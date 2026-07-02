@@ -31,7 +31,7 @@ jobs:
       ui: ${{ steps.filter.outputs.ui }}
       honcho: ${{ steps.filter.outputs.honcho }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
@@ -74,7 +74,7 @@ jobs:
       group: deploy-api
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Deploy
         run: flyctl deploy --remote-only --config fly.api.toml
@@ -92,7 +92,7 @@ jobs:
       group: deploy-ui
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Deploy
         run: flyctl deploy --remote-only --config fly.ui.toml
@@ -115,7 +115,7 @@ jobs:
       group: deploy-honcho
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
       # Fail loud if the operator forgot to set FLY_API_TOKEN_HONCHO —
       # flyctl's own error for a missing token is opaque and easy to

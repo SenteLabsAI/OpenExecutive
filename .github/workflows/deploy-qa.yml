@@ -30,7 +30,7 @@ jobs:
       api: ${{ steps.filter.outputs.api }}
       ui: ${{ steps.filter.outputs.ui }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
@@ -60,7 +60,7 @@ jobs:
       group: deploy-api-qa
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Deploy
         run: flyctl deploy --remote-only --config fly.api.qa.toml
@@ -78,7 +78,7 @@ jobs:
       group: deploy-ui-qa
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Deploy
         run: flyctl deploy --remote-only --config fly.ui.qa.toml
