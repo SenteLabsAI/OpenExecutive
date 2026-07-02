@@ -9,7 +9,7 @@ An AI system that acts as your company's virtual executive team — a senior adv
 
 ## What It Does
 
-Open Executive provides a single coherent executive voice backed by eight specialist AI agents:
+Developed by sentelabs.ai, Open Executive provides a single coherent executive voice backed by eight specialist AI agents:
 
 - **Chief Strategy Officer** — competitive analysis, M&A, market positioning, OKRs
 - **Chief Financial Officer** — financial modeling, fundraising, unit economics, cash flow
