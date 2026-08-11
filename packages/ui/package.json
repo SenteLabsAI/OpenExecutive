@@ -17,14 +17,14 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^3.0.0",
+    "@dagrejs/dagre": "^3.1.0",
     "@tailwindcss/typography": "^0.5.20",
-    "@xyflow/react": "^12.11.1",
-    "mermaid": "^11.16.0",
-    "next": "^16.2.9",
-    "next-auth": "^5.0.0-beta.31",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "@xyflow/react": "^12.11.2",
+    "mermaid": "^11.16.1",
+    "next": "^16.3.0",
+    "next-auth": "^5.0.0-beta.32",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.0"
@@ -33,11 +33,11 @@
     "@types/node": "^26",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "autoprefixer": "^10.5.2",
+    "autoprefixer": "^10.5.4",
     "eslint": "^10",
-    "eslint-config-next": "^16.2.9",
+    "eslint-config-next": "^16.3.0",
     "postcss": "^8.5.16",
-    "tailwindcss": "^4.3.2",
-    "typescript": "^6"
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7"
   }
 }
