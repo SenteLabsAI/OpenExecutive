@@ -12,7 +12,7 @@ Quick-reference cheatsheet for operating Open Executive's two Fly.io apps. Pair 
 | App | Stack | Key secrets | URL |
 |---|---|---|---|
 | `openexec-api-dev` | FastAPI (Python, port 8000) | `ANTHROPIC_API_KEY`, `HONCHO_API_KEY`, `HONCHO_BASE_URL` (optional), `BACKEND_SHARED_SECRET` | https://openexec-api-dev.fly.dev |
-| `openexec-ui-dev` | Next.js 15 (NextAuth + Google OAuth) | `AUTH_SECRET`, `AUTH_GOOGLE_ID/SECRET`, `BACKEND_SHARED_SECRET`, `BACKEND_URL` | https://openexec-ui-dev.fly.dev |
+| `openexec-ui-dev` | Next.js 16 (NextAuth + Google OAuth) | `AUTH_SECRET`, `AUTH_GOOGLE_ID/SECRET`, `BACKEND_SHARED_SECRET`, `BACKEND_URL` | https://openexec-ui-dev.fly.dev |
 
 No production-only apps exist today. Anything ending `-dev` is the live shared deployment.
 

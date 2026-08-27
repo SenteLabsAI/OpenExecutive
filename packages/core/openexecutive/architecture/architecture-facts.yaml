@@ -15,9 +15,9 @@ system:
   one_liner: A multi-agent AI system acting as a virtual corporate executive team.
   stack:
     backend: Python 3.11+ · FastAPI · Anthropic Claude SDK · ChromaDB · SQLite
-    frontend: Next.js 15 · React 19 · TailwindCSS · Mermaid.js
+    frontend: Next.js 16 · React 19 · TailwindCSS · Mermaid.js
   models:
-    default: claude-sonnet-4-6
+    default: claude-sonnet-5
     deep_reasoning: claude-opus-4-7
     routing: claude-haiku-4-5
     provider_routing: |
@@ -154,7 +154,7 @@ providers:
     at stream close.
   routing_rules:
     - Claude model + OPENROUTER_ENABLED=false → AnthropicProvider.
-    - Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated Claude OpenRouter slugs (anthropic/claude-opus-4.7, claude-sonnet-4.6, claude-haiku-4.5).
+    - Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated Claude OpenRouter slugs (anthropic/claude-opus-4.7, claude-sonnet-5, claude-sonnet-4.6, claude-haiku-4.5).
     - Non-Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated non-Anthropic slugs.
     - Non-Claude model + OPENROUTER_ENABLED=false → HTTP 400 at the API boundary. No silent fallback.
   council_ui_dropdown_source: |
@@ -1381,7 +1381,7 @@ external_monitoring:
          The research turn's model + deep-reasoning are controlled by the
          `research` virtual Council agent (get_research_model() /
          get_research_use_deep_reasoning(): Council override → `RESEARCH_MODEL`
-         env, default claude-sonnet-4-6 with deep reasoning OFF) — pinned
+         env, default claude-sonnet-5 with deep reasoning OFF) — pinned
          per-call via analyze_with_tools' overrides, NOT the agent's chat-time
          deep_reasoning_model (Opus 4.7). The research turn is
          retrieve-from-web-search + summarize, so the cheaper tier is the

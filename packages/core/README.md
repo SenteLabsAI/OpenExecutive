@@ -74,7 +74,7 @@ curl -X POST http://localhost:8000/documents \
 ```
 User message
     ↓
-Executive Orchestrator (claude-sonnet-4-6)
+Executive Orchestrator (claude-sonnet-5)
     ↓ tool use → parallel specialist calls
 CSO / CFO / CHRO / GC / COO / CMO / CPO / Board
     ↓ each specialist retrieves relevant context from ChromaDB

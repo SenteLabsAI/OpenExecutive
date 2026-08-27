@@ -24,6 +24,7 @@ from openexecutive.providers.provider import LLMProvider
 # the codebase (config defaults, agent class defaults, override DB).
 ANTHROPIC_DIRECT_MODELS: list[str] = [
     "claude-opus-4-7",
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
 ]
@@ -52,6 +53,7 @@ OPENROUTER_MODELS: list[str] = [
 # key; the value is what we send when OPENROUTER_ENABLED is on.
 _CLAUDE_OPENROUTER_SLUGS: dict[str, str] = {
     "claude-opus-4-7": "anthropic/claude-opus-4.7",
+    "claude-sonnet-5": "anthropic/claude-sonnet-5",
     "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
     "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
 }

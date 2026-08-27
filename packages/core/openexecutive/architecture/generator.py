@@ -24,7 +24,7 @@ from openexecutive.providers import get_provider
 logger = logging.getLogger(__name__)
 
 # Cheaper than Opus, plenty for prose + diagram synthesis.
-_MODEL = "claude-sonnet-4-6"
+_MODEL = "claude-sonnet-5"
 _MAX_TOKENS = 2048
 
 _SYSTEM_PROMPT = """\

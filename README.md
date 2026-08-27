@@ -3,7 +3,7 @@
 [![CI](https://github.com/SenteLabsAI/OpenExecutive/actions/workflows/ci.yml/badge.svg)](https://github.com/SenteLabsAI/OpenExecutive/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-black.svg)](https://nextjs.org/)
 
 An AI system that acts as your company's virtual executive team — a senior advisor with Harvard MBA-level knowledge, customized for your specific business.
 
@@ -33,7 +33,7 @@ All responses come from one consistent executive voice. The internal agent archi
 ```
 User message
     ↓
-Executive Orchestrator (claude-sonnet-4-6)
+Executive Orchestrator (claude-sonnet-5)
     ↓ tool use → parallel specialist calls
 CSO / CFO / CHRO / GC / COO / CMO / CPO / Board
     ↓ each specialist retrieves relevant context from ChromaDB
@@ -57,13 +57,13 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 | Layer | Choice |
 |---|---|
 | LLM backbone | Anthropic Claude API |
-| Default model | `claude-sonnet-4-6` (Executive + most specialists) |
+| Default model | `claude-sonnet-5` (Executive + most specialists) |
 | Deep reasoning | `claude-opus-4-7` (CSO, CFO, GC, Board — with extended thinking) |
 | Backend | Python 3.11 + FastAPI |
 | Package manager | `uv` |
 | Vector store | ChromaDB (local, embedded) |
 | Episodic memory | SQLite |
-| Web UI | Next.js 15 (App Router) + Tailwind |
+| Web UI | Next.js 16 (App Router) + Tailwind |
 | License | Apache 2.0 |
 
 ## Repo Layout
@@ -87,7 +87,7 @@ openexecutive/
 │   │       ├── architecture/     # Internal architecture utilities
 │   │       ├── workflows/        # Multi-step workflow definitions
 │   │       └── cli.py            # Click CLI
-│   └── ui/                       # Next.js 15 web UI
+│   └── ui/                       # Next.js 16 web UI
 ├── evals/                        # Eval scenarios + LLM-as-judge runner
 ├── fixtures/                     # Demo company fixtures (profiles, docs, rosters)
 ├── scripts/                      # Operator scripts (Fly secrets, Google auth)
@@ -219,7 +219,7 @@ Both workflows use `dorny/paths-filter` to deploy only the changed app (API, UI,
 | App | Purpose | State |
 |-----|---------|-------|
 | `openexec-api-{dev,qa}` | FastAPI + scheduler | Persistent volume `executive_data` at `/data` |
-| `openexec-ui-{dev,qa}` | Next.js 15 | Stateless |
+| `openexec-ui-{dev,qa}` | Next.js 16 | Stateless |
 | `openexec-honcho-dev` | Honcho per-person memory (optional) | Postgres-backed |
 
 > **⚠️ Single-instance only**: The scheduler claims rows via `UPDATE … RETURNING`. Running two API machines would double-fire scheduled actions. `max_machines_running = 1` is set in `fly.api.toml` / `fly.api.qa.toml` — do not override it.
@@ -273,7 +273,7 @@ the app refuses to start.
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes¹ | — | Anthropic API key |
-| `DEFAULT_MODEL` | No | `claude-sonnet-4-6` | Executive + most specialists |
+| `DEFAULT_MODEL` | No | `claude-sonnet-5` | Executive + most specialists |
 | `DEEP_REASONING_MODEL` | No | `claude-opus-4-7` | CSO, CFO, GC, Board |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB directory |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory |

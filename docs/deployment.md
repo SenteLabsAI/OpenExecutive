@@ -11,7 +11,7 @@ Two Fly apps in the same org:
 | App | Source | Public URL | State |
 |---|---|---|---|
 | `openexec-api-dev` | [docker/Dockerfile](../docker/Dockerfile) — Python 3.11 + FastAPI + scheduler | `https://openexec-api-dev.fly.dev` | Persistent volume `executive_data` mounted at `/data` |
-| `openexec-ui-dev` | [docker/Dockerfile.ui](../docker/Dockerfile.ui) — Next.js 15 standalone build | `https://openexec-ui-dev.fly.dev` | Stateless |
+| `openexec-ui-dev` | [docker/Dockerfile.ui](../docker/Dockerfile.ui) — Next.js 16 standalone build | `https://openexec-ui-dev.fly.dev` | Stateless |
 
 The UI talks to the API only through its server-side proxy route at [packages/ui/src/app/api/backend/[...path]/route.ts](../packages/ui/src/app/api/backend/[...path]/route.ts), which reads `BACKEND_BASE_URL` at request time. Currently set to the public API URL — see "Why not `.flycast`?" below.
 

@@ -31,6 +31,7 @@ def test_list_models_returns_allowed_models(client: TestClient) -> None:
     res = client.get("/agents/models")
     assert res.status_code == 200
     assert "claude-opus-4-7" in res.json()
+    assert "claude-sonnet-5" in res.json()
     assert "claude-sonnet-4-6" in res.json()
 
 

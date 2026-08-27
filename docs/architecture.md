@@ -29,7 +29,7 @@ openexecutive/
 │   │       ├── audit/                # SQLite-backed audit log
 │   │       ├── architecture/         # Self-documenting architecture module
 │   │       └── cli.py                # Click CLI
-│   └── ui/                           # Next.js 15 web UI
+│   └── ui/                           # Next.js 16 web UI
 ├── evals/                            # Eval scenarios + LLM-as-judge runner
 ├── docker/                           # Dockerfile + docker-compose.yml
 └── docs/                             # This file + deployment, setup guides
@@ -42,14 +42,14 @@ openexecutive/
 | Layer | Choice | Reason |
 |---|---|---|
 | LLM backbone | Anthropic Claude API | Native tool use, prompt caching, streaming |
-| Default model | `claude-sonnet-4-6` | Best speed/quality ratio for most queries |
+| Default model | `claude-sonnet-5` | Best speed/quality ratio for most queries |
 | Deep reasoning | `claude-opus-4-7` | Strategy, finance, legal, board — high-stakes decisions |
 | Routing / extraction | `claude-haiku-4-5-20251001` | Intent routing and background memory extraction |
 | Backend | Python + FastAPI | Async-native, Pydantic models, auto OpenAPI docs |
 | Package manager | `uv` | Fast, reproducible |
 | Vector store | ChromaDB (local) | Zero-config embedded DB |
 | Episodic memory | SQLite | Decision continuity + alerts + audit in one file |
-| Web UI | Next.js 15 (App Router) + Tailwind | Streaming-ready, TypeScript |
+| Web UI | Next.js 16 (App Router) + Tailwind | Streaming-ready, TypeScript |
 | License | Apache 2.0 | Permissive for commercial internal deployments |
 
 ---
@@ -72,11 +72,11 @@ The internal routing is implemented as a `consult_specialist` tool — the model
 |---|---|---|---|
 | Chief Strategy Officer | `cso` | `claude-opus-4-7` | Competitive analysis, M&A, OKRs, scenario planning |
 | Chief Financial Officer | `cfo` | `claude-opus-4-7` | Financial modeling, fundraising, unit economics |
-| Chief HR/People Officer | `chro` | `claude-sonnet-4-6` | Hiring, comp, performance, culture, org design |
+| Chief HR/People Officer | `chro` | `claude-sonnet-5` | Hiring, comp, performance, culture, org design |
 | General Counsel | `gc` | `claude-opus-4-7` | Contracts, IP, employment law, compliance |
-| Chief Operating Officer | `coo` | `claude-sonnet-4-6` | Process, vendor management, operational scaling |
-| Chief Marketing Officer | `cmo` | `claude-sonnet-4-6` | GTM, brand, messaging, PR, crisis comms |
-| Chief Product Officer | `cpo` | `claude-sonnet-4-6` | Roadmap, prioritization, product strategy |
+| Chief Operating Officer | `coo` | `claude-sonnet-5` | Process, vendor management, operational scaling |
+| Chief Marketing Officer | `cmo` | `claude-sonnet-5` | GTM, brand, messaging, PR, crisis comms |
+| Chief Product Officer | `cpo` | `claude-sonnet-5` | Roadmap, prioritization, product strategy |
 | Board Comms Director | `board_comms` | `claude-opus-4-7` | Board decks, investor relations, governance |
 
 CSO, CFO, GC, and Board Comms use `extended-thinking` (`budget_tokens: 8000`) for deeper reasoning on high-stakes decisions.
@@ -507,7 +507,7 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key |
-| `DEFAULT_MODEL` | No | `claude-sonnet-4-6` | Model for Executive + most specialists |
+| `DEFAULT_MODEL` | No | `claude-sonnet-5` | Model for Executive + most specialists |
 | `DEEP_REASONING_MODEL` | No | `claude-opus-4-7` | Model for CSO, CFO, GC, Board |
 | `ROUTING_MODEL` | No | `claude-haiku-4-5-20251001` | Model for intent routing and memory extraction |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB persistence directory |
@@ -569,7 +569,7 @@ from openexecutive.agents.base import BaseAgent
 class YourAgent(BaseAgent):
     name = "your_agent"
     domain = "your_domain"
-    model = "claude-sonnet-4-6"
+    model = "claude-sonnet-5"
 
     def get_system_prompt(self) -> str:
         from openexecutive.prompts.domain_prompts import YOUR_AGENT_PROMPT
