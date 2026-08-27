@@ -1,4 +1,6 @@
-.PHONY: dev stop test lint eval docker clean install discord
+.PHONY: dev stop test lint eval docker docker-down docker-logs docker-config clean install discord
+
+DOCKER_COMPOSE = docker compose --env-file .env -f docker/docker-compose.yml
 
 install:
 	cd packages/core && uv sync
@@ -25,10 +27,16 @@ eval:
 		--output ../../evals/results/
 
 docker:
-	docker compose -f docker/docker-compose.yml up --build
+	$(DOCKER_COMPOSE) up --build
 
 docker-down:
-	docker compose -f docker/docker-compose.yml down
+	$(DOCKER_COMPOSE) down
+
+docker-logs:
+	$(DOCKER_COMPOSE) logs -f
+
+docker-config:
+	$(DOCKER_COMPOSE) config
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

@@ -368,6 +368,12 @@ make docker       # Build and run Docker stack
 pytest packages/core/tests/unit/ -v
 ```
 
+For a production-image Docker setup, copy `docker/.env.example` to `.env`, fill
+in the provider and OAuth secrets, then run `make docker`. The API and UI have
+health checks, application state persists in a named volume, and only the UI is
+publicly bound by default. See [Docker deployment](docs/docker.md) for setup,
+Google OAuth, local-model networking, backups, and production guidance.
+
 ## Evaluation System
 
 `evals/` contains 29 scenarios covering all 8 domains, scored by `claude-opus-4-7` as an LLM-as-judge. Each scenario defines a query, simulated company context, expected topics, required specialist routing, and a domain-specific rubric. Five scoring dimensions (persona coherence, domain accuracy, company context utilization, routing quality, actionability) are each rated 1–5. The CI gate requires ≥ 3.5/5 average; any dimension dropping > 10% vs `main` fails the PR.

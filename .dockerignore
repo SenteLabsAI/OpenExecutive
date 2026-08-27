@@ -29,13 +29,18 @@ packages/ui/.next
 chroma_db
 **/chroma_db
 
-# Secrets & local env — never ship to the build context
+# Secrets & local env — never ship to the build context. The recursive forms
+# matter because the monorepo also uses packages/core/.env and
+# packages/ui/.env.local.
 .env
 .env.*
-!.env.example
+**/.env
+**/.env.*
+**/.gworkspace-credentials
 
 # Local company data (gitignored; not needed in the image)
 company
+**/company
 
 # Editor / OS cruft
 .obsidian

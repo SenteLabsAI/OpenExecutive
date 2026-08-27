@@ -22,7 +22,16 @@ RUN uvx --from git+https://github.com/SenteLabsAI/extensible-mcp extensible-mcp 
     || true
 
 COPY packages/core/pyproject.toml packages/core/uv.lock* ./
-RUN uv pip install --system -r pyproject.toml 2>/dev/null || uv pip install --system .
+RUN uv export --quiet --frozen --no-dev --no-emit-project --format requirements-txt \
+        --output-file /tmp/requirements.txt \
+    && uv pip install --system --require-hashes -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+
+# Chroma's default embedding function uses a separate ONNX cache under
+# /root/.cache/chroma. Warm it in addition to the sentence-transformers and
+# fastembed caches below; otherwise every fresh container downloads ~79 MB
+# before the API can become healthy.
+RUN python -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ONNXMiniLM_L6_V2()(['docker cache warmup'])"
 
 # Bake the embedding model the MCP gateway loads at startup
 # (sentence-transformers/all-MiniLM-L6-v2). Without this the ~90 MB model is
@@ -106,5 +115,8 @@ ENV WORKSPACE_MCP_CREDENTIALS_DIR=/data/google_credentials
 ENV WORKSPACE_MCP_TOOL_TIER=complete
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
 
 CMD ["uvicorn", "openexecutive.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

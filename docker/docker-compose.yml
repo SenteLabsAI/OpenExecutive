@@ -1,45 +1,62 @@
+name: openexecutive
+
 services:
   api:
+    image: openexecutive-api:local
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    ports:
-      - "8000:8000"
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${OPENEXEC_ENV_FILE:-../.env}
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - VECTOR_STORE_PATH=/data/chroma_db
-      - COMPANY_PROFILE_PATH=/data/company/profile.yaml
-      - EPISODIC_DB_PATH=/data/episodic_memory.db
-      - ENABLE_CACHING=${ENABLE_CACHING:-true}
-      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
-      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
-      # Outbound email goes through the Gmail Workspace MCP authenticated as
-      # this address (see .env.example / docs). Leave blank to disable email.
-      - EXEC_EMAIL_ADDRESS=${EXEC_EMAIL_ADDRESS:-}
+      # Keep all mutable application state on the named volume.
+      VECTOR_STORE_PATH: /data/chroma_db
+      COMPANY_PROFILE_PATH: /data/company/profile.yaml
+      EPISODIC_DB_PATH: /data/episodic_memory.db
+      MCP_SERVERS_CONFIG_PATH: /data/company/mcp_servers.json
+      WORKSPACE_MCP_CREDENTIALS_DIR: /data/google_credentials
+      # The UI proxy and API must share this value. Requiring it prevents an
+      # accidentally open API when Compose is used on a networked host.
+      BACKEND_SHARED_SECRET: ${BACKEND_SHARED_SECRET:?Set BACKEND_SHARED_SECRET in .env}
+      BACKEND_ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS:-http://localhost:3000}
+    ports:
+      # The browser talks to the API through the authenticated Next.js proxy.
+      # Keep direct API access available for local diagnostics only.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - executive_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    extra_hosts:
+      # Lets LOCAL_BASE_URL target a model server running on the Docker host.
+      - "host.docker.internal:host-gateway"
+    stop_grace_period: 30s
 
   ui:
-    image: node:22-alpine
-    working_dir: /app
-    command: sh -c "npm install && npm run dev"
-    ports:
-      - "3000:3000"
-    volumes:
-      - ../packages/ui:/app
-      - /app/node_modules
+    image: openexecutive-ui:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ui
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${OPENEXEC_ENV_FILE:-../.env}
     environment:
-      - NODE_ENV=development
-      # Reach the API over the compose network (the UI proxy/auth default of
-      # localhost:8000 resolves to the UI container itself, not the API).
-      - BACKEND_BASE_URL=http://api:8000
+      NODE_ENV: production
+      BACKEND_BASE_URL: http://api:8000
+      BACKEND_SHARED_SECRET: ${BACKEND_SHARED_SECRET:?Set BACKEND_SHARED_SECRET in .env}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:?Set AUTH_GOOGLE_ID in .env}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:?Set AUTH_GOOGLE_SECRET in .env}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:?Set ALLOWED_EMAILS in .env}
+      AUTH_TRUST_HOST: "true"
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+    ports:
+      - "${UI_PORT:-3000}:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    stop_grace_period: 15s
 
 volumes:
   executive_data:
