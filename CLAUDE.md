@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-Open Executive is a multi-agent AI system acting as a virtual corporate executive. Python backend (FastAPI) + Next.js 15 frontend. The "Executive" is a single coherent persona backed by 8 specialist sub-agents, all powered by the Anthropic Claude API.
+Open Executive is a multi-agent AI system acting as a virtual corporate executive. Python backend (FastAPI) + Next.js 16 frontend. The "Executive" is a single coherent persona backed by 8 specialist sub-agents, all powered by the Anthropic Claude API.
 
 ## Repository Layout
 
 ```
 packages/core/          Python: all agent logic, API, CLI
-packages/ui/            Next.js 15 web UI
+packages/ui/            Next.js 16 web UI
 knowledge/              Curated MBA knowledge base (git-tracked Markdown)
 evals/                  Eval scenarios + LLM-as-judge runner
 docker/                 Dockerfile + docker-compose.yml
@@ -70,7 +70,7 @@ RAG context goes in the **user turn**, not the system prompt.
    class YourAgent(BaseAgent):
        name = "your_agent"
        domain = "your_domain"
-       model = "claude-sonnet-4-6"
+       model = "claude-sonnet-5"
        
        def get_system_prompt(self) -> str:
            from openexecutive.prompts.domain_prompts import YOUR_AGENT_PROMPT

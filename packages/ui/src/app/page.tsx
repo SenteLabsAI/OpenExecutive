@@ -149,7 +149,7 @@ export default function HomePage() {
   // refresh doesn't reapply the action.
   //
   // Read directly from `window.location` rather than `useSearchParams`:
-  // that hook opts the page out of static rendering in Next 15 unless
+  // that hook opts the page out of static rendering in Next.js unless
   // wrapped in <Suspense>, and the chat home is a heavy static page we
   // want to keep prerendered. The effect runs client-only anyway.
   const router = useRouter();

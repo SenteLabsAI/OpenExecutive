@@ -40,12 +40,29 @@ def _reset_singleton() -> Any:
 
 
 def test_get_provider_returns_same_singleton_across_claude_calls() -> None:
-    a = get_provider("claude-sonnet-4-6")
+    a = get_provider("claude-sonnet-5")
     b = get_provider("claude-opus-4-7")
     # Different Claude model args resolve to the same Anthropic-direct
     # singleton — reconstructing the SDK client per request would burn
     # ~10 ms on every specialist call.
     assert a is b
+
+
+def test_sonnet_5_routes_direct_and_is_openrouter_mapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False),
+    )
+    registry_mod._reset_for_tests()
+    from openexecutive.providers.anthropic_provider import AnthropicProvider
+
+    assert isinstance(get_provider("claude-sonnet-5"), AnthropicProvider)
+    assert (
+        registry_mod._CLAUDE_OPENROUTER_SLUGS["claude-sonnet-5"]
+        == "anthropic/claude-sonnet-5"
+    )
 
 
 def test_returned_provider_satisfies_protocol() -> None:

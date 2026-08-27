@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # while this is unset.
     anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
 
-    default_model: str = Field("claude-sonnet-4-6", alias="DEFAULT_MODEL")
+    default_model: str = Field("claude-sonnet-5", alias="DEFAULT_MODEL")
     deep_reasoning_model: str = Field("claude-opus-4-7", alias="DEEP_REASONING_MODEL")
     routing_model: str = Field("claude-haiku-4-5-20251001", alias="ROUTING_MODEL")
     # Model for the executive_research specialist fan-out (research-mode turn
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # need Opus-tier reasoning; running 7 specialists on Sonnet (deep reasoning
     # off) instead of Opus 4.7 is the dominant cost lever for the workflow.
     # Set RESEARCH_MODEL=claude-opus-4-7 to restore the prior behavior.
-    research_model: str = Field("claude-sonnet-4-6", alias="RESEARCH_MODEL")
+    research_model: str = Field("claude-sonnet-5", alias="RESEARCH_MODEL")
 
     vector_store_path: Path = Field(_ROOT / "chroma_db", alias="VECTOR_STORE_PATH")
     company_profile_path: Path = Field(

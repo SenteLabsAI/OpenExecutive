@@ -510,7 +510,7 @@ The only exception is when a command truly requires the user's own environment (
 ## Project: Open Executive
 
 This repo is a Python backend (`packages/core`, FastAPI + Anthropic Claude) and
-a Next.js 15 frontend (`packages/ui`). The sections below override the generic
+a Next.js 16 frontend (`packages/ui`). The sections below override the generic
 discovery/verification steps with this project's known-good behavior.
 
 ### Verification commands (use these — don't re-derive)

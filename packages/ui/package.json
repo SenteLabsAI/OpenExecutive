@@ -2,7 +2,7 @@
   "name": "open-executive-ui",
   "version": "0.1.0",
   "private": true,
-  "description": "Next.js 15 web UI for Open Executive — an AI-powered virtual executive team.",
+  "description": "Next.js 16 web UI for Open Executive — an AI-powered virtual executive team.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,9 +20,9 @@
     "@dagrejs/dagre": "^3.0.0",
     "@tailwindcss/typography": "^0.5.20",
     "@xyflow/react": "^12.11.1",
-    "mermaid": "^11.16.0",
-    "next": "^16.2.9",
-    "next-auth": "^5.0.0-beta.31",
+    "mermaid": "^11.17.2",
+    "next": "^16.3.3",
+    "next-auth": "^5.0.0-beta.32",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
@@ -30,12 +30,13 @@
     "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.2",
     "@types/node": "^26",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.5.2",
-    "eslint": "^10",
-    "eslint-config-next": "^16.2.9",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.3",
     "postcss": "^8.5.16",
     "tailwindcss": "^4.3.2",
     "typescript": "^6"
