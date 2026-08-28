@@ -2,6 +2,67 @@ const API_BASE = "/api/backend";
 
 export type CommitteePhase = "drafting" | "reviewing" | "finalizing";
 
+export type CodexAuthState =
+  | "unavailable"
+  | "disconnected"
+  | "pending"
+  | "connected"
+  | "error";
+
+export interface CodexAuthStatus {
+  state: CodexAuthState;
+  auth_mode?: string | null;
+  email?: string | null;
+  plan_type?: string | null;
+  login_id?: string | null;
+  verification_url?: string | null;
+  user_code?: string | null;
+  error?: string | null;
+}
+
+export interface CodexDeviceLogin {
+  login_id: string;
+  verification_url: string;
+  user_code: string;
+}
+
+export class CodexAuthRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "CodexAuthRequestError";
+  }
+}
+
+async function codexAuthJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}/codex/auth${path}`, init);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      // Keep the HTTP status text when the response has no JSON body.
+    }
+    throw new CodexAuthRequestError(detail, response.status);
+  }
+  return response.json() as Promise<T>;
+}
+
+export function getCodexAuthStatus(): Promise<CodexAuthStatus> {
+  return codexAuthJson<CodexAuthStatus>("/status", { cache: "no-store" });
+}
+
+export function startCodexDeviceLogin(): Promise<CodexDeviceLogin> {
+  return codexAuthJson<CodexDeviceLogin>("/device/start", { method: "POST" });
+}
+
+export function cancelCodexDeviceLogin(): Promise<{ status: string }> {
+  return codexAuthJson<{ status: string }>("/device/cancel", { method: "POST" });
+}
+
 // Inline action chip surfaced when the Executive fires a side-effecting
 // tool (DM, schedule, workflow, roster mutation, alert, etc). Read-only
 // tools never produce one. See backend `action_chips.SIDE_EFFECTING_TOOLS`
@@ -186,6 +247,7 @@ export interface OnboardStatus {
   current_step: number;
   total_steps: number;
   current_question: string | null;
+  current_step_required: boolean;
   progress_percent: number;
   completed: boolean;
 }

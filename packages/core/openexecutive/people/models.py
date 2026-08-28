@@ -69,9 +69,10 @@ class Person(BaseModel):
 
     `is_principal=True` marks the founding user — the fallback approver for
     any action when no delegated Person is matched. Exactly one Person should
-    have `is_principal=True`. The API requires a valid `BACKEND_SHARED_SECRET`
-    header for all mutations (see api/main.py), so `is_principal` can only be
-    set by authenticated callers.
+    have `is_principal=True`. The API permits only the canonical principal
+    (identified by the UI proxy's verified email) to mutate the roster, and
+    refuses a second principal or principal archival. The canonical principal
+    email is bound at onboarding and immutable through the public API.
 
     `department_slugs` is advisory — it tells the Executive which department
     contexts this person participates in. FK enforcement deferred to Phase 4.

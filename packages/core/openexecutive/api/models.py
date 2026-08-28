@@ -73,6 +73,7 @@ class OnboardStatusResponse(BaseModel):
     current_step: int
     total_steps: int
     current_question: str | None
+    current_step_required: bool
     progress_percent: int
     completed: bool
 

@@ -22,6 +22,25 @@ logger = logging.getLogger(__name__)
 _VALID_PREFERRED_CHANNELS = {"email", "slack", "telegram", "discord", "any"}
 
 
+def _principal_write_error() -> str | None:
+    """Return a safe denial unless this chat turn belongs to the principal."""
+    from openexecutive.orchestrator.schedule_tools import (
+        current_caller_person_id,
+        current_roster_write_authorized,
+    )
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
+    caller_person_id = current_caller_person_id.get()
+    if (
+        not current_roster_write_authorized.get()
+        or principal is None
+        or caller_person_id != principal.id
+    ):
+        return "People roster changes require the authenticated principal."
+    return None
+
+
 LIST_PEOPLE_TOOL: dict[str, Any] = {
     "name": "list_people",
     "description": (
@@ -48,7 +67,8 @@ UPSERT_PERSON_TOOL: dict[str, Any] = {
         "update an existing row; omit it to create a new one. When the user "
         "asks you to add someone, fill in everything you know — name, role, "
         "email, department slugs, authority scopes — and call this directly. "
-        "Do not refuse and do not redirect to the UI. Call list_people first "
+        "Roster writes are allowed only for the authenticated principal; for "
+        "any other caller, return the permission error. Call list_people first "
         "if you need to look up an existing person_id by name."
     ),
     "input_schema": {
@@ -280,6 +300,9 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         _audit("upsert_person", "write", False, f"upsert_person bad input: {err}", {"error": err[:300]})
         return json.dumps({"error": err})
 
+    if denied := _principal_write_error():
+        return _bad(denied)
+
     try:
         full_name = str(tool_input["full_name"]).strip()
         if not full_name:
@@ -305,11 +328,13 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         existing = people_store.get_person(person_id)
         if existing is None:
             return _bad(f"person {person_id} not found")
-        # Updating a row that happens to be the existing principal must also
-        # not be a stealth path to flip the flag off; we block that too.
-        if existing.is_principal and not bool(tool_input.get("is_principal", existing.is_principal)):
+        # Chat turns are available to non-principals, so they must never
+        # mutate the canonical principal record (including its email, which is
+        # the HTTP authorization binding). The principal can make those edits
+        # through the principal-gated /people API instead.
+        if existing.is_principal:
             return _bad(
-                "is_principal can only be changed via the authenticated /people API"
+                "the principal record can only be changed via the authenticated /people API"
             )
 
     preferred_channel = tool_input.get("preferred_channel", "any")
@@ -405,11 +430,24 @@ async def handle_archive_person(tool_input: dict[str, Any]) -> str:
     from openexecutive.people import registry as people_registry
     from openexecutive.people import store as people_store
 
+    if denied := _principal_write_error():
+        _audit("archive_person", "write", False, denied, {"error": denied})
+        return json.dumps({"error": denied})
+
     try:
         person_id = int(tool_input["person_id"])
     except (KeyError, TypeError, ValueError) as exc:
         _audit("archive_person", "write", False, f"archive_person bad input: {exc}", {"error": str(exc)[:300]})
         return json.dumps({"error": f"bad arguments: {exc}"})
+
+    person = people_store.get_person(person_id)
+    if person is not None and person.is_principal:
+        detail = "the principal record cannot be archived"
+        _audit(
+            "archive_person", "write", False, detail,
+            {"person_id": person_id, "error": detail},
+        )
+        return json.dumps({"error": detail})
 
     try:
         archived = people_store.archive_person(person_id)
@@ -444,6 +482,10 @@ async def handle_set_department_head(tool_input: dict[str, Any]) -> str:
     from openexecutive.departments import store as dept_store
     from openexecutive.departments.head_persona import ensure_head_persona_override
     from openexecutive.people import store as people_store
+
+    if denied := _principal_write_error():
+        _audit("set_department_head", "write", False, denied, {"error": denied})
+        return json.dumps({"error": denied})
 
     try:
         department_slug = str(tool_input["department_slug"]).strip()

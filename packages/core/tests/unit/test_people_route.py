@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openexecutive.api import authorization
 from openexecutive.api.routes import people as people_route
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
@@ -22,12 +24,60 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     app = FastAPI()
     app.include_router(people_route.router)
+    # CRUD behavior is covered here independently of the shared permission
+    # dependency; the dedicated test below verifies that boundary.
+    app.dependency_overrides[authorization.require_principal] = lambda: None
     return TestClient(app)
 
 
 # --------------------------------------------------------------------------- #
 # List + Get
 # --------------------------------------------------------------------------- #
+
+def test_mutations_require_principal(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.dependency_overrides.clear()
+    person_id = people_store.upsert_person(full_name="Existing person")
+
+    assert client.post("/people", json={"full_name": "New person"}).status_code == 403
+    headers = {"X-Caller-Email": "member@example.com"}
+    monkeypatch.setattr(
+        authorization,
+        "find_person_by_email",
+        lambda _email: SimpleNamespace(id=1, is_principal=False),
+    )
+    monkeypatch.setattr(authorization, "find_principal_person", lambda: None)
+    assert client.post(
+        "/people", json={"full_name": "New person"}, headers=headers
+    ).status_code == 403
+    assert client.patch(f"/people/{person_id}", json={"role": "CFO"}, headers=headers).status_code == 403
+    assert client.post(f"/people/{person_id}/archive", headers=headers).status_code == 403
+
+    monkeypatch.setattr(
+        authorization,
+        "find_person_by_email",
+        lambda _email: SimpleNamespace(id=1, is_principal=True),
+    )
+    monkeypatch.setattr(authorization, "find_principal_person", lambda: SimpleNamespace(id=1))
+    assert client.post("/people", json={"full_name": "New person"}, headers=headers).status_code == 201
+    principal_id = people_store.upsert_person(
+        full_name="Existing principal", is_principal=True
+    )
+    assert client.post(
+        "/people",
+        json={"full_name": "Second principal", "is_principal": True},
+        headers=headers,
+    ).status_code == 409
+    assert client.post(
+        f"/people/{principal_id}/archive", headers=headers
+    ).status_code == 409
+    assert client.patch(
+        f"/people/{principal_id}",
+        json={"email": "other@example.com"},
+        headers=headers,
+    ).status_code == 409
+
 
 def test_list_people_empty(client: TestClient) -> None:
     resp = client.get("/people")
@@ -38,6 +88,7 @@ def test_list_people_empty(client: TestClient) -> None:
 def test_create_and_get(client: TestClient) -> None:
     resp = client.post(
         "/people",
+        headers={"X-Caller-Email": "alex@example.com"},
         json={
             "full_name": "Alex Rivera",
             "role": "CEO",
@@ -166,7 +217,13 @@ def test_by_scope_returns_matching(client: TestClient) -> None:
 def test_by_scope_wildcard_included(client: TestClient) -> None:
     client.post(
         "/people",
-        json={"full_name": "Founder", "is_principal": True, "authority_scope": ["wildcard"]},
+        headers={"X-Caller-Email": "founder@example.com"},
+        json={
+            "full_name": "Founder",
+            "email": "founder@example.com",
+            "is_principal": True,
+            "authority_scope": ["wildcard"],
+        },
     )
     resp = client.get("/people/by-scope/legal_sign")
     names = [p["full_name"] for p in resp.json()]

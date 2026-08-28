@@ -1,7 +1,7 @@
 {
   "section_id": "settings",
   "title": "Settings & Advanced",
-  "markdown": "**What it is:** The hub for power-user and admin tools that were pulled out of the day-to-day nav to keep it focused.\n\n**What it does:**\n\n- Links to the Agent Council, Audit Log, Token Usage, Architecture reference, Company Simulator, Client Companies, and this User Guide.\n- Acts as a directory — each tile opens a dedicated screen.\n- Keeps advanced configuration one click away without cluttering the main workspace.\n\n*Tip: if you're looking for a feature that isn't in the sidebar, it's probably here. This guide is also pinned next to Settings at the bottom of the nav.*",
+  "markdown": "**What it is:** The hub for power-user and admin tools that were pulled out of the day-to-day nav to keep it focused.\n\n**What it does:**\n\n- Connects the principal's ChatGPT subscription through OpenAI's official Codex device sign-in. Open the verification page, enter the one-time code, and leave Settings open while it checks for completion. This release authenticates only; it does not enable Codex model routing.\n- Links to the Agent Council, Audit Log, Token Usage, Architecture reference, Company Simulator, Client Companies, and this User Guide.\n- Acts as a directory — each tile opens a dedicated screen.\n- Keeps advanced configuration one click away without cluttering the main workspace.\n\n*Tip: if you're looking for a feature that isn't in the sidebar, it's probably here. This guide is also pinned next to Settings at the bottom of the nav.*",
   "mermaid": null,
-  "generated_at": "2026-06-11T00:00:00+00:00"
+  "generated_at": "2026-08-27T00:00:00+00:00"
 }

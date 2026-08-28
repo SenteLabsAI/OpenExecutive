@@ -9,6 +9,14 @@ from rich.prompt import Prompt
 console = Console()
 
 
+def _local_principal_person_id() -> int | None:
+    """Resolve the local operator's canonical principal for CLI admin tools."""
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
+    return principal.id if principal is not None else None
+
+
 @click.group()
 def cli() -> None:
     """Open Executive — your AI-powered virtual executive team."""
@@ -40,6 +48,7 @@ async def _ask(question: str) -> None:
     episodic = format_for_prompt()
 
     executive = Executive()
+    principal_person_id = _local_principal_person_id()
 
     console.print("\n[bold blue]Executive[/bold blue]\n")
     response = ""
@@ -48,6 +57,8 @@ async def _ask(question: str) -> None:
         session=session,
         retrieved_context=retrieved,
         episodic_context=episodic,
+        person_id=principal_person_id,
+        can_manage_roster=principal_person_id is not None,
     ):
         if isinstance(chunk, str):
             response += chunk
@@ -79,6 +90,7 @@ async def _chat() -> None:
 
     session = Session(company_profile=profile if not profile.is_empty() else None)
     executive = Executive()
+    principal_person_id = _local_principal_person_id()
 
     console.print("[bold]Open Executive[/bold] — type 'exit' to quit\n")
 
@@ -105,6 +117,8 @@ async def _chat() -> None:
             session=session,
             retrieved_context=retrieved,
             episodic_context=episodic,
+            person_id=principal_person_id,
+            can_manage_roster=principal_person_id is not None,
         ):
             console.print(chunk, end="", highlight=False)
 
@@ -248,7 +262,19 @@ async def _onboard() -> None:
         state = process_answer(state, answer)
         console.print()
 
-    profile = build_and_save_profile(state)
+    principal_email = ""
+    while not principal_email:
+        try:
+            candidate = Prompt.ask("Principal sign-in email").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Onboarding cancelled.[/yellow]")
+            return
+        if "@" not in candidate:
+            console.print("[yellow]Enter the email used to sign in to the web UI.[/yellow]")
+            continue
+        principal_email = candidate
+
+    profile = build_and_save_profile(state, principal_email=principal_email)
     console.print(
         f"\n[green]Company profile saved for '{profile.name}'.[/green]\n"
         "You can now start chatting: [bold]openexecutive chat[/bold]"

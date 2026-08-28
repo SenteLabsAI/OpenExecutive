@@ -32,6 +32,17 @@ logger = logging.getLogger(__name__)
 current_session: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "current_session", default=None
 )
+# Bound alongside current_session by Executive.stream_chat. Tool handlers use
+# it for authority checks without accepting caller-controlled tool arguments.
+current_caller_person_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "current_caller_person_id", default=None
+)
+# Only the web route can set this after resolving a caller from the trusted UI
+# proxy. Integration sender identifiers (especially email From headers) are
+# not sufficient authority for roster/identity changes.
+current_roster_write_authorized: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "current_roster_write_authorized", default=False
+)
 
 
 def _record_send_to_activity(

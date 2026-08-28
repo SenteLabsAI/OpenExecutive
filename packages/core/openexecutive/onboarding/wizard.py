@@ -76,7 +76,7 @@ WIZARD_STEPS = [
             "This sets you as the principal — the fallback approver for all decisions."
         ),
         "field": "principal_identity",
-        "required": False,
+        "required": True,
     },
     {
         "step": 10,
@@ -150,8 +150,9 @@ def process_answer(state: WizardState, answer: str) -> WizardState:
     if answer and answer.lower() not in ("skip", "s", "n/a"):
         state.answers[step_config["field"]] = answer
     else:
-        if not step_config["required"]:
-            state.skipped_steps.append(state.current_step)
+        if step_config["required"]:
+            return state
+        state.skipped_steps.append(state.current_step)
 
     state.current_step += 1
     if state.current_step >= TOTAL_STEPS:

@@ -14,6 +14,9 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
   const [error, setError] = useState<string | null>(null);
 
   const init = useCallback(async () => {
+    setError(null);
+    setAnswer("");
+    setStatus(null);
     setIsLoading(true);
     try {
       const s = await startOnboarding();
@@ -97,7 +100,7 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
     );
   }
 
-  const isOptionalStep = status.current_step >= 6;
+  const isOptionalStep = !status.current_step_required;
 
   return (
     <div className="flex flex-col h-full max-w-2xl mx-auto px-6 py-10">
@@ -130,9 +133,17 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
         </div>
 
         {error && (
-          <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">
-            {error}
-          </p>
+          <div className="flex items-center justify-between gap-3 text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={init}
+              disabled={isLoading}
+              className="shrink-0 text-xs font-medium text-fg-muted hover:text-fg disabled:opacity-50"
+            >
+              Restart onboarding
+            </button>
+          </div>
         )}
 
         <div className="flex flex-col gap-3">

@@ -3,11 +3,11 @@
 import Link from "next/link";
 
 import Icon from "@/components/Icon";
+import CodexConnectionCard from "@/components/settings/CodexConnectionCard";
 import { ADVANCED_ITEMS } from "@/components/shell/navConfig";
 
 // Settings hub — home for admin / power-user tools that were pulled out
-// of the primary nav to keep day-to-day navigation focused. Each tool is
-// a full route; this page is just the directory that points to them.
+// of the primary nav to keep day-to-day navigation focused.
 export default function SettingsPage() {
   return (
     <main className="flex-1 min-h-0 overflow-y-auto">
@@ -17,6 +17,8 @@ export default function SettingsPage() {
           Configuration, diagnostics, and power-user tools. These sit outside the
           day-to-day workspace nav.
         </p>
+
+        <CodexConnectionCard />
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
           {ADVANCED_ITEMS.map((item) => (

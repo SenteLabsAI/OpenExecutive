@@ -68,6 +68,8 @@ from openexecutive.orchestrator.router import (
 from openexecutive.orchestrator.schedule_tools import (
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
+    current_caller_person_id,
+    current_roster_write_authorized,
     current_session,
 )
 from openexecutive.orchestrator.session import Session
@@ -481,6 +483,7 @@ class Executive:
         max_iterations: int = 15,
         attachment_blocks: list[dict[str, Any]] | None = None,
         person_id: int | None = None,
+        can_manage_roster: bool = False,
         co_present_person_ids: list[int] | None = None,
         peer_memory_reasoning_level: HonchoReasoningLevel = "minimal",
         peer_memory_context: str | None = None,
@@ -516,6 +519,8 @@ class Executive:
         # Expose the current session to tool handlers (e.g. schedule_followup)
         # without threading it through every signature.
         current_session.set(session)
+        current_caller_person_id.set(person_id)
+        current_roster_write_authorized.set(can_manage_roster)
         # Persona and model can be overridden via the Agent Council admin UI.
         # Override is admin-set (not per-request dynamic), so placing it in the
         # cached block is fine — cache misses once on change, then hits normally.
@@ -700,6 +705,7 @@ class Executive:
         max_iterations: int = 15,
         attachment_blocks: list[dict[str, Any]] | None = None,
         person_id: int | None = None,
+        can_manage_roster: bool = False,
         co_present_person_ids: list[int] | None = None,
         peer_memory_reasoning_level: HonchoReasoningLevel = "medium",
         peer_memory_context: str | None = None,
@@ -727,6 +733,8 @@ class Executive:
             extra={"turn_break": True},
         )
         current_session.set(session)
+        current_caller_person_id.set(person_id)
+        current_roster_write_authorized.set(can_manage_roster)
 
         persona_override: str | None = None
         voice_persona_body: str | None = None
@@ -1504,6 +1512,7 @@ class Executive:
         debug_collector: DebugCollector | None = None,
         attachment_blocks: list[dict[str, Any]] | None = None,
         person_id: int | None = None,
+        can_manage_roster: bool = False,
         co_present_person_ids: list[int] | None = None,
         peer_memory_reasoning_level: HonchoReasoningLevel | None = None,
         peer_memory_context: str | None = None,
@@ -1540,6 +1549,7 @@ class Executive:
             "max_iterations": max_iterations,
             "attachment_blocks": attachment_blocks,
             "person_id": person_id,
+            "can_manage_roster": can_manage_roster,
             "co_present_person_ids": co_present_person_ids,
             "briefing_context": briefing_context,
         }

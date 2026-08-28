@@ -14,19 +14,15 @@ const ALLOWED_EMAILS_FALLBACK: ReadonlySet<string> = new Set(
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
+// Operator-only legacy recovery override. It mirrors the backend setting and
+// admits the configured owner while their canonical People row is repaired.
+const PRINCIPAL_EMAIL = process.env.PRINCIPAL_EMAIL?.trim().toLowerCase() ?? "";
+let hasObservedNonEmptyRoster = false;
 
-// 5-minute cache. Cheap insurance against hammering the backend on every
-// sign-in attempt and keeps sign-in latency bounded if the backend is
-// momentarily slow. NextAuth's signIn callback is server-side (Node
-// runtime) so this module-level cache is per-server-instance.
-const ROSTER_TTL_MS = 5 * 60 * 1000;
-let rosterCache: { fetchedAt: number; emails: Set<string> } | null = null;
-
+// The roster is an authorization source, so fetch it for every sign-in and
+// middleware authorization check. Caching it would leave a removed user (or
+// an env-fallback user just after bootstrap) authorized until cache expiry.
 async function fetchRosterEmails(): Promise<Set<string> | null> {
-  const now = Date.now();
-  if (rosterCache && now - rosterCache.fetchedAt < ROSTER_TTL_MS) {
-    return rosterCache.emails;
-  }
   try {
     const headers: Record<string, string> = {};
     if (BACKEND_SHARED_SECRET) headers["x-api-key"] = BACKEND_SHARED_SECRET;
@@ -41,7 +37,6 @@ async function fetchRosterEmails(): Promise<Set<string> | null> {
     }
     const rows = (await res.json()) as Array<{ email: string; person_id: number }>;
     const emails = new Set(rows.map((r) => r.email.toLowerCase()));
-    rosterCache = { fetchedAt: now, emails };
     return emails;
   } catch (err) {
     console.warn(`[auth] roster fetch error; falling back to ALLOWED_EMAILS env: ${String(err)}`);
@@ -65,8 +60,22 @@ async function checkEmailAllowed(
   email: string,
 ): Promise<{ allowed: boolean; source: string }> {
   const roster = await fetchRosterEmails();
+  if (PRINCIPAL_EMAIL && email === PRINCIPAL_EMAIL) {
+    return { allowed: true, source: "configured_principal" };
+  }
+  // During first-run bootstrap the configured owner is exclusive. Once the
+  // roster exists, its normal team allowlist remains authoritative for others.
   if (roster && roster.size > 0) {
+    hasObservedNonEmptyRoster = true;
     return { allowed: roster.has(email), source: "roster" };
+  }
+  if (
+    PRINCIPAL_EMAIL
+    && roster !== null
+    && roster.size === 0
+    && !hasObservedNonEmptyRoster
+  ) {
+    return { allowed: false, source: "configured_principal" };
   }
   return {
     allowed: ALLOWED_EMAILS_FALLBACK.has(email),

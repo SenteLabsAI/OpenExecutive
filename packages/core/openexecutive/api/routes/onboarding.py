@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
+from openexecutive.api.authorization import require_principal
 from openexecutive.api.models import OnboardAnswerRequest, OnboardStatusResponse
 from openexecutive.onboarding.wizard import (
     TOTAL_STEPS,
     WizardState,
     get_current_question,
+    get_step,
     process_answer,
 )
 
@@ -19,6 +22,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _wizard_sessions: dict[str, WizardState] = {}
+_wizard_session_owners: dict[str, str] = {}
+_onboarding_completion_lock = asyncio.Lock()
 # Hold strong refs to background research runs so GC can't cancel
 # them mid-flight (mirrors alerts/pipeline.py). Auto-cleared via
 # add_done_callback after the task finishes.
@@ -35,11 +40,48 @@ _onboarding_research_fired: set[str] = set()
 _RESEARCH_WALLCLOCK_TIMEOUT_SECONDS = 600
 
 
+def _verified_caller_email(x_caller_email: str | None) -> str:
+    if not x_caller_email or not x_caller_email.strip():
+        raise HTTPException(status_code=403, detail="Verified caller identity required.")
+    return x_caller_email.strip().lower()
+
+
+def _require_onboarding_access(caller_email: str) -> None:
+    """Allow bootstrap once; afterward only the canonical principal may onboard."""
+    from openexecutive.api.authorization import configured_principal_email
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
+    configured_principal = configured_principal_email()
+    if principal is not None:
+        require_principal(caller_email)
+    elif configured_principal and caller_email != configured_principal:
+        raise HTTPException(status_code=403, detail="Principal access required.")
+
+
+def _step_required(state: WizardState) -> bool:
+    step = get_step(state.current_step)
+    return bool(step and step["required"])
+
+
+def _invalidate_other_owner_sessions(_owner_email: str, completed_session_id: str) -> None:
+    """A completed wizard makes every pre-completion snapshot stale and unsafe."""
+    for session_id in list(_wizard_session_owners):
+        if session_id != completed_session_id:
+            _wizard_session_owners.pop(session_id, None)
+            _wizard_sessions.pop(session_id, None)
+
+
 @router.get("/onboard/start", response_model=OnboardStatusResponse)
-async def start_onboarding() -> OnboardStatusResponse:
+async def start_onboarding(
+    x_caller_email: Annotated[str | None, Header(alias="X-Caller-Email")] = None,
+) -> OnboardStatusResponse:
+    caller_email = _verified_caller_email(x_caller_email)
+    _require_onboarding_access(caller_email)
     session_id = str(uuid.uuid4())
     state = WizardState()
     _wizard_sessions[session_id] = state
+    _wizard_session_owners[session_id] = caller_email
 
     question = get_current_question(state)
     progress = state.get_progress()
@@ -49,16 +91,24 @@ async def start_onboarding() -> OnboardStatusResponse:
         current_step=state.current_step,
         total_steps=TOTAL_STEPS,
         current_question=question,
+        current_step_required=_step_required(state),
         progress_percent=progress["percent"],
         completed=state.completed,
     )
 
 
 @router.post("/onboard/answer", response_model=OnboardStatusResponse)
-async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
+async def submit_answer(
+    body: OnboardAnswerRequest,
+    x_caller_email: Annotated[str | None, Header(alias="X-Caller-Email")] = None,
+) -> OnboardStatusResponse:
+    caller_email = _verified_caller_email(x_caller_email)
     state = _wizard_sessions.get(body.session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
+    if _wizard_session_owners.get(body.session_id) != caller_email:
+        raise HTTPException(status_code=403, detail="Onboarding session belongs to another user.")
+    _require_onboarding_access(caller_email)
     if state.completed:
         raise HTTPException(status_code=400, detail="Onboarding already completed")
 
@@ -66,26 +116,33 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
     _wizard_sessions[body.session_id] = state
 
     if state.completed:
-        from openexecutive.onboarding.profile_builder import build_and_save_profile
+        async with _onboarding_completion_lock:
+            # A sibling completion can invalidate this session while it waits
+            # for the lock; never save an obsolete wizard snapshot.
+            if _wizard_sessions.get(body.session_id) is not state:
+                raise HTTPException(status_code=409, detail="Onboarding session is stale.")
+            _require_onboarding_access(caller_email)
+            from openexecutive.onboarding.profile_builder import build_and_save_profile
 
-        build_and_save_profile(state)
+            build_and_save_profile(state, principal_email=caller_email)
+            _invalidate_other_owner_sessions(caller_email, body.session_id)
 
-        # Fire the watchlist-research workflow once at onboarding
-        # completion so the principal's first /today after install
-        # carries a "here's what I researched we should be watching"
-        # alert. Best-effort — a research failure must NOT block
-        # finishing onboarding, so the helper swallows exceptions.
-        # Dedup on session_id so a duplicate completion (client retry
-        # before we 400) can't double-fire.
-        if body.session_id not in _onboarding_research_fired:
-            _onboarding_research_fired.add(body.session_id)
-            task = asyncio.create_task(
-                _fire_post_onboarding_research(body.session_id)
-            )
-            _background_research_tasks.add(task)
-            # Auto-cleanup so the set doesn't grow unboundedly across
-            # the process lifetime.
-            task.add_done_callback(_background_research_tasks.discard)
+            # Fire the watchlist-research workflow once at onboarding
+            # completion so the principal's first /today after install
+            # carries a "here's what I researched we should be watching"
+            # alert. Best-effort — a research failure must NOT block
+            # finishing onboarding, so the helper swallows exceptions.
+            # Dedup on session_id so a duplicate completion (client retry
+            # before we 400) can't double-fire.
+            if body.session_id not in _onboarding_research_fired:
+                _onboarding_research_fired.add(body.session_id)
+                task = asyncio.create_task(
+                    _fire_post_onboarding_research(body.session_id)
+                )
+                _background_research_tasks.add(task)
+                # Auto-cleanup so the set doesn't grow unboundedly across
+                # the process lifetime.
+                task.add_done_callback(_background_research_tasks.discard)
 
     question = get_current_question(state) if not state.completed else None
     progress = state.get_progress()
@@ -95,6 +152,7 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
         current_step=state.current_step,
         total_steps=TOTAL_STEPS,
         current_question=question,
+        current_step_required=_step_required(state),
         progress_percent=progress["percent"],
         completed=state.completed,
     )
@@ -179,10 +237,17 @@ async def _fire_post_onboarding_research(session_id: str) -> None:
 
 
 @router.get("/onboard/status/{session_id}", response_model=OnboardStatusResponse)
-async def get_onboard_status(session_id: str) -> OnboardStatusResponse:
+async def get_onboard_status(
+    session_id: str,
+    x_caller_email: Annotated[str | None, Header(alias="X-Caller-Email")] = None,
+) -> OnboardStatusResponse:
+    caller_email = _verified_caller_email(x_caller_email)
     state = _wizard_sessions.get(session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
+    if _wizard_session_owners.get(session_id) != caller_email:
+        raise HTTPException(status_code=403, detail="Onboarding session belongs to another user.")
+    _require_onboarding_access(caller_email)
 
     question = get_current_question(state) if not state.completed else None
     progress = state.get_progress()
@@ -192,6 +257,7 @@ async def get_onboard_status(session_id: str) -> OnboardStatusResponse:
         current_step=state.current_step,
         total_steps=TOTAL_STEPS,
         current_question=question,
+        current_step_required=_step_required(state),
         progress_percent=progress["percent"],
         completed=state.completed,
     )

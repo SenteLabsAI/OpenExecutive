@@ -230,6 +230,16 @@ def upsert_person(
     leave_str = on_leave_until.isoformat() if on_leave_until else None
 
     with _get_conn(db_path) as conn:
+        if is_principal and person_id is None:
+            # Serialize bootstrap principal creation across API workers. The
+            # route layer also rejects a second principal, but onboarding can
+            # run concurrently before a principal exists.
+            conn.execute("BEGIN IMMEDIATE")
+            existing_principal = conn.execute(
+                "SELECT 1 FROM people WHERE is_principal = 1 AND archived = 0 LIMIT 1"
+            ).fetchone()
+            if existing_principal is not None:
+                raise ValueError("An active principal is already configured")
         if person_id is not None and person_id > 0:
             conn.execute(
                 """
@@ -371,7 +381,8 @@ def find_person_by_email(email: str, db_path: Path | None = None) -> Person | No
         if not _table_exists(conn, "people"):
             return None
         row = conn.execute(
-            "SELECT * FROM people WHERE LOWER(email) = LOWER(?) AND archived = 0 LIMIT 1",
+            "SELECT * FROM people WHERE LOWER(email) = LOWER(?) AND archived = 0 "
+            "ORDER BY is_principal DESC, id ASC LIMIT 1",
             (email,),
         ).fetchone()
         if row is None:

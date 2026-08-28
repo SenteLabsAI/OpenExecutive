@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
+from openexecutive.api.authorization import PrincipalOnly
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.people.models import (
@@ -98,21 +99,41 @@ def get_person(person_id: int) -> Person:
 # --------------------------------------------------------------------------- #
 
 @router.post("/people", response_model=Person, status_code=status.HTTP_201_CREATED)
-def create_person(body: PersonCreate) -> Person:
-    pid = people_store.upsert_person(
-        full_name=body.full_name,
-        role=body.role,
-        is_principal=body.is_principal,
-        department_slugs=body.department_slugs,
-        email=body.email,
-        slack_user_id=body.slack_user_id,
-        telegram_chat_id=body.telegram_chat_id,
-        discord_user_id=body.discord_user_id,
-        preferred_channel=body.preferred_channel,  # type: ignore[arg-type]
-        response_sla_hours=body.response_sla_hours,
-        on_leave_until=body.on_leave_until,
-        reports_to_person_id=body.reports_to_person_id,
-    )
+def create_person(
+    body: PersonCreate,
+    _: PrincipalOnly,
+    x_caller_email: str | None = Header(default=None, alias="X-Caller-Email"),
+) -> Person:
+    if body.is_principal:
+        if people_store.find_principal_person() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A principal is already configured.",
+            )
+        if not body.email or not x_caller_email or body.email.lower() != x_caller_email.lower():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The principal email must match the verified caller.",
+            )
+        if AuthorityScope.WILDCARD not in body.authority_scope:
+            body.authority_scope.append(AuthorityScope.WILDCARD)
+    try:
+        pid = people_store.upsert_person(
+            full_name=body.full_name,
+            role=body.role,
+            is_principal=body.is_principal,
+            department_slugs=body.department_slugs,
+            email=body.email,
+            slack_user_id=body.slack_user_id,
+            telegram_chat_id=body.telegram_chat_id,
+            discord_user_id=body.discord_user_id,
+            preferred_channel=body.preferred_channel,  # type: ignore[arg-type]
+            response_sla_hours=body.response_sla_hours,
+            on_leave_until=body.on_leave_until,
+            reports_to_person_id=body.reports_to_person_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if body.authority_scope:
         people_store.set_authority_scope(pid, body.authority_scope)
     if body.availability:
@@ -125,11 +146,20 @@ def create_person(body: PersonCreate) -> Person:
 
 
 @router.patch("/people/{person_id}", response_model=Person)
-def patch_person(person_id: int, body: PersonPatch) -> Person:
-    if people_store.get_person(person_id) is None:
+def patch_person(person_id: int, body: PersonPatch, _: PrincipalOnly) -> Person:
+    person = people_store.get_person(person_id)
+    if person is None:
         raise HTTPException(status_code=404, detail="Person not found")
 
     raw = body.model_dump(exclude_unset=True)
+    if "email" in raw and person.is_principal:
+        current_email = (person.email or "").lower()
+        requested_email = (body.email or "").lower()
+        if requested_email != current_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The principal email is bound during onboarding and cannot be changed.",
+            )
     if raw:
         people_store.update_person(
             person_id,
@@ -162,9 +192,15 @@ def patch_person(person_id: int, body: PersonPatch) -> Person:
 
 
 @router.post("/people/{person_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
-def archive_person(person_id: int) -> Response:
-    if people_store.get_person(person_id) is None:
+def archive_person(person_id: int, _: PrincipalOnly) -> Response:
+    person = people_store.get_person(person_id)
+    if person is None:
         raise HTTPException(status_code=404, detail="Person not found")
+    if person.is_principal:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The principal cannot be archived.",
+        )
     people_store.archive_person(person_id)
     people_registry.invalidate()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

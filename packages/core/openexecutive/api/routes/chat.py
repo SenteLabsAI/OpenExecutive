@@ -123,6 +123,20 @@ def _build_page_context_block(page_context: PageContext | None) -> str:
     return "\n".join(lines)
 
 
+def _caller_can_manage_roster(request: Request) -> bool:
+    """Return true only for a principal authenticated by the trusted UI proxy."""
+    caller_email = (request.headers.get("x-caller-email") or "").strip().lower()
+    if not caller_email:
+        return False
+    try:
+        from openexecutive.api.authorization import require_principal
+
+        require_principal(caller_email)
+    except (HTTPException, OSError, sqlite3.Error):
+        return False
+    return True
+
+
 def _resolve_caller_person_id(request: Request) -> int | None:
     """Resolve the calling Person from the `x-caller-email` header.
 
@@ -140,6 +154,16 @@ def _resolve_caller_person_id(request: Request) -> int | None:
             find_principal_person,
         )
         if caller_email:
+            from openexecutive.api.authorization import configured_principal_email
+
+            principal = find_principal_person()
+            configured_principal = configured_principal_email()
+            if (
+                principal is not None
+                and configured_principal
+                and caller_email == configured_principal
+            ):
+                return principal.id
             caller = find_person_by_email(caller_email)
             return caller.id if caller is not None else None
         principal = find_principal_person()
@@ -203,6 +227,7 @@ async def _run_chat_turn(
     # sidebar by signed-in user). See `_resolve_caller_person_id` for
     # the precedence rule that protects against cross-identity leakage.
     caller_person_id = _resolve_caller_person_id(request)
+    can_manage_roster = _caller_can_manage_roster(request)
 
     # Persist the session row immediately (idempotent INSERT OR IGNORE) so a
     # mid-turn failure never leaves a ghost in-memory session with no DB row.
@@ -347,6 +372,7 @@ async def _run_chat_turn(
                     episodic_context=episodic_context,
                     debug_collector=collector,
                     person_id=caller_person_id,
+                    can_manage_roster=can_manage_roster,
                     attachment_blocks=attachment_blocks,
                     peer_memory_context=peer_memory_context,
                     briefing_context=briefing_context,
@@ -360,6 +386,7 @@ async def _run_chat_turn(
                     episodic_context=episodic_context,
                     debug_collector=collector,
                     person_id=caller_person_id,
+                    can_manage_roster=can_manage_roster,
                     attachment_blocks=attachment_blocks,
                     peer_memory_context=peer_memory_context,
                     briefing_context=briefing_context,

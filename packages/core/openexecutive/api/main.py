@@ -23,6 +23,7 @@ from openexecutive.api.routes import (
     audit,
     chat,
     clients,
+    codex_auth,
     company_profile,
     decisions,
     departments,
@@ -375,6 +376,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with mcp_server.run_session_manager():
         yield
 
+    # The official Codex App Server is started lazily by the connection UI.
+    # Close its stdio subprocess before tearing down the rest of the runtime.
+    from openexecutive.providers.codex_auth import close_codex_auth_manager
+
+    await close_codex_auth_manager()
+
     # Shut Discord down FIRST so the gateway stops accepting new events before
     # we tear down email_poller/scheduler/resumer that handlers might call into.
     # Bounded timeout: discord.py's close handshake can stall during a reconnect,
@@ -481,6 +488,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_route.router, tags=["auth"])
     app.include_router(fixtures.router, tags=["fixtures"])
     app.include_router(clients.router, tags=["clients"])
+    app.include_router(codex_auth.router, tags=["codex-auth"])
     app.include_router(agents.router, tags=["agents"])
     app.include_router(personas.router, tags=["personas"])
     app.include_router(chat.router, tags=["chat"])

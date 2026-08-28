@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -21,12 +22,18 @@ from openexecutive.orchestrator.people_tools import (
     handle_set_department_head,
     handle_upsert_person,
 )
+from openexecutive.orchestrator.schedule_tools import (
+    current_caller_person_id,
+    current_roster_write_authorized,
+)
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 
 
 @pytest.fixture(autouse=True)
-def shared_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def shared_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[Path, None, None]:
     """All three stores point at the same tmp SQLite file, matching prod."""
     db_path = tmp_path / "episodic.db"
     monkeypatch.setattr(people_store, "DB_PATH", db_path)
@@ -36,11 +43,18 @@ def shared_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # own module-level binding that must also be patched.
     monkeypatch.setattr(agent_overrides, "DB_PATH", db_path)
     people_store.initialize_db()
+    principal_id = people_store.upsert_person(
+        full_name="Principal", is_principal=True, email="principal@example.com"
+    )
+    caller_token = current_caller_person_id.set(principal_id)
+    roster_token = current_roster_write_authorized.set(True)
     dept_store.initialize_db()
     agent_overrides.initialize_overrides_db()
     people_registry.invalidate()
     dept_registry.invalidate()
-    return db_path
+    yield db_path
+    current_roster_write_authorized.reset(roster_token)
+    current_caller_person_id.reset(caller_token)
 
 
 def _call(coro_fn, payload: dict) -> dict:
@@ -50,6 +64,30 @@ def _call(coro_fn, payload: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # upsert_person
 # --------------------------------------------------------------------------- #
+
+
+def test_untrusted_channel_cannot_change_roster() -> None:
+    token = current_roster_write_authorized.set(False)
+    try:
+        result = _call(handle_upsert_person, {"full_name": "Outsider"})
+    finally:
+        current_roster_write_authorized.reset(token)
+    assert "principal" in result["error"].lower()
+
+
+def test_non_principal_chat_cannot_change_roster() -> None:
+    member_id = people_store.upsert_person(full_name="Member", email="member@example.com")
+    token = current_caller_person_id.set(member_id)
+    try:
+        result = _call(
+            handle_upsert_person,
+            {"full_name": "Outsider", "email": "outsider@example.com", "authority_scopes": ["wildcard"]},
+        )
+    finally:
+        current_caller_person_id.reset(token)
+
+    assert "principal" in result["error"].lower()
+    assert people_store.find_person_by_email("outsider@example.com") is None
 
 
 def test_upsert_creates_new_person() -> None:
@@ -260,20 +298,29 @@ def test_upsert_with_bogus_person_id_returns_error() -> None:
     assert "9999" in result["error"]
 
 
-def test_upsert_preserves_is_principal_on_update() -> None:
-    # Create a principal directly in the store (bypassing the chat tool gate
-    # — this is what the HTTP API does behind BACKEND_SHARED_SECRET).
-    pid = people_store.upsert_person(full_name="Principal Pat", is_principal=True)
-    # Updating other fields via the chat tool must not flip the flag off.
+def test_chat_tools_cannot_mutate_or_archive_principal() -> None:
+    # A chat turn may originate from a non-principal. The record's email is
+    # part of the HTTP authorization binding, so no principal mutation is safe
+    # through the LLM tool path.
+    principal = people_store.find_principal_person()
+    assert principal is not None and principal.id is not None
+    pid = principal.id
     result = _call(
         handle_upsert_person,
-        {"person_id": pid, "full_name": "Principal Pat", "role": "Founder"},
+        {
+            "person_id": pid,
+            "full_name": "Principal Pat",
+            "email": "attacker@example.com",
+        },
     )
-    assert result.get("action") == "updated"
+    assert "error" in result
+    assert "principal" in result["error"].lower()
+    assert _call(handle_archive_person, {"person_id": pid})["error"]
+
     refreshed = people_store.get_person(pid)
     assert refreshed is not None
-    assert refreshed.is_principal is True
-    assert refreshed.role == "Founder"
+    assert refreshed.email == "principal@example.com"
+    assert refreshed.archived is False
 
 
 # --------------------------------------------------------------------------- #
