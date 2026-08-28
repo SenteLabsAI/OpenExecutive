@@ -1,4 +1,5 @@
 """Unit tests for MCPGateway — mocked subprocess, no real extensible-mcp needed."""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,10 +13,19 @@ import pytest
 
 from openexecutive.orchestrator.mcp_gateway import (
     _FORWARDED_ENV_VARS,
+    _GITLAB_ALLOWED_TOOLS,
+    _GITLAB_READ_TOOLS,
+    _GITLAB_WRITE_TOOLS,
     MCP_TOOL_NAMES,
     MCP_TOOLS,
     MCPGateway,
 )
+
+
+@pytest.fixture(autouse=True)
+def _configure_gitlab_write_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITLAB_WRITE_NAMESPACES", "acme/platform")
+
 
 # ---------------------------------------------------------------------------
 # Tool schema correctness — no I/O needed
@@ -243,6 +253,199 @@ def test_call_tool_passes_arguments(tmp_path: Path) -> None:
         "call_tool", {"tool_name": "github_list_prs", "arguments": {"repo": "foo/bar"}}
     )
     assert json.loads(result)["result"] == "ok"
+
+
+def test_gitlab_read_tool_passes_through(tmp_path: Path) -> None:
+    session = _make_mock_session()
+    session.call_tool.return_value = _make_text_result('{"result": "ok"}')
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    async def _run() -> str:
+        with _FakeMcpModules(session, _make_mock_stdio_cm()):
+            gw = MCPGateway()
+            await gw.start(config)
+            return await gw.call_tool(
+                {
+                    "name": "gitlab__list_merge_requests",
+                    "arguments": {"project_id": "acme/platform/org/branding"},
+                }
+            )
+
+    result = asyncio.run(_run())
+    assert json.loads(result)["result"] == "ok"
+    session.call_tool.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        (
+            "gitlab__create_issue",
+            {
+                "id": "acme/platform/org/branding",
+                "title": "Test issue",
+            },
+        ),
+        (
+            "gitlab__save_work_item",
+            {
+                "group_id": "acme/platform",
+                "title": "Test epic",
+                "type_name": "Epic",
+            },
+        ),
+        (
+            "gitlab__manage_pipeline",
+            {
+                "id": "acme/platform/org/branding",
+                "pipeline_id": 123,
+                "name": "release",
+            },
+        ),
+    ],
+)
+def test_gitlab_scoped_write_tools_pass_through(
+    tmp_path: Path, tool_name: str, arguments: dict[str, object]
+) -> None:
+    session = _make_mock_session()
+    session.call_tool.return_value = _make_text_result('{"result": "ok"}')
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    async def _run() -> str:
+        with _FakeMcpModules(session, _make_mock_stdio_cm()):
+            gw = MCPGateway()
+            await gw.start(config)
+            return await gw.call_tool({"name": tool_name, "arguments": arguments})
+
+    result = asyncio.run(_run())
+    assert json.loads(result)["result"] == "ok"
+    session.call_tool.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "error_fragment"),
+    [
+        (
+            "gitlab__create_issue",
+            {"id": "another-company/private", "title": "No"},
+            "outside",
+        ),
+        (
+            "gitlab__create_issue",
+            {"id": 123, "title": "No"},
+            "outside",
+        ),
+        (
+            "gitlab__save_work_item",
+            {"title": "Missing target", "type_name": "Epic"},
+            "must include",
+        ),
+        (
+            "gitlab__fork_repository",
+            {"id": "acme/platform/org/branding"},
+            "must include an authorized namespace_path",
+        ),
+        (
+            "gitlab__fork_repository",
+            {
+                "id": "acme/platform/org/branding",
+                "namespace_path": "acme/platform",
+                "namespace_id": 123,
+            },
+            "numeric destination",
+        ),
+        (
+            "gitlab__attach_scan_profile",
+            {"security_scan_profile_id": 1, "project_ids": [2]},
+            "only accepts numeric targets",
+        ),
+        ("gitlab__future_tool", {}, "reviewed allowlist"),
+    ],
+)
+def test_gitlab_unscoped_and_unknown_tools_fail_closed(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, object],
+    error_fragment: str,
+) -> None:
+    session = _make_mock_session()
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    async def _run() -> str:
+        with _FakeMcpModules(session, _make_mock_stdio_cm()):
+            gw = MCPGateway()
+            await gw.start(config)
+            return await gw.call_tool({"name": tool_name, "arguments": arguments})
+
+    result = asyncio.run(_run())
+    assert error_fragment in json.loads(result)["error"]
+    session.call_tool.assert_not_awaited()
+
+
+def test_gitlab_catalog_is_explicit_and_disjoint() -> None:
+    assert len(_GITLAB_READ_TOOLS) == 28
+    assert len(_GITLAB_WRITE_TOOLS) == 14
+    assert _GITLAB_READ_TOOLS.isdisjoint(_GITLAB_WRITE_TOOLS)
+    assert _GITLAB_ALLOWED_TOOLS == _GITLAB_READ_TOOLS | _GITLAB_WRITE_TOOLS
+
+
+def test_gitlab_writes_disabled_without_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITLAB_WRITE_NAMESPACES")
+    session = _make_mock_session()
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    async def _run() -> str:
+        with _FakeMcpModules(session, _make_mock_stdio_cm()):
+            gw = MCPGateway()
+            await gw.start(config)
+            return await gw.call_tool({
+                "name": "gitlab__create_issue",
+                "arguments": {
+                    "id": "acme/platform/org/branding",
+                    "title": "Blocked",
+                },
+            })
+
+    result = asyncio.run(_run())
+    assert "GitLab writes are disabled" in json.loads(result)["error"]
+    session.call_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "acme/platform",
+        "acme/platform/org/branding",
+        "acme%2Fplatform%2Fbranding",
+        "https://gitlab.com/acme/platform/org/branding/-/issues/1",
+    ),
+)
+def test_gitlab_write_accepts_configured_path_forms(tmp_path: Path, target: str) -> None:
+    session = _make_mock_session()
+    session.call_tool.return_value = _make_text_result('{"result": "ok"}')
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    async def _run() -> str:
+        with _FakeMcpModules(session, _make_mock_stdio_cm()):
+            gw = MCPGateway()
+            await gw.start(config)
+            return await gw.call_tool(
+                {
+                    "name": "gitlab__create_issue",
+                    "arguments": {"id": target, "title": "Scoped"},
+                }
+            )
+
+    result = asyncio.run(_run())
+    assert json.loads(result)["result"] == "ok"
+    session.call_tool.assert_awaited_once()
 
 
 def test_call_tool_defaults_empty_arguments(tmp_path: Path) -> None:

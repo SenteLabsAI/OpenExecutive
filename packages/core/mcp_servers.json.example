@@ -1,6 +1,21 @@
 {
   "_comment": "google_workspace runs workspace-mcp co-located as a stdio child via docker/workspace-mcp-launch.sh, which selects the auth mode from GWORKSPACE_AUTH_MODE (oauth | service_account). The $VAR values in its env block are interpolated by extensible-mcp from the API's environment, so the API must have those secrets set and orchestrator/mcp_gateway.py forwards them (_FORWARDED_ENV_VARS). For local dev without the launcher script, use {\"command\":\"uvx\",\"args\":[\"workspace-mcp\",\"--tool-tier\",\"complete\",\"--single-user\"],\"env\":{...}} instead. See docs/deployment.md → 'Google Workspace (co-located in the API)'.",
   "mcpServers": {
+    "gitlab": {
+      "command": "/usr/local/bin/mcp-remote",
+      "args": [
+        "https://gitlab.com/api/v4/mcp",
+        "--static-oauth-client-metadata",
+        "{\"scope\":\"mcp\"}",
+        "--transport",
+        "http-only"
+      ],
+      "env": {
+        "HOME": "/data",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "MCP_REMOTE_CONFIG_DIR": "/data/mcp-auth/gitlab"
+      }
+    },
     "github": {
       "command": "npx",
       "args": ["-y", "@github/github-mcp-server", "stdio"],

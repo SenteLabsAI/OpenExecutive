@@ -165,6 +165,17 @@ Discord user access is managed via the /people UI — add a Person row with `dis
 
 The machine restarts and the bot starts on the next lifespan boot. To disable in prod: `flyctl secrets unset -a openexec-api-dev DISCORD_BOT_TOKEN`.
 
+## GitLab MCP
+
+Open Executive can connect to GitLab.com's official MCP endpoint through a
+pinned OAuth bridge. It can read and manage issues, epics/work items, merge
+requests, branches, commits, pipelines, and related project activity. Writes
+are disabled by default and must target a namespace explicitly authorized with
+`GITLAB_WRITE_NAMESPACES`; unknown future tools fail closed until reviewed.
+
+See [docs/gitlab_mcp_setup.md](docs/gitlab_mcp_setup.md) for the group settings,
+OAuth bootstrap, Docker volume seeding, verification, and recovery runbook.
+
 ## Onboarding Your Company
 
 The first time you visit the app, you'll be guided through a wizard to set up your company profile:

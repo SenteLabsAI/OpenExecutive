@@ -1,3 +1,14 @@
+FROM node:22-bookworm-slim AS mcp-node
+
+# GitLab's official MCP server is a remote OAuth service. Open Executive's
+# extensible-mcp gateway speaks stdio to downstream servers, so mcp-remote is
+# the OAuth/transport bridge. Pin the package: an integration update should be
+# reviewed together with the exact GitLab tool allowlist in mcp_gateway.py.
+ARG MCP_REMOTE_VERSION=0.8.1
+RUN npm install --global "mcp-remote@${MCP_REMOTE_VERSION}" \
+    && node --version \
+    && mcp-remote --help >/dev/null 2>&1
+
 FROM python:3.11-slim AS api
 
 WORKDIR /app
@@ -9,6 +20,15 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
+
+# Runtime-only Node installation from the official Node image. npm/npx remain
+# available for existing stdio MCP configurations; mcp-remote is installed and
+# pinned in the dedicated stage above.
+COPY --from=mcp-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=mcp-node /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=mcp-node /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=mcp-node /usr/local/bin/mcp-remote /usr/local/bin/mcp-remote
+COPY --from=mcp-node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN pip install uv
 
@@ -93,6 +113,19 @@ COPY fixtures/ ./fixtures/
 # Dependencies were already installed in the earlier layer, so --no-deps
 # keeps this fast and cache-friendly.
 RUN uv pip install --system --no-deps .
+
+# Docker COPY dereferences Node's global-bin symlinks, which would leave npm's
+# relative imports and mcp-remote's ESM chunks disconnected. Restore the
+# launchers as symlinks into their installed packages and smoke-test the runtime
+# paths used by MCP configurations.
+RUN rm /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/mcp-remote \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -s /usr/local/lib/node_modules/mcp-remote/dist/proxy.js /usr/local/bin/mcp-remote \
+    && ln -s /usr/local/lib/node_modules/mcp-remote/dist/client.js /usr/local/bin/mcp-remote-client \
+    && npm --version >/dev/null \
+    && npx --version >/dev/null \
+    && mcp-remote --help >/dev/null 2>&1
 
 ENV PYTHONUNBUFFERED=1
 ENV VECTOR_STORE_PATH=/data/chroma_db

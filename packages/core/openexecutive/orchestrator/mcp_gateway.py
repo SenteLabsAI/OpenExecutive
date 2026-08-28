@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from email.utils import getaddresses
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from openexecutive.config import get_settings
 
@@ -51,6 +52,224 @@ _FORWARDED_ENV_VARS = (
     "WORKSPACE_MCP_CREDENTIALS_DIR",
     "WORKSPACE_MCP_TOOL_TIER",
 )
+
+# GitLab's official MCP server exposes read and write operations through one
+# OAuth scope. Permit exactly the reviewed live catalog below and fail closed on
+# every future tool until it receives a code and policy review. Writes receive a
+# second in-process boundary: the request must name a project/group path or URL
+# inside an operator-configured namespace. This keeps the OAuth identity's
+# unrelated projects outside the Executive's mutation authority. With no
+# GITLAB_WRITE_NAMESPACES setting, GitLab writes are disabled by default.
+_GITLAB_PREFIX = "gitlab__"
+_GITLAB_READ_TOOLS = frozenset(
+    {
+        "get_mcp_server_version",
+        "get_issue",
+        "get_merge_request",
+        "list_duo_sessions",
+        "list_merge_requests",
+        "get_merge_request_commits",
+        "get_merge_request_conflicts",
+        "get_merge_request_diffs",
+        "get_merge_request_pipelines",
+        "get_merge_request_notes",
+        "list_project_members",
+        "get_repository_file",
+        "get_commit",
+        "get_pipeline",
+        "get_pipeline_jobs",
+        "get_job",
+        "list_pipelines",
+        "get_work_item",
+        "get_workitem_notes",
+        "get_saved_view_work_items",
+        "list_work_items",
+        "get_work_item_types",
+        "list_commits",
+        "list_repository_tree",
+        "search",
+        "search_labels",
+        "list_wiki_pages",
+        "semantic_code_search",
+    }
+)
+_GITLAB_WRITE_TOOLS = frozenset(
+    {
+        "accept_merge_request",
+        "add_branch",
+        "add_commit",
+        "attach_scan_profile",
+        "create_issue",
+        "create_merge_request_note",
+        "create_workitem_note",
+        "fork_repository",
+        "link_work_items",
+        "manage_pipeline",
+        "save_merge_request",
+        "save_merge_request_review",
+        "save_pipeline",
+        "save_work_item",
+    }
+)
+_GITLAB_ALLOWED_TOOLS = _GITLAB_READ_TOOLS | _GITLAB_WRITE_TOOLS
+
+# Argument fields that establish the project/group targeted by each write. The
+# gateway requires at least one of these fields and validates every one supplied.
+# GitLab accepts numeric IDs too, but those cannot be proven to belong to an
+# authorized namespace locally, so the Executive must send a full path or URL.
+_GITLAB_WRITE_SCOPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "accept_merge_request": ("url", "project_id"),
+    "add_branch": ("url", "project_id"),
+    "add_commit": ("url", "project_id"),
+    "create_issue": ("id",),
+    "create_merge_request_note": ("url", "project_id"),
+    "create_workitem_note": ("url", "group_id", "project_id"),
+    "fork_repository": ("id", "namespace_path"),
+    "link_work_items": ("url", "group_id", "project_id"),
+    "manage_pipeline": ("id",),
+    "save_merge_request": ("project_id",),
+    "save_merge_request_review": ("url", "project_id"),
+    "save_pipeline": ("url", "project_id"),
+    "save_work_item": ("url", "group_id", "project_id"),
+}
+
+
+def _gitlab_write_namespaces() -> tuple[str, ...]:
+    """Configured GitLab write roots, normalized and most-specific first."""
+    values = {
+        unquote(item.strip()).strip("/")
+        for item in os.environ.get("GITLAB_WRITE_NAMESPACES", "").split(",")
+        if item.strip().strip("/")
+    }
+    return tuple(sorted(values, key=lambda item: (-len(item), item)))
+
+
+def _gitlab_host() -> str:
+    """GitLab host used when validating URL-form write targets."""
+    return os.environ.get("GITLAB_HOST", "gitlab.com").strip().lower()
+
+
+def _is_allowed_gitlab_ref(value: Any, namespaces: tuple[str, ...]) -> bool:
+    """Return whether a path/URL unambiguously targets an allowed namespace."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    decoded = unquote(value.strip())
+    parsed = urlparse(decoded)
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != _gitlab_host():
+            return False
+        decoded = parsed.path
+    path = decoded.strip("/")
+    return any(path == root or path.startswith(f"{root}/") for root in namespaces)
+
+
+def _check_gitlab_access(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    """Enforce the reviewed catalog and configured scope for GitLab writes."""
+    if not tool_name.startswith(_GITLAB_PREFIX):
+        return None
+    unqualified = tool_name.removeprefix(_GITLAB_PREFIX)
+    if unqualified not in _GITLAB_ALLOWED_TOOLS:
+        logger.warning("blocked unknown GitLab tool: %s", tool_name)
+        return json.dumps(
+            {
+                "error": (
+                    f"GitLab tool {unqualified!r} is not in Open Executive's reviewed "
+                    "allowlist. Newly introduced GitLab tools require an explicit code "
+                    "and policy review."
+                ),
+            }
+        )
+    if unqualified in _GITLAB_READ_TOOLS:
+        return None
+
+    namespaces = _gitlab_write_namespaces()
+    if not namespaces:
+        return json.dumps(
+            {
+                "error": (
+                    "GitLab writes are disabled. Set GITLAB_WRITE_NAMESPACES to "
+                    "a comma-separated list of authorized group/project paths."
+                ),
+            }
+        )
+    namespace_display = ", ".join(namespaces)
+
+    scope_fields = _GITLAB_WRITE_SCOPE_FIELDS.get(unqualified)
+    if scope_fields is None:
+        logger.warning("blocked unscopable GitLab write tool: %s", tool_name)
+        return json.dumps(
+            {
+                "error": (
+                    f"GitLab write tool {unqualified!r} only accepts numeric targets, "
+                    "so Open Executive cannot prove they belong to an authorized "
+                    "namespace. Use a path-scoped GitLab operation."
+                ),
+            }
+        )
+
+    supplied = [(field, arguments[field]) for field in scope_fields if arguments.get(field)]
+    if not supplied:
+        return json.dumps(
+            {
+                "error": (
+                    f"GitLab write tool {unqualified!r} must include a full project/group "
+                    f"path or GitLab URL under one of [{namespace_display}]; numeric "
+                    "IDs are not accepted for writes."
+                ),
+            }
+        )
+    invalid = [
+        field for field, value in supplied if not _is_allowed_gitlab_ref(value, namespaces)
+    ]
+    if invalid:
+        logger.warning(
+            "blocked out-of-namespace GitLab write: tool=%s fields=%s",
+            tool_name,
+            invalid,
+        )
+        return json.dumps(
+            {
+                "error": (
+                    f"GitLab write tool {unqualified!r} targets a path outside "
+                    f"the authorized namespaces [{namespace_display}] or uses an "
+                    f"unverifiable numeric ID in: {', '.join(invalid)}."
+                ),
+            }
+        )
+
+    if unqualified == "fork_repository" and not arguments.get("namespace_path"):
+        return json.dumps(
+            {
+                "error": (
+                    "GitLab write tool 'fork_repository' must include an authorized "
+                    "namespace_path so the fork cannot default to a personal or "
+                    "unrelated namespace."
+                ),
+            }
+        )
+
+    # These optional numeric destination fields could redirect an otherwise
+    # scoped write outside an authorized namespace, so require path alternatives.
+    forbidden_numeric_destinations = {
+        "fork_repository": ("namespace_id",),
+        "save_merge_request": ("target_project_id",),
+    }
+    forbidden = [
+        field
+        for field in forbidden_numeric_destinations.get(unqualified, ())
+        if arguments.get(field) is not None
+    ]
+    if forbidden:
+        return json.dumps(
+            {
+                "error": (
+                    f"GitLab write tool {unqualified!r} cannot use unverifiable numeric "
+                    f"destination fields: {', '.join(forbidden)}. Use an authorized path."
+                ),
+            }
+        )
+    return None
+
 
 # Outbound Gmail tools whose arguments may carry recipients. Any tool name
 # matching one of these (after the `google_workspace__` namespace prefix) is
@@ -642,6 +861,9 @@ class MCPGateway:
                 logger.warning("call_tool: arguments was a string but not valid JSON — using empty dict")
                 arguments = {}
         tool_name = tool_input.get("name", "")
+        blocked = _check_gitlab_access(tool_name, arguments)
+        if blocked is not None:
+            return blocked
         if tool_name in _GATED_GMAIL_TOOLS:
             blocked = _check_gmail_recipients(tool_name, arguments)
             if blocked is not None:

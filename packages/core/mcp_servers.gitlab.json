@@ -1,0 +1,37 @@
+{
+  "_comment": "GitLab.com official MCP through mcp-remote OAuth. OAuth state is persisted outside the model-visible company directory. openexecutive/orchestrator/mcp_gateway.py permits only the reviewed live catalog, limits writes to GITLAB_WRITE_NAMESPACES, and blocks unknown future tools.",
+  "mcpServers": {
+    "gitlab": {
+      "command": "/usr/local/bin/mcp-remote",
+      "args": [
+        "https://gitlab.com/api/v4/mcp",
+        "--static-oauth-client-metadata",
+        "{\"scope\":\"mcp\"}",
+        "--transport",
+        "http-only"
+      ],
+      "env": {
+        "HOME": "/data",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "MCP_REMOTE_CONFIG_DIR": "/data/mcp-auth/gitlab"
+      }
+    }
+  },
+  "filters": {
+    "access_control": {
+      "deny_patterns": [
+        "*__delete_*",
+        "*__drop_*",
+        "*__destroy_*",
+        "*__remove_*"
+      ],
+      "deny": [],
+      "allow_servers": ["gitlab"]
+    },
+    "load_control": {
+      "deny_url_patterns": ["*"],
+      "allow_url_patterns": []
+    },
+    "similarity_threshold": 0.3
+  }
+}
