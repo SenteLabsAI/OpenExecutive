@@ -2121,6 +2121,29 @@ auth:
     Person row for Honcho's per-person memory; future routes
     (audit/today filters etc.) can read the same signal.
 
+security:
+  module: openexecutive.security
+  status: Optional hardening layer, OFF by default (fresh-checkout behavior unchanged).
+  purpose: Deterministic pre-execution guardrails on the tool-use boundary — defense against indirect prompt injection (RAG-injected company docs, inbound email/Slack/Telegram messages) steering the model into exfiltrating secrets, destroying state, or burning unbounded spend.
+  hooks:
+    executive_dispatch: openexecutive.orchestrator.executive._run_agent_loop — every skill/MCP tool_use is evaluated before dispatch; enforce mode replaces violating calls with an error tool_result, shadow mode logs and proceeds.
+    mcp_call_tool: openexecutive.orchestrator.mcp_gateway.MCPGateway.call_tool — re-checks the unwrapped tool + arguments so direct callers (scheduler, workflows) are covered too.
+  controls:
+    secret_denial: Blocks tool arguments that name credential paths — .env, ~/.ssh, ~/.aws, company/, /data (Fly volume), Google service-account JSON, episodic_memory.db, chroma_db.
+    egress_allowlist: Bare http(s) URL arguments must resolve to an allowlisted host (exact or real subdomain), fail closed. Public-fetch tools (web_search, scrape_url, load_mcp_server) are exempt — their data path terminates at allowlisted providers.
+    destructive_block: Shell-destructive fragments in arguments (rm -rf, sudo, chmod 777, shutdown, git reset --hard, DROP/TRUNCATE TABLE). No tool-name denylist — legit delete tools (delete_skill, remove_watchlist_entry) must keep working.
+    spend_guardrail: Per-session token/cost budget summed from cache_event audit rows (same numbers as /audit usage); blocks further dispatch past GRIMDALL_MAX_TOKENS_PER_SESSION / GRIMDALL_MAX_COST_USD_PER_SESSION.
+  modes: |
+    GRIMDALL_ENABLED=false (default) → guard is a no-op.
+    GRIMDALL_ENABLED=true → Shadow: violations written to audit_log as signed `grimdall_block` receipts; execution proceeds.
+    +GRIMDALL_ENFORCE=true → Enforce: violating calls return an error tool_result the model can react to.
+  receipts: HMAC-SHA256 signed with GRIMDALL_SIGNING_KEY or an auto-generated company/.grimdall-key (owner-only, gitignored), so a tampered audit trail is detectable.
+  invariants:
+    - Zero behavior change when the flag is off — the guard returns before any work.
+    - Shadow mode never blocks; enforce mode never silently drops a call (the model always sees an error tool_result).
+    - Guard checks are deterministic string/ledger checks only — no LLM calls, no network, no shell.
+    - Audit writes swallow exceptions; a guard failure must never break a turn.
+
 integrations:
   channel_access: |
     Channel access splits into INBOUND (does the message reach the

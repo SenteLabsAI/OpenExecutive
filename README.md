@@ -319,6 +319,38 @@ See [.env.example](.env.example) for the full list.
 > It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`)
 > or route through OpenRouter (`OPENROUTER_ENABLED`).
 
+## Execution Security (Optional)
+
+Because RAG context and inbound channel messages (email, Slack, Telegram,
+Discord, Google Chat) are injected into user turns, a malicious document or
+message can steer the model into tool calls that exfiltrate secrets, destroy
+state, or burn unbounded LLM spend. An **optional** deterministic guard layer —
+`grimdall_guard` — adds sub-millisecond pre-execution checks on every skill/MCP
+tool call at the dispatch boundary, so the model's judgment is not the only
+line of defense. It is **off by default**: a fresh checkout behaves identically.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GRIMDALL_ENABLED` | `false` | `true` = Shadow Mode: violations are audit-logged as signed `grimdall_block` receipts, execution proceeds |
+| `GRIMDALL_ENFORCE` | `false` | `true` (with `GRIMDALL_ENABLED`) = Enforce Mode: violating calls return an error tool_result |
+| `GRIMDALL_EGRESS_ALLOWLIST` | built-in | Comma-separated extra egress hosts beyond the built-in allowlist |
+| `GRIMDALL_MAX_TOKENS_PER_SESSION` | `0` | Per-session token budget (sums `cache_event` rows); `0` disables |
+| `GRIMDALL_MAX_COST_USD_PER_SESSION` | `0` | Per-session USD budget (OpenRouter cost accounting); `0` disables |
+| `GRIMDALL_SIGNING_KEY` | auto | HMAC key for block receipts; unset → auto-generated `company/.grimdall-key` |
+
+Four controls: **secret denial** (credential paths in tool args: `.env`,
+`~/.ssh`, `~/.aws`, `company/`, `/data`, service-account JSON,
+`episodic_memory.db`, `chroma_db`), **egress allowlist** (bare `http(s)` URL
+args must hit an allowlisted host — `api.anthropic.com`, `openrouter.ai`,
+`run.xcrawl.com`, `openstax.org`, `slack.com`, `api.telegram.org`,
+`googleapis.com`, `discord.com`, `github.com`, plus your
+`GRIMDALL_EGRESS_ALLOWLIST`; fails closed), **destructive block** (`rm -rf`,
+`sudo`, `chmod 777`, `shutdown`, `git reset --hard`, `DROP`/`TRUNCATE TABLE`
+fragments in args), and a **per-session spend guardrail** that catches runaway
+extended-thinking loops across many turns. See the
+[architecture docs](packages/core/openexecutive/architecture/prebuilt/security.json)
+and [Security Policy](SECURITY.md) for details.
+
 ## Running on Local Models
 
 Open Executive can run against any **OpenAI-compatible** local server — Ollama,

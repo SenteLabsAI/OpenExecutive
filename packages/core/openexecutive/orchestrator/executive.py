@@ -94,6 +94,7 @@ from openexecutive.orchestrator.workflow_run_tools import (
 )
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
+from openexecutive.security.grimdall_guard import guard_tool_call, is_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1242,6 +1243,31 @@ class Executive:
             skill_tool_uses = [tu for tu in tool_uses if tu["name"] in _ALL_SKILL_HANDLERS]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
 
+            # ── Grimdall execution guardrails (optional, default off) ──────
+            # Evaluate every skill/MCP tool call before it dispatches. Enforce
+            # mode replaces violating calls with an error tool_result (seeded
+            # into results_by_id below); shadow mode logs a signed receipt and
+            # proceeds unchanged. consult_specialist and server-side web_search
+            # are internal LLM calls — not covered.
+            session_id = getattr(current_session.get(), "session_id", None)
+            grimdall_blocked: dict[str, str] = {}
+            if is_enabled():
+                for tu in (*skill_tool_uses, *mcp_tool_uses):
+                    decision = guard_tool_call(
+                        tu["name"],
+                        tu.get("input") or {},
+                        session_id=session_id,
+                        turn_id=turn_id or "",
+                    )
+                    if not decision.allowed:
+                        grimdall_blocked[tu["id"]] = decision.error_result()
+                skill_tool_uses = [
+                    tu for tu in skill_tool_uses if tu["id"] not in grimdall_blocked
+                ]
+                mcp_tool_uses = [
+                    tu for tu in mcp_tool_uses if tu["id"] not in grimdall_blocked
+                ]
+
             specialist_calls = [
                 {
                     "specialist": tu["input"].get("specialist", ""),
@@ -1304,6 +1330,10 @@ class Executive:
             yield self._THINKING
 
             results_by_id: dict[str, str] = {}
+
+            # Grimdall-blocked calls resolve to their error payload here; the
+            # tool_results loop below feeds them back to the model untouched.
+            results_by_id.update(grimdall_blocked)
 
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)

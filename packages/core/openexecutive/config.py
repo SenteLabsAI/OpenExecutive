@@ -433,7 +433,10 @@ class Settings(BaseSettings):
     )
 
     @field_validator(
-        "web_search_allowed_domains", "web_search_blocked_domains", mode="before"
+        "web_search_allowed_domains",
+        "web_search_blocked_domains",
+        "grimdall_egress_allowlist",
+        mode="before",
     )
     @classmethod
     def _parse_domain_list(cls, v: Any) -> list[str]:
@@ -498,6 +501,35 @@ class Settings(BaseSettings):
     outbound_rate_window_minutes: int = Field(60, alias="OUTBOUND_RATE_WINDOW_MINUTES")
     outbound_dedup_window_minutes: int = Field(360, alias="OUTBOUND_DEDUP_WINDOW_MINUTES")
     outbound_respect_quiet_hours: bool = Field(True, alias="OUTBOUND_RESPECT_QUIET_HOURS")
+
+    # ── Grimdall execution guardrails (optional hardening layer) ───────────
+    # Deterministic pre-execution checks on every skill/MCP tool call at the
+    # dispatch boundary: secret denial (credential paths in args), egress
+    # allowlist (bare http(s) URL args must hit an allowed host), destructive
+    # block (shell-destructive fragments), and a per-session spend budget
+    # (summed from cache_event audit rows). Default OFF: a fresh checkout
+    # behaves identically. GRIMDALL_ENABLED=true switches to Shadow Mode
+    # (violations are audit-logged as signed `grimdall_block` receipts and
+    # execution proceeds); GRIMDALL_ENFORCE=true hard-blocks and returns an
+    # error tool_result the model can react to.
+    grimdall_enabled: bool = Field(False, alias="GRIMDALL_ENABLED")
+    grimdall_enforce: bool = Field(False, alias="GRIMDALL_ENFORCE")
+    # Extra egress hosts beyond the built-in allowlist (comma-separated).
+    grimdall_egress_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="GRIMDALL_EGRESS_ALLOWLIST"
+    )
+    # Per-session spend budgets; 0 disables the respective check. Tokens sum
+    # input + output + cache tokens; cost applies where the provider surfaced
+    # a real USD figure (OpenRouter path).
+    grimdall_max_tokens_per_session: int = Field(
+        0, alias="GRIMDALL_MAX_TOKENS_PER_SESSION"
+    )
+    grimdall_max_cost_usd_per_session: float = Field(
+        0.0, alias="GRIMDALL_MAX_COST_USD_PER_SESSION"
+    )
+    # HMAC signing key for grimdall_block receipts. When unset, an owner-only
+    # key is auto-generated at company/.grimdall-key (gitignored).
+    grimdall_signing_key: str | None = Field(None, alias="GRIMDALL_SIGNING_KEY")
 
     # Overnight client rotation (multi-client practice mode) — during a quiet
     # window, activate each parked client slot in turn, generate its morning

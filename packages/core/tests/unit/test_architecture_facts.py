@@ -58,6 +58,10 @@ def test_sections_have_unique_stable_ids() -> None:
         # `clients` — named client-company slots for fractional / multi-client
         # use (save-back switching, per-client MCP config). New top-level module.
         "clients",
+        # `security` — optional Grimdall execution guardrails on the tool-use
+        # boundary (secret denial, egress allowlist, destructive block,
+        # per-session spend budget). New top-level module under packages/core.
+        "security",
     ]
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from openexecutive.config import get_settings
+from openexecutive.security.grimdall_guard import guard_tool_call, is_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -654,6 +655,17 @@ class MCPGateway:
             blocked = _check_drive_share(tool_name, arguments)
             if blocked is not None:
                 return blocked
+        # Grimdall execution guardrails (optional, default off). Enforce mode
+        # returns an error payload before the subprocess call; shadow mode logs
+        # a signed receipt and proceeds. The executive dispatch boundary also
+        # evaluates call_tool envelopes, so chat-path calls are double-checked —
+        # this hook additionally covers direct callers (scheduler, workflows).
+        if is_enabled():
+            decision = guard_tool_call(
+                tool_name, arguments, session_id=None, turn_id="", actor="mcp_gateway"
+            )
+            if not decision.allowed:
+                return decision.error_result()
         result = await session.call_tool(
             "call_tool",
             {"tool_name": tool_input["name"], "arguments": arguments},

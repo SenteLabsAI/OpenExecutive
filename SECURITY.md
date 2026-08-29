@@ -46,3 +46,10 @@ A few things worth knowing when assessing or reporting:
 - **Outbound actions.** The Executive can send messages and call external tools
   (MCP). Reports about prompt-injection paths that lead to unintended outbound
   actions or data egress are in scope and appreciated.
+- **Defense-in-depth.** An optional, deterministic execution-guard layer
+  (`grimdall_guard`, off by default) adds pre-execution checks on tool calls —
+  secret denial, an egress allowlist, a destructive-command block, and a
+  per-session spend budget — with signed audit receipts. Enable it with
+  `GRIMDALL_ENABLED=true` (Shadow Mode) and `GRIMDALL_ENFORCE=true` (hard
+  blocks); see [README → Execution Security](#execution-security-optional) and
+  the architecture [security section](packages/core/openexecutive/architecture/prebuilt/security.json).

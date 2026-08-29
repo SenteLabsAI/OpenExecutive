@@ -266,6 +266,16 @@ SECTIONS: list[SectionSpec] = [
         wants_mermaid=True,
         diagram_kind="flowchart",
     ),
+    # `security` — optional Grimdall execution guardrails on the tool-use
+    # boundary. New top-level module; see `security:` in architecture-facts.yaml.
+    SectionSpec(
+        id="security",
+        title="Execution Security (Grimdall)",
+        sub="Optional, deterministic pre-execution guardrails on tool calls: secret denial, egress allowlist, destructive block, and a per-session spend budget. Shadow mode logs signed receipts; enforce mode blocks with an error tool_result.",
+        kb_query="grimdall execution security guardrails secret denial egress allowlist destructive spend shadow enforce",
+        wants_mermaid=True,
+        diagram_kind="flowchart",
+    ),
 ]
 
 

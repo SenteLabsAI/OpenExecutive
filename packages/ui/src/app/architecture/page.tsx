@@ -35,6 +35,7 @@ const SECTIONS = [
   { id: 'talent', label: 'Talent / Executive Search', sub: 'The in-house hiring vertical: engagements (searches), candidates, the ChromaDB matching graph, and the draft-and-approve recruiting workflows — surfaced in the /talent UI.' },
   { id: 'staff_onboarding', label: 'Staff Onboarding', sub: 'Role-tailored onboarding for new hires: reusable templates, per-hire plans with phased task checklists, the role_onboarding brief workflow, a bounded ramp drip, and chat + /today integration.' },
   { id: 'clients', label: 'Client Companies (Slots)', sub: 'Multi-client mode for fractional executives: named save files of the full company context, one active at a time, with save-back switching and per-client MCP tool configs.' },
+  { id: 'security', label: 'Execution Security (Grimdall)', sub: 'Optional deterministic pre-execution guardrails on tool calls — secret denial, egress allowlist, destructive block, per-session spend budget. Shadow mode logs signed receipts; enforce mode blocks.' },
 ];
 
 interface SectionMeta {

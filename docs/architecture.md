@@ -602,3 +602,38 @@ Everything in `company/` is gitignored. This includes:
 - `episodic_memory.db` — decisions, initiatives, advice, alerts, audit log
 
 None of this leaves the local machine (or your own Fly volume in cloud deployments) except as part of prompts sent to the Anthropic API. Anthropic does not train on API data.
+
+---
+
+## Execution Security (Grimdall) — Optional
+
+Because RAG context and inbound channel messages are injected into user turns,
+the model can be steered by malicious content into tool calls that exfiltrate
+secrets, destroy state, or run unbounded spend. An **optional** deterministic
+guard layer (`openexecutive/security/grimdall_guard.py`, **off by default**)
+evaluates every skill/MCP tool call at the `_run_agent_loop` dispatch boundary
+and re-checks at `MCPGateway.call_tool` (covering direct callers such as the
+scheduler):
+
+1. **Secret denial** — blocks tool arguments naming credential paths (`.env`,
+   `~/.ssh`, `~/.aws`, `company/`, `/data`, Google service-account JSON,
+   `episodic_memory.db`, `chroma_db`).
+2. **Egress allowlist** — bare `http(s)` URL arguments must hit an allowlisted
+   host (exact or real subdomain), failing closed. `web_search`, `scrape_url`,
+   and `load_mcp_server` are exempt (their data path terminates at allowlisted
+   providers / their own URL gates).
+3. **Destructive block** — shell-destructive fragments in arguments (`rm -rf`,
+   `sudo`, `chmod 777`, `shutdown`, `git reset --hard`, `DROP`/`TRUNCATE
+   TABLE`). No tool-name denylist, so legitimate delete tools keep working.
+4. **Per-session spend guardrail** — sums the session's `cache_event` audit
+   rows and blocks further dispatch past `GRIMDALL_MAX_TOKENS_PER_SESSION` /
+   `GRIMDALL_MAX_COST_USD_PER_SESSION`, catching runaway extended-thinking
+   loops that recur across turns.
+
+Modes: `GRIMDALL_ENABLED=true` → Shadow (violations written to `audit_log` as
+signed `grimdall_block` receipts, execution proceeds); `GRIMDALL_ENFORCE=true`
+→ Enforce (violating calls return an error `tool_result`). Receipts are
+HMAC-SHA256 signed (`GRIMDALL_SIGNING_KEY` or auto-generated
+`company/.grimdall-key`). All checks are deterministic string/ledger
+operations — no LLM calls, no network, no shell — and audit writes swallow
+exceptions so the guard never breaks a turn.
