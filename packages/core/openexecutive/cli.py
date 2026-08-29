@@ -152,6 +152,28 @@ async def _ingest_oer(
             console.print(f"  - {r.source_id}: {r.error}")
 
 
+@cli.command("sync-notion")
+def sync_notion() -> None:
+    """Run one Notion → company-docs sync tick (requires NOTION_SYNC_ENABLED)."""
+    asyncio.run(_sync_notion())
+
+
+async def _sync_notion() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.notion_sync import run_notion_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.notion_sync_enabled:
+        console.print(
+            "[yellow]NOTION_SYNC_ENABLED is false. Set it and NOTION_API_KEY in .env.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_notion_sync(store=store)
+    console.print(f"[green]Notion sync:[/green] {stats}")
+
+
 @cli.command("consolidate-initiatives")
 @click.option(
     "--apply",

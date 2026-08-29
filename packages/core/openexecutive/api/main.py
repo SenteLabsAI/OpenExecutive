@@ -256,6 +256,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         bootstrap_watchlist_research_scan()
 
+    if settings.notion_sync_enabled:
+        from openexecutive.knowledge.notion_sync import bootstrap_notion_sync_scan
+        bootstrap_notion_sync_scan()
+
     audit_logger = AuditLogger()
     app.state.audit = audit_logger
     set_audit_logger(audit_logger)

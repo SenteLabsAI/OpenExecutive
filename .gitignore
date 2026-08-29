@@ -22,6 +22,8 @@ coverage.xml
 # Company data — never commit
 packages/core/company/
 !packages/core/company/.gitkeep
+# Runtime profile/docs (COMPANY_PROFILE_PATH defaults to repo-root company/)
+company/
 
 # Vector store
 *.chroma/

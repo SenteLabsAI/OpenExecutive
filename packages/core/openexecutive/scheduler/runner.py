@@ -535,6 +535,38 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
+    # Notion company-docs sync — incremental ingest of pages shared with
+    # the Notion integration into the COMPANY Chroma collection.
+    # ------------------------------------------------------------------
+    if action.kind == "notion_sync_scan":
+        from openexecutive.knowledge.notion_sync import (
+            enqueue_next_notion_sync_scan,
+            run_notion_sync,
+        )
+        try:
+            stats = await run_notion_sync(now=now)
+            logger.info("scheduler: notion_sync_scan %s", stats)
+        except Exception:
+            logger.exception(
+                "scheduler: notion_sync_scan (action %d) crashed", action.id
+            )
+        try:
+            mark_action_done(action.id)
+        except Exception:
+            logger.exception(
+                "scheduler: notion_sync_scan (action %d) — mark_done failed",
+                action.id,
+            )
+        try:
+            enqueue_next_notion_sync_scan(after=datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "scheduler: failed to chain next notion_sync_scan "
+                "heartbeat — sync will stall until next bootstrap"
+            )
+        return
+
+    # ------------------------------------------------------------------
     # Proactive nudge — re-check reachability at dispatch time before
     # falling through to the ad-hoc dispatch path. The person may have
     # gone on leave between schedule and fire; if so, defer rather than

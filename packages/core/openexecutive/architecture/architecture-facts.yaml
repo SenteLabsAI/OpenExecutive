@@ -461,6 +461,15 @@ knowledge:
         the Knowledge UI can list (GET /documents), retrieve the extracted text
         for read-only viewing (GET /documents/{filename}), and delete
         (DELETE /documents/{filename}) individual docs.
+        Optional Notion sync (NOTION_SYNC_ENABLED, off by default): a scheduler
+        heartbeat (`notion_sync_scan`) incrementally re-indexes pages shared
+        with a Notion internal integration into this collection (metadata
+        `notion_page_id` / `type=notion`), writing Markdown under
+        <company_profile_dir>/docs/notion/. Only pages the integration can
+        see are pulled — share the company wiki, not the whole personal
+        workspace. Watermarked by last_edited_time in
+        <company_profile_dir>/notion_sync_state.json. Manual tick:
+        `openexecutive sync-notion`.
     - name: FAILURES
       what: Recorded failure cases used to teach specialists what to avoid.
     - name: RECENT_RESEARCH
@@ -951,6 +960,7 @@ scheduler:
     - "executive_reflection — Shift 5 recurring row. Seeded alongside the principal briefs (idempotent via `_has_pending_brief`), default 07:30 UTC, override via `PRINCIPAL_REFLECTION_TIME`. The scheduler runs `_run_executive_reflection`: invokes the `executive_reflection` workflow, stores the artifact via `complete_run`, audits the outcome, then chains the next occurrence — same crash-survival pattern as principal briefs. Unlike the briefs, the artifact is NOT delivered to the principal — the morning brief that fires 30 minutes later surfaces what reflection decided via the existing /today/activity rail."
     - "external_monitor_scan — heartbeat owned by the external-condition monitoring layer. Default every 5 min via EXTERNAL_MONITOR_SCAN_INTERVAL_MINUTES. The runner calls `monitoring.pipeline.run_external_monitor_scan()` which walks enabled watchlist rows whose `last_polled_at` is stale enough, fires the matching adapter (vendor_status, rss, stock, the billed standing-query `query` adapter, the `edgar` SEC-filings adapter, and the stateful `page_watch` change-detector), enriches promotable signals with capture-time relevance, writes `external_signals` rows, and promotes qualifying signals into the alerts pipeline. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`external_monitor`). Chains the next tick via `enqueue_next_external_monitor_scan` after firing — same idempotent / crash-resilient pattern as `nudge_scan`."
     - "watchlist_research_scan — periodic cron for the executive_research workflow (default every 120 min via WATCHLIST_RESEARCH_INTERVAL_MINUTES). The handler short-circuits when the company profile / initiatives / watchlist haven't changed since the last successful run, so quiet days cost zero tokens — except that a staleness floor (WATCHLIST_RESEARCH_MAX_STALENESS_HOURS, default 24) forces a run once that long has elapsed since the last successful run, so a static internal state can't keep the council blind to external change indefinitely. Does NOT write its own Alert — the workflow's Executive synthesis step routes findings directly via DMs / send_department_message / create_alert / add_watchlist_entry, so a separate cron Alert would duplicate the briefing. After routing, a DEDICATED watchlist-analysis pass (its own budget, separate from the routing budget) explicitly decides which findings are ongoing monitorable conditions and calls add_watchlist_entry for each; the run's markdown artifact is also persisted into the separate `recent_research` knowledge collection (keep-latest) so future runs + chat can recall it. The cron's only side-effects on success are the audit row (`watchlist_research_periodic_ran`) and whatever routing tools the synthesis fired. The scheduled-action kind keeps the legacy `watchlist_research_scan` name (matched by the env var WATCHLIST_RESEARCH_INTERVAL_MINUTES + the three audit event_types) even though the workflow itself is registered as `executive_research` — naming is mixed intentionally to avoid a migration on already-pending heartbeat rows. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`watchlist_research`)."
+    - "notion_sync_scan — optional heartbeat (NOTION_SYNC_ENABLED, default off) that incrementally re-indexes Notion pages shared with an internal integration into the COMPANY collection. Interval NOTION_SYNC_INTERVAL_MINUTES (default 60). Caps pages per tick via NOTION_MAX_PAGES_PER_SCAN. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`notion_sync`). Chains the next tick via enqueue_next_notion_sync_scan. See knowledge.collections COMPANY."
   channel_routing: |
     The delivery channel is stored ON the scheduled_actions row itself
     (the `channel` and `channel_ref` columns). The runner dispatches

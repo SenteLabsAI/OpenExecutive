@@ -596,6 +596,28 @@ class Settings(BaseSettings):
         24, alias="WATCHLIST_RESEARCH_MAX_STALENESS_HOURS"
     )
 
+    # Notion → company-docs sync. OFF by default. When on, a scheduler
+    # heartbeat incrementally re-indexes pages shared with the Notion
+    # internal integration into the COMPANY Chroma collection. Only those
+    # shared pages are visible — share the company wiki with the bot.
+    notion_sync_enabled: bool = Field(False, alias="NOTION_SYNC_ENABLED")
+    notion_api_key: str | None = Field(None, alias="NOTION_API_KEY")
+    notion_sync_interval_minutes: int = Field(
+        60, alias="NOTION_SYNC_INTERVAL_MINUTES"
+    )
+    notion_max_pages_per_scan: int = Field(
+        40, alias="NOTION_MAX_PAGES_PER_SCAN"
+    )
+
+    @model_validator(mode="after")
+    def _validate_notion_sync(self) -> "Settings":
+        if self.notion_sync_enabled and not self.notion_api_key:
+            raise ValueError(
+                "NOTION_SYNC_ENABLED=true requires NOTION_API_KEY "
+                "(Notion internal integration secret)"
+            )
+        return self
+
     @field_validator("user_timezone")
     @classmethod
     def _validate_tz(cls, v: str) -> str:
