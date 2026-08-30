@@ -631,6 +631,10 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         where={"type": "recent_research"},
     )
+    store.delete_notion_docs()
+    from openexecutive.knowledge.notion_sync import reset_local_state
+
+    reset_local_state(profile_path=settings.company_profile_path)
 
     company_docs_dir: Path = settings.company_profile_path.parent / "docs"
     docs_indexed = 0

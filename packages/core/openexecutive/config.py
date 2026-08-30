@@ -596,9 +596,10 @@ class Settings(BaseSettings):
         24, alias="WATCHLIST_RESEARCH_MAX_STALENESS_HOURS"
     )
 
-    # Notion → company-docs sync. OFF by default. When on, a scheduler
-    # heartbeat incrementally re-indexes pages shared with the Notion
-    # internal integration into the COMPANY Chroma collection. Only those
+    # Notion → isolated wiki-collection sync. OFF by default. When on, a
+    # scheduler heartbeat incrementally re-indexes pages shared with the
+    # Notion internal integration into the NOTION Chroma collection (not
+    # COMPANY — synced pages are multi-writer and unreviewed). Only those
     # shared pages are visible — share the company wiki with the bot.
     notion_sync_enabled: bool = Field(False, alias="NOTION_SYNC_ENABLED")
     notion_api_key: str | None = Field(None, alias="NOTION_API_KEY")

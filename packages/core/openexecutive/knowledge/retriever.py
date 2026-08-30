@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from openexecutive.audit import get_active_ids
@@ -26,6 +27,20 @@ _DISTANCE_THRESHOLD = 0.55
 # bypass RAG for meaningful Chinese/Japanese queries. Threshold sits
 # at 3 so 3-letter business acronyms ("ROI", "CFO", "P&L") still fire.
 _MIN_QUERY_CHARS = 3
+
+
+_ATX_HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
+
+
+def _neutralize_rag_headings(text: str) -> str:
+    """Strip ATX headings so untrusted wiki text cannot spoof RAG section labels."""
+    return _ATX_HEADING.sub("", text)
+
+
+def _format_untrusted_wiki(text: str) -> str:
+    """Prefix every line so wiki prose cannot impersonate citation markers."""
+    cleaned = _neutralize_rag_headings(text)
+    return "\n".join(f"· {line}" for line in cleaned.splitlines())
 
 
 def _passes_threshold(
@@ -246,6 +261,19 @@ def retrieve(
     else:
         company_results = []
 
+    # Synced Notion wiki — isolated from COMPANY because a Notion share is
+    # multi-writer and unreviewed. Ranked below curated company docs and
+    # labelled so specialists do not treat it as policy.
+    raw_notion = store.query(
+        query_text=query,
+        collection=ChromaDBStore.NOTION_COLLECTION,
+        domain_filter=effective_domains,
+        n_results=3,
+    )
+    notion_results = [
+        r for r in raw_notion if _passes_threshold(r, distance_threshold)
+    ]
+
     # Recent research artifacts — kept in a separate collection and ranked
     # BELOW curated company docs. These are unvetted, web-sourced summaries
     # from executive_research runs, so they are clearly labelled as such and
@@ -278,6 +306,7 @@ def retrieve(
     if (
         not builtin_results
         and not company_results
+        and not notion_results
         and not research_results
         and not active_annotations
     ):
@@ -290,6 +319,17 @@ def retrieve(
         for r in company_results:
             filename = r["metadata"].get("filename", "unknown")
             parts.append(f"[{filename}] {r['text']}")
+
+    if notion_results:
+        parts.append(
+            "### Synced Notion wiki (unreviewed, multi-writer — weigh below "
+            "curated company documents):"
+        )
+        for r in notion_results:
+            filename = r["metadata"].get("filename", "unknown")
+            parts.append(
+                f"[notion:{filename}]\n{_format_untrusted_wiki(r['text'])}"
+            )
 
     if research_results:
         parts.append(

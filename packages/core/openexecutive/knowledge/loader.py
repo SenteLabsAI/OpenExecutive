@@ -154,7 +154,7 @@ async def ingest_file(
     return len(chunks)
 
 
-async def ingest_text(
+def ingest_text_sync(
     text: str,
     store: ChromaDBStore,
     *,
@@ -163,14 +163,15 @@ async def ingest_text(
     collection: str = ChromaDBStore.COMPANY_COLLECTION,
     extra_metadata: dict[str, Any] | None = None,
 ) -> int:
-    """Ingest a raw markdown/text string as knowledge (no file on disk).
+    """Synchronous ingest of a raw markdown/text string.
 
-    Mirrors ``ingest_file`` but takes a string — used to persist the
-    executive_research artifact into its own collection. ``source_name``
-    is the logical identifier used for both the ``filename``/``source``
-    metadata and the chunk-id namespace. ``extra_metadata`` is merged into
-    every chunk's metadata (e.g. ``{"type": "recent_research", "created_at": …}``).
+    Mirrors ``ingest_file`` but takes a string — used to persist research
+    artifacts and Notion wiki pages into a named collection. ``source_name``
+    is the logical identifier for ``filename``/``source`` metadata and the
+    chunk-id namespace. ``extra_metadata`` is merged into every chunk.
     Returns the number of chunks written.
+
+    Callers on the API event loop should wrap this in ``asyncio.to_thread``.
     """
     if not text.strip():
         return 0
@@ -191,6 +192,34 @@ async def ingest_text(
 
     store.add_documents(texts=chunks, metadatas=metadatas, ids=ids, collection=collection)
     return len(chunks)
+
+
+async def ingest_text(
+    text: str,
+    store: ChromaDBStore,
+    *,
+    source_name: str,
+    domain: str = "general",
+    collection: str = ChromaDBStore.COMPANY_COLLECTION,
+    extra_metadata: dict[str, Any] | None = None,
+) -> int:
+    """Ingest a raw markdown/text string as knowledge (no file on disk).
+
+    Mirrors ``ingest_file`` but takes a string — used to persist the
+    executive_research artifact into its own collection. ``source_name``
+    is the logical identifier used for both the ``filename``/``source``
+    metadata and the chunk-id namespace. ``extra_metadata`` is merged into
+    every chunk's metadata (e.g. ``{"type": "recent_research", "created_at": …}``).
+    Returns the number of chunks written.
+    """
+    return ingest_text_sync(
+        text,
+        store,
+        source_name=source_name,
+        domain=domain,
+        collection=collection,
+        extra_metadata=extra_metadata,
+    )
 
 
 async def ingest_builtin_file(

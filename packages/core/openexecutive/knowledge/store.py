@@ -43,6 +43,11 @@ class ChromaDBStore(KnowledgeStore):
     # research never blends into curated company knowledge — it is
     # retrieved under its own clearly-labelled, lower-ranked section.
     RESEARCH_COLLECTION = "recent_research"
+    # Synced Notion wiki pages. Kept SEPARATE from COMPANY_COLLECTION
+    # because a Notion share is multi-writer and unreviewed — anyone
+    # who can edit a shared page can inject text the agents will read.
+    # Retrieved under its own clearly-labelled, lower-ranked section.
+    NOTION_COLLECTION = "notion_wiki"
 
     def __init__(self, persist_directory: str | Path = "./chroma_db") -> None:
         import chromadb
@@ -145,3 +150,9 @@ class ChromaDBStore(KnowledgeStore):
             self._client.delete_collection(self.COMPANY_COLLECTION)
         # Recreate with the same HNSW settings so subsequent upserts work normally.
         self._get_or_create_collection(self.COMPANY_COLLECTION)
+
+    def delete_notion_docs(self) -> None:
+        """Drop synced Notion chunks from the isolated collection and any
+        leftover COMPANY rows tagged ``type=notion`` (pre-isolation ingest)."""
+        self.delete_documents(collection=self.NOTION_COLLECTION, where={"type": "notion"})
+        self.delete_documents(collection=self.COMPANY_COLLECTION, where={"type": "notion"})

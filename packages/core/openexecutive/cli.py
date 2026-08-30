@@ -154,7 +154,7 @@ async def _ingest_oer(
 
 @cli.command("sync-notion")
 def sync_notion() -> None:
-    """Run one Notion → company-docs sync tick (requires NOTION_SYNC_ENABLED)."""
+    """Run one Notion → isolated wiki-collection sync tick."""
     asyncio.run(_sync_notion())
 
 
@@ -172,6 +172,59 @@ async def _sync_notion() -> None:
     store = ChromaDBStore(persist_directory=settings.vector_store_path)
     stats = await run_notion_sync(store=store)
     console.print(f"[green]Notion sync:[/green] {stats}")
+
+
+@cli.command("purge-notion")
+@click.option("--page-id", default=None, help="Purge one synced page by Notion id.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge pages the integration no longer sees (requires NOTION_API_KEY).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced page.")
+def purge_notion(page_id: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced Notion files and Chroma chunks."""
+    asyncio.run(_purge_notion(page_id, stale, purge_all))
+
+
+async def _purge_notion(page_id: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.notion_sync import (
+        load_state,
+        purge_all_synced,
+        purge_page,
+        run_notion_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    flags = sum(bool(x) for x in (page_id, stale, purge_all))
+    if flags != 1:
+        console.print(
+            "[red]Specify exactly one of --page-id, --stale, or --all.[/red]"
+        )
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if page_id:
+        state = load_state()
+        if purge_page(page_id, store, state):
+            save_state(state)
+            console.print(f"[green]Purged Notion page[/green] {page_id}")
+        else:
+            console.print(f"[red]Could not purge[/red] {page_id}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced Notion page(s).[/green]")
+        return
+    if not settings.notion_sync_enabled:
+        console.print(
+            "[yellow]NOTION_SYNC_ENABLED is false. Set it and NOTION_API_KEY in .env.[/yellow]"
+        )
+        return
+    stats = await run_notion_sync(store=store, reconcile_only=True)
+    console.print(f"[green]Notion stale purge:[/green] {stats}")
 
 
 @cli.command("consolidate-initiatives")
