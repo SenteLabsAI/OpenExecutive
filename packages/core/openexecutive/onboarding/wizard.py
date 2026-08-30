@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 WIZARD_STEPS = [
     {
@@ -195,10 +198,22 @@ def build_profile_from_answers(answers: dict[str, Any]) -> dict[str, Any]:
         profile["target_customer"] = {"profile": text, "pain_points": []}
         import re
 
-        arr_match = re.search(r"\$?([\d,]+)\s*[Mm]", text)
+        # The capture must START with a digit and the M must end a word.
+        # `[\d,]+` alone matched a bare comma, so any answer with a comma
+        # before an m-word — "Consultoría estratégica, marketing y
+        # operaciones" — captured "," and crashed the whole wizard on
+        # float(""). Requiring \b also stops "300 clientes, marketing"
+        # from being read as $300M.
+        arr_match = re.search(r"\$?(\d[\d,]*)\s*[Mm]\b", text)
         if arr_match:
             val = arr_match.group(1).replace(",", "")
-            profile["annual_revenue_arr"] = float(val) * 1_000_000
+            # Defensive: this is a best-effort parse of free text, so a
+            # surprising input must never take down onboarding. Skipping
+            # the field costs one profile value; raising costs the run.
+            try:
+                profile["annual_revenue_arr"] = float(val) * 1_000_000
+            except ValueError:
+                logger.warning("onboarding: could not parse ARR from %r", text[:80])
 
     if "competitive_landscape" in answers:
         text = answers["competitive_landscape"]
