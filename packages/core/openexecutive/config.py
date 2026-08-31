@@ -114,6 +114,29 @@ class Settings(BaseSettings):
     # stuck request doesn't pile up tasks.
     utility_fast_timeout_s: float = Field(10.0, alias="UTILITY_FAST_TIMEOUT_S")
 
+    # ---- OrcaRouter routing ---------------------------------------------
+    # Toggle that routes Claude calls through OrcaRouter (so usage is billed
+    # to your OrcaRouter account) and unlocks the curated set of OrcaRouter-
+    # native models (the ``orcarouter/*`` namespace) in the Council UI. When
+    # both OrcaRouter and OpenRouter are enabled, OpenRouter keeps precedence
+    # for Claude — a fresh checkout's behavior is identical to before.
+    orcarouter_enabled: bool = Field(False, alias="ORCAROUTER_ENABLED")
+    orcarouter_api_key: str | None = Field(None, alias="ORCAROUTER_API_KEY")
+    orcarouter_base_url: str = Field(
+        "https://api.orcarouter.ai/v1", alias="ORCAROUTER_BASE_URL"
+    )
+    orcarouter_timeout_s: float = Field(180.0, alias="ORCAROUTER_TIMEOUT_S")
+
+    @model_validator(mode="after")
+    def _validate_orcarouter(self) -> "Settings":
+        # Enabling the toggle without a key would silently 401 every call.
+        # Fail loud at startup instead.
+        if self.orcarouter_enabled and not self.orcarouter_api_key:
+            raise ValueError(
+                "ORCAROUTER_ENABLED=true requires ORCAROUTER_API_KEY to be set"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_openrouter(self) -> "Settings":
         # Enabling the toggle without a key would silently 401 every call.
@@ -179,12 +202,15 @@ class Settings(BaseSettings):
         if not (
             self.anthropic_api_key
             or self.openrouter_enabled
+            or self.orcarouter_enabled
             or self.local_models_enabled
         ):
             raise ValueError(
                 "No LLM provider configured. Set ANTHROPIC_API_KEY, or enable "
                 "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), or "
-                "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
+                "enable OrcaRouter (ORCAROUTER_ENABLED=true + "
+                "ORCAROUTER_API_KEY), or enable local models "
+                "(LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
             )
         return self
 

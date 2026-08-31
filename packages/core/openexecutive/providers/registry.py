@@ -18,6 +18,7 @@ from openexecutive.providers.anthropic_provider import AnthropicProvider
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 from openexecutive.providers.openrouter_provider import OpenRouterProvider
+from openexecutive.providers.orcarouter_provider import OrcaRouterProvider
 from openexecutive.providers.provider import LLMProvider
 
 # Anthropic-direct slugs — used as canonical model names everywhere in
@@ -45,6 +46,22 @@ OPENROUTER_MODELS: list[str] = [
     "meta-llama/llama-3.3-70b-instruct",
     "deepseek/deepseek-r1",
     "x-ai/grok-4",
+]
+
+# OrcaRouter-native model slugs. These strings ARE the OrcaRouter slug — we
+# don't translate them on the way through. Only the ``orcarouter/`` namespace
+# is curated here (the adaptive-routing and fusion models that only OrcaRouter
+# serves); any other model family is reachable through OpenRouter as before.
+# BYO-model routing through OrcaRouter is unchanged — add a slug here to
+# surface it in the Council UI dropdown.
+ORCAROUTER_MODELS: list[str] = [
+    "orcarouter/fusion",
+    "orcarouter/fusion-mini",
+    "orcarouter/fusion-flash",
+    "orcarouter/auto",
+    "orcarouter/free",
+    "orcarouter/orcacode-review",
+    "orcarouter/open-code",
 ]
 
 
@@ -93,16 +110,25 @@ def allowed_models() -> list[str]:
     each family is folded in only when it's reachable:
 
     * Anthropic-direct trio — when an ``ANTHROPIC_API_KEY`` is set, OR when
-      ``OPENROUTER_ENABLED`` is on (Claude is then reachable via OpenRouter).
+      ``OPENROUTER_ENABLED`` is on (Claude is then reachable via OpenRouter),
+      OR when ``ORCAROUTER_ENABLED`` is on (Claude is then reachable via
+      OrcaRouter).
     * OpenRouter set — when ``OPENROUTER_ENABLED`` is on.
+    * OrcaRouter set — when ``ORCAROUTER_ENABLED`` is on.
     * Local models — when ``LOCAL_MODELS_ENABLED`` is on.
     """
     settings = get_settings()
     models: list[str] = []
-    if getattr(settings, "anthropic_api_key", None) or settings.openrouter_enabled:
+    if (
+        getattr(settings, "anthropic_api_key", None)
+        or settings.openrouter_enabled
+        or getattr(settings, "orcarouter_enabled", False)
+    ):
         models.extend(ANTHROPIC_DIRECT_MODELS)
     if settings.openrouter_enabled:
         models.extend(OPENROUTER_MODELS)
+    if getattr(settings, "orcarouter_enabled", False):
+        models.extend(ORCAROUTER_MODELS)
     models.extend(_local_models(settings))
     return models
 
@@ -123,10 +149,15 @@ def _is_claude(model: str) -> bool:
     return model in _CLAUDE_OPENROUTER_SLUGS
 
 
+def _is_orcarouter(model: str) -> bool:
+    return model in ORCAROUTER_MODELS
+
+
 # Module-level singletons — providers pool their own HTTP connections and
 # are async-safe. Recreating them per call burns ~10 ms each.
 _anthropic_provider: AnthropicProvider | None = None
 _openrouter_provider: OpenRouterProvider | None = None
+_orcarouter_provider: OrcaRouterProvider | None = None
 _local_provider: OpenAICompatibleProvider | None = None
 
 
@@ -211,13 +242,47 @@ def _openrouter() -> OpenRouterProvider:
     return _openrouter_provider
 
 
+def _orcarouter() -> OrcaRouterProvider:
+    global _orcarouter_provider
+    if _orcarouter_provider is None:
+        settings = get_settings()
+        if not settings.orcarouter_api_key:
+            # The Settings model_validator already prevents ORCAROUTER_ENABLED
+            # without a key, but defense in depth — a misconfigured env could
+            # otherwise produce a None-token request.
+            raise HTTPException(
+                status_code=400,
+                detail="OrcaRouter routing requires ORCAROUTER_API_KEY",
+            )
+        # Claude slugs map 1:1 to OrcaRouter's ``anthropic/*`` namespace, so the
+        # same slug table that OpenRouter uses works here verbatim. The native
+        # ``orcarouter/*`` slugs pass through unchanged.
+        slug_lookup = dict(_CLAUDE_OPENROUTER_SLUGS)
+        spec_lookup: dict[str, FeatureSpec] = {
+            m: _CLAUDE_FEATURE_SPEC for m in ANTHROPIC_DIRECT_MODELS
+        }
+        for m in ORCAROUTER_MODELS:
+            spec_lookup[m] = _DEFAULT_NON_CLAUDE_SPEC
+        _orcarouter_provider = OrcaRouterProvider(
+            api_key=settings.orcarouter_api_key,
+            base_url=settings.orcarouter_base_url,
+            timeout_s=settings.orcarouter_timeout_s,
+            slug_lookup=slug_lookup,
+            spec_lookup=spec_lookup,
+        )
+    return _orcarouter_provider
+
+
 def get_provider(model: str) -> LLMProvider:
     """Return the provider that should serve calls for ``model``.
 
     Routing rules:
 
+    * OrcaRouter-native models (the ``orcarouter/*`` namespace) — OrcaRouter
+      when ``ORCAROUTER_ENABLED`` is on; HTTP 400 otherwise.
     * Claude family — Anthropic direct by default; OpenRouter when
-      ``OPENROUTER_ENABLED`` is on.
+      ``OPENROUTER_ENABLED`` is on, else OrcaRouter when ``ORCAROUTER_ENABLED``
+      is on.
     * Local models (slugs listed in ``LOCAL_MODELS`` with
       ``LOCAL_MODELS_ENABLED`` on) — the self-hosted OpenAI-compatible
       backend at ``LOCAL_BASE_URL``.
@@ -226,9 +291,21 @@ def get_provider(model: str) -> LLMProvider:
       is off, since we have no other backend that speaks those models.
     """
     settings = get_settings()
+    if _is_orcarouter(model):
+        if settings.orcarouter_enabled:
+            return _orcarouter()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model {model!r} requires ORCAROUTER_ENABLED=true (set "
+                f"ORCAROUTER_API_KEY and toggle the flag)."
+            ),
+        )
     if _is_claude(model):
         if settings.openrouter_enabled:
             return _openrouter()
+        if settings.orcarouter_enabled:
+            return _orcarouter()
         return _anthropic()
     # Local models take precedence for their configured slugs — a local
     # endpoint can serve them with no external dependency.
@@ -250,7 +327,8 @@ def get_provider(model: str) -> LLMProvider:
 
 def _reset_for_tests() -> None:
     """Drop cached provider singletons. Test-only — pytest fixtures call this."""
-    global _anthropic_provider, _openrouter_provider, _local_provider
+    global _anthropic_provider, _openrouter_provider, _orcarouter_provider, _local_provider
     _anthropic_provider = None
     _openrouter_provider = None
+    _orcarouter_provider = None
     _local_provider = None

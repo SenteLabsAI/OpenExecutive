@@ -14,6 +14,8 @@ _PROVIDER_VARS = (
     "ANTHROPIC_API_KEY",
     "OPENROUTER_ENABLED",
     "OPENROUTER_API_KEY",
+    "ORCAROUTER_ENABLED",
+    "ORCAROUTER_API_KEY",
     "LOCAL_MODELS_ENABLED",
     "LOCAL_BASE_URL",
     "LOCAL_MODELS",
@@ -75,3 +77,19 @@ def test_no_provider_configured_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
 def test_anthropic_key_alone_still_boots(monkeypatch: pytest.MonkeyPatch) -> None:
     s = _build(monkeypatch, ANTHROPIC_API_KEY="sk-test")
     assert s.anthropic_api_key == "sk-test"
+
+
+def test_orcarouter_alone_still_boots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Boot with NO Anthropic key — OrcaRouter alone is a valid backend."""
+    s = _build(
+        monkeypatch,
+        ORCAROUTER_ENABLED="true",
+        ORCAROUTER_API_KEY="sk-orca-test",
+    )
+    assert s.anthropic_api_key is None
+    assert s.orcarouter_enabled is True
+
+
+def test_orcarouter_enabled_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="ORCAROUTER_API_KEY"):
+        _build(monkeypatch, ORCAROUTER_ENABLED="true")

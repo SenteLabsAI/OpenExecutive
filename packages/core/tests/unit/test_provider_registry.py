@@ -166,6 +166,10 @@ def _settings_stub(
     local_models: list[str] | None = None,
     local_api_key: str | None = None,
     local_timeout_s: float = 300.0,
+    orcarouter_enabled: bool = False,
+    orcarouter_key: str | None = "sk-orca-test",
+    orcarouter_base_url: str = "https://api.orcarouter.ai/v1",
+    orcarouter_timeout_s: float = 180.0,
 ) -> Any:
     return SimpleNamespace(
         anthropic_api_key=anthropic_key,
@@ -175,6 +179,10 @@ def _settings_stub(
         openrouter_app_title="Open Executive",
         openrouter_referer=None,
         openrouter_timeout_s=180.0,
+        orcarouter_enabled=orcarouter_enabled,
+        orcarouter_api_key=orcarouter_key,
+        orcarouter_base_url=orcarouter_base_url,
+        orcarouter_timeout_s=orcarouter_timeout_s,
         local_models_enabled=local_enabled,
         local_base_url=local_base_url,
         local_models=local_models or [],
@@ -292,6 +300,112 @@ def test_allowed_models_includes_openrouter_set_only_when_enabled(
     assert on == [*ANTHROPIC_DIRECT_MODELS, *OPENROUTER_MODELS]
     # Both sets contain entries (catch the case where one list was emptied).
     assert len(on) > len(off)
+
+
+# --------------------------------------------------------------------------
+# OrcaRouter routing matrix
+# --------------------------------------------------------------------------
+
+
+def test_orca_native_model_with_orca_off_raises_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No fallback path — OrcaRouter-native slugs require the toggle to be on."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, orcarouter_enabled=False),
+    )
+    registry_mod._reset_for_tests()
+    with pytest.raises(HTTPException) as exc_info:
+        get_provider("orcarouter/fusion-mini")
+    assert exc_info.value.status_code == 400
+    assert "ORCAROUTER_ENABLED" in exc_info.value.detail
+
+
+def test_orca_native_model_with_orca_on_routes_to_orcarouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, orcarouter_enabled=True),
+    )
+    registry_mod._reset_for_tests()
+    from openexecutive.providers.orcarouter_provider import OrcaRouterProvider
+
+    provider = get_provider("orcarouter/fusion-mini")
+    assert isinstance(provider, OrcaRouterProvider)
+
+
+def test_claude_model_with_orca_on_and_openrouter_off_routes_to_orcarouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, orcarouter_enabled=True),
+    )
+    registry_mod._reset_for_tests()
+    from openexecutive.providers.orcarouter_provider import OrcaRouterProvider
+
+    provider = get_provider("claude-sonnet-4-6")
+    assert isinstance(provider, OrcaRouterProvider)
+
+
+def test_openrouter_takes_precedence_over_orcarouter_for_claude(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both toggles on: OpenRouter wins for Claude — existing deployments are
+    unchanged when they enable OrcaRouter later."""
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=True, orcarouter_enabled=True),
+    )
+    registry_mod._reset_for_tests()
+    from openexecutive.providers.openrouter_provider import OpenRouterProvider
+
+    provider = get_provider("claude-sonnet-4-6")
+    assert isinstance(provider, OpenRouterProvider)
+
+
+def test_orcarouter_provider_distinct_from_openrouter_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native OrcaRouter slug and an OpenRouter slug resolve to different
+    provider instances — an OrcaRouter request can't leak to OpenRouter."""
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=True, orcarouter_enabled=True),
+    )
+    registry_mod._reset_for_tests()
+    orca = get_provider("orcarouter/fusion-mini")
+    openrouter = get_provider("openai/gpt-5")
+    assert orca is not openrouter
+
+
+def test_allowed_models_includes_orcarouter_set_only_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.providers import allowed_models
+    from openexecutive.providers.registry import (
+        ANTHROPIC_DIRECT_MODELS,
+        OPENROUTER_MODELS,
+        ORCAROUTER_MODELS,
+    )
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, orcarouter_enabled=False),
+    )
+    off = allowed_models()
+    assert off == ANTHROPIC_DIRECT_MODELS
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False, orcarouter_enabled=True),
+    )
+    on = allowed_models()
+    assert on == [*ANTHROPIC_DIRECT_MODELS, *ORCAROUTER_MODELS]
 
 
 # --------------------------------------------------------------------------

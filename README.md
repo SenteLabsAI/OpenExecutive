@@ -304,6 +304,8 @@ the app refuses to start.
 | `GOOGLE_OAUTH_CLIENT_SECRET` | No | — | Google OAuth client secret (Gmail MCP) |
 | `OPENROUTER_ENABLED` | No | `false` | Route Claude calls through OpenRouter and unlock non-Anthropic models per-agent in the Council UI |
 | `OPENROUTER_API_KEY` | No | — | Required when `OPENROUTER_ENABLED=true` |
+| `ORCAROUTER_ENABLED` | No | `false` | Route Claude calls through [OrcaRouter](https://www.orcarouter.ai) and unlock OrcaRouter-native models per-agent in the Council UI |
+| `ORCAROUTER_API_KEY` | No | — | Required when `ORCAROUTER_ENABLED=true` |
 | `LOCAL_MODELS_ENABLED` | No | `false` | Route selected slugs to a local OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp) |
 | `LOCAL_BASE_URL` | No | — | Local server URL incl. version path, e.g. `http://localhost:11434/v1`. Required when `LOCAL_MODELS_ENABLED=true` |
 | `LOCAL_API_KEY` | No | — | Optional bearer token (vLLM / gateways); Ollama & LM Studio need none |
@@ -316,8 +318,35 @@ the app refuses to start.
 See [.env.example](.env.example) for the full list.
 
 > ¹ `ANTHROPIC_API_KEY` is required only when you serve Claude models directly.
-> It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`)
-> or route through OpenRouter (`OPENROUTER_ENABLED`).
+> It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`),
+> route through OpenRouter (`OPENROUTER_ENABLED`), or route through OrcaRouter
+> (`ORCAROUTER_ENABLED`).
+
+## Running on OrcaRouter
+
+Open Executive can also route Claude calls — and OrcaRouter's own `orcarouter/*`
+models — through [OrcaRouter](https://www.orcarouter.ai), an OpenAI-compatible
+AI gateway built for both models and agents. OrcaRouter exposes a
+provider/model namespace across many models (Anthropic, OpenAI, Google, Grok,
+and its own fusion/auto adaptive-routing models) behind the same endpoint, with
+adaptive routing, automatic failover, zero-markup inference, observability,
+guardrails, and agent-tool governance. It also runs gateway-level, zero-trust
+security for AI agents on the same endpoint — screening every prompt/response
+and governing every tool call on a default-deny basis, with no application code
+changes.
+
+```bash
+# In .env — route Claude through OrcaRouter and surface the native models
+ORCAROUTER_ENABLED=true
+ORCAROUTER_API_KEY=sk-orca-...   # from https://www.orcarouter.ai
+```
+
+The `orcarouter/*` slugs (e.g. `orcarouter/fusion-mini`) appear in the
+**Council UI** model dropdown, so you can flip individual specialists to them
+per-agent, or run a hybrid setup that keeps the Executive on Anthropic-direct
+Claude. Claude models route to OrcaRouter's `anthropic/*` namespace; when both
+`ORCAROUTER_ENABLED` and `OPENROUTER_ENABLED` are on, OpenRouter keeps
+precedence for Claude so existing deployments are unchanged.
 
 ## Running on Local Models
 

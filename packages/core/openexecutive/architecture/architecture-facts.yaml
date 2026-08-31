@@ -37,6 +37,14 @@ system:
       matrix) was removed — its 429s surfaced as user-visible errors and the
       per-agent free-model surface was more than it earned; BYO-model routing
       through OpenRouter is otherwise unchanged.
+      When ORCAROUTER_ENABLED=true (plus ORCAROUTER_API_KEY), Claude calls
+      can also be proxied through OrcaRouter (an OpenAI-compatible AI gateway
+      at https://api.orcarouter.ai/v1) — its ``anthropic/*`` namespace mirrors
+      the OpenRouter Claude slugs — and a curated set of OrcaRouter-native
+      ``orcarouter/*`` slugs (fusion, fusion-mini, fusion-flash, auto, free,
+      orcacode-review, open-code) is added to the Council UI dropdown. When
+      both ORCAROUTER_ENABLED and OPENROUTER_ENABLED are on, OpenRouter keeps
+      precedence for Claude, so existing OpenRouter deployments are unchanged.
       When LOCAL_MODELS_ENABLED=true (plus LOCAL_BASE_URL), the slugs listed
       in LOCAL_MODELS route to a self-hosted OpenAI-compatible server
       (Ollama / LM Studio / vLLM / llama.cpp) through the same provider seam,
@@ -44,12 +52,13 @@ system:
       are added to the Council UI dropdown and get the non-Claude feature
       spec (no cache_control / thinking / web_search). This makes
       ANTHROPIC_API_KEY optional: a deployment with only local (or
-      OpenRouter) models configured boots with no Anthropic key — the
-      Settings validator just requires that at least one provider is
-      reachable. Requesting a Claude model with no key and OpenRouter off
-      returns an actionable 400.
+      OpenRouter, or OrcaRouter) models configured boots with no Anthropic
+      key — the Settings validator just requires that at least one provider
+      is reachable. Requesting a Claude model with no key and OpenRouter off
+      (and OrcaRouter off) returns an actionable 400.
       Non-Claude slugs route through OpenRouter, except those listed in
-      LOCAL_MODELS (which route to the local backend); selecting an
+      LOCAL_MODELS (which route to the local backend) and those in the
+      ``orcarouter/*`` namespace (which route to OrcaRouter); selecting an
       OpenRouter-only slug with OPENROUTER_ENABLED=false is rejected at the
       API layer.
       Provider selection is per-call by model, not global — so the
@@ -66,9 +75,9 @@ system:
     - Tool definitions are sorted by name before being sent to the API so cache hits survive across processes.
     - Company-specific data lives under packages/core/company/ and is gitignored. Never commit it.
     - Audit writes never break a chat turn or tool call — exceptions are swallowed with a warning.
-    - Provider selection is per-call by model (openexecutive.providers.get_provider(model)). A single chat turn can mix Anthropic-routed Claude calls, OpenRouter-routed non-Claude calls, and locally-routed self-hosted models — no global "current provider" state.
+    - Provider selection is per-call by model (openexecutive.providers.get_provider(model)). A single chat turn can mix Anthropic-routed Claude calls, OpenRouter-routed non-Claude calls, OrcaRouter-routed native-model calls, and locally-routed self-hosted models — no global "current provider" state.
     - When a non-Claude or local model is selected, Anthropic-only fields (cache_control on system/tool/user blocks, adaptive thinking + output_config, server-side web_search) are stripped by the feature gate before the request leaves the process. Callers do NOT need to know which model they're routing to.
-    - ANTHROPIC_API_KEY is optional: a Settings validator requires at least one provider (Anthropic key, OpenRouter, or local models) to be configured, so an Anthropic-free deployment is supported but a zero-provider one fails fast at startup.
+    - ANTHROPIC_API_KEY is optional: a Settings validator requires at least one provider (Anthropic key, OpenRouter, OrcaRouter, or local models) to be configured, so an Anthropic-free deployment is supported but a zero-provider one fails fast at startup.
     - External-monitor adapters are read-only — they never write to upstream systems. The whole `monitoring/` subsystem is observation-only; surfacing happens through the alert pipeline, never via a direct upstream side-effect.
     - External signals never auto-execute on the principal's behalf. Every signal that surfaces is proposed via the alert pipeline (and thus subject to triage / mute / severity gates); the scheduler never dispatches an outbound message directly off a signal.
     - An external signal whose `dedup_key` already exists is dropped at ingest via the UNIQUE(dedup_key) constraint on `external_signals`. Adapter retries / re-polls cannot multiply alerts for the same upstream event.
@@ -121,13 +130,15 @@ providers:
   resolver: |
     openexecutive.providers.registry.get_provider(model) picks the
     backend per call. Module-level singletons cache one provider per
-    backend — the Anthropic SDK and the httpx-backed OpenRouter client
-    each pool their own connections.
+    backend — the Anthropic SDK and the httpx-backed OpenRouter /
+    OrcaRouter clients each pool their own connections.
   backends:
     - id: AnthropicProvider
-      what: Thin delegate over anthropic.AsyncAnthropic; default for the Claude trio when OPENROUTER_ENABLED is off.
+      what: Thin delegate over anthropic.AsyncAnthropic; default for the Claude trio when OPENROUTER_ENABLED and ORCAROUTER_ENABLED are both off.
     - id: OpenRouterProvider
       what: httpx-backed client targeting OpenRouter's OpenAI-format /chat/completions endpoint. Translates request/response/stream shape via openexecutive.providers.translator.
+    - id: OrcaRouterProvider
+      what: httpx-backed client targeting OrcaRouter's OpenAI-format /chat/completions endpoint (https://api.orcarouter.ai/v1). Same translator as OpenRouter; native ``orcarouter/*`` slugs pass through verbatim while Claude models map to OrcaRouter's ``anthropic/*`` namespace.
   feature_gate: |
     openexecutive.providers.feature_gate.apply_feature_gates(spec, kwargs)
     runs inside the OpenRouter provider before translation. Spec-driven
@@ -153,13 +164,17 @@ providers:
     fragmented tool_call argument deltas into a single tool_use block
     at stream close.
   routing_rules:
-    - Claude model + OPENROUTER_ENABLED=false → AnthropicProvider.
-    - Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated Claude OpenRouter slugs (anthropic/claude-opus-4.7, claude-sonnet-4.6, claude-haiku-4.5).
+    - OrcaRouter-native model (``orcarouter/*``) + ORCAROUTER_ENABLED=true → OrcaRouterProvider with the slug passed through verbatim.
+    - OrcaRouter-native model + ORCAROUTER_ENABLED=false → HTTP 400 at the API boundary.
+    - Claude model + OPENROUTER_ENABLED=false + ORCAROUTER_ENABLED=false → AnthropicProvider.
+    - Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated Claude OpenRouter slugs (anthropic/claude-opus-4.7, claude-sonnet-4.6, claude-haiku-4.5). OpenRouter wins when ORCAROUTER_ENABLED is also on.
+    - Claude model + OPENROUTER_ENABLED=false + ORCAROUTER_ENABLED=true → OrcaRouterProvider with the same anthropic/* Claude slugs.
     - Non-Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated non-Anthropic slugs.
     - Non-Claude model + OPENROUTER_ENABLED=false → HTTP 400 at the API boundary. No silent fallback.
   council_ui_dropdown_source: |
     openexecutive.providers.allowed_models_for(agent_id) — returns
-    ANTHROPIC_DIRECT_MODELS plus OPENROUTER_MODELS when the toggle is on.
+    ANTHROPIC_DIRECT_MODELS plus OPENROUTER_MODELS when the OpenRouter
+    toggle is on, plus ORCAROUTER_MODELS when the OrcaRouter toggle is on.
     Every agent (including utility_fast) gets the same list; the
     utility_fast-only free/cheap OpenRouter matrix was removed. The Council
     UI dropdown (GET /agents/models?agent_id=) and the PATCH /agents/{id}
