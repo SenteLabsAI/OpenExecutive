@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -74,8 +76,19 @@ class CompanyProfile(BaseModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {"company": self.model_dump()}
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=True)
+        # Write-then-rename so a concurrent reader (a chat turn building the
+        # company block, or a PATCH doing read-modify-write) never sees a
+        # truncated or half-written file.
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_name, path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
 
     def to_prompt_block(self) -> str:
         if not self.name:

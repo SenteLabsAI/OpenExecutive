@@ -234,7 +234,9 @@ flyctl secrets set -a openexec-ui-qa \
   BACKEND_SHARED_SECRET=<same value as the API app>
 ```
 
-Then add `https://openexec-ui-qa.fly.dev/api/auth/callback/google` as an authorized redirect URI on the OAuth client, create separate QA bot apps for any channels QA should run (so QA and dev never double-reply), and complete the onboarding wizard against the QA URL — QA starts with an empty volume by design.
+Then add `https://openexec-ui-qa.fly.dev/api/auth/callback/google` as an authorized redirect URI on the OAuth client, create separate QA bot apps for any channels QA should run (so QA and dev never double-reply), and complete the onboarding wizard against the QA URL — QA starts with an empty volume by design. To load a real
+organization instead of the wizard's free-text profile, seed it from private files with
+`openexecutive seed-org --api https://openexec-api-qa.fly.dev --dir <seed dir>` (see [org-setup.md](org-setup.md)).
 
 ---
 

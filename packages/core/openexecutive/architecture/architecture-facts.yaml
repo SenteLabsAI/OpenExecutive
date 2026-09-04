@@ -2609,6 +2609,25 @@ fixtures:
     fixture and the restored user state start with a clean watchlist instead
     of inheriting the previous company's monitors.
   packaging: Fixtures are copied into the API Docker image so demos work in deployed environments.
+  real_org_seeding: |
+    Demo fixtures are the wrong tool for a real organization: the loader wipes
+    state, only reads fixtures baked into the image, and flags the install as
+    "demo loaded". Real orgs are seeded with the `openexecutive seed-org` CLI
+    (module openexecutive.cli.seed_org), which reads the same YAML shapes
+    (profile.yaml / people.yaml / departments.yaml / docs/ + docs.yaml) from a
+    private, gitignored directory (e.g. company/seed/<org>/) and applies them
+    through the public HTTP API as idempotent upserts: PUT /company-profile
+    (create-or-replace; PATCH still 404s on an empty profile), people matched
+    by email then full name (reports_to resolved by name in a second pass),
+    departments matched by slug / server-derived slug / title with goals keyed
+    on (period_value, key_result), optional --prune-departments for unused
+    defaults, docs uploaded once per filename (--reindex-docs to refresh).
+    Invariant preserved: only the eight default department slugs carry
+    specialist_key; user-created departments stay informational, so a real org
+    retitles the defaults it wants routed. --dry-run lists every write and
+    sends none. The `openexecutive` console script itself was previously
+    broken — a `cli/` package shadowed `cli.py` — so the click group now lives
+    in openexecutive/cli/__init__.py. See docs/org-setup.md.
   client_interplay: |
     Loading a fixture while a client slot is active first saves that client
     back to its slot and clears the active-client sentinel (leaving client

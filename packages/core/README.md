@@ -46,6 +46,10 @@ The first time you visit the app, you'll be guided through a wizard to set up yo
 
 After onboarding, the Executive will reference your specific company context in every response.
 
+To mirror a real organization — the actual roster, approval authority, departments with goals, and
+the documents the team works from — keep the files outside the repo and apply them with
+`openexecutive seed-org` (idempotent, over the HTTP API). See [docs/org-setup.md](../../docs/org-setup.md).
+
 ## Interfaces
 
 | Interface | How to Use |

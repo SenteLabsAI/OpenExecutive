@@ -32,6 +32,11 @@ primary_region = "iad"
   MCP_SERVERS_CONFIG_PATH = "/data/company/mcp_servers.json"
   ENABLE_CACHING = "true"
   SCHEDULER_ENABLED = "true"
+  # Co-located Google Workspace MCP child — same layout as fly.api.toml so QA
+  # can exercise Gmail/Calendar/Drive with its own OAuth grant on its volume.
+  WORKSPACE_MCP_CREDENTIALS_DIR = "/data/google_credentials"
+  WORKSPACE_MCP_TOOL_TIER = "complete"
+  GWORKSPACE_AUTH_MODE = "oauth"
 
 [[mounts]]
   source = "executive_data"

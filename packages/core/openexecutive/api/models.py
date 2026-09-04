@@ -208,3 +208,12 @@ class CompanyProfileUpdateRequest(BaseModel):
     strategic_priorities: StrategicPrioritiesData | None = None
     culture: CultureData | None = None
     financials: FinancialsData | None = None
+
+
+class CompanyProfilePutRequest(CompanyProfileUpdateRequest):
+    """Full profile for create-or-replace. Only `name` is mandatory; omitted
+    sections fall back to CompanyProfile defaults (empty), so a PUT is a faithful
+    snapshot of the request, not a merge."""
+
+    name: str = Field(min_length=1)
+

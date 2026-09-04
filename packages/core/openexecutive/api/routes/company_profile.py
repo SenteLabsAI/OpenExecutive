@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from openexecutive.api.models import CompanyProfileResponse, CompanyProfileUpdateRequest
+from openexecutive.api.models import (
+    CompanyProfilePutRequest,
+    CompanyProfileResponse,
+    CompanyProfileUpdateRequest,
+)
 from openexecutive.config import get_settings
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding.profile_builder import load_or_create_profile
@@ -36,4 +40,18 @@ async def update_company_profile(body: CompanyProfileUpdateRequest) -> CompanyPr
     validated = CompanyProfile.model_validate(updated.model_dump())
     validated.save_to_yaml(settings.company_profile_path)
 
+    return CompanyProfileResponse(**validated.model_dump())
+
+
+@router.put("/company-profile", response_model=CompanyProfileResponse)
+async def put_company_profile(body: CompanyProfilePutRequest) -> CompanyProfileResponse:
+    """Create or fully replace the company profile.
+
+    Unlike PATCH, this works on a fresh install (no wizard run) and does not
+    merge: sections omitted from the body reset to their empty defaults. It is
+    the path `openexecutive seed-org` uses to configure a real organization.
+    """
+    settings = get_settings()
+    validated = CompanyProfile.model_validate(body.model_dump(exclude_none=True))
+    validated.save_to_yaml(settings.company_profile_path)
     return CompanyProfileResponse(**validated.model_dump())

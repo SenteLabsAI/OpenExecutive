@@ -43,7 +43,12 @@ jobs:
             api:
               - 'packages/core/**'
               - 'knowledge/**'
+              # Mirror deploy.yml: fixtures and the Workspace MCP launcher are
+              # COPYed into the API image, so a change to either must redeploy
+              # QA too or the qa branch drifts from what is actually running.
+              - 'fixtures/**'
               - 'docker/Dockerfile'
+              - 'docker/workspace-mcp-launch.sh'
               - 'fly.api.qa.toml'
               - '.github/workflows/deploy-qa.yml'
             ui:
