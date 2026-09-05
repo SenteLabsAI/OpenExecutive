@@ -1,5 +1,6 @@
-import { signIn, auth } from "@/auth";
+import { signIn, auth, checkEmailAllowed, DEV_BYPASS_EMAIL } from "@/auth";
 import { redirect } from "next/navigation";
+import DevAutoSignIn from "@/components/DevAutoSignIn";
 
 type SearchParams = Promise<{ callbackUrl?: string; error?: string }>;
 
@@ -15,13 +16,18 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
   const { callbackUrl, error } = await searchParams;
   const safeDest = safeCallbackUrl(callbackUrl);
 
-  // If already signed in, bounce straight to the destination.
+  // If already signed in, bounce straight to the destination — unless the
+  // session's email has since left the allowlist, in which case the
+  // middleware would send it straight back here. Show the denial instead.
   const session = await auth();
-  if (session?.user) {
-    redirect(safeDest);
+  let denied = false;
+  if (session?.user?.email) {
+    const { allowed, source } = await checkEmailAllowed(session.user.email.toLowerCase());
+    if (allowed || source === "env_after_fetch_error") redirect(safeDest);
+    denied = true;
   }
 
-  const errorMessage = error ? describeError(error) : null;
+  const errorMessage = error ? describeError(error) : denied ? describeError("AccessDenied") : null;
 
   return (
     <main className="min-h-screen flex items-center justify-center px-6">
@@ -33,6 +39,10 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
           <p className="mt-4 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-sm text-red-200">
             {errorMessage}
           </p>
+        )}
+
+        {DEV_BYPASS_EMAIL && !errorMessage && (
+          <DevAutoSignIn email={DEV_BYPASS_EMAIL} redirectTo={safeDest} />
         )}
 
         <form

@@ -1,20 +1,12 @@
-import { auth } from "@/auth";
+import { auth, denyResponse } from "@/auth";
 
 // Gate every page + non-auth API route. `auth` from NextAuth v5 wraps a
-// handler that injects req.auth; here we use it directly as middleware, which
-// makes unauthenticated requests redirect to the configured sign-in page.
+// handler that injects req.auth. Sessions whose email has since left the
+// allowlist never reach this handler — the `authorized` callback in auth.ts
+// returns the deny Response itself. This handler covers no-session only.
 export default auth((req) => {
   if (req.auth) return;
-
-  // For API routes, return JSON 401 instead of an HTML redirect so the
-  // browser doesn't follow it and break fetch() callers.
-  if (req.nextUrl.pathname.startsWith("/api/")) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  const signInUrl = new URL("/signin", req.nextUrl.origin);
-  signInUrl.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
-  return Response.redirect(signInUrl);
+  return denyResponse(req);
 });
 
 // Exclude Auth.js's own routes, Next internals, static assets, and exactly

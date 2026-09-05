@@ -15,7 +15,7 @@ install:
 dev:
 	@echo "Starting Open Executive..."
 	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/core && uv run uvicorn openexecutive.api.main:app --reload --port 8000 &
-	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/ui && npm run dev
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/ui && if [ "$$AUTH_DEV_BYPASS" = "true" ]; then npm run dev -- -H 127.0.0.1; else npm run dev; fi
 
 stop:
 	@lsof -ti :8000 -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true

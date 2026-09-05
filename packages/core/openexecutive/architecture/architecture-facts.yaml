@@ -2132,6 +2132,20 @@ auth:
          only when the roster is empty (fresh-install bootstrap).
          Once any Person has an email, the env var is ignored.
     Roster fetch is cached for 5 minutes per Next.js server instance.
+    The `authorized` callback must return a Response to deny: because
+    middleware.ts passes its own handler to `auth()`, next-auth discards a
+    boolean false there and runs the handler anyway. Both deny paths share
+    `denyResponse()` in auth.ts (JSON 401 for /api/*, /signin redirect
+    otherwise); /signin itself re-checks the allowlist so a revoked session
+    sees an AccessDenied message instead of a redirect loop.
+    Local-dev bypass: AUTH_DEV_BYPASS=true registers a Credentials
+    provider (`dev-bypass`) that /signin auto-submits, signing in as the
+    first ALLOWED_EMAILS entry. Same signIn/authorized allowlist gate
+    applies. Registered only when NODE_ENV != production (so `next build`
+    output on Fly never honours the flag); `make dev` binds next to
+    127.0.0.1 while the flag is on, which is the actual network boundary
+    (the provider's loopback-Host check is only a tripwire — Host is
+    client-supplied).
   backend_gate: |
     BACKEND_SHARED_SECRET via x-api-key header gates every API route
     (see api.main._shared_secret_gate). The Next.js proxy at
