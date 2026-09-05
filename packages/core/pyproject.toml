@@ -40,6 +40,9 @@ Repository = "https://github.com/SenteLabsAI/OpenExecutive"
 Issues = "https://github.com/SenteLabsAI/OpenExecutive/issues"
 
 [project.optional-dependencies]
+litellm = [
+    "litellm>=1.89.0,<2.0.0",
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",

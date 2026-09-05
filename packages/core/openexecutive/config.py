@@ -173,6 +173,50 @@ class Settings(BaseSettings):
             )
         return self
 
+    # ---- LiteLLM gateway -----------------------------------------------
+    # Route selected model slugs through the LiteLLM SDK, which reaches 100+
+    # providers by model prefix (anthropic/, gemini/, bedrock/, azure/,
+    # groq/, ...) using each provider's NATIVE auth (AWS SigV4, Google ADC,
+    # Azure AD) — beyond what a bare OpenAI base_url can express. Default OFF
+    # so a fresh checkout's behavior is identical to before.
+    #
+    # To run with NO Anthropic key, point the model settings at LiteLLM slugs:
+    #   LITELLM_ENABLED=true
+    #   LITELLM_MODELS=gemini/gemini-2.5-pro,groq/llama-3.3-70b-versatile
+    #   DEFAULT_MODEL=gemini/gemini-2.5-pro
+    # with each provider's own key exported (GEMINI_API_KEY, GROQ_API_KEY, ...).
+    litellm_enabled: bool = Field(False, alias="LITELLM_ENABLED")
+    # Optional. Unset routes natively by model prefix (recommended). Set it to
+    # front a running LiteLLM proxy (e.g. http://localhost:4000) instead.
+    litellm_base_url: str | None = Field(None, alias="LITELLM_BASE_URL")
+    # Optional key. When routing natively, per-provider env vars are used and
+    # this stays unset; set it only for a proxy that requires a virtual key.
+    litellm_api_key: str | None = Field(None, alias="LITELLM_API_KEY")
+    # Comma-separated LiteLLM model slugs to surface in the Council UI and
+    # route through LiteLLM, e.g. "gemini/gemini-2.5-pro,bedrock/anthropic..."
+    litellm_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="LITELLM_MODELS"
+    )
+    litellm_timeout_s: float = Field(180.0, alias="LITELLM_TIMEOUT_S")
+
+    @field_validator("litellm_models", mode="before")
+    @classmethod
+    def _parse_litellm_models(cls, v: Any) -> list[str]:
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str) and v.strip():
+            return [x.strip() for x in v.split(",") if x.strip()]
+        return []
+
+    @model_validator(mode="after")
+    def _validate_litellm(self) -> "Settings":
+        if self.litellm_enabled and not self.litellm_models:
+            raise ValueError(
+                "LITELLM_ENABLED=true requires LITELLM_MODELS to list at least "
+                "one model slug (e.g. gemini/gemini-2.5-pro)"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_provider_available(self) -> "Settings":
         # At least one backend must be reachable, or every model call fails.
@@ -180,11 +224,13 @@ class Settings(BaseSettings):
             self.anthropic_api_key
             or self.openrouter_enabled
             or self.local_models_enabled
+            or self.litellm_enabled
         ):
             raise ValueError(
                 "No LLM provider configured. Set ANTHROPIC_API_KEY, or enable "
-                "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), or "
-                "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
+                "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), "
+                "local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL), or "
+                "LiteLLM (LITELLM_ENABLED=true + LITELLM_MODELS)."
             )
         return self
 

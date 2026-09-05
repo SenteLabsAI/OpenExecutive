@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from openexecutive.config import get_settings
 from openexecutive.providers.anthropic_provider import AnthropicProvider
 from openexecutive.providers.feature_gate import FeatureSpec
+from openexecutive.providers.litellm_provider import LiteLLMProvider
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 from openexecutive.providers.openrouter_provider import OpenRouterProvider
 from openexecutive.providers.provider import LLMProvider
@@ -86,6 +87,16 @@ def _local_models(settings: Any) -> list[str]:
     return list(getattr(settings, "local_models", []) or [])
 
 
+def _litellm_models(settings: Any) -> list[str]:
+    """Configured LiteLLM model slugs, or ``[]`` when LiteLLM routing is off.
+
+    Read defensively: lightweight test settings stubs may omit the field.
+    """
+    if not getattr(settings, "litellm_enabled", False):
+        return []
+    return list(getattr(settings, "litellm_models", []) or [])
+
+
 def allowed_models() -> list[str]:
     """Flat allowlist the Council UI's dropdown reads.
 
@@ -104,6 +115,7 @@ def allowed_models() -> list[str]:
     if settings.openrouter_enabled:
         models.extend(OPENROUTER_MODELS)
     models.extend(_local_models(settings))
+    models.extend(_litellm_models(settings))
     return models
 
 
@@ -128,6 +140,7 @@ def _is_claude(model: str) -> bool:
 _anthropic_provider: AnthropicProvider | None = None
 _openrouter_provider: OpenRouterProvider | None = None
 _local_provider: OpenAICompatibleProvider | None = None
+_litellm_provider: LiteLLMProvider | None = None
 
 
 def _anthropic() -> AnthropicProvider:
@@ -177,6 +190,24 @@ def _local() -> OpenAICompatibleProvider:
             spec_lookup=spec_lookup,
         )
     return _local_provider
+
+
+def _litellm() -> LiteLLMProvider:
+    global _litellm_provider
+    if _litellm_provider is None:
+        settings = get_settings()
+        # LiteLLM slugs are non-Claude by default: no Anthropic-only
+        # cache_control / thinking / server web-search. Tool use is universal.
+        spec_lookup: dict[str, FeatureSpec] = {
+            m: _DEFAULT_NON_CLAUDE_SPEC for m in _litellm_models(settings)
+        }
+        _litellm_provider = LiteLLMProvider(
+            api_key=getattr(settings, "litellm_api_key", None),
+            base_url=getattr(settings, "litellm_base_url", None),
+            timeout_s=getattr(settings, "litellm_timeout_s", 180.0),
+            spec_lookup=spec_lookup,
+        )
+    return _litellm_provider
 
 
 def _openrouter() -> OpenRouterProvider:
@@ -234,6 +265,10 @@ def get_provider(model: str) -> LLMProvider:
     # endpoint can serve them with no external dependency.
     if model in _local_models(settings):
         return _local()
+    # LiteLLM-configured slugs route through the LiteLLM SDK (native
+    # per-provider auth by model prefix).
+    if model in _litellm_models(settings):
+        return _litellm()
     # Other non-Claude slugs require OpenRouter to be enabled.
     if not settings.openrouter_enabled:
         raise HTTPException(
@@ -251,6 +286,8 @@ def get_provider(model: str) -> LLMProvider:
 def _reset_for_tests() -> None:
     """Drop cached provider singletons. Test-only — pytest fixtures call this."""
     global _anthropic_provider, _openrouter_provider, _local_provider
+    global _litellm_provider
     _anthropic_provider = None
     _openrouter_provider = None
     _local_provider = None
+    _litellm_provider = None
