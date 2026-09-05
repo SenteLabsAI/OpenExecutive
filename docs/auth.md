@@ -82,6 +82,23 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 Then `make dev` and visit http://localhost:3000.
 
+#### Skipping Google locally
+
+No OAuth client yet? Set `AUTH_DEV_BYPASS=true` in the root `.env` and run
+`make dev` (the `make docker` UI service does not forward the flag). `/signin`
+then signs you in automatically as the first `ALLOWED_EMAILS` entry (via an
+Auth.js Credentials provider registered only when the flag is on), and every
+downstream check — middleware, backend proxy, `x-caller-email`, the allow-list
+callbacks — runs unchanged. Two guards keep it local: the provider is
+registered only when `NODE_ENV` is not `production` (`next build` hard-sets
+`production`, so the flag is inert on Fly or any other built deployment), and
+`make dev` binds the UI to `127.0.0.1` instead of the usual `0.0.0.0` while the
+flag is on, so nothing else on your network can reach the dev server. (The
+provider also rejects non-loopback `Host` headers, but that is a tripwire, not
+a boundary — `Host` is client-supplied.) If you start `next dev` by hand with
+the flag on, pass `-H 127.0.0.1` yourself. "Sign out" in the UI lands on
+`/signin`, which signs you straight back in while the flag is on.
+
 For Docker, use `make docker` (not a bare `docker compose -f
 docker/docker-compose.yml up`): the Makefile passes `--env-file .env`, which
 is what feeds the UI container's `AUTH_*` / `BACKEND_SHARED_SECRET` values.

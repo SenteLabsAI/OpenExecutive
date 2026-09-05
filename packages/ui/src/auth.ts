@@ -1,5 +1,8 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
+import Credentials from "next-auth/providers/credentials";
+import type { Provider } from "next-auth/providers";
+import type { NextRequest } from "next/server";
 
 // Env-var fallback for the bootstrap case (fresh install, roster still
 // empty). Once any Person row exists with an email, the backend's
@@ -11,6 +14,43 @@ const ALLOWED_EMAILS_FALLBACK: ReadonlySet<string> = new Set(
     .map((e) => e.trim().toLowerCase())
     .filter((e) => e.length > 0),
 );
+
+// Local-dev bypass: when AUTH_DEV_BYPASS=true, /signin auto-signs in as the
+// first ALLOWED_EMAILS entry without touching Google. `next build` hard-sets
+// NODE_ENV=production, so this is inert on every deployed build even if the
+// env var leaks there. The email still goes through the same allowlist gate
+// as a Google login (signIn + authorized callbacks below).
+export const DEV_BYPASS_EMAIL: string | null =
+  process.env.AUTH_DEV_BYPASS === "true" && process.env.NODE_ENV !== "production"
+    ? ([...ALLOWED_EMAILS_FALLBACK][0] ?? null)
+    : null;
+
+if (process.env.AUTH_DEV_BYPASS === "true" && !DEV_BYPASS_EMAIL) {
+  console.warn(
+    "[auth] AUTH_DEV_BYPASS=true ignored: " +
+      (process.env.NODE_ENV === "production" ? "NODE_ENV is production" : "ALLOWED_EMAILS is empty"),
+  );
+}
+
+const providers: Provider[] = [Google];
+if (DEV_BYPASS_EMAIL) {
+  providers.push(
+    Credentials({
+      id: "dev-bypass",
+      name: "Dev bypass",
+      credentials: {},
+      // Tripwire, not a boundary: Host is client-supplied, so a LAN peer
+      // can send `Host: localhost`. The boundary is the bind address —
+      // `make dev` passes `-H 127.0.0.1` to next when the flag is on. This
+      // check only rejects accidental use via a LAN IP or hostname.
+      authorize: async (_credentials, request) => {
+        const host = request.headers.get("host") ?? "";
+        if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) return null;
+        return { email: DEV_BYPASS_EMAIL, name: "Dev User" };
+      },
+    }),
+  );
+}
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
@@ -61,7 +101,7 @@ async function fetchRosterEmails(): Promise<Set<string> | null> {
  * the `authorized` callback (re-runs on every gated request so a user
  * removed from the roster mid-session is bounced on next request).
  */
-async function checkEmailAllowed(
+export async function checkEmailAllowed(
   email: string,
 ): Promise<{ allowed: boolean; source: string }> {
   const roster = await fetchRosterEmails();
@@ -93,8 +133,19 @@ function auditAuth(
   });
 }
 
+// Deny response for a middleware-gated request. API routes get JSON 401 so
+// fetch() callers don't follow an HTML redirect; pages go to /signin.
+export function denyResponse(req: NextRequest): Response {
+  if (req.nextUrl.pathname.startsWith("/api/")) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const signInUrl = new URL("/signin", req.nextUrl.origin);
+  signInUrl.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
+  return Response.redirect(signInUrl);
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  providers: [Google],
+  providers,
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check
   // below — a session that somehow drifts out of sync with the roster
   // is corrected on next access, but also naturally expires within a
@@ -108,13 +159,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // Strict initial gate. Requires `email_verified === true` explicitly: a
     // missing / non-boolean value fails closed. Google always returns true
     // for real accounts.
-    signIn: async ({ profile }) => {
-      const email = profile?.email?.toLowerCase();
+    signIn: async ({ user, account, profile }) => {
+      // Credentials sign-ins carry no OAuth profile; the dev bypass provider
+      // only exists when DEV_BYPASS_EMAIL is set (see above).
+      const isDevBypass = account?.provider === "dev-bypass";
+      const email = (isDevBypass ? user.email : profile?.email)?.toLowerCase();
       if (!email) {
         auditAuth("auth_login", "Login denied: no email", null, { denied: true, reason: "no_email" });
         return false;
       }
-      if (profile?.email_verified !== true) {
+      if (!isDevBypass && profile?.email_verified !== true) {
         auditAuth("auth_login", `Login denied: ${email} (email not verified)`, email, { denied: true, reason: "email_not_verified" });
         return false;
       }
@@ -137,7 +191,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // source === "env_after_fetch_error") so a brief backend hiccup
     // doesn't lock out everyone with a valid session — the strict
     // `signIn` gate already vetted them once.
-    authorized: async ({ auth }) => {
+    //
+    // Must return a Response to deny: because middleware.ts passes its own
+    // handler to `auth()`, next-auth ignores a boolean `false` here and
+    // runs the handler anyway (lib/index.js handleAuth). The no-session
+    // case is left to the handler.
+    authorized: async ({ auth, request }) => {
       if (!auth?.user?.email) return false;
       const email = auth.user.email.toLowerCase();
       const { allowed, source } = await checkEmailAllowed(email);
@@ -151,14 +210,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email,
           { revoked: true, reason: "not_in_allowlist", source },
         );
+        return denyResponse(request);
       }
-      return allowed;
+      return true;
     },
   },
   events: {
-    signIn: ({ user }) => {
+    signIn: ({ user, account }) => {
       const email = user.email?.toLowerCase() ?? null;
-      auditAuth("auth_login", `Login: ${email ?? "unknown"}`, email, { provider: "google" });
+      auditAuth("auth_login", `Login: ${email ?? "unknown"}`, email, { provider: account?.provider ?? "unknown" });
     },
     signOut: (message) => {
       // JWT strategy sends { token }, session strategy sends { session }.
