@@ -65,6 +65,28 @@ _FIXTURE_OP_LOCK = asyncio.Lock()
 # sentinel file so a tampered/garbage value cannot reach the UI.
 _SAFE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Per-company DERIVED caches in the episodic DB. Regenerable, so always safe to
+# drop — and they MUST be dropped by every path that swaps the live company,
+# because /today serves them from cache and only regenerates in a
+# BackgroundTask. Leave a row behind and the next request renders the OUTGOING
+# company's text under the incoming one: observed live, one client's briefing
+# narrative appearing verbatim under another.
+#
+# Three separate paths swap live company state, and each maintained its own
+# hand-written table list — so this was fixed in one and still live in the other
+# two. They now all consume this constant: `clients.slots._BLANK_WIPE_TABLES`
+# (client switch into a blank/seed slot), `reset_all_state` (factory reset), and
+# `_seed_episodic_memory` (fixture load). Any new per-company cache table goes
+# here, once.
+#
+# Not included, deliberately: `generated_fixtures` (operator-level, see
+# `slots._GLOBAL_TABLES`) and `architecture_sections` (repo-derived, keyed by a
+# hash of the facts file — not company data).
+PER_CLIENT_CACHE_TABLES: tuple[str, ...] = (
+    "briefing_narrative",
+    "person_insights",
+)
+
 # Walk up from this file to find the repo root (contains evals/, fixtures/, etc.)
 # Match on ``fixtures/companies`` specifically — NOT a bare ``fixtures`` dir —
 # so the in-package ``openexecutive/fixtures/`` module (generated-fixture store
@@ -671,6 +693,14 @@ async def reset_all_state(
         # circuit (and there's nothing to wipe in a DB that isn't there).
         if EPISODIC_DB_PATH.exists():
             monitoring_store.initialize_db(EPISODIC_DB_PATH)
+            # Same reasoning for the derived caches in PER_CLIENT_CACHE_TABLES:
+            # both create their table lazily on first put/get, so a DB that has
+            # never served a briefing lacks them and the DELETE pass would raise.
+            from openexecutive.briefing import narrative_cache
+            from openexecutive.people import insights_cache
+
+            narrative_cache.initialize_db(EPISODIC_DB_PATH)
+            insights_cache.initialize_db(EPISODIC_DB_PATH)
         episodic_cleared = _delete_all_rows(
             EPISODIC_DB_PATH,
             (
@@ -689,6 +719,7 @@ async def reset_all_state(
                 "eval_runs",
                 "external_signals",
                 "watchlist",
+                *PER_CLIENT_CACHE_TABLES,
             ),
         )
 
@@ -1135,6 +1166,18 @@ def _seed_episodic_memory(memory_path: Path, settings: Any) -> dict[str, int]:
         )
         if alerts_table_exists:
             conn.execute("DELETE FROM alerts")
+
+        # Derived per-company caches. Without this, loading a fixture over a
+        # live company leaves that company's cached briefing narrative in
+        # place and the demo's /today renders it verbatim — the surface most
+        # likely to be screen-shared. Same existence guard as alerts above:
+        # a minimal/legacy DB may not have these tables yet.
+        for cache_table in PER_CLIENT_CACHE_TABLES:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (cache_table,),
+            ).fetchone():
+                conn.execute(f"DELETE FROM {cache_table}")  # noqa: S608 — fixed tuple
 
         decisions = data.get("decisions", [])
         for row in decisions:

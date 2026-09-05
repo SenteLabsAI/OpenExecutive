@@ -393,6 +393,96 @@ async def test_generated_seed_slot_create_does_not_touch_live(env: SimpleNamespa
     assert listed[0]["origin"] == "generated"
 
 
+async def test_seed_slot_activation_clears_derived_caches(env: SimpleNamespace) -> None:
+    """The outgoing client's cached narrative/insights must not survive a switch.
+
+    /today serves the cached briefing narrative unconditionally and only
+    regenerates in a background task (api/routes/today.py::_attach_narrative),
+    so a surviving row renders the PREVIOUS client's narrative under the
+    incoming one — observed live, one client's briefing appearing verbatim
+    under another. Both tables are regenerable caches, so wiping is free.
+    """
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.people import insights_cache
+
+    _seed_live_company(env, "Outgoing Co")
+    narrative_cache.put(
+        narrative_cache.BriefingNarrative(
+            scope="principal",
+            input_hash="stale-hash",
+            narrative_text="**Outgoing Co is straining** — do not show this elsewhere.",
+            generated_at="2026-09-01T00:00:00+00:00",
+        )
+    )
+    insights_cache.put(
+        insights_cache.PersonInsight(
+            person_id=1,
+            input_hash="stale-hash",
+            insight_text="Outgoing Co founder is unreachable.",
+            generated_at="2026-09-01T00:00:00+00:00",
+        )
+    )
+    # Both caches are warm for the outgoing client.
+    assert narrative_cache.get("principal") is not None
+    assert insights_cache.get(1) is not None
+
+    await create_client_slot(
+        env.settings,
+        display_name="Incoming Co",
+        source="generated",
+        bundle=_intake_bundle(),
+    )
+    await activate_client_slot(env.settings, "incoming_co")
+
+    assert narrative_cache.get("principal") is None
+    assert insights_cache.get(1) is None
+
+
+async def test_switch_preserves_outgoing_caches_in_its_slot(env: SimpleNamespace) -> None:
+    """Wiping the caches on switch must not DESTROY them — only unpublish them.
+
+    The wipe has to happen after the outgoing client's VACUUM INTO save-back, so
+    its cached narrative lands in state.db and returns on reactivation. Ordering
+    the wipe before the save-back would lose it permanently, and the sibling
+    test above cannot catch that: there, no client is active, so the save-back
+    branch of activate_client_slot never runs.
+    """
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.people import insights_cache
+
+    _seed_live_company(env, "Client A")
+    await create_client_slot(env.settings, display_name="Client A", source="current")
+    narrative_cache.put(
+        narrative_cache.BriefingNarrative(
+            scope="principal",
+            input_hash="a-hash",
+            narrative_text="**Client A narrative**",
+            generated_at="2026-09-01T00:00:00+00:00",
+        )
+    )
+    insights_cache.put(
+        insights_cache.PersonInsight(
+            person_id=1,
+            input_hash="a-hash",
+            insight_text="Client A insight",
+            generated_at="2026-09-01T00:00:00+00:00",
+        )
+    )
+    await save_active_client(env.settings)
+
+    await create_client_slot(env.settings, display_name="Client B", source="blank")
+    await activate_client_slot(env.settings, "client_b")
+    assert narrative_cache.get("principal") is None
+
+    await activate_client_slot(env.settings, "client_a")
+    restored = narrative_cache.get("principal")
+    assert restored is not None
+    assert restored.narrative_text == "**Client A narrative**"
+    restored_insight = insights_cache.get(1)
+    assert restored_insight is not None
+    assert restored_insight.insight_text == "Client A insight"
+
+
 async def test_generated_seed_slot_activation_seeds_org_and_memory(
     env: SimpleNamespace,
 ) -> None:
