@@ -2715,6 +2715,37 @@ clients:
     blank slot (no state.db yet) factory-wipes the per-client tables and
     re-seeds defaults (departments, onboarding templates, principal briefs,
     cadences) so the new client's Today works without a process restart.
+    Wipe lists must cover the DERIVED CACHES, not just authored state.
+    briefing_narrative and person_insights were wiped by NO path, and because
+    /today serves the cached narrative unconditionally (regenerating only in a
+    BackgroundTask), whichever path swapped the company rendered the OUTGOING
+    one's narrative under the incoming one. Do not assume person_insights'
+    input_hash self-guards: that hash covers role/status/counters/UTC-day but
+    NOT person or company identity, and the key is a reused autoincrement
+    person_id — so an outgoing principal and a freshly seeded incoming
+    principal hash identically. Ordinary steady state, not a collision.
+    THREE paths swap live company state and each kept its own hand-written
+    table list, which is why fixing one left the leak live in the other two.
+    They now all consume `cli.fixture_loader.PER_CLIENT_CACHE_TABLES`:
+    `clients.slots._BLANK_WIPE_TABLES` (switch into a blank/seed slot),
+    `reset_all_state` (factory reset), and `_seed_episodic_memory` (fixture
+    load — the worst surface, since a demo is what gets screen-shared).
+    Client→client switching into a slot that HAS state.db was already safe:
+    the sqlite backup API truncates the destination to an exact copy.
+    Add any new per-company cache table to that constant, once.
+    Graded as NOT wiped: generated_fixtures (operator-level, see
+    _GLOBAL_TABLES) and architecture_sections (repo-derived, keyed by a hash of
+    the facts file). Still UNGRADED, deliberately deferred: dynamic_workflows
+    and eval_scenarios. These ARE client-scoped — the non-blank path already
+    swaps them with the whole DB — and on the blank path the outgoing client's
+    workflow definitions stay registered AND active (`list_definitions(
+    active_only=True)`), runnable against the incoming client's data, with full
+    bodies exposed via /workflows. They are not in the wipe list because they
+    are authored, not derived, and `snapshot_user_state` (the first-activation
+    branch, when no client is active) captures only profile/docs/memory.json/
+    people/departments — so wiping them there would irrecoverably delete the
+    operator's own work. The fix is to capture them in that snapshot FIRST,
+    then wipe. Both tables are empty on current installs.
   invariants:
     - At most one slot is active; the .active_client sentinel records it
       (allowlist-validated on read, same defence as the fixture sentinel).

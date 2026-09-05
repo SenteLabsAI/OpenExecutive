@@ -45,6 +45,9 @@ from openexecutive.cli.fixture_loader import (
     get_fixture_status,
     snapshot_user_state,
 )
+from openexecutive.cli.fixture_loader import (
+    PER_CLIENT_CACHE_TABLES as _PER_CLIENT_CACHE_TABLES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,18 @@ ENGAGEMENT_STATUSES = ("active", "paused", "winding_down", "completed")
 # Ordered children-before-parents for PRAGMA foreign_keys=ON. Existence-guarded
 # at delete time, so stores that haven't initialized on this box are skipped.
 _BLANK_WIPE_TABLES = (
+    # Derived caches first — see PER_CLIENT_CACHE_TABLES for why they must be
+    # wiped by every company-swapping path, not just this one. Neither declares
+    # a foreign key, so head position is free.
+    #
+    # Do not assume person_insights' input_hash makes it self-guarding: the hash
+    # (people.insights.build_insight_input_hash) covers role, is_principal,
+    # status, counters, availability and the UTC day — NOT the person's name or
+    # id. The cache key is person_id, a reused autoincrement PK. So an outgoing
+    # principal and a freshly seeded incoming principal, both with no awaiting
+    # work on the same day, hash identically and the stale note is served. That
+    # is an ordinary steady state for a seeded slot, not a collision.
+    *_PER_CLIENT_CACHE_TABLES,
     "chat_messages",
     "sessions",
     "decisions",

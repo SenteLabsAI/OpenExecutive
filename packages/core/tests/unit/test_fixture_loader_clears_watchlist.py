@@ -23,6 +23,7 @@ import inspect
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,3 +142,92 @@ def test_apply_state_from_source_resets_research_skip_gate() -> None:
         "a fixture reload within 24h will skip its seeded research scan and "
         "surface zero findings."
     )
+
+
+# ── Derived per-company caches (same leak class as the watchlist above) ──────
+#
+# briefing_narrative and person_insights were wiped by NO path. Because /today
+# serves them from cache and only regenerates in a BackgroundTask, loading a
+# demo fixture over a live company rendered that company's real briefing
+# narrative verbatim under the demo — on the surface most likely to be
+# screen-shared. All three swapping paths now consume PER_CLIENT_CACHE_TABLES.
+
+
+def test_seed_episodic_memory_clears_derived_caches(
+    _episodic_db: Path, tmp_path: Path
+) -> None:
+    """The fixture-load seeder must drop the outgoing company's cached text.
+
+    Behavioural, not a source grep: ``_seed_episodic_memory`` is cheap, and it
+    resolves the DB via ``episodic.DB_PATH`` imported at call time, which the
+    ``_episodic_db`` fixture monkeypatches — so the wipe is proven against the
+    live schema rather than asserted from source.
+    """
+    import json
+
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.cli.fixture_loader import _seed_episodic_memory
+    from openexecutive.people import insights_cache
+
+    # First arg is the fixture's memory.json, NOT a db path; an absent or
+    # unparseable file short-circuits before the wipe, so it must be real.
+    memory_path = tmp_path / "memory.json"
+    memory_path.write_text(json.dumps({"decisions": []}), encoding="utf-8")
+
+    narrative_cache.put(
+        narrative_cache.BriefingNarrative(
+            scope="principal",
+            input_hash="outgoing",
+            narrative_text="**Real client narrative** — must not reach a demo.",
+            generated_at=datetime.now(UTC).isoformat(),
+        ),
+        db_path=_episodic_db,
+    )
+    insights_cache.put(
+        insights_cache.PersonInsight(
+            person_id=1,
+            input_hash="outgoing",
+            insight_text="Real client founder note.",
+            generated_at=datetime.now(UTC).isoformat(),
+        ),
+        db_path=_episodic_db,
+    )
+    assert narrative_cache.get("principal", db_path=_episodic_db) is not None
+    assert insights_cache.get(1, db_path=_episodic_db) is not None
+
+    # settings has no episodic_db_path, so the seeder falls back to the
+    # monkeypatched episodic.DB_PATH — i.e. _episodic_db.
+    _seed_episodic_memory(memory_path, SimpleNamespace())
+
+    assert narrative_cache.get("principal", db_path=_episodic_db) is None
+    assert insights_cache.get(1, db_path=_episodic_db) is None
+
+
+def test_wipe_lists_consume_the_shared_cache_constant() -> None:
+    """All three swapping paths must reference the one constant, not copies.
+
+    The original bug was three hand-maintained table lists over one DB: the fix
+    landed in one and the leak stayed live in the other two. Source-grep for the
+    heavy async ``reset_all_state`` (same cheap guard the monitoring tables use)
+    and for the shared constant in the slot wipe list.
+    """
+    from openexecutive.cli.fixture_loader import (
+        PER_CLIENT_CACHE_TABLES,
+        _seed_episodic_memory,
+    )
+    from openexecutive.clients.slots import _BLANK_WIPE_TABLES
+
+    assert PER_CLIENT_CACHE_TABLES == ("briefing_narrative", "person_insights")
+
+    for fn in (reset_all_state, _seed_episodic_memory):
+        assert "PER_CLIENT_CACHE_TABLES" in inspect.getsource(fn), (
+            f"{fn.__name__} no longer consumes PER_CLIENT_CACHE_TABLES — the "
+            "outgoing company's cached briefing narrative will survive and be "
+            "rendered under the incoming one."
+        )
+
+    for table in PER_CLIENT_CACHE_TABLES:
+        assert table in _BLANK_WIPE_TABLES, (
+            f"{table!r} dropped out of the client-slot wipe list — switching "
+            "into a blank/seed slot will leak the previous client's cache."
+        )
