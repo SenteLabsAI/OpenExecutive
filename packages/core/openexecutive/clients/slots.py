@@ -636,6 +636,10 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
 
     reset_local_state(profile_path=settings.company_profile_path)
 
+    from openexecutive.knowledge.outline_sync import reset_synced_state
+
+    reset_synced_state(store, profile_path=settings.company_profile_path)
+
     company_docs_dir: Path = settings.company_profile_path.parent / "docs"
     docs_indexed = 0
     for doc in sorted(company_docs_dir.glob("*.md")):

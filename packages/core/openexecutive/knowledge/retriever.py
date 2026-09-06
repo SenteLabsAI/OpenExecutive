@@ -274,6 +274,19 @@ def retrieve(
         r for r in raw_notion if _passes_threshold(r, distance_threshold)
     ]
 
+    # Synced Outline wiki — same isolation rationale as Notion above: an
+    # Outline collection can be multi-writer, so this is unreviewed
+    # relative to curated company docs.
+    raw_outline = store.query(
+        query_text=query,
+        collection=ChromaDBStore.OUTLINE_COLLECTION,
+        domain_filter=effective_domains,
+        n_results=3,
+    )
+    outline_results = [
+        r for r in raw_outline if _passes_threshold(r, distance_threshold)
+    ]
+
     # Recent research artifacts — kept in a separate collection and ranked
     # BELOW curated company docs. These are unvetted, web-sourced summaries
     # from executive_research runs, so they are clearly labelled as such and
@@ -307,6 +320,7 @@ def retrieve(
         not builtin_results
         and not company_results
         and not notion_results
+        and not outline_results
         and not research_results
         and not active_annotations
     ):
@@ -329,6 +343,17 @@ def retrieve(
             filename = r["metadata"].get("filename", "unknown")
             parts.append(
                 f"[notion:{filename}]\n{_format_untrusted_wiki(r['text'])}"
+            )
+
+    if outline_results:
+        parts.append(
+            "### Synced Outline wiki (unreviewed, multi-writer — weigh below "
+            "curated company documents):"
+        )
+        for r in outline_results:
+            filename = r["metadata"].get("filename", "unknown")
+            parts.append(
+                f"[outline:{filename}]\n{_format_untrusted_wiki(r['text'])}"
             )
 
     if research_results:

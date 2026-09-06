@@ -644,6 +644,54 @@ class Settings(BaseSettings):
             )
         return self
 
+    # Outline → isolated wiki-collection sync. OFF by default. When on, a
+    # scheduler heartbeat incrementally re-indexes documents into the
+    # OUTLINE Chroma collection (not COMPANY — synced docs are multi-writer
+    # and unreviewed). Unlike Notion, Outline has no per-document
+    # "share with integration" ACL — an API key sees everything its owning
+    # user/service account can see — so OUTLINE_COLLECTION_IDS is the
+    # ENTIRE access boundary: only documents in a listed collection are
+    # ever synced, checked per-document even though the listing call is
+    # already server-side filtered by collectionId.
+    outline_sync_enabled: bool = Field(False, alias="OUTLINE_SYNC_ENABLED")
+    outline_api_key: str | None = Field(None, alias="OUTLINE_API_KEY")
+    # Self-hosted / custom-domain instances are the norm for Outline, so
+    # (like Honcho) there is no hosted-SaaS default — it must be explicit.
+    # Include the API root, e.g. https://your-instance.example.com/api.
+    outline_base_url: str | None = Field(None, alias="OUTLINE_BASE_URL")
+    outline_collection_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="OUTLINE_COLLECTION_IDS"
+    )
+    outline_sync_interval_minutes: int = Field(
+        60, alias="OUTLINE_SYNC_INTERVAL_MINUTES"
+    )
+    outline_max_docs_per_scan: int = Field(40, alias="OUTLINE_MAX_DOCS_PER_SCAN")
+
+    @field_validator("outline_collection_ids", mode="before")
+    @classmethod
+    def _parse_outline_collection_ids(cls, v: Any) -> list[str]:
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str) and v.strip():
+            return [x.strip() for x in v.split(",") if x.strip()]
+        return []
+
+    @model_validator(mode="after")
+    def _validate_outline_sync(self) -> "Settings":
+        if self.outline_sync_enabled and not (
+            self.outline_api_key
+            and self.outline_base_url
+            and self.outline_collection_ids
+        ):
+            raise ValueError(
+                "OUTLINE_SYNC_ENABLED=true requires OUTLINE_API_KEY, "
+                "OUTLINE_BASE_URL, and at least one id in "
+                "OUTLINE_COLLECTION_IDS — the collection-id allowlist is "
+                "the entire access boundary (Outline has no per-document "
+                "share-to-integration ACL the way Notion does)"
+            )
+        return self
+
     @field_validator("user_timezone")
     @classmethod
     def _validate_tz(cls, v: str) -> str:

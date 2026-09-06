@@ -436,6 +436,10 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
 
     reset_local_state(profile_path=settings.company_profile_path)
 
+    from openexecutive.knowledge.outline_sync import reset_synced_state
+
+    reset_synced_state(store, profile_path=settings.company_profile_path)
+
     docs_indexed = 0
     for dest_doc in sorted(company_docs_dir.glob("*.md")):
         docs_indexed += await ingest_file(
@@ -632,6 +636,10 @@ async def reset_all_state(
         from openexecutive.knowledge.notion_sync import reset_local_state
 
         reset_local_state(profile_path=settings.company_profile_path)
+
+        from openexecutive.knowledge.outline_sync import reset_synced_state
+
+        reset_synced_state(store, profile_path=settings.company_profile_path)
 
         # 2b. Company-authored skills — delete the filesystem directory and
         # the company-source rows from the shared `skills` ChromaDB

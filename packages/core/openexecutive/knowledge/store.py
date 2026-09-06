@@ -48,6 +48,10 @@ class ChromaDBStore(KnowledgeStore):
     # who can edit a shared page can inject text the agents will read.
     # Retrieved under its own clearly-labelled, lower-ranked section.
     NOTION_COLLECTION = "notion_wiki"
+    # Synced Outline wiki documents. Same isolation rationale as
+    # NOTION_COLLECTION — kept SEPARATE from COMPANY_COLLECTION because a
+    # synced collection is multi-writer and unreviewed.
+    OUTLINE_COLLECTION = "outline_wiki"
 
     def __init__(self, persist_directory: str | Path = "./chroma_db") -> None:
         import chromadb
@@ -156,3 +160,12 @@ class ChromaDBStore(KnowledgeStore):
         leftover COMPANY rows tagged ``type=notion`` (pre-isolation ingest)."""
         self.delete_documents(collection=self.NOTION_COLLECTION, where={"type": "notion"})
         self.delete_documents(collection=self.COMPANY_COLLECTION, where={"type": "notion"})
+
+    def delete_outline_docs(self) -> None:
+        """Drop synced Outline chunks from the isolated collection.
+
+        No COMPANY-collection cleanup here (unlike ``delete_notion_docs``):
+        Outline sync has always ingested only into OUTLINE_COLLECTION, so
+        there is no pre-isolation history to clean up.
+        """
+        self.delete_documents(collection=self.OUTLINE_COLLECTION, where={"type": "outline"})

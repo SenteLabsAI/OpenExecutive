@@ -227,6 +227,83 @@ async def _purge_notion(page_id: str | None, stale: bool, purge_all: bool) -> No
     console.print(f"[green]Notion stale purge:[/green] {stats}")
 
 
+@cli.command("sync-outline")
+def sync_outline() -> None:
+    """Run one Outline → isolated wiki-collection sync tick."""
+    asyncio.run(_sync_outline())
+
+
+async def _sync_outline() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.outline_sync import run_outline_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.outline_sync_enabled:
+        console.print(
+            "[yellow]OUTLINE_SYNC_ENABLED is false. Set it, OUTLINE_API_KEY, "
+            "OUTLINE_BASE_URL, and OUTLINE_COLLECTION_IDS in .env.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_outline_sync(store=store)
+    console.print(f"[green]Outline sync:[/green] {stats}")
+
+
+@cli.command("purge-outline")
+@click.option("--document-id", default=None, help="Purge one synced document by Outline id.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge documents no longer in scope (requires Outline sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced document.")
+def purge_outline(document_id: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced Outline files and Chroma chunks."""
+    asyncio.run(_purge_outline(document_id, stale, purge_all))
+
+
+async def _purge_outline(document_id: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.outline_sync import (
+        load_state,
+        purge_all_synced,
+        purge_document,
+        run_outline_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    flags = sum(bool(x) for x in (document_id, stale, purge_all))
+    if flags != 1:
+        console.print(
+            "[red]Specify exactly one of --document-id, --stale, or --all.[/red]"
+        )
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if document_id:
+        state = load_state()
+        if purge_document(document_id, store, state):
+            save_state(state)
+            console.print(f"[green]Purged Outline document[/green] {document_id}")
+        else:
+            console.print(f"[red]Could not purge[/red] {document_id}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced Outline document(s).[/green]")
+        return
+    if not settings.outline_sync_enabled:
+        console.print(
+            "[yellow]OUTLINE_SYNC_ENABLED is false. Set it, OUTLINE_API_KEY, "
+            "OUTLINE_BASE_URL, and OUTLINE_COLLECTION_IDS in .env.[/yellow]"
+        )
+        return
+    stats = await run_outline_sync(store=store, reconcile_only=True)
+    console.print(f"[green]Outline stale purge:[/green] {stats}")
+
+
 @cli.command("consolidate-initiatives")
 @click.option(
     "--apply",

@@ -569,6 +569,41 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
+    # Outline wiki sync — incremental ingest of documents inside the
+    # configured collection allowlist into the isolated OUTLINE Chroma
+    # collection (deliberately not COMPANY: synced documents are
+    # multi-writer and unvetted, so the retriever ranks them below
+    # curated docs). Mirrors notion_sync_scan above.
+    # ------------------------------------------------------------------
+    if action.kind == "outline_sync_scan":
+        from openexecutive.knowledge.outline_sync import (
+            enqueue_next_outline_sync_scan,
+            run_outline_sync,
+        )
+        try:
+            stats = await run_outline_sync(now=now)
+            logger.info("scheduler: outline_sync_scan %s", stats)
+        except Exception:
+            logger.exception(
+                "scheduler: outline_sync_scan (action %d) crashed", action.id
+            )
+        try:
+            mark_action_done(action.id)
+        except Exception:
+            logger.exception(
+                "scheduler: outline_sync_scan (action %d) — mark_done failed",
+                action.id,
+            )
+        try:
+            enqueue_next_outline_sync_scan(after=datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "scheduler: failed to chain next outline_sync_scan "
+                "heartbeat — sync will stall until next bootstrap"
+            )
+        return
+
+    # ------------------------------------------------------------------
     # Proactive nudge — re-check reachability at dispatch time before
     # falling through to the ad-hoc dispatch path. The person may have
     # gone on leave between schedule and fire; if so, defer rather than
