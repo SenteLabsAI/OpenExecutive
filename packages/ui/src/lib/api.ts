@@ -2693,6 +2693,8 @@ export interface WatchlistSignal {
   source_kind: string;
   source_external_id: string;
   captured_at: string;
+  /** Upstream publish time (RSS pubDate, EDGAR filing date); null when the source has none. */
+  published_at: string | null;
   normalized_summary: string;
   provenance_url: string;
   severity_hint: string;

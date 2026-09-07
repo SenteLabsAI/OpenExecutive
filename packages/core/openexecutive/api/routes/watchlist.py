@@ -104,6 +104,9 @@ class SignalRow(BaseModel):
     source_kind: str
     source_external_id: str
     captured_at: str
+    # Upstream publish time (RSS <pubDate>, EDGAR filing date) — None when the
+    # source has none or the row predates the column (issue #80).
+    published_at: str | None = None
     normalized_summary: str
     provenance_url: str
     severity_hint: str

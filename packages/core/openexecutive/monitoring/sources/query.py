@@ -152,6 +152,8 @@ class _QueryResearchAgent(BaseAgent):
 class QuerySource:
     kind: str = SOURCE_KIND_QUERY
     default_poll_interval_minutes: int = _DEFAULT_POLL_MINUTES
+    # A standing query's first results are the research the user asked for.
+    seed_on_first_poll: bool = False
 
     async def poll(
         self, item: WatchlistItem, *, db_path: Path | None = None

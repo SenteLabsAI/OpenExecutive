@@ -87,6 +87,12 @@ class WatchlistItem(BaseModel):
     enabled: bool = True
     created_at: str = ""
     last_polled_at: str | None = None
+    # Set once a seeding source (Source.seed_on_first_poll) has completed a
+    # poll that returned entries, i.e. the feed's existing back-catalogue
+    # has been recorded as seen. NULL until then — a failed or empty first
+    # fetch leaves the NEXT successful poll as the baseline. Never set for
+    # non-seeding sources.
+    baselined_at: str | None = None
     last_fired_at: str | None = None
     fired_count: int = 0
     dismiss_count: int = 0
@@ -121,7 +127,14 @@ class Signal(BaseModel):
     watchlist_id: int
     source_kind: str
     source_external_id: str
-    captured_at: str  # ISO 8601 UTC
+    captured_at: str  # ISO 8601 UTC — when WE first saw the event
+    # When the upstream says the event happened (ISO 8601 UTC), when the
+    # source publishes one — RSS <pubDate>, Atom <updated>, EDGAR filing
+    # date. None for sources with no upstream timestamp (stock, page_watch,
+    # query). The pipeline's age gate reads this; ``captured_at`` is never
+    # a proxy for it (issue #80: a January article discovered in September
+    # is not September news).
+    published_at: str | None = None
     normalized_summary: str  # one-line human description
     raw_payload: dict[str, Any] = Field(default_factory=dict)
     provenance_url: str
@@ -142,10 +155,20 @@ OUTCOME_SUPPRESSED_TRIAGE = "suppressed_triage"
 # configured floor (external_monitor_enrichment_min_relevance). Recorded, not
 # promoted — the gate is opt-in (default threshold 0.0 = off) until calibrated.
 OUTCOME_SUPPRESSED_LOW_RELEVANCE = "suppressed_low_relevance"
+# Recorded on the FIRST poll of a feed-listing source (rss, edgar): every
+# entry already in the feed is persisted as "seen" so dedup covers it, but
+# nothing is promoted — the watch reports what changes from now on, not
+# the feed's back-catalogue. Mirrors page_watch's first-observation baseline.
+OUTCOME_SUPPRESSED_BASELINE = "suppressed_baseline"
+# Upstream ``published_at`` is older than EXTERNAL_MONITOR_MAX_SIGNAL_AGE_DAYS
+# at capture time. Persisted for the audit trail + dedup; never promoted.
+OUTCOME_SUPPRESSED_STALE = "suppressed_stale"
 OUTCOME_FAILED = "failed"
 
 _VALID_OUTCOMES = frozenset({
     OUTCOME_ALERTED,
+    OUTCOME_SUPPRESSED_BASELINE,
+    OUTCOME_SUPPRESSED_STALE,
     OUTCOME_SUPPRESSED_DRY_RUN,
     OUTCOME_SUPPRESSED_BELOW_FLOOR,
     OUTCOME_SUPPRESSED_DUP,

@@ -153,6 +153,12 @@ See `.env.example`. Required: `ANTHROPIC_API_KEY`. Optional integrations: `SLACK
 > default), so a one-off `uv run python` snippet needs it exported alongside
 > `ANTHROPIC_API_KEY` — the test suite sets both in `tests/conftest.py`.
 
+> **uv gotchas (learned on #87):** `uv export/sync --frozen` uses `uv.lock`
+> as-is and does NOT detect a stale lock — `--locked` is the flag that fails
+> on staleness. `uv sync` in CI silently rewrites a stale lock before tests
+> run, so lock freshness is gated by the `uv lock --check` step in `ci.yml`.
+> `uv export -o FILE` still echoes the full export to stdout unless `-q`.
+
 > **UI lint:** `packages/ui` has no ESLint config — `npm run lint` opens an
 > interactive setup prompt. `npm run build` (`next build`) is the UI's
 > lint/type gate.

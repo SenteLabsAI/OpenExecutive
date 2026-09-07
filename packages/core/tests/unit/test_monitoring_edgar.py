@@ -67,32 +67,14 @@ def _make_item(
     )
 
 
-def _install_feed(monkeypatch: pytest.MonkeyPatch, body: bytes) -> dict[str, Any]:
-    captured: dict[str, Any] = {}
-
-    async def fake_fetch(url: str, max_bytes: int, *, user_agent: str | None = None) -> bytes:
-        captured["url"] = url
-        captured["user_agent"] = user_agent
-        return body
-
-    monkeypatch.setattr("openexecutive.monitoring.sources.edgar.fetch_bounded", fake_fetch)
-    monkeypatch.setattr(
-        "openexecutive.monitoring.sources.edgar.validate_target_url",
-        lambda u: (True, ""),
-    )
-    return captured
-
-
 # --------------------------------------------------------------------- #
 # poll()
 # --------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_edgar_emits_signal_per_matching_filing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _install_feed(monkeypatch, _SAMPLE_ATOM)
+async def test_edgar_emits_signal_per_matching_filing(install_source_feed) -> None:
+    captured = install_source_feed("edgar", _SAMPLE_ATOM)
     src = EdgarSource()
     signals = await src.poll(_make_item(config={"label": "Apple"}))
 
@@ -108,6 +90,10 @@ async def test_edgar_emits_signal_per_matching_filing(
     assert by_form["8-K"].provenance_url.endswith("-index.htm")
     assert by_form["8-K"].normalized_summary.startswith("[Apple] 8-K filed 2026-05-28")
     assert all(s.dedup_key.startswith("edgar:") for s in signals)
+    # <updated>2026-05-28T16:30:00-04:00</updated> → published_at in UTC, so
+    # the pipeline's age gate judges the filing date, not the poll time.
+    assert by_form["8-K"].published_at == "2026-05-28T20:30:00+00:00"
+    assert by_form["8-K"].captured_at != by_form["8-K"].published_at
 
     # The ticker target reaches the EDGAR URL; the configured UA is sent.
     from openexecutive.config import get_settings
@@ -117,8 +103,8 @@ async def test_edgar_emits_signal_per_matching_filing(
 
 
 @pytest.mark.asyncio
-async def test_edgar_dedup_stable_across_polls(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_feed(monkeypatch, _SAMPLE_ATOM)
+async def test_edgar_dedup_stable_across_polls(install_source_feed) -> None:
+    install_source_feed("edgar", _SAMPLE_ATOM)
     src = EdgarSource()
     item = _make_item()
     first = await src.poll(item)
@@ -127,8 +113,8 @@ async def test_edgar_dedup_stable_across_polls(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_edgar_forms_filter_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_feed(monkeypatch, _SAMPLE_ATOM)
+async def test_edgar_forms_filter_override(install_source_feed) -> None:
+    install_source_feed("edgar", _SAMPLE_ATOM)
     src = EdgarSource()
     # Opt into insider filings only.
     signals = await src.poll(_make_item(trigger={"forms": ["4"]}))
@@ -138,11 +124,11 @@ async def test_edgar_forms_filter_override(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_edgar_amendment_matches_base_form(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_edgar_amendment_matches_base_form(install_source_feed) -> None:
     amended = _SAMPLE_ATOM.replace(b'term="8-K"', b'term="8-K/A"').replace(
         b"<title>8-K -", b"<title>8-K/A -"
     )
-    _install_feed(monkeypatch, amended)
+    install_source_feed("edgar", amended)
     src = EdgarSource()
     # Default filter contains "8-K"; the "8-K/A" amendment should match it.
     signals = await src.poll(_make_item())
@@ -151,9 +137,7 @@ async def test_edgar_amendment_matches_base_form(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_edgar_filter_then_cap_does_not_starve(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_edgar_filter_then_cap_does_not_starve(install_source_feed) -> None:
     """Excluded forms at the front of the feed must not consume the output cap."""
     # 5 Form-4 entries (excluded by default) followed by one 8-K.
     entries = "".join(
@@ -179,7 +163,7 @@ async def test_edgar_filter_then_cap_does_not_starve(
     <updated>2026-05-29T09:00:00-04:00</updated>
   </entry></feed>"""
     )
-    _install_feed(monkeypatch, feed)
+    install_source_feed("edgar", feed)
     src = EdgarSource()
     signals = await src.poll(_make_item())  # default forms exclude Form 4
     # The 8-K behind the Form-4 run still surfaces.
@@ -189,8 +173,8 @@ async def test_edgar_filter_then_cap_does_not_starve(
 
 
 @pytest.mark.asyncio
-async def test_edgar_bad_target_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_feed(monkeypatch, _SAMPLE_ATOM)
+async def test_edgar_bad_target_skipped(install_source_feed) -> None:
+    install_source_feed("edgar", _SAMPLE_ATOM)
     src = EdgarSource()
     assert await src.poll(_make_item(target="")) == []
     assert await src.poll(_make_item(target="../etc/passwd")) == []
@@ -259,6 +243,11 @@ def test_severity_for_form() -> None:
     assert _severity_for_form("10-K") == AlertSeverity.MEDIUM
     assert _severity_for_form("10-Q") == AlertSeverity.MEDIUM
     assert _severity_for_form("4") == AlertSeverity.LOW
+
+
+def test_edgar_is_a_seeding_source() -> None:
+    """The Atom feed lists past filings on every poll — first poll must baseline."""
+    assert EdgarSource.seed_on_first_poll is True
 
 
 def test_edgar_registered() -> None:

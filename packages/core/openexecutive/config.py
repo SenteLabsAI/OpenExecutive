@@ -63,6 +63,14 @@ def _parse_csv_list(v: Any) -> list[str]:
     return [x.strip() for x in items if x.strip()]
 
 
+
+# Bounds for the external-monitor freshness settings, shared with
+# monitoring.sources.base so the per-row override is validated against the
+# same range as the env var. One year of future skew / a century of age is
+# far past any sane value and well inside datetime arithmetic limits.
+MAX_FUTURE_SKEW_HOURS = 24 * 365
+MAX_SIGNAL_AGE_DAYS = 365 * 100
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
@@ -623,6 +631,29 @@ class Settings(BaseSettings):
     # logged-but-dropped at scan time; never queued.
     external_monitor_max_signals_per_scan: int = Field(
         50, alias="EXTERNAL_MONITOR_MAX_SIGNALS_PER_SCAN"
+    )
+    # Freshness gate for sources that carry an upstream publish timestamp
+    # (rss <pubDate>, edgar filing date). A signal whose ``published_at`` is
+    # older than this many days at capture time is recorded but never
+    # promoted (outcome ``suppressed_stale``) — a feed that resurfaces a
+    # January article in September must not become September news (issue
+    # #80). 0 disables the gate. A timestamp more than a day in the FUTURE
+    # is deferred instead (skipped, not recorded, re-judged once the date
+    # passes) so a feed can't mute an announcement by post-dating it.
+    # Sources without an upstream timestamp (stock, page_watch, query) are
+    # unaffected.
+    external_monitor_max_signal_age_days: int = Field(
+        7, ge=0, le=MAX_SIGNAL_AGE_DAYS, alias="EXTERNAL_MONITOR_MAX_SIGNAL_AGE_DAYS"
+    )
+    # How far ahead of our clock a published_at may be before the entry is
+    # deferred (skipped for the tick, re-judged once the date passes; one
+    # ``external_signal_deferred`` audit row per poll). 0 disables the
+    # deferral — use it for feeds that legitimately date entries ahead
+    # (scheduled-maintenance or event calendars).
+    # Per-row override: ``config_json["max_future_skew_hours"]`` (0 = off
+    # for that row only) — the global switch affects every feed.
+    external_monitor_max_future_skew_hours: int = Field(
+        24, ge=0, le=MAX_FUTURE_SKEW_HOURS, alias="EXTERNAL_MONITOR_MAX_FUTURE_SKEW_HOURS"
     )
     # Adapter-fetch ceiling (bytes). Caps the body we read from any single
     # external feed — defence against runaway sources (e.g. malformed RSS
