@@ -367,6 +367,79 @@ def _doc_record(state: dict[str, Any], doc_id: str) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+# Governance-hub docs in this Outline workspace conventionally open with a
+# metadata table (Status, Owner, Version, Tags, Node Type, Reviewed, ...)
+# immediately after the title, then a `---`/`___`/`***` divider, before the
+# real prose starts. That table is mostly field labels with little semantic
+# content — being first, it dilutes the embedding of a document's first
+# chunk (the one retrieval weighs most) for exactly the "what does this doc
+# say" queries it should answer. Confirmed live: a query for a company's
+# mission scored a cosine distance of 0.577 against the correct doc — just
+# above the 0.55 relevance threshold — with the table intact.
+#
+# Deliberately conservative — a wrong strip destroys real content with no
+# way to recover it short of an edit in Outline (the sync watermark skips
+# unedited documents), so this requires ALL of:
+#   1. A run of pipe-table rows starting at the very beginning of the text
+#      (indentation capped at 3 spaces, matching CommonMark: 4+ spaces is an
+#      indented code block, not a table).
+#   2. At least TWO DISTINCT cells whose entire content — not a substring —
+#      is one of a known metadata field name (Status, Owner, ...), so an
+#      ordinary content table that merely has a column called "Owner" or
+#      "Version" (a RACI chart, a changelog) isn't mistaken for this
+#      specific template. A single matching column is common; the confirmed
+#      real template always carries several.
+#   3. A genuine divider LINE (the run of `-`/`_`/`*` and nothing else
+#      before end-of-line) immediately after the table — required, not
+#      optional. Anchoring to end-of-line matters: an unanchored check would
+#      also match the start of a bold/italic run like `***Purpose:***` and
+#      silently truncate the real paragraph that follows it.
+#   4. Non-blank content surviving after the strip — if the table were
+#      somehow the entire document, stripping it would leave nothing, so
+#      the original text is kept instead of emptying the document.
+_METADATA_FIELD_CELL_RE = re.compile(
+    r"\|[ \t]*\*{0,2}[ \t]*"
+    r"(status|owner|version|tags|node[ \t]*type|reviewed|policy[ \t]*champion)"
+    r"[ \t]*\*{0,2}[ \t]*\|",
+    re.IGNORECASE,
+)
+
+_DIVIDER_LINE = r"(?:-{3,}|_{3,}|\*{3,})[ \t]*(?:\r?\n|\Z)"
+
+_LEADING_TABLE_BLOCK_RE = re.compile(
+    r"\A[ \t]{0,3}(?:\r?\n[ \t]{0,3})*"  # optional leading blank/whitespace lines
+    r"(?P<table>(?:[ \t]{0,3}\|[^\r\n]*(?:\r?\n|\Z))+)"  # table rows (\Z: table is EOF)
+    r"[ \t]*(?:\r?\n[ \t]*)*"  # blank lines between table and divider
+    rf"{_DIVIDER_LINE}"  # required divider line, anchored to end-of-line
+    r"[ \t]*(?:\r?\n[ \t]*)*"  # blank lines after the divider
+)
+
+
+def _strip_leading_metadata_table(text: str) -> str:
+    """Drop a leading governance-template metadata table, conservatively.
+
+    Never touches a table appearing deeper in a document's real content
+    (the match is anchored to the start of ``text``), never strips a table
+    with fewer than two distinct metadata field cells, never strips a table
+    with no genuine divider line after it, and never leaves the document
+    blank. See the module comment above this function for the full
+    rationale and the concrete inputs it's guarding against.
+    """
+    match = _LEADING_TABLE_BLOCK_RE.match(text)
+    if match is None:
+        return text
+    markers = {
+        m.group(1).lower().replace(" ", "").replace("\t", "")
+        for m in _METADATA_FIELD_CELL_RE.finditer(match.group("table"))
+    }
+    if len(markers) < 2:
+        return text
+    stripped = text[match.end() :]
+    if not stripped.strip():
+        return text
+    return stripped
+
+
 def _ingest_doc_sync(
     doc: dict[str, Any],
     markdown: str,
@@ -381,6 +454,7 @@ def _ingest_doc_sync(
     dest = _docs_dir() / filename
     header = f"<!-- outline_document_id: {doc_id} -->\n\n# {title}\n\n"
     body_text = sanitize_markdown_mentions(markdown)
+    body_text = _strip_leading_metadata_table(body_text)
     body = (header + body_text).strip()[:_MAX_DOC_CHARS]
     dest.write_text(body + "\n", encoding="utf-8")
     _remove_stale_doc_files(doc_id, keep=dest)

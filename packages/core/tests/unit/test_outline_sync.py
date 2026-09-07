@@ -14,6 +14,7 @@ from openexecutive.config import Settings
 from openexecutive.knowledge.outline_sync import (
     _BLANK_LISTING_TRUST_AFTER_SKIPS,
     _doc_edited_after,
+    _strip_leading_metadata_table,
     fetch_document_body,
     infer_domain,
     list_documents_in_scope,
@@ -126,6 +127,224 @@ def test_sanitize_markdown_mentions_strips_uri() -> None:
     assert sanitize_markdown_mentions("See [docs](https://example.com).") == (
         "See [docs](https://example.com)."
     )
+
+
+def test_strip_leading_metadata_table_removes_governance_header() -> None:
+    # Exact byte pattern confirmed against a live synced doc: a 4-column
+    # table (Node Type / Status / Owner / Reviewed), then a `---` divider,
+    # then real content.
+    text = (
+        "| **Node Type** | `Governance_Policy` | **Status** | `Active` |\n"
+        "|-----------|-------------------|--------|--------|\n"
+        "| **Owner** | @Carlos Sierra | **Reviewed** | `2026-05-04` |\n"
+        "\n\n---\n\n"
+        "> Controlled vocabulary for the Graph-Based Documentation Framework."
+    )
+    assert _strip_leading_metadata_table(text) == (
+        "> Controlled vocabulary for the Graph-Based Documentation Framework."
+    )
+
+
+def test_strip_leading_metadata_table_removes_two_column_variant() -> None:
+    # Different column count (Status/Owner/Version/Tags) — the regex must
+    # not be keyed to a specific table shape.
+    text = (
+        "| **Status** | Active |\n"
+        "|--------|--------|\n"
+        "| **Owner** | @Paul Hirsch  |\n"
+        "| **Version** | 1.0   |\n"
+        "| **Tags** | vision, mission, values |\n"
+        "\n\n---\n\n"
+        "### **I. Vision and Mission**\n\n* **Purpose:** ..."
+    )
+    assert _strip_leading_metadata_table(text) == (
+        "### **I. Vision and Mission**\n\n* **Purpose:** ..."
+    )
+
+
+def test_strip_leading_metadata_table_is_noop_without_a_table() -> None:
+    # Most synced docs have no metadata table at all — must pass through
+    # unchanged, not eat real content on a false match.
+    text = "Just a plain paragraph with no table.\n\nAnd a second one."
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_preserves_table_deeper_in_content() -> None:
+    # A table that isn't the very first thing in the body is real content
+    # (e.g. a comparison table mid-document) and must survive untouched.
+    text = (
+        "Some real prose introduces the section.\n\n"
+        "| a table | deep in content |\n"
+        "|---|---|\n"
+        "| x | y |\n\n"
+        "More prose follows the table."
+    )
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_preserves_real_content_table_without_markers() -> None:
+    # A document whose body genuinely IS a table right after the title
+    # (e.g. a term/definition glossary) has no Status/Owner/... marker and
+    # must NOT be mistaken for the governance boilerplate — destroying it
+    # is unrecoverable short of an edit in Outline.
+    text = (
+        "| Term | Definition |\n"
+        "|---|---|\n"
+        "| Node | a thing |\n"
+        "| Edge | a link |\n"
+        "\n---\n\n"
+        "more prose"
+    )
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_requires_a_divider() -> None:
+    # A metadata-shaped table with no divider after it doesn't match the
+    # confirmed template closely enough to strip with confidence.
+    text = (
+        "| **Status** | Active |\n"
+        "|---|---|\n"
+        "| **Owner** | X |\n"
+        "\n"
+        "Some real prose right after, no divider."
+    )
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_does_not_blank_the_document() -> None:
+    # If the table (plus divider) were somehow the entire body, stripping
+    # it would leave nothing — keep the original instead of emptying it.
+    text = "| **Status** | Active |\n|---|---|\n| **Owner** | X |\n\n---\n\n   \n"
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_handles_crlf() -> None:
+    text = (
+        "| **Status** | Active |\r\n"
+        "|---|---|\r\n"
+        "| **Owner** | X |\r\n"
+        "\r\n---\r\n\r\n"
+        "Real prose."
+    )
+    assert _strip_leading_metadata_table(text) == "Real prose."
+
+
+def test_strip_leading_metadata_table_handles_unterminated_final_row() -> None:
+    # A table with no trailing newline and no divider (the table is the
+    # whole document) must not leave a dangling data row behind — the
+    # missing divider means this doesn't match the template anyway, so it's
+    # a no-op, not a partial strip.
+    text = "| **Status** | Active |\n|---|---|\n| **Owner** | X |"
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_tolerates_leading_blank_lines() -> None:
+    text = (
+        "\n| **Status** | Active |\n|---|---|\n| **Owner** | X |\n\n---\n\nReal content."
+    )
+    assert _strip_leading_metadata_table(text) == "Real content."
+
+
+def test_strip_leading_metadata_table_accepts_underscore_divider() -> None:
+    text = "| **Status** | Active |\n|---|---|\n| **Owner** | X |\n\n___\n\nReal content."
+    assert _strip_leading_metadata_table(text) == "Real content."
+
+
+def test_strip_leading_metadata_table_preserves_raci_table_with_single_marker_column() -> (
+    None
+):
+    # A perfectly ordinary business table (a RACI chart) can legitimately
+    # have a column named "Owner" and be followed by a divider for
+    # unrelated reasons — one matching column isn't enough evidence this is
+    # the governance template, which always carries several.
+    text = (
+        "| Deliverable | Owner |\n"
+        "|---|---|\n"
+        "| Pricing | Ana |\n"
+        "\n***Escalation:*** contact ops.\n"
+    )
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_preserves_changelog_with_single_marker_column() -> (
+    None
+):
+    text = (
+        "| Version | Date | Changes |\n"
+        "|---|---|---|\n"
+        "| 1.0 | Jan | Initial |\n"
+        "\n---\n\nMore changelog notes.\n"
+    )
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_does_not_match_field_name_substrings() -> None:
+    # A cell must equal a known field name, not merely contain one as a
+    # substring — "Subversion" and "Homeowner" must not trip the
+    # "version"/"owner" markers.
+    text = (
+        "| Item | Detail |\n|---|---|\n| Repo | uses Subversion |\n\n---\n\nprose\n"
+    )
+    assert _strip_leading_metadata_table(text) == text
+    text2 = (
+        "| Term | Definition |\n|---|---|\n| HOA | for Homeowner groups |\n\n---\n\nprose\n"
+    )
+    assert _strip_leading_metadata_table(text2) == text2
+
+
+def test_strip_leading_metadata_table_does_not_treat_bold_run_as_divider() -> None:
+    # A paragraph that starts with a bold/italic run (`***Purpose:***`) must
+    # not be mistaken for a `***` thematic-break divider — the divider
+    # check has to be anchored to end-of-line, not just "starts with 3+ of
+    # the character", or it silently truncates the real paragraph.
+    text = (
+        "| **Status** | Active |\n|---|---|\n| **Owner** | X |"
+        "\n\n***Purpose:*** the real content.\n"
+    )
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_rejects_mixed_divider_characters() -> None:
+    text = "| **Status** | Active |\n|---|---|\n| **Owner** | X |\n\n-_-*\n\nreal content\n"
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_strip_leading_metadata_table_ignores_indented_code_block() -> None:
+    # 4+ space indentation is a Markdown code block, not a table row.
+    text = "    | **Status** | A |\n    |---|---|\n\n---\n\nreal"
+    assert _strip_leading_metadata_table(text) == text
+
+
+def test_ingest_doc_sync_strips_metadata_table_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Wiring check: confirms the strip actually runs inside _ingest_doc_sync
+    # (both what gets embedded AND what gets written to disk), not just
+    # that the standalone helper function works in isolation.
+    from openexecutive.knowledge.outline_sync import _ingest_doc_sync
+
+    monkeypatch.setattr(
+        "openexecutive.knowledge.outline_sync._docs_dir", lambda: tmp_path
+    )
+    doc = {"id": DOC_A, "title": "LM Vision, Mission, Values and Vibes"}
+    markdown = (
+        "| **Status** | Active |\n"
+        "|--------|--------|\n"
+        "| **Owner** | @Paul Hirsch |\n"
+        "\n\n---\n\n"
+        "### I. Vision and Mission\n\nThe real content."
+    )
+    store = FakeStore()
+    _ingest_doc_sync(doc, markdown, store)  # type: ignore[arg-type]
+
+    stored = store.collections[ChromaDBStore.OUTLINE_COLLECTION]
+    assert len(stored) == 1
+    assert "| **Status** |" not in stored[0]["text"]
+    assert "The real content." in stored[0]["text"]
+
+    written = next(tmp_path.glob("outline-*.md")).read_text(encoding="utf-8")
+    assert "| **Status** |" not in written
+    assert "The real content." in written
 
 
 def test_enabled_without_any_config_raises(monkeypatch: pytest.MonkeyPatch) -> None:
