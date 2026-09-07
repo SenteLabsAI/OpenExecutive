@@ -94,6 +94,13 @@ function auditAuth(
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  // Middleware runs on the Edge runtime, where @auth/core's env-based
+  // trustHost detection (reading process.env.AUTH_TRUST_HOST dynamically)
+  // never sees the var even when it's set in the container — Next.js's Edge
+  // bundler only inlines *literal* process.env.X references, not the
+  // parameterized access @auth/core uses internally. A literal flag here is
+  // the only reliable way to satisfy self-hosted deployments.
+  trustHost: true,
   providers: [Google],
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check
   // below — a session that somehow drifts out of sync with the roster

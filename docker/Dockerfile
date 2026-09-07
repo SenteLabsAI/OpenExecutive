@@ -21,7 +21,7 @@ RUN pip install uv
 RUN uvx --from git+https://github.com/SenteLabsAI/extensible-mcp extensible-mcp --help \
     || true
 
-COPY packages/core/pyproject.toml packages/core/uv.lock* ./
+COPY packages/core/pyproject.toml packages/core/uv.lock* packages/core/README.md ./
 RUN uv pip install --system -r pyproject.toml 2>/dev/null || uv pip install --system .
 
 # Bake the embedding model the MCP gateway loads at startup
