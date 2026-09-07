@@ -375,7 +375,9 @@ def _translate_reasoning(anthropic_kwargs: dict[str, Any]) -> dict[str, Any] | N
     return {"effort": effort}
 
 
-def to_openai_request(model_slug: str, anthropic_kwargs: dict[str, Any]) -> dict[str, Any]:
+def to_openai_request(
+    model_slug: str, anthropic_kwargs: dict[str, Any], *, include_usage: bool = False
+) -> dict[str, Any]:
     """Translate an Anthropic ``messages.create`` kwargs dict to an OpenAI
     ``/chat/completions`` body. ``model_slug`` is the OpenRouter model id."""
     body: dict[str, Any] = {
@@ -427,7 +429,15 @@ def to_openai_request(model_slug: str, anthropic_kwargs: dict[str, Any]) -> dict
     # the cached system blocks, or the cache key, so prompt caching is
     # unaffected. The cost surfaces as `usage.cost` (USD) and is captured into
     # the per-call `cache_event` audit row downstream.
-    body["usage"] = {"include": True}
+    #
+    # OpenRouter-only: it's not part of the OpenAI or Anthropic request
+    # schema. A generic self-hosted/gateway backend (Ollama, vLLM, or a
+    # LiteLLM gateway fronting real Anthropic) may forward the request
+    # nearly verbatim to a stricter upstream that rejects an unrecognized
+    # top-level field outright instead of ignoring it — so only set it when
+    # the caller has confirmed the backend is actually OpenRouter.
+    if include_usage:
+        body["usage"] = {"include": True}
 
     return body
 
