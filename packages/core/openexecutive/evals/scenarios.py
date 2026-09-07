@@ -42,7 +42,7 @@ def _load_builtin_scenarios() -> list[dict[str, Any]]:
         return []
     out = []
     for yaml_file in sorted(scenarios_dir.glob("*.yaml")):
-        with open(yaml_file) as f:
+        with open(yaml_file, encoding="utf-8") as f:
             s = yaml.safe_load(f)
         s["_kind"] = scenario_kind(s)
         s["_is_builtin"] = True

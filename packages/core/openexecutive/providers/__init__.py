@@ -13,6 +13,7 @@ from openexecutive.providers.registry import (
     allowed_models,
     allowed_models_for,
     get_provider,
+    model_supports_deep_reasoning,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "allowed_models",
     "allowed_models_for",
     "get_provider",
+    "model_supports_deep_reasoning",
 ]

@@ -159,7 +159,7 @@ def get_active_client(settings: Any) -> str | None:
     if not sentinel.exists():
         return None
     try:
-        content = sentinel.read_text().strip()
+        content = sentinel.read_text(encoding="utf-8").strip()
     except Exception:
         return None
     # Same defence-in-depth as the fixture sentinel: garbage never reaches the UI.
@@ -213,7 +213,7 @@ def _read_meta(slot: Path) -> dict[str, Any]:
     if not meta_path.exists():
         return {}
     try:
-        data = json.loads(meta_path.read_text())
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -222,7 +222,7 @@ def _read_meta(slot: Path) -> dict[str, Any]:
 def _write_meta(slot: Path, **updates: Any) -> None:
     meta = _read_meta(slot)
     meta.update(updates)
-    (slot / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    (slot / "meta.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
 
 
 async def update_client_meta(
@@ -643,9 +643,20 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     company_docs_dir: Path = settings.company_profile_path.parent / "docs"
     docs_indexed = 0
     for doc in sorted(company_docs_dir.glob("*.md")):
-        docs_indexed += await ingest_file(
-            path=doc, store=store, collection=ChromaDBStore.COMPANY_COLLECTION
-        )
+        # Never let one unreadable doc abort the restore. This runs AFTER the DB
+        # and company dir have been swapped but BEFORE the active-client
+        # sentinel is written, so raising here strands live state belonging to
+        # the incoming client while get_active_client() still reports None —
+        # which makes park_active_client a no-op and lets a later
+        # create(source="current") capture that client's data as the operator's
+        # own. A doc that fails to index is a degraded search index; losing the
+        # sentinel is data attribution loss. Mirrors the skills loop below.
+        try:
+            docs_indexed += await ingest_file(
+                path=doc, store=store, collection=ChromaDBStore.COMPANY_COLLECTION
+            )
+        except Exception:
+            logger.exception("client-slots: reindex company doc failed: %s", doc.name)
 
     # Company-authored skills: drop the old client's rows, index the restored set.
     store.delete_documents(collection=SKILLS_COLLECTION, where={"source": "company"})
@@ -835,7 +846,7 @@ async def create_client_slot(
                         "client-slots: pre-create user snapshot failed"
                     )
             saved = _save_slot_state(settings, slot)
-            _active_client_sentinel(settings).write_text(slug)
+            _active_client_sentinel(settings).write_text(slug, encoding="utf-8")
             _set_honcho_client_workspace(slug)
             return {"slug": slug, "display_name": display_name, "active": True, **saved}
 
@@ -927,7 +938,7 @@ async def activate_client_slot(
 
         summary = await _restore_slot_state(settings, slot, app_state=app_state)
         _active_client_sentinel(settings).parent.mkdir(parents=True, exist_ok=True)
-        _active_client_sentinel(settings).write_text(slug)
+        _active_client_sentinel(settings).write_text(slug, encoding="utf-8")
         workspace = _set_honcho_client_workspace(slug)
         if workspace:
             summary["honcho_workspace"] = workspace

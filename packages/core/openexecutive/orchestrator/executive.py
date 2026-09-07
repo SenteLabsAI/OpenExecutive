@@ -94,6 +94,7 @@ from openexecutive.orchestrator.workflow_run_tools import (
 )
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
+from openexecutive.providers.translator import reasoning_replay_block
 
 logger = logging.getLogger(__name__)
 
@@ -1205,6 +1206,10 @@ class Executive:
                             web_search_queries.append(query)
                 elif block.type == "web_search_tool_result":
                     response_content.append(block.model_dump(exclude_none=True))
+                elif (replay := reasoning_replay_block(block)) is not None:
+                    # OpenRouter reasoning continuity across tool iterations
+                    # (replayed as ``reasoning_details`` by the translator).
+                    response_content.append(replay)
 
             last_full_text = full_text
 

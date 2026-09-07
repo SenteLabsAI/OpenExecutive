@@ -34,6 +34,35 @@ def _blank_or_comment(v: Any) -> bool:
     )
 
 
+# Vendor prefixes surfaced from the live OpenRouter catalog when
+# OPENROUTER_CATALOG_PROVIDERS is unset. Lives here (not in providers/) so
+# providers.openrouter_catalog can import it without a config→providers cycle.
+_DEFAULT_OPENROUTER_CATALOG_PROVIDERS: tuple[str, ...] = (
+    "openai",
+    "google",
+    "anthropic",
+    "meta-llama",
+    "deepseek",
+    "x-ai",
+)
+# Six hours: OpenRouter adds models a few times a month, so anything tighter
+# is wasted requests; a restart also refreshes.
+_DEFAULT_OPENROUTER_CATALOG_REFRESH_S = 6 * 60 * 60.0
+
+
+def _parse_csv_list(v: Any) -> list[str]:
+    """Env-var list parsing shared by the comma-separated ``*_MODELS`` /
+    ``*_PROVIDERS`` settings: accepts a real list or ``"a, b,,c"``, strips
+    whitespace, drops empties. Anything else → ``[]``."""
+    if isinstance(v, (list, tuple)):
+        items = [str(x) for x in v]
+    elif isinstance(v, str):
+        items = v.split(",")
+    else:
+        return []
+    return [x.strip() for x in items if x.strip()]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
@@ -52,16 +81,16 @@ class Settings(BaseSettings):
     # while this is unset.
     anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
 
-    default_model: str = Field("claude-sonnet-4-6", alias="DEFAULT_MODEL")
-    deep_reasoning_model: str = Field("claude-opus-4-7", alias="DEEP_REASONING_MODEL")
-    routing_model: str = Field("claude-haiku-4-5-20251001", alias="ROUTING_MODEL")
+    default_model: str = Field("claude-sonnet-5", alias="DEFAULT_MODEL")
+    deep_reasoning_model: str = Field("claude-opus-5", alias="DEEP_REASONING_MODEL")
+    routing_model: str = Field("claude-haiku-4-5", alias="ROUTING_MODEL")
     # Model for the executive_research specialist fan-out (research-mode turn
     # only — the chat path still uses each agent's deep_reasoning_model). The
     # research turn is retrieve-from-web-search + summarize, which does not
     # need Opus-tier reasoning; running 7 specialists on Sonnet (deep reasoning
-    # off) instead of Opus 4.7 is the dominant cost lever for the workflow.
-    # Set RESEARCH_MODEL=claude-opus-4-7 to restore the prior behavior.
-    research_model: str = Field("claude-sonnet-4-6", alias="RESEARCH_MODEL")
+    # off) instead of Opus is the dominant cost lever for the workflow.
+    # Set RESEARCH_MODEL=claude-opus-5 to restore the prior behavior.
+    research_model: str = Field("claude-sonnet-5", alias="RESEARCH_MODEL")
 
     vector_store_path: Path = Field(_ROOT / "chroma_db", alias="VECTOR_STORE_PATH")
     company_profile_path: Path = Field(
@@ -105,6 +134,39 @@ class Settings(BaseSettings):
     openrouter_app_title: str = Field("Open Executive", alias="OPENROUTER_APP_TITLE")
     openrouter_referer: str | None = Field(None, alias="OPENROUTER_REFERER")
     openrouter_timeout_s: float = Field(180.0, alias="OPENROUTER_TIMEOUT_S")
+
+    # ---- OpenRouter live model catalog ---------------------------------
+    # With OPENROUTER_ENABLED on, the API fetches OpenRouter's public
+    # /models catalog at startup (and every OPENROUTER_CATALOG_REFRESH_S)
+    # to populate the non-Anthropic entries of the Council UI dropdown, so
+    # newly released models appear without a code change. A failed fetch
+    # falls back to the hardcoded snapshot in providers.registry. Only
+    # consulted when OPENROUTER_ENABLED=true.
+    openrouter_catalog_enabled: bool = Field(True, alias="OPENROUTER_CATALOG_ENABLED")
+    # Vendor prefixes (the part before "/" in an OpenRouter slug) to surface.
+    openrouter_catalog_providers: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: list(_DEFAULT_OPENROUTER_CATALOG_PROVIDERS),
+        alias="OPENROUTER_CATALOG_PROVIDERS",
+    )
+    # Newest N tool-capable paid models per vendor. 0 = no cap.
+    openrouter_catalog_per_provider: int = Field(
+        6, alias="OPENROUTER_CATALOG_PER_PROVIDER"
+    )
+    # Startup fetch is awaited, so keep this short — it bounds boot latency.
+    openrouter_catalog_timeout_s: float = Field(
+        10.0, alias="OPENROUTER_CATALOG_TIMEOUT_S"
+    )
+    # Background re-fetch cadence. 0 disables the refresher (startup only).
+    openrouter_catalog_refresh_s: float = Field(
+        _DEFAULT_OPENROUTER_CATALOG_REFRESH_S, alias="OPENROUTER_CATALOG_REFRESH_S"
+    )
+
+    @field_validator("openrouter_catalog_providers", mode="before")
+    @classmethod
+    def _parse_openrouter_catalog_providers(cls, v: Any) -> list[str]:
+        # An explicitly empty value falls back to the default set rather than
+        # surfacing zero vendors (which would blank the dropdown).
+        return _parse_csv_list(v) or list(_DEFAULT_OPENROUTER_CATALOG_PROVIDERS)
 
     # Per-call wall-clock cap for the utility_fast paths (Discord response
     # gate, wait_for_human decision parser, inbound_resolver disambiguation).
@@ -158,11 +220,7 @@ class Settings(BaseSettings):
     @field_validator("local_models", mode="before")
     @classmethod
     def _parse_local_models(cls, v: Any) -> list[str]:
-        if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()]
-        if isinstance(v, str) and v.strip():
-            return [x.strip() for x in v.split(",") if x.strip()]
-        return []
+        return _parse_csv_list(v)
 
     @model_validator(mode="after")
     def _validate_local_models(self) -> "Settings":
@@ -228,11 +286,14 @@ class Settings(BaseSettings):
     # full-pass revision on top of the draft, typically 5–12s.
     committee_extra_timeout_s: float = Field(60.0, alias="COMMITTEE_EXTRA_TIMEOUT_S")
 
-    # Reasoning effort for deep-reasoning specialists. Opus 4.7 only supports
-    # `thinking.type=adaptive` paired with `output_config.effort`. Valid
-    # values: "low", "medium", "high", "xhigh", "max". `low` is ~3x faster
-    # and much cheaper; bump to `medium` when answers feel shallow.
-    specialist_effort: str = Field("low", alias="SPECIALIST_EFFORT")
+    # Reasoning effort for deep-reasoning specialists (adaptive thinking +
+    # `output_config.effort`; translated to OpenRouter `reasoning.effort` on
+    # that path). Validated at boot: an invalid value used to 400 on Anthropic
+    # direct and would otherwise be silently coerced on OpenRouter. `low` is
+    # ~3x faster and much cheaper; bump to `medium` when answers feel shallow.
+    specialist_effort: Literal["low", "medium", "high", "xhigh", "max"] = Field(
+        "low", alias="SPECIALIST_EFFORT"
+    )
 
     @model_validator(mode="after")
     def _resolve_paths(self) -> "Settings":
@@ -426,7 +487,7 @@ class Settings(BaseSettings):
     )
     # Cheap model for the per-finding verify call (read scraped page → verdict).
     research_verify_model: str = Field(
-        "claude-haiku-4-5-20251001", alias="RESEARCH_VERIFY_MODEL"
+        "claude-haiku-4-5", alias="RESEARCH_VERIFY_MODEL"
     )
     # Hard cap on findings verified per research run (each = 1 scrape + 1 cheap
     # LLM call). Bounds added cost; verified in severity order.

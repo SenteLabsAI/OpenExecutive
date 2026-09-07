@@ -30,7 +30,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from types import SimpleNamespace
 from typing import Any
@@ -45,6 +45,23 @@ from openexecutive.providers.translator import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Slugs for which we've already announced that deep reasoning is being sent
+# through OpenRouter. Reasoning tokens are billed, and the Council toggle can
+# be on for an agent that was previously parked on a model where it was a
+# silent no-op — one log line per model per process makes that visible.
+_reasoning_announced: set[str] = set()
+
+
+def _announce_reasoning(slug: str, body: dict[str, Any]) -> None:
+    if "reasoning" in body and slug not in _reasoning_announced:
+        _reasoning_announced.add(slug)
+        logger.info(
+            "deep reasoning enabled for %s via OpenAI-compatible backend "
+            "(reasoning=%s); reasoning tokens are billed for this model",
+            slug,
+            body["reasoning"],
+        )
 
 
 class OpenAICompatibleProvider:
@@ -63,6 +80,7 @@ class OpenAICompatibleProvider:
         timeout_s: float = 180.0,
         slug_lookup: dict[str, str] | None = None,
         spec_lookup: dict[str, FeatureSpec] | None = None,
+        model_resolver: Callable[[str], tuple[str, FeatureSpec] | None] | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -76,12 +94,21 @@ class OpenAICompatibleProvider:
         # through unchanged (the common case for local model names).
         self._slug_lookup = slug_lookup or {}
         self._spec_lookup = spec_lookup or {}
+        # Optional rule-based resolver consulted BEFORE the static lookups —
+        # lets the registry map whole model families (e.g. every Claude id)
+        # without enumerating them, so a catalog refresh after construction
+        # needs no provider rebuild. Returning None defers to the lookups.
+        self._model_resolver = model_resolver
 
     # ------------------------------------------------------------------
     # internal helpers
     # ------------------------------------------------------------------
 
     def _resolve(self, anthropic_model: str) -> tuple[str, FeatureSpec]:
+        if self._model_resolver is not None:
+            resolved = self._model_resolver(anthropic_model)
+            if resolved is not None:
+                return resolved
         slug = self._slug_lookup.get(anthropic_model, anthropic_model)
         spec = self._spec_lookup.get(
             anthropic_model,
@@ -119,6 +146,7 @@ class OpenAICompatibleProvider:
         slug, spec = self._resolve(model)
         gated = apply_feature_gates(spec, kwargs)
         body = to_openai_request(slug, gated)
+        _announce_reasoning(slug, body)
 
         try:
             resp = await self._client.post(
@@ -144,6 +172,7 @@ class OpenAICompatibleProvider:
         slug, spec = self._resolve(model)
         gated = apply_feature_gates(spec, kwargs)
         body = to_openai_request(slug, gated)
+        _announce_reasoning(slug, body)
         body["stream"] = True
         return _OpenAICompatibleStream(
             client=self._client,

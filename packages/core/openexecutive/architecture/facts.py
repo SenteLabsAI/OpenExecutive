@@ -161,7 +161,7 @@ def _load_curated() -> dict[str, Any]:
     if not _FACTS_YAML.exists():
         return {}
     try:
-        with open(_FACTS_YAML) as f:
+        with open(_FACTS_YAML, encoding="utf-8") as f:
             loaded = yaml.safe_load(f) or {}
     except yaml.YAMLError as exc:
         # A corrupt or hand-edited YAML must not 500 the entire

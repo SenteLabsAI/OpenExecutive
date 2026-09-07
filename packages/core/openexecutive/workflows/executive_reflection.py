@@ -258,6 +258,7 @@ def _render_reflection_context(
 # `executive_research` can reuse them without an underscore-import
 # tripwire; this re-export keeps any callers that still import the
 # private names from this module working.
+from openexecutive.providers.translator import reasoning_replay_block  # noqa: E402
 from openexecutive.workflows._synthesis import (  # noqa: E402
     execute_tool_calls as _execute_tool_calls,
 )
@@ -530,6 +531,9 @@ class ExecutiveReflectionWorkflow(Workflow):
                             "name": getattr(block, "name", ""),
                             "input": getattr(block, "input", {}) or {},
                         })
+                    elif (replay := reasoning_replay_block(block)) is not None:
+                        # OpenRouter reasoning continuity across tool iterations.
+                        assistant_blocks.append(replay)
                 messages.append({"role": "assistant", "content": assistant_blocks})
 
                 # Pair each tool_use with the matching summary by index.

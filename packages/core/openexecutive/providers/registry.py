@@ -1,19 +1,26 @@
 """Model registry + per-call provider routing.
 
-``MODEL_SPECS`` is the single source of truth for: what we ship to the
-Council UI, which OpenRouter slug each Claude model maps to, and which
-Anthropic-only features each model tolerates. ``get_provider(model)``
-picks the backend per call so the user can flip an agent's model in the
-Council UI and have requests for that agent — and only that agent —
-route differently.
+This module is the single source of truth for: what we ship to the
+Council UI (``allowed_models``), how a Claude model name maps to its
+OpenRouter slug (``openrouter_slug_for_claude``), and which Anthropic-only
+features each model tolerates. ``get_provider(model)`` picks the backend
+per call so the user can flip an agent's model in the Council UI and have
+requests for that agent — and only that agent — route differently.
+
+The non-Anthropic OpenRouter set is no longer a hand-maintained constant:
+``openrouter_models()`` serves the live catalog cached by
+``providers.openrouter_catalog`` (fetched at API startup) and falls back to
+the hardcoded ``OPENROUTER_MODELS`` snapshot when nothing has been loaded.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import HTTPException
 
 from openexecutive.config import get_settings
+from openexecutive.providers import openrouter_catalog
 from openexecutive.providers.anthropic_provider import AnthropicProvider
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
@@ -23,37 +30,95 @@ from openexecutive.providers.provider import LLMProvider
 # Anthropic-direct slugs — used as canonical model names everywhere in
 # the codebase (config defaults, agent class defaults, override DB).
 ANTHROPIC_DIRECT_MODELS: list[str] = [
-    "claude-opus-4-7",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
 ]
 
-# Models reachable only through OpenRouter. These strings ARE the
-# OpenRouter slug — we don't translate them on the way through. Curated
-# PAID models only: the rate-limited ``:free`` tier (and the utility_fast-
-# only free-model matrix) was removed — its 429s surfaced as user-visible
-# errors and the per-agent free-model surface was more than it earned.
-# BYO-model routing through OpenRouter is unchanged — add a slug here to
-# surface it in the Council UI dropdown.
+# Hardcoded FALLBACK for the non-Anthropic OpenRouter set. The live list
+# comes from ``providers.openrouter_catalog`` (fetched from OpenRouter's
+# public /models endpoint at API startup); this snapshot is served only
+# when that fetch has not succeeded (disabled, offline, CLI paths that skip
+# the lifespan). These strings ARE OpenRouter slugs — we don't translate
+# them on the way through. Curated PAID models only: the rate-limited
+# ``:free`` tier was removed because its 429s surfaced as user-visible
+# errors. Refresh this snapshot occasionally from a successful catalog
+# load; it is not the primary source anymore.
 OPENROUTER_MODELS: list[str] = [
-    "openai/gpt-5",
-    "openai/gpt-5-mini",
-    "openai/gpt-5-nano",
-    "google/gemini-2.5-pro",
-    "google/gemini-2.5-flash",
-    "google/gemini-2.5-flash-lite",
-    "meta-llama/llama-3.3-70b-instruct",
-    "deepseek/deepseek-r1",
-    "x-ai/grok-4",
+    "openai/gpt-6-astra",
+    "openai/gpt-6-astra-pro",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-5.6-luna",
+    "google/gemini-3.8-flash",
+    "google/gemini-3.5-flash-lite",
+    "meta-llama/llama-4-maverick",
+    "meta-llama/llama-4-scout",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "x-ai/grok-4.6",
+    "x-ai/grok-4.5",
 ]
 
 
-# Per-Claude OpenRouter slug. The Anthropic-direct name is the registry
-# key; the value is what we send when OPENROUTER_ENABLED is on.
+# Anthropic model ids look like ``claude-<family>-<major>[-<minor>][-<yyyymmdd>]``
+# (``claude-opus-5``, ``claude-haiku-4-5``, or a dated pin such as
+# ``claude-haiku-4-5-20251001`` / ``claude-opus-5-20260315``).
+# OpenRouter's slug for the same model is ``anthropic/claude-<family>-<major>[.<minor>]``
+# with the date snapshot dropped. Deriving the slug mechanically means any
+# Claude id — including older ones still stored in agent overrides, and
+# newer ones set via env before this file is touched — routes correctly.
+# ``minor`` is capped at 3 digits so an 8-digit date snapshot following a
+# major-only id (``claude-opus-5-20260315``) can't be swallowed as the minor
+# version — that would derive ``anthropic/claude-opus-5.20260315``.
+_CLAUDE_ID_RE = re.compile(
+    r"^claude-(?P<family>[a-z]+)-(?P<major>\d{1,3})(?:-(?P<minor>\d{1,3}))?(?:-\d{8})?$"
+)
+# Slugs on the OpenRouter side that are Claude models (either derived from an
+# Anthropic id above, or listed verbatim by the live catalog).
+_OPENROUTER_CLAUDE_PREFIX = "anthropic/claude-"
+_HAIKU_FAMILY = "haiku"
+
+
+def model_supports_deep_reasoning(model: str) -> bool:
+    """Whether the "Deep reasoning" toggle may add thinking fields for ``model``.
+
+    Haiku is the one Claude family that rejects adaptive thinking and the
+    ``output_config.effort`` field outright (HTTP 400 from Anthropic), so it
+    is excluded whether addressed by its Anthropic id or its OpenRouter slug,
+    in current or legacy naming. The check is scoped to Claude names, so an
+    unrelated slug that merely contains "haiku" keeps deep reasoning. Everything else is allowed
+    here; the provider feature gate then drops the fields for models that
+    can't actually reason, so a wrong guess costs nothing. Mirrors the
+    Council UI guard.
+    """
+    lowered = model.lower()
+    is_claude_name = lowered.startswith("claude-") or lowered.startswith(
+        _OPENROUTER_CLAUDE_PREFIX
+    )
+    # Scoped substring: only a Claude id / slug can be Haiku, but within that
+    # namespace the family may sit first (``claude-haiku-4-5``,
+    # ``anthropic/claude-haiku-4.5``) or last (legacy
+    # ``claude-3-5-haiku-20241022``, ``anthropic/claude-3.5-haiku``).
+    return not (is_claude_name and _HAIKU_FAMILY in lowered)
+
+
+def openrouter_slug_for_claude(model: str) -> str | None:
+    """``claude-sonnet-4-6`` → ``anthropic/claude-sonnet-4.6``; None if not a Claude id."""
+    m = _CLAUDE_ID_RE.match(model)
+    if m is None:
+        return None
+    version = m.group("major")
+    if m.group("minor") is not None:
+        version = f"{version}.{m.group('minor')}"
+    return f"anthropic/claude-{m.group('family')}-{version}"
+
+
+# Retained as a derived view for readers of the old constant. The registry
+# itself no longer consults it — ``openrouter_slug_for_claude`` is the rule.
 _CLAUDE_OPENROUTER_SLUGS: dict[str, str] = {
-    "claude-opus-4-7": "anthropic/claude-opus-4.7",
-    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
-    "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
+    m: slug
+    for m in ANTHROPIC_DIRECT_MODELS
+    if (slug := openrouter_slug_for_claude(m)) is not None
 }
 
 
@@ -75,6 +140,17 @@ _DEFAULT_NON_CLAUDE_SPEC = FeatureSpec(
     supports_tool_use=True,
 )
 
+# Non-Claude model whose live catalog entry advertises ``reasoning``
+# support: keep the Anthropic ``thinking`` / ``output_config`` fields so the
+# translator can turn them into OpenRouter's ``reasoning`` parameter. Cache
+# and web-search stay off — those really are Anthropic-only.
+_NON_CLAUDE_REASONING_SPEC = FeatureSpec(
+    supports_cache_control=False,
+    supports_thinking=True,
+    supports_web_search=False,
+    supports_tool_use=True,
+)
+
 
 def _local_models(settings: Any) -> list[str]:
     """Configured local model slugs, or ``[]`` when local routing is off.
@@ -86,6 +162,22 @@ def _local_models(settings: Any) -> list[str]:
     return list(getattr(settings, "local_models", []) or [])
 
 
+def openrouter_models() -> list[str]:
+    """Non-Anthropic-direct slugs offered when ``OPENROUTER_ENABLED`` is on.
+
+    Live catalog when one has been loaded, else the hardcoded fallback.
+    Catalog entries that duplicate an Anthropic-direct model (the same
+    Claude model under its OpenRouter slug) are dropped so the dropdown
+    doesn't list ``claude-opus-5`` twice; Claude models that exist ONLY on
+    OpenRouter (e.g. an older or newer generation) stay in.
+    """
+    loaded = openrouter_catalog.loaded_models()
+    if loaded is None:
+        return list(OPENROUTER_MODELS)
+    direct_slugs = set(_CLAUDE_OPENROUTER_SLUGS.values())
+    return [m for m in loaded if m not in direct_slugs]
+
+
 def allowed_models() -> list[str]:
     """Flat allowlist the Council UI's dropdown reads.
 
@@ -94,7 +186,8 @@ def allowed_models() -> list[str]:
 
     * Anthropic-direct trio — when an ``ANTHROPIC_API_KEY`` is set, OR when
       ``OPENROUTER_ENABLED`` is on (Claude is then reachable via OpenRouter).
-    * OpenRouter set — when ``OPENROUTER_ENABLED`` is on.
+    * OpenRouter set (live catalog or fallback) — when ``OPENROUTER_ENABLED``
+      is on.
     * Local models — when ``LOCAL_MODELS_ENABLED`` is on.
     """
     settings = get_settings()
@@ -102,7 +195,7 @@ def allowed_models() -> list[str]:
     if getattr(settings, "anthropic_api_key", None) or settings.openrouter_enabled:
         models.extend(ANTHROPIC_DIRECT_MODELS)
     if settings.openrouter_enabled:
-        models.extend(OPENROUTER_MODELS)
+        models.extend(openrouter_models())
     models.extend(_local_models(settings))
     return models
 
@@ -120,7 +213,37 @@ def allowed_models_for(agent_id: str | None) -> list[str]:
 
 
 def _is_claude(model: str) -> bool:
-    return model in _CLAUDE_OPENROUTER_SLUGS
+    """Any Anthropic-direct Claude id, not just the current trio.
+
+    Agent overrides persisted in SQLite may still name a previous
+    generation (``claude-opus-4-7``); those must keep routing to the
+    Anthropic SDK rather than falling through to the non-Claude path.
+    """
+    return _CLAUDE_ID_RE.match(model) is not None
+
+
+def _openrouter_model_resolver(model: str) -> tuple[str, FeatureSpec] | None:
+    """Slug + feature spec for a model on the OpenRouter path.
+
+    * Anthropic id (``claude-sonnet-5``) → derived OpenRouter slug, Claude spec.
+    * Verbatim Claude slug from the catalog (``anthropic/claude-opus-4.8``) →
+      unchanged, Claude spec — OpenRouter forwards cache_control / thinking
+      to Anthropic for these, so stripping them would only cost money.
+    * Non-Claude slug the catalog marks reasoning-capable → unchanged,
+      thinking kept (translated to OpenRouter ``reasoning``), rest stripped.
+    * Anything else → None; the provider applies the non-Claude default.
+    """
+    slug = openrouter_slug_for_claude(model)
+    if slug is not None:
+        return slug, _CLAUDE_FEATURE_SPEC
+    if model.startswith(_OPENROUTER_CLAUDE_PREFIX):
+        return model, _CLAUDE_FEATURE_SPEC
+    # Non-Claude: the live catalog knows whether OpenRouter will honour a
+    # ``reasoning`` request for this slug. Unknown (fallback list, or a slug
+    # outside the catalog) keeps the conservative thinking-off default.
+    if openrouter_catalog.supports_reasoning(model):
+        return model, _NON_CLAUDE_REASONING_SPEC
+    return None
 
 
 # Module-level singletons — providers pool their own HTTP connections and
@@ -191,22 +314,17 @@ def _openrouter() -> OpenRouterProvider:
                 status_code=400,
                 detail="OpenRouter routing requires OPENROUTER_API_KEY",
             )
-        # Pre-build the slug + spec lookup so the provider can resolve a
-        # Claude model to its OpenRouter slug + feature spec on each call.
-        slug_lookup = dict(_CLAUDE_OPENROUTER_SLUGS)
-        spec_lookup: dict[str, FeatureSpec] = {
-            m: _CLAUDE_FEATURE_SPEC for m in ANTHROPIC_DIRECT_MODELS
-        }
-        for m in OPENROUTER_MODELS:
-            spec_lookup[m] = _DEFAULT_NON_CLAUDE_SPEC
+        # Claude ids and catalog Claude slugs resolve through the derivation
+        # rule; every other slug (curated fallback or live catalog) gets the
+        # provider's non-Claude default spec, so a catalog refresh after
+        # construction needs no rebuild.
         _openrouter_provider = OpenRouterProvider(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
             app_title=settings.openrouter_app_title,
             referer=settings.openrouter_referer,
             timeout_s=settings.openrouter_timeout_s,
-            slug_lookup=slug_lookup,
-            spec_lookup=spec_lookup,
+            model_resolver=_openrouter_model_resolver,
         )
     return _openrouter_provider
 
@@ -214,26 +332,29 @@ def _openrouter() -> OpenRouterProvider:
 def get_provider(model: str) -> LLMProvider:
     """Return the provider that should serve calls for ``model``.
 
-    Routing rules:
+    Routing rules (in precedence order):
 
-    * Claude family — Anthropic direct by default; OpenRouter when
-      ``OPENROUTER_ENABLED`` is on.
     * Local models (slugs listed in ``LOCAL_MODELS`` with
       ``LOCAL_MODELS_ENABLED`` on) — the self-hosted OpenAI-compatible
-      backend at ``LOCAL_BASE_URL``.
-    * Other non-Claude (anything in ``OPENROUTER_MODELS``, or any unknown
-      slug) — OpenRouter only. Raises HTTP 400 when ``OPENROUTER_ENABLED``
+      backend at ``LOCAL_BASE_URL``. Always wins for its configured slugs.
+    * Claude family (any ``claude-<family>-<version>`` id) — Anthropic
+      direct by default; OpenRouter when ``OPENROUTER_ENABLED`` is on.
+    * Other non-Claude (anything from ``openrouter_models()``, or any
+      unknown slug) — OpenRouter only. Raises HTTP 400 when ``OPENROUTER_ENABLED``
       is off, since we have no other backend that speaks those models.
     """
     settings = get_settings()
+    # Explicit operator config wins: a slug listed in LOCAL_MODELS never
+    # leaves the local backend, even if it happens to look like a Claude id
+    # (``claude-proxy-1`` on an on-prem gateway). Checked BEFORE the Claude
+    # regex so widening ``_is_claude`` can't silently re-route local traffic
+    # to a hosted vendor.
+    if model in _local_models(settings):
+        return _local()
     if _is_claude(model):
         if settings.openrouter_enabled:
             return _openrouter()
         return _anthropic()
-    # Local models take precedence for their configured slugs — a local
-    # endpoint can serve them with no external dependency.
-    if model in _local_models(settings):
-        return _local()
     # Other non-Claude slugs require OpenRouter to be enabled.
     if not settings.openrouter_enabled:
         raise HTTPException(

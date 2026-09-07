@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
 from openexecutive.config import get_settings
-from openexecutive.providers import get_provider
+from openexecutive.providers import get_provider, model_supports_deep_reasoning
 
 _SPECIALIST_TIMEOUT = 180.0
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAgent(ABC):
@@ -121,8 +124,8 @@ class BaseAgent(ABC):
             "messages": [{"role": "user", "content": user_content}],
         }
 
-        if use_deep:
-            # Opus 4.7 requires `adaptive` thinking; we cap effort via
+        if use_deep and model_supports_deep_reasoning(model):
+            # Adaptive thinking with effort capped via
             # output_config.effort. Default "low" — adaptive at default
             # effort routinely burned 20k+ thinking tokens. "low" still
             # leaves room for nuanced reasoning while being ~3x faster.
@@ -139,6 +142,18 @@ class BaseAgent(ABC):
         message = await provider.messages_create(**create_kwargs)
 
         text_blocks = [b for b in message.content if b.type == "text"]
+        if not text_blocks:
+            # A reasoning model can spend the whole max_tokens budget thinking
+            # and return no text; the Executive would then synthesize as if
+            # this specialist had nothing to say. Make that visible.
+            logger.warning(
+                "specialist %s (%s) returned no text block (stop_reason=%s, "
+                "deep_reasoning=%s); its analysis will be empty",
+                self.name,
+                model,
+                getattr(message, "stop_reason", None),
+                use_deep,
+            )
         return text_blocks[0].text if text_blocks else ""
 
     async def analyze_with_tools(
@@ -207,7 +222,7 @@ class BaseAgent(ABC):
             "messages": [{"role": "user", "content": user_content}],
         }
 
-        if use_deep:
+        if use_deep and model_supports_deep_reasoning(model):
             create_kwargs["thinking"] = {"type": "adaptive"}
             create_kwargs["output_config"] = {"effort": settings.specialist_effort}
             create_kwargs["max_tokens"] = max(max_tokens, 16000)

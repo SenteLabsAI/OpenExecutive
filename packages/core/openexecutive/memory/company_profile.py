@@ -65,7 +65,11 @@ class CompanyProfile(BaseModel):
         path = Path(path)
         if not path.exists():
             return cls()
-        with open(path) as f:
+        # Explicit UTF-8: profile.yaml is routinely hand-edited, so it can hold
+        # real non-ASCII text. Without this, the platform default (cp1252 on
+        # Windows) silently mojibakes it into the cached company-profile prompt
+        # block rather than raising.
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         company_data = data.get("company", data)
         return cls.model_validate(company_data)
@@ -74,7 +78,7 @@ class CompanyProfile(BaseModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {"company": self.model_dump()}
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=True)
 
     def to_prompt_block(self) -> str:

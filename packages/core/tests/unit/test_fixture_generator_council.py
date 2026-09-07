@@ -53,12 +53,12 @@ def test_fixture_generator_detail(client: TestClient) -> None:
 def test_override_propagates_to_effective_model(client: TestClient) -> None:
     res = client.patch(
         "/agents/fixture_generator",
-        json={"model": "claude-haiku-4-5-20251001"},
+        json={"model": "claude-haiku-4-5"},
     )
     assert res.status_code == 200
-    assert res.json()["model"] == "claude-haiku-4-5-20251001"
+    assert res.json()["model"] == "claude-haiku-4-5"
     # The generator reads effective_model() at call time → picks up the override.
-    assert FixtureGeneratorAgent().effective_model() == "claude-haiku-4-5-20251001"
+    assert FixtureGeneratorAgent().effective_model() == "claude-haiku-4-5"
 
 
 def test_effective_model_defaults_to_settings(client: TestClient) -> None:
@@ -69,7 +69,7 @@ def test_effective_model_defaults_to_settings(client: TestClient) -> None:
 
 
 def test_reset_clears_override(client: TestClient) -> None:
-    client.patch("/agents/fixture_generator", json={"model": "claude-haiku-4-5-20251001"})
+    client.patch("/agents/fixture_generator", json={"model": "claude-haiku-4-5"})
     res = client.delete("/agents/fixture_generator/override")
     assert res.status_code == 204
     assert client.get("/agents/fixture_generator").json()["has_override"] is False

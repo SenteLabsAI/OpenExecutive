@@ -393,6 +393,71 @@ async def test_generated_seed_slot_create_does_not_touch_live(env: SimpleNamespa
     assert listed[0]["origin"] == "generated"
 
 
+# "≈", "→" and "✅" sit outside cp1252, so an unencoded write_text() raises
+# UnicodeEncodeError on a default Windows install. Accented Latin-1 characters
+# alone would NOT reproduce it — they encode fine in cp1252.
+_NON_ASCII_DOC = "Orçamento ≈ R$ 300 → prioridade: presença digital ✅"
+
+
+async def test_generated_slot_pins_encoding_on_every_text_write(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slot creation must never write or read text at the platform default.
+
+    ``Path.write_text()`` with no ``encoding`` uses the C-level locale
+    (cp1252 on a default Windows install), which raised mid-write and
+    surfaced as ``ClientSlotError: Failed to write client slot: 'charmap'
+    codec can't encode ...`` for any client whose docs were not
+    cp1252-representable. Doc bodies are the only artifact written verbatim —
+    profile/people/departments YAML and memory.json go through
+    ``yaml.safe_dump`` / ``json.dumps``, which escape non-ASCII and are pure
+    ASCII on disk — but every site in this path is pinned so the next verbatim
+    write is safe by default.
+
+    This asserts the *contract* (each call passes an explicit encoding) rather
+    than simulating a locale, because the locale cannot be faked from Python:
+    patching ``locale.getencoding`` does not affect ``Path.write_text``, which
+    reads the C-level locale. A symptom-based test would therefore be inert on
+    the UTF-8 platform CI runs on, and would police nothing.
+    """
+    real_write, real_read = Path.write_text, Path.read_text
+    offenders: list[str] = []
+
+    def guarded_write(self, data, encoding=None, errors=None, newline=None):  # type: ignore[no-untyped-def]
+        if encoding is None:
+            offenders.append(f"write_text: {self.name}")
+        return real_write(self, data, encoding=encoding or "utf-8", errors=errors, newline=newline)
+
+    # No `newline` here: Path.read_text only accepts it on Python 3.13+, and CI
+    # runs 3.11 — forwarding it unconditionally would TypeError the moment a
+    # read_text call enters the guarded path (exactly the regression this guard
+    # exists to catch). **kwargs keeps the forwarding correct on every version.
+    def guarded_read(self, encoding=None, **kwargs):  # type: ignore[no-untyped-def]
+        if encoding is None:
+            offenders.append(f"read_text: {self.name}")
+        return real_read(self, encoding=encoding or "utf-8", **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", guarded_write)
+    monkeypatch.setattr(Path, "read_text", guarded_read)
+
+    bundle = _intake_bundle()
+    bundle["docs"] = [{"filename": "plano.md", "content": _NON_ASCII_DOC}]
+    await create_client_slot(
+        env.settings,
+        display_name="Consultório Ação — Psicologia",
+        slug="consultorio_acao",
+        source="generated",
+        bundle=bundle,
+    )
+    monkeypatch.undo()
+
+    assert offenders == []
+
+    # And the bytes that landed really are UTF-8, losslessly.
+    slot = env.company / "_client_slots" / "consultorio_acao"
+    assert (slot / "docs" / "plano.md").read_bytes().decode("utf-8") == _NON_ASCII_DOC
+
+
 async def test_generated_seed_slot_activation_seeds_org_and_memory(
     env: SimpleNamespace,
 ) -> None:

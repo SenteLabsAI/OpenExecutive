@@ -143,7 +143,7 @@ def _summarize_departments(path: Path) -> list[dict[str, Any]]:
     import yaml
 
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
         return []
     out: list[dict[str, Any]] = []
@@ -162,7 +162,7 @@ def _summarize_people(path: Path) -> list[dict[str, Any]]:
     import yaml
 
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
         return []
     out: list[dict[str, Any]] = []
@@ -295,7 +295,7 @@ async def _load_from_dir(
         # Record which fixture is active so the UI can show it and so a
         # subsequent load() knows not to take a fresh snapshot.
         sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.write_text(fixture_name)
+        sentinel.write_text(fixture_name, encoding="utf-8")
 
         # Honcho workspace isolation: switch to a per-fixture workspace
         # so demo turns sync to a sacrificial store rather than polluting
@@ -869,7 +869,7 @@ def get_fixture_status(settings: Any) -> dict[str, Any]:
     active_fixture: str | None = None
     if sentinel.exists():
         try:
-            content = sentinel.read_text().strip()
+            content = sentinel.read_text(encoding="utf-8").strip()
             # Defence-in-depth: only return the value if it matches the same
             # allowlist used by /fixtures/{name}/load. Anything else (garbage,
             # hand-edit, tampering) is treated as "no fixture active".
@@ -993,7 +993,7 @@ def _dump_episodic_memory(memory_path: Path) -> dict[str, int]:
         "advice_given": advice,
         "scheduled_actions": [],
     }
-    memory_path.write_text(json.dumps(payload, indent=2, default=str))
+    memory_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return {
         "decisions": len(decisions),
         "initiatives": len(initiatives),
@@ -1039,7 +1039,7 @@ def _dump_people(people_path: Path) -> int:
 
     import yaml
 
-    people_path.write_text(yaml.safe_dump({"people": rows}, sort_keys=False))
+    people_path.write_text(yaml.safe_dump({"people": rows}, sort_keys=False), encoding="utf-8")
     return len(rows)
 
 
@@ -1091,7 +1091,7 @@ def _dump_departments(dept_path: Path) -> int:
 
     import yaml
 
-    dept_path.write_text(yaml.safe_dump({"departments": rows}, sort_keys=False))
+    dept_path.write_text(yaml.safe_dump({"departments": rows}, sort_keys=False), encoding="utf-8")
     return len(rows)
 
 
@@ -1108,7 +1108,7 @@ def _seed_episodic_memory(memory_path: Path, settings: Any) -> dict[str, int]:
         return dict(_empty)
 
     try:
-        data: dict[str, Any] = json.loads(memory_path.read_text())
+        data: dict[str, Any] = json.loads(memory_path.read_text(encoding="utf-8"))
     except Exception:
         return dict(_empty)
 
@@ -1308,7 +1308,7 @@ def _seed_people(people_path: Path) -> int:
     try:
         import yaml
 
-        data = yaml.safe_load(people_path.read_text()) or {}
+        data = yaml.safe_load(people_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return 0
 
@@ -1405,7 +1405,7 @@ def _seed_departments(dept_path: Path) -> int:
     try:
         import yaml
 
-        data = yaml.safe_load(dept_path.read_text()) or {}
+        data = yaml.safe_load(dept_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return 0
 
