@@ -21,8 +21,12 @@ RUN pip install uv
 RUN uvx --from git+https://github.com/SenteLabsAI/extensible-mcp extensible-mcp --help \
     || true
 
-COPY packages/core/pyproject.toml packages/core/uv.lock* packages/core/README.md ./
-RUN uv pip install --system -r pyproject.toml 2>/dev/null || uv pip install --system .
+COPY packages/core/pyproject.toml packages/core/uv.lock* ./
+# No fallback: this install has always succeeded on its own, and a silent
+# fallback here previously masked failures while also needing README.md
+# copied into this layer — which busts the cache (full dep install + baked
+# embedding models below) on every README edit. Let a real break fail loudly.
+RUN uv pip install --system -r pyproject.toml
 
 # Bake the embedding model the MCP gateway loads at startup
 # (sentence-transformers/all-MiniLM-L6-v2). Without this the ~90 MB model is
