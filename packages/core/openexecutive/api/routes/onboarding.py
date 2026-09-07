@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from openexecutive.api.models import OnboardAnswerRequest, OnboardStatusResponse
+from openexecutive.api.models import (
+    ONBOARD_ANSWER_MAX_CHARS,
+    OnboardAnswerRequest,
+    OnboardStatusResponse,
+)
 from openexecutive.onboarding.wizard import (
     TOTAL_STEPS,
     WizardState,
@@ -61,14 +66,41 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
     if state.completed:
         raise HTTPException(status_code=400, detail="Onboarding already completed")
+    if len(body.answer) > ONBOARD_ANSWER_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Answer is too long (limit {ONBOARD_ANSWER_MAX_CHARS:,} characters).",
+        )
 
+    # process_answer mutates the stored state in place. Keep a snapshot so
+    # a failed profile build on the final answer can be rolled back —
+    # otherwise the session is stuck at completed=True and every retry
+    # hits the 400 above, forcing the user to restart onboarding.
+    snapshot = copy.deepcopy(state)
     state = process_answer(state, body.answer)
-    _wizard_sessions[body.session_id] = state
 
     if state.completed:
         from openexecutive.onboarding.profile_builder import build_and_save_profile
 
-        build_and_save_profile(state)
+        try:
+            build_and_save_profile(state)
+        except Exception as exc:
+            # Type name only: a pydantic ValidationError's str() embeds the
+            # offending input, and the wizard answers include financials
+            # the UI promises are "stored locally only".
+            logger.error(
+                "onboarding: profile build failed on the final answer (%s)",
+                type(exc).__name__,
+            )
+            _wizard_sessions[body.session_id] = snapshot
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Could not build the company profile from your answers. "
+                    "Rephrase your last answer and try again, or restart "
+                    "onboarding if an earlier answer is the problem."
+                ),
+            ) from exc
 
         # Fire the watchlist-research workflow once at onboarding
         # completion so the principal's first /today after install
@@ -86,6 +118,8 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
             # Auto-cleanup so the set doesn't grow unboundedly across
             # the process lifetime.
             task.add_done_callback(_background_research_tasks.discard)
+
+    _wizard_sessions[body.session_id] = state
 
     question = get_current_question(state) if not state.completed else None
     progress = state.get_progress()
