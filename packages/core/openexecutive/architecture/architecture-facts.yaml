@@ -17,22 +17,35 @@ system:
     backend: Python 3.11+ · FastAPI · Anthropic Claude SDK · ChromaDB · SQLite
     frontend: Next.js 15 · React 19 · TailwindCSS · Mermaid.js
   models:
-    default: claude-sonnet-4-6
-    deep_reasoning: claude-opus-4-7
+    default: claude-sonnet-5
+    deep_reasoning: claude-opus-5
     routing: claude-haiku-4-5
     provider_routing: |
       All LLM calls go through openexecutive.providers.get_provider(model).
       The registry returns the Anthropic SDK by default. When
       OPENROUTER_ENABLED=true (plus OPENROUTER_API_KEY), Claude calls are
       proxied through OpenRouter so usage is billed to the operator's
-      OpenRouter account, and a curated set of non-Anthropic slugs is
-      added to the Council UI dropdown:
-        • Paid only: openai/gpt-5, openai/gpt-5-mini, openai/gpt-5-nano,
-          google/gemini-2.5-pro, google/gemini-2.5-flash,
-          google/gemini-2.5-flash-lite, meta-llama/llama-3.3-70b-instruct,
-          deepseek/deepseek-r1, x-ai/grok-4. The two cheapest/fastest tiers
-          (gpt-5-nano, gemini-2.5-flash-lite) are intended primarily for the
-          utility_fast knob.
+      OpenRouter account, and non-Anthropic slugs are added to the Council
+      UI dropdown from OpenRouter's LIVE catalog:
+        • openexecutive.providers.openrouter_catalog fetches the public
+          GET {OPENROUTER_BASE_URL}/models at API startup (awaited, bounded
+          by OPENROUTER_CATALOG_TIMEOUT_S) and again every
+          OPENROUTER_CATALOG_REFRESH_S in a background task, then filters
+          to: vendor prefix in OPENROUTER_CATALOG_PROVIDERS (default
+          openai, google, anthropic, meta-llama, deepseek, x-ai), "tools"
+          in supported_parameters, text-only output, no ":variant" suffix
+          (:free / :batch / :thinking …), paid pricing, newest
+          OPENROUTER_CATALOG_PER_PROVIDER (default 6) per vendor.
+        • registry.openrouter_models() serves that cache; when nothing has
+          loaded (fetch failed, OPENROUTER_CATALOG_ENABLED=false, CLI paths
+          that skip the lifespan) it serves the hardcoded snapshot
+          registry.OPENROUTER_MODELS instead — so a bad fetch degrades to
+          the previous behaviour, never to an empty dropdown.
+        • Catalog entries that are the same Claude model as an
+          Anthropic-direct id (e.g. anthropic/claude-opus-5) are dropped to
+          avoid duplicates; Claude generations that exist only on OpenRouter
+          (e.g. anthropic/claude-opus-4.8) stay in and get the Claude feature
+          spec.
       The rate-limited ``:free`` tier (and the utility_fast-only free-model
       matrix) was removed — its 429s surfaced as user-visible errors and the
       per-agent free-model surface was more than it earned; BYO-model routing
@@ -48,13 +61,14 @@ system:
       Settings validator just requires that at least one provider is
       reachable. Requesting a Claude model with no key and OpenRouter off
       returns an actionable 400.
-      Non-Claude slugs route through OpenRouter, except those listed in
-      LOCAL_MODELS (which route to the local backend); selecting an
+      Slugs listed in LOCAL_MODELS route to the local backend before any
+      other rule is consulted; remaining non-Claude slugs route through
+      OpenRouter; selecting an
       OpenRouter-only slug with OPENROUTER_ENABLED=false is rejected at the
       API layer.
       Provider selection is per-call by model, not global — so the
-      Executive can be on GPT-5 while the CFO specialist stays on
-      claude-opus-4-7 within the same turn.
+      Executive can be on GPT-6 while the CFO specialist stays on
+      claude-opus-5 within the same turn.
   invariants:
     - The internal sub-agent architecture is NEVER exposed to the end user — there is one voice (the Executive).
     - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only.
@@ -134,11 +148,56 @@ providers:
     stripping covers cache_control on system/tool/user blocks, adaptive
     thinking + output_config, and Anthropic server-side web_search
     tools. A misrouted call cannot ship an unsupported field.
+    supports_thinking is TRUE for the Claude family and for any non-Claude
+    catalog slug whose OpenRouter entry lists "reasoning" in
+    supported_parameters (registry._openrouter_model_resolver consults
+    openrouter_catalog.supports_reasoning); unknown slugs (hardcoded
+    fallback list, or outside the catalog) keep thinking OFF.
+  deep_reasoning: |
+    The Council "Deep reasoning" toggle (BaseAgent.use_deep_reasoning /
+    agent_overrides.use_deep_reasoning) adds Anthropic-native
+    ``thinking={"type":"adaptive"}`` + ``output_config.effort``
+    (SPECIALIST_EFFORT) to the call. It is honoured on: Claude Opus/Sonnet
+    via Anthropic direct; Claude via OpenRouter; and every non-Claude
+    OpenRouter model the live catalog marks reasoning-capable (today: all
+    OpenAI, Gemini, DeepSeek and Grok entries — not Llama). It is a silent
+    no-op on models that can't reason (feature gate strips the fields).
+    Haiku guard: Haiku rejects adaptive thinking (HTTP 400), so
+    providers.registry.model_supports_deep_reasoning() returns False for any
+    Claude id / OpenRouter Claude slug naming the Haiku family (current
+    ``claude-haiku-4-5`` and legacy ``claude-3-5-haiku-…`` orderings; scoped
+    to Claude names so an unrelated slug containing "haiku" is unaffected)
+    and the agent call paths (BaseAgent.analyze,
+    analyze_with_tools, monitoring.research.agentic) skip the thinking fields
+    for it; the Council UI disables the checkbox for the same models, clears
+    it when the model is switched to Haiku, masks a stale stored
+    deep_reasoning=true on load (so the next Save corrects the row), and
+    never sends deep reasoning for a Haiku model from the Test button.
   translator_shapes: |
     Anthropic ``system`` list → OpenAI single ``system`` message;
     Anthropic ``tools[].input_schema`` → OpenAI ``tools[].function.parameters``;
     Anthropic ``tool_choice={"type":"tool","name":X}`` → OpenAI
-    ``{"type":"function","function":{"name":X}}``. The Anthropic
+    ``{"type":"function","function":{"name":X}}``;
+    Anthropic ``thinking={"type":"adaptive"}`` + ``output_config.effort`` →
+    OpenRouter unified ``reasoning={"effort": <level>}`` where level is passed
+    through when it is one of OpenRouter's accepted strings
+    (none/minimal/low/medium/high/xhigh/max) and otherwise FAILS CLOSED to
+    "low" — never up to an expensive tier (legacy
+    ``{"type":"enabled","budget_tokens":N}`` → ``reasoning={"max_tokens":N}``;
+    ``enabled`` with no usable budget → no field),
+    which OpenRouter maps to each vendor's native form. The
+    ``reasoning_details`` array OpenRouter returns (non-streaming
+    ``message.reasoning_details``, streaming ``delta.reasoning_details``) is
+    carried as a synthetic ``openrouter_reasoning`` content block (always
+    LAST in ``content`` so ``content[0].text`` readers are unaffected) and
+    replayed verbatim as ``reasoning_details`` on the assistant message by
+    the request translator. The one tool loop that runs with deep reasoning
+    on — monitoring.research.agentic._assistant_turn — echoes the block, so
+    it keeps reasoning continuity (the OpenRouter-path equivalent of echoing
+    Anthropic thinking blocks). The Executive / executive_research /
+    executive_reflection loops never enable thinking and drop the block
+    harmlessly; wire the echo in if deep reasoning is ever added to them.
+    The Anthropic
     server-side web_search tool (no input_schema) cannot be executed by
     OpenRouter, so its intent is translated into OpenRouter's
     ``plugins:[{"id":"web","max_results":N}]`` web-search plugin (N derived
@@ -153,13 +212,16 @@ providers:
     fragmented tool_call argument deltas into a single tool_use block
     at stream close.
   routing_rules:
+    - Slug listed in LOCAL_MODELS (with LOCAL_MODELS_ENABLED=true) → local OpenAI-compatible backend. Checked FIRST, before the Claude-id regex, so an operator's explicit local slug (even one shaped like ``claude-proxy-1``) is never re-routed to a hosted vendor.
     - Claude model + OPENROUTER_ENABLED=false → AnthropicProvider.
-    - Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated Claude OpenRouter slugs (anthropic/claude-opus-4.7, claude-sonnet-4.6, claude-haiku-4.5).
-    - Non-Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the curated non-Anthropic slugs.
+    - Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider. The slug is DERIVED, not looked up — registry.openrouter_slug_for_claude maps ``claude-<family>-<major>[-<minor>][-<yyyymmdd>]`` to ``anthropic/claude-<family>-<major>[.<minor>]`` (claude-sonnet-5 → anthropic/claude-sonnet-5, claude-haiku-4-5-20251001 → anthropic/claude-haiku-4.5). The same regex defines "is a Claude model" for routing, so a previous-generation id persisted in agent_overrides (claude-opus-4-7) still routes to Anthropic instead of falling through to the non-Claude path.
+    - Non-Claude model + OPENROUTER_ENABLED=true → OpenRouterProvider with the slug passed through verbatim (live catalog or the hardcoded fallback). A ``model_resolver`` callback (registry._openrouter_model_resolver) hands Claude ids and ``anthropic/claude-*`` catalog slugs the Claude feature spec; everything else gets the non-Claude default — so a catalog refresh after the provider singleton is built needs no rebuild.
     - Non-Claude model + OPENROUTER_ENABLED=false → HTTP 400 at the API boundary. No silent fallback.
   council_ui_dropdown_source: |
     openexecutive.providers.allowed_models_for(agent_id) — returns
-    ANTHROPIC_DIRECT_MODELS plus OPENROUTER_MODELS when the toggle is on.
+    ANTHROPIC_DIRECT_MODELS (claude-opus-5, claude-sonnet-5, claude-haiku-4-5)
+    plus registry.openrouter_models() (live catalog, else the OPENROUTER_MODELS
+    fallback snapshot) when the toggle is on.
     Every agent (including utility_fast) gets the same list; the
     utility_fast-only free/cheap OpenRouter matrix was removed. The Council
     UI dropdown (GET /agents/models?agent_id=) and the PATCH /agents/{id}
@@ -1122,8 +1184,9 @@ audit:
     - committee_review — one row per committee-reviewed turn; carries draft length, final length, per-reviewer critiques and timings (previously emitted but newly declared as a recognised event_type)
     - peer_memory — one row per `openexecutive.memory.honcho_client` call (prefetch / sync_turn / directional_chat / prefetch_department / sync_department_turn / append_department_note); carries `op`, `person_id`, optional `department_slug`, `outcome` (ok / timeout / error / disabled / no_person / no_department / no_loop / empty), `duration_ms`, plus op-specific details (query preview, reasoning_level, peer count, co_present_person_ids, co_present_department_slugs, originating_person_id, target_person_id, session_id, kind) so the flow-chart view renders the peer_memory path alongside `<retrieved_context>` and `<past_decisions>`. Disabled / no-Person / no-Department turns still emit (outcome marker) so audit absence equals "code path never ran" instead of "the provider was down."
     - external_signal_received — one row per signal an external-monitor adapter wrote to `external_signals`. Carries `signal_id`, `watchlist_id`, `watchlist_slug`, `source_kind`, `severity_hint`, `dedup_key`. The audit trail of what the monitor noticed, separate from what it surfaced.
+    - external_signal_deferred — one row per poll that skipped entries whose published_at is more than the row's future-skew tolerance ahead (aggregated — `count`, `future_skew_hours`, `race_tick`, and up to 10 `entries` each with `dedup_key`, `published_at`, `summary` and `provenance_url`, so an operator can tell WHAT was held back). Emitted from the scan loop's finally, so it survives a poll that raises later in the same row. A deferred entry is by design NOT written to external_signals (that would burn its dedup key and mute it for good), so this row is its only trace until its date passes and it is judged normally.
     - external_signal_promoted — one row per signal promoted into the alerts pipeline (post-suppression cascade). Carries `signal_id`, `watchlist_id`, `watchlist_slug`, `source_kind`, `severity_hint`, `dedup_key`, `provenance_url`. Pair with `external_signal_received` to compute promotion rate per watchlist row.
-    - external_monitor_poll — one row per watchlist row polled in a scan tick. Carries `watchlist_id`, `watchlist_slug`, `signal_type`, `signals_emitted`, `duration_ms`. Enables per-source health drill-down (`GET /audit?event_type=external_monitor_poll`) without needing a dedicated debug endpoint.
+    - external_monitor_poll — one row per watchlist row polled in a scan tick, emitted even when the row's poll raised or was cancelled (`failed` set to true, with `signals_emitted` still counting rows that landed before the failure, so the audit log stands on its own); `failed` is also true when the adapter crashed or no adapter is registered. A row with no registered adapter is still marked polled so it honours the cadence rather than re-firing every heartbeat. Carries `watchlist_id`, `watchlist_slug`, `signal_type`, `signals_emitted`, `duration_ms`, `failed`. Enables per-source health drill-down (`GET /audit?event_type=external_monitor_poll`) without needing a dedicated debug endpoint.
     - watchlist_research_periodic_ran — emitted by the periodic cron whenever the workflow actually fires. Carries `state_hash` (the input fingerprint at run time), `trigger` (`cold_start`, `state_changed`, or `staleness_floor`), `findings` count, `tool_calls` count, `ok_tool_calls`, `run_id`. The next tick reads the most recent row to decide skip-or-run (its `state_hash` for the fingerprint compare, its `ts` for the staleness floor). These three research run-history rows are the ONLY audit_log rows a fixture load/unload clears (via `monitoring.research.scheduler.clear_research_run_history`, called from `cli.fixture_loader._apply_state_from_source`): load wipes the profile/initiatives/watchlist that feed the fingerprint but otherwise preserves audit_log, so without this reset a same-fixture reload within the staleness floor would make the freshly-seeded scan skip itself and surface zero findings. A full reset still wipes all of audit_log.
     - watchlist_research_periodic_skipped — emitted when the state_hash matches the last `_ran` row. Carries `state_hash`. Visible cost-saving signal in the audit log.
     - watchlist_research_periodic_failed — emitted on workflow timeout / crash. Carries `state_hash` + `error` or `reason`.
@@ -1162,8 +1225,12 @@ external_monitoring:
       Columns: id, slug, signal_type, target, config_json, trigger_json,
       cadence, severity_floor, severity_ceiling, route_to_specialist,
       route_to_department, route_to_person_id, mode ('active' | 'dry_run'),
-      enabled, created_at, last_polled_at, last_fired_at, fired_count,
-      dismiss_count, trust_score, notes.
+      enabled, created_at, last_polled_at, baselined_at, last_fired_at,
+      fired_count, dismiss_count, trust_score, notes.
+      baselined_at (nullable, additive ALTER; backfilled from
+      last_polled_at for rows that were already being polled when the
+      column landed) is set once a seeding source's first poll that
+      returned entries has been recorded — see external_signals below.
       UNIQUE(slug). Indexed on (enabled, signal_type) for the scan
       walker.
     external_signals (in episodic_memory.db): |
@@ -1171,12 +1238,72 @@ external_monitoring:
       is intentional — the briefing layer can answer "what did you ignore
       overnight" and the trust loop has a denominator for hit-rate metrics.
       Columns: id, watchlist_id, source_kind, source_external_id,
-      captured_at, normalized_summary, raw_payload_json, provenance_url,
-      severity_hint, dedup_key, processed_at, processed_outcome
-      ('alerted' | 'suppressed_dry_run' | 'suppressed_below_floor' |
+      captured_at, published_at, normalized_summary, raw_payload_json,
+      provenance_url, severity_hint, dedup_key, processed_at,
+      processed_outcome
+      ('alerted' | 'suppressed_baseline' | 'suppressed_stale' |
+      'suppressed_dry_run' | 'suppressed_below_floor' |
       'suppressed_dup' | 'suppressed_triage' | 'suppressed_low_relevance' |
       'failed'),
       promoted_alert_id, enrichment_json.
+      captured_at is when the monitor first saw the event; published_at
+      (nullable, added via the same idempotent additive ALTER pattern) is
+      when the upstream says it happened — RSS <pubDate>/<updated>, EDGAR
+      filing date; NULL for stock / page_watch / query. The two are never
+      conflated (issue #80). Two freshness gates run FIRST in the
+      suppression cascade, before dry_run / floor / enrichment, so they
+      never spend an LLM call: (1) `suppressed_baseline` — on the first
+      poll that RETURNS ENTRIES for a row whose adapter declares
+      `seed_on_first_poll` (rss, edgar) and whose `baselined_at` is NULL,
+      every entry in the feed is recorded as seen and nothing is promoted.
+      The claim and the recording are ONE transaction
+      (store.record_baseline, BEGIN IMMEDIATE): a compare-and-swap on
+      `baselined_at IS NULL` stamps the row, then EVERY fetched entry —
+      trigger misses included, so the first entry that ever matches a
+      keyword is news rather than "back-catalogue", and widening a
+      trigger later can't resurface what was already in the feed — is
+      inserted and marked suppressed_baseline; a failure part-way rolls
+      the stamp back with the rows, so the next tick baselines the whole
+      feed again rather than replaying an unrecorded tail. One row's
+      store failure is logged and skipped so the rest of the scan runs.
+      A scan that loses the race (overlapping heartbeat + client
+      rotation, or a slow tick) re-reads the winner's stamp and treats
+      entries published at or before it — and undated ones, since the
+      feed controls published_at — as baseline, promoting entries dated
+      after the stamp (and deferring, not recording, any dated more than
+      a few minutes past its own clock), so neither the back-catalogue replays as news
+      nor real news gets buried; later ticks process normally. The
+      net effect is that a new watch reports what changes
+      from now on rather than replaying the feed's back-catalogue
+      (mirrors page_watch's first-observation baseline). Keyed on
+      baselined_at, not last_polled_at, so a failed/empty first fetch
+      leaves the next successful poll as the baseline; baseline rows are
+      written but do NOT count against max_signals_per_scan, so a big
+      feed can't be half-baselined and replay its tail next tick;
+      (2) `suppressed_stale` — a signal whose published_at is older than
+      EXTERNAL_MONITOR_MAX_SIGNAL_AGE_DAYS (default 7; 0 disables) at
+      capture time is recorded but never promoted. An entry dated more
+      than EXTERNAL_MONITOR_MAX_FUTURE_SKEW_HOURS (default 24; 0 disables;
+      overridable per row via config_json.max_future_skew_hours, 0..8760,
+      for a calendar or maintenance feed that legitimately dates ahead; an
+      out-of-range or unparseable override is ignored with a warning, never
+      coerced — the adapters use the same value when choosing between an
+      entry's date keys) in the FUTURE is instead
+      deferred — skipped for the tick and NOT recorded, since recording
+      burns the dedup key and would let a feed mute an announcement for
+      good by post-dating it; the poll emits one aggregated
+      `external_signal_deferred` audit row so the skip is visible, and
+      once the date passes the entry is judged like any other. On a
+      lost-race tick the bound is a tight 5-minute drift tolerance
+      instead (nothing the scan fetched can honestly be dated later). The alert body handed
+      to triage carries `Published:` (when known) and `Discovered:`
+      lines so anything inside the window is still judged on when it
+      happened, not when it was found. Adapters prefer a plausible
+      date key over one more than a day in the future, and keep the
+      future value when every key is implausible so the pipeline can
+      defer it rather than wave an undated entry through; they also
+      collapse whitespace in feed titles so an entry can't
+      forge its own labeled body line.
       enrichment_json holds the capture-time relevance read
       (relevance_score 0..1, why_it_matters, matched_initiative) written by
       the enrichment stage; '{}' when enrichment is off or missed. Added via
@@ -1207,11 +1334,11 @@ external_monitoring:
       `Source` instance that handles it. New adapters register here;
       add a top-level fact in this YAML when they ship.
     shipped:
-      - "vendor_status — polls Statuspage Atom history feeds (AWS, Stripe, Twilio, GitHub, Cloudflare, …) and emits one Signal per incident entry. Severity hint HIGH by default. Optional `trigger_json.keywords` narrows to entries whose title contains a keyword."
-      - "rss — generic Atom/RSS feed adapter via feedparser; handles competitor changelogs, layoffs.fyi, USPTO patent feeds, regulatory filings, blog RSS. Severity hint LOW by default (most RSS is noisy). Optional `trigger_json.keywords` filters by title + summary."
+      - "vendor_status — polls Statuspage Atom/RSS history feeds (AWS, Stripe, Twilio, GitHub, Cloudflare, …) and emits one Signal per incident entry. Severity hint HIGH by default. Optional `trigger_json.keywords` narrows to entries whose title contains a keyword. Dedup key is sha256(slug + NUL + entry id + NUL + <updated>) — the <updated> component is load-bearing (issue #90): an incident's entry id never changes across its updates, so keying on the id alone made every suppression permanent, which is why this adapter used to sit outside BOTH #80 freshness gates and replayed a vendor's resolved archive as HIGH alerts on the first poll. With the state in the key a suppressed insert burns one state of an incident rather than the incident, so both gates now apply: published_at is parsed from <updated>/<pubDate> (age gate + future deferral), and the row is seeded on its first poll. The adapter reads each incident's CURRENT status out of the entry body (Statuspage renders the newest update first as <strong>Resolved</strong> / Investigating / Monitoring / …; the classifier is deliberately ASYMMETRIC and position-independent. Evidence that an incident is OVER counts from anywhere — an AWS-style [RESOLVED] title marker, a status label, or an update's prose; evidence that it is still OPEN counts only from a label the vendor marked up (<strong>Investigating</strong>), never from prose. Nothing tries to work out which update is newest: four review rounds each found a different way to get that wrong (scanning past an unrecognised label, mining prose for status words, skipping an unlabelled update in the element tree, and reading past a block whose end tag HTML lets you omit), and each reported a long-resolved incident as live, promoting an archive at HIGH. Position is not a property tag soup can express, so the rule does not depend on it and is monotone: more evidence only ever makes the answer safer. Bodies are parsed by html.parser.HTMLParser (a label in a comment, a script or an attribute value is not a label; <b> counts as <strong>), off the event loop via asyncio.to_thread, from ONE element chosen by its text (_entry_body), with an xhtml-typed <content> re-serialised — escaped — so both feed shapes reach the parser identically. Known residual: an unrecognised or empty label on the newest update, with an older open label and no sign of closure anywhere, reads as open — which is why an exempt entry is NOT excused the age gate, bounding that to an entry the feed dates inside the age window) and implements the optional `promote_on_baseline` hook, which exempts incidents that are still OPEN from its own baseline — so a new watch added during an outage surfaces that outage immediately while the resolved archive is recorded as suppressed_baseline. Unrecognised status counts as CLOSED (fail closed: a vendor changing feed format must not be able to promote its archive; the next <updated> bump mints a new key and surfaces normally). Exempt entries must also pass the row's trigger filter — one that misses stays in the baseline, or widening the trigger later would resurface it as news — and they bypass the age gate, since an incident the adapter calls still-happening can have an <updated> stamp days old and recording it as stale would burn its key. The dedup key hashes the NORMALISED stamp (the same parse that fills published_at), so Z vs +00:00 is one key and a serialisation change does not rekey a vendor's open incidents. One-time migration `vendor_status_dedup_rekey_90` (marker row in `monitoring_migrations`) clears `baselined_at` on existing vendor_status rows so the upgrade tick re-seeds under the new key scheme instead of replaying."
+      - "rss — generic Atom/RSS feed adapter via feedparser; handles competitor changelogs, layoffs.fyi, USPTO patent feeds, regulatory filings, blog RSS. Severity hint LOW by default (most RSS is noisy). Optional `trigger_json.keywords` filters by title + summary. Each entry's <pubDate>/<updated> is parsed into Signal.published_at; declares `seed_on_first_poll` so a new watch baselines the feed's existing entries instead of firing them, and entries older than EXTERNAL_MONITOR_MAX_SIGNAL_AGE_DAYS are recorded as `suppressed_stale` (issue #80)."
       - "stock — Yahoo Finance Chart endpoint (the same endpoint yfinance scrapes, used directly via httpx to avoid pandas/numpy). Watchlist `target` is the ticker; signals fire when |intraday vs previous close| ≥ `trigger.abs_change_pct_gte` (default 5%). Severity hint scales with the magnitude of the move (≥10% URGENT, ≥5% HIGH, ≥2% MEDIUM, else LOW). v2 candidate: swap behind the same Source interface for a paid Alpha Vantage / Finnhub feed if Yahoo brittleness bites."
       - "query — standing web-search query. Watchlist `target` is a natural-language query (e.g. 'Acme Corp layoffs OR restructuring OR funding'); each poll runs it through `BaseAgent.analyze_with_tools` with the web_search tool (model pinned to `get_research_model()`, honouring an OpenRouter Council override — the provider layer translates native web_search into OpenRouter's `plugins:[{id:web}]`, see providers/translator). The model reports distinct results via the `emit_query_results` tool; each result with a valid clickable URL becomes a Signal (the adapter emits a flat severity hint LOW because it can't judge materiality per-hit — the pipeline regrades this from the capture-time relevance read BEFORE the floor gate via `_grade_query_severity`, so a material hit clears a medium/high floor instead of being suppressed; dedup key `query:` + first 32 hex chars of sha256(slug + NUL + canonical_url); URL-less results dropped to uphold the provenance invariant). UNLIKE the keyless feed adapters this source is BILLED (one LLM call + web searches per poll), so it polls slowly (default 360 min), is bounded by `web_search_max_uses` + per-row `config.max_results` (default 5, ceiling 10), and has its own kill switch `EXTERNAL_MONITOR_QUERY_ENABLED`. Optional `trigger.keywords` filters like rss; `config.allowed_domains`/`blocked_domains` are best-effort prompt hints only (NOT enforced, and not honoured by the OpenRouter web plugin). This is the 'watch arbitrary conditions' primitive that no feed publishes."
-      - "edgar — SEC EDGAR filings. Watchlist `target` is a ticker (e.g. 'AAPL') or CIK; polls SEC's browse-edgar Atom feed (`/cgi-bin/browse-edgar?action=getcompany&CIK=…&output=atom`, whose CIK param resolves a ticker server-side, so no ticker→CIK table is shipped), parsed with feedparser. Emits one Signal per new filing whose form is in the filter (`trigger.forms`, default {8-K, 10-K, 10-Q}; amendments like 8-K/A match their base form). Dedup on the filing's accession number (globally unique — the cleanest natural key of any source). Provenance is the filing-index URL. Severity hint: 8-K HIGH (material-event report), 10-K/10-Q MEDIUM, else LOW. Keyless, but SEC's fair-access policy requires a descriptive User-Agent with a contact — sent via the EDGAR_USER_AGENT setting (operators should override the default with a real contact). Reuses fetch_bounded (now with a per-call user_agent override), validate_target_url, and the standard dedup/Signal pattern."
+      - "edgar — SEC EDGAR filings. Watchlist `target` is a ticker (e.g. 'AAPL') or CIK; polls SEC's browse-edgar Atom feed (`/cgi-bin/browse-edgar?action=getcompany&CIK=…&output=atom`, whose CIK param resolves a ticker server-side, so no ticker→CIK table is shipped), parsed with feedparser. Emits one Signal per new filing whose form is in the filter (`trigger.forms`, default {8-K, 10-K, 10-Q}; amendments like 8-K/A match their base form). Dedup on the filing's accession number (globally unique — the cleanest natural key of any source). Provenance is the filing-index URL. Severity hint: 8-K HIGH (material-event report), 10-K/10-Q MEDIUM, else LOW. Keyless, but SEC's fair-access policy requires a descriptive User-Agent with a contact — sent via the EDGAR_USER_AGENT setting (operators should override the default with a real contact). Reuses fetch_bounded (now with a per-call user_agent override), validate_target_url, and the standard dedup/Signal pattern. The entry's <updated> lands on Signal.published_at and the adapter declares `seed_on_first_poll`, so a new watch baselines past filings instead of replaying them and filings older than EXTERNAL_MONITOR_MAX_SIGNAL_AGE_DAYS are `suppressed_stale`."
       - "page_watch — generic web-page change detection for feed-less pages (pricing, careers, leadership, ToS). Watchlist `target` is the page URL. STATEFUL (the first stateful adapter): each poll fetches the page (bounded, SSRF-guarded), reduces it to normalized visible text (drops script/style/comments/tags, unescapes entities, collapses whitespace — so markup/layout churn doesn't register), hashes the FULL normalized text (so a change anywhere registers — no length blind spot), and compares to the last-seen hash in `page_watch_state`. First observation stores a baseline and emits NOTHING; an unchanged page emits nothing; a changed page emits ONE Signal carrying a difflib-based change summary (~N% differs + the added text; the diff/snapshot are length-capped but detection is not) and updates the baseline. Severity hint LOW (page diffs are noisy — enrichment + severity_floor filter). Dedup key folds slug + UTC date + content hash (mirrors stock — a state seen again on a later day re-alerts; same-day repeats dedup). Optional `trigger.keywords` only surfaces a change when the change itself (summary + added text) matches. Reads/writes its state via the db_path threaded through Source.poll. Optional `config.fetch = \"xcrawl\"` routes the fetch through xcrawl's scrape API (clean markdown) instead of the keyless httpx fetcher — so JS-rendered / bot-blocked feed-less pages (most modern news/marketing sites) are monitorable; off by default, a no-op when xcrawl is disabled, and the scraped markdown is size-capped to mirror the httpx byte cap."
   insert_validation: |
     monitoring.target_validation.validate_and_normalize_target — runs at
@@ -1406,7 +1533,7 @@ external_monitoring:
          The research turn's model + deep-reasoning are controlled by the
          `research` virtual Council agent (get_research_model() /
          get_research_use_deep_reasoning(): Council override → `RESEARCH_MODEL`
-         env, default claude-sonnet-4-6 with deep reasoning OFF) — pinned
+         env, default claude-sonnet-5 with deep reasoning OFF) — pinned
          per-call via analyze_with_tools' overrides, NOT the agent's chat-time
          deep_reasoning_model (Opus 4.7). The research turn is
          retrieve-from-web-search + summarize, so the cheaper tier is the
@@ -2715,6 +2842,46 @@ clients:
     blank slot (no state.db yet) factory-wipes the per-client tables and
     re-seeds defaults (departments, onboarding templates, principal briefs,
     cadences) so the new client's Today works without a process restart.
+    Wipe lists must cover the DERIVED CACHES, not just authored state.
+    briefing_narrative and person_insights were wiped by NO path, and because
+    /today serves the cached narrative unconditionally (regenerating only in a
+    BackgroundTask), whichever path swapped the company rendered the OUTGOING
+    one's narrative under the incoming one. Do not assume person_insights'
+    input_hash self-guards: that hash covers role, is_principal, status,
+    awaiting/reply counters, overdue, on_leave_until, reachable_now,
+    authority_scope, department_slugs, four hour-bucketed timestamps and the
+    UTC day — all per-person signals, and NOT person, name or company
+    identity. The key is a reused autoincrement person_id, so an outgoing
+    principal and a freshly seeded incoming principal hash identically
+    whenever those signals coincide. Ordinary steady state, not a collision.
+    THREE paths swap live company state and each kept its own hand-written
+    table list, which is why fixing one left the leak live in the other two.
+    They now all consume `cli.fixture_loader.PER_CLIENT_CACHE_TABLES`:
+    `clients.slots._BLANK_WIPE_TABLES` (switch into a blank/seed slot),
+    `reset_all_state` (factory reset), and `_apply_state_from_source` (fixture
+    load AND unload — the worst surface, since a demo is what gets
+    screen-shared). The fixture-path wipe sits in `_apply_state_from_source`
+    beside the unconditional watchlist wipe, NOT in `_seed_episodic_memory`:
+    that seeder returns early when a fixture has no readable `memory.json`,
+    and `load_fixture` only requires `profile.yaml`, so a wipe inside the
+    seeder is skipped on exactly those loads while the company still swaps.
+    Client→client switching into a slot that HAS state.db was already safe:
+    the sqlite backup API truncates the destination to an exact copy.
+    Add any new per-company cache table to that constant, once.
+    Graded as NOT wiped: generated_fixtures (operator-level, see
+    _GLOBAL_TABLES) and architecture_sections (repo-derived, keyed by a hash of
+    the facts file). Still UNGRADED, deliberately deferred: dynamic_workflows
+    and eval_scenarios. These ARE client-scoped — the non-blank path already
+    swaps them with the whole DB — and on the blank path the outgoing client's
+    workflow definitions stay registered AND active (`list_definitions(
+    active_only=True)`), runnable against the incoming client's data, with full
+    bodies exposed via /workflows. They are not in the wipe list because they
+    are authored, not derived, and `snapshot_user_state` (the first-activation
+    branch, when no client is active) captures only profile/docs/memory.json/
+    people/departments — so wiping them there would irrecoverably delete the
+    operator's own work. The fix is to capture them in that snapshot FIRST,
+    then wipe. Both tables were observed empty on all known installs as of
+    2026-09 — an observation at a point in time, not an invariant to rely on.
   invariants:
     - At most one slot is active; the .active_client sentinel records it
       (allowlist-validated on read, same defence as the fixture sentinel).

@@ -58,9 +58,11 @@ Events with `source` ∈ `{"vendor_status", "rss", "stock", "query", "edgar", "p
 ```
 Watchlist: <slug>         # the user-named entry that captured this signal
 Severity hint: <low|medium|high|urgent>   # the adapter's pre-graded severity
+Published: <ISO timestamp>   # when the upstream says it happened (only when the source publishes one)
+Discovered: <ISO timestamp>  # when the monitor first saw it
 ```
 
-Use those two lines plus `source` as your primary inputs. Follow these rules in addition to the general rubric:
+Use the first two lines plus `source` as your primary inputs. `Published:` and `Discovered:` are distinct on purpose: an item is only as recent as its `Published:` line, never its `Discovered:` line. Follow these rules in addition to the general rubric:
 
 - The watchlist already decided what's worth surfacing, so trust the source. Default to `alert=true` unless the event clearly duplicates a recent one (apply the dedup rule) or is muted.
 - Use the `Severity hint:` line as your starting severity. Upgrade only when something else justifies it; downgrade only when the body makes clear the event resolved or is irrelevant.
@@ -72,6 +74,7 @@ Use those two lines plus `source` as your primary inputs. Follow these rules in 
 - ALWAYS add two topic tags: `external:<source>` (e.g. `external:vendor_status` or `external:query`, from the `source` field) AND `external:<watchlist_slug>` (e.g. `external:stock-aapl`, copied verbatim from the `Watchlist:` line in the body). These tags drive the "external" chip on the briefing card; missing the source tag leaves the principal without provenance.
 - When the source is `stock`, include a short rationale in `body` linking the move to a plausible cause (earnings, macro, peer move) when one is obvious from `<recent_alerts>`. When no rationale is obvious, say "no obvious driver from open signals" — don't invent one.
 - `suggested_action` for external signals is the single concrete action you (the Executive) will take on the user's behalf if they approve — first-person imperative, naming the source/channel/tool: "Check Stripe's status page and confirm checkout impact, then report back" / "Re-read Acme's changelog v2 and refresh our battlecard if pricing changed". Never longer than one sentence.
+- When `Published:` is present and clearly predates `Discovered:` (days, not hours), describe the item as dated in `body` and do not treat it as breaking news — keep or lower the severity hint rather than upgrading it. Old news that is still material to an active initiative can stay `alert=true`, but say when it happened.
 - Quote, don't paraphrase, when summarising filings or status-page incidents — the body is the principal's last chance to see what the source actually said before clicking through.
 
 The blast-radius rules above (privacy invariant on board/comp/legal) still apply: an external signal that names a competitor's funding round is NOT board-scoped and stays per-Person.

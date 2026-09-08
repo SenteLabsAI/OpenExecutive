@@ -65,6 +65,34 @@ _FIXTURE_OP_LOCK = asyncio.Lock()
 # sentinel file so a tampered/garbage value cannot reach the UI.
 _SAFE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Per-company DERIVED caches in the episodic DB. Regenerable, so always safe to
+# drop — and they MUST be dropped by every path that swaps the live company,
+# because /today serves them from cache and only regenerates in a
+# BackgroundTask. Leave a row behind and the next request renders the OUTGOING
+# company's text under the incoming one: observed live, one client's briefing
+# narrative appearing verbatim under another.
+#
+# Three separate paths swap live company state, and each maintained its own
+# hand-written table list — so this was fixed in one and still live in the other
+# two. They now all consume this constant: `clients.slots._BLANK_WIPE_TABLES`
+# (client switch into a blank/seed slot), `reset_all_state` (factory reset), and
+# `_apply_state_from_source` (fixture load AND unload). Any new per-company
+# cache table goes here, once.
+#
+# The fixture-path wipe belongs in `_apply_state_from_source`, NOT in
+# `_seed_episodic_memory`: that seeder returns early when the fixture has no
+# readable `memory.json`, and `load_fixture` only requires `profile.yaml` — so
+# such a fixture swaps the company while skipping a wipe placed inside the
+# seeder.
+#
+# Not included, deliberately: `generated_fixtures` (operator-level, see
+# `slots._GLOBAL_TABLES`) and `architecture_sections` (repo-derived, keyed by a
+# hash of the facts file — not company data).
+PER_CLIENT_CACHE_TABLES: tuple[str, ...] = (
+    "briefing_narrative",
+    "person_insights",
+)
+
 # Walk up from this file to find the repo root (contains evals/, fixtures/, etc.)
 # Match on ``fixtures/companies`` specifically — NOT a bare ``fixtures`` dir —
 # so the in-package ``openexecutive/fixtures/`` module (generated-fixture store
@@ -143,7 +171,7 @@ def _summarize_departments(path: Path) -> list[dict[str, Any]]:
     import yaml
 
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
         return []
     out: list[dict[str, Any]] = []
@@ -162,7 +190,7 @@ def _summarize_people(path: Path) -> list[dict[str, Any]]:
     import yaml
 
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
         return []
     out: list[dict[str, Any]] = []
@@ -295,7 +323,7 @@ async def _load_from_dir(
         # Record which fixture is active so the UI can show it and so a
         # subsequent load() knows not to take a fresh snapshot.
         sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.write_text(fixture_name)
+        sentinel.write_text(fixture_name, encoding="utf-8")
 
         # Honcho workspace isolation: switch to a per-fixture workspace
         # so demo turns sync to a sacrificial store rather than polluting
@@ -474,6 +502,13 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
     monitoring_cleared = _delete_all_rows(
         EPISODIC_DB_PATH, ("external_signals", "watchlist")
     )
+
+    # ── 5b. Wipe the derived per-company caches ────────────────────────────
+    # Same leak class as the watchlist above; see PER_CLIENT_CACHE_TABLES for
+    # why this belongs here rather than in _seed_episodic_memory. Nothing in
+    # this step may become conditional on the fixture's contents.
+    caches_cleared = _wipe_derived_caches(EPISODIC_DB_PATH)
+    logger.info("fixture: cleared derived per-company caches: %s", caches_cleared)
 
     # ── 6. Reset the periodic research skip-if-unchanged gate ───────────────
     # The skip gate reads the last run's state_hash from audit_log; load/unload
@@ -671,6 +706,10 @@ async def reset_all_state(
         # circuit (and there's nothing to wipe in a DB that isn't there).
         if EPISODIC_DB_PATH.exists():
             monitoring_store.initialize_db(EPISODIC_DB_PATH)
+        # Same reasoning for the derived caches in PER_CLIENT_CACHE_TABLES,
+        # which this DELETE pass also covers; the helper is guarded on the
+        # DB existing, exactly like the monitoring init above.
+        _initialize_derived_cache_schemas(EPISODIC_DB_PATH)
         episodic_cleared = _delete_all_rows(
             EPISODIC_DB_PATH,
             (
@@ -689,6 +728,7 @@ async def reset_all_state(
                 "eval_runs",
                 "external_signals",
                 "watchlist",
+                *PER_CLIENT_CACHE_TABLES,
             ),
         )
 
@@ -853,6 +893,37 @@ def _delete_all_rows(
     return counts
 
 
+def _initialize_derived_cache_schemas(db_path: Path) -> None:
+    """Create the PER_CLIENT_CACHE_TABLES schemas if the DB already exists.
+
+    Both caches CREATE TABLE lazily on first put, so a DB that has never
+    served a briefing lacks them — and ``_delete_all_rows`` guards only the DB
+    *file*, not each table, so a wipe would raise mid-pass. Idempotent
+    (CREATE TABLE IF NOT EXISTS). Guarded on the DB already existing so we
+    never materialise one the caller never created, which would defeat
+    ``_delete_all_rows``' own exists() short circuit.
+    """
+    if not db_path.exists():
+        return
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.people import insights_cache
+
+    narrative_cache.initialize_db(db_path)
+    insights_cache.initialize_db(db_path)
+
+
+def _wipe_derived_caches(db_path: Path) -> dict[str, int]:
+    """Drop every row of the derived per-company caches; return per-table counts.
+
+    The one place the initialize-then-delete pairing is expressed for callers
+    that wipe only these tables. ``reset_all_state`` folds them into its own
+    single DELETE pass instead (it reports per-table counts for the whole
+    episodic DB), but shares ``_initialize_derived_cache_schemas`` above.
+    """
+    _initialize_derived_cache_schemas(db_path)
+    return _delete_all_rows(db_path, PER_CLIENT_CACHE_TABLES)
+
+
 def get_fixture_status(settings: Any) -> dict[str, Any]:
     """Lightweight status for the UI: which fixture is active and is there a snapshot?"""
     backup_dir = _user_backup_dir(settings)
@@ -861,7 +932,7 @@ def get_fixture_status(settings: Any) -> dict[str, Any]:
     active_fixture: str | None = None
     if sentinel.exists():
         try:
-            content = sentinel.read_text().strip()
+            content = sentinel.read_text(encoding="utf-8").strip()
             # Defence-in-depth: only return the value if it matches the same
             # allowlist used by /fixtures/{name}/load. Anything else (garbage,
             # hand-edit, tampering) is treated as "no fixture active".
@@ -985,7 +1056,7 @@ def _dump_episodic_memory(memory_path: Path) -> dict[str, int]:
         "advice_given": advice,
         "scheduled_actions": [],
     }
-    memory_path.write_text(json.dumps(payload, indent=2, default=str))
+    memory_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return {
         "decisions": len(decisions),
         "initiatives": len(initiatives),
@@ -1031,7 +1102,7 @@ def _dump_people(people_path: Path) -> int:
 
     import yaml
 
-    people_path.write_text(yaml.safe_dump({"people": rows}, sort_keys=False))
+    people_path.write_text(yaml.safe_dump({"people": rows}, sort_keys=False), encoding="utf-8")
     return len(rows)
 
 
@@ -1083,7 +1154,7 @@ def _dump_departments(dept_path: Path) -> int:
 
     import yaml
 
-    dept_path.write_text(yaml.safe_dump({"departments": rows}, sort_keys=False))
+    dept_path.write_text(yaml.safe_dump({"departments": rows}, sort_keys=False), encoding="utf-8")
     return len(rows)
 
 
@@ -1100,7 +1171,7 @@ def _seed_episodic_memory(memory_path: Path, settings: Any) -> dict[str, int]:
         return dict(_empty)
 
     try:
-        data: dict[str, Any] = json.loads(memory_path.read_text())
+        data: dict[str, Any] = json.loads(memory_path.read_text(encoding="utf-8"))
     except Exception:
         return dict(_empty)
 
@@ -1300,7 +1371,7 @@ def _seed_people(people_path: Path) -> int:
     try:
         import yaml
 
-        data = yaml.safe_load(people_path.read_text()) or {}
+        data = yaml.safe_load(people_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return 0
 
@@ -1397,7 +1468,7 @@ def _seed_departments(dept_path: Path) -> int:
     try:
         import yaml
 
-        data = yaml.safe_load(dept_path.read_text()) or {}
+        data = yaml.safe_load(dept_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return 0
 

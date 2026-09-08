@@ -90,6 +90,8 @@ _WS_RE = re.compile(r"\s+")
 class PageWatchSource:
     kind: str = SOURCE_KIND_PAGE_WATCH
     default_poll_interval_minutes: int = _DEFAULT_POLL_MINUTES
+    # Keeps its own first-observation baseline in page_watch_state.
+    seed_on_first_poll: bool = False
 
     async def poll(
         self, item: WatchlistItem, *, db_path: Path | None = None

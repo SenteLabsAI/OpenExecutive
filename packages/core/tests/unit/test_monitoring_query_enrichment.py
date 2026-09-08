@@ -372,6 +372,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 class _FakeSource:
     kind: str = "vendor_status"
     default_poll_interval_minutes: int = 5
+    seed_on_first_poll: bool = False
 
     def __init__(self, signals: list[Signal]) -> None:
         self._signals = signals
@@ -536,6 +537,7 @@ async def test_query_kill_switch_skips_query_rows(
     class _SpyQuery:
         kind = "query"
         default_poll_interval_minutes = 360
+        seed_on_first_poll: bool = False
 
         async def poll(
             self, item: WatchlistItem, *, db_path: Path | None = None
@@ -576,6 +578,7 @@ class _FakeQuerySource:
 
     kind: str = "query"
     default_poll_interval_minutes: int = 360
+    seed_on_first_poll: bool = False
 
     def __init__(self, signals: list[Signal]) -> None:
         self._signals = signals

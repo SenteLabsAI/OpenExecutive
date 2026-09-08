@@ -94,6 +94,32 @@ function auditAuth(
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  // @auth/core auto-detects trustHost via `AUTH_URL ?? AUTH_TRUST_HOST ??
+  // VERCEL ?? CF_PAGES ?? NODE_ENV !== "production"` — a chain of `??`
+  // (nullish coalescing). This repo's own local-dev default sets AUTH_URL
+  // to an EMPTY STRING, which is present-but-not-nullish, so it
+  // short-circuits that chain to `false` *before* AUTH_TRUST_HOST or the
+  // NODE_ENV fallback are ever consulted — exactly the documented local-dev
+  // config (AUTH_TRUST_HOST=true, AUTH_URL blank) breaks sign-in.
+  //
+  // Reimplemented below with an emptiness test instead of `??`, so a blank
+  // AUTH_URL can no longer mask AUTH_TRUST_HOST. Deliberately NOT a
+  // hardcoded `true`: that would trust the host on any real deployment
+  // that leaves AUTH_URL blank, letting a spoofed X-Forwarded-Host drive
+  // the OAuth callback/redirect origin. VERCEL/CF_PAGES/NODE_ENV are also
+  // deliberately dropped, not just reordered: this app doesn't target
+  // those platforms, and a literal `process.env.NODE_ENV` check gets
+  // folded to a build-time constant by Next.js's bundler (verified against
+  // the compiled output — even reading it off an intermediate variable
+  // didn't survive Turbopack's dead-code elimination), so it can't
+  // actually reflect the container's runtime NODE_ENV the way @auth/core's
+  // own dynamic property access does. This repo's documented local-dev
+  // setup already sets AUTH_TRUST_HOST=true explicitly and never relied on
+  // that fallback anyway. A deployment that sets neither AUTH_URL nor
+  // AUTH_TRUST_HOST gets `false` here — fail-closed, matching intent.
+  trustHost:
+    Boolean(process.env.AUTH_URL?.trim()) ||
+    process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true",
   providers: [Google],
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check
   // below — a session that somehow drifts out of sync with the roster

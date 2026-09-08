@@ -10,10 +10,23 @@ Watchlist row shape:
   - ``target``: the full feed URL
   - ``config_json``: optional ``{"feed_label": "Acme Changelog"}`` — used
     as a prefix in the normalized summary. Falls back to a host-derived
-    label when missing.
+    label when missing. Optional ``"max_future_skew_hours"`` (0 .. 8760)
+    overrides ``EXTERNAL_MONITOR_MAX_FUTURE_SKEW_HOURS`` for this feed (0 =
+    off, for calendars / maintenance windows that legitimately date entries
+    ahead); an out-of-range value is ignored with a warning.
   - ``trigger_json``: optional ``{"keywords": ["pricing", "launch"]}``
     — when present, only entries whose title OR summary contain at least
     one keyword surface. Otherwise every new entry surfaces.
+
+Freshness: each entry's ``<pubDate>`` / ``<updated>`` is parsed into
+``Signal.published_at`` so the pipeline can tell *when it happened* apart
+from *when we first saw it* (``captured_at``). Two guards follow from
+that (issue #80 — a January article was surfacing as September news):
+the first poll of a row records the feed's existing entries as a
+baseline without promoting them, and entries older than
+``EXTERNAL_MONITOR_MAX_SIGNAL_AGE_DAYS`` are recorded but never promoted
+(entries dated implausibly far in the future are deferred until the date
+passes).
 
 Severity hint defaults to ``LOW`` — RSS is by far the noisiest source,
 so a low default lets the watchlist's ``severity_floor`` filter
@@ -48,6 +61,11 @@ from openexecutive.monitoring.sources._http import (
     strip_url_query,
     validate_target_url,
 )
+from openexecutive.monitoring.sources.base import (
+    collapse_whitespace,
+    feed_entry_published_at,
+    future_skew_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +79,10 @@ class RssSource:
     # RSS publishers update less often than status pages — 30 min is the
     # sweet spot between freshness and politeness toward upstream.
     default_poll_interval_minutes: int = 30
+    # A feed returns its whole back-catalogue on every poll, so the first
+    # poll is a baseline (see Source.seed_on_first_poll) — otherwise every
+    # historical entry would fire as "news" the moment a watch is added.
+    seed_on_first_poll: bool = True
 
     async def poll(
         self, item: WatchlistItem, *, db_path: Path | None = None
@@ -110,13 +132,14 @@ class RssSource:
             item.config_json.get("feed_label")
             or _host_label(item.target)
         )
+        skew = future_skew_for(item)
         signals: list[Signal] = []
         for entry in parsed.entries[:_MAX_ENTRIES_PER_FEED]:
             entry_id = _entry_id(entry)
             if not entry_id:
                 # No stable upstream id → no reliable dedup → skip.
                 continue
-            title = (entry.get("title") or "").strip() or "(untitled)"
+            title = collapse_whitespace(entry.get("title") or "") or "(untitled)"
             link = strip_url_query((entry.get("link") or "").strip())
             summary = f"[{feed_label}] {title}"
             signals.append(Signal(
@@ -124,6 +147,7 @@ class RssSource:
                 source_kind=self.kind,
                 source_external_id=entry_id[:500],
                 captured_at=datetime.now(UTC).isoformat(),
+                published_at=feed_entry_published_at(entry, skew=skew),
                 normalized_summary=summary[:500],
                 raw_payload={
                     "feed_label": feed_label,

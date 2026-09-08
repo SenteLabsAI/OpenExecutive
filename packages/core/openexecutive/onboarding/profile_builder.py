@@ -61,8 +61,12 @@ def _save_wizard_people(answers: dict) -> None:  # type: ignore[type-arg]
                     scopes.append(AuthorityScope(tok))
             if scopes:
                 set_authority_scope(pid, scopes)
-    except Exception:
-        logger.warning("_save_wizard_people failed — skipping people creation", exc_info=True)
+    except Exception as exc:
+        # Type name only: the traceback would carry the wizard's org-chart
+        # answers (names, emails, handles) into the log stream.
+        logger.warning(
+            "_save_wizard_people failed (%s) — skipping people creation", type(exc).__name__
+        )
 
 
 def load_or_create_profile(path: Path | str | None = None) -> CompanyProfile:

@@ -22,7 +22,8 @@ map the names used in this skill to their real equivalents:
 | `ide-get_diagnostics` | Requires the IDE integration (the `mcp__ide__getDiagnostics` tool, available when Claude Code is connected to VS Code/JetBrains). If unavailable, substitute a compiler/type-checker/linter run and note the substitution in the Evidence Bundle. |
 | `session_store` SQL ledger | Resolved — the ledger is a per-repo temp SQLite file, created and queried via the `/tmp/anvil_sql.py` helper (Python's stdlib `sqlite3`, so no external `sqlite3` binary is required). See the Verification Ledger section. The `sessions` / `session_files` / `search_index` cross-session tables do not exist; the Recall step (1b) uses `git log` + `CLAUDE.md` instead. |
 | `context7-resolve-library-id` / `context7-query-docs` | The Context7 MCP tools, available only if the Context7 connector is enabled. If not, fall back to web search or reading the library's own docs. |
-| `code-review` subagent + `model:` field | Three dedicated agents in `.claude/agents/` — `anvil-security-reviewer` (opus), `anvil-logic-reviewer` (sonnet), `anvil-quality-reviewer` (haiku) — each pinned to its own Claude model. Spawn via the `Task` tool by `subagent_type`. See step 5c. |
+| `code-review` subagent + `model:` field | Three dedicated agents in `.claude/agents/` — `anvil-security-reviewer` (`fable`, effort `xhigh`), `anvil-logic-reviewer` (`opus`, effort `high`), `anvil-quality-reviewer` (`sonnet`, effort `medium`) — each pinned to its own model alias and effort in its frontmatter. Spawn via the `Agent` tool by `subagent_type`. See step 5c. |
+| `Task` tool | Now called `Agent` (the `Task` name is kept as a backward-compatible alias). Every `Task(...)` example in this skill means `Agent(...)`. |
 
 If a referenced capability genuinely is not available, do the closest real
 verification and say so in the Evidence Bundle — never fake a check.
@@ -144,7 +145,7 @@ table in your working notes — the ledger's purpose is anti-hallucination
 discipline, and the storage medium is secondary, but the real SQL ledger is
 strongly preferred.
 
-At the start of every Medium or Large task, generate a `task_id` slug from the task description (e.g., `fix-login-crash`, `add-user-avatar`). Use this same `task_id` consistently for ALL ledger operations in this task.
+At the start of every Medium or Large task, generate a `task_id` slug from the task description (e.g., `fix-login-crash`, `add-user-avatar`). **The slug must match `[a-z0-9-]+` — nothing else.** It is interpolated raw into every SQL statement below, and the helper runs non-SELECT statements with `executescript`, so a quote or semicolon in it would let a crafted task description forge or delete ledger rows. Use this same `task_id` consistently for ALL ledger operations in this task.
 
 Create the ledger:
 
@@ -199,7 +200,11 @@ Check the git state. Surface problems early so the user doesn't discover them af
    - Commit: `git add -A && git commit -m "WIP: uncommitted changes before Anvil task"` (commits on current branch BEFORE any branch switch)
    - Stash: `git stash push -m "pre-anvil-{task_id}"`
 
-2. **Branch check**: Run `git rev-parse --abbrev-ref HEAD`. If on `main` or `master` for a Medium/Large task, push back:
+2. **Branch check**: Run `git rev-parse --abbrev-ref HEAD`. **If the harness
+   designated a branch for this session** (remote sessions arrive with a
+   `claude/...` branch named in the system prompt), stay on it — never create an
+   `anvil/` branch alongside it, and never push anywhere else. Otherwise, if on
+   `main` or `master` for a Medium/Large task, push back:
    > ⚠️ **Anvil pushback**: You're on `main`. This is a Medium/Large task - recommend creating a branch first.
    Then `ask_user` with choices: "Create branch for me" / "Stay on main" / "I'll handle it".
    If "Create branch for me": `git checkout -b anvil/{task_id}`.
@@ -311,36 +316,88 @@ If Tier 3 is infeasible in the current environment (e.g., iOS library with no si
 
 Before launching reviewers, stage your changes: `git add -A` so reviewers see them via `git diff --staged`.
 
-Reviewers are dedicated subagents, each pinned to its own Claude model so
-the panel still has tier diversity (deep / balanced / fast). Spawn them
-with the `Task` tool by `subagent_type` — do NOT pass a `model:` override;
-the model is fixed inside each agent definition. The three agents live in
-`.claude/agents/`: `anvil-security-reviewer` (opus, security adversary),
-`anvil-logic-reviewer` (sonnet, logic adversary), and
-`anvil-quality-reviewer` (haiku, maintainability adversary).
+Reviewers are dedicated subagents, each pinned to its own Claude model alias
+and effort level so the panel has tier diversity (frontier / deep / balanced).
+Spawn them with the `Agent` tool by `subagent_type` — do NOT pass a `model:`
+or effort override; both are fixed inside each agent definition. The three
+agents live in `.claude/agents/`:
 
-**Medium (no 🔴 files):** One reviewer — spawn `anvil-security-reviewer`:
+| Agent | Model alias | Effort | Role |
+|---|---|---|---|
+| `anvil-security-reviewer` | `fable` (Fable 5.1) | `xhigh` | security adversary |
+| `anvil-logic-reviewer` | `opus` (Opus 5) | `high` | logic adversary |
+| `anvil-quality-reviewer` | `sonnet` (Sonnet 5) | `medium` | maintainability adversary |
+
+The aliases float to the current recommended model for each tier, so the
+panel stays current without edits; the concrete models in parentheses are
+what they resolve to as of September 2026.
+
+**The reviewer must be a different model from the main session.** That is the
+whole point of the panel. Before spawning on a Medium task, compare the
+session's model to the reviewer's alias (the system prompt names the session
+model; `fable` ↔ Fable 5.1, `opus` ↔ Opus 5). If they match, spawn the other
+one instead. On Large tasks all three run, so at least two are always a
+different model.
+
+**Medium (no 🔴 files):** exactly **one** reviewer, chosen by applying these
+rules in order (each later rule overrides the earlier choice):
+
+1. Default: `anvil-logic-reviewer` (`opus`, `high`).
+2. Diff touches an external-input surface (`api/`, `integrations/`,
+   `mcp_server/`, `orchestrator/outbound_guard.py`): `anvil-security-reviewer`
+   (`fable`, `xhigh`) instead.
+3. The chosen reviewer's alias resolves to the session's own model: the other
+   one instead.
+
+The result is always one reviewer and never the session's own model. This is
+the highest-frequency path (`CLAUDE.md` routes every code change through
+Anvil), so its per-change cost is one Opus call at `high` effort, or one Fable
+call at `xhigh` on external-input diffs. Security-sensitive files are 🔴 and
+escalate to Large regardless. If that cost is too high for a project, lower
+`effort` in the agent frontmatter — do not skip the review.
 
 ```
-Task(
-  subagent_type: "anvil-security-reviewer",
+Agent(
+  subagent_type: "anvil-logic-reviewer",
   prompt: "Review the staged changes. Files changed: {list_of_files}."
 )
 ```
 
 **Large OR 🔴 files:** All three reviewers, in parallel — spawn all three
-`Task` calls in a single turn so they run concurrently:
+`Agent` calls in a single turn so they run concurrently:
 
 ```
-Task(subagent_type: "anvil-security-reviewer", prompt: "Review the staged changes. Files changed: {list_of_files}.")
-Task(subagent_type: "anvil-logic-reviewer",    prompt: "Review the staged changes. Files changed: {list_of_files}.")
-Task(subagent_type: "anvil-quality-reviewer",  prompt: "Review the staged changes. Files changed: {list_of_files}.")
+Agent(subagent_type: "anvil-security-reviewer", prompt: "Review the staged changes. Files changed: {list_of_files}.")
+Agent(subagent_type: "anvil-logic-reviewer",    prompt: "Review the staged changes. Files changed: {list_of_files}.")
+Agent(subagent_type: "anvil-quality-reviewer",  prompt: "Review the staged changes. Files changed: {list_of_files}.")
 ```
+
+The built-in `/code-review` and `/security-review` skills overlap with the
+logic and quality passes and are fine as an *extra* signal, but they do not
+replace the panel: the ledger INSERT below depends on the `VERDICT:` line
+that only the anvil agents emit.
 
 Each agent reads the diff itself via `git --no-pager diff --staged` and
 returns a `VERDICT:` line plus findings.
 
 INSERT each verdict with `phase = 'review'` and `check_name = 'review-{agent_name}'` (e.g., `review-anvil-security-reviewer`).
+
+**A response with no `VERDICT:` line is a FAIL, not a pass.** The agents carry
+a `maxTurns` cap, and a reviewer that ran out of turns on a large diff returns
+findings without a verdict. INSERT it as `passed = 0` with
+`output_snippet = 'no verdict (turn cap?)'`. Then re-spawn that one agent once,
+against the **same** staged diff (never touch the index — sibling reviewers
+may still be reading it), with a prompt that names the files its first
+response did not mention and tells it to start there. INSERT the retry as
+`check_name = 'review-{agent_name}-retry'`; it supersedes the no-verdict row
+in the Evidence Bundle. The retry belongs to the same adversarial round. If it
+still returns no verdict, present with Confidence: Low.
+
+**Agent definitions are read at session start.** After editing anything in
+`.claude/agents/*.md` (model, effort, prompt), the running session keeps the
+old definition — a probe in this repo showed agents still served on their
+previous model pins after the frontmatter changed. Start a new session before
+trusting the new pins.
 
 If real issues found, fix, re-run 5b AND 5c. **Max 2 adversarial rounds.** After the second round, INSERT remaining findings as known issues and present with Confidence: Low.
 
@@ -495,7 +552,7 @@ The only exception is when a command truly requires the user's own environment (
 
 1. Never present code that introduces new build or test failures. Pre-existing baseline failures are acceptable if unchanged - note them in the Evidence Bundle.
 2. Work in discrete steps. Use subagents for parallelism when independent.
-3. Read code before changing it. Use `explore` subagents for unfamiliar areas.
+3. Read code before changing it. Use `Explore` subagents (`Agent(subagent_type: "Explore", ...)`) for unfamiliar areas.
 4. When stuck after 2 attempts, explain what failed and ask for help. Don't spin.
 5. Prefer extending existing code over creating new abstractions.
 6. Update project instruction files when you learn conventions that aren't documented.
@@ -521,14 +578,22 @@ paths that changed in the staged diff; run only the tiers that apply.
 **Python — only if `packages/core/**` changed** (run from repo root):
 - Lint + type check: `make lint`
   (= `cd packages/core && uv run ruff check openexecutive/ && uv run mypy openexecutive/`)
-- Tests: `make test`
-  (= `cd packages/core && uv run pytest tests/ -v --tb=short`)
-- Relevant subset while iterating: `cd packages/core && uv run pytest tests/unit/ -q`
+- Tests: `cd packages/core && env -u BACKEND_SHARED_SECRET uv run pytest tests/ -v --tb=short`
+  (`make test` minus the env var — if `BACKEND_SHARED_SECRET` is set in the
+  shell, full-app `TestClient` tests return `401` instead of their expected
+  status. CI does not set it; unsetting it matches CI.)
+- Relevant subset while iterating:
+  `cd packages/core && env -u BACKEND_SHARED_SECRET uv run pytest tests/unit/ -q`
+- Ad-hoc `uv run python` snippets need `EXEC_EMAIL_ADDRESS` and
+  `ANTHROPIC_API_KEY` exported (`get_settings()` has no default for the
+  former); the test suite sets both in `tests/conftest.py`.
 
 **UI — only if `packages/ui/**` changed:**
-- Lint: `cd packages/ui && npm run lint`
 - Build / type gate: `cd packages/ui && npm run build` (there is no separate
   typecheck or test script — `next build` is the type gate)
+- **Do NOT run `npm run lint`.** `packages/ui` has no ESLint config, so
+  `next lint` opens an interactive setup prompt that hangs the tool call
+  (see the Interactive Input Rule). `npm run build` is the lint gate.
 
 IDE diagnostics (5a) are unavailable in this remote environment, so substitute
 `ruff check` + `mypy` (Python) / `npm run build` (UI) and note the substitution
@@ -538,46 +603,119 @@ in the Evidence Bundle. If `uv`/`npm` are absent (e.g. deps not synced), INSERT 
 ### Architecture-doc drift (proactive + gate)
 
 The single most common failure mode in this repo: landing behavior under a topic
-the `/architecture` page documents, without updating the YAML it is generated
-from — so the docs page silently lies. The YAML is
-`packages/core/openexecutive/architecture/architecture-facts.yaml`; the topic→key
-map lives in `CLAUDE.md` → `## Architecture Docs`. Documented topics include
-`integrations`, `routing`, `caching`, `scheduler`, `departments`/`people`,
-`invariants`, `workflows`, `auth`, and any new top-level module under
-`packages/core/openexecutive/`. **A change to what an existing key already
-describes counts the same as a new key** (e.g. adding Discord under
-`integrations:`, or changing a response shape under `today:`).
+the `/architecture` page documents, without updating the docs — so the page
+silently lies. **The page is static, hand-authored content**, one file per
+section under `packages/core/openexecutive/architecture/prebuilt/<section_id>.json`
+(sections listed in `architecture/sections.py`). Nothing generates it at
+runtime. `architecture/architecture-facts.yaml` is the curated *reference
+notes* you read when re-authoring a section, so a behavior change normally
+touches **both** the prebuilt JSON and the YAML. The topic→section map lives in
+`CLAUDE.md` → `## Architecture Docs`; section ids include `integrations`,
+`workflows`, `caching`, `agents`, `lifecycle`, `scheduler`, `schemas`, `api`,
+`org`, `memory`, `today`, and any new top-level module under
+`packages/core/openexecutive/` (which also needs a `SectionSpec` and a matching
+entry in `packages/ui/src/app/architecture/page.tsx`). **A change to what an
+existing section already describes counts the same as a new section** (e.g.
+adding Discord under `integrations`, or changing a response shape under `today`).
 
 **Proactive (do this in Step 2 Survey):** When the boosted prompt or target
 files indicate the task will touch a documented topic, read the relevant
-key out of `architecture-facts.yaml` *before* implementing. Then you (a)
-understand the documented contract, (b) plan the YAML edit as part of the
-change, and (c) avoid contradicting a documented invariant. Quick scan of which
-keys exist:
+`prebuilt/<section_id>.json` and the matching key in `architecture-facts.yaml`
+*before* implementing. Then you (a) understand the documented contract, (b) plan
+the doc edit as part of the change, and (c) avoid contradicting a documented
+invariant. Quick scan of what exists:
 
 ```bash
+ls packages/core/openexecutive/architecture/prebuilt/
 grep -nE '^[a-zA-Z_]+:' packages/core/openexecutive/architecture/architecture-facts.yaml
 ```
 
-**Reactive gate (do this in Step 5b):** Detect drift from the staged diff and
-INSERT the result (`check_name='arch-yaml-drift'`). If a documented-topic path
-changed but the YAML did not, the check FAILS — surface a pushback-style callout
-naming the specific key and do not present until the YAML is updated (or the user
-explicitly waives it).
+**Reactive gate (do this in Step 5b):** Detect drift from the staged diff.
+The snippet below records its own ledger row (`check_name='arch-doc-drift'`)
+and exits non-zero on drift, so the result cannot be skimmed past. Nearly
+every top-level module under `openexecutive/` has a section, so the trigger is
+inclusive: any staged change under `openexecutive/` **except** the modules
+listed in `NON_DOC` counts as touching a documented topic. **Only a
+`prebuilt/<section>.json` edit satisfies the gate** — the page is served from
+those files, so a YAML-only edit leaves it stale (update the YAML too, but it
+does not count on its own). A brand-new top-level module is reported
+separately because it needs a new section, not an edit to an existing one.
 
 ```bash
+TASK_ID='{task_id}'
+case "$TASK_ID" in ''|*[!a-z0-9-]*) echo "task_id must be a slug [a-z0-9-], got: $TASK_ID"; exit 2;; esac
+NON_DOC='architecture|utils|cli|evals'                  # the only modules with no /architecture section
 CHANGED=$(git --no-pager diff --staged --name-only)
-TOUCHED_TOPIC=$(echo "$CHANGED" | grep -E 'openexecutive/(integrations|scheduler)/|orchestrator/router\.py|prompts/cache_manager\.py' || true)
-YAML_TOUCHED=$(echo "$CHANGED" | grep -E 'architecture/architecture-facts\.yaml' || true)
-if [ -n "$TOUCHED_TOPIC" ] && [ -z "$YAML_TOUCHED" ]; then
-  echo "FAIL: documented topic changed but architecture-facts.yaml untouched"
-  echo "$TOUCHED_TOPIC"
-fi
+if [ -z "$CHANGED" ]; then echo "nothing staged — gate not run, no ledger row"; exit 0; fi
+# Section ids whose prebuilt JSON was edited (one per line).
+JSON_TOUCHED=$(echo "$CHANGED" | grep -oE 'prebuilt/[A-Za-z0-9_]+\.json' | sed 's#prebuilt/##; s#\.json##' | sort -u)
+# Module -> section id(s) that must move when that module changes (from CLAUDE.md's map).
+# A module with no entry accepts any section edit; a NON_DOC module is skipped.
+sections_for() {
+  case "$1" in
+    integrations) echo integrations;;            scheduler) echo scheduler;;
+    workflows) echo workflows;;                  prompts) echo caching;;
+    departments|people|personas|onboarding) echo org;;
+    memory) echo "memory peer_memory";;          api) echo "api today";;
+    orchestrator|agents|providers) echo "agents lifecycle review";;
+    audit) echo audit;;                          talent) echo talent;;
+    monitoring) echo external_monitoring;;       mcp_server) echo mcp_server;;
+    clients|fixtures) echo "clients peer_memory";; staff_onboarding) echo staff_onboarding;;
+    knowledge) echo rag;;                        briefing|alerts) echo today;;
+    guide) echo user_guide;;                     *) echo "";;
+  esac
+}
+# Every top-level module (or top-level .py file) under openexecutive/ that the diff touches.
+MODULES=$(echo "$CHANGED" | grep -oE 'openexecutive/[A-Za-z0-9_]+(/|\.py$)' \
+  | sed -E 's#openexecutive/##; s#[/.].*##' | grep -vE "^($NON_DOC|__init__)$" | sort -u)
+NEW_MODULES=$(git --no-pager diff --staged --name-only --diff-filter=A \
+  | grep -oE 'openexecutive/[A-Za-z0-9_]+/__init__\.py$' | sed -E 's#openexecutive/([A-Za-z0-9_]+)/.*#\1#' \
+  | grep -vE "^($NON_DOC)$")
+MISSING=""
+for m in $MODULES; do
+  if echo "$NEW_MODULES" | grep -qx "$m"; then
+    echo "$JSON_TOUCHED" | grep -qx "$m" \
+      || MISSING="$MISSING $m(new module: needs a SectionSpec in sections.py, a page.tsx entry, and prebuilt/$m.json)"
+    continue
+  fi
+  EXPECT=$(sections_for "$m")
+  if [ -z "$EXPECT" ]; then
+    [ -n "$JSON_TOUCHED" ] || MISSING="$MISSING $m(no section edited)"; continue
+  fi
+  HIT=0; for s in $EXPECT; do echo "$JSON_TOUCHED" | grep -qx "$s" && HIT=1; done
+  [ "$HIT" = 1 ] || MISSING="$MISSING $m(expects one of: $EXPECT)"
+done
+if [ -z "$MODULES" ]; then RESULT=1; SNIP="PASS: no documented-topic paths staged"
+elif [ -n "$MISSING" ]; then RESULT=0; SNIP="FAIL:$(echo "$MISSING" | cut -c1-220)"
+else RESULT=1; SNIP="PASS: modules=[$(echo $MODULES)] sections=[$(echo $JSON_TOUCHED)]"; fi
+python3 /tmp/anvil_sql.py "INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed)
+VALUES ('$TASK_ID','after','arch-doc-drift','bash','drift gate on staged diff',$((1-RESULT)),'$(echo "$SNIP" | sed "s/'/''/g")',$RESULT);" \
+  || { echo "ledger INSERT failed — this verification did not happen; bootstrap /tmp/anvil_sql.py and re-run"; exit 2; }
+echo "$SNIP"; [ "$RESULT" = 1 ]
 ```
 
-(The grep is a floor, not a ceiling — `routing` also covers
-`SPECIALIST_REGISTRY` semantics, `caching` covers any `cache_control` change.
-Use the `CLAUDE.md` key map to judge anything the regex doesn't literally name.)
+The module→section map is the gate's contract: touching `integrations/` and
+editing only `prebuilt/talent.json` FAILS, because the edited section must be
+one the module is documented under. When you add a module or a section,
+extend `sections_for` in the same PR.
+
+**On FAIL, you have exactly two honest exits.** Either (a) update the affected
+`prebuilt/<section>.json` (and the YAML notes), re-stage, and re-run the gate;
+or (b) if the change genuinely does not alter what the section describes (a
+typo fix, an internal refactor with the same behavior), INSERT a second
+`arch-doc-drift` row with `passed=1` whose `output_snippet` starts with
+`waived:` and names the section and the reason. A waiver is a judgment call the
+Evidence Bundle must show, never a silent pass. Use the `CLAUDE.md` section map
+to decide: `agents`/`lifecycle` cover `SPECIALIST_REGISTRY` and committee
+semantics, `caching` covers any `cache_control` or `executive_persona` change,
+`schemas` covers any `CREATE TABLE` in a `*/store.py` or `*/persistence.py`,
+`api` covers any response-shape change under `api/`.
+
+When you edit a prebuilt JSON, validate it with
+`python3 -m json.tool packages/core/openexecutive/architecture/prebuilt/<id>.json > /dev/null`
+(always pass the file path — with no argument `json.tool` reads stdin and
+hangs) and keep the section heading out of `markdown` — the UI renders the
+title.
 
 ### Prompt-caching invariant (`check_name='caching-invariant'`)
 
@@ -600,8 +738,10 @@ git --no-pager diff --staged -- packages/core/openexecutive/prompts/cache_manage
 
 A hit is a prompt to inspect, not an automatic fail — confirm the dynamic value
 is not inside a cached block before passing. When any of these files are in the
-diff, also append a caching-invariant clause to the reviewer prompt in 5c (the
-`anvil-security-reviewer` / `anvil-quality-reviewer` agents are primed for it).
+diff, also append a caching-invariant clause to the reviewer prompt in 5c (all
+three anvil reviewer agents are primed for it — security and quality check the
+cached-block hygiene, logic checks tool ordering and the async/Pydantic
+invariants from `CLAUDE.md`).
 
 ### PR requirements (`CLAUDE.md` → `## PR Requirements`)
 

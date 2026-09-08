@@ -32,7 +32,8 @@ from openexecutive.monitoring.research.scrape_tool import (
 )
 from openexecutive.monitoring.research.tools import EMIT_RESEARCH_FINDINGS_TOOL
 from openexecutive.orchestrator.web_search_tool import build_web_search_tool
-from openexecutive.providers import get_provider
+from openexecutive.providers import get_provider, model_supports_deep_reasoning
+from openexecutive.providers.translator import reasoning_replay_block
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ async def run_specialist_agentic(
             "tools": tools,
             "messages": messages,
         }
-        if use_deep:
+        if use_deep and model_supports_deep_reasoning(model):
             create_kwargs["thinking"] = {"type": "adaptive"}
             create_kwargs["output_config"] = {
                 "effort": settings.specialist_effort
@@ -240,6 +241,11 @@ def _assistant_turn(
             assistant_content.append(tu)
             if tu["name"] == SCRAPE_URL_TOOL_NAME:
                 scrape_calls.append({"id": tu["id"], "input": tu["input"]})
+        elif (replay := reasoning_replay_block(block)) is not None:
+            # OpenRouter-path equivalent of a thinking block: replay its
+            # reasoning_details verbatim or the next tool-loop turn loses
+            # (Anthropic: rejects) the chain of thought.
+            assistant_content.append(replay)
         elif btype in (
             "thinking",
             "redacted_thinking",

@@ -30,8 +30,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_list_models_returns_allowed_models(client: TestClient) -> None:
     res = client.get("/agents/models")
     assert res.status_code == 200
-    assert "claude-opus-4-7" in res.json()
-    assert "claude-sonnet-4-6" in res.json()
+    assert "claude-opus-5" in res.json()
+    assert "claude-sonnet-5" in res.json()
 
 
 def test_list_agents_returns_all_specialists(client: TestClient) -> None:
@@ -79,12 +79,12 @@ def test_patch_rejects_unknown_model(client: TestClient) -> None:
 def test_patch_rejects_openrouter_model_when_openrouter_disabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``openai/gpt-5`` is a known OpenRouter slug, but with
+    """``openai/gpt-6-astra`` is a known OpenRouter slug, but with
     ``OPENROUTER_ENABLED=false`` it is NOT in the runtime's allowed list
     — the runtime has no backend that can serve it, so the API rejects
     the override at PATCH time rather than 500-ing on first chat call."""
     # The default config in conftest leaves OPENROUTER_ENABLED unset (False).
-    res = client.patch("/agents/cso", json={"model": "openai/gpt-5"})
+    res = client.patch("/agents/cso", json={"model": "openai/gpt-6-astra"})
     assert res.status_code == 400
     assert "allowed" in res.json()["detail"].lower()
 
@@ -92,9 +92,10 @@ def test_patch_rejects_openrouter_model_when_openrouter_disabled(
 def test_patch_accepts_openrouter_model_when_openrouter_enabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With ``OPENROUTER_ENABLED=true`` the curated OpenRouter slugs are
-    allowed values — operators can flip an agent to GPT-5 via the
-    Council UI without a code change."""
+    """With ``OPENROUTER_ENABLED=true`` the OpenRouter slugs (live catalog,
+    or the built-in fallback when none is loaded) are allowed values —
+    operators can flip an agent to GPT-6 via the Council UI without a code
+    change."""
     # Patch the registry's settings reader so allowed_models() folds the
     # OpenRouter set in. We can't toggle a real Settings() instance from
     # inside the test process because pydantic-settings caches behavior.
@@ -112,10 +113,10 @@ def test_patch_accepts_openrouter_model_when_openrouter_enabled(
             openrouter_timeout_s=180.0,
         ),
     )
-    res = client.patch("/agents/cso", json={"model": "openai/gpt-5"})
+    res = client.patch("/agents/cso", json={"model": "openai/gpt-6-astra"})
     # 200 means the model passed the allowlist; the override was persisted.
     assert res.status_code == 200, res.text
-    assert res.json()["model"] == "openai/gpt-5"
+    assert res.json()["model"] == "openai/gpt-6-astra"
 
 
 def test_reset_clears_override(client: TestClient) -> None:
@@ -158,14 +159,14 @@ def test_test_endpoint_passes_draft_to_analyze(client: TestClient) -> None:
             json={
                 "query": "Hi",
                 "prompt": "DRAFT_PROMPT",
-                "model": "claude-sonnet-4-6",
+                "model": "claude-sonnet-5",
                 "use_deep_reasoning": False,
             },
         )
     assert res.status_code == 200, res.text
     assert res.json()["response"] == "draft answer"
     kw = create_mock.await_args.kwargs
-    assert kw["model"] == "claude-sonnet-4-6"
+    assert kw["model"] == "claude-sonnet-5"
     assert kw["system"][0]["text"] == "DRAFT_PROMPT"
 
     # And no DB row was written.
@@ -208,19 +209,19 @@ def test_get_executive_detail_uses_persona_default(client: TestClient) -> None:
 def test_patch_executive_persists_override(client: TestClient) -> None:
     res = client.patch(
         "/agents/executive",
-        json={"prompt": "You are a calm Executive.", "model": "claude-opus-4-7"},
+        json={"prompt": "You are a calm Executive.", "model": "claude-opus-5"},
     )
     assert res.status_code == 200
     detail = res.json()
     assert detail["prompt"] == "You are a calm Executive."
-    assert detail["model"] == "claude-opus-4-7"
+    assert detail["model"] == "claude-opus-5"
     assert detail["has_override"] is True
     assert set(detail["overridden_fields"]) >= {"prompt", "model"}
 
     # Re-fetch confirms persistence.
     again = client.get("/agents/executive").json()
     assert again["prompt"] == "You are a calm Executive."
-    assert again["model"] == "claude-opus-4-7"
+    assert again["model"] == "claude-opus-5"
 
 
 def test_reset_executive_override_clears_it(client: TestClient) -> None:
@@ -257,13 +258,13 @@ def test_executive_test_endpoint_uses_draft_prompt(client: TestClient) -> None:
             json={
                 "query": "Hello",
                 "prompt": "DRAFT_EXEC_PROMPT",
-                "model": "claude-sonnet-4-6",
+                "model": "claude-sonnet-5",
             },
         )
     assert res.status_code == 200, res.text
     assert res.json()["response"] == "exec preview"
     kw = create_mock.await_args.kwargs
-    assert kw["model"] == "claude-sonnet-4-6"
+    assert kw["model"] == "claude-sonnet-5"
     assert kw["system"][0]["text"] == "DRAFT_EXEC_PROMPT"
     # Test endpoint must not persist.
     assert client.get("/agents/executive").json()["has_override"] is False

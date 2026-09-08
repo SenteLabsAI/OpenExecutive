@@ -52,6 +52,7 @@ from openexecutive.monitoring.research.models import (
 from openexecutive.monitoring.research.specialist_research import (
     research_one_specialist,
 )
+from openexecutive.providers.translator import reasoning_replay_block
 from openexecutive.workflows.base import (
     Workflow,
     WorkflowEvent,
@@ -843,6 +844,9 @@ async def _executive_synthesis_loop(
                         "name": getattr(block, "name", ""),
                         "input": getattr(block, "input", {}) or {},
                     })
+                elif (replay := reasoning_replay_block(block)) is not None:
+                    # OpenRouter reasoning continuity across tool iterations.
+                    assistant_blocks.append(replay)
             messages.append({"role": "assistant", "content": assistant_blocks})
 
             tool_results: list[dict[str, Any]] = []
@@ -951,6 +955,9 @@ async def _watchlist_analysis_loop(
                     "name": getattr(block, "name", ""),
                     "input": getattr(block, "input", {}) or {},
                 })
+            elif (replay := reasoning_replay_block(block)) is not None:
+                # OpenRouter reasoning continuity across tool iterations.
+                assistant_blocks.append(replay)
         messages.append({"role": "assistant", "content": assistant_blocks})
 
         tool_results: list[dict[str, Any]] = []

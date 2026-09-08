@@ -301,6 +301,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     email_poller_task: asyncio.Task[None] | None = None
     scheduler_task: asyncio.Task[None] | None = None
     resumer_task: asyncio.Task[None] | None = None
+    catalog_refresh_task: asyncio.Task[None] | None = None
+
+    # Live OpenRouter model catalog for the Council dropdown. Awaited so the
+    # first /agents/models call already sees it; the fetch carries its own
+    # total deadline (OPENROUTER_CATALOG_TIMEOUT_S, default 10s) and body cap,
+    # and a failure just leaves the hardcoded fallback in place — startup
+    # can be delayed by at most that timeout, never blocked.
+    if settings.openrouter_enabled and settings.openrouter_catalog_enabled:
+        from openexecutive.providers.openrouter_catalog import (
+            refresh_openrouter_catalog,
+            run_catalog_refresher,
+        )
+
+        await refresh_openrouter_catalog(settings)
+        catalog_refresh_task = asyncio.create_task(run_catalog_refresher(settings))
     discord_bot: Any = None
     discord_bot_task: asyncio.Task[None] | None = None
 
@@ -421,6 +436,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resumer_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await resumer_task
+
+    if catalog_refresh_task is not None:
+        catalog_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await catalog_refresh_task
 
     if getattr(app.state, "mcp_gateway", None) is not None:
         from openexecutive.orchestrator.mcp_gateway import set_active_gateway

@@ -33,11 +33,28 @@ interface DraftState {
   research_focus: string | null;
 }
 
+// Haiku is the one Claude family that rejects adaptive thinking (HTTP 400),
+// so the deep-reasoning toggle is disabled for it whether the slug is the
+// Anthropic id (claude-haiku-4-5) or the OpenRouter form
+// (anthropic/claude-haiku-4.5). Mirrors the backend guard in
+// providers.registry.model_supports_deep_reasoning.
+// Scoped to Claude names (current or legacy ordering), case-insensitive —
+// matches providers.registry.model_supports_deep_reasoning exactly.
+const HAIKU_MODEL_RE = /^(anthropic\/)?claude-.*haiku/i;
+
+function modelSupportsDeepReasoning(model: string): boolean {
+  return !HAIKU_MODEL_RE.test(model);
+}
+
 function detailToDraft(d: AgentDetail): DraftState {
   return {
     role: d.role,
     model: d.model,
-    deep_reasoning: d.deep_reasoning,
+    // A stored override can pair deep_reasoning=true with a Haiku model
+    // (older UI, direct API call). Mask it on load so the checkbox, the
+    // dirty check and the Save patch all agree — saving then corrects the
+    // persisted row instead of leaving it permanently out of sync.
+    deep_reasoning: d.deep_reasoning && modelSupportsDeepReasoning(d.model),
     prompt: d.prompt,
     voice_persona_slug: d.voice_persona_slug ?? null,
     research_focus: d.research_focus ?? null,
@@ -227,7 +244,7 @@ export default function CouncilPage() {
         query: testQuery,
         prompt: draft.prompt,
         model: draft.model,
-        use_deep_reasoning: draft.deep_reasoning,
+        use_deep_reasoning: draft.deep_reasoning && modelSupportsDeepReasoning(draft.model),
       });
       setTestResult(result.response);
     } catch (err) {
@@ -355,7 +372,16 @@ export default function CouncilPage() {
                     </span>
                     <select
                       value={draft.model}
-                      onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+                      onChange={(e) => {
+                        const model = e.target.value;
+                        setDraft({
+                          ...draft,
+                          model,
+                          deep_reasoning: modelSupportsDeepReasoning(model)
+                            ? draft.deep_reasoning
+                            : false,
+                        });
+                      }}
                       className="mt-1 w-full px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none text-sm"
                     >
                       {Array.from(new Set([detail.model_default, draft.model, ...models])).map(
@@ -371,14 +397,25 @@ export default function CouncilPage() {
                 </div>
 
                 {detail.name !== "utility_fast" && (
-                  <label className="flex items-center gap-2 text-xs text-fg-muted">
+                  <label
+                    className={`flex items-center gap-2 text-xs text-fg-muted ${
+                      modelSupportsDeepReasoning(draft.model) ? "" : "opacity-60"
+                    }`}
+                    title={
+                      modelSupportsDeepReasoning(draft.model)
+                        ? "Adaptive thinking on Claude Opus/Sonnet, and on any OpenRouter model whose catalog entry supports reasoning. Ignored by models that can't reason."
+                        : "Haiku doesn't support adaptive thinking — pick another model to enable deep reasoning."
+                    }
+                  >
                     <input
                       type="checkbox"
-                      checked={draft.deep_reasoning}
+                      checked={draft.deep_reasoning && modelSupportsDeepReasoning(draft.model)}
+                      disabled={!modelSupportsDeepReasoning(draft.model)}
                       onChange={(e) => setDraft({ ...draft, deep_reasoning: e.target.checked })}
-                      className="rounded border-line-strong bg-surface"
+                      className="rounded border-line-strong bg-surface disabled:cursor-not-allowed"
                     />
-                    Deep reasoning (adaptive thinking — Opus only)
+                    Deep reasoning (adaptive thinking — Claude Opus/Sonnet and reasoning-capable
+                    OpenRouter models; not available on Haiku)
                     <span className="text-[10px] text-fg-subtle">
                       default: {detail.deep_reasoning_default ? "on" : "off"}
                     </span>

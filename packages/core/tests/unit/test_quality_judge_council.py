@@ -63,13 +63,13 @@ def test_quality_judge_override_propagates_to_committee(
     new_prompt = "You are a custom quality reviewer. Return JSON only."
     res = client.patch(
         "/agents/quality_judge",
-        json={"prompt": new_prompt, "model": "claude-haiku-4-5-20251001"},
+        json={"prompt": new_prompt, "model": "claude-haiku-4-5"},
     )
     assert res.status_code == 200
     detail = res.json()
     assert detail["has_override"] is True
     assert detail["prompt"] == new_prompt
-    assert detail["model"] == "claude-haiku-4-5-20251001"
+    assert detail["model"] == "claude-haiku-4-5"
 
     # Now the Committee should pick up both overrides.
     from openexecutive.orchestrator.committee_reviewers import build_quality_reviewer
@@ -77,7 +77,7 @@ def test_quality_judge_override_propagates_to_committee(
     reviewer = build_quality_reviewer(model="claude-opus-4-7")
     assert reviewer.name == "quality_judge"
     assert reviewer.system_prompt == new_prompt
-    assert reviewer.model == "claude-haiku-4-5-20251001"
+    assert reviewer.model == "claude-haiku-4-5"
 
 
 def test_build_quality_reviewer_uses_agent_model_not_passed_arg(

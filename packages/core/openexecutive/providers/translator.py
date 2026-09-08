@@ -19,9 +19,18 @@ What we DO NOT translate:
   For non-Anthropic slugs the feature_gate has already stripped them
   before we get here, so the no-cache_control path falls back to the
   legacy string-flatten form for maximum upstream compatibility.
-* Anthropic thinking / output_config blocks — feature_gate has either
-  preserved them (Claude family) or popped them (non-Claude); we just
-  forward whatever is left.
+* Anthropic thinking / output_config blocks are NOT forwarded verbatim —
+  OpenRouter has no ``thinking`` field. When feature_gate has preserved
+  them (Claude family, or a catalog model that advertises ``reasoning``
+  support) ``to_openai_request`` translates their intent into OpenRouter's
+  unified ``reasoning`` parameter (``{"effort": ...}`` for adaptive
+  thinking, ``{"max_tokens": N}`` for a legacy ``budget_tokens`` request).
+  OpenRouter maps that onto each vendor's native form (Anthropic budget /
+  effort, OpenAI reasoning effort, Gemini thinkingLevel, …). The
+  ``reasoning`` / ``reasoning_details`` fields OpenRouter adds to the
+  response are ignored by the response path — only ``content`` and
+  ``tool_calls`` are read. See
+  https://openrouter.ai/docs/guides/best-practices/reasoning-tokens.
 * Web-search server tools — feature_gate stripped these for non-Claude
   models before we ran. For Claude family (where feature_gate keeps them)
   the Anthropic ``web_search_*`` server tool can't be executed by
@@ -212,6 +221,7 @@ def _assistant_content_to_openai(content: Any) -> dict[str, Any]:
 
     text_chunks: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    reasoning_details: list[Any] = []
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -220,6 +230,10 @@ def _assistant_content_to_openai(content: Any) -> dict[str, Any]:
             txt = block.get("text", "")
             if isinstance(txt, str) and txt:
                 text_chunks.append(txt)
+        elif btype == OPENROUTER_REASONING_BLOCK:
+            details = block.get("reasoning_details")
+            if isinstance(details, list):
+                reasoning_details.extend(details)
         elif btype == "tool_use":
             tool_calls.append(
                 {
@@ -234,6 +248,8 @@ def _assistant_content_to_openai(content: Any) -> dict[str, Any]:
 
     out: dict[str, Any] = {"role": "assistant"}
     out["content"] = "\n\n".join(text_chunks) if text_chunks else None
+    if reasoning_details:
+        out["reasoning_details"] = reasoning_details
     if tool_calls:
         out["tool_calls"] = tool_calls
     return out
@@ -318,6 +334,47 @@ def _web_search_plugin(tools: Any) -> dict[str, Any] | None:
     return None
 
 
+# OpenRouter's accepted ``reasoning.effort`` strings. Anthropic's
+# ``output_config.effort`` values (low / medium / high / xhigh / max) are a
+# subset, so they pass through unchanged. Anything else (or no effort at
+# all) falls back to "low" — the cheapest real tier and this codebase's
+# SPECIALIST_EFFORT default — so a typo can never silently escalate to the
+# most expensive reasoning budget.
+_OPENROUTER_EFFORT_LEVELS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+_DEFAULT_REASONING_EFFORT = "low"
+
+
+def _translate_reasoning(anthropic_kwargs: dict[str, Any]) -> dict[str, Any] | None:
+    """Anthropic ``thinking`` + ``output_config.effort`` → OpenRouter ``reasoning``.
+
+    * ``{"type": "adaptive"}`` (current models) → ``{"effort": <level>}`` where
+      the level comes from ``output_config.effort``, defaulting to "low".
+    * ``{"type": "enabled", "budget_tokens": N}`` (pre-4.6 models) →
+      ``{"max_tokens": N}``.
+    * ``{"type": "disabled"}``, absent, or malformed → ``None`` (no field).
+    """
+    thinking = anthropic_kwargs.get("thinking")
+    if not isinstance(thinking, dict):
+        return None
+    kind = thinking.get("type")
+    if kind == "enabled":
+        budget = thinking.get("budget_tokens")
+        if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
+            return {"max_tokens": budget}
+        # ``enabled`` with no usable budget is malformed — Anthropic itself
+        # would reject it — so send no reasoning rather than guessing.
+        return None
+    if kind != "adaptive":
+        return None
+    output_config = anthropic_kwargs.get("output_config")
+    effort = output_config.get("effort") if isinstance(output_config, dict) else None
+    if not isinstance(effort, str) or effort not in _OPENROUTER_EFFORT_LEVELS:
+        effort = _DEFAULT_REASONING_EFFORT
+    return {"effort": effort}
+
+
 def to_openai_request(model_slug: str, anthropic_kwargs: dict[str, Any]) -> dict[str, Any]:
     """Translate an Anthropic ``messages.create`` kwargs dict to an OpenAI
     ``/chat/completions`` body. ``model_slug`` is the OpenRouter model id."""
@@ -357,6 +414,13 @@ def to_openai_request(model_slug: str, anthropic_kwargs: dict[str, Any]) -> dict
     if tool_choice is not None:
         body["tool_choice"] = _translate_tool_choice(tool_choice)
 
+    # Deep reasoning: the Council checkbox sets Anthropic-native ``thinking``
+    # + ``output_config.effort``; feature_gate leaves them in place only for
+    # models that can reason, and here they become OpenRouter's ``reasoning``.
+    reasoning = _translate_reasoning(anthropic_kwargs)
+    if reasoning is not None:
+        body["reasoning"] = reasoning
+
     # Ask OpenRouter to report the actual charged cost of this generation in
     # the response `usage` block (and the final usage chunk when streaming).
     # This is a read-only accounting flag — it does not alter the messages,
@@ -390,6 +454,35 @@ def _block(type_: str, **fields: Any) -> SimpleNamespace:
     attributes; a SimpleNamespace matches the shape without pulling in
     pydantic models from the SDK."""
     return SimpleNamespace(type=type_, **fields)
+
+
+# Synthetic content-block type carrying OpenRouter's ``reasoning_details``
+# through the Anthropic-shaped message so a multi-turn tool loop can echo
+# it back. Always the LAST content block, so ``content[0]`` stays whatever
+# it was before (text, or tool_use for a text-less turn). OpenRouter requires the array to be replayed verbatim on the
+# assistant turn for reasoning continuity (Anthropic 400s a tool_use turn
+# whose thinking was dropped; other vendors lose their chain of thought).
+# https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#preserving-reasoning-blocks
+OPENROUTER_REASONING_BLOCK = "openrouter_reasoning"
+
+
+def reasoning_replay_block(block: Any) -> dict[str, Any] | None:
+    """Dict form of a response ``openrouter_reasoning`` block for the next
+    assistant turn, or ``None`` for any other block. Every multi-turn tool
+    loop that rebuilds its assistant history block-by-block calls this so
+    reasoning continuity is preserved on the OpenRouter path."""
+    if getattr(block, "type", None) != OPENROUTER_REASONING_BLOCK:
+        return None
+    details = getattr(block, "reasoning_details", None)
+    if not isinstance(details, list) or not details:
+        return None
+    return {"type": OPENROUTER_REASONING_BLOCK, "reasoning_details": list(details)}
+
+
+def _reasoning_details_block(details: Any) -> SimpleNamespace | None:
+    if isinstance(details, list) and details:
+        return _block(OPENROUTER_REASONING_BLOCK, reasoning_details=list(details))
+    return None
 
 
 def _stop_reason_from_openai(reason: str | None) -> str:
@@ -514,6 +607,14 @@ def from_openai_response(body: dict[str, Any]) -> SimpleNamespace:
             )
         )
 
+    # Reasoning LAST. Several callers read ``content[0].text`` (the SDK
+    # itself only ever emits text first for those prompts), so the synthetic
+    # block must never displace the text block. Order carries no meaning on
+    # the replay side — ``reasoning_details`` is a separate message field.
+    reasoning_block = _reasoning_details_block(msg.get("reasoning_details"))
+    if reasoning_block is not None:
+        content_blocks.append(reasoning_block)
+
     usage = body.get("usage") or {}
     cache_read, cache_create = _extract_cache_token_counts(usage)
     return SimpleNamespace(
@@ -594,6 +695,9 @@ class StreamAccumulator:
         self._cite_pending = ""
         # tool_calls[idx] = {"id": ..., "name": ..., "arg_chunks": [..]}
         self._tool_calls: dict[int, dict[str, Any]] = {}
+        # OpenRouter streams ``delta.reasoning_details`` chunks; collected
+        # verbatim and re-emitted as one block at finalize().
+        self._reasoning_details: list[Any] = []
         self._finish_reason: str | None = None
         self._usage: dict[str, Any] = {}
         self._model: str = ""
@@ -644,6 +748,10 @@ class StreamAccumulator:
                         delta=_block("text_delta", text=emit),
                     )
                 )
+
+        details = delta.get("reasoning_details")
+        if isinstance(details, list):
+            self._reasoning_details.extend(details)
 
         for tc in delta.get("tool_calls") or []:
             idx = tc.get("index", 0)
@@ -704,6 +812,10 @@ class StreamAccumulator:
                     input=_strip_cite_in_value(parsed),
                 )
             )
+        # Reasoning last — see from_openai_response for why.
+        reasoning_block = _reasoning_details_block(self._reasoning_details)
+        if reasoning_block is not None:
+            content_blocks.append(reasoning_block)
         cache_read, cache_create = _extract_cache_token_counts(self._usage)
         return SimpleNamespace(
             id=self._id,

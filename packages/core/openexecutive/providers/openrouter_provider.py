@@ -11,6 +11,8 @@ for backward compatibility with existing imports.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import (
     OpenAICompatibleProvider,
@@ -34,6 +36,7 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         timeout_s: float = 180.0,
         slug_lookup: dict[str, str] | None = None,
         spec_lookup: dict[str, FeatureSpec] | None = None,
+        model_resolver: Callable[[str], tuple[str, FeatureSpec] | None] | None = None,
     ) -> None:
         # OpenRouter attribution headers — surfaced in your dashboard alongside
         # the cost data so you can attribute usage back to this app.
@@ -47,4 +50,5 @@ class OpenRouterProvider(OpenAICompatibleProvider):
             timeout_s=timeout_s,
             slug_lookup=slug_lookup,
             spec_lookup=spec_lookup,
+            model_resolver=model_resolver,
         )

@@ -224,7 +224,7 @@ def get_active_workspace_id() -> str:
         if not path.exists():
             return settings.honcho_workspace_id
         import json
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         wid = data.get("workspace_id")
         if isinstance(wid, str) and wid:
             return wid
@@ -250,7 +250,7 @@ def set_active_workspace_id(workspace_id: str, *, fixture_name: str | None = Non
         "fixture_name": fixture_name,
         "set_at": datetime.now(UTC).isoformat(),
     }
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     _drop_cached_clients()
 
 

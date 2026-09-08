@@ -6,7 +6,9 @@ description: >
   code, unclear names, and tests that don't verify what they claim. Quotes the
   exact offending lines.
 tools: Read, Grep, Glob, Bash
-model: haiku
+model: sonnet
+effort: medium
+maxTurns: 20
 color: cyan
 ---
 
@@ -18,6 +20,7 @@ Examine `git --no-pager diff --staged`. Look for:
 4. Names that obscure intent
 5. Tests that don't actually verify the behavior they describe
 6. (Open Executive only — if the diff touches `prompts/cache_manager.py`, `prompts/executive_persona.py`, `memory/company_profile.py`, or any `cache_control` block) prompt-cache hygiene: dynamic content inside a cached system block, the executive persona being f-stringed rather than passed as a constant, or tool definitions not sorted by name. This breaks Anthropic prompt caching (~10x cost), so flag it as a maintainability defect.
+7. (Open Executive only) a change under a documented `/architecture` topic (integrations, scheduler, workflows, routing, caching, departments/people, schemas, API routes) with no edit to the **matching** `architecture/prebuilt/<section>.json`. The page is served from those JSON files, so an edit to `architecture-facts.yaml` alone does not count — the page still goes stale.
 Quote the exact lines for each issue. Do not give general advice.
 If nothing: state "No quality issues found."
 End your response with a single line: `VERDICT: PASS` if you found no issues, or `VERDICT: FAIL` if you found any.

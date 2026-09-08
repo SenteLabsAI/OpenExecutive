@@ -33,7 +33,7 @@ All responses come from one consistent executive voice. The internal agent archi
 ```
 User message
     ↓
-Executive Orchestrator (claude-sonnet-4-6)
+Executive Orchestrator (claude-sonnet-5)
     ↓ tool use → parallel specialist calls
 CSO / CFO / CHRO / GC / COO / CMO / CPO / Board
     ↓ each specialist retrieves relevant context from ChromaDB
@@ -57,8 +57,8 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 | Layer | Choice |
 |---|---|
 | LLM backbone | Anthropic Claude API |
-| Default model | `claude-sonnet-4-6` (Executive + most specialists) |
-| Deep reasoning | `claude-opus-4-7` (CSO, CFO, GC, Board — with extended thinking) |
+| Default model | `claude-sonnet-5` (Executive + most specialists) |
+| Deep reasoning | `claude-opus-5` (CSO, CFO, GC, Board — with extended thinking) |
 | Backend | Python 3.11 + FastAPI |
 | Package manager | `uv` |
 | Vector store | ChromaDB (local, embedded) |
@@ -281,13 +281,13 @@ the app refuses to start.
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes¹ | — | Anthropic API key |
-| `DEFAULT_MODEL` | No | `claude-sonnet-4-6` | Executive + most specialists |
-| `DEEP_REASONING_MODEL` | No | `claude-opus-4-7` | CSO, CFO, GC, Board |
+| `DEFAULT_MODEL` | No | `claude-sonnet-5` | Executive + most specialists |
+| `DEEP_REASONING_MODEL` | No | `claude-opus-5` | CSO, CFO, GC, Board |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB directory |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory |
 | `COMPANY_PROFILE_PATH` | No | `./company/profile.yaml` | Company profile |
 | `ENABLE_CACHING` | No | `true` | Anthropic prompt caching |
-| `ROUTING_MODEL` | No | `claude-haiku-4-5-20251001` | Model for intent routing |
+| `ROUTING_MODEL` | No | `claude-haiku-4-5` | Model for intent routing |
 | `SLACK_BOT_TOKEN` | No | — | Slack bot OAuth token |
 | `SLACK_APP_TOKEN` | No | — | Slack socket mode token |
 | `EXEC_EMAIL_ADDRESS` | No | — | Executive Gmail address (Gmail MCP OAuth) |
@@ -304,6 +304,10 @@ the app refuses to start.
 | `GOOGLE_OAUTH_CLIENT_SECRET` | No | — | Google OAuth client secret (Gmail MCP) |
 | `OPENROUTER_ENABLED` | No | `false` | Route Claude calls through OpenRouter and unlock non-Anthropic models per-agent in the Council UI |
 | `OPENROUTER_API_KEY` | No | — | Required when `OPENROUTER_ENABLED=true` |
+| `OPENROUTER_CATALOG_ENABLED` | No | `true` | Fetch OpenRouter's live `/models` catalog at startup to populate the Council dropdown; falls back to a built-in list on failure |
+| `OPENROUTER_CATALOG_PROVIDERS` | No | `openai,google,anthropic,meta-llama,deepseek,x-ai` | Vendor prefixes surfaced from the live catalog |
+| `OPENROUTER_CATALOG_PER_PROVIDER` | No | `6` | Newest tool-capable paid models per vendor (`0` = no cap) |
+| `OPENROUTER_CATALOG_REFRESH_S` | No | `21600` | Background re-fetch cadence in seconds (`0` = startup only) |
 | `LOCAL_MODELS_ENABLED` | No | `false` | Route selected slugs to a local OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp) |
 | `LOCAL_BASE_URL` | No | — | Local server URL incl. version path, e.g. `http://localhost:11434/v1`. Required when `LOCAL_MODELS_ENABLED=true` |
 | `LOCAL_API_KEY` | No | — | Optional bearer token (vLLM / gateways); Ollama & LM Studio need none |
@@ -312,12 +316,22 @@ the app refuses to start.
 | `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels |
 | `HONCHO_API_KEY` | No | — | Required when `HONCHO_ENABLED=true` |
 | `HONCHO_BASE_URL` | No | — | Self-hosted Honcho endpoint |
+| `ENABLE_WEB_SEARCH` | No | `true`² | Let the Executive and specialists answer with live web results (news, market data, competitor moves) alongside your uploaded documents |
+| `WEB_SEARCH_MAX_USES` | No | `2` | Max billed searches per agent per turn |
 
 See [.env.example](.env.example) for the full list.
 
 > ¹ `ANTHROPIC_API_KEY` is required only when you serve Claude models directly.
 > It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`)
 > or route through OpenRouter (`OPENROUTER_ENABLED`).
+
+> ² The application default is on, but **[.env.example](.env.example) ships
+> `ENABLE_WEB_SEARCH=false`** so a fresh setup incurs no per-search charges —
+> if the agents tell you they can't search the web or read the news, flip it
+> to `true` in your `.env` and restart. Uses Anthropic's server-side
+> `web_search` tool, so it applies to Claude models (local models can't use
+> it). `WEB_SEARCH_ALLOWED_DOMAINS` / `WEB_SEARCH_BLOCKED_DOMAINS` scope where
+> it may look (set at most one).
 
 ## Running on Local Models
 
@@ -352,6 +366,31 @@ disabled for local models. Multi-agent routing leans heavily on tool use, so
 pick a model that's strong at it (e.g. Llama 3.3 70B, Qwen2.5) — small models
 may route poorly. `LOCAL_API_KEY` is only needed if your server (vLLM, or a
 gateway) requires a bearer token; Ollama and LM Studio need none.
+
+### Using a hosted OpenAI-compatible gateway
+
+The `LOCAL_*` settings are not limited to localhost — the same recipe works with
+any **hosted** OpenAI-compatible endpoint (an aggregator or inference gateway):
+
+```bash
+LOCAL_MODELS_ENABLED=true
+LOCAL_BASE_URL=https://gateway.example.com/v1
+LOCAL_API_KEY=your-gateway-key
+LOCAL_MODELS=vendor/model-a,vendor/model-b
+```
+
+The listed slugs are sent to the gateway verbatim and appear in the Council UI
+dropdown, exactly like local slugs. Gateways that speak OpenRouter's request
+format and model namespace can alternatively be used through the OpenRouter
+path (`OPENROUTER_ENABLED=true` + `OPENROUTER_API_KEY` +
+`OPENROUTER_BASE_URL=https://gateway.example.com/v1`), which keeps that path's
+Claude-name translation and feature handling.
+
+The local-model caveats above apply to the `LOCAL_*` path unchanged, plus one
+that matters more for hosted endpoints: everything the Executive processes —
+company profile, documents, conversations — is sent to whichever endpoint you
+configure here. Point these settings only at a provider you trust with that
+data.
 
 ## Adding a New Specialist Agent
 

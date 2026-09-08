@@ -72,6 +72,8 @@ class StockSource:
     # Stock prices update fast but we don't want to be a high-frequency
     # trader's data feed — 15 min is a reasonable middle ground.
     default_poll_interval_minutes: int = 15
+    # Point-in-time threshold check — a crossing on the first poll is real.
+    seed_on_first_poll: bool = False
 
     async def poll(
         self, item: WatchlistItem, *, db_path: Path | None = None

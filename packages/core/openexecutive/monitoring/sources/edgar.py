@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -50,6 +50,10 @@ from openexecutive.monitoring.sources._http import (
     FetchOverflowError,
     fetch_bounded,
     validate_target_url,
+)
+from openexecutive.monitoring.sources.base import (
+    feed_entry_published_at,
+    future_skew_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,9 @@ _IDENT_RE = re.compile(rf"^[A-Za-z0-9.\-]{{1,{_MAX_IDENT_LEN}}}$")
 class EdgarSource:
     kind: str = SOURCE_KIND_EDGAR
     default_poll_interval_minutes: int = _DEFAULT_POLL_MINUTES
+    # The Atom feed lists the last N filings on every poll; the first poll
+    # is a baseline so a new watch doesn't replay past filings as news.
+    seed_on_first_poll: bool = True
 
     async def poll(
         self, item: WatchlistItem, *, db_path: Path | None = None
@@ -131,6 +138,7 @@ class EdgarSource:
 
         allowed = _allowed_forms(item.trigger_json)
         label = item.config_json.get("label") or ident.upper()
+        skew = future_skew_for(item)
         signals: list[Signal] = []
         # Filter first, then cap the OUTPUT — capping the raw entry list before
         # filtering would let a run of excluded forms (e.g. many Form 4s) at the
@@ -138,7 +146,7 @@ class EdgarSource:
         for entry in parsed.entries:
             if len(signals) >= _MAX_FILINGS_PER_POLL:
                 break
-            signal = _entry_to_signal(entry, item, label, allowed)
+            signal = _entry_to_signal(entry, item, label, allowed, skew)
             if signal is not None:
                 signals.append(signal)
         return signals
@@ -200,7 +208,8 @@ def _accession(entry: dict) -> str:
 
 
 def _entry_to_signal(
-    entry: dict, item: WatchlistItem, label: str, allowed: frozenset[str]
+    entry: dict, item: WatchlistItem, label: str, allowed: frozenset[str],
+    skew: timedelta,
 ) -> Signal | None:
     form = _entry_form(entry)
     if not _form_matches(form, allowed):
@@ -228,6 +237,7 @@ def _entry_to_signal(
         source_kind=SOURCE_KIND_EDGAR,
         source_external_id=accession[:500],
         captured_at=datetime.now(UTC).isoformat(),
+        published_at=feed_entry_published_at(entry, skew=skew),
         normalized_summary=summary[:500],
         raw_payload={
             "label": label,

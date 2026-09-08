@@ -13,15 +13,27 @@ import {
   type WatchlistSignal,
 } from "@/lib/api";
 
+/** Relative time for display, e.g. "3h ago", "just now", "never". */
 function formatRelTime(iso: string | null): string {
   if (!iso) return "never";
   try {
     const diff = new Date(iso).getTime() - Date.now();
+    // new Date("garbage") yields NaN rather than throwing; every comparison
+    // below would be false and fall through to "NaNd ago".
+    if (!Number.isFinite(diff)) return "—";
+    // A timestamp slightly ahead of the browser clock (published_at within
+    // the server's skew tolerance) reads as "just now", never a fabricated
+    // past.
+    // A value well ahead of the browser clock is reported as such rather
+    // than dressed up as recent (the source controls published_at). The
+    // tolerance absorbs ordinary browser/server clock drift, so our own
+    // timestamps don't read as tampered with.
+    if (diff > 300_000) return "in the future";
+    if (diff > -60_000) return "just now";
     const abs = Math.abs(diff);
-    if (abs < 60_000) return "now";
-    if (abs < 3_600_000) return `${Math.round(abs / 60_000)}m`;
-    if (abs < 86_400_000) return `${Math.round(abs / 3_600_000)}h`;
-    return `${Math.round(abs / 86_400_000)}d`;
+    if (abs < 3_600_000) return `${Math.round(abs / 60_000)}m ago`;
+    if (abs < 86_400_000) return `${Math.round(abs / 3_600_000)}h ago`;
+    return `${Math.round(abs / 86_400_000)}d ago`;
   } catch {
     return "—";
   }
@@ -49,7 +61,10 @@ function SignalRow({ signal }: { signal: WatchlistSignal }) {
             {signal.normalized_summary}
           </div>
           <div className="text-[11px] text-fg-muted mt-0.5">
-            {formatRelTime(signal.captured_at)} ago · severity {signal.severity_hint}
+            {signal.published_at
+              ? `published ${formatRelTime(signal.published_at)} · seen ${formatRelTime(signal.captured_at)}`
+              : formatRelTime(signal.captured_at)}
+            {" "}· severity {signal.severity_hint}
           </div>
         </div>
         <span
@@ -246,9 +261,9 @@ export default function WatchDetailPage() {
               <dt className="text-fg-muted">Trust score</dt>
               <dd className="text-fg">{item.trust_score.toFixed(2)}</dd>
               <dt className="text-fg-muted">Last polled</dt>
-              <dd className="text-fg">{formatRelTime(item.last_polled_at)} ago</dd>
+              <dd className="text-fg">{formatRelTime(item.last_polled_at)}</dd>
               <dt className="text-fg-muted">Last fired</dt>
-              <dd className="text-fg">{formatRelTime(item.last_fired_at)} ago</dd>
+              <dd className="text-fg">{formatRelTime(item.last_fired_at)}</dd>
             </dl>
             <div className="mt-3">
               <div className="text-xs text-fg-muted mb-1">Trigger</div>

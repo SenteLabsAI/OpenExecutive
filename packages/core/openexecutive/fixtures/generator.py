@@ -597,10 +597,18 @@ def materialize_to_dir(record: dict[str, Any], target_dir: Path) -> None:
     ``cli.fixture_loader._apply_state_from_source`` consumes.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    (target_dir / "profile.yaml").write_text(record.get("profile_yaml") or "")
-    (target_dir / "people.yaml").write_text(record.get("people_yaml") or "")
-    (target_dir / "departments.yaml").write_text(record.get("departments_yaml") or "")
-    (target_dir / "memory.json").write_text(record.get("memory_json") or "{}")
+    (target_dir / "profile.yaml").write_text(
+        record.get("profile_yaml") or "", encoding="utf-8"
+    )
+    (target_dir / "people.yaml").write_text(
+        record.get("people_yaml") or "", encoding="utf-8"
+    )
+    (target_dir / "departments.yaml").write_text(
+        record.get("departments_yaml") or "", encoding="utf-8"
+    )
+    (target_dir / "memory.json").write_text(
+        record.get("memory_json") or "{}", encoding="utf-8"
+    )
 
     docs = json.loads(record.get("docs_json") or "{}")
     if docs:
@@ -612,7 +620,7 @@ def materialize_to_dir(record: dict[str, Any], target_dir: Path) -> None:
             while safe in seen:
                 safe = f"_{safe}"
             seen.add(safe)
-            (docs_dir / safe).write_text(content or "")
+            (docs_dir / safe).write_text(content or "", encoding="utf-8")
 
 
 def _extract_tool_input(response: Any) -> dict[str, Any]:

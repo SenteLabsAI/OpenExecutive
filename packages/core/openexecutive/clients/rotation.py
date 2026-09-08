@@ -125,7 +125,7 @@ async def run_client_rotation(
 
     marker = _rotation_marker(settings)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(datetime.now(UTC).isoformat())
+    marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
 
     rotated: list[str] = []
     failed: dict[str, str] = {}
@@ -213,7 +213,7 @@ async def _force_restore(
         slot = _require_slot(settings, slug)
         await _restore_slot_state(settings, slot, app_state=app_state)
         _active_client_sentinel(settings).parent.mkdir(parents=True, exist_ok=True)
-        _active_client_sentinel(settings).write_text(slug)
+        _active_client_sentinel(settings).write_text(slug, encoding="utf-8")
         _set_honcho_client_workspace(slug)
 
 

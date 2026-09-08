@@ -22,7 +22,7 @@ and is imported lazily so a base install without it is unaffected.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from types import SimpleNamespace
 from typing import Any
@@ -68,19 +68,21 @@ class LiteLLMProvider(OpenAICompatibleProvider):
         drop_params: bool = True,
         slug_lookup: dict[str, str] | None = None,
         spec_lookup: dict[str, FeatureSpec] | None = None,
+        model_resolver: Callable[[str], tuple[str, FeatureSpec] | None] | None = None,
     ) -> None:
         # Intentionally do NOT call super().__init__ — the base builds an
         # httpx.AsyncClient this transport never uses (and we override every
         # method that would touch it). We keep ``_api_key`` / ``_slug_lookup``
-        # / ``_spec_lookup`` so the inherited ``_resolve`` helper works, and
-        # use ``_api_base`` (optional) rather than the base's required
-        # ``_base_url`` since LiteLLM routes by model prefix without one.
+        # / ``_spec_lookup`` / ``_model_resolver`` so the inherited ``_resolve``
+        # helper works, and use ``_api_base`` (optional) rather than the base's
+        # required ``_base_url`` since LiteLLM routes by model prefix without one.
         self._api_key = api_key
         self._api_base = base_url.rstrip("/") if base_url else None
         self._timeout_s = timeout_s
         self._drop_params = drop_params
         self._slug_lookup = slug_lookup or {}
         self._spec_lookup = spec_lookup or {}
+        self._model_resolver = model_resolver
 
     # ------------------------------------------------------------------
     # internal helpers
