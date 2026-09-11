@@ -360,15 +360,28 @@ def test_request_lifts_assistant_tool_use_blocks_to_tool_calls() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_request_enables_usage_accounting() -> None:
-    """Every request asks OpenRouter to report the charged cost so the
-    per-call cache_event audit row can store it. This is a read-only flag and
-    must not disturb messages / cache_control blocks."""
+def test_request_enables_usage_accounting_when_opted_in() -> None:
+    """An OpenRouter call (include_usage=True) asks OpenRouter to report the
+    charged cost so the per-call cache_event audit row can store it. This is
+    a read-only flag and must not disturb messages / cache_control blocks."""
     body = to_openai_request(
         "anthropic/claude-opus-4.8",
         {"max_tokens": 64, "messages": [{"role": "user", "content": "hi"}]},
+        include_usage=True,
     )
     assert body["usage"] == {"include": True}
+
+
+def test_request_omits_usage_accounting_by_default() -> None:
+    """A generic self-hosted/gateway backend (the default) must NOT get the
+    OpenRouter-only `usage` field — some upstreams (e.g. a LiteLLM gateway
+    fronting real Anthropic) reject an unrecognized top-level field outright
+    instead of ignoring it. Regression test for that exact failure."""
+    body = to_openai_request(
+        "claude-sonnet-4-6",
+        {"max_tokens": 64, "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert "usage" not in body
 
 
 def test_response_synthesizes_text_block() -> None:

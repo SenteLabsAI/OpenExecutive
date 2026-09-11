@@ -298,6 +298,9 @@ def _local() -> OpenAICompatibleProvider:
             api_key=getattr(settings, "local_api_key", None),
             timeout_s=getattr(settings, "local_timeout_s", 300.0),
             spec_lookup=spec_lookup,
+            include_usage_accounting=getattr(
+                settings, "local_include_usage_accounting", False
+            ),
         )
     return _local_provider
 
