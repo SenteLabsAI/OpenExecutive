@@ -227,6 +227,10 @@ health-check timing, resource sizing, operations, and common failure modes.
 
 The deployed UI is gated behind Google sign-in with an email allow-list, and the public API is protected by a shared-secret header between the UI proxy and the FastAPI backend. See [docs/auth.md](docs/auth.md) for the full setup (Google Cloud Console steps, required environment variables, adding/removing users, rotating secrets, and a debugging table).
 
+### Observability
+
+Every turn, specialist consult, tool call, model call and queued outbound send is recorded in `episodic_memory.db`. See [docs/observability.md](docs/observability.md) for what is recorded, how to read it from outside the process, and how to read the cost figures.
+
 ## Configuration
 
 All settings via environment variables. Minimum required: `ANTHROPIC_API_KEY` —
