@@ -229,7 +229,7 @@ The deployed UI is gated behind Google sign-in with an email allow-list, and the
 
 ### Observability
 
-Every turn, specialist consult, tool call, model call and queued outbound send is recorded in `episodic_memory.db`. See [docs/observability.md](docs/observability.md) for what is recorded, how to read it from outside the process, and how to read the cost figures.
+Every turn, specialist consult, tool call, model call and queued outbound send is recorded in `episodic_memory.db`. See [docs/observability.md](docs/observability.md) for what is recorded, how to read it from outside the process, and how to read the cost figures, or watch it live with [ClawMetry](https://clawmetry.com/runtimes/openexecutive).
 
 ## Configuration
 

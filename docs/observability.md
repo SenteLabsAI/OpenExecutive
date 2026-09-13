@@ -28,6 +28,37 @@ Open it read-only so you can never lock or modify the live database:
 sqlite3 "file:packages/core/episodic_memory.db?mode=ro"
 ```
 
+## Live dashboard with ClawMetry
+
+The sections below show how to read the database yourself. If you would rather
+watch it live, [ClawMetry](https://clawmetry.com/runtimes/openexecutive) reads
+this same file read-only, with no change to Open Executive:
+
+1. Install it. On macOS or Linux:
+
+   ```sh
+   curl -fsSL https://clawmetry.com/install.sh | bash
+   ```
+
+   (Windows and desktop installers are on the
+   [ClawMetry page](https://clawmetry.com/runtimes/openexecutive).)
+
+2. Run `clawmetry`. It finds a clone under your home directory on its own. For
+   Docker, point it at the file first:
+
+   ```sh
+   export CLAWMETRY_OPENEXECUTIVE_DB=/path/to/episodic_memory.db
+   clawmetry
+   ```
+
+3. Open `http://localhost:8900` and pick OpenExecutive in the runtime switcher.
+
+You get every conversation, including the ones that started in Slack or email;
+each specialist consult as a step with its question and answer; failed tool
+calls; token usage and cost per conversation; and every send the scheduler has
+queued, with its status, so a pending message is visible before it goes out.
+The OpenExecutive integration is part of ClawMetry's paid plans.
+
 ## What is recorded
 
 | Table | What it holds |
@@ -51,7 +82,7 @@ Slack and email conversations write `audit_log` rows but no `sessions` row, so
 to list every conversation, read session ids from `audit_log`, not only from
 `sessions`.
 
-## Three questions you can answer today
+## Four questions you can answer today
 
 **What is about to be sent, and to whom?**
 
@@ -122,14 +153,3 @@ ORDER BY ts DESC;
   measured", not "free".
 - Rows written by background work (research runs, triage) may carry no
   `session_id`; research runs tag theirs with `details.run_id` instead.
-
-## Dashboards and alerts
-
-The queries above are enough for a cron job or a quick check. If you would
-rather have this as a live dashboard, [ClawMetry](https://github.com/vivekchand/clawmetry)
-reads this database directly (read-only, no code change) and shows each
-conversation with its specialist consults, tool failures, token usage and cost,
-alongside the pending, delivered and failed sends from `scheduled_actions`. It
-finds a clone under your home directory automatically; for Docker, point it at
-the file with `CLAWMETRY_OPENEXECUTIVE_DB=/path/to/episodic_memory.db`. The
-OpenExecutive integration is part of ClawMetry's paid plans.
