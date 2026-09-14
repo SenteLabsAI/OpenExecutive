@@ -224,6 +224,17 @@ class Settings(BaseSettings):
     # Local generation (especially CPU inference) can be far slower than a
     # hosted API. Default generous so a slow first token doesn't time out.
     local_timeout_s: float = Field(300.0, alias="LOCAL_TIMEOUT_S")
+    # Off by default: the `usage: {include: true}` request field is an
+    # OpenRouter-only accounting extension, not part of the OpenAI or
+    # Anthropic request schema. A plain self-hosted server (Ollama, vLLM) or
+    # a strict gateway that forwards nearly verbatim to real Anthropic will
+    # reject an unrecognized top-level field outright instead of ignoring
+    # it. Only turn this on if you've confirmed your LOCAL_BASE_URL backend
+    # actually understands OpenRouter's request format (some hosted, billed
+    # gateways do) — otherwise every local-model call 400s.
+    local_include_usage_accounting: bool = Field(
+        False, alias="LOCAL_INCLUDE_USAGE_ACCOUNTING"
+    )
 
     @field_validator("local_models", mode="before")
     @classmethod

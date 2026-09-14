@@ -166,6 +166,7 @@ def _settings_stub(
     local_models: list[str] | None = None,
     local_api_key: str | None = None,
     local_timeout_s: float = 300.0,
+    local_include_usage_accounting: bool = False,
 ) -> Any:
     return SimpleNamespace(
         anthropic_api_key=anthropic_key,
@@ -180,6 +181,7 @@ def _settings_stub(
         local_models=local_models or [],
         local_api_key=local_api_key,
         local_timeout_s=local_timeout_s,
+        local_include_usage_accounting=local_include_usage_accounting,
     )
 
 
@@ -323,6 +325,25 @@ def test_local_model_routes_to_local_provider(monkeypatch: pytest.MonkeyPatch) -
     assert not isinstance(provider, OpenRouterProvider)
     # Cached singleton — same object across calls.
     assert get_provider("qwen2.5") is provider
+
+
+def test_local_provider_omits_usage_accounting_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _local_stub(monkeypatch, enabled=False)
+    provider = get_provider("llama3.3")
+    assert provider._include_usage_accounting is False  # type: ignore[attr-defined]
+
+
+def test_local_provider_respects_usage_accounting_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_INCLUDE_USAGE_ACCOUNTING=true lets an operator who has confirmed
+    their LOCAL_BASE_URL backend actually speaks OpenRouter's request format
+    (e.g. a hosted, billed gateway) restore cost tracking."""
+    _local_stub(monkeypatch, enabled=False, local_include_usage_accounting=True)
+    provider = get_provider("llama3.3")
+    assert provider._include_usage_accounting is True  # type: ignore[attr-defined]
 
 
 def test_local_provider_distinct_from_openrouter_singleton(

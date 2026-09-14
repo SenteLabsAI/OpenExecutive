@@ -51,4 +51,13 @@ class OpenRouterProvider(OpenAICompatibleProvider):
             slug_lookup=slug_lookup,
             spec_lookup=spec_lookup,
             model_resolver=model_resolver,
+            # OpenRouter-format request extension (see
+            # translator.to_openai_request). Also correct for OPENROUTER_BASE_URL
+            # pointed at a third-party gateway, as long as it actually speaks
+            # OpenRouter's request format — that's the documented contract for
+            # this class, unlike the generic OpenAICompatibleProvider base
+            # (used for LOCAL_MODELS), which defaults this off because it may
+            # front a plain OpenAI-compatible server or a strict pass-through
+            # to real Anthropic that rejects the field outright.
+            include_usage_accounting=True,
         )

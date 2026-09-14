@@ -160,6 +160,74 @@ def test_messages_create_sends_authorization_header_and_translates_body() -> Non
         "role": "system",
         "content": "You are a helpful assistant.",
     }
+    # OpenRouterProvider opts into the cost-accounting request field — this
+    # is really OpenRouter, unlike a generic local/gateway backend.
+    assert captured["json"]["usage"] == {"include": True}
+
+
+def test_local_provider_omits_usage_accounting_field() -> None:
+    """Regression: a generic OpenAICompatibleProvider (e.g. a self-hosted
+    server, or a LiteLLM gateway aliased under a Claude-family name) must
+    NOT send the OpenRouter-only `usage` request field. A gateway that
+    forwards nearly verbatim to real Anthropic rejects an unrecognized
+    top-level field outright, breaking every call for that model."""
+    from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://litellm.example.com/v1",
+        slug_lookup={},
+        spec_lookup={"claude-sonnet-4-6": FeatureSpec()},
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_post(url: str, **kwargs: Any) -> Any:
+        captured["json"] = kwargs.get("json", {})
+        fake = MagicMock()
+        fake.json.return_value = {
+            "id": "x",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        }
+        fake.raise_for_status = MagicMock()
+        return fake
+
+    provider._client.post = AsyncMock(side_effect=_fake_post)  # type: ignore[method-assign]
+    asyncio.run(
+        provider.messages_create(
+            model="claude-sonnet-4-6",
+            max_tokens=64,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+    assert "usage" not in captured["json"]
+
+
+def test_local_provider_omits_usage_accounting_field_on_stream_path() -> None:
+    """Same regression as test_local_provider_omits_usage_accounting_field,
+    but for messages_stream — a separate call site into to_openai_request
+    that the non-streaming test does not exercise. _OpenAICompatibleStream
+    stores the assembled body on ``._body``, readable without ever entering
+    the context manager or opening a connection."""
+    from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://litellm.example.com/v1",
+        slug_lookup={},
+        spec_lookup={"claude-sonnet-4-6": FeatureSpec()},
+    )
+    stream = provider.messages_stream(
+        model="claude-sonnet-4-6", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+    )
+    assert "usage" not in stream._body  # type: ignore[attr-defined]
+
+
+def test_openrouter_provider_includes_usage_accounting_on_stream_path() -> None:
+    """OpenRouterProvider must keep opting in on the streaming path too —
+    the non-streaming test above only covers messages_create."""
+    provider = _provider()
+    stream = provider.messages_stream(
+        model="claude-sonnet-4-6", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+    )
+    assert stream._body["usage"] == {"include": True}  # type: ignore[attr-defined]
 
 
 def test_messages_create_strips_anthropic_only_fields_for_non_claude() -> None:
