@@ -1181,7 +1181,7 @@ scheduler:
     client is restored, then chains the next nightly occurrence via
     seed_client_rotation (idempotent).
   module: openexecutive.scheduler
-  runner: openexecutive.scheduler.runner — asyncio task started in the FastAPI lifespan. Polls every 30s; `claim_due_actions` uses an UPDATE…RETURNING claim so a row is fired at most once per process. Single-worker assumption (do not run two scheduler processes against the same DB). Each poll is gated on an active company profile via `_company_profile_active()` (true when `load_or_create_profile().is_empty()` is false) — when no profile is configured the poll loop claims and dispatches no scheduled actions, so every due row (including the recurring principal-brief rows seeded once in the startup prologue) stays `pending` and fires only once onboarding completes (the Executive has no company context to act on before then). The hold is logged once per gap and once on resume, not every poll.
+  runner: openexecutive.scheduler.runner — asyncio task started in the FastAPI lifespan. Polls every 30s; `claim_due_actions` uses an UPDATE…RETURNING claim so a row is fired at most once per process. Single-worker assumption (do not run two scheduler processes against the same DB). Each poll is gated on an active company profile via `_company_profile_active()` (true when `load_or_create_profile().is_empty()` is false) — when no profile is configured the poll loop claims and dispatches no scheduled actions, so every due row (including the recurring principal-brief rows seeded once in the startup prologue) stays `pending` and fires only once a company profile is saved (the Executive has no company context to act on before then). The hold is logged once per gap and once on resume, not every poll.
   table: |
     scheduled_actions (in episodic_memory.db). Schema (see
     memory/episodic.py):
@@ -2051,7 +2051,7 @@ external_monitoring:
          narrative for programmatic consumers.
     triggers:
       - "Manual chat — the principal asks 'what should we look into?'; the Executive calls the `run_executive_research` chat tool. The tool runs the workflow, which both researches AND routes; the chat tool returns the structured summary so the Executive can describe to the principal what it researched and what it did with each finding."
-      - "Onboarding completion — when the wizard finishes (build_and_save_profile fires), `api/routes/onboarding._fire_post_onboarding_research` schedules the workflow as a background task. The workflow's synthesis step fires whatever routing tools it deems necessary (DMs to heads, briefing alert, watchlist additions) — the wrapper just runs the workflow with a wall-clock ceiling and creates / completes the workflow_run row."
+      - "Onboarding completion — when the user saves the reviewed draft (POST /onboard/interview/commit, or the wizard fallback's final answer), `api/routes/onboarding._fire_post_onboarding_research` schedules the workflow as a background task. Both paths share the same helper and the same `_onboarding_research_fired` dedup set, so it fires at most once per setup session. The workflow's synthesis step fires whatever routing tools it deems necessary (DMs to heads, briefing alert, watchlist additions) — the wrapper just runs the workflow with a wall-clock ceiling and creates / completes the workflow_run row."
       - "Periodic cron — `watchlist_research_scan` scheduled-action kind (default every 360 min via `WATCHLIST_RESEARCH_INTERVAL_MINUTES`). Each tick computes a state fingerprint (company profile + active initiatives + watchlist slugs/targets) and SKIPS the run when nothing has changed since the last successful periodic research. Quiet days cost zero tokens; first tick after any material profile / initiative / watchlist change fires immediately. A staleness floor (`WATCHLIST_RESEARCH_MAX_STALENESS_HOURS`, default 168, i.e. weekly) overrides the skip once that many hours have elapsed since the last successful run, so a static internal state cannot keep the council blind to purely-external change forever (set <= 0 to disable). The cron does NOT write its own Alert — the workflow's synthesis step already routes findings directly. After routing, a dedicated watchlist-analysis pass (separate budget) proposes ongoing monitors via `propose_watch`; `monitoring.research.watch_policy` decides per proposal — direct add (grounded in company data: competitor / vendor / ticker / initiative / priority, score >= 4 on a fixed ledger, quiet defaults) vs dry-run suggestion for the principal vs reject — and the run artifact is persisted into the separate `recent_research` knowledge collection (keep-latest). Cron's only side-effects on success are the `watchlist_research_periodic_ran` audit row + whatever the workflow's Executive synthesis + watchlist pass fired."
     skip_if_unchanged: |
       The periodic cron handler (`monitoring.research.scheduler.run_watchlist_research_scan`)
@@ -3143,6 +3143,130 @@ evals:
   api: /evals — scenario CRUD, run launch, run history, cancel.
   ui: UI-triggered runner with SSE streaming, parallel execution, scenario CRUD inline, stop button on active runs.
   scenarios_dir: openexecutive/evals/_scenarios — YAML scenarios bundled with the package so they ship in the Docker image.
+
+company_onboarding:
+  module: openexecutive.onboarding (interview.py, commit.py, wizard.py) + api.routes.onboarding
+  intent: |
+    First-run company setup. The user describes their business in their own
+    words (optionally attaching a deck, one-pager or brief); an LLM asks
+    clarifying questions, then drafts a company profile, a leadership roster
+    and a department list that the user reviews, edits inline, and saves.
+    Deliberately shaped like the /demo and /clients/generate draft-then-review
+    flows rather than like a form.
+  api: |
+    POST /onboard/interview/start (multipart: description + files[]),
+    POST /onboard/interview/message, POST /onboard/interview/draft,
+    GET /onboard/interview/{session_id}, POST /onboard/interview/commit.
+    The original wizard endpoints (/onboard/start, /onboard/answer,
+    /onboard/status/{id}) are unchanged and still serve the form fallback at
+    /onboard?mode=form and the `openexecutive onboard` CLI.
+  agent: |
+    openexecutive.agents.onboarding_interviewer.OnboardingInterviewerAgent.
+    Council-visible (model + prompt overridable) but OUTSIDE
+    SPECIALIST_REGISTRY, so the Executive cannot reach it via
+    consult_specialist — same containment as fixture_generator and
+    engagement_intake. Model defaults to settings.default_model (not the fast
+    model: question quality is the feature).
+  tool_contract: |
+    A CONSTANT two-tool array, sorted by name — ask_clarifying_question and
+    emit_company_draft — with tool_choice={"type":"any"} so the model picks
+    which to call without the array varying. This is load-bearing: adding a
+    tool partway through a conversation invalidates the cached tool prefix on
+    every subsequent turn (the same invariant orchestrator/form_tools.py
+    documents). tool_choice flips to the forced emit tool exactly once, on the
+    turn where the question budget (8) or the transcript ceiling (120k chars)
+    is reached, or when the user clicks "draft it now". That single call misses
+    the tools cache; one miss per setup session is the accepted price of a
+    bounded interview. Do NOT "fix" it by making the tools conditional.
+  caching: |
+    The system block is the ONBOARDING_INTERVIEWER_SYSTEM constant, never
+    f-stringed. When the user re-runs setup over an existing profile,
+    profile.to_prompt_block() goes into the FIRST USER TURN, never the cached
+    system block. This path does not touch prompts/cache_manager.py, so the
+    "exactly 2 cache_control blocks" budget there is unaffected.
+  validation: |
+    Two stages, mirroring fixtures.generator: Pydantic model_validate, then
+    interview.validate_draft for referential integrity — exactly one
+    is_principal, unique person names, every department head_person_name
+    matching a person (or empty), distinct department titles. A failure of
+    either feeds the errors back as a follow-up user turn and retries ONCE
+    with the emit tool forced.
+  error_contract: |
+    NO failure path echoes model or user input. A ValidationError's str()
+    embeds the offending values, which here are the user's ARR, burn and
+    runway. InterviewError / InterviewTimeout messages are fixed, input-free
+    strings safe to return as an HTTP detail, and every log line carries an
+    exception TYPE only. Note fixtures/generator.py interpolates the exception
+    into its GenerationError — that is NOT the pattern to copy here.
+    Route mapping: InterviewTimeout -> 504, InterviewError -> 502, oversized
+    message -> 422 (checked in the route, not with Field(max_length=...),
+    because FastAPI's 422 body echoes the rejected input).
+  session_state: |
+    In-memory OrderedDict in api/routes/onboarding.py, 2h TTL and a 50-session
+    cap, swept on every handler and after each insert. Deliberately NOT
+    persisted: the transcript is unedited free text containing financials, and
+    the artifact worth keeping (the draft) is already in the client's hands.
+    GET /onboard/interview/{id} covers the common loss case (page refresh); a
+    process restart mid-interview loses the interview, consistent with /demo
+    and /clients/generate. Single-process assumption, same as the scheduler.
+  write_once_commit: |
+    The interview NEVER writes. POST /onboard/interview/commit is the single
+    write, ordered so nothing observable changes until the atomic save
+    succeeds: (1) validate profile + drafts, (2) reject an empty name,
+    (3) profile.save_to_yaml (write-then-rename, O_EXCL, fsync), (4) mark the
+    session saved, (5) seed people, (6) reconcile departments, (7) fire the
+    post-onboarding research workflow. A failure at 1-3 leaves the session
+    untouched, so the user edits the draft and retries. This replaces the
+    deepcopy-snapshot rollback the wizard needs (process_answer mutates state
+    before the build can fail). A second commit returns 409, preserving the
+    research-fire dedup guarantee.
+  departments_are_additive: |
+    THE key difference from the fixture path. cli/fixture_loader._seed_departments
+    DELETEs every department and goal before inserting — correct when swapping
+    in a demo company, destructive here: it would drop the eight defaults from
+    seed_default_departments along with their specialist_key wiring, and
+    create_department always writes specialist_key = NULL, so a wiped default
+    can never be recreated properly. onboarding/commit.reconcile_onboarding_departments
+    instead matches each drafted department onto an existing one by slug or
+    case-insensitive title, UPDATEs matches in place (preserving charter scope
+    and specialist_key), CREATEs only what is unmatched, and never deletes. An
+    empty drafted mission or head leaves the existing value alone rather than
+    clearing it.
+  people_and_contacts: |
+    Exactly one person is is_principal (the user) and gets AuthorityScope.WILDCARD;
+    nobody else gets a scope. PersonDraft uses extra="ignore" so an email or
+    chat handle the model emits despite the system prompt is dropped at the
+    model boundary — OE never auto-imports contacts, matching the fixture and
+    engagement-intake invariants. Channels, availability and scopes stay a
+    deliberate action on /people.
+  org_structure_is_derived: |
+    profile.org_structure.departments and .leadership_team are computed from
+    the reviewed people and department tables at commit time
+    (onboarding.commit.derive_org_structure). The draft-review screen therefore
+    omits the Org Structure section (ProfileSections `omit={["org"]}`) — leaving
+    it editable would give the user two places to edit the same list.
+  uploads: |
+    api/intake_uploads.py holds the attachment helpers shared with
+    POST /clients/generate (8 files, 25MB each, .pdf/.docx/.doc/.xlsx/.xlsm/
+    .csv/.md/.txt, text extracted via knowledge.loader). Extracted text is
+    appended to the opening user turn, labelled per file.
+  scope_note: |
+    Onboarding drafts the profile, people and departments — NOT memory,
+    documents or scheduled actions. Seeded "past decisions" invented from a
+    five-minute conversation would be fabricated history in a real company's
+    episodic store; the fixture generator may invent because it is building
+    fiction. This gap is a decision, not an oversight.
+  ui: |
+    /onboard — app/onboard/page.tsx phase machine (conversation -> draft ->
+    redirect), components/onboard/{OnboardConversation,OnboardDraftReview,
+    OnboardPeopleDraft,OnboardDepartmentsDraft}.tsx. The draft screen reuses
+    the /company-profile section editors via
+    components/company-profile/ProfileSections.tsx, extracted for this purpose:
+    the sections already took onSave as an injected prop, so onboarding passes
+    one that merges into local draft state instead of PATCHing. Plain JSON
+    POSTs with a typing indicator, no SSE — a clarifying question is one
+    sentence, and the draft turn is a forced tool call whose partial JSON
+    cannot be usefully streamed.
 
 fixtures:
   module: openexecutive.api.routes.fixtures

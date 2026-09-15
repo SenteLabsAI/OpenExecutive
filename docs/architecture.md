@@ -19,7 +19,7 @@ openexecutive/
 │   │       ├── agents/               # 8 specialist agents + triage
 │   │       ├── knowledge/            # ChromaDB store + RAG pipeline
 │   │       ├── memory/               # Company profile + episodic memory
-│   │       ├── onboarding/           # Wizard state machine + profile builder
+│   │       ├── onboarding/           # Conversational interview + commit; wizard fallback
 │   │       ├── prompts/              # Persona + domain prompts + cache manager
 │   │       ├── api/                  # FastAPI app + routes
 │   │       ├── integrations/         # Slack, Email, Telegram, Google Chat
@@ -257,7 +257,7 @@ Key design decisions:
 ### Company Profile (structured long-term)
 `memory/company_profile.py`
 
-`CompanyProfile` is a Pydantic v2 model serialized to `company/profile.yaml`. Loaded at startup, cached in the system prompt. Updated through the onboarding wizard or natural-language corrections.
+`CompanyProfile` is a Pydantic v2 model serialized to `company/profile.yaml`. Loaded at startup, cached in the system prompt. Updated through conversational onboarding, the `/company-profile` editor, or natural-language corrections.
 
 ---
 
@@ -384,11 +384,47 @@ SQLite-backed append-only audit trail. Writes to the same `episodic_memory.db` f
 
 ---
 
-## Onboarding Wizard
+## Onboarding
 
-`onboarding/wizard.py`
+Two paths to the same artifact — `company/profile.yaml` (gitignored) — plus
+the `people` and `departments` tables.
 
-A 9-step state machine. Works as both a CLI flow and an API-driven web wizard.
+### Conversational (default)
+
+`onboarding/interview.py`, `onboarding/commit.py`,
+`agents/onboarding_interviewer.py`
+
+The user describes their business in their own words at `/onboard`, optionally
+attaching a deck or one-pager. The `onboarding_interviewer` agent (Council-
+visible, outside `SPECIALIST_REGISTRY`) asks up to 8 clarifying questions, then
+emits a draft company profile, leadership roster, and department list. The user
+reviews and edits that draft inline — the same section editors `/company-profile`
+uses — and saves.
+
+Mechanics worth knowing:
+
+- A **constant, name-sorted two-tool array** (`ask_clarifying_question`,
+  `emit_company_draft`) with `tool_choice: any`. Varying the array mid-
+  conversation would invalidate the cached tool prefix on every turn.
+  `tool_choice` flips to the forced emit tool exactly once, at the question or
+  transcript budget, or when the user asks to draft now.
+- **The interview never writes.** State is an in-memory, TTL'd session; the
+  single write is `POST /onboard/interview/commit`, ordered so a rejected save
+  leaves the draft editable and retryable.
+- **Departments are reconciled additively** — matched by slug or title and
+  updated in place, unmatched ones created, nothing ever deleted. Unlike the
+  fixture loader, which wipes the table first and would destroy the eight
+  defaults' `specialist_key` wiring.
+- **Errors never echo input.** Transcripts carry ARR, burn, and runway, so
+  every failure detail is a fixed string and every log line carries an
+  exception type only.
+
+### Step-by-step form (fallback)
+
+`onboarding/wizard.py` — reachable at `/onboard?mode=form` and used by the
+`openexecutive onboard` CLI.
+
+A 12-step state machine driven by regex parsing of free-text answers.
 
 | Step | Field | Required |
 |---|---|---|
@@ -401,6 +437,9 @@ A 9-step state machine. Works as both a CLI flow and an API-driven web wizard.
 | 6 | Culture & values | Optional |
 | 7 | Monthly burn & runway | Optional |
 | 8 | Mission & vision | Optional |
+| 9 | Your identity | Optional |
+| 10 | Team members | Optional |
+| 11 | Fractional executives | Optional |
 
 `WizardState` tracks `current_step`, `answers`, `completed`, and `skipped_steps`. `process_answer()` advances the state. `build_profile_from_answers()` parses free-text answers into structured fields.
 
@@ -416,7 +455,8 @@ Output: `company/profile.yaml` (gitignored).
 |---|---|---|
 | `GET` | `/health` | Liveness check + ChromaDB status |
 | `POST` | `/chat` | SSE streaming chat |
-| `GET/POST/PATCH` | `/onboard/*` | Onboarding wizard |
+| `POST/GET` | `/onboard/interview/*` | Conversational setup — start (multipart), message, draft, resume, commit |
+| `GET/POST` | `/onboard/start`, `/onboard/answer`, `/onboard/status/{id}` | Step-by-step form fallback |
 | `GET/PATCH` | `/company-profile` | Read / update company profile |
 | `POST/GET/DELETE` | `/documents` | Upload, list, delete company documents |
 | `GET/PATCH/DELETE` | `/agents/*` | List agents, inspect or override model |

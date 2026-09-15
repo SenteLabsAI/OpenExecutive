@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -32,6 +31,7 @@ from openexecutive.departments.models import (
     GoalStatus,
     PeriodType,
 )
+from openexecutive.utils.slug import DEPARTMENT_SLUG_FALLBACK, slugify
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +73,7 @@ def _now() -> str:
 
 
 def _slugify(title: str) -> str:
-    slug = title.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")
-    return slug or "department"
+    return slugify(title, fallback=DEPARTMENT_SLUG_FALLBACK)
 
 
 # --------------------------------------------------------------------------- #

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PageFormField(BaseModel):
@@ -223,3 +223,85 @@ class CompanyProfileUpdateRequest(BaseModel):
     financials: FinancialsData | None = None
     vendors: list[str] | None = None
     tickers: list[str] | None = None
+
+
+
+# ── conversational onboarding (/onboard/interview/*) ─────────────────────────
+
+# A free-text business description is longer than a wizard answer — people
+# paste a whole one-pager. Bounded in the ROUTE rather than with
+# Field(max_length=...), for the same reason as OnboardAnswerRequest above:
+# FastAPI's validation error echoes the rejected input, and these messages
+# carry the financials the UI promises are stored locally only.
+ONBOARD_MESSAGE_MAX_CHARS = 20_000
+# The question and transcript budgets live in onboarding/interview.py, which is
+# what actually enforces them — a second copy here would silently drift from
+# the value the interview uses.
+
+
+class OnboardMessageRequest(BaseModel):
+    session_id: str
+    # No Field(max_length=...) — see ONBOARD_MESSAGE_MAX_CHARS above.
+    message: str
+
+
+class OnboardSessionRequest(BaseModel):
+    session_id: str
+
+
+# No Field(max_length=...) on any of the draft models below, for the same
+# reason as ONBOARD_MESSAGE_MAX_CHARS above: FastAPI's 422 body echoes the
+# rejected value, and a commit body carries the company's financials. Lengths
+# are bounded by the CompanyProfile/PersonDraft validation the commit route
+# runs, which reports fixed strings.
+class OnboardPersonDraft(BaseModel):
+    # extra="ignore" mirrors interview.PersonDraft: an email or chat handle
+    # that reaches this boundary is dropped, never persisted.
+    model_config = ConfigDict(extra="ignore")
+
+    full_name: str
+    role: str = ""
+    is_principal: bool = False
+
+
+class OnboardDepartmentDraft(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+    mission: str = ""
+    head_person_name: str = ""
+    authority_level: str = "propose_only"
+
+
+class OnboardTranscriptTurn(BaseModel):
+    role: str
+    text: str
+
+
+class OnboardTurnResponse(BaseModel):
+    session_id: str
+    # "question" while interviewing, "draft" once a reviewable draft exists.
+    phase: str
+    questions_asked: int
+    max_questions: int
+    question: str | None = None
+    question_hint: str | None = None
+    draft: CompanyProfileResponse | None = None
+    draft_people: list[OnboardPersonDraft] = Field(default_factory=list)
+    draft_departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+    confidence_notes: list[str] = Field(default_factory=list)
+    summary: str | None = None
+
+
+class OnboardSessionResponse(OnboardTurnResponse):
+    turns: list[OnboardTranscriptTurn] = Field(default_factory=list)
+    saved: bool = False
+
+
+class OnboardCommitRequest(BaseModel):
+    session_id: str
+    # Reuses the PATCH model: all-optional fields merged onto a fresh
+    # CompanyProfile(), so the client never has to send a complete profile.
+    profile: CompanyProfileUpdateRequest
+    people: list[OnboardPersonDraft] = Field(default_factory=list)
+    departments: list[OnboardDepartmentDraft] = Field(default_factory=list)

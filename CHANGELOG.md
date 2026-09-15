@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Conversational onboarding.** `/onboard` now opens with "tell me about your
+  company" instead of a 12-step form. The user writes a paragraph (and can
+  attach a deck, one-pager or brief), the new `onboarding_interviewer` agent
+  asks up to 8 clarifying questions, then drafts a company profile, leadership
+  roster and department list that the user edits inline and saves. The draft
+  review reuses the `/company-profile` section editors, extracted to
+  `components/company-profile/ProfileSections.tsx`, so the editing surface is
+  the same one the user gets permanently afterwards. New endpoints:
+  `POST /onboard/interview/{start,message,draft,commit}` and
+  `GET /onboard/interview/{session_id}`.
+
+  Design notes: the interview never writes — `POST /onboard/interview/commit`
+  is the single write, ordered so a rejected save leaves the draft editable
+  and retryable. Departments are reconciled **additively** (matched ones
+  updated, new ones created, none ever deleted), unlike the fixture loader
+  which wipes the table and would destroy the eight defaults' `specialist_key`
+  wiring. Exactly one person is marked principal and gets `WILDCARD`
+  authority; no contact details are imported. Every failure path is asserted
+  not to echo the user's input, because these transcripts carry ARR, burn and
+  runway. The step-by-step wizard remains at `/onboard?mode=form` and still
+  backs the `openexecutive onboard` CLI.
 - **Research watch policy grounds in departments and recent decisions, and
   routes to department heads.** Departments gain a `watched_entities` list
   (`PATCH /departments/{slug}`, edited one per line on the department page).

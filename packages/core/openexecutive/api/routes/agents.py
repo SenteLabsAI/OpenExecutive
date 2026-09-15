@@ -98,6 +98,8 @@ def _role_default(name: str) -> str:
         return "Utility · Company fixture generator"
     if name == "engagement_intake":
         return "Utility · Client engagement intake (grounded company drafts)"
+    if name == "onboarding_interviewer":
+        return "Utility · Company setup interviewer (conversational onboarding)"
     from openexecutive.orchestrator.router import SPECIALIST_DESCRIPTIONS
 
     description = SPECIALIST_DESCRIPTIONS.get(name, name)
@@ -110,6 +112,7 @@ _utility_fast_agent: Any = None
 _research_council_agent: Any = None
 _fixture_generator_agent: Any = None
 _engagement_intake_agent: Any = None
+_onboarding_interviewer_agent: Any = None
 
 
 def _agent_registry() -> dict[str, Any]:
@@ -120,14 +123,15 @@ def _agent_registry() -> dict[str, Any]:
     controls the model used by non-specialist Haiku call sites (Discord
     response gate / title gen, wait_for_human parser, inbound resolver
     disambiguation), and the ``fixture_generator`` that authors company
-    simulator fixtures, and the ``research`` virtual agent whose model +
-    deep-reasoning drive the executive_research specialist fan-out. These
+    simulator fixtures, the ``onboarding_interviewer`` that runs the
+    conversational company-setup flow, and the ``research`` virtual agent
+    whose model + deep-reasoning drive the executive_research fan-out. These
     live here (not in SPECIALIST_REGISTRY) because we want them overridable
     through the Council but NOT callable via the ``consult_specialist`` tool.
     """
     global _executive_proxy, _quality_judge_agent, _utility_fast_agent
     global _research_council_agent, _fixture_generator_agent
-    global _engagement_intake_agent
+    global _engagement_intake_agent, _onboarding_interviewer_agent
     if _executive_proxy is None:
         from openexecutive.agents.executive_proxy import ExecutiveProxy
         _executive_proxy = ExecutiveProxy()
@@ -146,6 +150,11 @@ def _agent_registry() -> dict[str, Any]:
     if _engagement_intake_agent is None:
         from openexecutive.agents.engagement_intake import EngagementIntakeAgent
         _engagement_intake_agent = EngagementIntakeAgent()
+    if _onboarding_interviewer_agent is None:
+        from openexecutive.agents.onboarding_interviewer import (
+            OnboardingInterviewerAgent,
+        )
+        _onboarding_interviewer_agent = OnboardingInterviewerAgent()
     from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
 
     return {
@@ -156,6 +165,7 @@ def _agent_registry() -> dict[str, Any]:
         "research": _research_council_agent,
         "fixture_generator": _fixture_generator_agent,
         "engagement_intake": _engagement_intake_agent,
+        "onboarding_interviewer": _onboarding_interviewer_agent,
     }
 
 

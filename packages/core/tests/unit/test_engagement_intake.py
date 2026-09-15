@@ -179,9 +179,11 @@ def test_generate_route_rejects_unsupported_file(client: TestClient) -> None:
 def test_generate_route_rejects_too_many_files(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from openexecutive.api.routes import clients as route
+    from openexecutive.api import intake_uploads
 
-    monkeypatch.setattr(route, "_INTAKE_MAX_FILES", 2)
+    # The caps live in api.intake_uploads (shared with onboarding intake), so
+    # that is the module whose attribute the helpers actually read.
+    monkeypatch.setattr(intake_uploads, "_INTAKE_MAX_FILES", 2)
     files = [("files", (f"n{i}.txt", b"hello world", "text/plain")) for i in range(3)]
     resp = client.post("/clients/generate", files=files)
     assert resp.status_code == 400
@@ -191,9 +193,9 @@ def test_generate_route_rejects_too_many_files(
 def test_generate_route_rejects_oversized_file(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from openexecutive.api.routes import clients as route
+    from openexecutive.api import intake_uploads
 
-    monkeypatch.setattr(route, "_INTAKE_MAX_BYTES_PER_FILE", 8)
+    monkeypatch.setattr(intake_uploads, "_INTAKE_MAX_BYTES_PER_FILE", 8)
     resp = client.post(
         "/clients/generate",
         files=[("files", ("big.txt", b"way more than eight bytes", "text/plain"))],

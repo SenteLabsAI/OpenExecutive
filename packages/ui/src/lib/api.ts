@@ -209,6 +209,117 @@ export async function submitOnboardAnswer(
   return res.json();
 }
 
+// ── conversational onboarding (/onboard/interview/*) ─────────────────────────
+// The step-by-step wizard above stays as a fallback; this is the default flow.
+
+export interface OnboardPersonDraft {
+  full_name: string;
+  role: string;
+  is_principal: boolean;
+}
+
+export interface OnboardDepartmentDraft {
+  title: string;
+  mission: string;
+  head_person_name: string;
+  authority_level: string;
+}
+
+export interface OnboardTurn {
+  session_id: string;
+  phase: "question" | "draft";
+  questions_asked: number;
+  max_questions: number;
+  question: string | null;
+  question_hint: string | null;
+  draft: CompanyProfile | null;
+  draft_people: OnboardPersonDraft[];
+  draft_departments: OnboardDepartmentDraft[];
+  confidence_notes: string[];
+  summary: string | null;
+}
+
+export interface OnboardTranscriptTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+export interface OnboardSession extends OnboardTurn {
+  turns: OnboardTranscriptTurn[];
+  saved: boolean;
+}
+
+/** Pulls the backend's `detail` when there is one, so the user sees the real
+ * reason (file too large, message too long) rather than a generic failure. */
+async function onboardError(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  return new Error(typeof body.detail === "string" ? body.detail : fallback);
+}
+
+export async function startOnboardInterview(
+  description: string,
+  files: File[] = []
+): Promise<OnboardTurn> {
+  const form = new FormData();
+  form.append("description", description);
+  for (const file of files) form.append("files", file);
+  const res = await fetch(`${API_BASE}/onboard/interview/start`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw await onboardError(res, "Could not start setup");
+  return res.json();
+}
+
+export async function sendOnboardMessage(
+  sessionId: string,
+  message: string
+): Promise<OnboardTurn> {
+  const res = await fetch(`${API_BASE}/onboard/interview/message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, message }),
+  });
+  if (!res.ok) throw await onboardError(res, "Could not send that message");
+  return res.json();
+}
+
+export async function forceOnboardDraft(sessionId: string): Promise<OnboardTurn> {
+  const res = await fetch(`${API_BASE}/onboard/interview/draft`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  if (!res.ok) throw await onboardError(res, "Could not draft your profile");
+  return res.json();
+}
+
+export async function getOnboardInterview(sessionId: string): Promise<OnboardSession> {
+  const res = await fetch(`${API_BASE}/onboard/interview/${sessionId}`);
+  if (!res.ok) throw new Error(`${res.status}`);
+  return res.json();
+}
+
+export async function commitOnboardDraft(
+  sessionId: string,
+  profile: CompanyProfile,
+  people: OnboardPersonDraft[],
+  departments: OnboardDepartmentDraft[]
+): Promise<CompanyProfile> {
+  const res = await fetch(`${API_BASE}/onboard/interview/commit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      profile,
+      people,
+      departments,
+    }),
+  });
+  if (!res.ok) throw await onboardError(res, "Could not save your profile");
+  return res.json();
+}
+
 export interface CompanyProfile {
   name: string;
   industry: string;
