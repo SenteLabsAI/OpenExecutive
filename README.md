@@ -230,9 +230,8 @@ The deployed UI is gated behind Google sign-in with an email allow-list, and the
 ## Configuration
 
 All settings via environment variables. Minimum required: `ANTHROPIC_API_KEY` —
-*unless* you configure a local or OpenRouter backend instead (see [Running on
-Local Models](#running-on-local-models)). At least one provider must be set or
-the app refuses to start.
+*unless* you configure Atlas Cloud, a local backend, or OpenRouter instead. At
+least one provider must be set or the app refuses to start.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -264,6 +263,9 @@ the app refuses to start.
 | `OPENROUTER_CATALOG_PROVIDERS` | No | `openai,google,anthropic,meta-llama,deepseek,x-ai` | Vendor prefixes surfaced from the live catalog |
 | `OPENROUTER_CATALOG_PER_PROVIDER` | No | `6` | Newest tool-capable paid models per vendor (`0` = no cap) |
 | `OPENROUTER_CATALOG_REFRESH_S` | No | `21600` | Background re-fetch cadence in seconds (`0` = startup only) |
+| `ATLASCLOUD_ENABLED` | No | `false` | Route explicitly selected models through Atlas Cloud's OpenAI-compatible API |
+| `ATLASCLOUD_API_KEY` | No | — | Required when `ATLASCLOUD_ENABLED=true` |
+| `ATLASCLOUD_MODELS` | No | — | Comma-separated Atlas Cloud model IDs to expose in the Council UI |
 | `LOCAL_MODELS_ENABLED` | No | `false` | Route selected slugs to a local OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp) |
 | `LOCAL_BASE_URL` | No | — | Local server URL incl. version path, e.g. `http://localhost:11434/v1`. Required when `LOCAL_MODELS_ENABLED=true` |
 | `LOCAL_API_KEY` | No | — | Optional bearer token (vLLM / gateways); Ollama & LM Studio need none |
@@ -279,7 +281,8 @@ See [.env.example](.env.example) for the full list.
 
 > ¹ `ANTHROPIC_API_KEY` is required only when you serve Claude models directly.
 > It can be omitted entirely if you run on local models (`LOCAL_MODELS_ENABLED`)
-> or route through OpenRouter (`OPENROUTER_ENABLED`).
+> or route through Atlas Cloud (`ATLASCLOUD_ENABLED`) or OpenRouter
+> (`OPENROUTER_ENABLED`).
 
 > ² The application default is on, but **[.env.example](.env.example) ships
 > `ENABLE_WEB_SEARCH=false`** so a fresh setup incurs no per-search charges —
@@ -288,6 +291,23 @@ See [.env.example](.env.example) for the full list.
 > `web_search` tool, so it applies to Claude models (local models can't use
 > it). `WEB_SEARCH_ALLOWED_DOMAINS` / `WEB_SEARCH_BLOCKED_DOMAINS` scope where
 > it may look (set at most one).
+
+## Running on Atlas Cloud
+
+Atlas Cloud exposes an OpenAI-compatible chat endpoint. Enable it, provide a
+key, and list only model IDs that you want to make selectable in the Council:
+
+```bash
+ATLASCLOUD_ENABLED=true
+ATLASCLOUD_API_KEY=your-atlascloud-key
+ATLASCLOUD_MODELS=qwen/qwen3.5-flash
+```
+
+The integration is opt-in and does not change the default provider. Configured
+models use the shared OpenAI-compatible request, response, and streaming
+translator. Anthropic-only prompt caching, extended thinking, and server-side
+web search are removed on this route; select Atlas Cloud models that support
+function tools because the multi-agent workflow depends on them.
 
 ## Running on Local Models
 
