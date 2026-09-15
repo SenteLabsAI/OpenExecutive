@@ -5,7 +5,8 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
 
-An AI system that acts as your company's virtual executive team — a senior advisor with Harvard MBA-level knowledge, customized for your specific business.
+Open Executive, is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box, it supports configurable spending authorization limits, seamless integrations with corporate knowledge systems (including email, Microsoft Teams, and Jira), and defined governance for interacting with both human colleagues and other AI systems. Open Executive can also be configured as a digital twin to replicate a busy executive—responding in alignment with their specific role and insights—allowing leaders to truly scale their impact through AI.
+
 
 ## Demo
 
