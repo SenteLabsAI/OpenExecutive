@@ -166,6 +166,8 @@ def _settings_stub(
     local_models: list[str] | None = None,
     local_api_key: str | None = None,
     local_timeout_s: float = 300.0,
+    atlascloud_enabled: bool = False,
+    atlascloud_models: list[str] | None = None,
 ) -> Any:
     return SimpleNamespace(
         anthropic_api_key=anthropic_key,
@@ -180,6 +182,11 @@ def _settings_stub(
         local_models=local_models or [],
         local_api_key=local_api_key,
         local_timeout_s=local_timeout_s,
+        atlascloud_enabled=atlascloud_enabled,
+        atlascloud_api_key="dummy",
+        atlascloud_base_url="https://api.atlascloud.ai/v1",
+        atlascloud_models=atlascloud_models or [],
+        atlascloud_timeout_s=180.0,
     )
 
 
@@ -368,6 +375,48 @@ def test_anthropic_free_deployment_hides_claude_and_serves_local(
     _local_stub(monkeypatch, enabled=False, anthropic_key=None)
     assert allowed_models() == ["llama3.3", "qwen2.5"]
     assert isinstance(get_provider("llama3.3"), OpenAICompatibleProvider)
+
+
+def test_atlascloud_model_routes_to_its_own_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.providers import allowed_models
+    from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(
+            enabled=False,
+            anthropic_key=None,
+            atlascloud_enabled=True,
+            atlascloud_models=["qwen/qwen3.5-flash"],
+        ),
+    )
+    registry_mod._reset_for_tests()
+
+    assert allowed_models() == ["qwen/qwen3.5-flash"]
+    assert isinstance(get_provider("qwen/qwen3.5-flash"), OpenAICompatibleProvider)
+
+
+def test_local_model_wins_when_slug_is_also_configured_for_atlascloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(
+            enabled=False,
+            local_enabled=True,
+            local_base_url="http://localhost:11434/v1",
+            local_models=["shared/model"],
+            atlascloud_enabled=True,
+            atlascloud_models=["shared/model"],
+        ),
+    )
+    registry_mod._reset_for_tests()
+
+    provider = get_provider("shared/model")
+    assert provider is registry_mod._local()
+    assert provider is not registry_mod._atlascloud()
 
 
 def test_claude_without_key_or_openrouter_raises_actionable_400(

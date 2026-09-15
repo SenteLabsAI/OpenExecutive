@@ -50,6 +50,12 @@ system:
       matrix) was removed — its 429s surfaced as user-visible errors and the
       per-agent free-model surface was more than it earned; BYO-model routing
       through OpenRouter is otherwise unchanged.
+      When ATLASCLOUD_ENABLED=true (plus ATLASCLOUD_API_KEY), the explicit
+      slugs in ATLASCLOUD_MODELS route through Atlas Cloud's OpenAI-compatible
+      /v1/chat/completions endpoint. They appear in the Council UI and reuse
+      the shared translator with cache_control, thinking, and web_search
+      stripped while function tools remain enabled. Atlas Cloud is off by
+      default and does not change the existing provider routes.
       When LOCAL_MODELS_ENABLED=true (plus LOCAL_BASE_URL), the slugs listed
       in LOCAL_MODELS route to a self-hosted OpenAI-compatible server
       (Ollama / LM Studio / vLLM / llama.cpp) through the same provider seam,
@@ -57,14 +63,14 @@ system:
       are added to the Council UI dropdown and get the tools-only local
       feature spec (no cache_control / thinking / web_search — a
       self-hosted server has no search plugin). This makes
-      ANTHROPIC_API_KEY optional: a deployment with only local (or
-      OpenRouter) models configured boots with no Anthropic key — the
+      ANTHROPIC_API_KEY optional: a deployment with only local, Atlas Cloud,
+      or OpenRouter models configured boots with no Anthropic key — the
       Settings validator just requires that at least one provider is
       reachable. Requesting a Claude model with no key and OpenRouter off
       returns an actionable 400.
       Slugs listed in LOCAL_MODELS route to the local backend before any
-      other rule is consulted; remaining non-Claude slugs route through
-      OpenRouter; selecting an
+      other rule is consulted, followed by explicit ATLASCLOUD_MODELS;
+      remaining non-Claude slugs route through OpenRouter; selecting an
       OpenRouter-only slug with OPENROUTER_ENABLED=false is rejected at the
       API layer.
       Provider selection is per-call by model, not global — so the
@@ -81,9 +87,9 @@ system:
     - Tool definitions are sorted by name before being sent to the API so cache hits survive across processes.
     - Company-specific data lives under packages/core/company/ and is gitignored. Never commit it.
     - Audit writes never break a chat turn or tool call — exceptions are swallowed with a warning.
-    - Provider selection is per-call by model (openexecutive.providers.get_provider(model)). A single chat turn can mix Anthropic-routed Claude calls, OpenRouter-routed non-Claude calls, and locally-routed self-hosted models — no global "current provider" state.
-    - When a non-Claude or local model is selected, Anthropic-only fields (cache_control on system/tool/user blocks, adaptive thinking + output_config) are stripped by the feature gate before the request leaves the process. The web_search server tool is kept for every OpenRouter model (the translator swaps it for OpenRouter's `web` plugin, which serves any model) and stripped only for a self-hosted OpenAI-compatible backend, which has no search plugin. Callers do NOT need to know which model they're routing to.
-    - ANTHROPIC_API_KEY is optional: a Settings validator requires at least one provider (Anthropic key, OpenRouter, or local models) to be configured, so an Anthropic-free deployment is supported but a zero-provider one fails fast at startup.
+    - Provider selection is per-call by model (openexecutive.providers.get_provider(model)). A single chat turn can mix Anthropic-routed Claude calls, OpenRouter-routed non-Claude calls, Atlas Cloud models, and locally-routed self-hosted models — no global "current provider" state.
+    - When a non-Claude, Atlas Cloud, or local model is selected, Anthropic-only fields (cache_control on system/tool/user blocks, adaptive thinking + output_config) are stripped by the feature gate before the request leaves the process. The web_search server tool is kept for every OpenRouter model (the translator swaps it for OpenRouter's `web` plugin, which serves any model) and stripped for Atlas Cloud and self-hosted OpenAI-compatible backends, which have no compatible server-side search plugin. Callers do NOT need to know which model they're routing to.
+    - ANTHROPIC_API_KEY is optional: a Settings validator requires at least one provider (Anthropic key, OpenRouter, Atlas Cloud, or local models) to be configured, so an Anthropic-free deployment is supported but a zero-provider one fails fast at startup.
     - External-monitor adapters are read-only — they never write to upstream systems. The whole `monitoring/` subsystem is observation-only; surfacing happens through the alert pipeline, never via a direct upstream side-effect.
     - External signals never auto-execute on the principal's behalf. Every signal that surfaces is proposed via the alert pipeline (and thus subject to triage / mute / severity gates); the scheduler never dispatches an outbound message directly off a signal.
     - An external signal whose `dedup_key` already exists is dropped at ingest via the UNIQUE(dedup_key) constraint on `external_signals`. Adapter retries / re-polls cannot multiply alerts for the same upstream event.
@@ -160,13 +166,15 @@ providers:
   resolver: |
     openexecutive.providers.registry.get_provider(model) picks the
     backend per call. Module-level singletons cache one provider per
-    backend — the Anthropic SDK and the httpx-backed OpenRouter client
-    each pool their own connections.
+    backend — the Anthropic SDK and the httpx-backed OpenAI-compatible
+    clients each pool their own connections.
   backends:
     - id: AnthropicProvider
       what: Thin delegate over anthropic.AsyncAnthropic; default for the Claude trio when OPENROUTER_ENABLED is off.
     - id: OpenRouterProvider
       what: httpx-backed client targeting OpenRouter's OpenAI-format /chat/completions endpoint. Translates request/response/stream shape via openexecutive.providers.translator.
+    - id: OpenAICompatibleProvider (Atlas Cloud route)
+      what: OpenAICompatibleProvider targeting Atlas Cloud's /v1/chat/completions endpoint for explicit ATLASCLOUD_MODELS. Disabled by default; strips Anthropic-only fields while preserving function tools.
   feature_gate: |
     openexecutive.providers.feature_gate.apply_feature_gates(spec, kwargs)
     runs inside the OpenRouter provider before translation. Spec-driven

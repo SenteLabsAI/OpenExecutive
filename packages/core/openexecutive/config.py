@@ -194,6 +194,37 @@ class Settings(BaseSettings):
             )
         return self
 
+    # ---- Atlas Cloud routing ------------------------------------------
+    # Optional hosted OpenAI-compatible backend. Model slugs are explicit
+    # operator configuration so the Council only offers selected models.
+    atlascloud_enabled: bool = Field(False, alias="ATLASCLOUD_ENABLED")
+    atlascloud_api_key: str | None = Field(None, alias="ATLASCLOUD_API_KEY")
+    atlascloud_base_url: str = Field(
+        "https://api.atlascloud.ai/v1", alias="ATLASCLOUD_BASE_URL"
+    )
+    atlascloud_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="ATLASCLOUD_MODELS"
+    )
+    atlascloud_timeout_s: float = Field(180.0, alias="ATLASCLOUD_TIMEOUT_S")
+
+    @field_validator("atlascloud_models", mode="before")
+    @classmethod
+    def _parse_atlascloud_models(cls, v: Any) -> list[str]:
+        return _parse_csv_list(v)
+
+    @model_validator(mode="after")
+    def _validate_atlascloud(self) -> "Settings":
+        if self.atlascloud_enabled and not self.atlascloud_api_key:
+            raise ValueError(
+                "ATLASCLOUD_ENABLED=true requires ATLASCLOUD_API_KEY to be set"
+            )
+        if self.atlascloud_enabled and not self.atlascloud_models:
+            raise ValueError(
+                "ATLASCLOUD_ENABLED=true requires at least one model in "
+                "ATLASCLOUD_MODELS"
+            )
+        return self
+
     # ---- Local / self-hosted models ------------------------------------
     # Route selected model slugs to a local OpenAI-compatible server
     # (Ollama, LM Studio, vLLM, llama.cpp, …) instead of the Anthropic API.
@@ -245,11 +276,14 @@ class Settings(BaseSettings):
         if not (
             self.anthropic_api_key
             or self.openrouter_enabled
+            or self.atlascloud_enabled
             or self.local_models_enabled
         ):
             raise ValueError(
                 "No LLM provider configured. Set ANTHROPIC_API_KEY, or enable "
-                "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), or "
+                "OpenRouter (OPENROUTER_ENABLED=true + OPENROUTER_API_KEY), "
+                "Atlas Cloud (ATLASCLOUD_ENABLED=true + ATLASCLOUD_API_KEY + "
+                "ATLASCLOUD_MODELS), or "
                 "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
             )
         return self

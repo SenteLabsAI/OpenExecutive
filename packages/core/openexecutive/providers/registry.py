@@ -166,6 +166,13 @@ _LOCAL_FEATURE_SPEC = FeatureSpec(
     supports_tool_use=True,
 )
 
+_ATLASCLOUD_FEATURE_SPEC = FeatureSpec(
+    supports_cache_control=False,
+    supports_thinking=False,
+    supports_web_search=False,
+    supports_tool_use=True,
+)
+
 
 def _local_models(settings: Any) -> list[str]:
     """Configured local model slugs, or ``[]`` when local routing is off.
@@ -175,6 +182,13 @@ def _local_models(settings: Any) -> list[str]:
     if not getattr(settings, "local_models_enabled", False):
         return []
     return list(getattr(settings, "local_models", []) or [])
+
+
+def _atlascloud_models(settings: Any) -> list[str]:
+    """Configured Atlas Cloud model slugs, or ``[]`` when routing is off."""
+    if not getattr(settings, "atlascloud_enabled", False):
+        return []
+    return list(getattr(settings, "atlascloud_models", []) or [])
 
 
 def openrouter_models() -> list[str]:
@@ -203,6 +217,8 @@ def allowed_models() -> list[str]:
       ``OPENROUTER_ENABLED`` is on (Claude is then reachable via OpenRouter).
     * OpenRouter set (live catalog or fallback) — when ``OPENROUTER_ENABLED``
       is on.
+    * Atlas Cloud models — explicit ``ATLASCLOUD_MODELS`` when
+      ``ATLASCLOUD_ENABLED`` is on.
     * Local models — when ``LOCAL_MODELS_ENABLED`` is on.
     """
     settings = get_settings()
@@ -211,8 +227,9 @@ def allowed_models() -> list[str]:
         models.extend(ANTHROPIC_DIRECT_MODELS)
     if settings.openrouter_enabled:
         models.extend(openrouter_models())
+    models.extend(_atlascloud_models(settings))
     models.extend(_local_models(settings))
-    return models
+    return list(dict.fromkeys(models))
 
 
 def allowed_models_for(agent_id: str | None) -> list[str]:
@@ -267,6 +284,7 @@ def _openrouter_model_resolver(model: str) -> tuple[str, FeatureSpec] | None:
 # are async-safe. Recreating them per call burns ~10 ms each.
 _anthropic_provider: AnthropicProvider | None = None
 _openrouter_provider: OpenRouterProvider | None = None
+_atlascloud_provider: OpenAICompatibleProvider | None = None
 _local_provider: OpenAICompatibleProvider | None = None
 
 
@@ -319,6 +337,31 @@ def _local() -> OpenAICompatibleProvider:
     return _local_provider
 
 
+def _atlascloud() -> OpenAICompatibleProvider:
+    global _atlascloud_provider
+    if _atlascloud_provider is None:
+        settings = get_settings()
+        api_key = getattr(settings, "atlascloud_api_key", None)
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Atlas Cloud routing requires ATLASCLOUD_API_KEY",
+            )
+        spec_lookup = {
+            model: _ATLASCLOUD_FEATURE_SPEC
+            for model in _atlascloud_models(settings)
+        }
+        _atlascloud_provider = OpenAICompatibleProvider(
+            base_url=getattr(
+                settings, "atlascloud_base_url", "https://api.atlascloud.ai/v1"
+            ),
+            api_key=api_key,
+            timeout_s=getattr(settings, "atlascloud_timeout_s", 180.0),
+            spec_lookup=spec_lookup,
+        )
+    return _atlascloud_provider
+
+
 def _openrouter() -> OpenRouterProvider:
     global _openrouter_provider
     if _openrouter_provider is None:
@@ -354,6 +397,8 @@ def get_provider(model: str) -> LLMProvider:
     * Local models (slugs listed in ``LOCAL_MODELS`` with
       ``LOCAL_MODELS_ENABLED`` on) — the self-hosted OpenAI-compatible
       backend at ``LOCAL_BASE_URL``. Always wins for its configured slugs.
+    * Atlas Cloud models (slugs listed in ``ATLASCLOUD_MODELS`` with
+      ``ATLASCLOUD_ENABLED`` on) — Atlas Cloud's OpenAI-compatible API.
     * Claude family (any ``claude-<family>-<version>`` id) — Anthropic
       direct by default; OpenRouter when ``OPENROUTER_ENABLED`` is on.
     * Other non-Claude (anything from ``openrouter_models()``, or any
@@ -368,6 +413,8 @@ def get_provider(model: str) -> LLMProvider:
     # to a hosted vendor.
     if model in _local_models(settings):
         return _local()
+    if model in _atlascloud_models(settings):
+        return _atlascloud()
     if _is_claude(model):
         if settings.openrouter_enabled:
             return _openrouter()
@@ -388,7 +435,8 @@ def get_provider(model: str) -> LLMProvider:
 
 def _reset_for_tests() -> None:
     """Drop cached provider singletons. Test-only — pytest fixtures call this."""
-    global _anthropic_provider, _openrouter_provider, _local_provider
+    global _anthropic_provider, _openrouter_provider, _atlascloud_provider, _local_provider
     _anthropic_provider = None
     _openrouter_provider = None
+    _atlascloud_provider = None
     _local_provider = None

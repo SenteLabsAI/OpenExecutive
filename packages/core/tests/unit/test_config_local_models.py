@@ -14,6 +14,10 @@ _PROVIDER_VARS = (
     "ANTHROPIC_API_KEY",
     "OPENROUTER_ENABLED",
     "OPENROUTER_API_KEY",
+    "ATLASCLOUD_ENABLED",
+    "ATLASCLOUD_API_KEY",
+    "ATLASCLOUD_MODELS",
+    "ATLASCLOUD_BASE_URL",
     "LOCAL_MODELS_ENABLED",
     "LOCAL_BASE_URL",
     "LOCAL_MODELS",
@@ -64,6 +68,44 @@ def test_anthropic_free_boot_with_local(monkeypatch: pytest.MonkeyPatch) -> None
     )
     assert s.anthropic_api_key is None
     assert s.local_models_enabled is True
+
+
+def test_atlascloud_models_csv_parses_and_trims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = _build(
+        monkeypatch,
+        ATLASCLOUD_ENABLED="true",
+        ATLASCLOUD_API_KEY="dummy",
+        ATLASCLOUD_MODELS="qwen/qwen3.5-flash, openai/gpt-5.6-luna ,",
+    )
+    assert s.atlascloud_models == [
+        "qwen/qwen3.5-flash",
+        "openai/gpt-5.6-luna",
+    ]
+    assert s.anthropic_api_key is None
+
+
+@pytest.mark.parametrize(
+    ("env", "missing"),
+    [
+        (
+            {"ATLASCLOUD_ENABLED": "true", "ATLASCLOUD_MODELS": "m"},
+            "ATLASCLOUD_API_KEY",
+        ),
+        (
+            {"ATLASCLOUD_ENABLED": "true", "ATLASCLOUD_API_KEY": "k"},
+            "ATLASCLOUD_MODELS",
+        ),
+    ],
+)
+def test_atlascloud_enabled_requires_key_and_models(
+    monkeypatch: pytest.MonkeyPatch,
+    env: dict[str, str],
+    missing: str,
+) -> None:
+    with pytest.raises(ValueError, match=missing):
+        _build(monkeypatch, **env)
 
 
 def test_no_provider_configured_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
