@@ -30,7 +30,6 @@ export function clientCountsSummary(c: ClientCockpitCard): string {
       c.overdue_actions ? `${c.overdue_actions} overdue` : null,
       c.awaiting_replies ? `${c.awaiting_replies} awaiting reply` : null,
       c.unread_alerts ? `${c.unread_alerts} alerts` : null,
-      c.onboarding_due_soon ? `${c.onboarding_due_soon} onboarding due` : null,
     ]
       .filter(Boolean)
       .join(" · ") || "all quiet";

@@ -153,9 +153,6 @@ DOMAIN_ALIASES: dict[str, list[str]] = {
     "cmo": ["marketing"],
     "cpo": ["product", "strategy"],
     "board_comms": ["board", "finance"],
-    # The talent specialist reuses the existing HR + strategy knowledge
-    # domains until a dedicated `talent` knowledge corpus is seeded (Phase 2).
-    "talent": ["hr", "strategy"],
 }
 
 

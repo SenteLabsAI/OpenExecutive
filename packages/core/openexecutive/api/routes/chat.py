@@ -239,22 +239,17 @@ async def _run_chat_turn(
             return ""
 
     async def _do_briefing() -> str:
-        # Current open-alert digest + open-search digest so the Executive can
-        # discuss a briefing item the principal clicked or named (the items
-        # behind the /today "What's going on" narrative) AND the live executive
-        # searches. Sync SQLite reads off the event loop; both formatters
-        # swallow their own errors, so this is belt-and-suspenders.
+        # Current open-alert digest so the Executive can discuss a briefing item
+        # the principal clicked or named (the items behind the /today "What's
+        # going on" narrative). Sync SQLite read off the event loop; the
+        # formatter swallows its own errors, so this is belt-and-suspenders.
         from openexecutive.briefing.context import format_open_alerts_for_prompt
-        from openexecutive.briefing.onboarding_digest import format_onboarding_for_prompt
-        from openexecutive.briefing.talent_digest import format_talent_for_prompt
 
-        # return_exceptions=True so one digest raising never discards the others —
+        # return_exceptions=True so a digest raising never discards the others —
         # each formatter already swallows its own errors, this just guards the
         # to_thread wrappers themselves.
         results = await asyncio.gather(
             asyncio.to_thread(format_open_alerts_for_prompt),
-            asyncio.to_thread(format_talent_for_prompt),
-            asyncio.to_thread(format_onboarding_for_prompt),
             return_exceptions=True,
         )
         digests: list[str] = []

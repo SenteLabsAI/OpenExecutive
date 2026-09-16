@@ -5,14 +5,10 @@ import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import WorkflowRunner from "@/components/WorkflowRunner";
 import {
-  Candidate,
-  Engagement,
   WorkflowInputFieldSchema,
   WorkflowMeta,
   getWorkflow,
   getWorkflowSample,
-  listCandidates,
-  listEngagements,
 } from "@/lib/api";
 
 type FormState = Record<string, string>;
@@ -84,11 +80,6 @@ export default function JobDetailPage() {
   // re-render and silently overwrites the user's in-progress edits.
   const initializedForWorkflowRef = useRef<string | null>(null);
   const prefillRaw = searchParams?.get("prefill") ?? null;
-  // Talent pickers: when a workflow exposes a `candidate_id` / `engagement_id`
-  // field, fetch the roster so the user picks from a dropdown instead of typing
-  // a raw id. Best-effort — on failure the field falls back to a text input.
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [engagements, setEngagements] = useState<Engagement[]>([]);
 
   useEffect(() => {
     if (!name) return;
@@ -135,27 +126,6 @@ export default function JobDetailPage() {
     // when it changes would clobber user edits. See ref guard above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
-
-  // Populate the talent pickers once the workflow's fields are known. The
-  // cancelled guard prevents a stale/duplicate fetch (StrictMode double-invoke,
-  // re-render) from overwriting state or setting it after unmount.
-  useEffect(() => {
-    const props = workflow?.input_schema.properties ?? {};
-    let cancelled = false;
-    if ("candidate_id" in props) {
-      listCandidates()
-        .then((c) => !cancelled && setCandidates(c))
-        .catch(() => !cancelled && setCandidates([]));
-    }
-    if ("engagement_id" in props) {
-      listEngagements()
-        .then((e) => !cancelled && setEngagements(e))
-        .catch(() => !cancelled && setEngagements([]));
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [workflow]);
 
   const handleLoadSample = useCallback(async () => {
     if (!name) return;
@@ -292,20 +262,6 @@ export default function JobDetailPage() {
                 const isRequired = required.has(fieldName);
                 const multiline = isMultiline(fieldName, schema);
                 const inputId = `field-${fieldName}`;
-                // Talent pickers replace the raw-id text input when a roster
-                // is available; otherwise fall through to the normal input.
-                const pickerItems =
-                  fieldName === "candidate_id" && candidates.length
-                    ? candidates.map((c) => ({
-                        value: String(c.id),
-                        label: `${c.full_name}${c.current_title ? ` — ${c.current_title}` : ""} (#${c.id})`,
-                      }))
-                    : fieldName === "engagement_id" && engagements.length
-                      ? engagements.map((e) => ({
-                          value: String(e.id),
-                          label: `${e.role_title} (#${e.id})`,
-                        }))
-                      : null;
                 const hasExample =
                   Array.isArray(schema.examples) &&
                   schema.examples.length > 0 &&
@@ -339,22 +295,7 @@ export default function JobDetailPage() {
                         {schema.description}
                       </p>
                     )}
-                    {pickerItems ? (
-                      <select
-                        id={inputId}
-                        value={form[fieldName] ?? ""}
-                        onChange={(e) => handleChange(fieldName, e.target.value)}
-                        required={isRequired}
-                        className="w-full rounded-md bg-surface/60 border border-line focus:border-indigo-500 focus:outline-none text-sm text-fg px-3 py-2"
-                      >
-                        <option value="">Select…</option>
-                        {pickerItems.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    ) : multiline ? (
+                    {multiline ? (
                       <textarea
                         id={inputId}
                         value={form[fieldName] ?? ""}

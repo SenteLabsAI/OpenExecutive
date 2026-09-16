@@ -26,7 +26,6 @@ def _today() -> dict:
             _proposal(3, hours_ago=90),
         ],
         "people": [{"full_name": "Dana", "role": "CFO", "awaiting_count": 1, "soonest_sla_at": "x"}],
-        "talent": [],
     }
 
 

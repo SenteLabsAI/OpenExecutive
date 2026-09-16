@@ -1255,7 +1255,7 @@ scheduler:
 today:
   module: openexecutive.api.routes.today
   endpoints:
-    - "GET /today — JSON aggregation. Returns TodayResponse(departments, people, proposals, narrative, in_flight, awaiting, talent, caller_person_id). `departments` rolls up each department's goal counts (total, at_risk, off_track) and awaiting workflow count, PLUS `attention_goals` — the actual off_track/at_risk Goal rows themselves (worst first, capped at 3), each carrying `key_result`, `current`, `target`, and `status`, so the briefing's Department card is insightful at rest (shows which goal is off and how far) instead of a count you must click into; empty for healthy/inactive departments and additive (older clients ignore it). `people` is an attention-ranked roster: each person carries the original preferred channel, awaiting-action count and soonest SLA PLUS enrichment signals — `status` (on_leave | needs_reply | awaiting | clear), `awaiting_reply_count`/`oldest_awaiting_reply_at` (open scheduled_action commitments we're waiting on THEM to answer, mirroring the nudge engine's awaiting_response_since set), `on_leave_until`, `reachable_now`/`next_window_at` (from people.channel availability windows), `authority_scope`, `department_slugs`, `last_contact_at` (most recent done outbound assigned to them), `overdue` (any SLA or awaited reply past deadline), `priority` (server sort key — overdue replies/work float to top, on-leave sinks), and `insight` (a one-line utility-fast note, see people.insights — null until the background cache warms). Rows are returned sorted by (-priority, full_name). `proposals` is the org-wide set of ALL unread alerts (workflow approvals, triage-classified inbound, Executive-created operational signals, and research artifacts the Executive flagged for review via `draft_artifact` — source=`artifact`, tagged `artifact`, which the UI renders as a Markdown document card rather than a terse proposal — and which also persist into the dedicated Artifacts section (`/artifacts`) so they remain browsable after they leave this unread queue — anything in the alerts table with status='unread'); the UI splits it into 'mine' vs 'across the team' using `caller_person_id` plus a 'principal owns unrouted' rule (alerts with `routed_to_person_id == null` fall to the principal's queue by default). Each proposal also carries presentation signals from `openexecutive.briefing.ranking`: `score` (attention sort key — severity-weighted, with a bonus for routed alerts) and `category` ('action' = a human should look, vs 'monitoring' = passive watchlist/external signals that are unrouted and not high/urgent), plus `surfaced_reason` (a short human note, null for most items) — set only when an external/watchlist signal was pulled into the 'action' lane *by its severity* (the high/urgent escape hatch in `categorize`, e.g. a ≥5% stock move), so the UI can render a per-item explanation of why a normally-Monitoring signal is in 'Needs you'. A proposal also carries `decision_instance_id` (parsed from a `decision_instance:{id}` topic tag), non-null only for gated calendar bookings surfaced from the decision ledger (source=`decision_scheduling`); the UI routes those cards' Approve/Reject to the /decisions endpoints (which book or cancel server-side and clear this alert) instead of the ack-and-hand-off-to-chat flow, so meeting bookings are reviewed in the briefing itself (the standalone proposals page was removed). `_build_today` sorts action items first (by score), monitoring last; the UI collapses the 'monitoring' tail into a separate section so it stops crowding the 'Needs you' queue. `narrative` is a PER-VIEWER Executive-voice 'what's going on' header (see `openexecutive.briefing.narrative` + `today._attach_narrative`). It is a SYNTHESIS, not a re-list: the actionable items render as cards below it, so the narrative gives the connective tissue a list can't (how items relate, what's most urgent and why, the single recommended focus) and deliberately does NOT enumerate a 'Needs you' section that would duplicate the cards. The principal and any unrostered/unresolved caller get the whole-company synthesis (cache scope `principal`) over ALL action-category proposals (mine + across the team; monitoring/watchlist noise is excluded) plus company-wide at-risk depts + activity; each non-principal teammate gets a role-scoped synthesis (cache scope `person:<id>`) over ONLY the action items routed to them + their departments' goal health + their department activity, written in their perspective. Synthesized by `synthesize_briefing_narrative`, which also produces the standalone morning_brief DM but via a DIFFERENT prompt (`standalone=True` → an enumerated brief with a 'Needs you' section, since the DM has no cards beside it to carry the list; the EoD digest still has its own prompt); the /today header path uses the synthesis prompt and never re-lists. Served from the per-scope `briefing_narrative` cache (`openexecutive.briefing.narrative_cache`, keyed by a hash of the viewer's scoped state + scope + UTC date + `NARRATIVE_PROMPT_VERSION`, the last so a prompt rewrite invalidates every cached narrative on the next view). Served from cache on the hot path and regenerated per-viewer in a FastAPI BackgroundTask when that viewer's hash moves; null on a cold cache. `in_flight` is the Executive's upcoming user-facing commitments — pending scheduled_actions (follow-ups, nudges) from `episodic.list_pending_scheduled_actions` (excludes the `__internal__` channel and `nudge_scan` heartbeat, the same set the activity feed hides), each with the resolved recipient `target` (person name via the shared channel→name lookup, or department/raw ref), `kind`, `run_at`, and `overdue` (run_at already passed). `awaiting` is the people we're waiting on a reply from, derived from the same open-commitment set behind each person's `awaiting_reply_count` (name, role, count, oldest_at, overdue), sorted most-overdue/oldest first. Together they power the briefing's 'In flight' section so cross-team work in progress is visible without opening the Scheduled Actions page. Both are additive and default to empty. `talent` is the active executive-search pipeline rolled up by `openexecutive.briefing.talent_digest.build_talent_brief_items` — one `TalentBriefItem` per non-terminal engagement (FILLED/CANCELLED dropped), carrying role_title, department, status, candidate_count, `stage_counts` (per-CandidateStage counts), and four attention signals (`offers_expiring_soon` = EXTENDED offers whose expires_at is within 72h or already past with no decision recorded — computed straight from the offers table so a missed nudge can't make it stale, `needs_screening` = leads, `offers_out` = offers, `stalled_count` = active-stage candidates not updated in ≥7 days), sorted expiring→offers→stalled→leads→size. It renders as the briefing's 'Executive search' card (one per search, click-to-discuss → chat) and feeds the narrative (a search going cold or an offer landing re-writes the header — the narrative hash now folds a talent fingerprint of [engagement_id, needs_screening, offers_out, stalled_count]). The same digest's `format_talent_for_prompt` is appended to the chat `<briefing>` user-turn block (alongside the open-alert digest) so the Executive can discuss live searches by client/role. Additive, default empty (no talent tables ⇒ empty, never an error). `caller_person_id` is the signed-in caller resolved from `x-caller-email` via chat._resolve_caller_person_id; null when no caller could be resolved (unrostered signed-in user, or a CLI hit without the header). The route is async: it serves insight notes from the person_insights cache and, after resolving the caller, attaches the viewer-scoped narrative via `_attach_narrative`, scheduling regeneration of stale entries as FastAPI BackgroundTasks so the request never blocks on an LLM call. `_build_today()` stays synchronous and caller-agnostic — no insight regen and NO narrative (that is attached per-viewer by the endpoints) — for the morning_brief workflow and the deprecated /morning-brief alias that call it directly; the alias resolves the caller and serves the cached narrative but cannot schedule a regen."
+    - "GET /today — JSON aggregation. Returns TodayResponse(departments, people, proposals, narrative, in_flight, awaiting, caller_person_id). `departments` rolls up each department's goal counts (total, at_risk, off_track) and awaiting workflow count, PLUS `attention_goals` — the actual off_track/at_risk Goal rows themselves (worst first, capped at 3), each carrying `key_result`, `current`, `target`, and `status`, so the briefing's Department card is insightful at rest (shows which goal is off and how far) instead of a count you must click into; empty for healthy/inactive departments and additive (older clients ignore it). `people` is an attention-ranked roster: each person carries the original preferred channel, awaiting-action count and soonest SLA PLUS enrichment signals — `status` (on_leave | needs_reply | awaiting | clear), `awaiting_reply_count`/`oldest_awaiting_reply_at` (open scheduled_action commitments we're waiting on THEM to answer, mirroring the nudge engine's awaiting_response_since set), `on_leave_until`, `reachable_now`/`next_window_at` (from people.channel availability windows), `authority_scope`, `department_slugs`, `last_contact_at` (most recent done outbound assigned to them), `overdue` (any SLA or awaited reply past deadline), `priority` (server sort key — overdue replies/work float to top, on-leave sinks), and `insight` (a one-line utility-fast note, see people.insights — null until the background cache warms). Rows are returned sorted by (-priority, full_name). `proposals` is the org-wide set of ALL unread alerts (workflow approvals, triage-classified inbound, Executive-created operational signals, and research artifacts the Executive flagged for review via `draft_artifact` — source=`artifact`, tagged `artifact`, which the UI renders as a Markdown document card rather than a terse proposal — and which also persist into the dedicated Artifacts section (`/artifacts`) so they remain browsable after they leave this unread queue — anything in the alerts table with status='unread'); the UI splits it into 'mine' vs 'across the team' using `caller_person_id` plus a 'principal owns unrouted' rule (alerts with `routed_to_person_id == null` fall to the principal's queue by default). Each proposal also carries presentation signals from `openexecutive.briefing.ranking`: `score` (attention sort key — severity-weighted, with a bonus for routed alerts) and `category` ('action' = a human should look, vs 'monitoring' = passive watchlist/external signals that are unrouted and not high/urgent), plus `surfaced_reason` (a short human note, null for most items) — set only when an external/watchlist signal was pulled into the 'action' lane *by its severity* (the high/urgent escape hatch in `categorize`, e.g. a ≥5% stock move), so the UI can render a per-item explanation of why a normally-Monitoring signal is in 'Needs you'. A proposal also carries `decision_instance_id` (parsed from a `decision_instance:{id}` topic tag), non-null only for gated calendar bookings surfaced from the decision ledger (source=`decision_scheduling`); the UI routes those cards' Approve/Reject to the /decisions endpoints (which book or cancel server-side and clear this alert) instead of the ack-and-hand-off-to-chat flow, so meeting bookings are reviewed in the briefing itself (the standalone proposals page was removed). `_build_today` sorts action items first (by score), monitoring last; the UI collapses the 'monitoring' tail into a separate section so it stops crowding the 'Needs you' queue. `narrative` is a PER-VIEWER Executive-voice 'what's going on' header (see `openexecutive.briefing.narrative` + `today._attach_narrative`). It is a SYNTHESIS, not a re-list: the actionable items render as cards below it, so the narrative gives the connective tissue a list can't (how items relate, what's most urgent and why, the single recommended focus) and deliberately does NOT enumerate a 'Needs you' section that would duplicate the cards. The principal and any unrostered/unresolved caller get the whole-company synthesis (cache scope `principal`) over ALL action-category proposals (mine + across the team; monitoring/watchlist noise is excluded) plus company-wide at-risk depts + activity; each non-principal teammate gets a role-scoped synthesis (cache scope `person:<id>`) over ONLY the action items routed to them + their departments' goal health + their department activity, written in their perspective. Synthesized by `synthesize_briefing_narrative`, which also produces the standalone morning_brief DM but via a DIFFERENT prompt (`standalone=True` → an enumerated brief with a 'Needs you' section, since the DM has no cards beside it to carry the list; the EoD digest still has its own prompt); the /today header path uses the synthesis prompt and never re-lists. Served from the per-scope `briefing_narrative` cache (`openexecutive.briefing.narrative_cache`, keyed by a hash of the viewer's scoped state + scope + UTC date + `NARRATIVE_PROMPT_VERSION`, the last so a prompt rewrite invalidates every cached narrative on the next view). Served from cache on the hot path and regenerated per-viewer in a FastAPI BackgroundTask when that viewer's hash moves; null on a cold cache. `in_flight` is the Executive's upcoming user-facing commitments — pending scheduled_actions (follow-ups, nudges) from `episodic.list_pending_scheduled_actions` (excludes the `__internal__` channel and `nudge_scan` heartbeat, the same set the activity feed hides), each with the resolved recipient `target` (person name via the shared channel→name lookup, or department/raw ref), `kind`, `run_at`, and `overdue` (run_at already passed). `awaiting` is the people we're waiting on a reply from, derived from the same open-commitment set behind each person's `awaiting_reply_count` (name, role, count, oldest_at, overdue), sorted most-overdue/oldest first. Together they power the briefing's 'In flight' section so cross-team work in progress is visible without opening the Scheduled Actions page. Both are additive and default to empty. `caller_person_id` is the signed-in caller resolved from `x-caller-email` via chat._resolve_caller_person_id; null when no caller could be resolved (unrostered signed-in user, or a CLI hit without the header). The route is async: it serves insight notes from the person_insights cache and, after resolving the caller, attaches the viewer-scoped narrative via `_attach_narrative`, scheduling regeneration of stale entries as FastAPI BackgroundTasks so the request never blocks on an LLM call. `_build_today()` stays synchronous and caller-agnostic — no insight regen and NO narrative (that is attached per-viewer by the endpoints) — for the morning_brief workflow and the deprecated /morning-brief alias that call it directly; the alias resolves the caller and serves the cached narrative but cannot schedule a regen."
     - "GET /today/activity?limit=N — Returns ActivityResponse(items). Each item is one recent self-initiated Executive action — a fired scheduled_action (DM dispatched, follow-up fired, cadence run, paused workflow resumed) or an extracted decision/advice row. Items carry `kind` (coarse classifier the UI maps to verb + icon — dm_sent, email_sent, nudge_sent, cadence_sent, workflow_resumed, proposal_routed, decision_logged, advice_given, workflow_done, initiative_started, decision_resolved, alert_raised, or action for unclassified), `summary`, `actor` (always Executive for now), `target` (channel ref / person, or null), `department`, and `at` (ISO timestamp). Sources merged — `scheduled_actions` with status=done (excluding `nudge_scan` heartbeat and `__internal__` channel), `decisions`, `advice_given`, completed `workflow_runs` (status=done — briefings/check-ins/research, bucketed at `updated_at`), `initiatives` (kicked-off projects, at `created_at`), resolved `decision_instances` (terminal gated-decision outcomes — approved/rejected/reversed, at `resolved_at`; pending ones stay in `proposals`, not the rail), and `alerts` raised (excluding source=`decision_scheduling`, which is the companion alert for a gated booking already represented by its `decision_resolved` row). This broadens the feed beyond the original messaging-heavy three sources so it reflects all self-initiated Executive activity, not just dispatched messages. Actions on `propose_only` departments are reclassified to `proposal_routed` because the runner marks them done without dispatching (the proposal is surfaced via /today's `proposals` field; the activity rail shows it as 'proposed to <approver>' rather than implying a DM was sent). Sorted by `at DESC`, then capped at `limit` (default 20, clamped to 1..100 via FastAPI Query validation — 422 on out-of-range). The Pulse page polls this endpoint (limit=100) every ~20s so new activity streams into the 'Recent activity' card without a reload; the card scrolls internally at a fixed max-height rather than growing the page."
     - "GET /today/activity/daily?days=N — Returns DailyActivityResponse(days), the per-day counts behind the Pulse page's 'heartbeat' heatmap (the GitHub-contributions-style grid at `/memories`). Same source set and exclusions as /today/activity — the union of `decisions`, `advice_given`, status=done `scheduled_actions` (excluding the `nudge_scan` heartbeat and `__internal__` channel), completed `workflow_runs`, `initiatives`, resolved `decision_instances`, and `alerts` — but bucketed by calendar day (UTC) in `episodic.count_activity_by_day` rather than returned as individual items — decisions/advice by their `timestamp`, fired actions by `run_at` (fire time, not `created_at` queue time, so a cadence queued the night before counts on the day it fires), workflow runs by `updated_at` (completion), initiatives by `created_at`, resolved decisions by `resolved_at`, alerts by `created_at`. The `workflow_runs` and `alerts` tables are owned by other stores (not `episodic.initialize_db`), so each UNION arm is included only when its table exists — `count_activity_by_day` checks `sqlite_master` and still counts the sources episodic owns on a DB initialised by episodic alone. The response is DENSE: every calendar day in the window is present (count 0 when nothing fired), oldest→newest, so the UI renders a gap-free grid without client-side fill. `days` defaults to 90, clamped to 1..365 via FastAPI Query validation (422 on out-of-range). Read-only, unauthenticated (matches /today/activity and /memories/*), uncached."
     - GET /morning-brief — deprecated alias for GET /today, kept for one release for older UI builds and bookmarks. Sends a Deprecation header with a Sunset date.
@@ -2186,22 +2186,14 @@ workflows:
     (the common case) are fully served by the capture-and-surface path
     above; multi-step auto-continuation is the gap.
 
-    `offer_approval` (talent) is the first BUILT-IN workflow to yield the
-    gate (previously only user-created dynamic workflows did). It is
-    designed AROUND the resume gap: the run yields `result` + `artifact`
-    BEFORE the gate (the runner never reaches `complete_run` on a paused
-    run) and persists the package onto the Offer row, the gate exists to
-    RECORD the HIRING_SIGNOFF decision, and the actual
-    `pending_approval → extended` state transition is an explicit
-    follow-up action (the `extend_offer` tool / POST /offers/{id}/extend)
-    that consults the recorded resolution via
-    `talent.offers.offer_approval_state` — a recorded rejection blocks the
-    extension; a pending/absent sign-off proceeds on the principal's
-    explicit instruction with the gap flagged in the response. The gate
-    DMs the approver itself via `handle_message_person` before yielding
-    (no other component delivers built-in gate questions) and resolves the
-    approver via `people.store.find_approvers(HIRING_SIGNOFF)` with the
-    principal as fallback.
+    NO BUILT-IN workflow currently yields the gate — `offer_approval` did,
+    and it was removed with the talent vertical. Only user-created dynamic
+    workflows pause today. A dynamic workflow that pauses must be designed
+    AROUND the resume gap: yield `result` + `artifact` BEFORE the gate (the
+    runner never reaches `complete_run` on a paused run) and persist anything
+    downstream code needs, so the gate's only job is to RECORD the decision and
+    an explicit follow-up action performs the real state transition.
+
   dynamic_user_created: |
     Users create reusable workflows on the fly — from the executive chat or a
     builder UI on /jobs — without shipping a Workflow subclass. A dynamic
@@ -2256,8 +2248,7 @@ workflows:
     Guardrail: `_CHAT_LAUNCH_BLOCKLIST` excludes `executive_research` (it has the
     dedicated `run_executive_research` tool). The principal-targeting recurring
     workflows (`morning_brief`, `end_of_day_digest`, `executive_reflection`) stay
-    launchable but the tool description warns they dispatch real messages. Talent
-    workflows are still better served by `start_talent_workflow`. A successful
+    launchable but the tool description warns they dispatch real messages. A successful
     `run_workflow` emits an `action_taken` chip (in `action_chips`) linking to
     `/jobs/runs/{run_id}`.
   notable_recent:
@@ -2284,292 +2275,6 @@ workflows:
     - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 UTC, override via PRINCIPAL_BRIEF_MORNING_TIME env var). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Artifact is DM'd via the principal's preferred_channel (slack_dm → discord_dm → telegram → email fallback chain)."
     - "end_of_day_digest — Shift 3 recurring workflow. Fires once per day from the scheduler (default 18:00 UTC, override via PRINCIPAL_BRIEF_EOD_TIME). Same shape as morning_brief but framed as a recap since the last DELIVERED digest (`brief_state.since_for`, 24 h on a cold store): what OE did today (activity since), alerts it handled today (completed moves only; rewritten-but-open items render as a REWRITTEN block under still pending), what's still pending (NEW SINCE LAST BRIEF, action category only, carried-over as one line), what's at risk for tomorrow, one optional 'sleep on this' question. Same fingerprint / one-liner suppression and `force_full` as morning_brief, under scope `brief:principal_brief_eod`."
     - "executive_reflection — Shift 5 recurring workflow. Fires once per day ~30 minutes before the morning brief (default 07:30 UTC, override via PRINCIPAL_REFLECTION_TIME). The first workflow OE runs ON ITSELF — not for a department, not for the principal, but for its own org-coordination judgment. Three steps: (1) gather /today + /today/activity + recent open alerts, (2) single LLM call with the full outbound toolkit (schedule_followup, send_*_dm, send_department_message, send_company_broadcast, suggest_workflow, create_alert, etc.) bounded to ≤4 iterations — the model decides per signal whether to act now, notify the right audience via the persona's 'Choosing Who to Tell' rule, raise it for the morning brief, or ignore, (3) emit a short Markdown summary with a structured tool-call log. MEMORY: the context carries a YESTERDAY'S STANDUP block (the previous done run's artifact, capped at 1500 chars) and the prompt forbids re-acting on or re-notifying about anything listed there unless it changed; open alerts render with `alert_id`, the review verdict, note and recommended move. Reflection never closes alerts (the alert review does, with evidence) — the prompt does not instruct `ack_alert`. The artifact is stored via complete_run but NOT DM'd — the morning brief surfaces what was decided via /today/activity. This operationalizes the 'When You Notice Something on Your Own' persona section (Shift 1)."
-    - "candidate_screen — Talent-platform (Phase 1) workflow. Screens one candidate against one executive-search engagement: loads the engagement + candidate from `talent.store`, consults the `talent` specialist for a fit assessment, parses the 0-100 fit score from the response, and persists score + summary back onto the candidate via `talent.store.record_screening` (which advances a raw `lead` to `screened`). Emits a structured `result` event plus a Markdown scorecard artifact. See the `talent:` key."
-    - "candidate_outreach — Talent-platform (Phase 3) recruiting-automation workflow. Drafts a personalized first-touch + N follow-ups for a candidate via the `talent` specialist and schedules each touch as a REMINDER TO THE PRINCIPAL (a `scheduled_actions` row, assigned_to_person_id=principal, run_at = now + i*interval) — never a direct message to the candidate. Draft-and-approve posture: each reminder is the human checkpoint (the Executive DMs the principal the ready-to-send draft at fire time; the principal sends it manually). Deliberately uses reminders rather than a `wait_for_human` gate because gate-resume is deferred (a gate would pause and never schedule). Channel resolution maps the principal's people-channel → scheduled-actions vocabulary (slack→slack_dm etc.). See the `talent:` key."
-    - "interview_coordination — Talent-platform (Phase 3) workflow. Designs an N-round interview loop + a candidate-facing availability-request via the `talent` specialist, then schedules ONE reminder to the principal to kick off scheduling (line up the panel, send the availability request). Never contacts the candidate directly. See the `talent:` key."
-    - "reference_check — Talent-platform (Phase 3) workflow. Drafts a reference-check rubric (questions + the concerning-answer signal) + a reference-facing outreach via the `talent` specialist, then schedules ONE reminder to the principal to conduct the checks. Never contacts references directly. See the `talent:` key."
-    - "offer_approval — Talent-platform (close-the-hire-loop) workflow, and the first BUILT-IN to pause on a WaitForHumanEvent gate. Drafts the offer package for an interviewed candidate — terms via the `chro` specialist anchored on the engagement's comp_band, closing plan (risks, competing-offer posture, recommended expiry window) via the `talent` specialist — persists an Offer row (status pending_approval, full package Markdown on `package_md`), advances the candidate interviewed→offer, DMs the HIRING_SIGNOFF approver (find_approvers, principal fallback) the sign-off request via handle_message_person, yields result+artifact, THEN yields the gate (timeout 72h, on_timeout=escalate, expected_reply_shape=approve_reject, context_summary prefixed `offer_id=<n>` for later matching). The run stays awaiting_human/resolved; the extended transition is the explicit extend_offer follow-up. OE never sends the offer to the candidate. See the `talent:` key."
-    - "new_hire_onboarding — Talent-platform (close-the-hire-loop) workflow: the placed→Person handoff. Requires the candidate to be `placed` OR hold an accepted offer. Idempotently creates/updates the Person record (match by case-insensitive email, else exact full_name; role = engagement.role_title; department_slugs only when the engagement's free-text department resolves in the department registry; NO authority scopes granted), drafts a role-specific 30/60/90 plan via the `chro` specialist, and schedules day-7/30/60/90 check-in reminders to the PRINCIPAL (past milestones skipped when start_date is in the past). Never contacts the new hire directly. See the `talent:` key."
-
-talent:
-  status: |
-    The talent-intelligence / executive-search vertical built on OpenExecutive.
-    IN-HOUSE hiring: searches are run
-    WITHIN this company, not on behalf of external clients. Single-tenant; reuses
-    the existing agent runtime, RAG, workflow engine, and shared SQLite DB.
-  module: openexecutive.talent
-  entities: |
-    THREE core entities, persisted in the shared `episodic_memory.db` via
-    `talent.store` (same idempotent `CREATE TABLE IF NOT EXISTS` +
-    `_resolve_db_path` convention as `people.store`):
-      - Engagement — one search: a role we're hiring for in THIS company
-        (`engagements` table, status open/on_hold/filled/cancelled). Optional
-        free-text `department` label (e.g. "Drilling") for in-house grouping —
-        NOT a FK to the departments entity.
-      - Candidate — a person considered for an engagement (`candidates` table,
-        FK engagement_id) moving through the pipeline
-        lead → screened → interviewed → offer → placed (rejected is a terminal
-        off-ramp). `fit_score` (0-100) + `screening_summary` are owned by
-        `record_screening`, never by the plain `upsert_candidate` path.
-      - Offer — an offer to a candidate (`offers` table, FKs candidate_id +
-        engagement_id). Lifecycle enforced by a transition map in
-        `set_offer_status`: draft → pending_approval → extended →
-        accepted/declined/expired/rescinded (rescind also legal from
-        draft/pending_approval; pending_approval may fall back to draft;
-        terminals are immutable — re-offering means a NEW row). INVARIANT: at
-        most ONE open offer (draft/pending_approval/extended) per candidate —
-        `create_offer` raises on a duplicate. `expires_at` is set at EXTEND
-        time, not draft time, and expiry NEVER auto-flips the status — only
-        `record_offer_decision` does, on the principal's say-so. `package_md`
-        carries the full offer-package artifact (persisted by offer_approval so
-        the UI can render it after the run pauses); `extended_at`/`decided_at`
-        are stamped by the transition; `approval_run_id` /
-        `approved_by_person_id` record the sign-off when one was resolved;
-        `nudge_action_ids_json` tracks the scheduled expiry reminders so a
-        decision can cancel them. Terms (`comp_summary`/`package_md`/`note`)
-        are editable only while draft/pending_approval — an extended offer's
-        terms are the record of what went out.
-    NOTE: the original external-`Client` entity was REMOVED — engagement is now
-    top-level. `initialize_db` does a one-time reset (drops the legacy talent
-    tables when a `clients` table is detected, then rebuilds the new shape), as
-    there is no migration tooling. Workflows that named the hiring org now use
-    THIS company's name from the profile (`reminders.company_name()` →
-    `load_or_create_profile().name`), not a client lookup.
-  specialist: |
-    `talent` — Head of Talent & Executive Search (openexecutive.agents.talent,
-    TalentAgent, deep-reasoning). Registered in SPECIALIST_REGISTRY; prompt
-    `TALENT_PROMPT` in prompts/domain_prompts.py. RAG alias maps `talent` →
-    ["hr", "strategy"] until a dedicated talent knowledge corpus is seeded.
-    TALENT_PROMPT is anchored to the live pipeline vocabulary (engagement,
-    stages lead→…→placed, fit_score) so the specialist's read lines up with
-    what the principal sees on the briefing.
-  chat_briefing: |
-    The vertical is wired into BOTH chat and the briefing so it isn't a siloed
-    UI. Chat: `openexecutive.orchestrator.talent_tools` adds tools to the
-    Executive's main loop (registered in executive.py `_ALL_SKILL_TOOLS` /
-    `_ALL_SKILL_HANDLERS`) — `list_engagements` (the shared
-    `briefing.talent_digest` rollup), `list_candidates`, `get_candidate`,
-    `match_candidates` (talent-graph semantic ranking) and `list_offers` are
-    read-only and never emit an action chip; the side-effecting tools
-    (registered in `action_chips.SIDE_EFFECTING_TOOLS`) are
-    `set_candidate_stage` (a light, reversible pipeline move — when the target
-    stage is `placed` the response carries a read-only `suggestion` to record
-    the offer decision and run new_hire_onboarding, with NO implicit writes),
-    `start_talent_workflow` (runs candidate_screen / candidate_outreach /
-    interview_coordination / reference_check / exec_search_brief /
-    new_hire_onboarding to completion via WORKFLOW_REGISTRY + the runs store,
-    mirroring `run_executive_research`; `offer_approval` instead pauses on its
-    sign-off gate — the handler mirrors run_workflow's WaitForHumanEvent
-    branch: save_checkpoint + a `status='awaiting_human'` response), the create
-    tools `create_engagement` / `create_candidate`, and the offer-lifecycle
-    tools `create_offer` (manual draft path when the principal dictates terms;
-    the workflow is the full drafted-and-approved path), `extend_offer`
-    (records that the PRINCIPAL sent the offer — OE never sends it — checks
-    the recorded sign-off via talent.offers, schedules expiry nudges to the
-    principal at T−3d/T−1d/T+12h as kind=ad_hoc scheduled_actions, future ones
-    only), and `record_offer_decision` (terminal outcome; cancels pending
-    nudges; `accepted` also moves the candidate to placed + the engagement to
-    filled — documented side effects, PLACED coincides with FILLED — and
-    suggests new_hire_onboarding; declined/expired/rescinded leave the
-    candidate's stage for the principal to decide). The shared extend/decide
-    logic lives in `openexecutive.talent.offers` so the chat tools and the
-    /offers routes can't drift. (There is NO `create_client`/`list_clients` — the
-    external-client entity was removed; in-house searches have no client.) The
-    create tools call the talent DATA layer (`talent.store.upsert_*`) directly,
-    mirroring the `/talent` API routes: `create_engagement` opens a role for THIS
-    company (required `role_title`, optional `department`; no client), and
-    `create_candidate` re-indexes the new person into the talent graph
-    (`talent.graph.index_candidate` against a `ChromaDBStore`) just as
-    `api/routes/talent.py` does after an insert, so `match_candidates` sees it.
-    `fit_score` / `screening_summary` stay workflow-owned (not settable via
-    create). NOTE: action_chips suppresses the chip when a write returns
-    `{status: not_found}` (nothing changed), alongside the existing error/noop
-    suppression; the `create_engagement` chip links to `/talent/searches`.
-    Heavier editing (updates, soft-archive) and bulk work stay in the `/talent`
-    UI (the old `/talent/clients` pages are gone; searches live at
-    `/talent/searches`). Briefing: `briefing.talent_digest` is the single rollup the
-    `/today` `talent` field, the 'Executive search' briefing card, the narrative
-    synthesis, and the chat `<briefing>` block all share — so the cards, the
-    header, and chat never disagree about pipeline state. See the `today:` key.
-
-    MCP: the pipeline is also exposed to EXTERNAL agents over the outbound MCP
-    server (see `mcp_server:`) as a READ-ONLY search surface — an
-    oe://talent/engagements resource plus list_candidates / get_candidate /
-    match_candidates / find_similar_candidates tools that call talent.store /
-    talent.graph directly (NOT the chat handlers). The `talent` specialist's
-    advice is reachable there via consult_specialist. Writes and workflow
-    execution are not exposed over MCP.
-  graph: |
-    Phase 2 — semantic candidate matching (openexecutive.talent.graph). Each
-    non-archived candidate is indexed into a dedicated ChromaDB collection
-    `talent_candidates` (kept separate from builtin/company/research collections
-    so candidate profiles never blend into RAG). The doc text is the candidate's
-    name/title/company/location/source/notes/screening_summary; metadata carries
-    candidate_id, engagement_id, stage. Two queries: match_candidates_for_
-    engagement (ranks the WHOLE candidate pool against an engagement's role +
-    must-haves — a cross-engagement talent pool) and find_similar_candidates
-    (excludes the query candidate). Because KnowledgeStore.query only filters by
-    `domain`, archived rows are kept out of the index entirely and the query
-    candidate is removed by over-fetch + post-filter (mirrors the knowledge
-    retriever). Indexing is best-effort, driven from the API layer after a store
-    mutation (the store stays pure SQLite) and from the candidate_screen
-    workflow after a screen; failures are logged and swallowed so candidate CRUD
-    never breaks on a vector-store outage. `reindex_all` rebuilds from the store
-    (upsert active, drop archived).
-  api: |
-    `openexecutive.api.routes.talent` exposes CRUD for the two entities:
-    /engagements (in-house searches; create takes role_title + optional
-    department, no client) and /candidates (filter by engagement_id and stage),
-    plus /candidates/{id}/stage and per-entity /archive. (The /clients endpoints
-    were removed with the Client entity.) Mirrors the /people route shape. Phase
-    2 adds the talent-graph endpoints: GET /engagements/{id}/matches, GET
-    /candidates/{id}/similar, and POST /talent/reindex. The hire-loop slice
-    adds /offers: GET /offers (filter by candidate_id / engagement_id /
-    status), GET+PATCH /offers/{id} (PATCH = terms, 409 unless
-    draft/pending_approval), POST /offers (201; 404 unknown candidate; 409 when
-    an open offer exists), POST /offers/{id}/extend and
-    /offers/{id}/decision (both return OfferActionResponse — the offer plus
-    approval_state / nudges_scheduled / cancelled_nudges / side_effects /
-    warnings; lifecycle conflicts are 409s, a malformed expiry is 400), and
-    POST /offers/{id}/archive. Extend/decision route through the shared
-    `talent.offers` logic, same code path as the chat tools.
-  automation: |
-    Phase 3 — recruiting automation, draft-and-approve posture. Three workflows
-    (see `workflows.notable_recent`): `candidate_outreach` (first-touch + timed
-    follow-up reminders), `interview_coordination` (loop + availability request),
-    and `reference_check` (rubric + reference outreach). All schedule reminders
-    to the PRINCIPAL only and never message candidates/references directly. They
-    share `openexecutive.talent.reminders` — `resolve_reminder_context` (resolves
-    candidate→engagement→principal→channel or an error string),
-    `principal_channel` (people-channel → scheduled-actions vocab; the raw
-    people-vocab pair is exposed as `person_channel_raw` for the
-    WaitForHumanEvent channel fields), and `schedule_reminder` (the single
-    place a reminder's recipient is set, always the principal). Multi-LLM is
-    intentionally NOT a build: non-Claude models already route via OpenRouter
-    (providers/registry.py) by model slug.
-  hire_loop: |
-    Close-the-hire-loop slice: the funnel no longer goes dark after
-    "interviewed". Two workflows + the Offer entity:
-      - `offer_approval` drafts the package (chro terms anchored on comp_band +
-        talent closing plan), persists the Offer (pending_approval, package on
-        the row), advances the candidate to `offer`, DMs the HIRING_SIGNOFF
-        approver, and pauses on the first built-in WaitForHumanEvent gate (see
-        `workflows.human_in_the_loop` for how the design works around the
-        generator-resume gap — the extended transition is the explicit
-        extend_offer follow-up that consults the recorded resolution; the
-        gate's context_summary is `offer_id=<n>`-prefixed and matched by
-        `talent.offers.find_offer_approval` scanning offer_approval runs).
-      - `new_hire_onboarding` is the placed→Person handoff: idempotent Person
-        creation (email match, else exact name; engagement free-text
-        department only mapped when it resolves to a real slug; no authority
-        scopes), a chro-drafted 30/60/90 plan, and day-7/30/60/90 check-in
-        reminders to the principal. Person creation is NEVER an implicit side
-        effect of a stage change — `record_offer_decision(accepted)` and
-        `set_candidate_stage(placed)` only SUGGEST running it. It COMPOSES
-        with the `staff_onboarding:` subsystem rather than competing:
-        new_hire_onboarding supplies the roster Person that staff-onboarding
-        plan delivery + the ramp drip require, and the merged
-        `set_candidate_stage(placed)` onboarding_suggestion chains
-        record_offer_decision → new_hire_onboarding →
-        create_onboarding_plan/start_onboarding.
-    Expiry posture: extend_offer schedules T−3d/T−1d/T+12h reminder nudges
-    (kind=ad_hoc, assigned to the principal; no new scheduled-action kind);
-    nudges remind, they never write — only record_offer_decision flips the
-    status. The /today digest's `offers_expiring_soon` is computed straight
-    from `expires_at`, so a missed nudge can't make the briefing stale. The
-    candidate-contact invariant extends to offers and onboarding: OE never
-    sends an offer to a candidate and never messages a new hire — the approver
-    gets the sign-off request, the principal gets the reminders. UI: the
-    candidate detail page (`/talent/candidates/{id}`) renders an OfferPanel
-    (status pill, terms, collapsible package, expiry countdown, lifecycle
-    buttons, onboarding launcher) between the stage control and the workflow
-    row.
-  deferred: |
-    CRM/ATS integration (rest of Phase 3) and multi-tenancy (Phase 4) are NOT in
-    these slices. Direct candidate sends (OE emailing candidates itself, outside
-    the roster-gated Person/DM model) are deferred as "Phase 3b". The
-    /architecture UI page (sections.py / page.tsx / prebuilt JSON) is
-    intentionally not wired for the talent module yet.
-
-staff_onboarding:
-  status: |
-    The staff-onboarding framework (openexecutive.staff_onboarding) onboards a
-    PERSON into the company — distinct from the company-setup wizard in
-    `onboarding/` and the people roster in `people/`. A first-class subsystem,
-    sibling to `talent`, that turns existing company context (profile,
-    departments, roster, company-doc RAG, talent pipeline) into a role-tailored
-    onboarding experience for any hire (exec or IC, fractional or full-time).
-  entities: |
-    Three Pydantic models in the shared episodic_memory.db (idempotent
-    CREATE TABLE IF NOT EXISTS, mirroring talent/store.py):
-      - OnboardingTemplate (onboarding_templates): reusable role/department
-        blueprint — task specs (phase + owner-by-role + due_offset_days),
-        brief_sections, ramp_days, checkin_cadence. Defaults seeded idempotently
-        at startup (generic, engineering, go_to_market, finance) via
-        staff_onboarding/seed.py; operator edits are preserved.
-      - OnboardingPlan (onboarding_plans): one per hire — role, start_date,
-        manager/buddy, brief_artifact + reading_list, ramp_segments +
-        ramp_next_index, optional engagement_id/candidate_id back-links to
-        talent. completion_pct computed from tasks on read (never stored).
-      - OnboardingTask (onboarding_tasks): phased checklist item (pre_start /
-        week_1 / day_30 / day_60 / day_90), owner, due_date, status
-        (pending/in_progress/done/skipped; skipped excluded from completion).
-  instantiation: |
-    service.instantiate_plan turns a template into a plan: each task spec →
-    a task with due_date = start_date + due_offset_days and an owner resolved
-    against the plan/roster (hire→person_id, manager/buddy→plan ids,
-    department_head→department head). Plans start in `draft`. service.advance_phase
-    walks pre_start→week_1→day_30→day_60→day_90 and stops at the final phase.
-  content_workflow: |
-    role_onboarding (WORKFLOW_REGISTRY, section People) generates the welcome
-    brief section-by-section via the role's lead specialist — resolved by
-    department specialist_key → function map → cso fallback (staff_onboarding/
-    specialists.py). Sections: company landscape (cso), function state (domain),
-    people map (chro + roster), 30/60/90, week-one questions. Also generates an
-    optional per-day ramp drip and writes brief/reading_list/ramp_segments back
-    onto the plan. ramp_days is tri-state: None=use template, 0=force off,
-    >0=override.
-  chat_integration: |
-    orchestrator/onboarding_tools.py exposes list/get/create plans, list
-    templates, complete task, advance phase, and start_onboarding (runs the
-    workflow), spliced into the Executive's _ALL_SKILL_TOOLS/_ALL_SKILL_HANDLERS.
-    briefing/onboarding_digest.py (build_onboarding_brief_items /
-    format_onboarding_for_prompt) joins the per-turn chat briefing_context
-    (beside the talent digest) and powers a /today onboarding panel, so the
-    Executive proactively knows who is onboarding and what's overdue.
-  recurring: |
-    Bounded ramp drip (IMPLEMENTED): service.activate_plan sets the plan active
-    and enqueues the first `onboarding_ramp` scheduled action (kind handled in
-    scheduler/runner.py). Each fire claims the next segment via
-    store.claim_next_ramp_segment — an atomic compare-and-swap on ramp_next_index
-    — DMs it to the hire via message_person, and chains the next BUSINESS-day
-    occurrence ONLY while segments remain (self-terminating; every other
-    recurring kind chains forever). The drip only fires once the plan has a
-    roster person_id + pre-generated ramp_segments; enqueue_ramp is a no-op
-    otherwise.
-
-    Stakeholder orchestration + milestone check-ins (IMPLEMENTED,
-    staff_onboarding/orchestration.py). activate_plan also enqueues, idempotently:
-      - `onboarding_kickoff` (one-shot, fires next tick): a welcome notice to the
-        hire's department channel ONLY when one is configured (no accidental
-        broadcast; routed via the privacy-gated, audited
-        broadcast_tools.post_department_notice — same length cap + privacy
-        backstop + audit trail as send_department_message — to the first
-        configured slack/discord/telegram channel), plus intro-1:1 nudge DMs to
-        the manager and buddy.
-      - `onboarding_checkin` (day 7/30/60/90): each milestone is its own
-        pre-scheduled row (no self-chaining); past-due milestones are skipped at
-        enqueue time. On fire it DMs the hire + manager a check-in and advances
-        the plan's phase deterministically (forward-only). wait_for_human resume
-        is a Phase-7 item, so reply-folding rides the chat-integrated path: the
-        recipient's reply lands in chat where the Executive's onboarding tools
-        update tasks/phase. Both kinds are handled in scheduler/runner.py
-        (`_run_onboarding_kickoff` / `_run_onboarding_checkin`).
-  talent_tie_in: |
-    Suggest-on-placed: when a talent candidate moves to `placed`, OE surfaces an
-    "onboard {name}" suggestion (no auto-fire, never messages the candidate).
-    Plan creation can pull role context from the engagement; delivery + ramp
-    activate only once the hire exists as a roster Person.
 
 artifacts:
   summary: |
@@ -3036,30 +2741,18 @@ integrations:
     resources, and the specialist council as tools.
       Resources: oe://company/profile, oe://today/briefing, oe://today/activity,
         oe://people/roster, oe://departments/state, oe://memory/{decisions,
-        initiatives,advice}, oe://talent/engagements (active executive-search
-        engagements rolled up by pipeline stage via
-        briefing.talent_digest.build_talent_brief_items — the same rollup /today
-        and the briefing card use). Pure reads of existing service functions
+        initiatives,advice}. Pure reads of existing service functions
         (load_or_create_profile, today._build_today/_build_activity,
         people.list_people, departments.list_departments, episodic list_*); no
         LLM calls. The warm ChromaDB store is handed to handlers via
         mcp_server.set_store() from the lifespan (handlers have no Request).
       Tools: consult_specialist (flagship — orchestrator.router.route_to_specialist,
         stateless, the specialist enum is a Literal pinned to SPECIALIST_REGISTRY
-        by a unit test — includes `talent`, so the executive-search specialist's
-        ADVICE is already reachable here), search_knowledge (knowledge.retriever.retrieve),
-        list_workflows (workflows.list_workflows → Workflow.meta), ask_executive
+        by a unit test), search_knowledge (knowledge.retriever.retrieve),
+        list_workflows (workflows.list_workflows → Workflow.meta), and ask_executive
         (Executive.chat fallback — non-streaming, resolves caller to principal or
-        by caller_email), and a READ-ONLY executive-search suite: list_candidates
-        / get_candidate (browse a search's pipeline via talent.store) and
-        match_candidates / find_similar_candidates (semantic candidate search via
-        talent.graph against the warm store, results enriched with candidate
-        name/title). These call the talent DATA layer (talent.store/graph/digest)
-        directly — NOT the orchestrator.talent_tools chat handlers, which audit as
-        actor=executive and build their own ChromaDB. Talent WRITES
-        (set_candidate_stage) and workflow execution (start_talent_workflow) are
-        intentionally NOT exposed over MCP — same read-only posture as the rest of
-        the server. limit is clamped to 1-50.
+        by caller_email). All reads — no tool here mutates company state, the same
+        read-only posture as the resources.
 
     DEFERRED by design: workflow EXECUTION is not exposed — workflows are
     long-running async generators (minutes) that would exceed a single MCP
@@ -3379,8 +3072,8 @@ clients:
   slot_contents: |
     company/_client_slots/<slug>/ (gitignored — client data is never
     committable): state.db (VACUUM INTO copy of the shared episodic_memory.db
-    — chat history, scheduled actions, onboarding plans, talent pipeline,
-    departments, people, watchlist, audit/runs), profile.yaml, docs/ (all file
+    — chat history, scheduled actions, departments, people, watchlist,
+    audit/runs), profile.yaml, docs/ (all file
     types), skills/, mcp_servers.json (per-client external MCP tools, e.g.
     one client's Crayon credentials), meta.json (display name + timestamps).
   restore_mechanics: |

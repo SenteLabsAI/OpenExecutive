@@ -49,10 +49,6 @@ from openexecutive.orchestrator.form_tools import (
     build_form_patch_event,
 )
 from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES, MCP_TOOLS, MCPGateway
-from openexecutive.orchestrator.onboarding_tools import (
-    ONBOARDING_TOOL_HANDLERS,
-    ONBOARDING_TOOLS,
-)
 from openexecutive.orchestrator.people_tools import (
     PEOPLE_TOOL_HANDLERS,
     PEOPLE_TOOLS,
@@ -73,10 +69,6 @@ from openexecutive.orchestrator.schedule_tools import (
 )
 from openexecutive.orchestrator.session import Session
 from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS, SKILL_TOOLS
-from openexecutive.orchestrator.talent_tools import (
-    TALENT_TOOL_HANDLERS,
-    TALENT_TOOLS,
-)
 from openexecutive.orchestrator.watchlist_tools import (
     WATCHLIST_TOOL_HANDLERS,
     WATCHLIST_TOOLS,
@@ -163,8 +155,6 @@ _ALL_SKILL_TOOLS = [
     *RESEARCH_TOOLS,
     *WORKFLOW_AUTHORING_TOOLS,
     *WORKFLOW_RUN_TOOLS,
-    *TALENT_TOOLS,
-    *ONBOARDING_TOOLS,
     *FORM_TOOLS,
 ]
 _ALL_SKILL_HANDLERS = {
@@ -180,8 +170,6 @@ _ALL_SKILL_HANDLERS = {
     **RESEARCH_TOOL_HANDLERS,
     **WORKFLOW_AUTHORING_TOOL_HANDLERS,
     **WORKFLOW_RUN_TOOL_HANDLERS,
-    **TALENT_TOOL_HANDLERS,
-    **ONBOARDING_TOOL_HANDLERS,
     **FORM_TOOL_HANDLERS,
 }
 

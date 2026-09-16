@@ -5,7 +5,7 @@ The slot architecture's deliberate ceiling is that only the active client is
 anyway, without touching that ceiling: every parked slot's ``state.db`` is a
 complete SQLite snapshot sitting on disk, so we open it **read-only, in
 place** and count what matters — overdue follow-ups, awaiting replies,
-unread alerts, onboarding tasks coming due. The active client is read from
+unread alerts. The active client is read from
 the live DB instead (its slot copy is only as fresh as the last save-back).
 
 Honesty contract: parked data is as fresh as each slot's ``saved_at``; every
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +34,6 @@ from openexecutive.clients.slots import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Onboarding tasks due within this window count as "due soon".
-_ONBOARDING_DUE_SOON_DAYS = 7
 
 
 class ClientCockpitCard(BaseModel):
@@ -57,9 +54,6 @@ class ClientCockpitCard(BaseModel):
     overdue_actions: int | None = None
     awaiting_replies: int | None = None
     unread_alerts: int | None = None
-    # Onboarding tasks due within the window OR already overdue (both need
-    # attention — see the deliberate no-lower-bound note in _fill_state_counts).
-    onboarding_due_soon: int | None = None
     # Freshness + degradation.
     saved_at: str | None = None  # parked cards: when this data was captured
     has_state: bool = False
@@ -160,23 +154,6 @@ def _fill_state_counts(
         if "alerts" in tables:
             card.unread_alerts = _one(
                 conn, "SELECT COUNT(*) FROM alerts WHERE status='unread'"
-            )
-        if "onboarding_tasks" in tables and "onboarding_plans" in tables:
-            # Deliberately no lower bound: this counts tasks due within the
-            # window AND tasks already overdue — both demand the operator's
-            # attention, and an overdue ramp task dropping OFF the practice
-            # board would be the worse failure mode.
-            horizon = (
-                datetime.now(UTC) + timedelta(days=_ONBOARDING_DUE_SOON_DAYS)
-            ).isoformat()
-            card.onboarding_due_soon = _one(
-                conn,
-                "SELECT COUNT(*) FROM onboarding_tasks t "
-                "JOIN onboarding_plans p ON p.id = t.plan_id "
-                "WHERE p.status IN ('draft','active') "
-                "AND t.status IN ('pending','in_progress') "
-                "AND t.due_date <= ?",
-                (horizon,),
             )
     finally:
         conn.close()

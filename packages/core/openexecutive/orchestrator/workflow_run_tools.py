@@ -1,17 +1,16 @@
 """Anthropic tool definitions + handlers for launching workflows from chat.
 
-Until now the Executive could only fire the five talent workflows
-(``start_talent_workflow``) and the research council (``run_executive_research``)
-from a chat turn — the other ~25 built-in workflows and every user-created
-custom workflow were reachable only through the ``/jobs`` UI. These two tools
-close that gap so the principal can ask the Executive to run any workflow
-conversationally and get the artifact back in the same turn.
+Before these tools existed the Executive could only fire the research council
+(``run_executive_research``) from a chat turn — every other built-in workflow
+and every user-created custom workflow was reachable only through the ``/jobs``
+UI. These two tools close that gap so the principal can ask the Executive to run
+any workflow conversationally and get the artifact back in the same turn.
 
 - ``list_workflows`` (read) surfaces the launchable catalog with each
   workflow's input fields, mirroring ``GET /workflows``.
 - ``run_workflow`` (write) runs one workflow to completion using the same
-  engine as the HTTP route (``openexecutive.api.routes.workflows``) and
-  ``start_talent_workflow``: validate inputs, ``create_run``, stream events,
+  engine as the HTTP route (``openexecutive.api.routes.workflows``):
+  validate inputs, ``create_run``, stream events,
   ``complete_run`` / ``fail_run``. It also handles the approval-gate case — a
   workflow that yields a ``WaitForHumanEvent`` is checkpointed
   (``save_checkpoint``) and reported as ``awaiting_human`` (exactly as the route
@@ -75,9 +74,6 @@ RUN_WORKFLOW_TOOL: dict[str, Any] = {
         "name and its required `inputs` with list_workflows first, then pass "
         "`inputs` as an object matching that workflow's fields.\n"
         "Notes:\n"
-        "- For talent-pipeline jobs (candidate screen/outreach, interviews, "
-        "reference checks, exec-search briefs) prefer start_talent_workflow, "
-        "which adds pipeline-specific guidance.\n"
         "- A few workflows dispatch real messages when run (morning_brief and "
         "end_of_day_digest DM the principal; executive_reflection can DM heads "
         "and post broadcasts). Confirm the principal actually wants an ad-hoc "

@@ -93,18 +93,6 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
             "Your roster — who the Executive coordinates with and their approval scopes.",
         },
         {
-          href: "/talent",
-          label: "Talent",
-          icon: "clipboard",
-          description: "Candidate searches and hiring engagements.",
-        },
-        {
-          href: "/staff-onboarding",
-          label: "Staff onboarding",
-          icon: "users",
-          description: "Onboarding plans for new hires — progress, tasks, and welcome briefs.",
-        },
-        {
           href: isOnboarded ? "/company-profile" : "/onboard",
           label: isOnboarded ? "Company profile" : "Set up company",
           icon: "building",

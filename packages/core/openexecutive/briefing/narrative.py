@@ -23,10 +23,6 @@ from openexecutive.alerts.lifecycle import parse_aware
 
 logger = logging.getLogger(__name__)
 
-# Cap how many open searches the narrative lists before it stops enumerating —
-# the header is a synthesis, not an exhaustive roster (the cards carry the rest).
-_TALENT_NARRATIVE_CAP = 8
-
 # Standalone morning-brief DM prompt. Unlike the /today header, this is
 # delivered as a DM with NO cards beside it — so it MUST enumerate what needs
 # the principal's attention (it's the only thing they see). Whole-company,
@@ -227,27 +223,6 @@ def render_briefing_context(
                 f"{p.get('awaiting_count', 0)} awaiting, "
                 f"SLA {p.get('soonest_sla_at', 'unset')}"
             )
-        parts.append("")
-
-    talent = today_data.get("talent", [])
-    notable_searches = [
-        t for t in talent
-        if t.get("offers_out", 0) or t.get("stalled_count", 0) or t.get("needs_screening", 0)
-    ]
-    if notable_searches:
-        parts.append("OPEN EXECUTIVE SEARCHES NEEDING ATTENTION:")
-        for t in notable_searches[:_TALENT_NARRATIVE_CAP]:
-            flags = []
-            if t.get("offers_out", 0):
-                flags.append(f"{t['offers_out']} offer(s) out")
-            if t.get("stalled_count", 0):
-                flags.append(f"{t['stalled_count']} stalled")
-            if t.get("needs_screening", 0):
-                flags.append(f"{t['needs_screening']} to screen")
-            role = t.get("role_title", "")
-            dept = t.get("department", "")
-            label = f"{role} ({dept})" if dept else role
-            parts.append(f"- {label}: {', '.join(flags)}")
         parts.append("")
 
     if activity:

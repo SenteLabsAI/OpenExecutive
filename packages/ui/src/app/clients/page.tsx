@@ -241,7 +241,7 @@ export default function ClientsPage() {
         <p className="mt-1 text-sm text-fg-muted">
           Run several client companies from one Open Executive — one active at a
           time. Switching saves the current client&apos;s full state (chat,
-          schedule, onboarding plans, documents, MCP tools) to its slot and
+          schedule, documents, MCP tools) to its slot and
           restores the target.
         </p>
 

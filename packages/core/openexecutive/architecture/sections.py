@@ -233,29 +233,6 @@ SECTIONS: list[SectionSpec] = [
         wants_mermaid=True,
         diagram_kind="flowchart",
     ),
-    # `talent` — the talent-intelligence / executive-search vertical built on
-    # OE (new top-level module under packages/core; see `talent:` in
-    # architecture-facts.yaml). Phases 1-3: entities + store, candidate
-    # matching graph, and recruiting-automation workflows, plus the /talent UI.
-    SectionSpec(
-        id="talent",
-        title="Talent / Executive Search",
-        sub="The executive-search vertical: clients, engagements, candidates, the ChromaDB matching graph, and the draft-and-approve recruiting workflows — surfaced in the /talent UI.",
-        kb_query="talent executive search candidate engagement client pipeline matching outreach screening",
-        wants_mermaid=True,
-        diagram_kind="flowchart",
-    ),
-    # `staff_onboarding` — onboarding a person INTO the company (distinct from
-    # the company-setup wizard in `onboarding/` and the people roster). New
-    # top-level module; see `staff_onboarding:` in architecture-facts.yaml.
-    SectionSpec(
-        id="staff_onboarding",
-        title="Staff Onboarding",
-        sub="Role-tailored onboarding for new hires: reusable templates, per-hire plans with phased task checklists, the role_onboarding brief workflow, a bounded ramp drip, and chat + /today integration.",
-        kb_query="staff onboarding new hire ramp plan template task checklist welcome brief role_onboarding completion",
-        wants_mermaid=True,
-        diagram_kind="flowchart",
-    ),
     # `clients` — named client-company slots for fractional / multi-client
     # use. New top-level module; see `clients:` in architecture-facts.yaml.
     SectionSpec(

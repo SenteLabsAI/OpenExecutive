@@ -35,10 +35,6 @@ const NAV_GROUPS = buildPrimaryNav();
 // Dynamic segments (slugs / ids) are rendered raw and truncated by CSS.
 const SEGMENT_LABELS: Record<string, string> = {
   today: "Today",
-  talent: "Talent",
-  candidates: "Candidate",
-  searches: "Searches",
-  engagements: "Engagement",
   review: "Review",
   proposals: "Proposals",
   people: "People",
@@ -56,7 +52,6 @@ const SEGMENT_LABELS: Record<string, string> = {
   council: "Agent Council",
   architecture: "Architecture",
   "company-profile": "Company profile",
-  "staff-onboarding": "Staff onboarding",
   demo: "Company Simulator",
   onboard: "Setup",
   watchlist: "Watch list",

@@ -18,8 +18,6 @@ const SECTIONS = [
   { id: 'watchlist', label: 'Watch List', sub: 'External monitors — stock tickers, RSS feeds, status pages, web queries — that raise alerts.' },
   { id: 'departments', label: 'Departments', sub: 'Org units, each with goals, an authority level, and a specialist behind it.' },
   { id: 'people', label: 'People', sub: 'Your roster — who the Executive coordinates with, their SLAs, channels, and approval scopes.' },
-  { id: 'talent', label: 'Talent', sub: 'Candidate searches and hiring — engagements, pipeline stages, scoring, and offers.' },
-  { id: 'staff_onboarding', label: 'Staff onboarding', sub: 'Templated ramp-up plans for new hires — tasks, phases, check-ins, and welcome briefs.' },
   { id: 'company_profile', label: 'Company Profile & Onboarding', sub: "Your company's identity and strategy — set up once, edited any time." },
   { id: 'knowledge', label: 'Knowledge base', sub: 'Upload company documents so the Executive can ground its answers in your context.' },
   { id: 'skills', label: 'Skills', sub: 'Reusable how-to procedures the Executive can pull up — checklists, playbooks, templates.' },

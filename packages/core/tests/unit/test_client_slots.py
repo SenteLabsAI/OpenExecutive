@@ -1,8 +1,8 @@
 """Client-slot round-trip tests: save → switch → switch back must be lossless.
 
 The slot mechanism's whole contract is "a slot is a faithful save file" —
-these tests prove the SQLite state (decisions, scheduled actions, onboarding
-plans), the company artifacts (profile, docs, mcp_servers.json), and the
+these tests prove the SQLite state (decisions, scheduled actions, the people
+roster), the company artifacts (profile, docs, mcp_servers.json), and the
 operator-level tables behave correctly across switches. The vector and
 Honcho layers are stubbed: they're side effects of a switch, not part of the
 round-trip contract under test.
@@ -45,7 +45,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     from openexecutive.departments import store as dept_store
     from openexecutive.memory import episodic
     from openexecutive.people import store as people_store
-    from openexecutive.staff_onboarding import store as onboarding_store
 
     monkeypatch.setattr(episodic, "DB_PATH", db_path)
     monkeypatch.setattr(people_store, "DB_PATH", db_path)
@@ -53,7 +52,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     episodic.initialize_db(db_path)
     people_store.initialize_db(db_path)
     dept_store.initialize_db(db_path)
-    onboarding_store.initialize_db(db_path)
 
     async def _no_vector(_settings: Any, _app_state: Any) -> int:
         return 0
@@ -123,19 +121,15 @@ async def test_create_from_current_captures_state_and_activates(env: SimpleNames
 
 
 async def test_switch_round_trip_is_lossless(env: SimpleNamespace) -> None:
-    # Client A: full company with an onboarding plan and a scheduled action.
+    # Client A: full company with a roster entry and a scheduled action.
     _seed_live_company(env, "Acme Corp")
-    from openexecutive.staff_onboarding import store as onboarding_store
-    from openexecutive.staff_onboarding.models import OnboardingTemplate, TaskSpec
+    from openexecutive.people import store as people_store
 
-    onboarding_store.upsert_template(
-        OnboardingTemplate(
-            name="cfo_ramp",
-            title="Fractional CFO ramp",
-            department="finance",
-            task_specs=[TaskSpec(title="Cash review")],
-        ),
-        env.db_path,
+    people_store.upsert_person(
+        full_name="Dana Acme",
+        role="CFO",
+        email="dana@acme.example",
+        db_path=env.db_path,
     )
     conn = sqlite3.connect(str(env.db_path))
     conn.execute(
@@ -154,6 +148,8 @@ async def test_switch_round_trip_is_lossless(env: SimpleNamespace) -> None:
     await activate_client_slot(env.settings, "beta_inc")
     assert get_active_client(env.settings) == "beta_inc"
     assert _decision_summaries(env.db_path) == []
+    # Acme's roster must not leak into Beta — the other half of the witness.
+    assert people_store.find_person_by_email("dana@acme.example", env.db_path) is None
     assert not env.settings.mcp_servers_config_path.exists()
     assert "Beta Inc" in env.settings.company_profile_path.read_text()
 
@@ -168,7 +164,7 @@ async def test_switch_round_trip_is_lossless(env: SimpleNamespace) -> None:
     assert (env.company / "docs" / "strategy.md").exists()
     assert not (env.company / "docs" / "beta.md").exists()
     assert env.settings.mcp_servers_config_path.exists()
-    assert onboarding_store.get_template("cfo_ramp", env.db_path) is not None
+    assert people_store.find_person_by_email("dana@acme.example", env.db_path) is not None
     conn = sqlite3.connect(str(env.db_path))
     actions = conn.execute("SELECT intent_text FROM scheduled_actions").fetchall()
     conn.close()

@@ -28,11 +28,6 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from openexecutive.briefing.onboarding_digest import (
-    OnboardingBriefItem,
-    build_onboarding_brief_items,
-)
-from openexecutive.briefing.talent_digest import TalentBriefItem, build_talent_brief_items
 from openexecutive.clients.cockpit import ClientCockpitCard, format_practice_for_today
 
 if TYPE_CHECKING:
@@ -394,13 +389,6 @@ class TodayResponse(BaseModel):
     # and people we're awaiting a reply from. Both additive, default empty.
     in_flight: list[InFlightItem] = []
     awaiting: list[AwaitingItem] = []
-    # Active executive-search engagements rolled up by pipeline stage, so the
-    # briefing surfaces talent the same way it surfaces departments and
-    # proposals. Additive, default empty (no talent data ⇒ no section).
-    talent: list[TalentBriefItem] = []
-    # New hires currently onboarding, rolled up by progress. Additive, default
-    # empty (no onboarding plans ⇒ no section).
-    onboarding: list[OnboardingBriefItem] = []
     # Multi-client practice mode only (2+ client slots): rollup cards for the
     # PARKED clients — overdue follow-ups, awaiting replies, renewals — so the
     # operator sees the whole practice from the active client's brief.
@@ -814,14 +802,6 @@ def _build_today(
 
     response.in_flight = in_flight_items
     response.awaiting = awaiting_items
-
-    # Active executive-search engagements, rolled up by pipeline stage. The
-    # helper swallows its own errors (returns []), so a talent-store hiccup or a
-    # fresh install with no talent tables never breaks the brief.
-    response.talent = build_talent_brief_items()
-
-    # New hires currently onboarding. Same swallow-errors contract as talent.
-    response.onboarding = build_onboarding_brief_items()
 
     # Parked clients in multi-client practice mode. The helper returns [] for
     # single-company installs (0–1 slots) and swallows its own errors.

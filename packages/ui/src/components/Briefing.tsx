@@ -13,15 +13,12 @@ import {
   rejectDecision,
   reopenAlert,
   reviewAlerts,
-  type CandidateStage,
   type DepartmentBriefItem,
   type HandledItem,
   type InFlightItem,
-  type OnboardingBriefItem,
   type PersonBriefItem,
   type ClientCockpitCard,
   type ProposalItem,
-  type TalentBriefItem,
   type Today,
 } from "@/lib/api";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
@@ -36,9 +33,7 @@ import {
   type HandledRow,
 } from "@/lib/handled";
 import InfoTip from "./InfoTip";
-import { phaseLabel } from "./onboarding/meta";
 import { SectionHeading } from "./memories/shared";
-import { PIPELINE_STAGES, STAGE_META, STATUS_META } from "./talent/stages";
 
 // Future-relative label for a pending run time ("in 8h"). Past/blank →
 // "soon" (the caller renders "overdue" separately via the backend flag).
@@ -450,8 +445,6 @@ const SECTION_IDS = {
   monitoring: "sec-monitoring",
   departments: "sec-departments",
   people: "sec-people",
-  talent: "sec-talent",
-  onboarding: "sec-onboarding",
   practice: "sec-practice",
 } as const;
 
@@ -480,7 +473,6 @@ function briefingStats(args: {
   deptAtRisk: number;
   inFlight: number;
   monitoring: number;
-  searchesNeedingAttention: number;
 }): StatPill[] {
   const pills: StatPill[] = [];
   const peopleTargets = [SECTION_IDS.people];
@@ -498,12 +490,6 @@ function briefingStats(args: {
     pills.push({ label: `${args.deptAtRisk} dept${args.deptAtRisk === 1 ? "" : "s"} at risk`, tone: "amber", targetIds: [SECTION_IDS.departments] });
   if (args.inFlight > 0)
     pills.push({ label: `${args.inFlight} in flight`, tone: "sky", targetIds: [SECTION_IDS.inFlight] });
-  if (args.searchesNeedingAttention > 0)
-    pills.push({
-      label: `${args.searchesNeedingAttention} search${args.searchesNeedingAttention === 1 ? "" : "es"} to move`,
-      tone: "indigo",
-      targetIds: [SECTION_IDS.talent],
-    });
   // Passive watchlist signals — quietest pill, last, so it never crowds the
   // action-oriented ones but the lane is still reachable in one click.
   if (args.monitoring > 0)
@@ -1105,189 +1091,6 @@ function InFlightPanel({ inFlight, id }: { inFlight: InFlightItem[]; id?: string
   );
 }
 
-// Seed prompt for handing a search off into chat — mirrors the proposal
-// "Discuss" flow so the Executive picks up with the right engagement in mind.
-function buildTalentSeed(t: TalentBriefItem): string {
-  return (
-    `Let's review the ${t.role_title} search. ` +
-    `Where do we stand across the pipeline, and what's the next move? ` +
-    `(engagement ${t.engagement_id})`
-  );
-}
-
-// One open search as a compact card: role • department • status, the pipeline
-// rollup, and attention badges (offers out / stalled / to screen). Click-to-
-// discuss seeds chat; a quiet link opens the full engagement page.
-function TalentCard({
-  item,
-  onContinue,
-}: {
-  item: TalentBriefItem;
-  onContinue?: (p: string) => void;
-}) {
-  const status = STATUS_META[item.status as keyof typeof STATUS_META];
-  const badges: { label: string; pill: string }[] = [];
-  const expiringSoon = item.offers_expiring_soon ?? 0;
-  // Red (rejected) pill — an offer about to lapse undecided is the most
-  // time-critical signal a search can carry, so it leads the badge row.
-  if (expiringSoon > 0)
-    badges.push({ label: `${expiringSoon} offer${expiringSoon === 1 ? "" : "s"} expiring`, pill: STAGE_META.rejected.pill });
-  if (item.offers_out > 0)
-    badges.push({ label: `${item.offers_out} offer${item.offers_out === 1 ? "" : "s"} out`, pill: STAGE_META.offer.pill });
-  // Amber (warning), not the red `rejected` pill — a stalled candidate is still
-  // in play and needs a nudge, not one that was cut from the pipeline.
-  if (item.stalled_count > 0)
-    badges.push({ label: `${item.stalled_count} stalled`, pill: STATUS_META.on_hold.pill });
-  if (item.needs_screening > 0)
-    badges.push({ label: `${item.needs_screening} to screen`, pill: STAGE_META.lead.pill });
-
-  const header = (
-    <div className="flex items-start justify-between gap-2">
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-fg truncate" title={item.department ? `${item.role_title} — ${item.department}` : item.role_title}>
-          {item.role_title}
-        </div>
-        {item.department && (
-          <div className="text-[11px] text-fg-muted truncate">{item.department}</div>
-        )}
-      </div>
-      {status && (
-        <span className={`flex-shrink-0 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${status.pill}`}>
-          {status.label}
-        </span>
-      )}
-    </div>
-  );
-
-  return (
-    <div className="group py-3 pl-2 border-l-2 border-transparent hover:bg-surface-overlay/30 transition-colors">
-      {onContinue ? (
-        <button
-          type="button"
-          onClick={() => onContinue(buildTalentSeed(item))}
-          className="block w-full text-left cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500/40 rounded"
-        >
-          {header}
-        </button>
-      ) : (
-        <Link href={`/talent/engagements/${item.engagement_id}`} className="block">
-          {header}
-        </Link>
-      )}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1">
-        {PIPELINE_STAGES.map((stage: CandidateStage) => {
-          const n = item.stage_counts[stage] ?? 0;
-          if (n === 0) return null;
-          return (
-            <span
-              key={stage}
-              className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] ${STAGE_META[stage].pill}`}
-              title={`${n} ${STAGE_META[stage].label}`}
-            >
-              {STAGE_META[stage].label} {n}
-            </span>
-          );
-        })}
-        {item.candidate_count === 0 && (
-          <span className="text-[10px] text-fg-subtle">No candidates yet</span>
-        )}
-      </div>
-      {badges.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {badges.map((b) => (
-            <span key={b.label} className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${b.pill}`}>
-              {b.label}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Executive Search — active engagements rolled up by pipeline stage. Ambient
-// awareness card in the right column; clicking a search hands off to chat.
-// Takes its anchor `id` as a prop (set by the caller).
-function TalentPanel({
-  talent,
-  onContinue,
-  id,
-}: {
-  talent: TalentBriefItem[];
-  onContinue?: (p: string) => void;
-  id?: string;
-}) {
-  if (talent.length === 0) return null;
-  return (
-    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="flex items-center gap-1.5">
-          <SectionHeading title="Executive search" count={talent.length} icon="search" />
-          <InfoTip align="left">
-            Active searches and where each stands across the pipeline. Click a
-            search to pick it up in chat — review fit, screen a candidate, or
-            move the next step.
-          </InfoTip>
-        </div>
-        <Link href="/talent" className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300">View all</Link>
-      </div>
-      <div className="max-h-[32rem] overflow-y-auto pr-1 divide-y divide-line">
-        {talent.map((t) => (
-          <TalentCard key={`talent-${t.engagement_id}`} item={t} onContinue={onContinue} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function buildOnboardingSeed(o: OnboardingBriefItem): string {
-  const role = o.role ? ` (${o.role})` : "";
-  return `How is ${o.full_name}${role}'s onboarding going? Walk me through where their plan stands and anything overdue.`;
-}
-
-function OnboardingCard({
-  item,
-  onContinue,
-}: {
-  item: OnboardingBriefItem;
-  onContinue?: (p: string) => void;
-}) {
-  const startLabel =
-    item.days_to_start == null
-      ? ""
-      : item.days_to_start > 0
-        ? `starts in ${item.days_to_start}d`
-        : item.days_to_start < 0
-          ? `day ${Math.abs(item.days_to_start) + 1}`
-          : "starts today";
-  return (
-    <div className="py-2 first:pt-0 last:pb-0">
-      <button
-        onClick={() => onContinue?.(buildOnboardingSeed(item))}
-        className="w-full text-left group"
-      >
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm text-fg group-hover:text-indigo-300 truncate">
-            {item.full_name}
-            {item.role && <span className="text-fg-muted"> — {item.role}</span>}
-          </span>
-          <span className="text-xs text-fg-subtle tabular-nums flex-shrink-0">
-            {item.completion_pct}%
-          </span>
-        </div>
-        <div className="mt-1 flex items-center gap-2 text-[11px] text-fg-subtle">
-          <span>{phaseLabel(item.current_phase)}</span>
-          {item.overdue_tasks > 0 && (
-            <span className="text-rose-300">{item.overdue_tasks} overdue</span>
-          )}
-          {item.open_tasks > 0 && <span>{item.open_tasks} open</span>}
-          {startLabel && <span>· {startLabel}</span>}
-        </div>
-      </button>
-    </div>
-  );
-}
-
 // Multi-client practice mode only: rollup cards for PARKED client slots so
 // the operator sees the whole practice from the active client's brief. The
 // backend sends [] for single-company installs (0-1 slots), so this renders
@@ -1342,42 +1145,6 @@ function PracticeClientsPanel({
               {clientCountsSummary(c)}
             </div>
           </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function OnboardingPanel({
-  onboarding,
-  onContinue,
-  id,
-}: {
-  onboarding: OnboardingBriefItem[];
-  onContinue?: (p: string) => void;
-  id?: string;
-}) {
-  if (onboarding.length === 0) return null;
-  return (
-    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="flex items-center gap-1.5">
-          <SectionHeading title="Staff onboarding" count={onboarding.length} icon="users" />
-          <InfoTip align="left">
-            New hires currently ramping. Click one to pick it up in chat — check
-            progress, mark tasks done, or move their plan forward.
-          </InfoTip>
-        </div>
-        <Link
-          href="/staff-onboarding"
-          className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300"
-        >
-          View all
-        </Link>
-      </div>
-      <div className="max-h-[32rem] overflow-y-auto pr-1 divide-y divide-line">
-        {onboarding.map((o) => (
-          <OnboardingCard key={`onboarding-${o.plan_id}`} item={o} onContinue={onContinue} />
         ))}
       </div>
     </section>
@@ -1920,16 +1687,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   ).length;
   const peopleNeedReply = (today?.people ?? []).filter((p) => p.status === "needs_reply").length;
   const peopleOverdue = (today?.people ?? []).filter((p) => p.overdue).length;
-  // Only searches with an actionable signal earn an attention pill — mirrors the
-  // narrative's `notable_searches` filter. The Executive-search card still shows
-  // every active search; the pill is just the one-second "what needs a move" read.
-  const searchesNeedingAttention = (today?.talent ?? []).filter(
-    (t) =>
-      (t.offers_expiring_soon ?? 0) > 0 ||
-      t.offers_out > 0 ||
-      t.stalled_count > 0 ||
-      t.needs_screening > 0,
-  ).length;
   const statPills: StatPill[] = today
     ? briefingStats({
         needsYou: mineProposals.length,
@@ -1939,7 +1696,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
         deptAtRisk: deptAtRiskCount,
         inFlight: inFlightCount,
         monitoring: monitoringProposals.length,
-        searchesNeedingAttention,
       })
     : [];
 
@@ -2314,16 +2070,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                       Monitoring (live signals). Both render once; each is its
                       own Pulse card. */}
                   <InFlightPanel inFlight={today.in_flight ?? []} id={SECTION_IDS.inFlight} />
-                  <TalentPanel
-                    talent={today.talent ?? []}
-                    onContinue={onContinue}
-                    id={SECTION_IDS.talent}
-                  />
-                  <OnboardingPanel
-                    onboarding={today.onboarding ?? []}
-                    onContinue={onContinue}
-                    id={SECTION_IDS.onboarding}
-                  />
                   <PracticeClientsPanel
                     clients={today.practice_clients ?? []}
                     id={SECTION_IDS.practice}

@@ -288,8 +288,6 @@ def _compose_digest(
             bits.append(f"{c.awaiting_replies} awaiting reply")
         if c.unread_alerts:
             bits.append(f"{c.unread_alerts} alerts")
-        if c.onboarding_due_soon:
-            bits.append(f"{c.onboarding_due_soon} onboarding due")
         if isinstance(c.days_to_renewal, int) and c.days_to_renewal <= 30:
             bits.append(
                 "renewal due"

@@ -658,9 +658,9 @@ sections_for() {
     departments|people|personas|onboarding) echo org;;
     memory) echo "memory peer_memory";;          api) echo "api today";;
     orchestrator|agents|providers) echo "agents lifecycle review";;
-    audit) echo audit;;                          talent) echo talent;;
+    audit) echo audit;;
     monitoring) echo external_monitoring;;       mcp_server) echo mcp_server;;
-    clients|fixtures) echo "clients peer_memory";; staff_onboarding) echo staff_onboarding;;
+    clients|fixtures) echo "clients peer_memory";;
     knowledge) echo rag;;                        briefing|alerts) echo today;;
     guide) echo user_guide;;                     *) echo "";;
   esac
@@ -695,9 +695,9 @@ echo "$SNIP"; [ "$RESULT" = 1 ]
 ```
 
 The module→section map is the gate's contract: touching `integrations/` and
-editing only `prebuilt/talent.json` FAILS, because the edited section must be
-one the module is documented under. When you add a module or a section,
-extend `sections_for` in the same PR.
+editing only `prebuilt/scheduler.json` FAILS, because the edited section must
+be one the module is documented under. When you add or remove a module or a
+section, update `sections_for` in the same PR.
 
 **On FAIL, you have exactly two honest exits.** Either (a) update the affected
 `prebuilt/<section>.json` (and the YAML notes), re-stage, and re-run the gate;

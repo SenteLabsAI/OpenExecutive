@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Talent / executive search.** The whole vertical is gone: the `talent`
+  specialist, `openexecutive/talent/` (engagements, candidates, offers, the
+  ChromaDB matching graph), its 21 REST routes, 12 chat tools, 4 MCP tools and
+  the `/talent` UI, plus the six recruiting workflows (`candidate_screen`,
+  `candidate_outreach`, `interview_coordination`, `reference_check`,
+  `exec_search_brief`, `offer_approval`). The `chro` specialist and its
+  `comp_refresh` / `org_design` / `performance_review` workflows are unchanged.
+- **Staff onboarding.** `openexecutive/staff_onboarding/` (templates, per-hire
+  plans, tasks), its REST routes and 8 chat tools, the `new_hire_onboarding` and
+  `role_onboarding` workflows, the `/staff-onboarding` UI, and the
+  `onboarding_ramp` / `onboarding_kickoff` / `onboarding_checkin` scheduler
+  kinds. **The company-setup wizard (`/onboard`) is untouched** — it is a
+  different subsystem that happens to share the word.
+- `GET /today` no longer returns the `talent` or `onboarding` fields, and the
+  per-turn chat briefing no longer includes their digests.
+
+  Existing SQLite tables (`engagements`, `candidates`, `offers`,
+  `onboarding_templates`, `onboarding_plans`, `onboarding_tasks`) are **not
+  dropped** — nothing reads them, and a blank client slot still wipes them so
+  candidate data cannot cross slots. Operators with in-flight talent reminders
+  should run the cleanup SQL in the PR description.
+
 ### Added
 - **Conversational onboarding.** `/onboard` now opens with "tell me about your
   company" instead of a 12-step form. The user writes a paragraph (and can

@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ``orchestrator/router.SPECIALIST_REGISTRY`` by a unit test. Declared as a
 # ``Literal`` so MCP clients see a proper enum in the tool schema.
 SpecialistKey = Literal[
-    "board_comms", "cfo", "chro", "cmo", "coo", "cpo", "cso", "gc", "talent", "triage"
+    "board_comms", "cfo", "chro", "cmo", "coo", "cpo", "cso", "gc", "triage"
 ]
 
 _INSTRUCTIONS = (
@@ -57,16 +57,12 @@ _INSTRUCTIONS = (
     "can ground itself in this company without re-explaining it.\n\n"
     "Resources (read-only, company-internal): company profile, today's "
     "briefing and recent activity, the people roster, department state, "
-    "episodic memory (past decisions, initiatives, advice), and the "
-    "executive-search pipeline (active engagements by stage).\n\n"
+    "and episodic memory (past decisions, initiatives, advice).\n\n"
     "Tools: `consult_specialist` (domain analysis from a CFO/CSO/etc., grounded "
     "in company knowledge), `search_knowledge` (curated MBA + company-doc "
     "retrieval), `list_workflows` (catalog of multi-step executive workflows), "
-    "`ask_executive` (a single synthesized answer from the Executive — a "
-    "fallback; prefer the specialist tool and resources), and a read-only "
-    "executive-search suite — `list_candidates` / `get_candidate` (browse a "
-    "search's pipeline) and `match_candidates` / `find_similar_candidates` "
-    "(semantic candidate search over the talent graph)."
+    "and `ask_executive` (a single synthesized answer from the Executive — a "
+    "fallback; prefer the specialist tool and resources)."
 )
 
 mcp = FastMCP(
@@ -100,58 +96,6 @@ def get_store() -> Any:
 def _json(payload: Any) -> str:
     """Serialize a resource payload as compact JSON, dates → ISO strings."""
     return json.dumps(payload, default=str, ensure_ascii=False)
-
-
-# Upper bound on talent search result counts, so a client-supplied limit can't
-# request an unbounded scan.
-_MAX_MATCH_RESULTS = 50
-
-
-def _clamp_match_limit(limit: int) -> int:
-    """Clamp a client-supplied search limit to 1..._MAX_MATCH_RESULTS."""
-    return max(1, min(limit, _MAX_MATCH_RESULTS))
-
-
-def _candidate_brief(candidate: Any) -> dict[str, Any]:
-    """Compact candidate view for list / search results.
-
-    Full detail (incl. screening_summary) is available via ``get_candidate``.
-    """
-    return {
-        "candidate_id": candidate.id,
-        "engagement_id": candidate.engagement_id,
-        "full_name": candidate.full_name,
-        "current_title": candidate.current_title,
-        "current_company": candidate.current_company,
-        "stage": candidate.stage.value,
-        "fit_score": candidate.fit_score,
-    }
-
-
-def _enrich_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Add each match candidate's name/title so results name people, not ids.
-
-    Runs synchronously inside an ``asyncio.to_thread`` wrapper alongside the
-    graph query, so there is no extra event-loop hop per candidate.
-    """
-    from openexecutive.talent import store as talent_store
-
-    out: list[dict[str, Any]] = []
-    for match in matches:
-        cid = match.get("candidate_id")
-        full_name = current_title = None
-        # `cid` comes from ChromaDB metadata; coerce defensively so a malformed
-        # id degrades to an un-enriched row rather than raising out of the thread.
-        try:
-            cid_int = int(cid) if cid is not None else None
-        except (TypeError, ValueError):
-            cid_int = None
-        if cid_int is not None:
-            cand = talent_store.get_candidate(cid_int)
-            if cand is not None:
-                full_name, current_title = cand.full_name, cand.current_title
-        out.append({**match, "full_name": full_name, "current_title": current_title})
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -264,19 +208,6 @@ async def memory_advice() -> str:
     return _json([r.model_dump(mode="json") for r in rows])
 
 
-@mcp.resource(
-    "oe://talent/engagements",
-    name="Talent: active searches",
-    description="Active executive-search engagements rolled up by pipeline stage.",
-    mime_type="application/json",
-)
-async def talent_engagements() -> str:
-    from openexecutive.briefing.talent_digest import build_talent_brief_items
-
-    items = await asyncio.to_thread(build_talent_brief_items)
-    return _json([it.model_dump(mode="json") for it in items])
-
-
 # ---------------------------------------------------------------------------
 # Tools — structured capabilities. The flagship is consult_specialist.
 # ---------------------------------------------------------------------------
@@ -290,8 +221,7 @@ async def consult_specialist(
     domain-expert read. Specialists: cso (strategy/M&A/OKRs), cfo (finance/unit
     economics/fundraising), chro (people/comp/org design), gc (legal/contracts/
     compliance), coo (operations/process/metrics), cmo (GTM/brand/PR), cpo
-    (product/roadmap), board_comms (board decks/IR/governance), talent (executive
-    search — candidate screening/fit scoring, energy-sector talent mapping),
+    (product/roadmap), board_comms (board decks/IR/governance),
     triage (chief of staff — significance of inbound events).
 
     Args:
@@ -389,136 +319,6 @@ async def ask_executive(message: str, caller_email: str = "") -> str:
     return await executive.chat(
         user_message=message, session=session, person_id=person_id
     )
-
-
-# ---------------------------------------------------------------------------
-# Talent / executive-search tools — read-only search over the candidate
-# pipeline. The `oe://talent/engagements` resource exposes the engagement
-# rollup; these parameterized tools read and rank candidates within a search.
-# The talent specialist's ADVICE is already reachable via consult_specialist;
-# writes and workflow execution are intentionally NOT exposed over MCP.
-# ---------------------------------------------------------------------------
-@mcp.tool()
-async def list_candidates(engagement_id: int, stage: str = "") -> str:
-    """List the candidates in one executive-search engagement's pipeline.
-
-    Returns a JSON list of candidates, each with id, name, current title /
-    company, pipeline stage, and fit_score. Discover engagement ids from the
-    ``oe://talent/engagements`` resource.
-
-    Args:
-        engagement_id: The engagement (search) whose candidates to list.
-        stage: Optional pipeline stage filter — one of lead, screened,
-            interviewed, offer, placed, rejected. Empty returns all stages.
-    """
-    from openexecutive.talent import store as talent_store
-    from openexecutive.talent.models import CandidateStage
-
-    stage_filter: CandidateStage | None = None
-    if stage:
-        try:
-            stage_filter = CandidateStage(stage)
-        except ValueError:
-            valid = ", ".join(s.value for s in CandidateStage)
-            return _json({"error": f"invalid stage {stage!r}. Valid: {valid}"})
-
-    def _run() -> Any:
-        # Signal a missing engagement explicitly (matching get_candidate /
-        # match_candidates) so a client can tell "no such search" from "an
-        # empty pipeline" — list_candidates would otherwise return [] for both.
-        if talent_store.get_engagement(engagement_id) is None:
-            return {"error": "not_found", "engagement_id": engagement_id}
-        candidates = talent_store.list_candidates(
-            engagement_id=engagement_id, stage=stage_filter
-        )
-        return [_candidate_brief(c) for c in candidates]
-
-    return _json(await asyncio.to_thread(_run))
-
-
-@mcp.tool()
-async def get_candidate(candidate_id: int) -> str:
-    """Fetch full detail for one candidate by id.
-
-    Includes the fit_score and screening_summary produced by the candidate
-    screen, plus contact fields. Returns ``{"error": "not_found", ...}`` when no
-    candidate has that id.
-
-    Args:
-        candidate_id: The candidate to fetch.
-    """
-    from openexecutive.talent import store as talent_store
-
-    candidate = await asyncio.to_thread(talent_store.get_candidate, candidate_id)
-    # `store.get_candidate` does not filter soft-deletes, but the rest of this
-    # external surface (list_candidates, the talent index behind match/similar)
-    # excludes archived rows — so honor the soft-delete here too rather than
-    # leaking a removed candidate's full PII by id.
-    if candidate is None or candidate.archived:
-        return _json({"error": "not_found", "candidate_id": candidate_id})
-    return _json(candidate.model_dump(mode="json"))
-
-
-@mcp.tool()
-async def match_candidates(engagement_id: int, limit: int = 10) -> str:
-    """Rank the candidate pool against an engagement's role and must-haves.
-
-    Semantic search over the talent graph: returns up to ``limit`` candidates,
-    best first, each with a 0-1 match ``score`` plus name, title, and current
-    stage. Use to answer "who's the strongest fit for this search".
-
-    Args:
-        engagement_id: The engagement to rank candidates against.
-        limit: Maximum matches to return (1-50, default 10).
-    """
-    from openexecutive.talent import graph as talent_graph
-    from openexecutive.talent import store as talent_store
-
-    capped = _clamp_match_limit(limit)
-
-    def _run() -> dict[str, Any]:
-        engagement = talent_store.get_engagement(engagement_id)
-        if engagement is None:
-            return {"error": "not_found", "engagement_id": engagement_id}
-        store = get_store()
-        if store is None:
-            return {"error": "knowledge store unavailable"}
-        matches = talent_graph.match_candidates_for_engagement(
-            engagement, store, limit=capped
-        )
-        return {"engagement_id": engagement_id, "matches": _enrich_matches(matches)}
-
-    return _json(await asyncio.to_thread(_run))
-
-
-@mcp.tool()
-async def find_similar_candidates(candidate_id: int, limit: int = 5) -> str:
-    """Find candidates whose profile is semantically similar to a given one.
-
-    Excludes the query candidate. Returns up to ``limit`` matches, best first,
-    each with a 0-1 ``score`` plus name, title, and stage. Returns
-    ``{"error": "not_found", ...}`` when the candidate id is unknown.
-
-    Args:
-        candidate_id: The candidate to find lookalikes for.
-        limit: Maximum matches to return (1-50, default 5).
-    """
-    from openexecutive.talent import graph as talent_graph
-    from openexecutive.talent import store as talent_store
-
-    capped = _clamp_match_limit(limit)
-
-    def _run() -> dict[str, Any]:
-        candidate = talent_store.get_candidate(candidate_id)
-        if candidate is None:
-            return {"error": "not_found", "candidate_id": candidate_id}
-        store = get_store()
-        if store is None:
-            return {"error": "knowledge store unavailable"}
-        matches = talent_graph.find_similar_candidates(candidate, store, limit=capped)
-        return {"candidate_id": candidate_id, "matches": _enrich_matches(matches)}
-
-    return _json(await asyncio.to_thread(_run))
 
 
 # ---------------------------------------------------------------------------

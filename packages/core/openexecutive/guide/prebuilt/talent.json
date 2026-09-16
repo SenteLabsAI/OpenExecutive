@@ -1,7 +1,0 @@
-{
-  "section_id": "talent",
-  "title": "Talent",
-  "markdown": "**What it is:** The hiring pipeline — open searches (engagements) and the candidates moving through them, from first lead to signed offer.\n\n**What it does:**\n\n- Define an **engagement** for each open role: title, department, comp band, location, and must-haves.\n- Track candidates on a stage board — lead → screened → interviewed → offer → placed — with rejection possible at any stage.\n- Score each candidate (0–100 fit score) and keep screening summaries and notes on their record.\n- Manage **offers** through their own lifecycle: draft, approval, extended, then accepted or declined.\n- Ask about candidates and searches straight from chat — the Executive can look the pipeline up mid-conversation.\n\n*Note: offers that need sign-off route through the same approval flow as everything else, to whoever holds hiring authority.*",
-  "mermaid": null,
-  "generated_at": "2026-06-11T00:00:00+00:00"
-}

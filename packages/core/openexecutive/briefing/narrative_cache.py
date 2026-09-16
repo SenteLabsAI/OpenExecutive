@@ -117,19 +117,6 @@ def build_narrative_input_hash(
         for p in today_data.get("people", [])
         if p.get("awaiting_count", 0)
     )
-    # Fingerprint the talent pipeline by the signals the narrative actually
-    # surfaces (offers out, stalled, leads to screen) so a search going cold —
-    # or an offer landing — re-writes the brief, while volatile fields (ids
-    # aside, timestamps) don't churn it.
-    talent = sorted(
-        (
-            t.get("engagement_id", 0),
-            t.get("needs_screening", 0),
-            t.get("offers_out", 0),
-            t.get("stalled_count", 0),
-        )
-        for t in today_data.get("talent", [])
-    )
     payload = {
         "scope": scope,
         "prompt_version": NARRATIVE_PROMPT_VERSION,
@@ -137,7 +124,6 @@ def build_narrative_input_hash(
         "proposals": proposals,
         "depts": depts,
         "awaiting": awaiting,
-        "talent": talent,
     }
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

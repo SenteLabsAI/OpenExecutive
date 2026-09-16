@@ -135,66 +135,14 @@ def test_set_department_head_chip_with_link() -> None:
     assert chip["link"] == "/departments/marketing"
 
 
-def test_set_candidate_stage_chip_with_link() -> None:
+def test_chip_suppressed_on_not_found() -> None:
+    # The generic `status: not_found` suppression: a write that matched no row
+    # changed nothing, so it must not paint a green ✓. Here archive_person
+    # against an id that doesn't exist (people_tools returns that shape).
     chip = summarize_action(
-        tool_name="set_candidate_stage",
-        tool_input={"candidate_id": 12, "stage": "interviewed"},
-        tool_result=json.dumps({"status": "ok", "candidate_id": 12, "stage": "interviewed"}),
-    )
-    assert chip is not None
-    assert chip["summary"] == "Moved candidate #12 → interviewed"
-    assert chip["link"] == "/talent/candidates/12"
-
-
-def test_create_engagement_chip_with_link() -> None:
-    chip = summarize_action(
-        tool_name="create_engagement",
-        tool_input={"role_title": "VP Drilling", "department": "Drilling"},
-        tool_result=json.dumps({"status": "ok", "engagement": {"id": 9}}),
-    )
-    assert chip is not None
-    assert chip["summary"] == "Opened search: VP Drilling"
-    # In-house model: the chip links to the searches list, not a client page.
-    assert chip["link"] == "/talent/searches"
-
-
-def test_create_candidate_chip_with_link() -> None:
-    chip = summarize_action(
-        tool_name="create_candidate",
-        tool_input={"engagement_id": 9, "full_name": "Dana Wells"},
-        tool_result=json.dumps({"status": "ok", "candidate": {"id": 3}}),
-    )
-    assert chip is not None
-    assert chip["summary"] == "Added candidate Dana Wells"
-    assert chip["link"] == "/talent/engagements/9"
-
-
-def test_create_candidate_chip_suppressed_on_not_found() -> None:
-    # The generic `status: not_found` suppression still applies — here a
-    # create_candidate against an engagement that doesn't exist returns no ✓.
-    chip = summarize_action(
-        tool_name="create_candidate",
-        tool_input={"engagement_id": 9999, "full_name": "Ghost"},
-        tool_result=json.dumps({"status": "not_found", "engagement_id": 9999}),
-    )
-    assert chip is None
-
-
-def test_start_talent_workflow_chip() -> None:
-    chip = summarize_action(
-        tool_name="start_talent_workflow",
-        tool_input={"workflow": "candidate_screen", "inputs": {"engagement_id": 1, "candidate_id": 2}},
-        tool_result=json.dumps({"ok": True, "run_id": "abc"}),
-    )
-    assert chip is not None
-    assert chip["summary"] == "Ran candidate screen"
-
-
-def test_start_talent_workflow_chip_suppressed_on_error() -> None:
-    chip = summarize_action(
-        tool_name="start_talent_workflow",
-        tool_input={"workflow": "candidate_screen", "inputs": {}},
-        tool_result=json.dumps({"error": "invalid inputs"}),
+        tool_name="archive_person",
+        tool_input={"person_id": 9999},
+        tool_result=json.dumps({"status": "not_found", "person_id": 9999}),
     )
     assert chip is None
 
@@ -350,12 +298,6 @@ _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "load_skill",
     # mcp_gateway
     "search_tools",
-    # talent_tools — pipeline reads (writes are in SIDE_EFFECTING_TOOLS)
-    "list_engagements",
-    "list_candidates",
-    "get_candidate",
-    "match_candidates",
-    "list_offers",
     # workflow_run_tools — catalog read (run_workflow is in SIDE_EFFECTING_TOOLS)
     "list_workflows",
 })
@@ -374,7 +316,6 @@ def _all_registered_tool_names() -> set[str]:
     from openexecutive.orchestrator.people_tools import PEOPLE_TOOL_HANDLERS
     from openexecutive.orchestrator.schedule_tools import SCHEDULE_TOOL_HANDLERS
     from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS
-    from openexecutive.orchestrator.talent_tools import TALENT_TOOL_HANDLERS
     from openexecutive.orchestrator.workflow_run_tools import WORKFLOW_RUN_TOOL_HANDLERS
 
     return (
@@ -385,7 +326,6 @@ def _all_registered_tool_names() -> set[str]:
         | set(BROADCAST_TOOL_HANDLERS)
         | set(DRAFT_ARTIFACT_TOOL_HANDLERS)
         | set(MCP_TOOL_NAMES)
-        | set(TALENT_TOOL_HANDLERS)
         | set(WORKFLOW_RUN_TOOL_HANDLERS)
         # `create_alert` is in chat module rather than a HANDLERS dict.
         | {"create_alert"}

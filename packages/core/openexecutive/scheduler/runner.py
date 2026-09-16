@@ -11,10 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from openexecutive.staff_onboarding.models import OnboardingPlan
 
 from openexecutive.memory.episodic import (
     ScheduledAction,
@@ -391,34 +387,6 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
-    # Onboarding ramp drip — deliver the next pre-generated ramp segment to the
-    # new hire, then chain the next business-day occurrence ONLY while segments
-    # remain (self-terminating, unlike every other recurring kind). Specialised
-    # __internal__ action; must be handled before the generic short-circuit.
-    # ------------------------------------------------------------------
-    if action.kind == "onboarding_ramp":
-        await _run_onboarding_ramp(action, now)
-        return
-
-    # ------------------------------------------------------------------
-    # Onboarding kickoff — one-shot on activation: a welcome notice to the
-    # hire's department channel (if configured) + intro-1:1 nudges to the
-    # manager and buddy. No chaining. Specialised __internal__ action.
-    # ------------------------------------------------------------------
-    if action.kind == "onboarding_kickoff":
-        await _run_onboarding_kickoff(action, now)
-        return
-
-    # ------------------------------------------------------------------
-    # Onboarding milestone check-in (day 7/30/60/90) — DM the hire + manager
-    # and advance the plan's phase. Each milestone is its own pre-scheduled
-    # row (no self-chaining). Specialised __internal__ action.
-    # ------------------------------------------------------------------
-    if action.kind == "onboarding_checkin":
-        await _run_onboarding_checkin(action, now)
-        return
-
-    # ------------------------------------------------------------------
     # Nudge engine heartbeat — runs a scan that may insert one or more
     # `proactive_nudge` rows for future ticks, then chains the next scan.
     # Must come BEFORE the `__internal__` short-circuit because the
@@ -751,6 +719,12 @@ async def _execute_action(
     # ------------------------------------------------------------------
     # Internal channel — bypass outbound message dispatch entirely.
     # Used by workflow steps (Phase 6) and other internal kinds.
+    #
+    # This is also where rows from REMOVED features drain. The staff-onboarding
+    # kinds (`onboarding_ramp`, `onboarding_kickoff`, `onboarding_checkin`) were
+    # all `__internal__`, so any row still pending from before that feature was
+    # deleted lands here, gets marked done, and logs once — no dispatch, no
+    # crash, no chaining.
     # ------------------------------------------------------------------
     if action.channel == "__internal__":
         mark_action_done(action.id)
@@ -1116,231 +1090,6 @@ async def _deliver_to_principal(text: str) -> tuple[bool, str]:
             logger.exception("scheduler: delivery via %s failed", channel)
 
     return False, "no deliverable channel configured for principal"
-
-
-async def _run_onboarding_ramp(action: ScheduledAction, now: datetime) -> None:
-    """Deliver one onboarding ramp segment to the hire and chain the next.
-
-    Reads the plan id from ``channel_ref``, atomically claims the next segment
-    (compare-and-swap on the plan's ramp index), DMs it to the assigned person
-    via ``message_person``, then enqueues the next business-day occurrence only
-    when more segments remain. Always marks the row done — a single delivery
-    failure must not wedge the row or the drip.
-    """
-    from openexecutive.orchestrator.schedule_tools import handle_message_person
-    from openexecutive.staff_onboarding import store as ob_store
-    from openexecutive.staff_onboarding.ramp_scheduler import enqueue_ramp
-
-    assert action.id is not None
-    try:
-        plan_id = int(action.channel_ref)
-    except (TypeError, ValueError):
-        logger.warning("scheduler: onboarding_ramp bad channel_ref=%r", action.channel_ref)
-        mark_action_done(action.id)
-        return
-
-    # No assignee → we can't deliver. Stop WITHOUT claiming a segment (claiming
-    # advances the index, so claiming here would silently burn the segment) and
-    # WITHOUT chaining a dead drip.
-    if action.assigned_to_person_id is None:
-        logger.warning(
-            "scheduler: onboarding_ramp plan=%s has no assignee — skipping, not chaining",
-            plan_id,
-        )
-        mark_action_done(action.id)
-        return
-
-    try:
-        segment, has_more = ob_store.claim_next_ramp_segment(plan_id)
-    except Exception:
-        logger.exception("scheduler: onboarding_ramp claim failed plan=%s", plan_id)
-        mark_action_done(action.id)
-        return
-
-    if segment is None:
-        # Drip exhausted (or plan gone/archived) — stop, no re-chain.
-        mark_action_done(action.id)
-        return
-
-    try:
-        await handle_message_person(
-            {"person_id": action.assigned_to_person_id, "text": segment}
-        )
-    except Exception:
-        # Claim-then-send: the segment's index is already advanced (so a retry
-        # can't double-DM the hire), which means this segment is dropped on a
-        # delivery failure. Surface it loudly rather than only at EXCEPTION level.
-        logger.exception(
-            "scheduler: onboarding_ramp delivery failed plan=%s — segment dropped "
-            "(not retried, to avoid double-sends)", plan_id,
-        )
-
-    mark_action_done(action.id)
-    if has_more:
-        enqueue_ramp(plan_id, after=datetime.now(UTC))
-
-
-def _hire_first_name(full_name: str) -> str:
-    """Best-effort first name for a friendly greeting."""
-    return full_name.strip().split(" ", 1)[0] if full_name.strip() else "there"
-
-
-async def _send_team_notice(department: str, text: str) -> bool:
-    """Post a welcome notice to a department's first configured channel.
-
-    Delegates to ``broadcast_tools.post_department_notice`` so the SAME privacy
-    backstop, length cap, and audit trail that guard ``send_department_message``
-    apply here — an internal sender must not bypass them. Returns True only when
-    a message was actually sent."""
-    if not department:
-        return False
-    from openexecutive.orchestrator.broadcast_tools import post_department_notice
-
-    result = await post_department_notice(department, text, tool="onboarding_kickoff")
-    if result.get("status") != "sent":
-        logger.info("onboarding_kickoff: team notice not sent (dept=%r): %s",
-                    department, result.get("status"))
-    return result.get("status") == "sent"
-
-
-def _onboarding_plan_for_action(
-    action: ScheduledAction,
-) -> tuple[int | None, OnboardingPlan | None]:
-    """Resolve (plan_id, plan) for an onboarding ``__internal__`` action.
-
-    Parses the plan id from ``channel_ref`` (tolerates both ``"<id>"`` and the
-    check-in ``"<id>:<label>"`` form), then loads the plan. Returns
-    ``(None, None)`` when the ref is malformed and ``(plan_id, None)`` when the
-    plan is missing or archived — in both cases the caller should mark the row
-    done and return. Centralises the parse + load + guard the kickoff/check-in
-    handlers share."""
-    from openexecutive.staff_onboarding import store as ob_store
-
-    head = (action.channel_ref or "").partition(":")[0]
-    try:
-        plan_id = int(head)
-    except (TypeError, ValueError):
-        logger.warning("scheduler: onboarding action bad channel_ref=%r", action.channel_ref)
-        return None, None
-    plan = ob_store.get_plan(plan_id)
-    if plan is None or plan.archived:
-        return plan_id, None
-    return plan_id, plan
-
-
-async def _run_onboarding_kickoff(action: ScheduledAction, now: datetime) -> None:
-    """Welcome notice to the dept channel + intro-1:1 nudges to manager/buddy.
-
-    Best-effort throughout: a missing channel or a delivery hiccup never wedges
-    the row. One-shot — no re-chain.
-    """
-    from openexecutive.orchestrator.schedule_tools import handle_message_person
-
-    assert action.id is not None
-    plan_id, plan = _onboarding_plan_for_action(action)
-    if plan is None:
-        mark_action_done(action.id)
-        return
-
-    role = f" as {plan.role}" if plan.role else ""
-    # Team notice — only when a department channel is configured (no accidental
-    # broadcast); silently skipped otherwise.
-    if action.department:
-        notice = (
-            f"👋 Please welcome {plan.full_name}, joining the team{role} on "
-            f"{plan.start_date}. Say hello and help them get oriented!"
-        )
-        try:
-            sent = await _send_team_notice(action.department, notice)
-            if not sent:
-                logger.info("onboarding_kickoff: no team channel for dept=%r — skipped",
-                            action.department)
-        except Exception:
-            logger.exception("onboarding_kickoff: team notice failed plan=%s", plan_id)
-
-    # Intro-1:1 nudges to manager + buddy (best-effort DMs).
-    nudges = [
-        (plan.manager_person_id,
-         f"You're the manager for {plan.full_name}{role} (starting {plan.start_date}). "
-         "Please schedule your week-one intro 1:1 and review their onboarding plan."),
-        (plan.buddy_person_id,
-         f"You're the onboarding buddy for {plan.full_name}{role} (starting "
-         f"{plan.start_date}). Please reach out and set up a welcome coffee in week one."),
-    ]
-    for person_id, text in nudges:
-        if person_id is None:
-            continue
-        try:
-            await handle_message_person({"person_id": person_id, "text": text})
-        except Exception:
-            logger.exception("onboarding_kickoff: nudge to person %s failed", person_id)
-
-    mark_action_done(action.id)
-
-
-async def _run_onboarding_checkin(action: ScheduledAction, now: datetime) -> None:
-    """DM the hire + manager a milestone check-in and advance the plan's phase.
-
-    One-shot per milestone. The recipient's reply lands in chat, where the
-    Executive's onboarding tools fold it into task/plan progress.
-    """
-    from openexecutive.orchestrator.schedule_tools import handle_message_person
-    from openexecutive.staff_onboarding import store as ob_store
-    from openexecutive.staff_onboarding.orchestration import phase_for_milestone
-    from openexecutive.staff_onboarding.service import _PHASE_ORDER
-
-    assert action.id is not None
-    plan_id, plan = _onboarding_plan_for_action(action)
-    if plan is None or plan_id is None:
-        mark_action_done(action.id)
-        return
-    # channel_ref is "<plan_id>:<label>" — the label after the colon.
-    label = (action.channel_ref or "").partition(":")[2]
-
-    day_n = label.removeprefix("day_") or "?"
-    first = _hire_first_name(plan.full_name)
-    role = f" ({plan.role})" if plan.role else ""
-
-    hire_msg = (
-        f"Day {day_n} onboarding check-in 👋 How's it going, {first}? "
-        "Anything blocking you or that you need? Reply here and I'll route it to the "
-        "right person."
-    )
-    mgr_msg = (
-        f"{plan.full_name}{role} reaches their day-{day_n} onboarding milestone today. "
-        "Quick check-in: are they on track? Reply to flag anything or to mark tasks "
-        "done and I'll update their plan."
-    )
-    for person_id, text in (
-        (action.assigned_to_person_id, hire_msg),
-        (plan.manager_person_id, mgr_msg),
-    ):
-        if person_id is None:
-            continue
-        try:
-            await handle_message_person({"person_id": person_id, "text": text})
-        except Exception:
-            logger.exception("onboarding_checkin: message to person %s failed", person_id)
-
-    # Deterministic progress: advance the plan's phase to the milestone, but only
-    # ever forward. If the current phase isn't in the known order, skip rather
-    # than risk dragging it back (a -1 sentinel would advance unconditionally).
-    target = phase_for_milestone(label)
-    if target is not None and target in _PHASE_ORDER and plan.current_phase in _PHASE_ORDER:
-        cur_idx = _PHASE_ORDER.index(plan.current_phase)
-        tgt_idx = _PHASE_ORDER.index(target)
-        if tgt_idx > cur_idx:
-            try:
-                ob_store.update_plan(plan_id, current_phase=target)
-            except Exception:
-                logger.exception("onboarding_checkin: phase advance failed plan=%s", plan_id)
-    elif target is not None:
-        logger.warning(
-            "onboarding_checkin: plan %s phase %r not in _PHASE_ORDER — skipping advance",
-            plan_id, plan.current_phase,
-        )
-
-    mark_action_done(action.id)
 
 
 async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:

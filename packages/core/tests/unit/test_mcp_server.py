@@ -46,10 +46,6 @@ async def test_registered_tools() -> None:
         "search_knowledge",
         "list_workflows",
         "ask_executive",
-        "list_candidates",
-        "get_candidate",
-        "match_candidates",
-        "find_similar_candidates",
     }
 
 
@@ -65,7 +61,6 @@ async def test_registered_resources() -> None:
         "oe://memory/decisions",
         "oe://memory/initiatives",
         "oe://memory/advice",
-        "oe://talent/engagements",
     }
 
 
@@ -203,178 +198,6 @@ async def test_ask_executive_resolves_principal_and_calls_chat() -> None:
         out = await mcp_server.ask_executive("What's our top risk?")
     assert out == "Executive answer"
     assert chat.await_args.kwargs["person_id"] == 42
-
-
-# ---------------------------------------------------------------------------
-# Talent / executive-search read-only tools + resource.
-# ---------------------------------------------------------------------------
-class _Stage:
-    def __init__(self, value: str) -> None:
-        self.value = value
-
-
-class _Candidate:
-    def __init__(
-        self,
-        cid: int,
-        name: str = "Jane Roe",
-        stage: str = "lead",
-        archived: bool = False,
-    ) -> None:
-        self.id = cid
-        self.engagement_id = 1
-        self.full_name = name
-        self.current_title = "VP Ops"
-        self.current_company = "Acme"
-        self.stage = _Stage(stage)
-        self.fit_score = None
-        self.archived = archived
-
-    def model_dump(self, mode: str = "python") -> dict[str, Any]:
-        return {"id": self.id, "full_name": self.full_name}
-
-
-@pytest.mark.asyncio
-async def test_talent_engagements_resource_serializes_rollup() -> None:
-    items = [_Dumpable({"engagement_id": 1, "role_title": "VP Drilling"})]
-    with patch(
-        "openexecutive.briefing.talent_digest.build_talent_brief_items",
-        return_value=items,
-    ):
-        out = await mcp_server.talent_engagements()
-    assert json.loads(out) == [{"engagement_id": 1, "role_title": "VP Drilling"}]
-
-
-@pytest.mark.asyncio
-async def test_list_candidates_returns_briefs() -> None:
-    with (
-        patch("openexecutive.talent.store.get_engagement", return_value=object()),
-        patch(
-            "openexecutive.talent.store.list_candidates",
-            return_value=[_Candidate(7, "Jane Roe", "offer")],
-        ),
-    ):
-        out = await mcp_server.list_candidates(engagement_id=1)
-    data = json.loads(out)
-    assert data == [
-        {
-            "candidate_id": 7,
-            "engagement_id": 1,
-            "full_name": "Jane Roe",
-            "current_title": "VP Ops",
-            "current_company": "Acme",
-            "stage": "offer",
-            "fit_score": None,
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_list_candidates_unknown_engagement() -> None:
-    with patch("openexecutive.talent.store.get_engagement", return_value=None):
-        out = await mcp_server.list_candidates(engagement_id=4242)
-    assert json.loads(out)["error"] == "not_found"
-
-
-@pytest.mark.asyncio
-async def test_list_candidates_rejects_invalid_stage() -> None:
-    # Stage validation happens before any store call, so no engagement needed.
-    out = await mcp_server.list_candidates(engagement_id=1, stage="bogus")
-    assert "invalid stage" in json.loads(out)["error"]
-
-
-@pytest.mark.asyncio
-async def test_get_candidate_found_and_missing() -> None:
-    with patch(
-        "openexecutive.talent.store.get_candidate", return_value=_Candidate(7)
-    ):
-        found = await mcp_server.get_candidate(7)
-    assert json.loads(found) == {"id": 7, "full_name": "Jane Roe"}
-
-    with patch("openexecutive.talent.store.get_candidate", return_value=None):
-        missing = await mcp_server.get_candidate(9999)
-    assert json.loads(missing) == {"error": "not_found", "candidate_id": 9999}
-
-
-@pytest.mark.asyncio
-async def test_get_candidate_hides_archived() -> None:
-    # A soft-deleted candidate must not be readable by id over the external
-    # surface, even though store.get_candidate would still return it.
-    with patch(
-        "openexecutive.talent.store.get_candidate",
-        return_value=_Candidate(7, archived=True),
-    ):
-        out = await mcp_server.get_candidate(7)
-    assert json.loads(out)["error"] == "not_found"
-
-
-@pytest.mark.asyncio
-async def test_match_candidates_enriches_with_names() -> None:
-    mcp_server.set_store("STORE_SENTINEL")
-    try:
-        with (
-            patch("openexecutive.talent.store.get_engagement", return_value=object()),
-            patch(
-                "openexecutive.talent.graph.match_candidates_for_engagement",
-                return_value=[{"candidate_id": 7, "score": 0.9, "stage": "lead"}],
-            ),
-            patch(
-                "openexecutive.talent.store.get_candidate", return_value=_Candidate(7)
-            ),
-        ):
-            out = await mcp_server.match_candidates(engagement_id=1, limit=5)
-        match = json.loads(out)["matches"][0]
-        assert match["candidate_id"] == 7
-        assert match["full_name"] == "Jane Roe"
-        assert match["current_title"] == "VP Ops"
-    finally:
-        mcp_server.set_store(None)
-
-
-@pytest.mark.asyncio
-async def test_match_candidates_unknown_engagement() -> None:
-    mcp_server.set_store("STORE_SENTINEL")
-    try:
-        with patch("openexecutive.talent.store.get_engagement", return_value=None):
-            out = await mcp_server.match_candidates(engagement_id=4242)
-        assert json.loads(out)["error"] == "not_found"
-    finally:
-        mcp_server.set_store(None)
-
-
-@pytest.mark.asyncio
-async def test_find_similar_candidates_missing_candidate() -> None:
-    mcp_server.set_store("STORE_SENTINEL")
-    try:
-        with patch("openexecutive.talent.store.get_candidate", return_value=None):
-            out = await mcp_server.find_similar_candidates(candidate_id=9999)
-        assert json.loads(out)["error"] == "not_found"
-    finally:
-        mcp_server.set_store(None)
-
-
-@pytest.mark.asyncio
-async def test_find_similar_candidates_enriches_with_names() -> None:
-    mcp_server.set_store("STORE_SENTINEL")
-    try:
-        # get_candidate is called twice: once to load the query candidate, then
-        # by _enrich_matches for each result — both return a named candidate.
-        with (
-            patch(
-                "openexecutive.talent.store.get_candidate",
-                return_value=_Candidate(7),
-            ),
-            patch(
-                "openexecutive.talent.graph.find_similar_candidates",
-                return_value=[{"candidate_id": 8, "score": 0.7, "stage": "lead"}],
-            ),
-        ):
-            out = await mcp_server.find_similar_candidates(candidate_id=7, limit=3)
-        match = json.loads(out)["matches"][0]
-        assert match["candidate_id"] == 8
-        assert match["full_name"] == "Jane Roe"
-    finally:
-        mcp_server.set_store(None)
 
 
 # ---------------------------------------------------------------------------

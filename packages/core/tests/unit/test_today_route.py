@@ -1373,42 +1373,15 @@ def test_teammate_slice_is_only_their_routed_action(
     assert captured["proposals"] == ["Dan action"]
 
 
-def test_today_includes_active_searches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An open engagement with candidates surfaces in the /today `talent` list."""
-    from openexecutive.talent import store as talent_store
-    from openexecutive.talent.models import CandidateStage
-
-    db = tmp_path / "today.db"
-    _setup_isolated_db(db, monkeypatch)
-    monkeypatch.setattr(talent_store, "DB_PATH", db)
-    talent_store.initialize_db(db)
-
-    eid = talent_store.upsert_engagement(
-        role_title="VP Drilling", department="Drilling", db_path=db
-    )
-    talent_store.upsert_candidate(
-        engagement_id=eid, full_name="Lead A", stage=CandidateStage.LEAD, db_path=db
-    )
-    talent_store.upsert_candidate(
-        engagement_id=eid, full_name="Offeree", stage=CandidateStage.OFFER, db_path=db
-    )
-
-    resp = _make_client().get("/today")
-    assert resp.status_code == 200
-    talent = resp.json()["talent"]
-    assert len(talent) == 1
-    assert talent[0]["role_title"] == "VP Drilling"
-    assert talent[0]["needs_screening"] == 1
-    assert talent[0]["offers_out"] == 1
-
-
-def test_today_talent_empty_when_no_searches(client: TestClient) -> None:
-    """No talent data ⇒ an empty `talent` list, never a crash."""
+def test_today_has_no_talent_or_onboarding_fields(client: TestClient) -> None:
+    """The talent and staff-onboarding verticals were removed, so /today must
+    no longer carry their rollups. Pins the response-shape change so a revert
+    or a stray re-add is caught here rather than by the UI."""
     resp = client.get("/today")
     assert resp.status_code == 200
-    assert resp.json()["talent"] == []
+    body = resp.json()
+    assert "talent" not in body
+    assert "onboarding" not in body
 
 
 # --------------------------------------------------------------------------- #

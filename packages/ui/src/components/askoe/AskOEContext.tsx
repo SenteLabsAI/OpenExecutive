@@ -70,8 +70,6 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
 
 // Routes with no guide section yet — still want a readable page title.
 const EXTRA_TITLES: Array<{ prefix: string; title: string }> = [
-  { prefix: "/talent", title: "Talent" },
-  { prefix: "/staff-onboarding", title: "Staff onboarding" },
   { prefix: "/clients", title: "Client Companies" },
   { prefix: "/architecture", title: "Architecture" },
   { prefix: "/guide", title: "User Guide" },

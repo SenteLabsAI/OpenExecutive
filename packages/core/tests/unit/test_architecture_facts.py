@@ -47,14 +47,6 @@ def test_sections_have_unique_stable_ids() -> None:
         # `user_guide` — documents the /guide user-guide surface (plain-language
         # per-feature overviews). New top-level module under packages/core.
         "user_guide",
-        # `talent` — the talent-intelligence / executive-search vertical
-        # (clients/engagements/candidates, matching graph, recruiting workflows,
-        # /talent UI). New top-level module under packages/core.
-        "talent",
-        # `staff_onboarding` — onboarding a person INTO the company (templates,
-        # per-hire plans + task checklists, role_onboarding brief workflow, ramp
-        # drip, chat + /today integration). New top-level module.
-        "staff_onboarding",
         # `clients` — named client-company slots for fractional / multi-client
         # use (save-back switching, per-client MCP config). New top-level module.
         "clients",

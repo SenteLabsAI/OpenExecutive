@@ -22,8 +22,6 @@ from openexecutive.workflows.base import (
     WorkflowStepDef,
 )
 from openexecutive.workflows.board_prep import BoardPrepWorkflow
-from openexecutive.workflows.candidate_outreach import CandidateOutreachWorkflow
-from openexecutive.workflows.candidate_screen import CandidateScreenWorkflow
 from openexecutive.workflows.churn_deep_dive import ChurnDeepDiveWorkflow
 from openexecutive.workflows.comp_refresh import CompRefreshWorkflow
 from openexecutive.workflows.competitive_teardown import CompetitiveTeardownWorkflow
@@ -33,33 +31,25 @@ from openexecutive.workflows.end_of_day_digest import EndOfDayDigestWorkflow
 from openexecutive.workflows.engagement_value_report import (
     EngagementValueReportWorkflow,
 )
-from openexecutive.workflows.exec_search_brief import ExecSearchBriefWorkflow
 from openexecutive.workflows.executive_reflection import ExecutiveReflectionWorkflow
 from openexecutive.workflows.executive_research import ExecutiveResearchWorkflow
 from openexecutive.workflows.fundraising_prep import FundraisingPrepWorkflow
 from openexecutive.workflows.gtm_launch import GTMLaunchWorkflow
-from openexecutive.workflows.interview_coordination import InterviewCoordinationWorkflow
 from openexecutive.workflows.investor_update import InvestorUpdateWorkflow
 from openexecutive.workflows.ma_evaluation import MAEvaluationWorkflow
 from openexecutive.workflows.mbr import MBRWorkflow
 from openexecutive.workflows.morning_brief import MorningBriefWorkflow
-from openexecutive.workflows.new_hire_onboarding import NewHireOnboardingWorkflow
-from openexecutive.workflows.offer_approval import OfferApprovalWorkflow
 from openexecutive.workflows.org_design import OrgDesignWorkflow
 from openexecutive.workflows.performance_review import PerformanceReviewWorkflow
 from openexecutive.workflows.pricing_review import PricingReviewWorkflow
 from openexecutive.workflows.product_strategy import ProductStrategyWorkflow
 from openexecutive.workflows.quarterly_plan import QuarterlyPlanWorkflow
-from openexecutive.workflows.reference_check import ReferenceCheckWorkflow
 from openexecutive.workflows.risk_register import RiskRegisterWorkflow
-from openexecutive.workflows.role_onboarding import RoleOnboardingWorkflow
 
 WORKFLOW_REGISTRY: dict[str, Workflow] = {
     "annual_plan": AnnualPlanWorkflow(),
     "department_check_in": DepartmentCheckInWorkflow(),
     "board_prep": BoardPrepWorkflow(),
-    "candidate_outreach": CandidateOutreachWorkflow(),
-    "candidate_screen": CandidateScreenWorkflow(),
     "churn_deep_dive": ChurnDeepDiveWorkflow(),
     "comp_refresh": CompRefreshWorkflow(),
     "competitive_teardown": CompetitiveTeardownWorkflow(),
@@ -75,31 +65,18 @@ WORKFLOW_REGISTRY: dict[str, Workflow] = {
     # coordination decisions. Fires ~30 minutes before the morning
     # brief, can invoke real tools (DMs, broadcasts, follow-ups).
     "executive_reflection": ExecutiveReflectionWorkflow(),
-    "exec_search_brief": ExecSearchBriefWorkflow(),
     "fundraising_prep": FundraisingPrepWorkflow(),
     "gtm_launch": GTMLaunchWorkflow(),
-    "interview_coordination": InterviewCoordinationWorkflow(),
     "engagement_value_report": EngagementValueReportWorkflow(),
     "investor_update": InvestorUpdateWorkflow(),
     "ma_evaluation": MAEvaluationWorkflow(),
     "mbr": MBRWorkflow(),
-    # `offer_approval` is the first BUILT-IN workflow to pause on a
-    # WaitForHumanEvent gate (previously only dynamic workflows did): it
-    # drafts the offer package, DMs the HIRING_SIGNOFF approver, and pauses.
-    # Paused runs never auto-resume — the pending_approval → extended
-    # transition is the explicit `extend_offer` tool/route, which consults
-    # the recorded resolution. `new_hire_onboarding` is the placed → Person
-    # handoff (roster record + 30/60/90 plan + milestone reminders).
-    "offer_approval": OfferApprovalWorkflow(),
-    "new_hire_onboarding": NewHireOnboardingWorkflow(),
     "org_design": OrgDesignWorkflow(),
     "performance_review": PerformanceReviewWorkflow(),
     "pricing_review": PricingReviewWorkflow(),
     "product_strategy": ProductStrategyWorkflow(),
     "quarterly_plan": QuarterlyPlanWorkflow(),
-    "reference_check": ReferenceCheckWorkflow(),
     "risk_register": RiskRegisterWorkflow(),
-    "role_onboarding": RoleOnboardingWorkflow(),
     # `executive_research` drives the 7-specialist council in research
     # mode with web_search, then runs the Executive's tool-use loop
     # (same shape as `executive_reflection`) so findings get routed

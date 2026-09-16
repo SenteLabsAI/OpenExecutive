@@ -75,16 +75,6 @@ GUIDE_SECTIONS: list[GuideSection] = [
         sub="Your roster — who the Executive coordinates with, their SLAs, channels, and approval scopes.",
     ),
     GuideSection(
-        id="talent",
-        title="Talent",
-        sub="Candidate searches and hiring — engagements, pipeline stages, scoring, and offers.",
-    ),
-    GuideSection(
-        id="staff_onboarding",
-        title="Staff Onboarding",
-        sub="Templated ramp-up plans for new hires — tasks, phases, check-ins, and welcome briefs.",
-    ),
-    GuideSection(
         id="company_profile",
         title="Company Profile & Onboarding",
         sub="Your company's identity and strategy — set up once, edited any time.",

@@ -1,7 +1,0 @@
-{
-  "section_id": "staff_onboarding",
-  "title": "Staff Onboarding",
-  "markdown": "**What it is:** Templated ramp-up plans for new hires — a checklist, a schedule, and a welcome brief, so nobody's first month depends on someone remembering.\n\n**What it does:**\n\n- Create a plan per hire from a **template**: tasks with assignees and due dates relative to the start date.\n- Track progress through phases — pre-start, day one, week one, and on through ramp — with a completion percentage.\n- Wire in a manager and a buddy from your People roster.\n- Generate a **welcome brief** (who they report to, the team, tools, policies) and drip check-ins at milestones like day 7 and day 30.\n- See active plans in your daily briefing, and move tasks along from chat.\n\n*Note: this is for ramping employees you've hired — company setup lives under Company Profile & Onboarding.*",
-  "mermaid": null,
-  "generated_at": "2026-06-11T00:00:00+00:00"
-}

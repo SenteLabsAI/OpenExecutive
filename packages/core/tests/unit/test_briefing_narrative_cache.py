@@ -57,20 +57,6 @@ def test_hash_changes_when_proposals_change() -> None:
         narrative_cache.build_narrative_input_hash(changed)
 
 
-def test_hash_changes_when_talent_pipeline_changes() -> None:
-    base = {
-        "proposals": [], "departments": [], "people": [],
-        "talent": [{"engagement_id": 1, "needs_screening": 2, "offers_out": 0, "stalled_count": 0}],
-    }
-    # An offer landing on the same search must re-write the brief.
-    changed = {
-        "proposals": [], "departments": [], "people": [],
-        "talent": [{"engagement_id": 1, "needs_screening": 2, "offers_out": 1, "stalled_count": 0}],
-    }
-    assert narrative_cache.build_narrative_input_hash(base) != \
-        narrative_cache.build_narrative_input_hash(changed)
-
-
 def test_hash_differs_by_scope() -> None:
     # Same content, different viewer → distinct cache keys (no cross-user reuse).
     data = {"proposals": [], "departments": [], "people": []}

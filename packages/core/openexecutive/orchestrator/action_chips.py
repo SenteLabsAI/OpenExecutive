@@ -53,14 +53,6 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # Triage / alerts
     "create_alert",
     "ack_alert",
-    # Talent / executive-search pipeline mutations
-    "create_engagement",
-    "create_candidate",
-    "set_candidate_stage",
-    "start_talent_workflow",
-    "create_offer",
-    "extend_offer",
-    "record_offer_decision",
     # Universal workflow launcher (any built-in / custom workflow from chat)
     "run_workflow",
     # Research artifacts flagged for review
@@ -150,8 +142,8 @@ def summarize_action(
         # paint a green ✓ chip over a red outcome.
         return None
     if parsed is not None and parsed.get("status") == "not_found":
-        # The target row didn't exist, so nothing changed (e.g. create_candidate
-        # for an unknown engagement). No state change → no ✓ chip.
+        # The target row didn't exist, so nothing changed (e.g. archive_person
+        # for an unknown person). No state change → no ✓ chip.
         return None
     if parsed is not None and parsed.get("noop") is True:
         # Idempotent re-call (e.g. `ack_alert` after the briefing UI already
@@ -311,65 +303,6 @@ def summarize_action(
         url = tool_input.get("url", "")
         payload["summary"] = f"Connected MCP server: {url}" if url else "Connected MCP server"
         payload["target"] = url or None
-    elif tool_name == "create_engagement":
-        role = str(tool_input.get("role_title", "")).strip()
-        payload["summary"] = f"Opened search: {role}" if role else "Opened a search"
-        payload["target"] = role or None
-        payload["link"] = "/talent/searches"
-    elif tool_name == "create_candidate":
-        name = str(tool_input.get("full_name", "")).strip()
-        payload["summary"] = f"Added candidate {name}" if name else "Added a candidate"
-        payload["target"] = name or None
-        eid = tool_input.get("engagement_id")
-        if isinstance(eid, int):
-            payload["link"] = f"/talent/engagements/{eid}"
-    elif tool_name == "set_candidate_stage":
-        cid = tool_input.get("candidate_id")
-        stage = str(tool_input.get("stage", "")).replace("_", " ")
-        payload["summary"] = (
-            f"Moved candidate #{cid} → {stage}" if cid is not None and stage
-            else "Moved a candidate"
-        )
-        payload["target"] = str(cid) if cid is not None else None
-        if isinstance(cid, int):
-            payload["link"] = f"/talent/candidates/{cid}"
-    elif tool_name == "start_talent_workflow":
-        wf = str(tool_input.get("workflow", "")).replace("_", " ")
-        awaiting_signoff = (parsed or {}).get("status") == "awaiting_human"
-        if wf and awaiting_signoff:
-            payload["summary"] = f"Started {wf} — awaiting sign-off"
-        else:
-            payload["summary"] = f"Ran {wf}" if wf else "Ran a talent workflow"
-        payload["target"] = tool_input.get("workflow") or None
-    elif tool_name == "create_offer":
-        oid = tool_input.get("candidate_id")
-        payload["summary"] = (
-            f"Drafted an offer for candidate #{oid}" if oid is not None
-            else "Drafted an offer"
-        )
-        payload["target"] = str(oid) if oid is not None else None
-        if isinstance(oid, int):
-            payload["link"] = f"/talent/candidates/{oid}"
-    elif tool_name == "extend_offer":
-        oid = tool_input.get("offer_id")
-        payload["summary"] = (
-            f"Marked offer #{oid} extended" if oid is not None else "Marked an offer extended"
-        )
-        payload["target"] = str(oid) if oid is not None else None
-        cid = ((parsed or {}).get("offer") or {}).get("candidate_id")
-        if isinstance(cid, int):
-            payload["link"] = f"/talent/candidates/{cid}"
-    elif tool_name == "record_offer_decision":
-        oid = tool_input.get("offer_id")
-        decision = str(tool_input.get("decision", "")).strip()
-        payload["summary"] = (
-            f"Offer #{oid} {decision}" if oid is not None and decision
-            else "Recorded an offer decision"
-        )
-        payload["target"] = str(oid) if oid is not None else None
-        cid = ((parsed or {}).get("offer") or {}).get("candidate_id")
-        if isinstance(cid, int):
-            payload["link"] = f"/talent/candidates/{cid}"
     elif tool_name == "run_workflow":
         wf = str(tool_input.get("workflow", "")).replace("_", " ")
         run_id = (parsed or {}).get("run_id")

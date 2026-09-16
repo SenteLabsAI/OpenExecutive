@@ -346,7 +346,6 @@ Pre-built multi-step executive deliverables. Each workflow is a subclass of `Wor
 | `performance_review` | People |
 | `comp_refresh` | People |
 | `org_design` | People |
-| `exec_search_brief` | People |
 | `churn_deep_dive` | Growth & GTM |
 | `crisis_comms` | Risk, Legal & Crisis |
 | `risk_register` | Risk, Legal & Crisis |

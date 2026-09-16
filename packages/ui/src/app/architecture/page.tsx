@@ -32,8 +32,6 @@ const SECTIONS = [
   { id: 'api', label: 'API Reference', sub: 'The FastAPI HTTP surface — endpoints grouped by router.' },
   { id: 'mcp_server', label: 'MCP Server', sub: 'Open Executive exposed as an MCP server — company context as resources and the specialist council as tools, over Streamable-HTTP at /mcp for external agents.' },
   { id: 'user_guide', label: 'User Guide Surface', sub: "The /guide page — plain-language, per-feature overviews served from static prebuilt JSON, sharing this page's loader and renderer but separate from this technical reference." },
-  { id: 'talent', label: 'Talent / Executive Search', sub: 'The in-house hiring vertical: engagements (searches), candidates, the ChromaDB matching graph, and the draft-and-approve recruiting workflows — surfaced in the /talent UI.' },
-  { id: 'staff_onboarding', label: 'Staff Onboarding', sub: 'Role-tailored onboarding for new hires: reusable templates, per-hire plans with phased task checklists, the role_onboarding brief workflow, a bounded ramp drip, and chat + /today integration.' },
   { id: 'clients', label: 'Client Companies (Slots)', sub: 'Multi-client mode for fractional executives: named save files of the full company context, one active at a time, with save-back switching and per-client MCP tool configs.' },
 ];
 

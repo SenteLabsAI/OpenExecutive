@@ -182,9 +182,9 @@ def test_unknown_guide_section_is_skipped() -> None:
     """A guide id with no prebuilt file must not break the block — explain
     tier still works from route + title."""
     block = _build_page_context_block(
-        PageContext(route="/talent", title="Talent", guide_section_id="no-such-section")
+        PageContext(route="/people", title="People", guide_section_id="no-such-section")
     )
-    assert 'PAGE: /talent — "Talent"' in block
+    assert 'PAGE: /people — "People"' in block
     assert "USER GUIDE" not in block
 
 
