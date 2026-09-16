@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -341,3 +342,72 @@ def test_empty_content_returns_fallback(tmp_path: Path) -> None:
 
     result = asyncio.run(_run())
     assert json.loads(result) == {"tools": []}
+
+
+# ---------------------------------------------------------------------------
+# mcp_servers.json.example — the shipped example must describe servers that can
+# actually start. Issue #115: the example documented
+# `npx -y @github/github-mcp-server stdio`; that npm package does not exist and
+# the API image has no Node, so extensible-mcp logged "Failed to connect to
+# 'github', skipping" and anyone copying the example got a toolless gateway.
+# ---------------------------------------------------------------------------
+
+_CORE_DIR = Path(__file__).resolve().parents[2]
+_EXAMPLE_CONFIG = _CORE_DIR / "mcp_servers.json.example"
+_DOCKERFILE = _CORE_DIR.parents[1] / "docker" / "Dockerfile"
+
+# Bare (non-absolute) commands the API image can actually resolve on PATH.
+# `uvx` arrives with `pip install uv` in docker/Dockerfile. Node is NOT
+# installed — the image apt-installs only git — so `npx` is not on this list
+# and never should be without a Dockerfile change to match.
+_IMAGE_INTERPRETERS = frozenset({"uvx"})
+
+
+def _example_servers() -> dict[str, dict[str, Any]]:
+    raw: dict[str, Any] = json.loads(_EXAMPLE_CONFIG.read_text())
+    servers: dict[str, dict[str, Any]] = raw["mcpServers"]
+    return servers
+
+
+def test_example_config_parses_and_every_server_is_launchable() -> None:
+    """Mirrors extensible-mcp's own load_config validation.
+
+    `config.load_config` raises ValueError on a server that defines neither
+    `command` nor `url`, which would take the whole gateway down at startup.
+    """
+    servers = _example_servers()
+    assert servers, "example config must define at least one server"
+    for name, server in servers.items():
+        assert isinstance(server, dict), f"server '{name}' must be an object"
+        assert "command" in server or "url" in server, (
+            f"server '{name}' has neither 'command' nor 'url' — "
+            "extensible-mcp's load_config rejects this config outright"
+        )
+
+
+def test_example_config_commands_are_present_in_the_api_image() -> None:
+    """Every documented `command` must exist in the image that runs it.
+
+    An absolute path has to be one docker/Dockerfile installs; a bare command
+    has to be an interpreter the image provides. This is the regression test
+    for #115 — an `npx` command fails it, because the image has no Node.
+    """
+    dockerfile = _DOCKERFILE.read_text()
+    for name, server in _example_servers().items():
+        command = server.get("command")
+        if command is None:
+            continue  # url-only server, nothing to launch locally
+        if command.startswith("/"):
+            # Whole-path match, not bare substring: a plain `in` check would let
+            # `/usr/local/bin/work` pass on the strength of the unrelated
+            # `/usr/local/bin/workspace-mcp-launch.sh` already in the Dockerfile.
+            assert re.search(re.escape(command) + r"(?![\w./-])", dockerfile), (
+                f"server '{name}' launches '{command}', which docker/Dockerfile "
+                "never installs — it cannot start in the API image"
+            )
+        else:
+            assert command in _IMAGE_INTERPRETERS, (
+                f"server '{name}' launches '{command}', which the API image does "
+                f"not provide (known interpreters: {sorted(_IMAGE_INTERPRETERS)}). "
+                "Install it in docker/Dockerfile or use an absolute path."
+            )

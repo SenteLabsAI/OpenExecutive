@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -141,6 +142,48 @@ class ChromaDBStore(KnowledgeStore):
             col.delete(where=where)
         except Exception:
             pass
+
+    def iter_chunk_metadata(self, collection: str) -> list[tuple[str, dict[str, Any]]]:
+        """Return every ``(chunk_id, metadata)`` pair in *collection*.
+
+        Chroma's ``where`` has no prefix/substring operator, so metadata
+        patterns (rather than exact matches) have to be filtered in Python.
+        Only used against the small ``company_docs`` collection.
+        """
+        try:
+            col = self._get_or_create_collection(collection)
+            rows = col.get(include=["metadatas"])
+        except Exception:
+            return []
+        ids = rows.get("ids") or []
+        metas = rows.get("metadatas") or []
+        return [
+            (str(cid), dict(md) if isinstance(md, dict) else {})
+            for cid, md in zip(ids, metas, strict=False)
+        ]
+
+    def delete_by_ids(self, collection: str, ids: list[str]) -> int:
+        """Delete specific chunk ids; returns how many were actually deleted.
+
+        No-op on an empty list — Chroma treats a delete with neither ids nor
+        where as 'delete everything', so the guard must come before the call,
+        not inside it.
+
+        Returns 0 rather than ``len(ids)`` when the delete raises, so a caller
+        reporting the count cannot claim to have removed rows that are still
+        there.
+        """
+        if not ids:
+            return 0
+        try:
+            col = self._get_or_create_collection(collection)
+            col.delete(ids=ids)
+            return len(ids)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "delete_by_ids failed for %d id(s) in %s", len(ids), collection
+            )
+            return 0
 
     def delete_company_docs(self) -> None:
         """Delete and recreate the company_docs collection, clearing all indexed documents."""

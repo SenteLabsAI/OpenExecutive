@@ -677,6 +677,36 @@ knowledge:
         for read-only viewing (GET /documents/{filename}), and delete
         (DELETE /documents/{filename}) individual docs. Synced Notion pages
         do NOT land here — see NOTION_WIKI.
+
+        IDENTITY IS THE FILENAME. ingest_file takes an explicit `source_name`
+        that becomes the filename/source metadata AND the chunk-id namespace
+        (_make_chunk_id is an MD5 of it). The upload endpoint stages the body
+        in a tempfile so the PDF/DOCX extractors have a real path to open, and
+        MUST pass the real name — passing the staging path was issue #113:
+        every re-upload got fresh ids so the id-keyed upsert never collided
+        and company_docs grew without bound, and the stored filename was
+        `tmpXXXXXXXX.md`, which the DELETE `where={"filename": …}` could never
+        match (it unlinked the file, returned 200, and stranded every chunk).
+        Because the id namespace is the bare filename and not the absolute
+        path, an uploaded plan.md and a fixture-loaded plan.md are the same
+        document rather than two.
+
+        Chat/email attachments (integrations.attachments) share this
+        collection but are namespaced `attachment:<bare filename>`. The
+        sender chooses that filename and the filename is the id namespace, so
+        an unprefixed one would upsert straight over the curated company
+        document it collides with — same "unvetted text must not blend into
+        curated uploads" reasoning that isolates NOTION_WIKI and
+        RECENT_RESEARCH, applied within a collection.
+
+        RECONCILE ON BOOT. The lifespan calls
+        loader.reconcile_company_docs(store, docs_dir), which drops rows whose
+        filename still matches the temp pattern and is absent from docs_dir,
+        then indexes any docs_dir file with no rows at all. It deliberately
+        does NOT re-ingest documents that are already indexed: the on-disk
+        copy carries no record of the domain the uploader chose, so
+        re-ingesting would retag a `finance` document as `general`. Idempotent
+        (filename-derived ids), so it is a no-op on a clean store.
     - name: NOTION_WIKI
       what: |
         Synced Notion wiki pages (ChromaDB collection `notion_wiki`). Kept
@@ -715,6 +745,26 @@ knowledge:
         BELOW the curated company-documents section.
   domain_aliases_source: openexecutive.knowledge.retriever.DOMAIN_ALIASES
   dedupe_note: Multi-domain chunks can fan out to multiple rows; the retriever dedupes by text before returning.
+  upload_domains: |
+    POST /documents accepts the eight DOMAIN_MAP domains plus `general`
+    (loader.UPLOAD_DOMAINS) and returns 400 for anything else. Unvalidated, a
+    typo like `domain=finanace` returned 200 and indexed the document under a
+    value no specialist filters on — issue #114, silent and only observable by
+    asking a specialist a question it should be able to answer and getting
+    nothing back.
+  general_catch_all: |
+    `general` is the domain an upload gets when nobody classified it: the
+    default on POST /documents, the default option in the UI's picker, and
+    what reconcile_company_docs assigns to a recovered document. It maps to no
+    specialist in DOMAIN_ALIASES, so retriever._with_general widens each
+    specialist's COMPANY filter to include it — otherwise an unclassified
+    document is retrievable by NO specialist rather than by all of them.
+
+    Scoped to the COMPANY collection on purpose. BUILTIN shares its rows with
+    external OER sources, and external_sources falls back to ["general"] for a
+    source that declares no domains; widening BUILTIN too would fan unvetted
+    third-party material into every specialist's context. NOTION_WIKI and
+    RECENT_RESEARCH keep their existing filters.
 
 memory:
   episodic_db: ./episodic_memory.db
@@ -2542,6 +2592,29 @@ integrations:
     surface in future RAG retrieval. Per-file cap 20 MB; extracted text
     truncated to 40 000 chars. Web chat exposes this through
     ``POST /chat/upload`` (multipart) — capped at 5 files per turn.
+
+    Indexed under ``source_name="attachment:<bare filename>"`` and domain
+    ``general``. Both matter. The name is the chunk-id namespace and the
+    retrieval citation, and an attachment's filename is chosen by whoever
+    sent the message — unprefixed, an emailed ``strategy-2026.md`` would
+    upsert straight over the curated company document of that name, so
+    inbound content stays in its own namespace and its provenance is
+    visible in the ``[filename]`` citation. (``Path(...).name`` strips
+    directory components first.)
+
+    The domain stays ``company_docs``, which is deliberately NOT one of the
+    specialist domains: these chunks match no domain filter and so do not
+    reach the Executive. Leaving them inert is a decision, not an oversight —
+    anyone who can attach a file in an integration channel would otherwise be
+    writing into every specialist's RAG context, and these rows have no
+    removal path (never written to docs/, so GET /documents does not list them
+    and DELETE /documents/{filename} 404s before reaching the store). Making
+    them retrievable needs its own change, with a delete path alongside it.
+
+    Passing the staging tempfile path as the identity was the #113 bug on this
+    path too: duplicate chunks on every re-send, and no filename any API call
+    could delete. The boot reconcile drops their orphans rather than
+    recovering them, there being no file on disk to recover from.
   broadcast_tools: |
     openexecutive.orchestrator.broadcast_tools — two new tools exposed
     to the Executive alongside the existing per-Person DM tools:
@@ -2606,7 +2679,7 @@ integrations:
     requires escaping. Cross-platform plain text is the safest cut.
   mcp_gateway: |
     openexecutive.orchestrator.mcp_gateway.MCPGateway — proxies remote MCP
-    servers as tools available to the Executive (Gmail, Calendar, GitHub, …).
+    servers as tools available to the Executive (Gmail, Calendar, Drive, …).
     The MCP is configured via company/mcp_servers.json (workspace-mcp at
     --tool-tier complete to expose the full Google Workspace tool surface).
 

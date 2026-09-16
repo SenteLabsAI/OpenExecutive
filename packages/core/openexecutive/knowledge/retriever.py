@@ -5,6 +5,7 @@ from typing import Any
 
 from openexecutive.audit import get_active_ids
 from openexecutive.audit import log_event as _audit_log
+from openexecutive.knowledge.loader import GENERAL_DOMAIN
 from openexecutive.knowledge.review_store import (
     PRIORITY_ORDER,
     ContentType,
@@ -156,6 +157,31 @@ DOMAIN_ALIASES: dict[str, list[str]] = {
 }
 
 
+def _with_general(domains: list[str] | None) -> list[str] | None:
+    """Widen a company-document domain filter to include the catch-all.
+
+    ``general`` is the domain an upload gets when the uploader did not classify
+    it — it is the default in the UI's picker and the default on
+    ``POST /documents``. It maps to no specialist, so without this an
+    unclassified company document is retrievable by *no* specialist rather than
+    by all of them, silently, with nothing in the API to reveal it.
+
+    Deliberately applied to the COMPANY collection only. The builtin collection
+    shares its rows with external OER sources, which fall back to ``general``
+    when a source declares no domains (``external_sources``); fanning those
+    into every specialist would blend unvetted third-party material into every
+    answer.
+
+    An absent filter is returned unchanged. ``store.query`` treats both ``None``
+    and ``[]`` as "no domain filter", so both already match every domain —
+    widening ``[]`` to ``["general"]`` would *narrow* it to general-only, the
+    exact inversion of this function's purpose.
+    """
+    if not domains:
+        return domains
+    return domains if GENERAL_DOMAIN in domains else [*domains, GENERAL_DOMAIN]
+
+
 def retrieve(
     query: str,
     domain_filter: list[str] | None = None,
@@ -249,7 +275,7 @@ def retrieve(
         raw_company = store.query(
             query_text=query,
             collection=ChromaDBStore.COMPANY_COLLECTION,
-            domain_filter=effective_domains,
+            domain_filter=_with_general(effective_domains),
             n_results=n_company,
         )
         company_results = [

@@ -37,6 +37,18 @@ async def upload_document(
             detail=f"Unsupported file type: {ext}. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
+    # Reject an unknown domain rather than indexing under it. Specialist
+    # retrieval filters on these exact values, so a typo ("finanace") would
+    # return 200 and then make the document permanently unretrievable — a
+    # silent, delayed failure with no way to notice it from the API.
+    from openexecutive.knowledge.loader import UPLOAD_DOMAINS
+
+    if domain not in UPLOAD_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown domain: {domain}. Allowed: {', '.join(sorted(UPLOAD_DOMAINS))}",
+        )
+
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large (max 50MB)")
@@ -57,11 +69,19 @@ async def upload_document(
             else ChromaDBStore(persist_directory=settings.vector_store_path)
         )
 
+        # `source_name` — NOT tmp_path.name. The temp file is only a staging
+        # buffer so the PDF/DOCX extractors have a real path to open; the
+        # document's identity is the name the user uploaded it under. Deriving
+        # identity from the random temp name instead gives every re-upload
+        # fresh chunk ids (so the id-keyed upsert never collides and the
+        # collection grows without bound) and stores a `filename` that the
+        # DELETE endpoint below can never match.
         chunks_indexed = await ingest_file(
             path=tmp_path,
             store=store,
             domain=domain,
             collection=ChromaDBStore.COMPANY_COLLECTION,
+            source_name=safe_filename,
         )
 
         company_docs_dir = settings.company_profile_path.parent / "docs"

@@ -233,3 +233,57 @@ def test_failures_rejects_path_traversal(client: TestClient) -> None:
     # The path-segment regex requires a *.md and no slashes/dots-as-traversal,
     # so the encoded "../evil.md" must be rejected as a bad filename.
     assert res.status_code in (400, 404)
+
+
+# ── #114: the Query panel must mirror what retrieve() actually does ────────
+
+
+def test_search_accepts_the_general_domain(client: TestClient) -> None:
+    """`general` is a real, uploadable company domain. Rejecting it left the
+    operator unable to introspect the documents most likely to need it — the
+    unclassified ones."""
+    res = client.post(
+        "/knowledge/search", json={"query": "pricing", "domain_filter": ["general"]}
+    )
+
+    assert res.status_code == 200, res.text
+
+
+def test_search_still_rejects_an_unknown_domain(client: TestClient) -> None:
+    res = client.post(
+        "/knowledge/search", json={"query": "pricing", "domain_filter": ["finanace"]}
+    )
+
+    assert res.status_code == 400
+
+
+def test_search_widens_the_company_filter_with_general(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """This endpoint is documented as the parallel of `retrieve()`. If it does
+    not widen COMPANY the same way, the panel reports zero company hits for a
+    specialist that does retrieve them in chat — the exact #114 symptom, shown
+    by the tool an operator would use to diagnose it."""
+    seen: dict[str, list[str] | None] = {}
+
+    def recording_query(
+        query_text: str,
+        collection: str,
+        domain_filter: list[str] | None = None,
+        n_results: int = 5,
+    ) -> list[dict[str, Any]]:
+        seen[collection] = domain_filter
+        return []
+
+    recording_store = MagicMock()
+    recording_store.query.side_effect = recording_query
+    monkeypatch.setattr(
+        "openexecutive.api.routes.knowledge._get_store",
+        lambda _request: recording_store,
+    )
+
+    res = client.post("/knowledge/search", json={"query": "pricing", "specialist": "cfo"})
+
+    assert res.status_code == 200, res.text
+    assert seen["company_docs"] == ["finance", "general"]
+    assert seen["builtin_knowledge"] == ["finance"]

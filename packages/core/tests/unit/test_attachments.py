@@ -241,3 +241,68 @@ async def test_process_attachments_concatenates_multiple_texts():
     assert "a.txt" in extra_text
     assert "b.txt" in extra_text
     assert image_blocks == []
+
+
+# ── #113/#114 at the attachment ingest path ───────────────────────────────
+
+
+def _ingest_call(filename: str, data: bytes = b"# Notes\nRevenue grew."):
+    """Run `_schedule_ingest` to completion and return the `ingest_file` call."""
+    from openexecutive.integrations import attachments as att
+
+    mock_ingest = AsyncMock(return_value=3)
+    with (
+        patch("openexecutive.knowledge.loader.ingest_file", mock_ingest),
+        patch("openexecutive.knowledge.store.ChromaDBStore", MagicMock()),
+    ):
+
+        async def _drive() -> None:
+            att._schedule_ingest(data, filename)
+            # `_schedule_ingest` fires a background task; let it run.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        asyncio.run(_drive())
+
+    mock_ingest.assert_called_once()
+    return mock_ingest.call_args
+
+
+def test_attachment_is_indexed_under_its_real_name_not_the_temp_path():
+    """The bug: the staging temp path was passed straight to `ingest_file`, so
+    every re-send duplicated and no chunk could ever be deleted."""
+    _, kwargs = _ingest_call("board-deck.md")
+
+    assert kwargs["source_name"] == "attachment:board-deck.md"
+
+
+def test_attachment_name_cannot_collide_with_a_company_document():
+    """`source_name` is the chunk-id namespace, and an attachment name is
+    chosen by whoever sent the message — without the prefix an emailed
+    `strategy-2026.md` would upsert over the curated document of that name."""
+    _, kwargs = _ingest_call("strategy-2026.md")
+
+    assert kwargs["source_name"] != "strategy-2026.md"
+    assert kwargs["source_name"].startswith("attachment:")
+
+
+def test_attachment_name_is_stripped_to_a_bare_name():
+    _, kwargs = _ingest_call("../../etc/passwd.md")
+
+    assert kwargs["source_name"] == "attachment:passwd.md"
+
+
+def test_attachment_domain_stays_outside_the_specialist_domains():
+    """Pins a deliberate gap, so a later change has to be deliberate too.
+
+    "company_docs" is not one of the specialist domains, so these chunks match
+    no domain filter and never reach the Executive. Anyone who can attach a
+    file in an integration channel would otherwise be writing into every
+    specialist's RAG context, and these rows have no removal path — they are
+    never written to company/docs/, so GET /documents does not list them and
+    DELETE /documents/{filename} 404s before reaching the store."""
+    from openexecutive.knowledge.loader import UPLOAD_DOMAINS
+
+    _, kwargs = _ingest_call("board-deck.md")
+
+    assert kwargs["domain"] not in UPLOAD_DOMAINS

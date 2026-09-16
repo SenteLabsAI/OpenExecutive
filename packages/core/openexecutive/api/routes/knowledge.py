@@ -11,6 +11,7 @@ from openexecutive.knowledge.loader import (
     BUILTIN_KNOWLEDGE_PATH,
     DOMAIN_MAP,
     FAILURES_KNOWLEDGE_PATH,
+    UPLOAD_DOMAINS,
 )
 
 router = APIRouter(prefix="/knowledge")
@@ -544,7 +545,7 @@ async def search_knowledge(
     `retrieve()` produces. Intended for the Knowledge UI's Query mode and
     for tuning the knowledge base offline.
     """
-    from openexecutive.knowledge.retriever import DOMAIN_ALIASES
+    from openexecutive.knowledge.retriever import DOMAIN_ALIASES, _with_general
     from openexecutive.knowledge.store import ChromaDBStore
 
     if not body.query.strip():
@@ -555,9 +556,12 @@ async def search_knowledge(
     if bad:
         raise HTTPException(status_code=400, detail=f"Invalid include values: {sorted(bad)}")
 
+    # UPLOAD_DOMAINS, not DOMAIN_MAP: `general` is a real, uploadable company
+    # domain, and rejecting it here made this endpoint unable to introspect the
+    # documents most likely to need it — the unclassified ones.
     if body.domain_filter:
         for d in body.domain_filter:
-            if d not in DOMAIN_MAP:
+            if d not in UPLOAD_DOMAINS:
                 raise HTTPException(status_code=400, detail=f"Unknown domain: {d}")
 
     if body.specialist and body.specialist not in DOMAIN_ALIASES:
@@ -584,12 +588,14 @@ async def search_knowledge(
     n_failures = max(1, min(body.n_failures, _MAX_RESULTS_PER_BUCKET))
     n_external = max(1, min(body.n_external, _MAX_RESULTS_PER_BUCKET))
 
-    def _query_collection(collection: str, n: int) -> list[dict[str, object]]:
+    def _query_collection(
+        collection: str, n: int, domains: list[str] | None = None
+    ) -> list[dict[str, object]]:
         try:
             return store.query(
                 query_text=body.query,
                 collection=collection,
-                domain_filter=effective_domains,
+                domain_filter=effective_domains if domains is None else domains,
                 n_results=n,
             )
         except Exception:
@@ -625,8 +631,17 @@ async def search_knowledge(
 
     company_hits: list[SearchHit] = []
     if "company" in include:
+        # Mirror `retrieve()` exactly: it widens the COMPANY filter with the
+        # `general` catch-all. Without this, the panel an operator uses to
+        # debug retrieval would report zero company hits for a specialist that
+        # does retrieve them in chat — showing the very #114 symptom the
+        # catch-all fixes.
         company_hits = _hits_from_chroma(
-            _query_collection(ChromaDBStore.COMPANY_COLLECTION, n_company)
+            _query_collection(
+                ChromaDBStore.COMPANY_COLLECTION,
+                n_company,
+                domains=_with_general(effective_domains),
+            )
         )
 
     failure_hits: list[SearchHit] = []
