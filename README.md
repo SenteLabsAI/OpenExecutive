@@ -5,9 +5,9 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
 
-Open Executive, is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also be configured as a digital twin to replicate a busy leader—responding in alignment with their specific role and insights—allowing leaders to truly scale their impact through AI.
+Open Executive is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also be configured as a digital twin to replicate a busy leader—responding in alignment with their specific role and insights—allowing leaders to truly scale their impact through AI.
 
-It meets people where they already work, with integrations for Slack, Discord, Telegram, email, Google Workspace, Notion and any MCP-compatible AI tool with more features are on the roadmap. Open Executive will always be open source. 
+It meets people where they already work, with integrations for Slack, Discord, Telegram, email, Google Workspace, Notion and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
 
 A managed cloud offering is coming, where you can get access without deploying anything yourself.
 
