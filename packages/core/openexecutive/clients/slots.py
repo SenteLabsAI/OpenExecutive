@@ -563,9 +563,13 @@ def _ensure_schemas() -> None:
     init_episodic(db_path)
     # A parked slot's state.db may predate the talent removal; give it the
     # same one-shot reminder sweep the live DB gets at boot.
-    swept = cancel_orphaned_talent_reminders(db_path)
-    if swept:
-        logger.info("client-slots: cancelled %d orphaned talent reminder(s)", swept)
+    try:
+        swept = cancel_orphaned_talent_reminders(db_path)
+    except Exception:
+        logger.exception("client-slots: orphaned-reminder sweep failed")
+    else:
+        if swept:
+            logger.info("client-slots: cancelled %d orphaned talent reminder(s)", swept)
     init_alerts(db_path)
     init_fixtures(db_path)
     initialize_overrides_db(db_path)

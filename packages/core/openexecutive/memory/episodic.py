@@ -1314,49 +1314,71 @@ def cancel_scheduled_action(action_id: int, db_path: Path | None = None) -> str:
         return "cancelled"
 
 
-# Intent-text prefixes of the ad-hoc reminders the removed talent /
+# Intent-text shapes of the ad-hoc reminders the removed talent /
 # staff-onboarding workflows scheduled on the principal's real DM channel.
 # Nothing creates these any more, but rows pending from before the removal
 # would keep firing (for weeks, in the outreach case) about candidates whose
-# records are unreachable. They are `kind="ad_hoc"` on a live channel, so the
-# scheduler's `__internal__` drain never sees them.
-_ORPHANED_TALENT_REMINDER_PREFIXES: tuple[str, ...] = (
-    "Outreach reminder %",
-    "Interview coordination for %",
-    "Reference checks (%",
-    "Onboarding check-in (day %",
+# records are unreachable. They were `kind="ad_hoc"` with `department=''` on
+# a live channel, so the scheduler's `__internal__` drain never sees them.
+# Each pattern is the full generated template up to its first free-text
+# field — deliberately NOT a bare prefix like "Outreach reminder %", which
+# would also catch a reminder the Executive phrased that way for the
+# principal's own work. (`talent.reminders`, `workflows.candidate_outreach`,
+# `interview_coordination`, `reference_check`, `new_hire_onboarding`,
+# `talent.offers` at the pre-removal commit.)
+_ORPHANED_TALENT_REMINDER_PATTERNS: tuple[str, ...] = (
+    "Outreach reminder %/% (%) for the % search (%). Send the principal %",
+    "Interview coordination for % on the % search (%). Send the principal %",
+    "Reference checks (%) for % on the % search (%). Send the principal %",
+    "Onboarding check-in (day %) for %, % at %. DM the principal %",
+    "Offer expiry reminder: the offer to % for the % role (offer %) %. DM the principal %",
 )
 _TALENT_REMINDER_SWEEP = "2026-09-cancel-talent-reminders"
 
 
 def cancel_orphaned_talent_reminders(db_path: Path | None = None) -> int:
-    """One-shot sweep: cancel pending reminders left by the removed talent and
+    """One-shot sweep: cancel reminders left by the removed talent and
     staff-onboarding features. Returns the number of rows cancelled.
 
-    Bounded by ``app_migrations``: the first call on a DB does the work and
-    records the sweep; every later call is a no-op even if a matching pending
-    row appears afterwards. Delete this function (and its callers) in the
-    release after next, once every install has booted on it once.
+    Bounded by ``app_migrations``: the marker row is claimed FIRST with
+    ``INSERT OR IGNORE`` inside the same transaction as the sweep, so of two
+    processes booting against one DB exactly one does the work and the other
+    is a clean no-op (no ``IntegrityError``). Every later call is a no-op even
+    if a matching row appears afterwards. ``running`` rows are included: the
+    scheduler's ``reclaim_running_actions`` runs AFTER this sweep at boot and
+    would otherwise resurrect a crash-orphaned row as ``pending``. Delete this
+    function (and its callers) in the release after next, once every install
+    has booted on it once.
     """
     with _get_conn(_resolve_db_path(db_path)) as conn:
-        applied = conn.execute(
-            "SELECT 1 FROM app_migrations WHERE name = ?", (_TALENT_REMINDER_SWEEP,)
-        ).fetchone()
-        if applied is not None:
+        claimed = conn.execute(
+            "INSERT OR IGNORE INTO app_migrations (name, applied_at) VALUES (?, ?)",
+            (_TALENT_REMINDER_SWEEP, datetime.now(UTC).isoformat()),
+        )
+        if claimed.rowcount == 0:
             return 0
-        where = " OR ".join(
-            "intent_text LIKE ?" for _ in _ORPHANED_TALENT_REMINDER_PREFIXES
+        shape = " OR ".join(
+            "intent_text LIKE ?" for _ in _ORPHANED_TALENT_REMINDER_PATTERNS
         )
         cur = conn.execute(
             "UPDATE scheduled_actions "
             "SET status = 'cancelled', "
+            "    awaiting_response_since = NULL, "
             "    last_error = 'cancelled: talent/staff-onboarding feature removed' "
-            f"WHERE status = 'pending' AND ({where})",
-            _ORPHANED_TALENT_REMINDER_PREFIXES,
+            "WHERE status IN ('pending', 'running') "
+            "  AND kind = 'ad_hoc' AND department = '' "
+            f"  AND ({shape})",
+            _ORPHANED_TALENT_REMINDER_PATTERNS,
         )
+        # Delivered talent reminders still marked as awaiting a reply would
+        # keep feeding the nudge engine ("chase the open commitment …") about
+        # a dead candidate. Clear the flag; leave the rows as history.
         conn.execute(
-            "INSERT INTO app_migrations (name, applied_at) VALUES (?, ?)",
-            (_TALENT_REMINDER_SWEEP, datetime.now(UTC).isoformat()),
+            "UPDATE scheduled_actions SET awaiting_response_since = NULL "
+            "WHERE awaiting_response_since IS NOT NULL AND status = 'done' "
+            "  AND kind = 'ad_hoc' AND department = '' "
+            f"  AND ({shape})",
+            _ORPHANED_TALENT_REMINDER_PATTERNS,
         )
         return int(cur.rowcount)
 

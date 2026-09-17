@@ -256,11 +256,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # docstring for the removal schedule). Runs after `initialize_db()` so the
     # `app_migrations` table exists.
     from openexecutive.memory.episodic import cancel_orphaned_talent_reminders
-    _swept = cancel_orphaned_talent_reminders()
-    if _swept:
-        logging.getLogger("openexecutive").info(
-            "cancelled %d orphaned talent/onboarding reminder(s) on startup", _swept
-        )
+    try:
+        _swept = cancel_orphaned_talent_reminders()
+    except Exception:
+        # Best-effort data cleanup — a locked DB must not block boot.
+        logging.getLogger("openexecutive").exception("orphaned-reminder sweep failed")
+    else:
+        if _swept:
+            logging.getLogger("openexecutive").info(
+                "cancelled %d orphaned talent/onboarding reminder(s) on startup", _swept
+            )
 
     # Departments: persistent state layer over the 8 specialist agents. Init
     # AFTER episodic_db so the additive ALTERs (department column on decisions,
