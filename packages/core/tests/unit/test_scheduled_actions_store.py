@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from openexecutive.memory.episodic import (
+    cancel_orphaned_talent_reminders,
     cancel_scheduled_action,
     claim_due_actions,
     count_pending_for_channel_ref,
@@ -444,3 +445,57 @@ def test_list_pending_scheduled_actions_excludes_done(db: Path) -> None:
     )
     mark_action_done(aid, db_path=db)
     assert list_pending_scheduled_actions(db_path=db) == []
+
+
+# --------------------------------------------------------------------------- #
+# One-shot sweep for reminders the removed talent / staff-onboarding
+# workflows left pending on the principal's DM channel.
+# --------------------------------------------------------------------------- #
+
+def _insert_reminder(db: Path, text: str, *, status: str = "pending") -> int:
+    aid = insert_scheduled_action(
+        run_at=_future(3600), channel="telegram", channel_ref="123",
+        intent_text=text, kind="ad_hoc", db_path=db,
+    )
+    if status != "pending":
+        mark_action_done(aid, db)
+    return aid
+
+
+def test_orphan_sweep_cancels_exactly_the_four_reminder_shapes(db: Path) -> None:
+    orphans = [
+        _insert_reminder(db, "Outreach reminder for Jane Doe (VP Ops search)"),
+        _insert_reminder(db, "Interview coordination for Jane Doe"),
+        _insert_reminder(db, "Reference checks (Jane Doe) — chase 2 of 3"),
+        _insert_reminder(db, "Onboarding check-in (day 30): Jane Doe"),
+    ]
+    keep_unrelated = _insert_reminder(db, "Follow up with the board candidate on Q3 deck")
+    keep_delivered = _insert_reminder(db, "Outreach reminder for old search", status="done")
+
+    assert cancel_orphaned_talent_reminders(db) == 4
+
+    for aid in orphans:
+        row = get_scheduled_action(aid, db)
+        assert row is not None and row.status == "cancelled"
+        assert "feature removed" in row.last_error
+    unrelated = get_scheduled_action(keep_unrelated, db)
+    assert unrelated is not None and unrelated.status == "pending"
+    delivered = get_scheduled_action(keep_delivered, db)
+    assert delivered is not None and delivered.status == "done"
+
+
+def test_orphan_sweep_runs_once_per_db(db: Path) -> None:
+    """The marker row bounds the sweep: a matching row inserted AFTER the first
+    run is left alone, proving later boots do no work."""
+    first = _insert_reminder(db, "Outreach reminder for A")
+    assert cancel_orphaned_talent_reminders(db) == 1
+
+    late = _insert_reminder(db, "Outreach reminder for B")
+    assert cancel_orphaned_talent_reminders(db) == 0
+    assert get_scheduled_action(late, db).status == "pending"  # type: ignore[union-attr]
+    assert get_scheduled_action(first, db).status == "cancelled"  # type: ignore[union-attr]
+
+
+def test_orphan_sweep_is_a_noop_on_a_clean_db(db: Path) -> None:
+    assert cancel_orphaned_talent_reminders(db) == 0
+    assert cancel_orphaned_talent_reminders(db) == 0

@@ -373,6 +373,15 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_outbound_ctx_lookup
                 ON outbound_context(channel, channel_ref, status, created_at DESC);
+
+            -- One-shot data migrations. Schema changes above are idempotent
+            -- DDL and need no bookkeeping; this table is for sweeps that must
+            -- run exactly once per DB (e.g. cancelling rows a removed feature
+            -- left behind). A migration inserts its name when it has applied.
+            CREATE TABLE IF NOT EXISTS app_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
         """)
 
 
@@ -1303,6 +1312,53 @@ def cancel_scheduled_action(action_id: int, db_path: Path | None = None) -> str:
             (action_id,),
         )
         return "cancelled"
+
+
+# Intent-text prefixes of the ad-hoc reminders the removed talent /
+# staff-onboarding workflows scheduled on the principal's real DM channel.
+# Nothing creates these any more, but rows pending from before the removal
+# would keep firing (for weeks, in the outreach case) about candidates whose
+# records are unreachable. They are `kind="ad_hoc"` on a live channel, so the
+# scheduler's `__internal__` drain never sees them.
+_ORPHANED_TALENT_REMINDER_PREFIXES: tuple[str, ...] = (
+    "Outreach reminder %",
+    "Interview coordination for %",
+    "Reference checks (%",
+    "Onboarding check-in (day %",
+)
+_TALENT_REMINDER_SWEEP = "2026-09-cancel-talent-reminders"
+
+
+def cancel_orphaned_talent_reminders(db_path: Path | None = None) -> int:
+    """One-shot sweep: cancel pending reminders left by the removed talent and
+    staff-onboarding features. Returns the number of rows cancelled.
+
+    Bounded by ``app_migrations``: the first call on a DB does the work and
+    records the sweep; every later call is a no-op even if a matching pending
+    row appears afterwards. Delete this function (and its callers) in the
+    release after next, once every install has booted on it once.
+    """
+    with _get_conn(_resolve_db_path(db_path)) as conn:
+        applied = conn.execute(
+            "SELECT 1 FROM app_migrations WHERE name = ?", (_TALENT_REMINDER_SWEEP,)
+        ).fetchone()
+        if applied is not None:
+            return 0
+        where = " OR ".join(
+            "intent_text LIKE ?" for _ in _ORPHANED_TALENT_REMINDER_PREFIXES
+        )
+        cur = conn.execute(
+            "UPDATE scheduled_actions "
+            "SET status = 'cancelled', "
+            "    last_error = 'cancelled: talent/staff-onboarding feature removed' "
+            f"WHERE status = 'pending' AND ({where})",
+            _ORPHANED_TALENT_REMINDER_PREFIXES,
+        )
+        conn.execute(
+            "INSERT INTO app_migrations (name, applied_at) VALUES (?, ?)",
+            (_TALENT_REMINDER_SWEEP, datetime.now(UTC).isoformat()),
+        )
+        return int(cur.rowcount)
 
 
 def get_scheduled_action(

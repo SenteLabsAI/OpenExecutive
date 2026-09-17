@@ -31,6 +31,7 @@ from openexecutive.workflows.end_of_day_digest import EndOfDayDigestWorkflow
 from openexecutive.workflows.engagement_value_report import (
     EngagementValueReportWorkflow,
 )
+from openexecutive.workflows.exec_search_brief import ExecSearchBriefWorkflow
 from openexecutive.workflows.executive_reflection import ExecutiveReflectionWorkflow
 from openexecutive.workflows.executive_research import ExecutiveResearchWorkflow
 from openexecutive.workflows.fundraising_prep import FundraisingPrepWorkflow
@@ -65,6 +66,10 @@ WORKFLOW_REGISTRY: dict[str, Workflow] = {
     # coordination decisions. Fires ~30 minutes before the morning
     # brief, can invoke real tools (DMs, broadcasts, follow-ups).
     "executive_reflection": ExecutiveReflectionWorkflow(),
+    # `exec_search_brief` is an ADVISORY deliverable (a hiring brief /
+    # scorecard from the CHRO), not part of the removed talent pipeline —
+    # it never touched the candidate/engagement tables.
+    "exec_search_brief": ExecSearchBriefWorkflow(),
     "fundraising_prep": FundraisingPrepWorkflow(),
     "gtm_launch": GTMLaunchWorkflow(),
     "engagement_value_report": EngagementValueReportWorkflow(),

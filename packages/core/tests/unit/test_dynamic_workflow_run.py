@@ -173,3 +173,40 @@ async def test_run_reports_placeholder_error(monkeypatch: pytest.MonkeyPatch) ->
     events = await _collect(wf, bad_inputs)
     errors = [e for e in events if getattr(e, "type", None) == "error"]
     assert errors and "placeholder error" in errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_run_fails_loudly_when_stored_specialist_no_longer_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Definitions are validated on create/update, not on load, so a stored
+    definition can name a specialist that has since been removed (the `talent`
+    key). The run must emit an error event, not feed "Unknown specialist" into
+    the synthesis step as if it were analysis."""
+    called: list[str] = []
+
+    async def fake_route(**kwargs: Any) -> str:  # pragma: no cover - must not run
+        called.append(kwargs["specialist_name"])
+        return "Unknown specialist: talent"
+
+    monkeypatch.setattr(dyn, "route_to_specialist", fake_route)
+    d = _def(
+        steps=[
+            {"kind": "specialist", "id": "screen", "title": "Screen",
+             "specialist": "talent", "goal": "Assess {topic}."},
+            {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+        ],
+    )
+    wf = DynamicWorkflow(d)
+    inputs = wf.input_model()(topic="a candidate")
+    events = await _collect(wf, inputs)
+    types = [getattr(e, "type", None) for e in events]
+    assert "error" in types
+    # The synthetic context step completes; the specialist step must not.
+    assert [e.step_id for e in events if getattr(e, "type", None) == "step_done"] == [
+        dyn._CONTEXT_STEP_ID
+    ]
+    assert "result" not in types
+    error = next(e for e in events if getattr(e, "type", None) == "error")
+    assert "'talent'" in error.message and "no longer exists" in error.message
+    assert called == []

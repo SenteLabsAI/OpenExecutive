@@ -28,7 +28,7 @@ from openexecutive.knowledge.retriever import retrieve
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding.profile_builder import load_or_create_profile
-from openexecutive.orchestrator.router import route_to_specialist
+from openexecutive.orchestrator.router import SPECIALIST_REGISTRY, route_to_specialist
 from openexecutive.workflows.base import (
     Workflow,
     WorkflowEvent,
@@ -162,6 +162,22 @@ class DynamicWorkflow(Workflow):
                 yield WorkflowEvent(
                     type="step_start", step_id=step.id, step_title=step.title
                 )
+                # Definitions are validated on create/update, not on load, so
+                # a stored definition can outlive its specialist (the `talent`
+                # key was removed). `route_to_specialist` would return the
+                # string "Unknown specialist: …" as the step OUTPUT, and the
+                # synthesis step would write it into the artifact as analysis.
+                # Fail the run loudly instead.
+                if step.specialist not in SPECIALIST_REGISTRY:
+                    yield WorkflowEvent(
+                        type="error",
+                        message=(
+                            f"step {step.id!r} names specialist "
+                            f"{step.specialist!r}, which no longer exists — "
+                            "edit the workflow to use a current specialist"
+                        ),
+                    )
+                    return
                 try:
                     goal = _render(step.goal, values)
                     rag = ""

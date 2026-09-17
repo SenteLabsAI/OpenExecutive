@@ -552,6 +552,7 @@ def _ensure_schemas() -> None:
     from openexecutive.departments.store import initialize_db as init_departments
     from openexecutive.fixtures.store import initialize_db as init_fixtures
     from openexecutive.knowledge.review_store import ReviewStore
+    from openexecutive.memory.episodic import cancel_orphaned_talent_reminders
     from openexecutive.memory.episodic import initialize_db as init_episodic
     from openexecutive.monitoring.store import initialize_db as init_monitoring
     from openexecutive.people.store import initialize_db as init_people
@@ -560,6 +561,11 @@ def _ensure_schemas() -> None:
     # DB_PATH default at import time, which would ignore a runtime override.
     db_path = _episodic_db_path()
     init_episodic(db_path)
+    # A parked slot's state.db may predate the talent removal; give it the
+    # same one-shot reminder sweep the live DB gets at boot.
+    swept = cancel_orphaned_talent_reminders(db_path)
+    if swept:
+        logger.info("client-slots: cancelled %d orphaned talent reminder(s)", swept)
     init_alerts(db_path)
     init_fixtures(db_path)
     initialize_overrides_db(db_path)

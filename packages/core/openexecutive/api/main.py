@@ -224,6 +224,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from openexecutive.people.store import initialize_db as initialize_people_db
     initialize_people_db()
 
+    # One-shot cleanup of reminders the removed talent / staff-onboarding
+    # workflows left pending on the principal's DM channel (see the function's
+    # docstring for the removal schedule). Runs after `initialize_db()` so the
+    # `app_migrations` table exists.
+    from openexecutive.memory.episodic import cancel_orphaned_talent_reminders
+    _swept = cancel_orphaned_talent_reminders()
+    if _swept:
+        logging.getLogger("openexecutive").info(
+            "cancelled %d orphaned talent/onboarding reminder(s) on startup", _swept
+        )
+
     # Departments: persistent state layer over the 8 specialist agents. Init
     # AFTER episodic_db so the additive ALTERs (department column on decisions,
     # initiatives, advice_given, scheduled_actions) have already run by the

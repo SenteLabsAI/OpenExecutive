@@ -11,10 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Talent / executive search.** The whole vertical is gone: the `talent`
   specialist, `openexecutive/talent/` (engagements, candidates, offers, the
   ChromaDB matching graph), its 21 REST routes, 12 chat tools, 4 MCP tools and
-  the `/talent` UI, plus the six recruiting workflows (`candidate_screen`,
+  the `/talent` UI, plus the five recruiting workflows (`candidate_screen`,
   `candidate_outreach`, `interview_coordination`, `reference_check`,
-  `exec_search_brief`, `offer_approval`). The `chro` specialist and its
-  `comp_refresh` / `org_design` / `performance_review` workflows are unchanged.
+  `offer_approval`). The `chro` specialist and its `comp_refresh` /
+  `org_design` / `performance_review` / `exec_search_brief` workflows are
+  unchanged — `exec_search_brief` is an advisory hiring brief, not pipeline.
 - **Staff onboarding.** `openexecutive/staff_onboarding/` (templates, per-hire
   plans, tasks), its REST routes and 8 chat tools, the `new_hire_onboarding` and
   `role_onboarding` workflows, the `/staff-onboarding` UI, and the
@@ -27,8 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Existing SQLite tables (`engagements`, `candidates`, `offers`,
   `onboarding_templates`, `onboarding_plans`, `onboarding_tasks`) are **not
   dropped** — nothing reads them, and a blank client slot still wipes them so
-  candidate data cannot cross slots. Operators with in-flight talent reminders
-  should run the cleanup SQL in the PR description.
+  candidate data cannot cross slots. Pending talent reminders the removed
+  workflows had scheduled on the principal's DM channel are cancelled by a
+  one-time startup sweep (`cancel_orphaned_talent_reminders`, recorded in the
+  new `app_migrations` table); the sweep can be deleted in the release after
+  next.
 
 ### Added
 - **Conversational onboarding.** `/onboard` now opens with "tell me about your
