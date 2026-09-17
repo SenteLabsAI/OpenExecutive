@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -13,6 +14,8 @@ from openexecutive.knowledge.loader import (
     FAILURES_KNOWLEDGE_PATH,
     UPLOAD_DOMAINS,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/knowledge")
 
@@ -74,6 +77,39 @@ def _get_store(request: Request):  # type: ignore[return]
     return ChromaDBStore(persist_directory=get_settings().vector_store_path)
 
 
+def _review_store():  # type: ignore[no-untyped-def]
+    """ReviewStore bound to the DB every other consumer reads.
+
+    `ReviewStore()`'s default is captured at import, so a runtime override of
+    `EPISODIC_DB_PATH` (client slots, tests) left this module writing review
+    rows into one database while `routes/review._store` and
+    `retriever._default_review_store` read another — the gate would silently
+    consult state this module never wrote.
+    """
+    from openexecutive.knowledge.review_store import ReviewStore
+    from openexecutive.memory.episodic import DB_PATH
+
+    return ReviewStore(db_path=DB_PATH)
+
+
+def _existing_review_item(item_id: str):  # type: ignore[no-untyped-def]
+    """Look up a review item without 500ing or materialising the database.
+
+    `sqlite3.connect` creates the file, and a DB with no `review_items` table
+    raises — neither should turn a legitimate upload into a server error.
+    Absent review state simply means nothing is known to be trusted.
+    """
+    from openexecutive.memory.episodic import DB_PATH
+
+    if not DB_PATH.exists():
+        return None
+    try:
+        return _review_store().get_item(item_id)
+    except Exception:
+        logger.warning("review state unreadable during upload check", exc_info=True)
+        return None
+
+
 @router.get("/builtin", response_model=BuiltinListResponse)
 async def list_builtin_files() -> BuiltinListResponse:
     files: list[BuiltinFileMeta] = []
@@ -106,16 +142,30 @@ async def create_builtin_file(body: BuiltinFileWrite, request: Request) -> Built
     if path.exists():
         raise HTTPException(status_code=409, detail="File already exists. Use PUT to update.")
 
+    from openexecutive.knowledge.loader import ingest_builtin_file
+    from openexecutive.knowledge.review_store import ContentType, build_item_id
+
+    # Defence in depth. Shipped failure docs used to derive ids in this very
+    # namespace, so an upload of a name like `board/theranos.md` landed on a
+    # row already marked `approved` + `trusted_default = 1` and inherited it —
+    # trusted, unqueued, and labelled "ships with the product" in the UI. The
+    # FAILURE namespace fixes that at the source; this makes sure no future
+    # id-space change can quietly re-open it.
+    item_id = build_item_id(ContentType.BUILTIN, body.domain, body.filename)
+    existing = _existing_review_item(item_id)
+    if existing is not None and existing.trusted_default:
+        raise HTTPException(
+            status_code=409,
+            detail="That name belongs to content shipped with Open Executive.",
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.content, encoding="utf-8")
 
-    from openexecutive.knowledge.loader import ingest_builtin_file
-    from openexecutive.knowledge.review_store import ContentType, ReviewStore
-
     chunks = await ingest_builtin_file(path, _get_store(request))
 
-    ReviewStore().register(
-        item_id=f"builtin:{body.domain}:{body.filename}",
+    _review_store().register(
+        item_id=item_id,
         content_type=ContentType.BUILTIN,
         domain=body.domain,
         filename=body.filename,
@@ -135,7 +185,7 @@ async def update_builtin_file(
         raise HTTPException(status_code=404, detail="File not found. Use POST to create.")
 
     from openexecutive.knowledge.loader import ingest_builtin_file
-    from openexecutive.knowledge.review_store import ContentType, ReviewStore
+    from openexecutive.knowledge.review_store import ContentType, build_item_id
     from openexecutive.knowledge.store import ChromaDBStore
 
     store = _get_store(request)
@@ -146,8 +196,8 @@ async def update_builtin_file(
     path.write_text(body.content, encoding="utf-8")
     chunks = await ingest_builtin_file(path, store)
 
-    rs = ReviewStore()
-    item_id = f"builtin:{domain}:{filename}"
+    rs = _review_store()
+    item_id = build_item_id(ContentType.BUILTIN, domain, filename)
     rs.register(item_id=item_id, content_type=ContentType.BUILTIN, domain=domain, filename=filename)
     rs.touch_modified(item_id)
 
@@ -271,7 +321,9 @@ async def list_external_sources(request: Request) -> ExternalSourcesResponse:
         if s.is_ingested
     ]
     if ingested:
-        ReviewStore.sync_external_registrations(ingested)
+        from openexecutive.memory.episodic import DB_PATH as _REVIEW_DB
+
+        ReviewStore.sync_external_registrations(ingested, _REVIEW_DB)
 
     return ExternalSourcesResponse(sources=sources, total_chunks=sum(chunk_counts.values()))
 
@@ -320,7 +372,7 @@ async def delete_builtin_file(domain: str, filename: str, request: Request) -> d
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
-    from openexecutive.knowledge.review_store import ReviewStore
+    from openexecutive.knowledge.review_store import ContentType, build_item_id
     from openexecutive.knowledge.store import ChromaDBStore
 
     store = _get_store(request)
@@ -329,7 +381,9 @@ async def delete_builtin_file(domain: str, filename: str, request: Request) -> d
         where={"source": str(path)},
     )
     path.unlink()
-    ReviewStore().delete_item(f"builtin:{domain}:{filename}")
+    _review_store().delete_item(
+        build_item_id(ContentType.BUILTIN, domain, filename)
+    )
     return {"deleted": filename}
 
 
@@ -393,6 +447,20 @@ async def create_failure_file(body: BuiltinFileWrite, request: Request) -> Built
         chunk_size=400,
         overlap=40,
     )
+
+    # Register, exactly as create_builtin_file does. Without this a
+    # user-authored failure case study had no review row at all, so it could
+    # never enter the withheld set — `retrieve_failures` applied a gate that
+    # could not reach it, and no SME decision could block it.
+    from openexecutive.knowledge.review_store import ContentType, build_item_id
+
+    _review_store().register(
+        item_id=build_item_id(ContentType.FAILURE, body.domain, body.filename),
+        content_type=ContentType.FAILURE,
+        domain=body.domain,
+        filename=body.filename,
+    )
+
     return BuiltinWriteResponse(domain=body.domain, filename=body.filename, chunks_indexed=chunks)
 
 
@@ -423,6 +491,21 @@ async def update_failure_file(
         chunk_size=400,
         overlap=40,
     )
+    # Mirror update_builtin_file: register (a doc created before failure docs
+    # were registered still has no row, and editing must create one) and mark
+    # it needs_revision so an edit behaves the same for both content types.
+    from openexecutive.knowledge.review_store import ContentType, build_item_id
+
+    rs = _review_store()
+    item_id = build_item_id(ContentType.FAILURE, domain, filename)
+    rs.register(
+        item_id=item_id,
+        content_type=ContentType.FAILURE,
+        domain=domain,
+        filename=filename,
+    )
+    rs.touch_modified(item_id)
+
     return BuiltinWriteResponse(domain=domain, filename=filename, chunks_indexed=chunks)
 
 
@@ -442,6 +525,10 @@ async def delete_failure_file(domain: str, filename: str, request: Request) -> d
         where={"source": str(path)},
     )
     path.unlink()
+
+    from openexecutive.knowledge.review_store import ContentType, build_item_id
+
+    _review_store().delete_item(build_item_id(ContentType.FAILURE, domain, filename))
     return {"deleted": filename}
 
 
@@ -545,7 +632,12 @@ async def search_knowledge(
     `retrieve()` produces. Intended for the Knowledge UI's Query mode and
     for tuning the knowledge base offline.
     """
-    from openexecutive.knowledge.retriever import DOMAIN_ALIASES, _with_general
+    from openexecutive.knowledge.retriever import (
+        DOMAIN_ALIASES,
+        _default_review_store,
+        _with_general,
+    )
+    from openexecutive.knowledge.review_store import ContentType
     from openexecutive.knowledge.store import ChromaDBStore
 
     if not body.query.strip():
@@ -601,6 +693,53 @@ async def search_knowledge(
         except Exception:
             return []
 
+    # Mirror `retrieve()`'s review gate. Withheld = pending or rejected; the
+    # chat path drops those before a specialist ever sees them, so a panel
+    # that advertises itself as showing "what RAG would surface" must drop
+    # them too — otherwise it reports knowledge the Executive cannot use.
+    # Resolved once per request, via the retriever's own resolver so both
+    # paths read the same database. Company docs are never registered in
+    # `review_items`, so the company bucket is deliberately not filtered.
+    #
+    # Degrades to "nothing withheld" rather than failing, matching the
+    # per-collection `except` above: this is a read-only diagnostic, and a
+    # broken panel helps nobody. `retrieve()` is the enforcing gate and does
+    # NOT degrade. The exists() check matters on its own — `sqlite3.connect`
+    # creates the file, and a diagnostic read must not materialise a database.
+    def _withheld_sets() -> tuple[set[tuple[str, str]], set[str]]:
+        from openexecutive.memory.episodic import DB_PATH
+
+        if not DB_PATH.exists():
+            return set(), set()
+        try:
+            rs = _default_review_store()
+            return (
+                rs.get_withheld_keys(ContentType.BUILTIN)
+                | rs.get_withheld_keys(ContentType.FAILURE),
+                rs.get_withheld_source_ids(),
+            )
+        except Exception:
+            # Say so. A silently degraded mirror is worse than a loud one: an
+            # SME who rejects a doc, still sees it listed here, and has no
+            # signal will conclude rejection is broken — while chat is in fact
+            # withholding it correctly.
+            logger.warning(
+                "review state unreadable; /knowledge/search is showing "
+                "unfiltered results this request",
+                exc_info=True,
+            )
+            return set(), set()
+
+    _withheld_builtin, _withheld_external = _withheld_sets()
+
+    def _is_withheld(row: dict[str, object]) -> bool:
+        md = row.get("metadata") or {}
+        md_dict = md if isinstance(md, dict) else {}
+        source_id = md_dict.get("source_id")
+        if source_id:
+            return source_id in _withheld_external
+        return (md_dict.get("domain"), md_dict.get("filename")) in _withheld_builtin
+
     builtin_hits: list[SearchHit] = []
     external_hits: list[SearchHit] = []
     want_builtin = "builtin" in include
@@ -613,7 +752,11 @@ async def search_knowledge(
         wanted_builtin = n_builtin if want_builtin else 0
         wanted_external = n_external if want_external else 0
         window = (wanted_builtin + wanted_external) * _BUILTIN_OVERFETCH_MULTIPLIER
-        raw = _query_collection(ChromaDBStore.BUILTIN_COLLECTION, window)
+        raw = [
+            r
+            for r in _query_collection(ChromaDBStore.BUILTIN_COLLECTION, window)
+            if not _is_withheld(r)
+        ]
         for r in raw:
             md = r.get("metadata") or {}
             md_dict = md if isinstance(md, dict) else {}
@@ -647,7 +790,13 @@ async def search_knowledge(
     failure_hits: list[SearchHit] = []
     if "failures" in include:
         failure_hits = _hits_from_chroma(
-            _query_collection(ChromaDBStore.FAILURES_COLLECTION, n_failures)
+            [
+                r
+                for r in _query_collection(
+                    ChromaDBStore.FAILURES_COLLECTION, n_failures
+                )
+                if not _is_withheld(r)
+            ]
         )
 
     return KnowledgeSearchResponse(

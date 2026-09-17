@@ -72,3 +72,58 @@ def test_hitl_doc_and_code_agree_on_resume() -> None:
         "Resume status disagrees between resumer.py and architecture-facts.yaml "
         "(workflows.human_in_the_loop). Update both."
     )
+
+
+def _retriever_source() -> str:
+    from openexecutive.knowledge import retriever
+
+    return Path(retriever.__file__).read_text()
+
+
+def test_retriever_never_queries_the_attachment_collection() -> None:
+    """The isolation is 'this collection is not queried', which is only ever
+    one helpful edit away from being untrue. Coupled to the constant rather
+    than the literal so a rename cannot quietly defeat it."""
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    src = _retriever_source()
+    assert "ATTACHMENT_COLLECTION" not in src, (
+        "retriever.py now references ATTACHMENT_COLLECTION. Attachments are "
+        "sender-chosen, unreviewed text with no delete path; retrieving them "
+        "is a trust-boundary change that needs its own decision and an update "
+        "to architecture-facts.yaml (knowledge.collections)."
+    )
+    assert ChromaDBStore.ATTACHMENT_COLLECTION not in src
+
+
+def test_attachment_facts_do_not_claim_domain_isolation() -> None:
+    """The retired overclaim: that a non-specialist domain kept attachment
+    chunks out of the Executive's context. An unfiltered retrieval builds no
+    `where` clause, so it matched every domain."""
+    attachments = _load_facts()["integrations"]["attachments"]
+
+    assert "never reach the Executive" not in attachments
+    assert "match no domain filter" not in attachments
+    # And it must positively name the mechanism that does the work.
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    assert ChromaDBStore.ATTACHMENT_COLLECTION in attachments
+
+
+def test_attachment_isolation_doc_and_code_agree() -> None:
+    """Couple the two: the code isolates by collection, so the doc must say
+    collection — not domain."""
+    from openexecutive.integrations import attachments as att_mod
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    code_isolates_by_collection = (
+        "ATTACHMENT_COLLECTION" in Path(att_mod.__file__).read_text()
+    )
+    doc_names_collection = (
+        ChromaDBStore.ATTACHMENT_COLLECTION
+        in _load_facts()["integrations"]["attachments"]
+    )
+    assert code_isolates_by_collection == doc_names_collection, (
+        "Attachment isolation disagrees between integrations/attachments.py "
+        "and architecture-facts.yaml (integrations.attachments). Update both."
+    )

@@ -248,12 +248,29 @@ async def test_process_attachments_concatenates_multiple_texts():
 
 def _ingest_call(filename: str, data: bytes = b"# Notes\nRevenue grew."):
     """Run `_schedule_ingest` to completion and return the `ingest_file` call."""
+    return _ingest_and_store_call(filename, data)[0]
+
+
+def _ingest_and_store_call(filename: str, data: bytes = b"# Notes\nRevenue grew."):
+    """As `_ingest_call`, plus the `ChromaDBStore(...)` construction call.
+
+    The store constructor matters on its own: it is how the ingest picks
+    which database to write to, and passing no argument silently sends the
+    chunks somewhere nothing reads.
+    """
     from openexecutive.integrations import attachments as att
+    from openexecutive.knowledge.store import ChromaDBStore
 
     mock_ingest = AsyncMock(return_value=3)
+    mock_store_cls = MagicMock()
+    # Mock the constructor, not the collection names: those are data the code
+    # under test reads, and a MagicMock attribute would make the assertion
+    # compare two mocks and pass regardless of what the code actually chose.
+    mock_store_cls.ATTACHMENT_COLLECTION = ChromaDBStore.ATTACHMENT_COLLECTION
+    mock_store_cls.COMPANY_COLLECTION = ChromaDBStore.COMPANY_COLLECTION
     with (
         patch("openexecutive.knowledge.loader.ingest_file", mock_ingest),
-        patch("openexecutive.knowledge.store.ChromaDBStore", MagicMock()),
+        patch("openexecutive.knowledge.store.ChromaDBStore", mock_store_cls),
     ):
 
         async def _drive() -> None:
@@ -265,7 +282,7 @@ def _ingest_call(filename: str, data: bytes = b"# Notes\nRevenue grew."):
         asyncio.run(_drive())
 
     mock_ingest.assert_called_once()
-    return mock_ingest.call_args
+    return mock_ingest.call_args, mock_store_cls.call_args
 
 
 def test_attachment_is_indexed_under_its_real_name_not_the_temp_path():
@@ -292,17 +309,55 @@ def test_attachment_name_is_stripped_to_a_bare_name():
     assert kwargs["source_name"] == "attachment:passwd.md"
 
 
-def test_attachment_domain_stays_outside_the_specialist_domains():
-    """Pins a deliberate gap, so a later change has to be deliberate too.
+def test_attachment_is_indexed_into_the_isolated_collection():
+    """The isolation this path depends on, pinned.
 
-    "company_docs" is not one of the specialist domains, so these chunks match
-    no domain filter and never reach the Executive. Anyone who can attach a
-    file in an integration channel would otherwise be writing into every
-    specialist's RAG context, and these rows have no removal path — they are
-    never written to company/docs/, so GET /documents does not list them and
-    DELETE /documents/{filename} 404s before reaching the store."""
-    from openexecutive.knowledge.loader import UPLOAD_DOMAINS
+    Attachments used to go to COMPANY_COLLECTION, kept out of retrieval by a
+    domain outside the specialist set. That never worked: `query` builds a
+    `where` clause only when a domain filter is truthy, and an
+    Executive-level `retrieve` passes none — so the chunks matched and came
+    back under "From your company documents". The collection is the boundary.
+    """
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    _, kwargs = _ingest_call("board-deck.md")
+
+    assert kwargs["collection"] == ChromaDBStore.ATTACHMENT_COLLECTION
+    assert kwargs["collection"] != ChromaDBStore.COMPANY_COLLECTION
+
+
+def test_attachment_rows_carry_the_removal_tag():
+    """`type` is what makes these rows deletable by a `where` clause — Chroma
+    matches exact values only, so without it a wipe means a full scan."""
+    _, kwargs = _ingest_call("board-deck.md")
+
+    assert kwargs["extra_metadata"]["type"] == "attachment"
+
+
+def test_attachment_domain_is_not_the_general_catch_all():
+    """Belt-and-braces behind the collection.
+
+    Nothing queries the attachment collection, so this domain is never read
+    today. It is chosen so that if anything ever does, the default stays
+    "not retrieved": `general` would be the worst possible value, because
+    `retriever._with_general` fans it out to every specialist.
+    """
+    from openexecutive.knowledge.loader import GENERAL_DOMAIN, UPLOAD_DOMAINS
 
     _, kwargs = _ingest_call("board-deck.md")
 
     assert kwargs["domain"] not in UPLOAD_DOMAINS
+    assert kwargs["domain"] != GENERAL_DOMAIN
+
+
+def test_attachment_ingest_uses_the_configured_vector_store():
+    """The bug this pins: `ChromaDBStore()` defaults to a RELATIVE
+    "./chroma_db" resolved against the process CWD, so with
+    VECTOR_STORE_PATH set — every container deployment — attachments were
+    written to a different database than the one the API reads."""
+    from openexecutive.config import get_settings
+
+    _, store_call = _ingest_and_store_call("board-deck.md")
+
+    assert store_call is not None, "ChromaDBStore was never constructed"
+    assert store_call.kwargs.get("persist_directory") == get_settings().vector_store_path

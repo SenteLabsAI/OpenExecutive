@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import re
@@ -33,6 +34,28 @@ GENERAL_DOMAIN = "general"
 # Domains ``POST /documents`` accepts. Anything else is a typo that would
 # silently index the document where no specialist can ever retrieve it.
 UPLOAD_DOMAINS: frozenset[str] = frozenset(DOMAIN_MAP) | {GENERAL_DOMAIN}
+
+# Chunk-id namespace for a file attached in an integration channel. The
+# sender picks the filename and the filename is the id namespace, so an
+# unprefixed ``strategy-2026.md`` would upsert over whatever else carries
+# that name. Shared between the write path
+# (``integrations.attachments``) and the migration below, which has to
+# recognise exactly what the write path produced.
+ATTACHMENT_SOURCE_PREFIX = "attachment:"
+
+# Domain tag on attachment chunks. Isolation is the collection
+# (``ChromaDBStore.ATTACHMENT_COLLECTION``), never this value — but if
+# anything ever does query that collection, this keeps the default
+# "not retrieved": it is in neither UPLOAD_DOMAINS nor DOMAIN_ALIASES, and
+# deliberately NOT ``general``, which ``retriever._with_general`` would fan
+# out to every specialist.
+ATTACHMENT_DOMAIN = "attachment"
+
+# What the pre-isolation attachment path wrote into ``domain``. Only the
+# boot migration reads it, to tell its own legacy rows from a curated
+# upload that merely happens to be named with the prefix. UPLOAD_DOMAINS
+# never accepts this value, so nothing uploaded through the API carries it.
+_LEGACY_ATTACHMENT_DOMAIN = "company_docs"
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> list[str]:
@@ -128,8 +151,25 @@ def _make_chunk_id(source: str, chunk_index: int) -> str:
     return hashlib.md5(base.encode()).hexdigest()
 
 
-def infer_domain_from_path(path: Path) -> str:
-    for part in path.parts:
+def infer_domain_from_path(path: Path, root: Path | None = None) -> str:
+    """Infer a knowledge domain from a path's components.
+
+    Pass ``root`` for content under a known tree: only the parts BELOW it are
+    scanned. Without it this walks the ABSOLUTE path, so an install rooted at
+    e.g. `/srv/product/` tags every chunk `product` no matter which domain
+    directory the file is actually in. That was merely a mis-tag until the
+    review gate began keying on `(domain, filename)` — a chunk domain that
+    disagrees with its review row's domain means the key never matches and
+    withheld content is retrieved. Callers under `knowledge/builtin/` must
+    pass the root so the metadata agrees with what `review_items` stores.
+    """
+    parts = path.parts
+    if root is not None:
+        # A path outside the root keeps its absolute parts — the caller asked
+        # for a hint, not a constraint.
+        with contextlib.suppress(ValueError):
+            parts = path.relative_to(root).parts
+    for part in parts:
         domain = DOMAIN_MAP.get(part.lower())
         if domain:
             return domain
@@ -143,6 +183,7 @@ async def ingest_file(
     collection: str = ChromaDBStore.COMPANY_COLLECTION,
     *,
     source_name: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> int:
     """Index a file on disk into a knowledge collection.
 
@@ -159,6 +200,11 @@ async def ingest_file(
     fixture-loaded ``plan.md`` on the same ids instead of duplicating each
     other, and matches how ``DELETE`` and ``list_company_docs`` already treat
     filename as the document's identity.
+
+    ``extra_metadata`` is merged into every chunk, mirroring
+    ``ingest_text_sync``. It is how a collection gets a ``type`` tag it can
+    later be deleted by: Chroma's ``where`` matches exact values only, so a
+    tag is the difference between a one-call delete and a full metadata scan.
     """
     text = extract_text_from_file(path)
     if not text.strip():
@@ -175,6 +221,7 @@ async def ingest_file(
             "filename": name,
             "source": name,
             "chunk_index": i,
+            **(extra_metadata or {}),
         }
         for i in range(len(chunks))
     ]
@@ -270,7 +317,7 @@ async def ingest_builtin_file(
     text = path.read_text(encoding="utf-8")
     if not text.strip():
         return 0
-    domain = infer_domain_from_path(path)
+    domain = infer_domain_from_path(path, root=BUILTIN_KNOWLEDGE_PATH)
     chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     metadatas: list[dict[str, Any]] = [
         {
@@ -401,6 +448,143 @@ async def reconcile_company_docs(
     return deleted, indexed
 
 
+def _is_attachment_row(metadata: dict[str, Any]) -> bool:
+    """True when a COMPANY row was written by the attachment path.
+
+    The prefix alone is not enough. A colon is legal in a filename and
+    ``POST /documents`` passes one through, so a curated upload can be called
+    ``attachment:q4-plan.md`` — matching on the name alone would migrate a
+    real company document out of the collection it belongs in, and (because
+    the file is still on disk) the boot reconcile would re-index it as
+    ``general`` on the way back, widening it to every specialist. So the name
+    has to be corroborated by ``domain="company_docs"``, the value the old
+    attachment path always wrote and the one value ``UPLOAD_DOMAINS`` will
+    never accept from an upload.
+
+    ``type="attachment"`` is checked first as defence in depth: this change
+    introduces the tag, so no shipped build ever wrote one into COMPANY, but
+    a row carrying it is unambiguously ours.
+
+    ``startswith``, not ``in`` — ``attachments-policy.md`` is a document about
+    attachments, not an attachment.
+    """
+    if metadata.get("type") == "attachment":
+        return True
+    if metadata.get("domain") != _LEGACY_ATTACHMENT_DOMAIN:
+        return False
+    return any(
+        str(metadata.get(key) or "").startswith(ATTACHMENT_SOURCE_PREFIX)
+        for key in ("filename", "source")
+    )
+
+
+def migrate_attachments_out_of_company_docs(store: ChromaDBStore) -> int:
+    """Move attachment chunks from COMPANY into the isolated collection.
+
+    Attachment rows used to be written into ``company_docs`` and kept out of
+    retrieval by a domain outside the specialist set, which never excluded
+    them (see knowledge.general_catch_all in architecture-facts.yaml).
+    Isolation is now the collection, and the rows already in COMPANY have to
+    follow.
+
+    Returns the number of chunks actually removed from COMPANY — not the
+    number attempted. A row that was copied but not deleted is still
+    retrievable, so reporting it as moved would announce the leak as closed
+    while it is open.
+
+    Idempotent: ids are reused verbatim, an id already present in the
+    destination is left alone, and once a run completes the scan that
+    precedes it finds nothing.
+
+    Synchronous on purpose. Every step here blocks — the metadata scan, the
+    text fetch, the embedding pass inside ``add_documents`` — so the caller
+    has to put it on a thread rather than merely scheduling it on the event
+    loop, which would defer the stall without avoiding it.
+
+    A note for anyone reading a zero on an install that certainly received
+    attachments: before this change the ingest path built its store with the
+    bare ``ChromaDBStore()`` default rather than ``settings.vector_store_path``,
+    so wherever those differ the rows went to a different database than the
+    one the API reads. In a container that directory is outside the data
+    volume and goes with the container; elsewhere it persists as a stray
+    ``<cwd>/chroma_db`` that no wipe path reaches and an operator should
+    remove by hand. Either way it is unreachable from here, and zero is the
+    honest answer rather than a failure.
+    """
+    candidates = [
+        chunk_id
+        for chunk_id, metadata in store.iter_chunk_metadata(
+            ChromaDBStore.COMPANY_COLLECTION
+        )
+        if _is_attachment_row(metadata)
+    ]
+    if not candidates:
+        return 0
+
+    rows = store.get_documents_by_ids(ChromaDBStore.COMPANY_COLLECTION, candidates)
+    if not rows:
+        # The scan found rows and the fetch returned none. Those two cannot
+        # both be right, and `get_documents_by_ids` reports a read failure the
+        # same way it reports an empty result — so say so rather than letting
+        # a broken read look like a clean store.
+        logger.error(
+            "attachment migration: %d row(s) matched but none could be read "
+            "from %s; leaving them in place",
+            len(candidates),
+            ChromaDBStore.COMPANY_COLLECTION,
+        )
+        return 0
+
+    # Ids collide by design: they are md5 of the same source name on both
+    # sides. A row already in the destination is a NEWER copy written by the
+    # post-fix path, so upserting the COMPANY copy over it would restore
+    # superseded text. Skip those and just drop the stale original.
+    already_there = {
+        chunk_id
+        for chunk_id, _, _ in store.get_documents_by_ids(
+            ChromaDBStore.ATTACHMENT_COLLECTION, [cid for cid, _, _ in rows]
+        )
+    }
+    fresh = [row for row in rows if row[0] not in already_there]
+
+    if fresh:
+        ids = [chunk_id for chunk_id, _, _ in fresh]
+        texts = [text for _, text, _ in fresh]
+        metadatas: list[dict[str, Any]] = []
+        for _, _, metadata in fresh:
+            # Normalise onto one shape. Nothing reads these values today —
+            # the collection is never queried — which is why it is cheap now
+            # and expensive once something does.
+            moved = dict(metadata)
+            moved["type"] = "attachment"
+            moved["domain"] = ATTACHMENT_DOMAIN
+            metadatas.append(moved)
+
+        # Write first, delete second, and never the other way round. Chroma
+        # spans no transaction across two collections: a crash between them
+        # leaves a duplicate the next run collapses on unchanged ids, while
+        # deleting first would destroy the only copy — an attachment is never
+        # written to ``company/docs/``, so nothing can re-ingest it.
+        store.add_documents(
+            texts=texts,
+            metadatas=metadatas,
+            ids=ids,
+            collection=ChromaDBStore.ATTACHMENT_COLLECTION,
+        )
+
+    stale_ids = [chunk_id for chunk_id, _, _ in rows]
+    deleted = store.delete_by_ids(ChromaDBStore.COMPANY_COLLECTION, stale_ids)
+    if deleted != len(stale_ids):
+        logger.error(
+            "attachment migration: copied %d row(s) but removed %d from %s — "
+            "the remainder are still retrievable",
+            len(stale_ids),
+            deleted,
+            ChromaDBStore.COMPANY_COLLECTION,
+        )
+    return deleted
+
+
 async def seed_builtin_knowledge(
     store: ChromaDBStore | None = None,
     force: bool = False,
@@ -420,7 +604,7 @@ async def seed_builtin_knowledge(
         # collection by openexecutive.knowledge.skills_index.seed_builtin_skills.
         if any(p in md_file.relative_to(BUILTIN_KNOWLEDGE_PATH).parts for p in ("skills", "failures")):
             continue
-        domain = infer_domain_from_path(md_file)
+        domain = infer_domain_from_path(md_file, root=BUILTIN_KNOWLEDGE_PATH)
         text = md_file.read_text(encoding="utf-8")
         chunks = chunk_text(text)
 
@@ -471,7 +655,7 @@ async def seed_failures(
 
     total = 0
     for md_file in FAILURES_KNOWLEDGE_PATH.rglob("*.md"):
-        domain = infer_domain_from_path(md_file)
+        domain = infer_domain_from_path(md_file, root=BUILTIN_KNOWLEDGE_PATH)
         text = md_file.read_text(encoding="utf-8")
         if not text.strip():
             continue

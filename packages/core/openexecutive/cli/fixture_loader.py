@@ -460,6 +460,7 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
         where={"type": "recent_research"},
     )
     store.delete_notion_docs()
+    store.delete_attachment_docs()
     from openexecutive.knowledge.notion_sync import reset_local_state
 
     reset_local_state(profile_path=settings.company_profile_path)
@@ -613,6 +614,45 @@ async def unload_fixture(settings: Any) -> dict[str, Any]:
         return summary
 
 
+def _reregister_surviving_user_knowledge(db_path: Path) -> int:
+    """Register non-shipped knowledge files left on disk after a reset.
+
+    `reset_all_state` wipes `review_items`, but user-authored docs under
+    `knowledge/builtin/` (including `failures/`) and their indexed chunks are
+    not removed. Anything the shipped manifest does not list is the operator's
+    own content, so it goes back as `pending`: withheld from retrieval, and
+    listed in the review queue. Returns the number registered.
+    """
+    from openexecutive.knowledge.loader import BUILTIN_KNOWLEDGE_PATH
+    from openexecutive.knowledge.review_store import (
+        ContentType,
+        ReviewStore,
+        build_item_id,
+    )
+    from openexecutive.knowledge.shipped_manifest import SHIPPED_BUILTIN_FILES
+
+    store = ReviewStore(db_path=db_path)
+    registered = 0
+    for md in sorted(BUILTIN_KNOWLEDGE_PATH.rglob("*.md")):
+        rel = md.relative_to(BUILTIN_KNOWLEDGE_PATH).as_posix()
+        # Skills have separate management and are absent from the manifest by
+        # construction, so they must not be swept in here.
+        if rel.startswith("skills/") or rel in SHIPPED_BUILTIN_FILES:
+            continue
+        content_type = (
+            ContentType.FAILURE if rel.startswith("failures/") else ContentType.BUILTIN
+        )
+        domain, filename = md.parent.name, md.name
+        store.register(
+            item_id=build_item_id(content_type, domain, filename),
+            content_type=content_type,
+            domain=domain,
+            filename=filename,
+        )
+        registered += 1
+    return registered
+
+
 async def reset_all_state(
     settings: Any, *, app_state: Any | None = None
 ) -> dict[str, Any]:
@@ -664,6 +704,7 @@ async def reset_all_state(
             where={"type": "recent_research"},
         )
         store.delete_notion_docs()
+        store.delete_attachment_docs()
         from openexecutive.knowledge.notion_sync import reset_local_state
 
         reset_local_state(profile_path=settings.company_profile_path)
@@ -731,6 +772,70 @@ async def reset_all_state(
                 *PER_CLIENT_CACHE_TABLES,
             ),
         )
+
+        # 3c. Knowledge review state (same DB as the episodic rows above). A
+        # "factory reset" that keeps the previous operator's approvals,
+        # rejections and SME annotations is not a factory reset — and a
+        # rejection still suppresses retrieval, so a stale one would silently
+        # withhold knowledge on the new box. Wipe both tables (child first for
+        # FK ordering), then re-register the shipped docs so the reset state is
+        # trusted defaults rather than an empty table.
+        # Resolve the review DB through ``memory.episodic.DB_PATH`` like every
+        # other consumer (``api/routes/review._store``,
+        # ``retriever._default_review_store``). ``review_store.DB_PATH`` is
+        # bound at import, so using it here could wipe a different file than
+        # the one the app reads under a runtime override.
+        from openexecutive.knowledge.review_store import ReviewStore
+        from openexecutive.memory.episodic import DB_PATH as _REVIEW_DB_PATH
+
+        # Guarded like the episodic wipe above: never materialise a DB the
+        # caller never created. ``sqlite3.connect`` creates the file, so an
+        # unguarded initialize_db + sync would leave ~81 rows in a stray DB.
+        if _REVIEW_DB_PATH.exists():
+            # ``_delete_all_rows`` guards a missing FILE but not a missing
+            # TABLE, and nothing guarantees the review schema exists here (a
+            # slot restored before these tables shipped, or a test DB built
+            # table-by-table). ``initialize_db`` is idempotent.
+            ReviewStore.initialize_db(_REVIEW_DB_PATH)
+            _delete_all_rows(
+                _REVIEW_DB_PATH,
+                ("review_annotations", "review_items"),
+            )
+            try:
+                ReviewStore.sync_builtin_registrations(_REVIEW_DB_PATH)
+            except Exception:
+                logger.exception("reset: sync_builtin_registrations failed")
+            # External (OER) sources too, or they carry no review rows until
+            # the next process restart re-syncs them in the lifespan. Same
+            # selector as api/main.py: only sources ingested onto this disk.
+            try:
+                from openexecutive.knowledge.external_sources import load_manifest
+                ingested = [
+                    {"id": src.id, "domains": src.domains}
+                    for src in load_manifest()
+                    if src.cache_dir.exists() and any(src.cache_dir.iterdir())
+                ]
+                if ingested:
+                    ReviewStore.sync_external_registrations(ingested, _REVIEW_DB_PATH)
+            except Exception:
+                logger.exception("reset: sync_external_registrations failed")
+
+            # The wipe above deleted every review decision, but this reset does
+            # NOT delete user-authored knowledge files or their Chroma chunks —
+            # they live inside the installed package and survive. Left alone,
+            # a document an SME had REJECTED would come back retrievable with
+            # no review row at all: un-suppressed, and invisible in the queue.
+            #
+            # So re-register everything in the tree that the manifest does not
+            # claim, as `pending` — withheld from retrieval AND visible for a
+            # fresh decision. Deliberately conservative: a previously-approved
+            # upload comes back needing review, which is the safe direction.
+            # Deleting the files instead would make a reset silently destroy
+            # the operator's own work.
+            try:
+                _reregister_surviving_user_knowledge(_REVIEW_DB_PATH)
+            except Exception:
+                logger.exception("reset: re-registering user knowledge failed")
 
         # 4. People (child tables first to satisfy FK ordering)
         from openexecutive.people import store as people_store

@@ -524,6 +524,27 @@ def _schedule_thread_rename(
     task.add_done_callback(_thread_rename_tasks.discard)
 
 
+def _is_rostered(discord_user_id: str) -> bool:
+    """Whether this Discord user maps to a Person on the roster.
+
+    The same lookup ``_handle_message``'s roster gate makes, exposed so
+    ``on_message`` can skip work it would otherwise do *before* that gate
+    runs. Kept as a boolean rather than returning the Person: the caller
+    only needs the decision, and the gate below still does its own lookup
+    so its audit rows keep their existing shape.
+    """
+    if not discord_user_id:
+        return False
+    from openexecutive.people.store import find_person_by_discord_id
+
+    try:
+        return find_person_by_discord_id(discord_user_id) is not None
+    except Exception:
+        # A roster lookup that errors must not be read as "rostered".
+        logger.exception("Discord: roster lookup failed for user=%s", discord_user_id)
+        return False
+
+
 async def _handle_message(
     text: str,
     discord_user_id: str,
@@ -539,6 +560,7 @@ async def _handle_message(
     gate_eligible: bool = False,
     bot_display_name: str | None = None,
     attachment_blocks: list[dict] | None = None,
+    attachment_count: int = 0,
     co_present_discord_user_ids: list[str] | None = None,
     response_router: Callable[[str], Awaitable[MentionRouteResult]] | None = None,
 ) -> None:
@@ -552,6 +574,11 @@ async def _handle_message(
     `attachment_blocks` is a list of Anthropic image content blocks assembled
     by process_attachments(). Text-extracted document content is expected to
     already be prepended to `text` by the caller.
+
+    `attachment_count` is how many files the message carried, recorded in the
+    audit row. It is passed separately from `attachment_blocks` because the
+    caller skips attachment processing for an unrostered sender — that is
+    exactly the case where /audit should still show a file was sent.
 
     `response_router`, if provided, is awaited with the full reply text
     AFTER ``executive.chat`` returns and BEFORE the chunked send loop.
@@ -576,6 +603,7 @@ async def _handle_message(
             "message_id": message_id,
             "thread_id": thread_id,
             "text_len": len(text),
+            "attachments": attachment_count,
         },
     )
 
@@ -1237,8 +1265,20 @@ def create_discord_bot():
         # Process file attachments — download, extract text / build image blocks.
         # Must run BEFORE the send_fn closure is called so we can prepend
         # extracted text to `cleaned` and pass image_blocks through.
+        #
+        # Roster-gated separately here, because that "before" put it before
+        # _handle_message's gate too: an unrostered sender's message was
+        # dropped, but not until after we had downloaded their file and
+        # indexed its text.
+        #
+        # The message still goes to _handle_message, so a rejected attempt
+        # still produces both the integration_inbound row and the
+        # rejected_unknown_sender row. What changes is that row's preview:
+        # extracted attachment text used to be prepended to `cleaned` and so
+        # appeared in it. Not extracting an unrostered sender's file is the
+        # point, and `attachments` below records that one was sent.
         att_image_blocks: list[dict] = []
-        if message.attachments:
+        if message.attachments and _is_rostered(discord_user_id):
             try:
                 from openexecutive.integrations.attachments import (
                     AttachmentItem,
@@ -1310,6 +1350,7 @@ def create_discord_bot():
         # replies that arrive in the same DM or thread channel.
         await _handle_message(
             text=cleaned,
+            attachment_count=len(message.attachments or []),
             discord_user_id=discord_user_id,
             discord_channel=discord_channel,
             message_id=message_id,

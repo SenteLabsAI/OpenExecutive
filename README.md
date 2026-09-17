@@ -5,7 +5,12 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
 
-An AI system that acts as your company's virtual executive team — a senior advisor with Harvard MBA-level knowledge, customized for your specific business.
+Open Executive is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also be configured as a digital twin to replicate a busy leader—responding in alignment with their specific role and insights—allowing leaders to truly scale their impact through AI.
+
+It meets people where they already work, with integrations for Slack, Discord, Telegram, email, Google Workspace, Notion and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
+
+A managed cloud offering is coming (https://openexecutive.ai), where you can get access without deploying anything yourself.
+
 
 ## Demo
 
@@ -125,17 +130,29 @@ Open http://localhost:3000 to start chatting with your executive. The API runs o
 > downloads a small embedding model (~90 MB) to build the local vector index — so the
 > first `make dev` takes a few minutes before the app is ready. Subsequent starts are fast.
 
+> **On Windows:** run `make` from Git Bash or WSL, not PowerShell or `cmd`.
+> The recipes are POSIX shell (`if [ -f .env ]; …`), and GNU Make falls back to
+> `cmd.exe` when no `sh` is on PATH — which fails with
+> `-f was unexpected at this time`. If Make still picks the wrong shell, point
+> it at one: `make dev SHELL="C:/Program Files/Git/bin/sh.exe"`. Note that
+> `make stop` uses `lsof` and has no Windows equivalent; stop the two dev
+> servers from their own terminals instead.
+
 **For contributors not using `make`:**
 
 ```bash
 cd packages/core
 uv sync
-source .venv/bin/activate
-uvicorn openexecutive.api.main:app --reload --port 8000
+uv run uvicorn openexecutive.api.main:app --reload --port 8000
 
 # In a second terminal
 cd packages/ui && npm install && npm run dev
 ```
+
+`uv run` executes inside the project's virtualenv without activating it, so
+these commands are the same on macOS, Linux and Windows. (Activating manually
+works too, but the path differs per platform: `.venv/bin/activate` on
+macOS/Linux, `.venv\Scripts\Activate.ps1` on Windows.)
 
 ## Run the Discord Bot
 
@@ -180,6 +197,8 @@ The first time you visit the app, you'll be guided through a wizard to set up yo
 - Optional: financial position, document upload
 
 After onboarding, the Executive will reference your specific company context in every response.
+
+The built-in knowledge base is **trusted by default** — the Executive can use it straight away, and the Review queue starts empty rather than asking you to sign off on ~81 shipped documents. Items reach the queue when you upload a document, edit an existing file, or deliberately send a domain for review from the Review page. While a domain is being reviewed its content is withheld from the Executive, so the UI confirms the count before it starts.
 
 ## Interfaces
 

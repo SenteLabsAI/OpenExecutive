@@ -691,13 +691,11 @@ knowledge:
         path, an uploaded plan.md and a fixture-loaded plan.md are the same
         document rather than two.
 
-        Chat/email attachments (integrations.attachments) share this
-        collection but are namespaced `attachment:<bare filename>`. The
-        sender chooses that filename and the filename is the id namespace, so
-        an unprefixed one would upsert straight over the curated company
-        document it collides with — same "unvetted text must not blend into
-        curated uploads" reasoning that isolates NOTION_WIKI and
-        RECENT_RESEARCH, applied within a collection.
+        Chat/integration attachments are NOT in this collection — see
+        ATTACHMENTS below. They used to be, isolated only by a domain outside
+        the specialist set, which isolated nothing. Rows left by that path are
+        migrated out on boot by
+        loader.migrate_attachments_out_of_company_docs, not purged.
 
         RECONCILE ON BOOT. The lifespan calls
         loader.reconcile_company_docs(store, docs_dir), which drops rows whose
@@ -743,6 +741,37 @@ knowledge:
         retriever queries it with a small n and appends it under a clearly-
         labelled "Recent research (unverified, web-sourced …)" section ranked
         BELOW the curated company-documents section.
+    - name: ATTACHMENTS
+      what: |
+        Files attached in an integration channel (ChromaDB collection
+        `inbound_attachments`), written only by
+        integrations.attachments._schedule_ingest. Rows carry
+        `type=attachment`, domain `attachment`, filename
+        `attachment:<bare name>`.
+
+        The one collection retriever.retrieve NEVER queries. An attachment's
+        content is chosen by whoever sent the message, passes through no
+        upload endpoint, gets no review, and leaves no copy in docs/. It is
+        already inlined into the turn that carried it, which is where it is
+        useful; what it must not become is company knowledge resurfacing in
+        later, unrelated turns. NOTION_WIKI and RECENT_RESEARCH are
+        queried-but-labelled; this one is not queried at all.
+
+        Wiped per company by store.delete_attachment_docs() on client-slot
+        restore and fixture reset — drop-and-recreate, not a where-delete,
+        because a surviving row there is one company's attachment visible to
+        the next.
+
+        Caveat for anyone auditing an existing install: before this
+        collection existed, the ingest built its store with the bare
+        ChromaDBStore() default rather than settings.vector_store_path, so
+        wherever that differs from VECTOR_STORE_PATH the rows went to a
+        different database than the API reads. In a container that directory
+        is outside the data volume and goes with the container; on a
+        non-container install with a stable CWD it persists as a stray
+        <cwd>/chroma_db holding the plaintext of every attachment ever sent,
+        which no wipe path reaches and an operator should delete by hand. The
+        boot migration cannot see it either way and correctly reports zero.
   domain_aliases_source: openexecutive.knowledge.retriever.DOMAIN_ALIASES
   dedupe_note: Multi-domain chunks can fan out to multiple rows; the retriever dedupes by text before returning.
   upload_domains: |
@@ -764,7 +793,19 @@ knowledge:
     external OER sources, and external_sources falls back to ["general"] for a
     source that declares no domains; widening BUILTIN too would fan unvetted
     third-party material into every specialist's context. NOTION_WIKI and
-    RECENT_RESEARCH keep their existing filters.
+    RECENT_RESEARCH keep their existing filters, and ATTACHMENTS is not
+    queried at all.
+
+    The property that makes all of this easy to get wrong: _with_general
+    returns a falsy filter UNCHANGED, and ChromaDBStore.query builds a `where`
+    clause only when the filter is truthy. So a retrieve with no domain filter
+    and no specialist — every Executive-level turn, as opposed to the
+    specialist fan-out — queries COMPANY with no `where` at all and matches
+    EVERY domain, including values chosen precisely because no specialist maps
+    to them. An unrecognised domain excludes nothing. That is what put inbound
+    attachments in front of the Executive under "From your company documents",
+    and it is why isolation belongs in the collection, never in a domain
+    value.
 
 memory:
   episodic_db: ./episodic_memory.db
@@ -773,6 +814,7 @@ memory:
     - initiatives
     - advice_given
     - scheduled_actions
+    - "app_migrations — one-shot data migrations (name PK, applied_at). Schema DDL stays idempotent and is NOT recorded here; only sweeps that must run exactly once per DB insert a row. First user is `cancel_orphaned_talent_reminders` (2026-09), deletable in the release after next."
   formatter: openexecutive.memory.episodic.format_for_prompt — produces a compact prompt block of recent decisions/initiatives.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
@@ -1262,7 +1304,16 @@ scheduler:
     through whichever channel was specified when the row was enqueued —
     `telegram`, `slack_dm`, `discord_dm`, `email` (requires MCP gateway
     for Gmail), or `__internal__` (bypasses outbound dispatch; used for
-    workflow steps and the nudge_scan heartbeat). Department-scoped
+    workflow steps and the nudge_scan heartbeat). Rows a REMOVED feature
+    left pending drain two ways: `__internal__` kinds (the old
+    `onboarding_ramp` / `onboarding_kickoff` / `onboarding_checkin`) fall
+    through the generic short-circuit — marked done, logged once, no
+    dispatch; but the removed talent workflows scheduled `ad_hoc`
+    reminders on the principal's REAL DM channel, which the short-circuit
+    never sees, so `memory.episodic.cancel_orphaned_talent_reminders`
+    cancels them by intent-text prefix at API startup and on slot schema
+    init, bounded by an `app_migrations` marker row (runs once per DB).
+    Department-scoped
     actions pass through the authority gate first
     (`departments.authority.gate_action`), which can `propose` (route to
     an approver via alert, not dispatched), `escalate` (alert + dispatch),
@@ -2201,10 +2252,140 @@ external_monitoring:
 
 review:
   store: openexecutive.knowledge.review_store.ReviewStore (shares episodic_memory.db).
+  default_state: |
+    Shipped content is TRUSTED ON ARRIVAL. `sync_builtin_registrations` and
+    `sync_external_registrations` register `approved` with a NULL
+    `reviewed_at`, so a new instance starts with an EMPTY review queue.
+    Before this, all 81 built-in docs registered `pending`, and a brand-new
+    box greeted its first user with "81 items need review" — work nobody had
+    a basis to do on day one, gating nothing.
+
+    PROVENANCE IS AN EXPLICIT COLUMN FED BY A COMMITTED MANIFEST — never
+    inferred, and never re-derived from the filesystem. Two mistakes were
+    caught here in review, both of which silently approved a user's own
+    unvetted document and labelled it "shipped" in the UI:
+      1. Keying on (pending, reviewed_at NULL). A brand-new upload via
+         `POST /knowledge/builtin` -> `ReviewStore.register()` has exactly
+         that shape.
+      2. Keying on "a .md file exists under knowledge/builtin/". That route
+         writes the user's file into that SAME tree
+         (`api/routes/knowledge._resolve_path`), so a directory scan re-flagged
+         uploads as shipped on the next boot.
+    So `review_items.trusted_default` (INTEGER, default 0; additive ALTER for
+    older DBs) is set to 1 only for paths listed in
+    `knowledge/shipped_manifest.py::SHIPPED_BUILTIN_FILES`, which
+    `sync_builtin_registrations` iterates instead of rglobbing the tree.
+    Regenerate that manifest when adding or removing a built-in doc;
+    `test_shipped_manifest_matches_git` fails on drift. `register()` never
+    sets the flag, so user content stays `trusted_default = 0` forever.
+
+    Two states, read together:
+      - trusted_default=1, approved, reviewed_at IS NULL -> shipped, unvetted
+      - approved + reviewed_at set                       -> an SME signed off
+    `count_trusted_defaults_by_domain()` counts the first kind and drives the
+    "Curate N" affordance. The UI reads `trusted_default` off the API rather
+    than inferring it.
+
+    MIGRATION ORDER MATTERS. `ReviewStore.backfill_trusted_defaults()` must run
+    AFTER both registration syncs, because it only touches rows they have
+    flagged `trusted_default = 1`. Call sites: `api/main.py` lifespan and
+    `clients/slots._ensure_schemas`. A `review_meta` marker row
+    (`trusted_defaults_backfill_v1`) makes it fire exactly once, written under
+    `BEGIN IMMEDIATE` with `INSERT OR IGNORE` so two workers booting together
+    cannot raise a UNIQUE violation out of the lifespan. The marker lives in
+    `review_meta` rather than `PRAGMA user_version` because
+    `episodic_memory.db` is shared with episodic memory, alerts, people,
+    talent and more.
+
+    The migration's rule is NO SHIPPED DOC LOSES RETRIEVABILITY ON UPGRADE.
+    Its only exclusion is `reviewed_at IS NULL` (which `set_status` always
+    stamps, so every explicit approve/reject is skipped). Notes and
+    annotations deliberately do NOT hold a row back: `retrieve`
+    injects annotations by DOMAIN regardless of item status, so withholding an
+    annotated doc would feed the Executive a correction to a document it can
+    no longer see.
   effect_on_retrieval: |
-    Rejected items are filtered out of every retrieval. Approved items
-    can be promoted in priority. The Executive never sees pending items
-    until an SME approves them.
+    WITHHELD = `pending` OR `rejected`. `get_withheld_filenames(content_type)`
+    is the single query the retrieval path uses; it replaced the old
+    rejected-only lookups, which no longer exist.
+
+    Both `retrieve` and `retrieve_failures` apply it, and so does
+    `POST /knowledge/search` — the diagnostic panel documents itself as
+    showing what RAG would surface, so it drops withheld rows too. It
+    degrades to unfiltered if review state is unreadable (a read-only
+    diagnostic should not 500, and must not create the DB file);
+    `retrieve` is the enforcing gate and does NOT degrade. The failures
+    path is the one that used to leak: failure case studies are registered
+    for review but indexed into FAILURES_COLLECTION, and `retrieve_failures`
+    consulted no review state at all, so rejecting a failure case study did
+    nothing.
+
+    The gate is now real. It could only be made real once shipped content
+    defaulted to approved — enforcing it beforehand would have left a fresh
+    instance with zero retrievable knowledge.
+
+    `needs_revision` is deliberately NOT withheld. `touch_modified` flips an
+    item there on ANY content edit, so withholding it would make editing a
+    file in the knowledge UI silently delete it from retrieval. Approved
+    items can still be promoted in priority.
+
+    The filter keys on the `(domain, filename)` PAIR that Chroma metadata
+    carries. Bare filename was both ambiguous and caller-choosable:
+    `POST /knowledge/builtin` accepts any `(domain, filename)`, so uploading a
+    file named after a shipped doc in a different domain silently withheld
+    that shipped doc from every specialist. `get_priority_map` uses the same
+    key for the same reason. The old design leaned on "all shipped basenames
+    are unique", which only a test over the shipped tree ever checked and
+    which nothing enforced at the write path.
+
+    IDENTITY IS NAMESPACED. `build_item_id` is the single constructor, with
+    three disjoint namespaces: `builtin:<domain>:<file>`,
+    `failure:<domain>:<file>`, `external:<source_id>`. Failure case studies
+    used to fold into `builtin:`, which is the namespace a user upload reaches
+    — and since no file sits at `knowledge/builtin/<domain>/<file>` for a
+    failure doc, `create_builtin_file`'s exists() guard never fired, so an
+    upload INSERT-OR-IGNOREd onto the shipped row and inherited `approved` +
+    `trusted_default = 1`. `_migrate_failure_namespace` (marker
+    `failure_namespace_v1`) re-keys existing rows, carrying status,
+    reviewed_at, notes and annotations across under `PRAGMA
+    defer_foreign_keys`. `create_builtin_file` also refuses outright to write
+    onto a `trusted_default = 1` row, so a future id-space change cannot
+    silently re-open it.
+  curation: |
+    Opt-in, per domain. `POST /review/curate {domain, action: start|stop}`
+    moves a domain's untouched trusted defaults to `pending` (and back).
+    Both directions require `trusted_default = 1 AND reviewed_at IS NULL`, so
+    neither a user's own upload nor an item an SME decided on is ever moved.
+
+    `domain` is REQUIRED — there is no "curate everything" selector. While a
+    domain is curated its items are withheld, so no single call may take the
+    whole knowledge base away from the Executive. The UI confirms with the
+    exact count before starting.
+  bulk_approve: |
+    `POST /review/bulk-approve` selects by `domain` (min_length=1 —
+    the store reads a falsy domain as "no filter", so an empty string would
+    widen a scoped call to every pending item), an explicit `item_ids` list
+    (over BULK_MAX_IDS=500 raises rather than silently truncating), or
+    `all_pending: true`. A call with no selector is a 400 —
+    the same "a bulk call must always carry a selector" rule as
+    `/alerts/bulk-ack`. Returns `{approved_count, item_ids}` and writes a
+    `review_bulk_approve` audit event; `/review/curate` writes `review_curate`.
+  reset_and_slots: |
+    `reset_all_state` wipes `review_annotations` + `review_items` (child
+    first) and re-registers the shipped docs — built-in and any ingested OER
+    sources. It then re-registers, as `pending`, every `.md` under
+    `knowledge/builtin/` the manifest does NOT claim: the reset does not
+    delete user-authored files or their Chroma chunks, so without this a doc
+    an SME had REJECTED came back retrievable with no review row at all —
+    un-suppressed and invisible in the queue. Conservative on purpose, since
+    a previously-approved upload returning for review is the safe direction,
+    and deleting the operator's files would be worse. This means a reset no
+    longer
+    inherits the previous operator's approvals and rejections — a stale
+    rejection would otherwise keep suppressing retrieval on the new box.
+    `clients.slots._ensure_schemas` runs `sync_builtin_registrations` after
+    `initialize_db`, so a newly activated client slot has its trusted
+    defaults immediately instead of an empty table until the next restart.
 
 workflows:
   contract: Structured input → ordered named steps → rendered Markdown artifact.
@@ -2237,7 +2418,9 @@ workflows:
     above; multi-step auto-continuation is the gap.
 
     NO BUILT-IN workflow currently yields the gate — `offer_approval` did,
-    and it was removed with the talent vertical. Only user-created dynamic
+    and it was removed with the talent vertical. (`exec_search_brief` survived
+    that removal — it is an advisory CHRO brief with no gate and no pipeline
+    dependency.) Only user-created dynamic
     workflows pause today. A dynamic workflow that pauses must be designed
     AROUND the resume gap: yield `result` + `artifact` BEFORE the gate (the
     runner never reaches `complete_run` on a paused run) and persist anything
@@ -2587,34 +2770,53 @@ integrations:
     extracted to Anthropic vision content blocks and forwarded to the
     Executive in the same turn as the text. Inbound documents
     (PDF/DOCX/TXT/MD/CSV) have their text extracted and inlined into the
-    user message AND are indexed into the ChromaDB ``company_docs``
-    collection in a fire-and-forget background task, so attachments
-    surface in future RAG retrieval. Per-file cap 20 MB; extracted text
+    user message AND are indexed into the ChromaDB
+    ``inbound_attachments`` collection in a fire-and-forget background
+    task. Per-file cap 20 MB; extracted text
     truncated to 40 000 chars. Web chat exposes this through
     ``POST /chat/upload`` (multipart) — capped at 5 files per turn.
 
-    Indexed under ``source_name="attachment:<bare filename>"`` and domain
-    ``general``. Both matter. The name is the chunk-id namespace and the
-    retrieval citation, and an attachment's filename is chosen by whoever
-    sent the message — unprefixed, an emailed ``strategy-2026.md`` would
-    upsert straight over the curated company document of that name, so
-    inbound content stays in its own namespace and its provenance is
-    visible in the ``[filename]`` citation. (``Path(...).name`` strips
-    directory components first.)
+    Indexed under ``source_name="attachment:<bare filename>"``, domain
+    ``attachment``, metadata ``type=attachment``. The name is the chunk-id
+    namespace and the retrieval citation, and an attachment's filename is
+    chosen by whoever sent the message — unprefixed, an inbound
+    ``strategy-2026.md`` would upsert over the curated company document of
+    that name, so inbound content stays in its own namespace and its
+    provenance is visible. (``Path(...).name`` strips directory components
+    first.) The prefix does NOT separate senders from each other: ids are
+    md5 of the prefixed name alone, so two senders' ``notes.md`` collide.
+    Inert while nothing reads the collection, and the first thing to fix if
+    that changes.
 
-    The domain stays ``company_docs``, which is deliberately NOT one of the
-    specialist domains: these chunks match no domain filter and so do not
-    reach the Executive. Leaving them inert is a decision, not an oversight —
-    anyone who can attach a file in an integration channel would otherwise be
-    writing into every specialist's RAG context, and these rows have no
-    removal path (never written to docs/, so GET /documents does not list them
-    and DELETE /documents/{filename} 404s before reaching the store). Making
-    them retrievable needs its own change, with a delete path alongside it.
+    Isolation is the COLLECTION. ``inbound_attachments`` is the one
+    collection ``retriever.retrieve`` never queries at all, so an attachment
+    cannot resurface as company knowledge in a later, unrelated turn. It is
+    still inlined into the turn that carried it, which is where it is useful.
+    The domain value is belt-and-braces behind that: ``attachment`` is in
+    neither UPLOAD_DOMAINS nor DOMAIN_ALIASES, and deliberately not
+    ``general``, which ``_with_general`` would fan out to every specialist.
+
+    What this replaced, because the reasoning was wrong and should not come
+    back: the rows lived in ``company_docs`` under domain ``company_docs``,
+    on the premise that a domain outside the specialist set matched no
+    filter. It matched every one — the mechanism is written up once under
+    knowledge.general_catch_all. They came back under "From your company
+    documents", top-ranked and indistinguishable from a curated upload.
+    ``loader.migrate_attachments_out_of_company_docs`` moves the
+    legacy rows across on boot (write-then-delete: the store holds the only
+    copy). Wiped per company by ``store.delete_attachment_docs()`` on
+    client-slot restore and fixture reset.
+
+    Attachment processing is roster-gated on Discord (``_is_rostered`` in
+    ``on_message``): it used to run before ``_handle_message``'s gate, so an
+    unrostered sender's file was downloaded and indexed before their message
+    was dropped. There is still no operator surface listing these rows —
+    ``GET /documents`` is a filesystem listing and attachments are never
+    written to docs/.
 
     Passing the staging tempfile path as the identity was the #113 bug on this
     path too: duplicate chunks on every re-send, and no filename any API call
-    could delete. The boot reconcile drops their orphans rather than
-    recovering them, there being no file on disk to recover from.
+    could delete.
   broadcast_tools: |
     openexecutive.orchestrator.broadcast_tools — two new tools exposed
     to the Executive alongside the existing per-Person DM tools:
@@ -3159,8 +3361,8 @@ clients:
     the restored dirs, and recent_research artifacts are wiped (same rule as
     fixtures: per-company research never crosses companies). Activating a
     blank slot (no state.db yet) factory-wipes the per-client tables and
-    re-seeds defaults (departments, onboarding templates, principal briefs,
-    cadences) so the new client's Today works without a process restart.
+    re-seeds defaults (departments, principal briefs, cadences) so the new
+    client's Today works without a process restart.
     Wipe lists must cover the DERIVED CACHES, not just authored state.
     briefing_narrative and person_insights were wiped by NO path, and because
     /today serves the cached narrative unconditionally (regenerating only in a
@@ -3284,7 +3486,7 @@ clients:
     state.db read-only IN PLACE (sqlite file:...?mode=ro URI — no
     activation, no lock, cannot block or be blocked by a switch). Counts:
     pending + overdue scheduled actions, awaiting replies, unread alerts,
-    onboarding tasks due within 7 days or already overdue (deliberate — overdue ramp tasks must not drop off the board); plus engagement metadata and
+    plus engagement metadata and
     days_to_renewal. Honesty contract: parked data is as fresh as the
     slot's saved_at (stamped on every card); a broken slot degrades to one
     error-flagged card, never a failed board. Every table query is

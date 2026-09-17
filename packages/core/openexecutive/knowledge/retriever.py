@@ -233,8 +233,11 @@ def retrieve(
         store = ChromaDBStore(persist_directory=settings.vector_store_path)
 
     rs = review_store or _default_review_store()
-    rejected_builtin = rs.get_rejected_filenames(ContentType.BUILTIN)
-    rejected_external = rs.get_rejected_source_ids()
+    # Withheld = pending or rejected. Shipped content registers as an approved
+    # trusted default, so anything pending was deliberately queued for
+    # curation and must not reach a specialist until it is resolved.
+    withheld_builtin = rs.get_withheld_keys(ContentType.BUILTIN)
+    withheld_external = rs.get_withheld_source_ids()
     priority_map = rs.get_priority_map(ContentType.BUILTIN)
 
     # Over-fetch slightly so post-query text dedup (multi-domain chunks share
@@ -252,18 +255,22 @@ def retrieve(
             )
         )
 
-        # Filter out rejected files and rejected OER sources, drop weak
+        # Filter out withheld files and withheld OER sources, drop weak
         # matches, then sort by SME priority.
         filtered_builtin = [
             r
             for r in raw_builtin
-            if r["metadata"].get("filename") not in rejected_builtin
-            and r["metadata"].get("source_id") not in rejected_external
+            if (r["metadata"].get("domain"), r["metadata"].get("filename"))
+            not in withheld_builtin
+            and r["metadata"].get("source_id") not in withheld_external
             and _passes_threshold(r, distance_threshold)
         ]
         filtered_builtin.sort(
             key=lambda r: PRIORITY_ORDER.get(
-                priority_map.get(r["metadata"].get("filename", ""), Priority.NORMAL.value),
+                priority_map.get(
+                    (r["metadata"].get("domain", ""), r["metadata"].get("filename", "")),
+                    Priority.NORMAL.value,
+                ),
                 1,
             )
         )
@@ -368,7 +375,12 @@ def retrieve(
         parts.append("### From executive knowledge base:")
         for r in builtin_results:
             filename = r["metadata"].get("filename", "unknown")
-            prio = priority_map.get(filename, Priority.NORMAL.value)
+            # Same (domain, filename) key the map is built on — a bare
+            # filename here would miss every entry and silently drop the
+            # priority label from every citation.
+            prio = priority_map.get(
+                (r["metadata"].get("domain", ""), filename), Priority.NORMAL.value
+            )
             prefix = "[verified - priority source] " if prio == Priority.HIGH.value else ""
             parts.append(f"[{filename}] {prefix}{r['text']}")
 
@@ -386,12 +398,18 @@ def retrieve_failures(
     specialist_name: str | None = None,
     n_results: int = 2,
     store: ChromaDBStore | None = None,
+    review_store: ReviewStore | None = None,
 ) -> str:
     """Query the failure_cases collection and return formatted context.
 
     Returns an empty string if no result clears the distance threshold —
     tangential failure stories are noise, so we prefer surfacing nothing
     over surfacing a poor match.
+
+    Failure case studies are registered for review like any other built-in
+    doc, so the same withheld filter applies here. Without it, rejecting a
+    failure case study did nothing at all — these live in their own Chroma
+    collection, which this path used to query without consulting review state.
     """
     from openexecutive.config import get_settings
 
@@ -413,7 +431,18 @@ def retrieve_failures(
     # Cosine distance threshold (configurable via KNOWLEDGE_DISTANCE_THRESHOLD):
     # a larger distance means the match is too weak to be useful.
     threshold = settings.knowledge_distance_threshold
-    filtered = _dedupe_by_text([r for r in raw if r["distance"] <= threshold])
+    rs = review_store or _default_review_store()
+    # FAILURE, not BUILTIN: failure case studies have their own id namespace
+    # so a user upload cannot collide with a shipped one.
+    withheld = rs.get_withheld_keys(ContentType.FAILURE)
+    filtered = _dedupe_by_text(
+        [
+            r
+            for r in raw
+            if (r["metadata"].get("domain"), r["metadata"].get("filename")) not in withheld
+            and r["distance"] <= threshold
+        ]
+    )
     results = filtered[:n_results]
 
     # Audit emit (failure cases collection). Fire even when empty so the

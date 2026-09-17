@@ -299,10 +299,12 @@ def test_retrieve_widens_only_the_company_filter(monkeypatch: pytest.MonkeyPatch
 
 
 class _NullReviewStore:
-    def get_rejected_filenames(self, *a: Any, **k: Any) -> set[str]:
+    # `get_withheld_*` superseded the rejected-only lookups when `pending`
+    # became a real retrieval gate; these are the methods `retrieve()` calls.
+    def get_withheld_keys(self, *a: Any, **k: Any) -> set[tuple[str, str]]:
         return set()
 
-    def get_rejected_source_ids(self, *a: Any, **k: Any) -> set[str]:
+    def get_withheld_source_ids(self, *a: Any, **k: Any) -> set[str]:
         return set()
 
     def get_priority_map(self, *a: Any, **k: Any) -> dict[str, str]:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from openexecutive.knowledge.review_store import (
+    BULK_MAX_IDS,
     Annotation,
     ContentType,
     Priority,
@@ -37,11 +38,35 @@ class ReviewItemPatch(BaseModel):
 
 
 class BulkApproveRequest(BaseModel):
-    domain: str | None = None
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    # min_length matters: the store treats a falsy domain as "no filter", so a
+    # `""` here would pass the selector guard below and then silently widen to
+    # every pending item in every domain.
+    domain: str | None = Field(default=None, min_length=1)
+    item_ids: list[str] | None = Field(default=None, max_length=BULK_MAX_IDS)
+    # Approving the entire queue is a real action, not a default. Requiring an
+    # explicit opt-in keeps a selector-less call from silently clearing
+    # everything when a caller meant to pass a filter and forgot.
+    all_pending: bool = False
 
 
 class BulkApproveResponse(BaseModel):
     approved_count: int
+    item_ids: list[str]
+
+
+class CurateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    domain: str = Field(..., min_length=1, max_length=200)
+    action: Literal["start", "stop"]
+
+
+class CurateResponse(BaseModel):
+    domain: str
+    action: Literal["start", "stop"]
+    affected_count: int
 
 
 class AnnotationCreate(BaseModel):
@@ -134,8 +159,66 @@ async def update_review_item(item_id: str, body: ReviewItemPatch) -> ReviewItem:
 
 @router.post("/bulk-approve", response_model=BulkApproveResponse)
 async def bulk_approve(body: BulkApproveRequest) -> BulkApproveResponse:
-    count = _store().bulk_approve(domain=body.domain)
-    return BulkApproveResponse(approved_count=count)
+    if body.domain is None and body.item_ids is None and not body.all_pending:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide 'domain', 'item_ids', or 'all_pending': true.",
+        )
+    ids = _store().bulk_approve(domain=body.domain, item_ids=body.item_ids)
+    if ids:
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "review_bulk_approve",
+            f"Bulk approve: {len(ids)} knowledge item(s)",
+            actor="user",
+            details={
+                "count": len(ids),
+                "item_ids": ids[:100],
+                "domain": body.domain,
+                "all_pending": body.all_pending,
+            },
+        )
+    return BulkApproveResponse(approved_count=len(ids), item_ids=ids)
+
+
+@router.post("/curate", response_model=CurateResponse)
+async def curate_domain(body: CurateRequest) -> CurateResponse:
+    """Opt one domain's shipped defaults into (or out of) the review queue.
+
+    Built-in knowledge ships as a trusted default, so the queue is empty until
+    the user asks to curate something. `domain` is required on purpose: while a
+    domain is being curated its items are `pending`, and pending is withheld
+    from retrieval — no single call should be able to take the whole knowledge
+    base away from the Executive.
+    """
+    store = _store()
+    if body.action == "start":
+        count = store.queue_for_curation(body.domain)
+    else:
+        count = store.stop_curation(body.domain)
+
+    if count:
+        from openexecutive.audit import log_event as audit_log
+
+        verb = "queued for curation" if body.action == "start" else "restored to default"
+        audit_log(
+            "review_curate",
+            f"{count} item(s) in '{body.domain}' {verb}",
+            actor="user",
+            details={
+                "domain": body.domain,
+                "action": body.action,
+                "count": count,
+            },
+        )
+    return CurateResponse(domain=body.domain, action=body.action, affected_count=count)
+
+
+@router.get("/trusted-defaults", response_model=dict[str, int])
+async def trusted_defaults_by_domain() -> dict[str, int]:
+    """Domain → count of never-reviewed shipped defaults, for the curate UI."""
+    return _store().count_trusted_defaults_by_domain()
 
 
 # ---------------------------------------------------------------------------

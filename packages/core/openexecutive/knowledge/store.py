@@ -49,6 +49,22 @@ class ChromaDBStore(KnowledgeStore):
     # who can edit a shared page can inject text the agents will read.
     # Retrieved under its own clearly-labelled, lower-ranked section.
     NOTION_COLLECTION = "notion_wiki"
+    # Files attached in an integration channel. Same isolation reasoning as
+    # the two above, taken one step further: this collection is NEVER
+    # queried — not by ``retriever.retrieve``, not by anything else.
+    #
+    # An attachment's content is chosen by whoever sent the message. It
+    # passes through no upload endpoint, gets no review, and leaves no copy
+    # in ``company/docs/``. It is already inlined into the turn that carried
+    # it, which is where it is useful; what it must not become is company
+    # knowledge that resurfaces in later, unrelated turns.
+    #
+    # These rows used to live in COMPANY_COLLECTION, isolated only by a
+    # domain outside the specialist set. That isolated nothing — see
+    # ``query`` below, and knowledge.general_catch_all in
+    # architecture-facts.yaml. The collection is the boundary; a domain
+    # value never was.
+    ATTACHMENT_COLLECTION = "inbound_attachments"
 
     def __init__(self, persist_directory: str | Path = "./chroma_db") -> None:
         import chromadb
@@ -185,6 +201,54 @@ class ChromaDBStore(KnowledgeStore):
             )
             return 0
 
+    def get_documents_by_ids(
+        self, collection: str, ids: list[str]
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        """Return ``(chunk_id, text, metadata)`` for each id that exists.
+
+        The counterpart to :meth:`iter_chunk_metadata`, which deliberately
+        fetches metadata only: that scan runs on every boot, and pulling the
+        text of every chunk along with it would cost the full collection in
+        memory each time to find nothing in the steady state. Callers that
+        need the text find candidate ids with the cheap scan first, then ask
+        for those ids here.
+
+        Empty list in, empty list out — guarded before the call, because
+        ``col.get(ids=[])`` degrades to "fetch everything", the same footgun
+        :meth:`delete_by_ids` guards against.
+
+        Batched for the same reason ``add_documents`` batches: a channel that
+        has been collecting attachments for months holds more rows than one
+        request should materialise at once.
+        """
+        if not ids:
+            return []
+        out: list[tuple[str, str, dict[str, Any]]] = []
+        batch_size = 100
+        try:
+            col = self._get_or_create_collection(collection)
+            for i in range(0, len(ids), batch_size):
+                rows = col.get(
+                    ids=ids[i : i + batch_size], include=["documents", "metadatas"]
+                )
+                got_ids = rows.get("ids") or []
+                docs = rows.get("documents") or []
+                metas = rows.get("metadatas") or []
+                for cid, doc, md in zip(got_ids, docs, metas, strict=False):
+                    out.append(
+                        (
+                            str(cid),
+                            str(doc) if doc is not None else "",
+                            dict(md) if isinstance(md, dict) else {},
+                        )
+                    )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "get_documents_by_ids failed for %d id(s) in %s", len(ids), collection
+            )
+            return []
+        return out
+
     def delete_company_docs(self) -> None:
         """Delete and recreate the company_docs collection, clearing all indexed documents."""
         import contextlib
@@ -199,3 +263,27 @@ class ChromaDBStore(KnowledgeStore):
         leftover COMPANY rows tagged ``type=notion`` (pre-isolation ingest)."""
         self.delete_documents(collection=self.NOTION_COLLECTION, where={"type": "notion"})
         self.delete_documents(collection=self.COMPANY_COLLECTION, where={"type": "notion"})
+
+    def delete_attachment_docs(self) -> None:
+        """Drop every inbound attachment chunk, plus any pre-isolation
+        leftovers still tagged ``type=attachment`` in COMPANY.
+
+        Drop-and-recreate rather than a ``where`` delete, unlike
+        :meth:`delete_notion_docs`: the callers are client-slot restore and
+        fixture reset, where one surviving row is one company's attachment
+        visible to the next. "Deleted every row carrying the tag" is not the
+        same guarantee as "the collection is empty", and here only the
+        second one is good enough.
+
+        The COMPANY sweep is belt-and-braces — every caller drops that
+        collection wholesale a line or two earlier — but it keeps this
+        method correct when called on its own.
+        """
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self._client.delete_collection(self.ATTACHMENT_COLLECTION)
+        self._get_or_create_collection(self.ATTACHMENT_COLLECTION)
+        self.delete_documents(
+            collection=self.COMPANY_COLLECTION, where={"type": "attachment"}
+        )

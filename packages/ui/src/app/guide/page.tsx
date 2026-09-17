@@ -12,7 +12,7 @@ const SECTIONS = [
   { id: 'ask_oe', label: 'Ask OE', sub: 'The page-aware assistant panel — explains any screen and fills forms for you to review.' },
   { id: 'today', label: 'Today / Morning Brief', sub: 'What needs you right now: proposals, department health, and people with open items.' },
   { id: 'pulse', label: 'Pulse (Memory)', sub: "The Executive's running memory — decisions made, initiatives in flight, advice gathered." },
-  { id: 'review', label: 'Review Queue', sub: 'Approve, reject, or correct incoming knowledge before the Executive relies on it.' },
+  { id: 'review', label: 'Review Queue', sub: 'Built-in knowledge is trusted by default. Review what you upload or edit, or send a domain for review yourself.' },
   { id: 'jobs', label: 'Jobs (Workflows)', sub: 'Multi-step workflows that produce a deliverable — board prep, GTM plan, perf review.' },
   { id: 'artifacts', label: 'Artifacts', sub: 'Your library of finished documents — drafts and workflow outputs in one place.' },
   { id: 'watchlist', label: 'Watch List', sub: 'External monitors — stock tickers, RSS feeds, status pages, web queries — that raise alerts.' },

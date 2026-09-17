@@ -9,9 +9,12 @@ import {
   ReviewStatus,
   addAnnotation,
   bulkApproveReviewItems,
+  curateDomain,
   deleteAnnotation,
   getBuiltinFile,
+  getFailureFile,
   getReviewItem,
+  getTrustedDefaults,
   listAllAnnotations,
   listItemAnnotations,
   listReviewItems,
@@ -45,10 +48,34 @@ const PRIORITY_CLASSES: Record<ReviewPriority, string> = {
   low: "bg-surface-overlay/60 text-fg-muted border border-line-strong/60",
 };
 
-function StatusPill({ status }: { status: ReviewStatus }) {
+const TRUSTED_DEFAULT_CLASS =
+  "bg-surface-overlay/60 text-fg-muted border border-line-strong/60";
+
+function StatusPill({
+  status,
+  reviewedAt,
+  trustedDefault,
+}: {
+  status: ReviewStatus;
+  reviewedAt?: string | null;
+  trustedDefault?: boolean;
+}) {
+  // Provenance comes from the server, never inferred: a user's own upload can
+  // also sit approved-with-no-timestamp, and labelling it "Ships with Open
+  // Executive" would be a lie about where the content came from.
+  const trusted = trustedDefault === true && status === "approved" && reviewedAt == null;
   return (
-    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${STATUS_CLASSES[status]}`}>
-      {STATUS_LABELS[status]}
+    <span
+      className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+        trusted ? TRUSTED_DEFAULT_CLASS : STATUS_CLASSES[status]
+      }`}
+      title={
+        trusted
+          ? "Ships with Open Executive. Available to the Executive, but nobody here has reviewed it."
+          : undefined
+      }
+    >
+      {trusted ? "Default" : STATUS_LABELS[status]}
     </span>
   );
 }
@@ -114,13 +141,19 @@ function ItemSlideOver({
   }, [itemId_stable]);
 
   useEffect(() => {
-    if (!detail || detail.item.content_type !== "builtin") return;
+    // Failure case studies are file-backed too; without this an SME sees no
+    // content and is pushed toward approving something they cannot read.
+    const fileBacked =
+      detail?.item.content_type === "builtin" || detail?.item.content_type === "failure";
+    if (!detail || !fileBacked) return;
     const [, domain, filename] = detail.item.item_id.split(":");
+    const fetchFile =
+      detail.item.content_type === "failure" ? getFailureFile : getBuiltinFile;
     let cancelled = false;
     setContentLoading(true);
     setContentError(false);
     setContent(null);
-    getBuiltinFile(domain, filename)
+    fetchFile(domain, filename)
       .then((f) => { if (!cancelled) setContent(f.content); })
       .catch(() => { if (!cancelled) { setContent(null); setContentError(true); } })
       .finally(() => { if (!cancelled) setContentLoading(false); });
@@ -204,7 +237,7 @@ function ItemSlideOver({
   }
 
   const { item, annotations } = detail;
-  const isBuiltin = item.content_type === "builtin";
+  const isBuiltin = item.content_type === "builtin" || item.content_type === "failure";
   const isExternal = item.content_type === "external";
 
   return (
@@ -218,7 +251,11 @@ function ItemSlideOver({
             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
               <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{item.domain}</span>
               <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{item.content_type}</span>
-              <StatusPill status={item.status} />
+              <StatusPill
+                status={item.status}
+                reviewedAt={item.reviewed_at}
+                trustedDefault={item.trusted_default}
+              />
               <PriorityPill priority={item.priority} />
             </div>
           </div>
@@ -402,15 +439,19 @@ export default function ReviewQueue() {
   const [filterType, setFilterType] = useState<"builtin" | "external" | "">("");
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [rejectModal, setRejectModal] = useState<RejectModalState>(null);
+  const [trustedDefaults, setTrustedDefaults] = useState<Record<string, number>>({});
+  const [pendingItems, setPendingItems] = useState<ReviewItem[]>([]);
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
     try {
-      const [pending, needsRevision] = await Promise.all([
+      const [pending, needsRevision, defaults] = await Promise.all([
         listReviewItems({ status: "pending", limit: 200 }),
         listReviewItems({ status: "needs_revision", limit: 200 }),
+        getTrustedDefaults().catch(() => ({}) as Record<string, number>),
       ]);
       setItems([...pending, ...needsRevision]);
+      setTrustedDefaults(defaults);
     } finally {
       setLoading(false);
     }
@@ -419,13 +460,23 @@ export default function ReviewQueue() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await listReviewItems({
-        status: filterStatus || undefined,
-        domain: filterDomain || undefined,
-        content_type: filterType || undefined,
-        limit: 500,
-      });
+      // The per-domain action row must reflect what the SERVER would do, so it
+      // reads its own unfiltered sources. Deriving those counts from the
+      // filtered, 500-capped `allItems` made the buttons vanish whenever a
+      // status filter was set, and undercounted past the cap.
+      const [result, defaults, pending] = await Promise.all([
+        listReviewItems({
+          status: filterStatus || undefined,
+          domain: filterDomain || undefined,
+          content_type: filterType || undefined,
+          limit: 500,
+        }),
+        getTrustedDefaults().catch(() => ({}) as Record<string, number>),
+        listReviewItems({ status: "pending", limit: 500 }),
+      ]);
       setAllItems(result);
+      setTrustedDefaults(defaults);
+      setPendingItems(pending);
     } finally {
       setLoading(false);
     }
@@ -482,13 +533,38 @@ export default function ReviewQueue() {
     await loadAll();
   };
 
+  const handleCurate = async (domain: string, action: "start" | "stop") => {
+    // Starting curation withholds that domain from the Executive, so say so
+    // before doing it — this is the one action here that removes knowledge.
+    if (action === "start") {
+      const n = trustedDefaults[domain] ?? 0;
+      const ok = window.confirm(
+        `Queue ${n} item${n === 1 ? "" : "s"} in "${domain}" for review?\n\n` +
+          `They will be withheld from the Executive until you approve them. ` +
+          `You can undo this with "Stop curating".`,
+      );
+      if (!ok) return;
+    }
+    await curateDomain(domain, action);
+    await loadQueue();
+    await loadAll();
+  };
+
   const handleItemUpdated = (updated: ReviewItem) => {
     setItems((prev) => prev.map((i) => (i.item_id === updated.item_id ? updated : i)));
     setAllItems((prev) => prev.map((i) => (i.item_id === updated.item_id ? updated : i)));
   };
 
   // Unique domains from current list
-  const domains = Array.from(new Set(allItems.map((i) => i.domain))).sort();
+  // Union of every source, so a domain is never hidden just because the
+  // current filter excludes it from `allItems`.
+  const domains = Array.from(
+    new Set([
+      ...allItems.map((i) => i.domain),
+      ...pendingItems.map((i) => i.domain),
+      ...Object.keys(trustedDefaults),
+    ]),
+  ).sort();
 
   return (
     <div className="p-6">
@@ -526,7 +602,39 @@ export default function ReviewQueue() {
             )}
           </div>
           {!loading && items.length === 0 && (
-            <div className="text-center py-16 text-fg-subtle text-sm">All caught up — nothing to review.</div>
+            <div className="py-12 max-w-2xl mx-auto text-center">
+              <p className="text-sm text-fg">Nothing waiting on you.</p>
+              <p className="text-xs text-fg-muted mt-2 leading-relaxed">
+                The knowledge that ships with Open Executive is trusted by default — the
+                Executive can use it right away, and it does not sit here waiting for
+                sign-off. Items appear in this queue when you upload something new, edit an
+                existing file, or deliberately send a domain for review.
+              </p>
+              {Object.keys(trustedDefaults).length > 0 && (
+                <div className="mt-6 text-left">
+                  <p className="text-[11px] uppercase tracking-wide text-fg-subtle mb-2">
+                    Review a domain yourself
+                  </p>
+                  <p className="text-xs text-fg-muted mb-3 leading-relaxed">
+                    Sending a domain for review withholds it from the Executive until you
+                    work through it.
+                  </p>
+                  <div className="flex gap-2 flex-wrap">
+                    {Object.entries(trustedDefaults)
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([domain, count]) => (
+                        <button
+                          key={domain}
+                          onClick={() => handleCurate(domain, "start")}
+                          className="text-[11px] text-fg-muted hover:text-amber-400 bg-surface-elevated border border-line-strong hover:border-amber-900/60 px-2.5 py-1.5 rounded-lg transition-colors"
+                        >
+                          Curate {domain} ({count})
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           <div className="space-y-2">
             {items.map((item) => (
@@ -575,22 +683,56 @@ export default function ReviewQueue() {
             >
               <option value="">All types</option>
               <option value="builtin">Built-in</option>
+              <option value="failure">Failure case studies</option>
               <option value="external">Reference library</option>
             </select>
           </div>
 
-          {/* Bulk approve by domain */}
+          {/* Per-domain actions: approve what's queued, or start/stop curating. */}
           {domains.length > 0 && (
             <div className="flex gap-2 mb-4 flex-wrap">
-              {domains.map((d) => (
-                <button
-                  key={d}
-                  onClick={() => handleBulkApprove(d)}
-                  className="text-[10px] text-fg-muted hover:text-emerald-400 bg-surface-elevated border border-line-strong hover:border-emerald-900/60 px-2 py-1 rounded-lg transition-colors"
-                >
-                  Approve all pending in {d}
-                </button>
-              ))}
+              {domains.map((d) => {
+                const pendingInDomain = pendingItems.filter((i) => i.domain === d);
+                // "Stop curating" reverses queue_for_curation, whose selector is
+                // `trusted_default = 1 AND reviewed_at IS NULL`. Mirror BOTH: a
+                // user's own upload is pending with no timestamp too, and
+                // counting it would render a button that does nothing.
+                const untouchedPending = pendingInDomain.filter(
+                  (i) => i.trusted_default && i.reviewed_at == null,
+                ).length;
+                const defaultsInDomain = trustedDefaults[d] ?? 0;
+                return (
+                  <div key={d} className="flex gap-1">
+                    {pendingInDomain.length > 0 && (
+                      <button
+                        onClick={() => handleBulkApprove(d)}
+                        className="text-[10px] text-fg-muted hover:text-emerald-400 bg-surface-elevated border border-line-strong hover:border-emerald-900/60 px-2 py-1 rounded-lg transition-colors"
+                      >
+                        Approve all pending in {d}
+                      </button>
+                    )}
+                    {untouchedPending > 0 ? (
+                      <button
+                        onClick={() => handleCurate(d, "stop")}
+                        className="text-[10px] text-fg-muted hover:text-fg bg-surface-elevated border border-line-strong px-2 py-1 rounded-lg transition-colors"
+                        title={`Return ${untouchedPending} unreviewed item(s) in ${d} to trusted default`}
+                      >
+                        Stop curating {d}
+                      </button>
+                    ) : (
+                      defaultsInDomain > 0 && (
+                        <button
+                          onClick={() => handleCurate(d, "start")}
+                          className="text-[10px] text-fg-muted hover:text-amber-400 bg-surface-elevated border border-line-strong hover:border-amber-900/60 px-2 py-1 rounded-lg transition-colors"
+                          title={`Send ${defaultsInDomain} shipped item(s) in ${d} for review — they will be withheld from the Executive until approved`}
+                        >
+                          Curate {d} ({defaultsInDomain})
+                        </button>
+                      )
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -720,7 +862,7 @@ function ItemRow({
     <div className="bg-surface-elevated/40 border border-line rounded-lg px-4 py-3 flex items-center gap-3">
       {/* Icon */}
       <div className="flex-shrink-0 text-fg-subtle">
-        {item.content_type === "builtin" ? (
+        {item.content_type === "builtin" || item.content_type === "failure" ? (
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
           </svg>
@@ -736,7 +878,11 @@ function ItemRow({
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-fg font-medium truncate">{item.filename}</span>
           <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{item.domain}</span>
-          <StatusPill status={item.status} />
+          <StatusPill
+                status={item.status}
+                reviewedAt={item.reviewed_at}
+                trustedDefault={item.trusted_default}
+              />
           <PriorityPill priority={item.priority} />
         </div>
         <p className="text-[11px] text-fg-subtle mt-0.5">Added {formatDate(item.registered_at)}</p>

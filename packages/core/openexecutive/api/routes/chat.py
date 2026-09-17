@@ -580,9 +580,10 @@ async def chat_upload(
     """Streaming chat turn with file/photo attachments.
 
     Documents (PDF/DOCX/TXT/MD/CSV) have their text extracted, inlined into
-    the user message, and indexed into the ChromaDB ``company_docs``
+    the user message, and indexed into the ChromaDB ``inbound_attachments``
     collection as a background task — exactly the behavior the Discord and
-    Telegram bots already use. Images are converted into Anthropic vision
+    Telegram bots already use. That collection is never retrieved from, so an
+    attachment informs the turn that carried it and no later one. Images are converted into Anthropic vision
     blocks and passed through ``attachment_blocks``.
     """
     if not files:

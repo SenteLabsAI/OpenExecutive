@@ -2010,3 +2010,41 @@ def test_discord_mention_thread_threshold_rejects_negative():
         pytest.raises(ValidationError),
     ):
         Settings()  # type: ignore[call-arg]
+
+
+# ── roster gate on attachment processing ──────────────────────────────────
+
+
+def test_is_rostered_matches_the_handle_message_gate():
+    """`_is_rostered` exists so `on_message` can skip downloading and indexing
+    an unrostered sender's file, which previously happened before
+    `_handle_message`'s gate ran. It must agree with that gate exactly."""
+    from unittest.mock import patch
+
+    from openexecutive.integrations import discord_bot as db
+
+    with patch(
+        "openexecutive.people.store.find_person_by_discord_id", return_value=object()
+    ):
+        assert db._is_rostered("123") is True
+
+    with patch("openexecutive.people.store.find_person_by_discord_id", return_value=None):
+        assert db._is_rostered("123") is False
+
+    # Empty id is unrostered, matching `discord_user_id if discord_user_id else None`
+    # in the gate — and no lookup is attempted.
+    assert db._is_rostered("") is False
+
+
+def test_is_rostered_fails_closed_when_the_roster_lookup_raises():
+    """A database error must not read as 'rostered'. Failing open here would
+    restore the exact pre-gate behaviour for every sender during an outage."""
+    from unittest.mock import patch
+
+    from openexecutive.integrations import discord_bot as db
+
+    with patch(
+        "openexecutive.people.store.find_person_by_discord_id",
+        side_effect=RuntimeError("db is locked"),
+    ):
+        assert db._is_rostered("123") is False

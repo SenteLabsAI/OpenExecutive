@@ -287,3 +287,102 @@ def test_search_widens_the_company_filter_with_general(
     assert res.status_code == 200, res.text
     assert seen["company_docs"] == ["finance", "general"]
     assert seen["builtin_knowledge"] == ["finance"]
+
+
+# ---------------------------------------------------------------------------
+# The review gate: the diagnostic panel must not advertise withheld knowledge
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def review_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """Point the retriever's review-store resolver at an isolated DB."""
+    from openexecutive.knowledge.review_store import ReviewStore
+
+    db = tmp_path / "review.db"
+    ReviewStore.initialize_db(db)
+    # Patch only the module attribute. `_default_review_store` imports DB_PATH
+    # inside its body, and `_withheld_sets` reads the same attribute for its
+    # exists() check, so this one patch exercises the real resolver wiring
+    # instead of stubbing it out.
+    monkeypatch.setattr("openexecutive.memory.episodic.DB_PATH", db, raising=False)
+    return ReviewStore(db_path=db)
+
+
+def _register(store: Any, domain: str, filename: str, *, content_type: Any = None) -> str:
+    from openexecutive.knowledge.review_store import ContentType
+
+    ct = content_type or ContentType.BUILTIN
+    item_id = (
+        f"builtin:{domain}:{filename}" if ct is ContentType.BUILTIN else f"external:{filename}"
+    )
+    store.register(item_id=item_id, content_type=ct, domain=domain, filename=filename)
+    return item_id
+
+
+def test_search_omits_a_withheld_builtin_doc(client: TestClient, review_db: Any) -> None:
+    """A doc queued for curation is withheld from chat, so the panel must not show it."""
+    from openexecutive.knowledge.review_store import ReviewStatus
+
+    # Unregistered content is not withheld — establish the baseline first.
+    before = client.post("/knowledge/search", json={"query": "strategy"}).json()
+    assert [h["filename"] for h in before["builtin"]] == ["product_strategy.md"]
+
+    # register() leaves it `pending`, which is withheld.
+    item = _register(review_db, "strategy", "product_strategy.md")
+    after = client.post("/knowledge/search", json={"query": "strategy"}).json()
+    assert after["builtin"] == []
+
+    # Approving it brings it back.
+    review_db.set_status(item, ReviewStatus.APPROVED)
+    restored = client.post("/knowledge/search", json={"query": "strategy"}).json()
+    assert [h["filename"] for h in restored["builtin"]] == ["product_strategy.md"]
+
+
+def test_search_omits_a_rejected_external_source(client: TestClient, review_db: Any) -> None:
+    from openexecutive.knowledge.review_store import ContentType, ReviewStatus
+
+    item = _register(
+        review_db, "finance", "openstax-finance", content_type=ContentType.EXTERNAL
+    )
+    review_db.set_status(item, ReviewStatus.REJECTED, "not for us")
+
+    data = client.post("/knowledge/search", json={"query": "strategy"}).json()
+
+    assert data["external"] == []
+    # The un-registered builtin row is unaffected.
+    assert [h["filename"] for h in data["builtin"]] == ["product_strategy.md"]
+
+
+def test_search_omits_a_withheld_failure_case(client: TestClient, review_db: Any) -> None:
+    """Failure cases have their own content type AND their own Chroma collection."""
+    from openexecutive.knowledge.review_store import ContentType
+
+    _register(
+        review_db, "strategy", "kodak-digital.md", content_type=ContentType.FAILURE
+    )
+
+    data = client.post("/knowledge/search", json={"query": "strategy"}).json()
+
+    assert data["failures"] == []
+
+
+def test_search_company_bucket_is_never_review_filtered(
+    client: TestClient, review_db: Any
+) -> None:
+    """Company docs are not registered in review_items, so they must pass through.
+
+    The withheld entry deliberately carries the COMPANY row's own filename.
+    Registering some unrelated builtin doc would make this vacuous — no filter
+    bug could ever drop `deck.pdf` on account of a different name. With the
+    name shared, wiring the company bucket through `_is_withheld` drops the
+    row and fails here, which is the regression this guards.
+    """
+    from openexecutive.knowledge.review_store import ContentType
+
+    _register(review_db, "strategy", "deck.pdf")
+    assert ("strategy", "deck.pdf") in review_db.get_withheld_keys(ContentType.BUILTIN)
+
+    data = client.post("/knowledge/search", json={"query": "strategy"}).json()
+
+    assert [h["filename"] for h in data["company"]] == ["deck.pdf"]

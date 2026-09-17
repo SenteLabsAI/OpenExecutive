@@ -1195,7 +1195,10 @@ export async function deleteArtifact(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export type ReviewStatus = "pending" | "approved" | "rejected" | "needs_revision";
-export type ReviewContentType = "builtin" | "external";
+// `failure` = shipped or user-authored failure case studies. They have their
+// own id namespace (`failure:<domain>:<file>`) so a user upload can never
+// collide with a shipped one.
+export type ReviewContentType = "builtin" | "external" | "failure";
 export type ReviewPriority = "low" | "normal" | "high";
 
 export interface ReviewItem {
@@ -1207,6 +1210,8 @@ export interface ReviewItem {
   priority: ReviewPriority;
   reviewer_notes: string;
   reviewed_at: string | null;
+  /** True only for content that ships with the product, not a user upload. */
+  trusted_default: boolean;
   registered_at: string;
   last_modified_at: string;
 }
@@ -1280,13 +1285,38 @@ export async function patchReviewItem(itemId: string, patch: ReviewItemPatch): P
   return res.json();
 }
 
-export async function bulkApproveReviewItems(domain?: string): Promise<{ approved_count: number }> {
+// A bulk approve must always carry a selector — the backend rejects a call
+// with none, so clearing the whole queue is an explicit `all_pending` opt-in
+// rather than an empty body.
+export async function bulkApproveReviewItems(
+  domain?: string,
+): Promise<{ approved_count: number; item_ids: string[] }> {
   const res = await fetch(`${API_BASE}/review/bulk-approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ domain }),
+    body: JSON.stringify(domain ? { domain } : { all_pending: true }),
   });
   if (!res.ok) throw new Error("Failed to bulk approve");
+  return res.json();
+}
+
+export async function curateDomain(
+  domain: string,
+  action: "start" | "stop",
+): Promise<{ domain: string; action: "start" | "stop"; affected_count: number }> {
+  const res = await fetch(`${API_BASE}/review/curate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain, action }),
+  });
+  if (!res.ok) throw new Error("Failed to update curation");
+  return res.json();
+}
+
+/** Domain → count of shipped docs nobody has reviewed yet. */
+export async function getTrustedDefaults(): Promise<Record<string, number>> {
+  const res = await fetch(`${API_BASE}/review/trusted-defaults`);
+  if (!res.ok) throw new Error("Failed to load trusted defaults");
   return res.json();
 }
 

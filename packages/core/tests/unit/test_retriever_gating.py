@@ -13,12 +13,25 @@ from openexecutive.knowledge.retriever import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `_emit_retrieval_audit` out of the default ./episodic_memory.db.
+
+    retrieve() and retrieve_failures() both emit an audit row. Unpatched they
+    write to the module default, and the leaked rows only break *other*
+    modules' assertions in a full-suite run.
+    """
+    import openexecutive.knowledge.retriever as retriever_mod
+
+    monkeypatch.setattr(retriever_mod, "_audit_log", lambda *a, **k: None)
+
+
 @pytest.fixture
 def fake_review_store() -> SimpleNamespace:
     """ReviewStore stub that returns empty sets — keep retrieval focused on the gate."""
     return SimpleNamespace(
-        get_rejected_filenames=lambda _ct: set(),
-        get_rejected_source_ids=lambda: set(),
+        get_withheld_keys=lambda _ct: set(),
+        get_withheld_source_ids=lambda: set(),
         get_priority_map=lambda _ct: {},
         list_annotations=lambda domains=None, active_only=True: [],
     )
@@ -154,3 +167,92 @@ def test_perfect_match_distance_zero_is_kept(
     out = retrieve(query="a real question about strategy", store=store, review_store=fake_review_store)
     assert "perfect" in out
     assert "also perfect" in out
+
+
+# ---------------------------------------------------------------------------
+# The pending gate: withheld items never reach a specialist
+# ---------------------------------------------------------------------------
+
+
+def _hit(filename: str, text: str, *, distance: float = 0.1) -> dict[str, Any]:
+    return {
+        "text": text,
+        "distance": distance,
+        "metadata": {"filename": filename, "domain": "finance", "type": "builtin"},
+    }
+
+
+def _review_store(withheld: set[tuple[str, str]]) -> SimpleNamespace:
+    return SimpleNamespace(
+        get_withheld_keys=lambda _ct: withheld,
+        get_withheld_source_ids=lambda: set(),
+        get_priority_map=lambda _ct: {},
+        list_annotations=lambda domains=None, active_only=True: [],
+    )
+
+
+def test_withheld_builtin_chunk_is_not_retrieved() -> None:
+    """A doc queued for curation must not reach the Executive."""
+    store = _make_store(
+        [_hit("queued.md", "WITHHELD CONTENT"), _hit("trusted.md", "TRUSTED CONTENT")],
+        [],
+    )
+    out = retrieve(
+        query="a real question about capital structure",
+        store=store,
+        review_store=_review_store({("finance", "queued.md")}),
+    )
+    assert "TRUSTED CONTENT" in out
+    assert "WITHHELD CONTENT" not in out
+
+
+def test_nothing_withheld_returns_everything() -> None:
+    store = _make_store([_hit("a.md", "ALPHA"), _hit("b.md", "BETA")], [])
+    out = retrieve(
+        query="a real question about capital structure",
+        store=store,
+        review_store=_review_store(set()),
+    )
+    assert "ALPHA" in out
+    assert "BETA" in out
+
+
+def test_withheld_external_source_is_not_retrieved() -> None:
+    hit = _hit("oer.md", "EXTERNAL CONTENT")
+    hit["metadata"]["source_id"] = "openstax-finance"
+    store = _make_store([hit, _hit("trusted.md", "TRUSTED CONTENT")], [])
+    rs = _review_store(set())
+    rs.get_withheld_source_ids = lambda: {"openstax-finance"}
+
+    out = retrieve(query="a real question about capital structure", store=store, review_store=rs)
+
+    assert "TRUSTED CONTENT" in out
+    assert "EXTERNAL CONTENT" not in out
+
+
+def test_retrieve_failures_honors_withheld_items() -> None:
+    """Failure case studies live in their own collection and used to ignore
+    review state entirely — rejecting one did nothing."""
+    from openexecutive.knowledge.retriever import retrieve_failures
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    store = MagicMock()
+
+    def fake_query(*, query_text: str, collection: str, domain_filter: Any, n_results: int):
+        if collection == ChromaDBStore.FAILURES_COLLECTION:
+            return [
+                _hit("bad_case.md", "REJECTED FAILURE STORY"),
+                _hit("good_case.md", "USEFUL FAILURE STORY"),
+            ]
+        return []
+
+    store.query.side_effect = fake_query
+
+    out = retrieve_failures(
+        query="what went wrong with this rollout",
+        store=store,
+        review_store=_review_store({("finance", "bad_case.md")}),
+    )
+
+    assert "USEFUL FAILURE STORY" in out
+    assert "REJECTED FAILURE STORY" not in out

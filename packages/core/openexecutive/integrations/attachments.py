@@ -150,7 +150,7 @@ def _extract_text(data: bytes, filename: str) -> str:
 
 
 def _schedule_ingest(data: bytes, filename: str) -> None:
-    """Fire-and-forget ChromaDB ingest of *data* as a new company document.
+    """Fire-and-forget ChromaDB ingest of *data* into the attachment collection.
 
     Uses the same strong-ref pattern as ``_thread_rename_tasks`` in
     discord_bot to prevent GC cancellation mid-flight.
@@ -158,10 +158,21 @@ def _schedule_ingest(data: bytes, filename: str) -> None:
     async def _run() -> None:
         suffix = _suffix_from_filename(filename)
         try:
-            from openexecutive.knowledge.loader import ingest_file
+            from openexecutive.config import get_settings
+            from openexecutive.knowledge.loader import (
+                ATTACHMENT_DOMAIN,
+                ATTACHMENT_SOURCE_PREFIX,
+                ingest_file,
+            )
             from openexecutive.knowledge.store import ChromaDBStore
 
-            store = ChromaDBStore()
+            # The configured store, not the bare default. `ChromaDBStore()`
+            # falls back to a RELATIVE "./chroma_db", resolved against the
+            # process CWD — so with VECTOR_STORE_PATH set (every container
+            # deployment) this wrote to a second database nothing reads,
+            # off the data volume and gone with the container. It happened
+            # to work in local dev only because CWD is the repo root there.
+            store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(data)
                 tmp_path = Path(tmp.name)
@@ -172,31 +183,34 @@ def _schedule_ingest(data: bytes, filename: str) -> None:
                 # on every re-send and leaves chunks no API call can delete.
                 #
                 # It is PREFIXED, and stripped to a bare name, because an
-                # attachment name is chosen by whoever sent the message. The
-                # name is the chunk-id namespace, so an unprefixed
-                # "strategy-2026.md" arriving by email would upsert straight
-                # over the curated company document of that name. The prefix
-                # keeps inbound content in its own namespace and makes the
-                # provenance visible in the `[filename]` retrieval citation —
-                # the same reason Notion and research artifacts are isolated.
+                # attachment name is chosen by whoever sent the message and
+                # the name is the chunk-id namespace: unprefixed, an inbound
+                # "strategy-2026.md" would upsert over the curated company
+                # document of that name. The prefix separates inbound content
+                # from curated uploads, and makes provenance visible in the
+                # `[filename]` citation. It does NOT separate senders from
+                # each other — ids are md5 of the prefixed name alone, so two
+                # senders' "notes.md" still collide. Harmless while nothing
+                # reads this collection; it is the first thing to fix if
+                # anything ever does.
                 #
-                # `domain` stays "company_docs", which is NOT one of the
-                # specialist domains — so these chunks match no specialist's
-                # domain filter and never reach the Executive's context. That
-                # is a known gap, left deliberately: anyone who can attach a
-                # file in an integration channel would otherwise be writing
-                # into every specialist's RAG context, and these rows have no
-                # removal path at all (they are never written to
-                # `company/docs/`, so `GET /documents` does not list them and
-                # `DELETE /documents/{filename}` 404s before reaching the
-                # store). Making them retrievable is a trust-boundary decision
-                # that needs its own change, with a delete path alongside it —
-                # not a side effect of fixing the chunk-id bug below.
+                # Isolation is the COLLECTION. These rows go to
+                # ATTACHMENT_COLLECTION, which `retriever.retrieve` never
+                # queries, so an attachment cannot resurface as company
+                # knowledge in a later, unrelated turn.
+                #
+                # What this replaced, so nobody reinstates it: the rows used
+                # to land in COMPANY_COLLECTION under a non-specialist domain,
+                # which excluded them from nothing — an unfiltered retrieval
+                # has no `where` clause at all. See knowledge.general_catch_all
+                # in architecture-facts.yaml.
                 count = await ingest_file(
                     tmp_path,
                     store,
-                    domain="company_docs",
-                    source_name=f"attachment:{Path(filename).name}",
+                    domain=ATTACHMENT_DOMAIN,
+                    collection=ChromaDBStore.ATTACHMENT_COLLECTION,
+                    source_name=f"{ATTACHMENT_SOURCE_PREFIX}{Path(filename).name}",
+                    extra_metadata={"type": "attachment"},
                 )
                 logger.info(
                     "attachments: indexed %d chunks from %s into ChromaDB",
