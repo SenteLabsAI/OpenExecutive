@@ -1345,7 +1345,7 @@ def cancel_orphaned_talent_reminders(db_path: Path | None = None) -> int:
     processes booting against one DB exactly one does the work and the other
     is a clean no-op (no ``IntegrityError``). Every later call is a no-op even
     if a matching row appears afterwards. ``running`` rows are included: the
-    scheduler's ``reclaim_running_actions`` runs AFTER this sweep at boot and
+    scheduler's ``requeue_orphaned_running`` runs AFTER this sweep at boot and
     would otherwise resurrect a crash-orphaned row as ``pending``. Delete this
     function (and its callers) in the release after next, once every install
     has booted on it once.
