@@ -166,15 +166,17 @@ def _client_timeout_s(base_timeout_s: float) -> float:
     built with the bare prefetch budget (3s by default), silently capping
     `directional_chat` far below its documented 30s ceiling.
     """
+    # Per-CALL budgets only. The aggregate ceilings (_SYNC_TOTAL_TIMEOUT_S,
+    # _SEED_TOTAL_TIMEOUT_S, _SESSION_PURGE_BUDGET_S) each span several
+    # sequential requests; folding them in would hand every single request —
+    # including the ones no wait_for covers — an outer bound several times
+    # longer than any one call is ever allowed to take.
     longest = max(
         [
             _DIRECTIONAL_TIMEOUT_S,
-            _SESSION_PURGE_BUDGET_S,
             _SESSION_DELETE_TIMEOUT_S,
             _WORKSPACE_DELETE_TIMEOUT_S,
             _IDENTITY_SEED_TIMEOUT_S,
-            _SEED_TOTAL_TIMEOUT_S,
-            _SYNC_TOTAL_TIMEOUT_S,
         ]
         + [
             prefetch_timeout_s(level, base_timeout_s)  # type: ignore[arg-type]
@@ -405,10 +407,15 @@ async def _purge_workspace_sessions(client: Any, workspace_id: str) -> dict[str,
     # happen FIRST — iterating the coroutine directly would TypeError.
     sessions: list[Any] = []
     list_error: str | None = None
-    try:
+    async def _list_all() -> None:
         page = await client.aio.sessions()
         async for session in page:
             sessions.append(session)
+
+    try:
+        # The listing pages transparently and each page request now gets the
+        # (wide) client timeout, so it needs the same ceiling as the deletes.
+        await asyncio.wait_for(_list_all(), timeout=_SESSION_PURGE_BUDGET_S)
     except Exception as exc:
         # If we can't even list sessions the workspace is already gone or
         # auth is broken — record it and let the outer delete_workspace
@@ -704,7 +711,14 @@ def _is_identity_line(line: str) -> bool:
 # prompt, so that exposure is pre-existing. What it does stop is roster text
 # forging card *structure* in a third party's prompt.
 _CARD_ALLOWED_PUNCT = frozenset(" .,'-&()/")
-_CARD_ALLOWED_CATEGORIES = ("L", "M", "N")
+# Explicit categories rather than the "L*" family: modifier letters (Lm) are
+# excluded because several colon lookalikes live there — U+02D0 "ː" is an Lm
+# and reads as a colon to the model — and nothing a real name needs does.
+# Lo stays in, since it is where CJK, Arabic, Hebrew and most non-Latin
+# scripts' letters are.
+_CARD_ALLOWED_CATEGORIES = frozenset(
+    {"Lu", "Ll", "Lt", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No"}
+)
 
 _CARD_VALUE_MAX_CHARS = 120
 
@@ -738,7 +752,7 @@ def _card_value(raw: str) -> str | None:
     for char in flat:
         if char in _CARD_ALLOWED_PUNCT:
             continue
-        if unicodedata.category(char)[0] in _CARD_ALLOWED_CATEGORIES:
+        if unicodedata.category(char) in _CARD_ALLOWED_CATEGORIES:
             continue
         return None
     return flat
@@ -806,10 +820,15 @@ async def _seed_peer_identity(
     ]
     if [ln for ln in existing if _is_identity_line(ln)] == desired:
         _identity_seeded[key] = (facts, time.monotonic())
+        _identity_failed.pop(key, None)
         return False
-    kept = [ln for ln in existing if not _is_identity_line(ln)][:_CARD_KEPT_MAX_LINES]
+    # The deriver appends newest-last, so cap from the front: dropping the
+    # oldest lines is a bounded loss, dropping the newest would erase every
+    # correction it made since the last seed.
+    kept = [ln for ln in existing if not _is_identity_line(ln)][-_CARD_KEPT_MAX_LINES:]
     await peer.aio.set_card(desired + kept)
     _identity_seeded[key] = (facts, time.monotonic())
+    _identity_failed.pop(key, None)
     return True
 
 
@@ -837,17 +856,25 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
     # Roster reads first, in one hop off the loop. ``asyncio.wait_for`` cannot
     # cancel a worker thread, so a blocking SQLite read must not sit inside the
     # per-peer budget that is supposed to bound it.
+    # Bounded so the TASK cannot sit here indefinitely. The worker thread
+    # itself is not cancellable, but the roster connection has SQLite's
+    # default 5s busy timeout, so a locked table raises rather than blocks.
     try:
-        people = await asyncio.to_thread(
-            lambda: {person_id: get_person(person_id) for person_id, _ in targets}
+        people = await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: {person_id: get_person(person_id) for person_id, _ in targets}
+            ),
+            timeout=_IDENTITY_SEED_TIMEOUT_S,
         )
     except Exception as exc:
         logger.warning("honcho: roster lookup for identity seeding failed (%s)", type(exc).__name__)
         return 0
     seeded: list[int] = []
+    settled: set[int] = set()
 
     async def _pass() -> None:
         for person_id, peer in targets:
+            settled.add(person_id)
             try:
                 if await asyncio.wait_for(
                     _seed_peer_identity(
@@ -873,10 +900,51 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
     try:
         await asyncio.wait_for(_pass(), timeout=_SEED_TOTAL_TIMEOUT_S)
     except Exception as exc:
+        # The per-peer handler cannot see this cancellation, so the peer that
+        # was in flight and every peer never reached would otherwise be
+        # re-attempted in full next turn — the pass would converge only
+        # over ceil(N/2) turns, each paying the whole ceiling. Mark them all.
+        now = time.monotonic()
+        for person_id, _ in targets:
+            if person_id not in seeded and (person_id not in settled or person_id == list(settled)[-1] if settled else True):
+                _identity_failed[(workspace_id, person_id)] = now
         logger.warning(
             "honcho: identity seeding pass aborted (%s)", type(exc).__name__
         )
     return len(seeded)
+
+
+async def _seed_and_audit(
+    targets: list[tuple[int, Any]],
+    *,
+    person_id: int | None,
+    session_id: str | None,
+    department_slug: str | None = None,
+) -> None:
+    """Identity seeding for a sync that has already persisted, audited as its
+    own ``seed_identity`` row. Kept apart from the sync's row and outside the
+    sync ceiling so that row stays a pure record of the persist: however slow
+    the card round trips are, they can neither delay nor replace it. Bounded
+    entirely by the seeding pass's own per-peer and per-pass ceilings."""
+    if not targets:
+        return
+    client = await _get_client()
+    if client is None:
+        return
+    t0 = time.monotonic()
+    seeded = await _seed_identities(client, targets)
+    _emit_peer_memory(
+        op="seed_identity",
+        person_id=person_id,
+        department_slug=department_slug,
+        outcome="ok",
+        duration_ms=int((time.monotonic() - t0) * 1000),
+        details={
+            "identity_seeded": seeded,
+            "targets": len(targets),
+            "session_id": session_id,
+        },
+    )
 
 
 async def prefetch(
@@ -1178,11 +1246,12 @@ async def _do_sync(
     # the time we run, leaving session_id/turn_id as None on every row we
     # emit — invisible in the per-session audit view.
     with set_turn(session_id=audit_session_id, turn_id=audit_turn_id):
+        targets: list[tuple[int, Any]] = []
         try:
             await asyncio.wait_for(
                 _do_sync_body(
                     user_message, assistant_response, person_id, session_id,
-                    co_present_person_ids,
+                    co_present_person_ids, targets,
                 ),
                 timeout=_SYNC_TOTAL_TIMEOUT_S,
             )
@@ -1200,6 +1269,8 @@ async def _do_sync(
                 outcome="timeout",
                 details={"session_id": session_id, "timeout_s": _SYNC_TOTAL_TIMEOUT_S},
             )
+            return
+        await _seed_and_audit(targets, person_id=person_id, session_id=session_id)
 
 
 async def _do_sync_body(
@@ -1208,7 +1279,10 @@ async def _do_sync_body(
     person_id: int,
     session_id: str | None,
     co_present_person_ids: list[int],
+    seed_targets_out: list[tuple[int, Any]],
 ) -> None:
+    """Persist the exchange. On success the peers to seed are appended to
+    ``seed_targets_out`` for the caller to run OUTSIDE the sync ceiling."""
     t0 = time.monotonic()
     client = await _get_client()
     if client is None:
@@ -1242,32 +1316,23 @@ async def _do_sync_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
-        # The persist is done: snapshot its cost now, so duration_ms reports
-        # the message write alone rather than absorbing the card round trips
-        # that follow.
-        persist_ms = int((time.monotonic() - t0) * 1000)
-        # Seed roster identity onto the peer cards only once the exchange is
-        # persisted: that write is the point of the sync and must not queue
-        # behind two card round trips per peer. Stays on this fire-and-forget
-        # path and never on the latency-budgeted prefetch path.
-        seed_t0 = time.monotonic()
-        identity_seeded = await _seed_identities(client, seed_targets)
-        seed_ms = int((time.monotonic() - seed_t0) * 1000)
+        # The exchange is persisted: record that NOW, before anything else can
+        # run. Seeding happens in the caller, outside this body and outside
+        # the sync ceiling, precisely so a slow card round trip can never turn
+        # a successful persist into a missing or "timeout" audit row.
         _emit_peer_memory(
             op="sync_turn",
             person_id=person_id,
             outcome="ok",
-            duration_ms=persist_ms,
+            duration_ms=int((time.monotonic() - t0) * 1000),
             details={
                 "peer_count": 2 + len(co_present_unique),
                 "co_present_person_ids": co_present_unique,
                 "message_count": len(msgs),
-                "identity_seeded": identity_seeded,
-                # Reported separately from duration_ms (the persist alone).
-                "seed_ms": seed_ms,
                 "session_id": session_id,
             },
         )
+        seed_targets_out.extend(seed_targets)
     except Exception as exc:
         logger.exception(
             "honcho: sync_turn failed for person_id=%s session_id=%s",
@@ -1532,12 +1597,13 @@ async def _do_sync_department(
     # Re-bind the audit ContextVars so peer_memory rows we emit land
     # on the right session in the per-turn flow chart.
     with set_turn(session_id=audit_session_id, turn_id=audit_turn_id):
+        targets: list[tuple[int, Any]] = []
         try:
             await asyncio.wait_for(
                 _do_sync_department_body(
                     user_message, assistant_response, department_slug, session_id,
                     originating_person_id, co_present_person_ids,
-                    co_present_department_slugs,
+                    co_present_department_slugs, targets,
                 ),
                 timeout=_SYNC_TOTAL_TIMEOUT_S,
             )
@@ -1553,6 +1619,13 @@ async def _do_sync_department(
                 outcome="timeout",
                 details={"session_id": session_id, "timeout_s": _SYNC_TOTAL_TIMEOUT_S},
             )
+            return
+        await _seed_and_audit(
+            targets,
+            person_id=originating_person_id,
+            session_id=session_id,
+            department_slug=department_slug,
+        )
 
 
 async def _do_sync_department_body(
@@ -1563,6 +1636,7 @@ async def _do_sync_department_body(
     originating_person_id: int | None,
     co_present_person_ids: list[int],
     co_present_department_slugs: list[str],
+    seed_targets_out: list[tuple[int, Any]],
 ) -> None:
     t0 = time.monotonic()
     client = await _get_client()
@@ -1628,29 +1702,24 @@ async def _do_sync_department_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
-        # As in _do_sync_body: duration_ms is the persist alone; seeding is
-        # reported separately as seed_ms.
-        persist_ms = int((time.monotonic() - t0) * 1000)
-        seed_t0 = time.monotonic()
-        identity_seeded = await _seed_identities(client, seed_targets)
-        seed_ms = int((time.monotonic() - seed_t0) * 1000)
+        # As in _do_sync_body: the persist row goes out immediately; seeding
+        # runs in the caller, outside the sync ceiling.
         _emit_peer_memory(
             op="sync_department_turn",
             person_id=originating_person_id,
             department_slug=department_slug,
             outcome="ok",
-            duration_ms=persist_ms,
+            duration_ms=int((time.monotonic() - t0) * 1000),
             details={
                 "peer_count": 1 + len(extra_peers),  # exec_peer + extras
                 "originating_person_id": originating_person_id,
                 "co_present_person_ids": co_present_person_ids,
                 "co_present_department_slugs": co_present_department_slugs,
                 "message_count": len(msgs),
-                "identity_seeded": identity_seeded,
-                "seed_ms": seed_ms,
                 "session_id": session_id,
             },
         )
+        seed_targets_out.extend(seed_targets)
     except Exception as exc:
         logger.exception(
             "honcho: sync_department_turn failed for department_slug=%s session_id=%s",
@@ -1767,9 +1836,28 @@ async def _do_append_department_note(
     # Re-bind the audit ContextVars so peer_memory rows we emit land on
     # the right session in the per-turn flow chart.
     with set_turn(session_id=audit_session_id, turn_id=audit_turn_id):
-        await _do_append_department_note_body(
-            department_slug, kind, body, person_id,
-        )
+        try:
+            await asyncio.wait_for(
+                _do_append_department_note_body(
+                    department_slug, kind, body, person_id,
+                ),
+                timeout=_SYNC_TOTAL_TIMEOUT_S,
+            )
+        except TimeoutError:
+            # Same reasoning as _do_sync: the client timeout is an outer bound
+            # now, so this body needs its own ceiling or a blackholing
+            # endpoint pins the task and its pool connections.
+            logger.warning(
+                "honcho: append_department_note exceeded %ss for department_slug=%s",
+                _SYNC_TOTAL_TIMEOUT_S, department_slug,
+            )
+            _emit_peer_memory(
+                op="append_department_note",
+                person_id=person_id,
+                department_slug=department_slug,
+                outcome="timeout",
+                details={"kind": kind, "timeout_s": _SYNC_TOTAL_TIMEOUT_S},
+            )
 
 
 async def _do_append_department_note_body(
