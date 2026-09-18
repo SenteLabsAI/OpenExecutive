@@ -728,6 +728,13 @@ _CARD_ALLOWED_CATEGORIES = frozenset(
 # basis; they render as a stacked pair of dots and are vanishingly rare in
 # personal names. Two tests guard this: an exhaustive scan of every
 # COLON-named codepoint, and the explicit confusables list below.
+#
+# Cross-checked against confusables.txt 18.0.0: of the 33 sources it maps to
+# U+003A, 12 survive the category allow-list and all 12 are here. The one
+# source deliberately absent is U+FE30 (vertical two-dot leader), which NFKC
+# folds to two plain periods *before* this check runs — what reaches the
+# card is "..", not a colon shape, and denying "." would refuse real names
+# like "J. R. R. Tolkien". Re-run the cross-check when Unicode updates.
 _CARD_COLON_LOOKALIKES = frozenset(
     "\u02d0\u02d1"            # modifier letter (half) triangular colon
     "\U00010781\U00010782"    # their superscript forms (NFKC-fold to the above)
