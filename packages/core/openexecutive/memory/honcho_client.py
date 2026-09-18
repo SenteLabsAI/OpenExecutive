@@ -1014,9 +1014,12 @@ async def _seed_and_audit(
     # The department path can hand the originator back among the co-present
     # ids; a sender cc'd under a second address resolving to the same Person
     # does the same on the person path.
+    # NB: the loop variable must not be named person_id — that is this
+    # function's keyword parameter (the originator), and rebinding it here
+    # attributed every seed row to whichever target happened to come last.
     unique: dict[int, Any] = {}
-    for person_id, peer in targets:
-        unique.setdefault(person_id, peer)
+    for target_id, peer in targets:
+        unique.setdefault(target_id, peer)
     targets = list(unique.items())
     client = await _get_client() if targets else None
     if not targets:

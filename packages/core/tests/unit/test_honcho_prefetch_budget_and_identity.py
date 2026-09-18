@@ -1061,25 +1061,27 @@ def test_duplicate_seed_targets_collapse_to_one_attempt(monkeypatch: pytest.Monk
     _roster(monkeypatch, {7: "Person 7"})
     store: dict[str, Any] = {"cards": {}}
 
-    class _BrokenClient(_CardClient):
-        async def peer(self, peer_id: str) -> Any:
-            peer = await super().peer(peer_id)
+    captured: list[dict[str, Any]] = []
 
-            async def _boom() -> Any:
-                raise RuntimeError("card endpoint 4xx")
-
-            peer.get_card = _boom  # type: ignore[method-assign]
-            return peer
-
-    async def run() -> tuple[int, str, int]:
-        client = _BrokenClient(store)
+    async def run() -> None:
+        client = _CardClient(store)
         peer = await client.peer("7")
-        # With a failing endpoint, an undeduplicated second occurrence would
-        # short-circuit on the fresh negative memo, land in `completed` but
-        # not in the failure count, and make the pass read `ok`.
-        return await honcho_client._seed_identities(client, [(7, peer), (7, peer), (7, peer)])
 
-    assert asyncio.run(run()) == (0, "error", 1)
+        async def _get() -> Any:
+            return client
+
+        with patch.object(honcho_client, "_get_client", _get), patch.object(
+            honcho_client, "audit_log", _audit_spy(captured)
+        ):
+            await honcho_client._seed_and_audit(
+                [(7, peer), (7, peer), (7, peer)], person_id=7, session_id="s1"
+            )
+
+    asyncio.run(run())
+    assert store["writes"] == ["7"]  # one attempt
+    row = next(r["details"] for r in captured if r["details"].get("op") == "seed_identity")
+    assert row["targets"] == 1  # one counted target, so seeded == targets can hold
+    assert row["identity_seeded"] == 1
 
 
 def test_a_pass_where_every_peer_fails_is_not_reported_ok(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1176,3 +1178,39 @@ def test_pass_timeout_does_not_mark_an_already_correct_unreached_peer(
     asyncio.run(run())
     failed = {pid for (_, pid) in honcho_client._identity_failed}
     assert failed == {7}  # 14 was never reached but is already correct: not marked
+
+
+def test_seed_row_is_attributed_to_the_originator_not_the_last_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seed row's person_id is the turn's originator. A dedupe loop that
+    reused the parameter name as its loop variable attributed every row to
+    whichever target came last — invisible to lint and mypy, and to any test
+    with a single target equal to the originator."""
+    _enable(monkeypatch)
+    _roster(monkeypatch, {4: "Person 4", 9: "Person 9"})
+    store: dict[str, Any] = {"cards": {}}
+    captured: list[dict[str, Any]] = []
+
+    async def run() -> None:
+        client = _CardClient(store)
+        targets = [(4, await client.peer("4")), (9, await client.peer("9"))]
+
+        async def _get() -> Any:
+            return client
+
+        with patch.object(honcho_client, "_get_client", _get), patch.object(
+            honcho_client, "audit_log", _audit_spy(captured)
+        ):
+            await honcho_client._seed_and_audit(targets, person_id=4, session_id="s1")
+            # Department turn with no originator: must stay None, not become
+            # a co-present person who never sent anything.
+            await honcho_client._seed_and_audit(
+                targets, person_id=None, session_id="s2", department_slug="eng"
+            )
+
+    asyncio.run(run())
+    rows = [r["details"] for r in captured if r["details"].get("op") == "seed_identity"]
+    assert [r["person_id"] for r in rows] == [4, None]
+    assert rows[1]["department_slug"] == "eng"
+    assert all(r["targets"] == 2 for r in rows)
