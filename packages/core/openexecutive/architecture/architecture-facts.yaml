@@ -2714,6 +2714,13 @@ integrations:
     to-roster) instead of wasting a turn discovering the outbound
     block. The outbound gate at ``mcp_gateway._check_gmail_recipients``
     is the actual security boundary against auto-replying to spam.
+    Like every other channel adapter, the poller calls
+    ``Executive.chat`` on the standard path — it does NOT force
+    ``committee_review=True``. Committee review is a per-request
+    opt-in on ``/chat`` only; it was previously forced on for every
+    inbound email (at least 5 model calls per message, ``medium`` Honcho
+    prefetch) and removed because the revision pass never reaches
+    Gmail anyway (outbound mail is sent from the draft's tool loop).
   slack: |
     openexecutive.integrations.slack_bot — async Bolt socket-mode
     adapter (``AsyncApp`` + ``AsyncSocketModeHandler``) embedded in the

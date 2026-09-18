@@ -1,6 +1,10 @@
-"""The email poller must default ``committee_review=True`` when invoking
-the Executive on an inbound email. Skipping this would silently route the
-unrevised draft to a real recipient over Gmail.
+"""The email poller must invoke the Executive on the standard path, like
+the Slack and Discord adapters — it must not force ``committee_review=True``.
+
+Committee review (draft + three critiques + revision, plus a deeper Honcho
+prefetch) is a per-request opt-in on ``/chat``. Forcing it on every inbound
+email multiplied model calls for every message, including ones from
+off-roster senders the gateway will never let the Executive reply to.
 """
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ def _settings() -> Any:
     )
 
 
-def test_run_executive_passes_committee_review_true() -> None:
+def test_run_executive_does_not_force_committee_review() -> None:
     captured: list[_CapturingExecutive] = []
 
     def _factory(**kwargs: Any) -> _CapturingExecutive:
@@ -66,7 +70,7 @@ def test_run_executive_passes_committee_review_true() -> None:
     assert len(captured) == 1
     kwargs = captured[0].chat_kwargs
     assert kwargs is not None
-    assert kwargs.get("committee_review") is True, (
-        "Email poller must default committee_review=True so the reply "
-        "Gmail sees is the reviewed revision, not the raw draft."
+    assert kwargs.get("committee_review", False) is False, (
+        "Email poller must use the standard chat path like the other "
+        "channel adapters; committee review is a per-request /chat opt-in."
     )

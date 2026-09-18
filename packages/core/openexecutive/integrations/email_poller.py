@@ -409,16 +409,16 @@ async def _run_executive(
         )
 
     executive = Executive(mcp_gateway=gateway)
-    # Default committee review on for inbound email. Emails tend to be
-    # higher-stakes than ad-hoc chat (a recipient is going to read the
-    # reply with no chance to interactively refine it), and the +5–12s
-    # latency does not matter on a 60s poll cycle.
+    # Standard (non-committee) path, same as the Slack and Discord
+    # adapters. Committee review (draft + 3 critiques + revision, and a
+    # deeper Honcho prefetch) is a per-request opt-in on /chat only; it
+    # was previously forced on here for every inbound email, including
+    # off-roster senders the gateway will not let us reply to anyway.
     await executive.chat(
         user_message=base_message,
         session=session,
         retrieved_context=retrieve(query=raw_email[:500]),
         episodic_context=format_for_prompt(),
-        committee_review=True,
         person_id=person_id,
         co_present_person_ids=co_present_person_ids or None,
     )

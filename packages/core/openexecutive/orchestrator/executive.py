@@ -1479,9 +1479,9 @@ class Executive:
 
         When ``committee_review=True`` the call routes through
         ``stream_chat_with_committee`` so the answer is the revised
-        response, not the raw draft. Used by non-HTTP callers (e.g.
-        the email poller) that want committee output without holding
-        an SSE stream open.
+        response, not the raw draft. Lets non-HTTP callers get
+        committee output without holding an SSE stream open; the
+        channel adapters (Slack, Discord, email) all use the default.
 
         ``attachment_blocks`` is a list of Anthropic content blocks (image
         type) assembled by the caller from inbound file attachments.  Text
@@ -1491,8 +1491,8 @@ class Executive:
         ``person_id`` / ``co_present_person_ids`` / ``peer_memory_reasoning_level``
         thread through to the Honcho memory layer — see ``stream_chat``
         for details. ``peer_memory_reasoning_level=None`` (default)
-        keeps each underlying entry point's own default (``"low"`` for
-        the streaming path, ``"medium"`` for the committee path).
+        keeps each underlying entry point's own default (``"minimal"``
+        for the streaming path, ``"medium"`` for the committee path).
         """
         # Build the kwargs dict so we can conditionally include the
         # reasoning_level only when caller specified one — otherwise

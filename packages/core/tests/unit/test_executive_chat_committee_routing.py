@@ -1,8 +1,10 @@
 """``Executive.chat(committee_review=...)`` must pick the right stream method.
 
-Non-HTTP callers (the email poller, the eval harness) use ``chat()`` rather
-than going through the SSE route. The committee flag has to be honored at
-this level too — otherwise emails would silently bypass review.
+Non-HTTP callers (the channel adapters, the eval harness) use ``chat()``
+rather than going through the SSE route. The flag has to be honored at this
+level so a caller that opts in gets the revised response; the default must
+stay ``False`` because the channel adapters (Slack, Discord, email) rely on
+it — committee review is a per-request opt-in on ``/chat``.
 """
 from __future__ import annotations
 
