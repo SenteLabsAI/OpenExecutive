@@ -39,6 +39,7 @@ import asyncio
 import logging
 import re
 import time
+import unicodedata
 from typing import Any, Literal
 
 from openexecutive.audit import log_event as audit_log
@@ -97,32 +98,51 @@ ReasoningLevel = Literal["minimal", "low", "medium", "high", "max"]
 # So scale the operator-configured base budget by level. The base stays the
 # knob for the fast per-turn path (``HONCHO_PREFETCH_TIMEOUT_S``); the
 # multipliers give the deliberate, deeper levels a budget they can meet.
-# ``minimal`` and ``low`` share a multiplier: the measurements put ``minimal``
-# *slower* than ``low``, so giving ``minimal`` the bare base would under-budget
-# the most-travelled call site (it is the default for the standard per-turn
-# path) — the same silent-empty-block failure this table exists to prevent.
-# ``medium`` is set from its ~8s measurement. ``high``/``max`` are extrapolated:
-# no OE call site requests them yet, so there is nothing to measure. Revisit
-# with real numbers before relying on either.
+# ``minimal``/``low`` deliberately stay at 1.0: the base IS the knob for the
+# fast per-turn path, and scaling it there would inflate the inline stall on
+# every ordinary turn. (``minimal`` measured marginally slower than ``low``,
+# which argues for a little headroom — but that is an argument for raising the
+# base, not for silently multiplying it. A multiplier above 1.0 here also
+# collapses the whole table against the ceiling at a large base.)
+# ``medium`` is 4.0 rather than the ~2.7 its 8.1s measurement alone implies:
+# the budget spans ``peer()`` + ``chat()``, not just the dialectic call, and a
+# budget set at the mean still times out on half the calls.
+# ``high``/``max`` are extrapolated — no OE call site requests them yet, so
+# there is nothing to measure. Revisit with real numbers before relying on
+# either.
 _REASONING_TIMEOUT_MULTIPLIER: dict[str, float] = {
-    "minimal": 1.5,
-    "low": 1.5,
-    "medium": 3.0,
-    "high": 4.0,
-    "max": 5.0,
+    "minimal": 1.0,
+    "low": 1.0,
+    "medium": 4.0,
+    "high": 5.0,
+    "max": 6.0,
 }
 
 # Absolute ceiling for one prefetch, whatever the configured base. `prefetch`
 # is awaited *inline* in the turn (before the first SSE byte), so the scaling
 # above must not turn a generous base into a user-visible stall: at a 10s base
-# an unbounded ``max`` would reach 50s of dead air. Never drops below the
-# operator's configured base — the ceiling only caps the scaling, it does not
-# override an explicit request for a longer budget.
+# an unbounded ``max`` would reach 60s of dead air. It caps only the scaling
+# and never drops the budget below the operator's configured base — which is
+# also why the fast levels sit at 1.0: were they scaled, a base at or above
+# the ceiling would flatten every level onto it and the operator's knob would
+# stop distinguishing the per-turn path at all.
 _PREFETCH_CEILING_S = 15.0
+
+# Fallback when the configured base is non-positive. ``asyncio.wait_for`` with
+# a timeout <= 0 fires before the request is made, so a misconfigured 0 would
+# turn every prefetch into an instant silent timeout.
+_DEFAULT_PREFETCH_TIMEOUT_S = 3.0
 
 # Ceiling for `directional_chat`, which backs a deliberate tool call rather
 # than the per-turn budget path.
 _DIRECTIONAL_TIMEOUT_S = 30.0
+
+# Ceiling for one whole fire-and-forget sync. The SDK client timeout used to be
+# the only bound on these bodies (none of their calls is individually
+# wait_for'd) and raising it to an outer bound removed even that — with the
+# SDK's own retries, a blackholing endpoint could otherwise pin a task, and the
+# connections it holds on the shared client, for minutes.
+_SYNC_TOTAL_TIMEOUT_S = 60.0
 
 # Kept strictly greater than every per-call budget rather than merely equal,
 # so which bound fires first is by construction and not by coincidence.
@@ -131,8 +151,9 @@ _CLIENT_TIMEOUT_HEADROOM_S = 5.0
 
 def prefetch_timeout_s(reasoning_level: ReasoningLevel, base_timeout_s: float) -> float:
     """The wall-clock budget for one dialectic prefetch at ``reasoning_level``."""
-    scaled = base_timeout_s * _REASONING_TIMEOUT_MULTIPLIER.get(reasoning_level, 1.0)
-    return max(base_timeout_s, min(scaled, _PREFETCH_CEILING_S))
+    base = base_timeout_s if base_timeout_s > 0 else _DEFAULT_PREFETCH_TIMEOUT_S
+    scaled = base * _REASONING_TIMEOUT_MULTIPLIER.get(reasoning_level, 1.0)
+    return max(base, min(scaled, _PREFETCH_CEILING_S))
 
 
 def _client_timeout_s(base_timeout_s: float) -> float:
@@ -146,7 +167,15 @@ def _client_timeout_s(base_timeout_s: float) -> float:
     `directional_chat` far below its documented 30s ceiling.
     """
     longest = max(
-        [_DIRECTIONAL_TIMEOUT_S]
+        [
+            _DIRECTIONAL_TIMEOUT_S,
+            _SESSION_PURGE_BUDGET_S,
+            _SESSION_DELETE_TIMEOUT_S,
+            _WORKSPACE_DELETE_TIMEOUT_S,
+            _IDENTITY_SEED_TIMEOUT_S,
+            _SEED_TOTAL_TIMEOUT_S,
+            _SYNC_TOTAL_TIMEOUT_S,
+        ]
         + [
             prefetch_timeout_s(level, base_timeout_s)  # type: ignore[arg-type]
             for level in _REASONING_TIMEOUT_MULTIPLIER
@@ -249,6 +278,7 @@ def _drop_cached_clients() -> None:
     _client_locks.clear()
     _pending_sync_tasks.clear()
     _identity_seeded.clear()
+    _identity_failed.clear()
 
 
 def reset_client_for_tests() -> None:
@@ -637,13 +667,16 @@ _IDENTITY_RECHECK_S = 900.0
 # fire-and-forget, so absent this the only bound is the SDK client timeout.
 _IDENTITY_SEED_TIMEOUT_S = 10.0
 
+# Ceiling for a whole seeding pass. The per-peer bound alone leaves the serial
+# loop costing peers x budget, which a wide thread turns into a pile-up.
+_SEED_TOTAL_TIMEOUT_S = 20.0
+
+# Peers whose last seed attempt failed, and when. A degraded card endpoint is
+# then retried once per interval instead of once per peer per turn.
+_identity_failed: dict[tuple[str, int], float] = {}
+_IDENTITY_RETRY_AFTER_S = 120.0
+
 _IDENTITY_PREFIX = "IDENTITY:"
-
-# The tokens that give a card line its kind. A roster value carrying one could
-# forge card structure, so such a value is refused rather than escaped.
-_CARD_STRUCTURE_TOKENS = ("IDENTITY:", "ATTRIBUTE:", "RELATIONSHIP:")
-
-_CARD_VALUE_MAX_CHARS = 120
 
 
 def _is_identity_line(line: str) -> bool:
@@ -657,6 +690,29 @@ def _is_identity_line(line: str) -> bool:
     return line.strip().upper().startswith(_IDENTITY_PREFIX)
 
 
+# A card value is reduced to a conservative allow-list rather than screened by
+# a deny-list of structure tokens. The consumer here is an LLM system prompt,
+# not a strict parser, so semantic equivalence is what matters and exact-match
+# screening does not provide a boundary: ``ATTRIBUTE :``, a fullwidth colon, a
+# zero-width space inside the word and a Cyrillic homoglyph all read the same
+# to the model while each defeating a substring test. Allowing letters, marks,
+# digits, spaces and a small punctuation set instead refuses every colon
+# variant in one rule — and the colon is what gives a card line its structure.
+#
+# This does not, and cannot, stop a value that is merely persuasive free text
+# ("Ignore prior notes..."); OE already embeds ``full_name`` in its own system
+# prompt, so that exposure is pre-existing. What it does stop is roster text
+# forging card *structure* in a third party's prompt.
+_CARD_ALLOWED_PUNCT = frozenset(" .,'-&()/")
+_CARD_ALLOWED_CATEGORIES = ("L", "M", "N")
+
+_CARD_VALUE_MAX_CHARS = 120
+
+# Cap on the deriver-authored lines carried over by a re-seed, so a card
+# cannot grow without bound through repeated read-modify-write passes.
+_CARD_KEPT_MAX_LINES = 40
+
+
 def _card_value(raw: str) -> str | None:
     """A roster string reduced to something safe to put on a card, or ``None``
     when it cannot be.
@@ -664,16 +720,26 @@ def _card_value(raw: str) -> str | None:
     Card lines are injected verbatim into Honcho's dialectic system prompt,
     and roster values are attacker-reachable: the Executive exposes
     ``upsert_person`` as a chat tool, so anyone who can talk to it — an unknown
-    inbound email sender included — can propose a name. A newline would forge
-    additional card lines and a structure token would forge a line's kind, so
-    flatten whitespace, cap length, and refuse a value carrying a structure
-    token outright rather than trying to escape it.
+    inbound email sender included — can propose a name.
     """
-    flat = " ".join(raw.split())[:_CARD_VALUE_MAX_CHARS]
+    # NFKC first, so compatibility forms (fullwidth latin, fullwidth colon,
+    # ligatures) fold to their plain equivalents before anything is checked.
+    text = unicodedata.normalize("NFKC", raw)
+    # Whitespace runs collapse to one space *before* controls are dropped, so
+    # a newline becomes a separator rather than vanishing and joining two
+    # words together.
+    text = " ".join(text.split())
+    # Remaining control and format characters (zero-width joiners, bidi
+    # overrides) are invisible and only ever used to smuggle.
+    text = "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf"))
+    flat = text[:_CARD_VALUE_MAX_CHARS].strip()
     if not flat:
         return None
-    upper = flat.upper()
-    if any(token in upper for token in _CARD_STRUCTURE_TOKENS):
+    for char in flat:
+        if char in _CARD_ALLOWED_PUNCT:
+            continue
+        if unicodedata.category(char)[0] in _CARD_ALLOWED_CATEGORIES:
+            continue
         return None
     return flat
 
@@ -690,7 +756,9 @@ def _identity_lines(person: Any) -> list[str]:
     return [] if name is None else [f"{_IDENTITY_PREFIX} Name: {name}"]
 
 
-async def _seed_peer_identity(peer: Any, person_id: int, *, workspace_id: str) -> bool:
+async def _seed_peer_identity(
+    peer: Any, person_id: int, person: Any, *, workspace_id: str
+) -> bool:
     """Tell Honcho who this peer actually is. Returns whether it wrote.
 
     Peers are keyed by ``Person.id``, so absent this the only identity signal
@@ -702,17 +770,17 @@ async def _seed_peer_identity(peer: Any, person_id: int, *, workspace_id: str) -
 
     ``set_card`` replaces the whole card, so keep the deriver's own
     ``ATTRIBUTE:`` / ``RELATIONSHIP:`` lines and swap only the ``IDENTITY:``
-    ones — those are the lines the roster knows better.
+    ones — those are the lines the roster knows better. The existing card is
+    split on physical lines first: a single list element may itself span
+    lines, and a start-anchored test on the element would let an identity
+    assertion on its second line survive into ``kept`` and be re-persisted
+    forever, which is the two-identities state this is meant to prevent.
 
     Known limitation: the replace is read-modify-write and the SDK exposes no
     version or ETag, so a deriver write landing between the read and the write
     is lost. Self-correcting (the deriver re-derives) and not fixable
     client-side with the current API.
     """
-    from openexecutive.people.store import get_person
-
-    # Synchronous SQLite — off the shared event loop, as elsewhere in OE.
-    person = await asyncio.to_thread(get_person, person_id)
     if person is None:
         return False
     desired = _identity_lines(person)
@@ -720,18 +788,26 @@ async def _seed_peer_identity(peer: Any, person_id: int, *, workspace_id: str) -
         return False
     facts = tuple(desired)
     key = (workspace_id, person_id)
-    seen = _identity_seeded.get(key)
-    if (
-        seen is not None
-        and seen[0] == facts
-        and (time.monotonic() - seen[1]) < _IDENTITY_RECHECK_S
-    ):
+    now = time.monotonic()
+    failed_at = _identity_failed.get(key)
+    if failed_at is not None and (now - failed_at) < _IDENTITY_RETRY_AFTER_S:
+        # A degraded card endpoint gets probed once per interval, not once per
+        # peer per turn: without this, every inbound message re-pays the full
+        # per-peer budget for every peer for as long as Honcho is unwell.
         return False
-    existing = (await peer.aio.get_card()) or []
-    if [ln.strip() for ln in existing if _is_identity_line(ln)] == desired:
+    seen = _identity_seeded.get(key)
+    if seen is not None and seen[0] == facts and (now - seen[1]) < _IDENTITY_RECHECK_S:
+        return False
+    existing = [
+        sub.strip()
+        for line in ((await peer.aio.get_card()) or [])
+        for sub in str(line).splitlines()
+        if sub.strip()
+    ]
+    if [ln for ln in existing if _is_identity_line(ln)] == desired:
         _identity_seeded[key] = (facts, time.monotonic())
         return False
-    kept = [ln for ln in existing if not _is_identity_line(ln)]
+    kept = [ln for ln in existing if not _is_identity_line(ln)][:_CARD_KEPT_MAX_LINES]
     await peer.aio.set_card(desired + kept)
     _identity_seeded[key] = (facts, time.monotonic())
     return True
@@ -740,28 +816,67 @@ async def _seed_peer_identity(peer: Any, person_id: int, *, workspace_id: str) -
 async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
     """Best-effort identity seeding for each ``(person_id, peer)``.
 
-    Bounded per peer and never allowed to raise: this runs *after* the message
-    write, whose success is the actual point of the sync.
+    Bounded per peer *and* in aggregate, and never allowed to raise: this runs
+    after the message write, whose success is the actual point of the sync.
+    The aggregate bound matters because the pass is serial — without it a
+    hanging card endpoint costs ``len(targets) x`` the per-peer budget on every
+    single turn, which a thread with many resolvable participants turns into a
+    pile-up on the shared client.
     """
-    workspace_id = getattr(client, "workspace_id", "") or get_active_workspace_id()
-    seeded = 0
-    for person_id, peer in targets:
-        try:
-            if await asyncio.wait_for(
-                _seed_peer_identity(peer, person_id, workspace_id=workspace_id),
-                timeout=_IDENTITY_SEED_TIMEOUT_S,
-            ):
-                seeded += 1
-        except Exception as exc:
-            # Deliberately not ``exc_info=True``: a 4xx body from the card
-            # endpoint typically echoes the offending value back, which would
-            # put roster content into application logs.
-            logger.warning(
-                "honcho: could not seed peer identity for person_id=%s (%s)",
-                person_id,
-                type(exc).__name__,
-            )
-    return seeded
+    if not targets:
+        return 0
+    try:
+        workspace_id = getattr(client, "workspace_id", "") or get_active_workspace_id()
+    except Exception:
+        # Nothing here may escape: the caller has already written the messages
+        # and a raise would audit the whole sync as failed after it succeeded.
+        logger.warning("honcho: could not resolve workspace for identity seeding")
+        return 0
+    from openexecutive.people.store import get_person
+
+    # Roster reads first, in one hop off the loop. ``asyncio.wait_for`` cannot
+    # cancel a worker thread, so a blocking SQLite read must not sit inside the
+    # per-peer budget that is supposed to bound it.
+    try:
+        people = await asyncio.to_thread(
+            lambda: {person_id: get_person(person_id) for person_id, _ in targets}
+        )
+    except Exception as exc:
+        logger.warning("honcho: roster lookup for identity seeding failed (%s)", type(exc).__name__)
+        return 0
+    seeded: list[int] = []
+
+    async def _pass() -> None:
+        for person_id, peer in targets:
+            try:
+                if await asyncio.wait_for(
+                    _seed_peer_identity(
+                        peer,
+                        person_id,
+                        people.get(person_id),
+                        workspace_id=workspace_id,
+                    ),
+                    timeout=_IDENTITY_SEED_TIMEOUT_S,
+                ):
+                    seeded.append(person_id)
+            except Exception as exc:
+                _identity_failed[(workspace_id, person_id)] = time.monotonic()
+                # Deliberately not ``exc_info=True``: a 4xx body from the card
+                # endpoint typically echoes the offending value back, which
+                # would put roster content into application logs.
+                logger.warning(
+                    "honcho: could not seed peer identity for person_id=%s (%s)",
+                    person_id,
+                    type(exc).__name__,
+                )
+
+    try:
+        await asyncio.wait_for(_pass(), timeout=_SEED_TOTAL_TIMEOUT_S)
+    except Exception as exc:
+        logger.warning(
+            "honcho: identity seeding pass aborted (%s)", type(exc).__name__
+        )
+    return len(seeded)
 
 
 async def prefetch(
@@ -1063,10 +1178,28 @@ async def _do_sync(
     # the time we run, leaving session_id/turn_id as None on every row we
     # emit — invisible in the per-session audit view.
     with set_turn(session_id=audit_session_id, turn_id=audit_turn_id):
-        await _do_sync_body(
-            user_message, assistant_response, person_id, session_id,
-            co_present_person_ids,
-        )
+        try:
+            await asyncio.wait_for(
+                _do_sync_body(
+                    user_message, assistant_response, person_id, session_id,
+                    co_present_person_ids,
+                ),
+                timeout=_SYNC_TOTAL_TIMEOUT_S,
+            )
+        except TimeoutError:
+            # None of the body's individual calls is wait_for'd, so this is the
+            # only bound on the whole pass now that the client timeout is an
+            # outer bound rather than a tight one.
+            logger.warning(
+                "honcho: sync_turn exceeded %ss for person_id=%s",
+                _SYNC_TOTAL_TIMEOUT_S, person_id,
+            )
+            _emit_peer_memory(
+                op="sync_turn",
+                person_id=person_id,
+                outcome="timeout",
+                details={"session_id": session_id, "timeout_s": _SYNC_TOTAL_TIMEOUT_S},
+            )
 
 
 async def _do_sync_body(
@@ -1113,7 +1246,9 @@ async def _do_sync_body(
         # persisted: that write is the point of the sync and must not queue
         # behind two card round trips per peer. Stays on this fire-and-forget
         # path and never on the latency-budgeted prefetch path.
+        seed_t0 = time.monotonic()
         identity_seeded = await _seed_identities(client, seed_targets)
+        seed_ms = int((time.monotonic() - seed_t0) * 1000)
         _emit_peer_memory(
             op="sync_turn",
             person_id=person_id,
@@ -1124,6 +1259,9 @@ async def _do_sync_body(
                 "co_present_person_ids": co_present_unique,
                 "message_count": len(msgs),
                 "identity_seeded": identity_seeded,
+                # Split out so duration_ms keeps meaning "how long the persist
+                # took" rather than silently absorbing the card round trips.
+                "seed_ms": seed_ms,
                 "session_id": session_id,
             },
         )
@@ -1391,11 +1529,27 @@ async def _do_sync_department(
     # Re-bind the audit ContextVars so peer_memory rows we emit land
     # on the right session in the per-turn flow chart.
     with set_turn(session_id=audit_session_id, turn_id=audit_turn_id):
-        await _do_sync_department_body(
-            user_message, assistant_response, department_slug, session_id,
-            originating_person_id, co_present_person_ids,
-            co_present_department_slugs,
-        )
+        try:
+            await asyncio.wait_for(
+                _do_sync_department_body(
+                    user_message, assistant_response, department_slug, session_id,
+                    originating_person_id, co_present_person_ids,
+                    co_present_department_slugs,
+                ),
+                timeout=_SYNC_TOTAL_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.warning(
+                "honcho: sync_department_turn exceeded %ss for department_slug=%s",
+                _SYNC_TOTAL_TIMEOUT_S, department_slug,
+            )
+            _emit_peer_memory(
+                op="sync_department_turn",
+                person_id=originating_person_id,
+                department_slug=department_slug,
+                outcome="timeout",
+                details={"session_id": session_id, "timeout_s": _SYNC_TOTAL_TIMEOUT_S},
+            )
 
 
 async def _do_sync_department_body(
@@ -1471,7 +1625,9 @@ async def _do_sync_department_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
+        seed_t0 = time.monotonic()
         identity_seeded = await _seed_identities(client, seed_targets)
+        seed_ms = int((time.monotonic() - seed_t0) * 1000)
         _emit_peer_memory(
             op="sync_department_turn",
             person_id=originating_person_id,
@@ -1485,6 +1641,7 @@ async def _do_sync_department_body(
                 "co_present_department_slugs": co_present_department_slugs,
                 "message_count": len(msgs),
                 "identity_seeded": identity_seeded,
+                "seed_ms": seed_ms,
                 "session_id": session_id,
             },
         )

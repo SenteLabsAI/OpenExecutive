@@ -921,29 +921,36 @@ peer_memory:
       which defaults ``committee_review=True``) that already pay
       deep-review latency.
 
-      The budget is ``HONCHO_PREFETCH_TIMEOUT_S`` scaled by
-      ``_REASONING_TIMEOUT_MULTIPLIER`` for the requested level
-      (``minimal``/``low`` 1.5x, ``medium`` 3x, ``high`` 4x, ``max`` 5x),
-      capped at ``_PREFETCH_CEILING_S`` and never below the configured
-      base, via ``prefetch_timeout_s()``. Honcho's dialectic latency
-      scales steeply with the level — measured on hosted Honcho, ``low``
-      ~2s against ``medium`` ~8s — so a single flat budget made the
-      deeper levels unreachable: every ``medium`` call timed out and the
-      turn silently ran with no peer memory, which is strictly worse
-      than having asked for ``low``. ``minimal`` shares ``low``'s
-      multiplier because it measured *slower* than ``low`` and is the
-      default for the standard per-turn path. The ceiling exists because
-      ``prefetch`` is awaited inline before the first streamed byte, so
-      scaling a generous base (10s in prod) must not become user-visible
-      dead air. Each prefetch audit row carries the ``timeout_s`` it ran
-      under, so a timeout can be read against its own budget instead of
-      guessed at.
+      ``HONCHO_PREFETCH_TIMEOUT_S`` is the knob for the FAST per-turn
+      path and is used unscaled there (``minimal``/``low`` sit at 1.0).
+      Only the deliberate levels scale off it — ``medium`` 4x, ``high``
+      5x, ``max`` 6x — capped at ``_PREFETCH_CEILING_S`` and never below
+      the configured base, via ``prefetch_timeout_s()``. Honcho's
+      dialectic latency scales steeply with the level (measured on
+      hosted Honcho: ``low`` ~2s, ``medium`` ~8s), so a single flat
+      budget made the deeper levels unreachable — every ``medium`` call
+      timed out and the turn silently ran with no peer memory, strictly
+      worse than having asked for ``low``. ``medium`` carries more
+      headroom than its measurement alone implies because the budget
+      spans ``peer()`` + ``chat()`` and a budget at the mean still times
+      out half the time.
 
-      The SDK client's own HTTP timeout (``_client_timeout_s``) is an
-      OUTER bound over every per-call budget, kept strictly greater than
-      all of them rather than equal: while it was the prefetch budget, it
-      silently capped ``directional_chat`` far below that surface's
-      documented 30s ceiling.
+      The fast levels stay unscaled deliberately: ``prefetch`` is awaited
+      inline before the first streamed byte, so multiplying the base
+      there adds dead air to every ordinary turn; and any multiplier
+      above 1.0 flattens every level onto the ceiling once the base
+      approaches it, which would stop the operator's knob distinguishing
+      the two paths at all. A non-positive base falls back to
+      ``_DEFAULT_PREFETCH_TIMEOUT_S`` — ``wait_for`` with timeout <= 0
+      fires before the request is made. Each prefetch audit row carries
+      the ``timeout_s`` it ran under.
+
+      ``_client_timeout_s`` is an OUTER bound over EVERY per-call budget
+      in the module (not only the prefetch ones), kept strictly greater
+      than all of them. Because it is no longer tight, the
+      fire-and-forget sync bodies — none of whose individual calls is
+      separately budgeted — carry their own ``_SYNC_TOTAL_TIMEOUT_S``
+      ceiling and emit ``outcome=timeout`` when it fires.
     sync_turn: |
       ``sync_turn(user, assistant, *, person_id, session_id, co_present_person_ids)``
       — fire-and-forget background task scheduled on the current event
@@ -965,21 +972,40 @@ peer_memory:
       The card carries the NAME ONLY: email and role would export roster
       PII to a third-party memory service, for cc'd people included, and
       neither is needed to fix the defect. ``set_card`` replaces the
-      whole card, so only ``IDENTITY:`` lines are swapped (matched
-      case- and whitespace-insensitively) and the deriver's
-      ``ATTRIBUTE:`` / ``RELATIONSHIP:`` lines are preserved. Roster
-      values are flattened to one line, length-capped, and refused
-      outright when they carry a card structure token (``_card_value``)
-      — ``upsert_person`` is a chat tool, so a roster value is
-      attacker-reachable and could otherwise forge card lines inside a
-      system prompt. Seeding runs AFTER the message write (that write is
-      the point of the sync and must not queue behind two card round
-      trips per peer), is bounded per peer by
-      ``_IDENTITY_SEED_TIMEOUT_S``, and is best-effort. Memoized per
-      ``(workspace, person)`` on the facts sent with an
-      ``_IDENTITY_RECHECK_S`` interval: a rename re-seeds at once, and
-      because the deriver keeps re-deriving identity from the peer id a
-      one-shot memo would let ``IDENTITY: Name: 1`` return unnoticed.
+      whole card, so only ``IDENTITY:`` lines are swapped (matched case-
+      and whitespace-insensitively) and the deriver's ``ATTRIBUTE:`` /
+      ``RELATIONSHIP:`` lines are preserved; the existing card is split
+      on PHYSICAL lines first, because one list element may itself span
+      lines and hide an identity claim on its second, and the carried-over
+      lines are capped.
+
+      Roster values are attacker-reachable (``upsert_person`` is a chat
+      tool an inbound email sender can reach), so ``_card_value``
+      NFKC-normalises, flattens whitespace, strips Cc/Cf characters,
+      length-caps, and then holds the value to an ALLOW-LIST of letters,
+      marks, digits and a small punctuation set. A deny-list of structure
+      tokens is not sufficient: the consumer is an LLM system prompt
+      rather than a parser, so ``ATTRIBUTE :``, a fullwidth colon, a
+      zero-width space and a Cyrillic homoglyph all read the same to the
+      model while defeating a literal match. The allow-list refuses every
+      colon variant in one rule. It does NOT stop merely persuasive prose
+      — OE already embeds ``full_name`` in its own system prompt, so that
+      exposure is pre-existing, not introduced here.
+
+      Seeding runs AFTER the message write (that write is the point of
+      the sync and must not queue behind two card round trips per peer),
+      is bounded per peer by ``_IDENTITY_SEED_TIMEOUT_S`` AND per pass by
+      ``_SEED_TOTAL_TIMEOUT_S`` (the pass is serial, so the per-peer bound
+      alone costs peers x budget on a wide thread), and is best-effort;
+      ``seed_ms`` is audited separately so ``duration_ms`` keeps meaning
+      the persist cost. Memoized per ``(workspace, person)`` on the facts
+      sent with an ``_IDENTITY_RECHECK_S`` interval: a rename re-seeds at
+      once, and because the deriver keeps re-deriving identity from the
+      peer id a one-shot memo would let ``IDENTITY: Name: 1`` return
+      unnoticed. A failure is memoized separately for
+      ``_IDENTITY_RETRY_AFTER_S`` so a degraded card endpoint is probed
+      once per interval, not once per peer per turn.
+
       Known limitation: the card replace is read-modify-write with no
       ETag in the SDK, so a deriver write landing in between is lost
       (self-correcting, since the deriver re-derives). Sanitizes session
