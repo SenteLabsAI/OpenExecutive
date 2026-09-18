@@ -792,7 +792,20 @@ def test_international_names_are_accepted(monkeypatch: pytest.MonkeyPatch) -> No
     exercise Lo (CJK), Lu/Ll with diacritics, combining marks, an apostrophe
     and a hyphen — the shapes a roster actually contains."""
     _enable(monkeypatch)
-    for name in ("李雷", "Zoë Müller-O'Brien", "José Álvarez", "Nguyễn Thị Minh Khai", "Søren Kierkegaard"):
+    for name in (
+        "李雷",
+        "Zoë Müller-O'Brien",
+        "José Álvarez",
+        "Nguyễn Thị Minh Khai",
+        "Søren Kierkegaard",
+        # Modifier letters (Lm) that real names need — an earlier revision
+        # dropped the whole category to catch colon lookalikes and silently
+        # left every one of these people with an integer for a name.
+        "佐々木 花子",       # U+3005 ideographic iteration mark
+        "ジョーンズ",        # U+30FC prolonged sound mark
+        "Hawaiʻi Kealoha",   # U+02BB ʻokina
+        "Gʻafur Gʻulom",     # U+02BB in Uzbek Latin
+    ):
         honcho_client.reset_client_for_tests()
         store: dict[str, Any] = {"cards": {}}
         _roster(monkeypatch, {1: name})
@@ -864,8 +877,10 @@ def test_slow_seeding_never_masks_a_successful_persist(
     it with a `timeout` row or delay it — seeding runs outside that ceiling
     and reports on its own row."""
     _enable(monkeypatch)
+    # The card round trip is allowed to run LONGER than the whole sync
+    # ceiling: that is the scenario, and it must not touch the persist row.
     monkeypatch.setattr(honcho_client, "_SYNC_TOTAL_TIMEOUT_S", 0.2)
-    monkeypatch.setattr(honcho_client, "_IDENTITY_SEED_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(honcho_client, "_IDENTITY_SEED_TIMEOUT_S", 0.5)
     captured: list[dict[str, Any]] = []
     _roster(monkeypatch, {1: "Sarah Chen"})
     store: dict[str, Any] = {"cards": {}}
@@ -890,13 +905,15 @@ def test_slow_seeding_never_masks_a_successful_persist(
             honcho_client.sync_turn("Hi", "Hello", person_id=1, session_id="s1")
             await asyncio.gather(*list(honcho_client._pending_sync_tasks))
 
-    asyncio.run(runner())
+    elapsed = asyncio.run(_timed(runner))
+    assert elapsed >= 0.5  # the seed genuinely outlasted the 0.2s sync ceiling
     rows = [r["details"] for r in captured if r["event_type"] == "peer_memory"]
     ops = [(r["op"], r["outcome"]) for r in rows]
-    assert ("sync_turn", "ok") in ops
+    assert ops.index(("sync_turn", "ok")) < ops.index(("seed_identity", "ok"))
     assert ("sync_turn", "timeout") not in ops
     sync_row = next(r for r in rows if r["op"] == "sync_turn")
     assert sync_row["message_count"] == 2
+    assert sync_row["duration_ms"] < 200  # the persist, not the persist plus the seed
     seed_row = next(r for r in rows if r["op"] == "seed_identity")
     assert seed_row["identity_seeded"] == 0 and seed_row["targets"] == 1
     assert len(store["messages"]) == 2
@@ -917,14 +934,21 @@ def test_seed_pass_ceiling_bounds_many_hanging_peers_and_memoizes_them(
     store: dict[str, Any] = {"cards": {}}
 
     class _HangingClient(_CardClient):
+        """Peers 1 and 2 answer normally; 3, 4 and 5 hang. So at least two
+        peers COMPLETE before the ceiling fires, which is what makes the
+        classification of who gets marked failed observable at all."""
+
         async def peer(self, peer_id: str) -> Any:
             peer = await super().peer(peer_id)
+            inner_get = peer.get_card
 
-            async def _hang() -> Any:
+            async def _get() -> Any:
                 attempts.append(peer_id)
-                await asyncio.sleep(30)
+                if peer_id in {"3", "4", "5"}:
+                    await asyncio.sleep(30)
+                return await inner_get()
 
-            peer.get_card = _hang  # type: ignore[method-assign]
+            peer.get_card = _get  # type: ignore[method-assign]
             return peer
 
     fake = _HangingClient(store)
@@ -948,5 +972,50 @@ def test_seed_pass_ceiling_bounds_many_hanging_peers_and_memoizes_them(
 
     elapsed_first, attempted_first, attempted_second = asyncio.run(both())
     assert elapsed_first < 5 * 0.5  # the pass ceiling, not peers x per-peer
-    assert attempted_first < 5  # it really was cut off
+    assert 3 <= attempted_first < 5  # 1 and 2 completed, 3 was cut off in flight
     assert attempted_second == 0  # every peer, reached or not, is memoized
+    failed = {pid for (_, pid) in honcho_client._identity_failed}
+    verified = {pid for (_, pid) in honcho_client._identity_seeded}
+    # Exactly the peers that did not finish are marked failed — the ones
+    # that completed successfully must never be, or a rename inside the
+    # retry window would not reach their card.
+    assert failed == {3, 4, 5}
+    assert verified == {1, 2}
+    assert store["cards"]["1"] == ["IDENTITY: Name: Person 1"]
+    assert store["cards"]["2"] == ["IDENTITY: Name: Person 2"]
+
+
+def test_seed_row_reports_a_cut_off_pass_as_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The seed row must say what happened: a pass the ceiling cut short is
+    `timeout`, not `ok` with a zero count, or the failure mode the negative
+    memo exists for is invisible in the audit view."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(honcho_client, "_IDENTITY_SEED_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(honcho_client, "_SEED_TOTAL_TIMEOUT_S", 0.05)
+    _roster(monkeypatch, {1: "Sarah Chen"})
+    captured: list[dict[str, Any]] = []
+
+    class _HangingClient(_CardClient):
+        async def peer(self, peer_id: str) -> Any:
+            peer = await super().peer(peer_id)
+
+            async def _hang() -> Any:
+                await asyncio.sleep(30)
+
+            peer.get_card = _hang  # type: ignore[method-assign]
+            return peer
+
+    async def runner() -> None:
+        async def _get() -> Any:
+            return _HangingClient({"cards": {}})
+
+        with patch.object(honcho_client, "_get_client", _get), patch.object(
+            honcho_client, "audit_log", _audit_spy(captured)
+        ):
+            honcho_client.sync_turn("Hi", "Hello", person_id=1, session_id="s1")
+            await asyncio.gather(*list(honcho_client._pending_sync_tasks))
+
+    asyncio.run(runner())
+    seed = next(r["details"] for r in captured if r["details"].get("op") == "seed_identity")
+    assert seed["outcome"] == "timeout"
+    assert seed["identity_seeded"] == 0

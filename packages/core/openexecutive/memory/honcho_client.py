@@ -166,11 +166,12 @@ def _client_timeout_s(base_timeout_s: float) -> float:
     built with the bare prefetch budget (3s by default), silently capping
     `directional_chat` far below its documented 30s ceiling.
     """
-    # Per-CALL budgets only. The aggregate ceilings (_SYNC_TOTAL_TIMEOUT_S,
-    # _SEED_TOTAL_TIMEOUT_S, _SESSION_PURGE_BUDGET_S) each span several
-    # sequential requests; folding them in would hand every single request —
-    # including the ones no wait_for covers — an outer bound several times
-    # longer than any one call is ever allowed to take.
+    # Single-call budgets only (plus the per-peer identity budget, which
+    # spans two requests each shorter than it). The whole-pass ceilings
+    # (_SYNC_TOTAL_TIMEOUT_S, _SEED_TOTAL_TIMEOUT_S, _SESSION_PURGE_BUDGET_S)
+    # each span several sequential requests; folding them in would hand every
+    # single request — including the ones no wait_for covers — an outer bound
+    # several times longer than any one call is ever allowed to take.
     longest = max(
         [
             _DIRECTIONAL_TIMEOUT_S,
@@ -711,14 +712,18 @@ def _is_identity_line(line: str) -> bool:
 # prompt, so that exposure is pre-existing. What it does stop is roster text
 # forging card *structure* in a third party's prompt.
 _CARD_ALLOWED_PUNCT = frozenset(" .,'-&()/")
-# Explicit categories rather than the "L*" family: modifier letters (Lm) are
-# excluded because several colon lookalikes live there — U+02D0 "ː" is an Lm
-# and reads as a colon to the model — and nothing a real name needs does.
-# Lo stays in, since it is where CJK, Arabic, Hebrew and most non-Latin
-# scripts' letters are.
 _CARD_ALLOWED_CATEGORIES = frozenset(
-    {"Lu", "Ll", "Lt", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No"}
+    {"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No"}
 )
+# Colon lookalikes that are letters by Unicode category and survive NFKC
+# unchanged, so the category allow-list alone would admit them: U+02D0 "ː"
+# reads as a colon to the model but is a *modifier letter*. Lm cannot simply
+# be dropped — it also holds U+3005 々 and U+30FC ー (as in 佐々木, ジョーンズ)
+# and U+02BB ʻ (Hawaiʻi), which real names need — so the lookalikes are
+# named explicitly instead. Generated from an exhaustive scan of every
+# codepoint whose Unicode name contains COLON; the test of the same name
+# fails if a Unicode update adds one.
+_CARD_COLON_LOOKALIKES = frozenset("\u02d0\u02d1\U00010781\U00010782")
 
 _CARD_VALUE_MAX_CHARS = 120
 
@@ -750,6 +755,8 @@ def _card_value(raw: str) -> str | None:
     if not flat:
         return None
     for char in flat:
+        if char in _CARD_COLON_LOOKALIKES:
+            return None
         if char in _CARD_ALLOWED_PUNCT:
             continue
         if unicodedata.category(char) in _CARD_ALLOWED_CATEGORIES:
@@ -832,7 +839,7 @@ async def _seed_peer_identity(
     return True
 
 
-async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
+async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple[int, str]:
     """Best-effort identity seeding for each ``(person_id, peer)``.
 
     Bounded per peer *and* in aggregate, and never allowed to raise: this runs
@@ -841,24 +848,29 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
     hanging card endpoint costs ``len(targets) x`` the per-peer budget on every
     single turn, which a thread with many resolvable participants turns into a
     pile-up on the shared client.
+
+    Returns ``(peers written, outcome)`` where outcome is ``ok`` when the pass
+    ran to completion (whatever it wrote), ``timeout`` when the pass or the
+    roster read hit its ceiling, and ``error`` otherwise.
     """
     if not targets:
-        return 0
+        return 0, "empty"
     try:
         workspace_id = getattr(client, "workspace_id", "") or get_active_workspace_id()
     except Exception:
         # Nothing here may escape: the caller has already written the messages
         # and a raise would audit the whole sync as failed after it succeeded.
         logger.warning("honcho: could not resolve workspace for identity seeding")
-        return 0
+        return 0, "error"
     from openexecutive.people.store import get_person
 
     # Roster reads first, in one hop off the loop. ``asyncio.wait_for`` cannot
     # cancel a worker thread, so a blocking SQLite read must not sit inside the
     # per-peer budget that is supposed to bound it.
     # Bounded so the TASK cannot sit here indefinitely. The worker thread
-    # itself is not cancellable, but the roster connection has SQLite's
-    # default 5s busy timeout, so a locked table raises rather than blocks.
+    # itself is not cancellable; the roster connection has SQLite's default
+    # 5s busy timeout per read, so a locked table costs the thread at most
+    # ~N x 5s before it raises, while the task detaches at the budget.
     try:
         people = await asyncio.wait_for(
             asyncio.to_thread(
@@ -868,15 +880,17 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
         )
     except Exception as exc:
         logger.warning("honcho: roster lookup for identity seeding failed (%s)", type(exc).__name__)
-        return 0
+        return 0, "timeout" if isinstance(exc, TimeoutError) else "error"
     seeded: list[int] = []
-    settled: set[int] = set()
+    # Every target whose attempt FINISHED — written, already correct, skipped
+    # by a memo, or failed. Deliberately not a ``finally``: a peer cut off
+    # mid-flight by the pass ceiling must stay out of this set.
+    completed: set[int] = set()
 
     async def _pass() -> None:
         for person_id, peer in targets:
-            settled.add(person_id)
             try:
-                if await asyncio.wait_for(
+                wrote = await asyncio.wait_for(
                     _seed_peer_identity(
                         peer,
                         person_id,
@@ -884,10 +898,10 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
                         workspace_id=workspace_id,
                     ),
                     timeout=_IDENTITY_SEED_TIMEOUT_S,
-                ):
-                    seeded.append(person_id)
+                )
             except Exception as exc:
                 _identity_failed[(workspace_id, person_id)] = time.monotonic()
+                completed.add(person_id)
                 # Deliberately not ``exc_info=True``: a 4xx body from the card
                 # endpoint typically echoes the offending value back, which
                 # would put roster content into application logs.
@@ -896,22 +910,28 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
                     person_id,
                     type(exc).__name__,
                 )
+                continue
+            completed.add(person_id)
+            if wrote:
+                seeded.append(person_id)
 
+    outcome = "ok"
     try:
         await asyncio.wait_for(_pass(), timeout=_SEED_TOTAL_TIMEOUT_S)
     except Exception as exc:
-        # The per-peer handler cannot see this cancellation, so the peer that
-        # was in flight and every peer never reached would otherwise be
-        # re-attempted in full next turn — the pass would converge only
-        # over ceil(N/2) turns, each paying the whole ceiling. Mark them all.
+        outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
+        # The per-peer handler cannot see this cancellation, so the peer in
+        # flight and every peer never reached would otherwise be re-attempted
+        # in full next turn — converging only over ceil(N/2) turns, each
+        # paying the whole ceiling. Mark exactly the ones that did not finish.
         now = time.monotonic()
         for person_id, _ in targets:
-            if person_id not in seeded and (person_id not in settled or person_id == list(settled)[-1] if settled else True):
+            if person_id not in completed:
                 _identity_failed[(workspace_id, person_id)] = now
         logger.warning(
             "honcho: identity seeding pass aborted (%s)", type(exc).__name__
         )
-    return len(seeded)
+    return len(seeded), outcome
 
 
 async def _seed_and_audit(
@@ -926,18 +946,21 @@ async def _seed_and_audit(
     sync ceiling so that row stays a pure record of the persist: however slow
     the card round trips are, they can neither delay nor replace it. Bounded
     entirely by the seeding pass's own per-peer and per-pass ceilings."""
-    if not targets:
-        return
-    client = await _get_client()
-    if client is None:
-        return
     t0 = time.monotonic()
-    seeded = await _seed_identities(client, targets)
+    client = await _get_client() if targets else None
+    if not targets:
+        seeded, outcome = 0, "empty"
+    elif client is None:
+        seeded, outcome = 0, "error"
+    else:
+        seeded, outcome = await _seed_identities(client, targets)
+    # Emitted on every path, ``empty`` included, so audit absence keeps
+    # meaning "the code path never ran" rather than "nothing to do".
     _emit_peer_memory(
         op="seed_identity",
         person_id=person_id,
         department_slug=department_slug,
-        outcome="ok",
+        outcome=outcome,
         duration_ms=int((time.monotonic() - t0) * 1000),
         details={
             "identity_seeded": seeded,

@@ -719,6 +719,7 @@ def test_sync_department_turn_audit_row_carries_snapshotted_ids(
     # must carry the same snapshotted ids, so check they all agree, then
     # inspect the persist row itself.
     assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
     sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
     assert len(sync_rows) == 1
     row = sync_rows[0]
@@ -759,6 +760,7 @@ def test_sync_turn_audit_row_carries_snapshotted_ids(
     # must carry the same snapshotted ids, so check they all agree, then
     # inspect the persist row itself.
     assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
     sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
     assert len(sync_rows) == 1
     row = sync_rows[0]
@@ -795,6 +797,7 @@ def test_append_department_note_audit_row_carries_snapshotted_ids(
     # must carry the same snapshotted ids, so check they all agree, then
     # inspect the persist row itself.
     assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
     sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
     assert len(sync_rows) == 1
     row = sync_rows[0]
@@ -835,6 +838,7 @@ def test_snapshot_is_none_when_called_outside_set_turn(
     # must carry the same snapshotted ids, so check they all agree, then
     # inspect the persist row itself.
     assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
     sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
     assert len(sync_rows) == 1
     row = sync_rows[0]

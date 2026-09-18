@@ -988,10 +988,12 @@ peer_memory:
       Roster values are attacker-reachable (``upsert_person`` is a chat
       tool an inbound email sender can reach), so ``_card_value``
       NFKC-normalises, flattens whitespace, strips Cc/Cf characters,
-      length-caps, and then holds the value to an ALLOW-LIST of letters
-      (excluding modifier letters, category Lm, where colon lookalikes
-      such as U+02D0 live), combining marks, digits and a small
-      punctuation set. A deny-list of structure
+      length-caps, and then holds the value to an ALLOW-LIST of letters,
+      combining marks, digits and a small punctuation set, minus an
+      explicit deny-set of colon lookalikes that are letters by category
+      (U+02D0 is a modifier letter). Modifier letters as a class stay
+      allowed — real names need them (々, ー, ʻ) — so the lookalikes are
+      named rather than the category dropped. A deny-list of structure
       tokens is not sufficient: the consumer is an LLM system prompt
       rather than a parser, so ``ATTRIBUTE :``, a fullwidth colon, a
       zero-width space and a Cyrillic homoglyph all read the same to the
@@ -1006,7 +1008,8 @@ peer_memory:
       is bounded per peer by ``_IDENTITY_SEED_TIMEOUT_S`` AND per pass by
       ``_SEED_TOTAL_TIMEOUT_S`` (the pass is serial, so the per-peer bound
       alone costs peers x budget on a wide thread), and is best-effort. It runs OUTSIDE the
-      sync ceiling and is audited as its own ``seed_identity`` row, so the
+      sync ceiling and is audited as its own ``seed_identity`` row (``ok`` /
+      ``timeout`` / ``error`` / ``empty``), so the
       sync row is a pure record of the persist, emitted the instant the
       write lands — a slow card round trip can neither delay nor replace
       it. Memoized per ``(workspace, person)`` on the facts
