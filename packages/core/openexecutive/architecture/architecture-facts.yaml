@@ -914,12 +914,36 @@ peer_memory:
       ``stream_chat_with_committee``. Calls Honcho's dialectic endpoint
       (``peer.aio.chat(query)``) and returns a short ``<peer_memory>``
       block injected into the USER turn (never a cached system block,
-      so it doesn't poison prompt caching). Bounded by
-      ``HONCHO_PREFETCH_TIMEOUT_S`` (10s in prod) — on timeout the turn
+      so it doesn't poison prompt caching). On timeout the turn
       proceeds with an empty block. ``reasoning_level`` trades latency
       for synthesis depth: ``"low"`` for the per-turn path,
-      ``"medium"`` for committee-reviewed turns that already pay
+      ``"medium"`` for committee-reviewed turns (and inbound email,
+      which defaults ``committee_review=True``) that already pay
       deep-review latency.
+
+      The budget is ``HONCHO_PREFETCH_TIMEOUT_S`` scaled by
+      ``_REASONING_TIMEOUT_MULTIPLIER`` for the requested level
+      (``minimal``/``low`` 1.5x, ``medium`` 3x, ``high`` 4x, ``max`` 5x),
+      capped at ``_PREFETCH_CEILING_S`` and never below the configured
+      base, via ``prefetch_timeout_s()``. Honcho's dialectic latency
+      scales steeply with the level — measured on hosted Honcho, ``low``
+      ~2s against ``medium`` ~8s — so a single flat budget made the
+      deeper levels unreachable: every ``medium`` call timed out and the
+      turn silently ran with no peer memory, which is strictly worse
+      than having asked for ``low``. ``minimal`` shares ``low``'s
+      multiplier because it measured *slower* than ``low`` and is the
+      default for the standard per-turn path. The ceiling exists because
+      ``prefetch`` is awaited inline before the first streamed byte, so
+      scaling a generous base (10s in prod) must not become user-visible
+      dead air. Each prefetch audit row carries the ``timeout_s`` it ran
+      under, so a timeout can be read against its own budget instead of
+      guessed at.
+
+      The SDK client's own HTTP timeout (``_client_timeout_s``) is an
+      OUTER bound over every per-call budget, kept strictly greater than
+      all of them rather than equal: while it was the prefetch budget, it
+      silently capped ``directional_chat`` far below that surface's
+      documented 30s ceiling.
     sync_turn: |
       ``sync_turn(user, assistant, *, person_id, session_id, co_present_person_ids)``
       — fire-and-forget background task scheduled on the current event
@@ -928,9 +952,40 @@ peer_memory:
       enumerates other humans in the conversation context (Discord
       thread members, Slack thread participants, email To+Cc) so
       Honcho can store them as session peers — the data shape that
-      makes peer-of-peer reasoning possible. Sanitizes session ids
-      through ``_safe_honcho_id`` (Honcho rejects ``[^a-zA-Z0-9_-]``)
-      so channel-shaped ids like ``discord:thread:N`` get rewritten to
+      makes peer-of-peer reasoning possible. Also seeds each person
+      peer's Honcho card with the roster's name (``_seed_identities`` /
+      ``_seed_peer_identity``, applied on the department sync path too):
+      peers are keyed by ``Person.id``, so without this the only identity
+      signal Honcho receives is a bare integer, and its dreaming agent
+      concludes the number IS the person's name — observed in production
+      as a card reading ``IDENTITY: Name: 1``. Cards are injected into
+      the dialectic system prompt on every ``peer.aio.chat()``, so that
+      error then propagates into every later answer about that person.
+
+      The card carries the NAME ONLY: email and role would export roster
+      PII to a third-party memory service, for cc'd people included, and
+      neither is needed to fix the defect. ``set_card`` replaces the
+      whole card, so only ``IDENTITY:`` lines are swapped (matched
+      case- and whitespace-insensitively) and the deriver's
+      ``ATTRIBUTE:`` / ``RELATIONSHIP:`` lines are preserved. Roster
+      values are flattened to one line, length-capped, and refused
+      outright when they carry a card structure token (``_card_value``)
+      — ``upsert_person`` is a chat tool, so a roster value is
+      attacker-reachable and could otherwise forge card lines inside a
+      system prompt. Seeding runs AFTER the message write (that write is
+      the point of the sync and must not queue behind two card round
+      trips per peer), is bounded per peer by
+      ``_IDENTITY_SEED_TIMEOUT_S``, and is best-effort. Memoized per
+      ``(workspace, person)`` on the facts sent with an
+      ``_IDENTITY_RECHECK_S`` interval: a rename re-seeds at once, and
+      because the deriver keeps re-deriving identity from the peer id a
+      one-shot memo would let ``IDENTITY: Name: 1`` return unnoticed.
+      Known limitation: the card replace is read-modify-write with no
+      ETag in the SDK, so a deriver write landing in between is lost
+      (self-correcting, since the deriver re-derives). Sanitizes session
+      ids through ``_safe_honcho_id`` (Honcho rejects
+      ``[^a-zA-Z0-9_-]``) so channel-shaped ids like
+      ``discord:thread:N`` get rewritten to
       ``discord_thread_N``.
     directional_chat: |
       ``directional_chat(*, person_id, question, target_person_id=None)``

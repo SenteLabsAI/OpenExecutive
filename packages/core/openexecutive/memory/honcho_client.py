@@ -85,6 +85,75 @@ def _safe_honcho_id(raw: str) -> str:
 # Executive entry points can annotate the kwarg they thread through.
 ReasoningLevel = Literal["minimal", "low", "medium", "high", "max"]
 
+# Honcho's dialectic latency scales steeply with ``reasoning_level``. Measured
+# against hosted Honcho on a warm workspace, same query: ``low`` ~2.1s,
+# ``minimal`` ~2.8s, ``medium`` ~8.1s. A single flat budget therefore makes the
+# deeper levels unreachable — a caller that asks for ``medium`` under the
+# default 3s budget times out *every* time and gets no peer memory at all,
+# which is strictly worse than having asked for ``low``. And because prefetch
+# degrades silently (returns "" on timeout), the turn just quietly runs
+# memory-less; nothing surfaces the fact that the level is unusable.
+#
+# So scale the operator-configured base budget by level. The base stays the
+# knob for the fast per-turn path (``HONCHO_PREFETCH_TIMEOUT_S``); the
+# multipliers give the deliberate, deeper levels a budget they can meet.
+# ``minimal`` and ``low`` share a multiplier: the measurements put ``minimal``
+# *slower* than ``low``, so giving ``minimal`` the bare base would under-budget
+# the most-travelled call site (it is the default for the standard per-turn
+# path) — the same silent-empty-block failure this table exists to prevent.
+# ``medium`` is set from its ~8s measurement. ``high``/``max`` are extrapolated:
+# no OE call site requests them yet, so there is nothing to measure. Revisit
+# with real numbers before relying on either.
+_REASONING_TIMEOUT_MULTIPLIER: dict[str, float] = {
+    "minimal": 1.5,
+    "low": 1.5,
+    "medium": 3.0,
+    "high": 4.0,
+    "max": 5.0,
+}
+
+# Absolute ceiling for one prefetch, whatever the configured base. `prefetch`
+# is awaited *inline* in the turn (before the first SSE byte), so the scaling
+# above must not turn a generous base into a user-visible stall: at a 10s base
+# an unbounded ``max`` would reach 50s of dead air. Never drops below the
+# operator's configured base — the ceiling only caps the scaling, it does not
+# override an explicit request for a longer budget.
+_PREFETCH_CEILING_S = 15.0
+
+# Ceiling for `directional_chat`, which backs a deliberate tool call rather
+# than the per-turn budget path.
+_DIRECTIONAL_TIMEOUT_S = 30.0
+
+# Kept strictly greater than every per-call budget rather than merely equal,
+# so which bound fires first is by construction and not by coincidence.
+_CLIENT_TIMEOUT_HEADROOM_S = 5.0
+
+
+def prefetch_timeout_s(reasoning_level: ReasoningLevel, base_timeout_s: float) -> float:
+    """The wall-clock budget for one dialectic prefetch at ``reasoning_level``."""
+    scaled = base_timeout_s * _REASONING_TIMEOUT_MULTIPLIER.get(reasoning_level, 1.0)
+    return max(base_timeout_s, min(scaled, _PREFETCH_CEILING_S))
+
+
+def _client_timeout_s(base_timeout_s: float) -> float:
+    """HTTP timeout for the SDK client.
+
+    An **outer** bound only: every call path applies its own, tighter
+    ``asyncio.wait_for`` budget on top. It must therefore be longer than the
+    longest of those budgets, or the transport aborts first and the per-call
+    budget never gets to apply. That was previously the case — the client was
+    built with the bare prefetch budget (3s by default), silently capping
+    `directional_chat` far below its documented 30s ceiling.
+    """
+    longest = max(
+        [_DIRECTIONAL_TIMEOUT_S]
+        + [
+            prefetch_timeout_s(level, base_timeout_s)  # type: ignore[arg-type]
+            for level in _REASONING_TIMEOUT_MULTIPLIER
+        ]
+    )
+    return longest + _CLIENT_TIMEOUT_HEADROOM_S
+
 # Clients are cached **per event loop**, not globally. The Slack adapter
 # uses `asyncio.run(...)` once per inbound message, which spins up a fresh
 # event loop each turn — a globally cached Honcho client would hold an
@@ -165,7 +234,7 @@ async def _get_client() -> Any | None:
                 # override set by cli/fixture_loader.py). See
                 # `get_active_workspace_id` above.
                 workspace_id=get_active_workspace_id(),
-                timeout=settings.honcho_prefetch_timeout_s,
+                timeout=_client_timeout_s(settings.honcho_prefetch_timeout_s),
             )
             _clients[loop] = client
             return client
@@ -179,6 +248,7 @@ def _drop_cached_clients() -> None:
     _clients.clear()
     _client_locks.clear()
     _pending_sync_tasks.clear()
+    _identity_seeded.clear()
 
 
 def reset_client_for_tests() -> None:
@@ -366,7 +436,7 @@ def _build_teardown_client(settings: Any, workspace_id: str) -> Any | None:
             api_key=settings.honcho_api_key,
             base_url=settings.honcho_base_url,
             workspace_id=workspace_id,
-            timeout=settings.honcho_prefetch_timeout_s,
+            timeout=_client_timeout_s(settings.honcho_prefetch_timeout_s),
         )
     except Exception:
         logger.exception(
@@ -550,6 +620,150 @@ def _emit_peer_memory(
     )
 
 
+# Peer cards Honcho has been told the identity for:
+# ``(workspace_id, person_id) -> (facts written, monotonic time verified)``.
+# Keyed on the workspace the *writing client* is bound to rather than the
+# ambient override (the two can diverge across processes), and bounded by
+# roster size rather than growing once per roster edit.
+_identity_seeded: dict[tuple[str, int], tuple[tuple[str, ...], float]] = {}
+
+# Honcho's dreaming agent keeps re-deriving identity from the peer id, and it
+# runs on every message the sync pushes — so one successful seed is not
+# permanent; it can put ``IDENTITY: Name: 1`` straight back. Re-verify
+# periodically rather than memoizing "done" for the life of the process.
+_IDENTITY_RECHECK_S = 900.0
+
+# Per-peer ceiling for the two card round trips. The sync path is
+# fire-and-forget, so absent this the only bound is the SDK client timeout.
+_IDENTITY_SEED_TIMEOUT_S = 10.0
+
+_IDENTITY_PREFIX = "IDENTITY:"
+
+# The tokens that give a card line its kind. A roster value carrying one could
+# forge card structure, so such a value is refused rather than escaped.
+_CARD_STRUCTURE_TOKENS = ("IDENTITY:", "ATTRIBUTE:", "RELATIONSHIP:")
+
+_CARD_VALUE_MAX_CHARS = 120
+
+
+def _is_identity_line(line: str) -> bool:
+    """Whether a card line is one of ours to replace.
+
+    Case-insensitive and whitespace-tolerant: nothing pins the deriver's exact
+    formatting, and a near-miss would be worse than a miss — the stale line
+    would survive into ``kept`` and the card would then assert two identities
+    at once, both of which reach the dialectic prompt.
+    """
+    return line.strip().upper().startswith(_IDENTITY_PREFIX)
+
+
+def _card_value(raw: str) -> str | None:
+    """A roster string reduced to something safe to put on a card, or ``None``
+    when it cannot be.
+
+    Card lines are injected verbatim into Honcho's dialectic system prompt,
+    and roster values are attacker-reachable: the Executive exposes
+    ``upsert_person`` as a chat tool, so anyone who can talk to it — an unknown
+    inbound email sender included — can propose a name. A newline would forge
+    additional card lines and a structure token would forge a line's kind, so
+    flatten whitespace, cap length, and refuse a value carrying a structure
+    token outright rather than trying to escape it.
+    """
+    flat = " ".join(raw.split())[:_CARD_VALUE_MAX_CHARS]
+    if not flat:
+        return None
+    upper = flat.upper()
+    if any(token in upper for token in _CARD_STRUCTURE_TOKENS):
+        return None
+    return flat
+
+
+def _identity_lines(person: Any) -> list[str]:
+    """The card lines OE owns for a Person — deliberately the name alone.
+
+    The name is what fixes the defect. Adding email or role would export
+    roster PII to a third-party memory service, for co-present peers who never
+    interacted with the Executive at that, and buys no additional correctness:
+    the deriver already picks role and domain up from conversation content.
+    """
+    name = _card_value(person.full_name)
+    return [] if name is None else [f"{_IDENTITY_PREFIX} Name: {name}"]
+
+
+async def _seed_peer_identity(peer: Any, person_id: int, *, workspace_id: str) -> bool:
+    """Tell Honcho who this peer actually is. Returns whether it wrote.
+
+    Peers are keyed by ``Person.id``, so absent this the only identity signal
+    Honcho ever receives is a bare integer — and its dreaming agent duly
+    concludes that the number *is* the person's name, producing cards that
+    read ``IDENTITY: Name: 1``. Peer cards are injected into the dialectic
+    system prompt on every ``peer.chat()``, so that error then propagates into
+    every answer the Executive gets back about that person.
+
+    ``set_card`` replaces the whole card, so keep the deriver's own
+    ``ATTRIBUTE:`` / ``RELATIONSHIP:`` lines and swap only the ``IDENTITY:``
+    ones — those are the lines the roster knows better.
+
+    Known limitation: the replace is read-modify-write and the SDK exposes no
+    version or ETag, so a deriver write landing between the read and the write
+    is lost. Self-correcting (the deriver re-derives) and not fixable
+    client-side with the current API.
+    """
+    from openexecutive.people.store import get_person
+
+    # Synchronous SQLite — off the shared event loop, as elsewhere in OE.
+    person = await asyncio.to_thread(get_person, person_id)
+    if person is None:
+        return False
+    desired = _identity_lines(person)
+    if not desired:
+        return False
+    facts = tuple(desired)
+    key = (workspace_id, person_id)
+    seen = _identity_seeded.get(key)
+    if (
+        seen is not None
+        and seen[0] == facts
+        and (time.monotonic() - seen[1]) < _IDENTITY_RECHECK_S
+    ):
+        return False
+    existing = (await peer.aio.get_card()) or []
+    if [ln.strip() for ln in existing if _is_identity_line(ln)] == desired:
+        _identity_seeded[key] = (facts, time.monotonic())
+        return False
+    kept = [ln for ln in existing if not _is_identity_line(ln)]
+    await peer.aio.set_card(desired + kept)
+    _identity_seeded[key] = (facts, time.monotonic())
+    return True
+
+
+async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> int:
+    """Best-effort identity seeding for each ``(person_id, peer)``.
+
+    Bounded per peer and never allowed to raise: this runs *after* the message
+    write, whose success is the actual point of the sync.
+    """
+    workspace_id = getattr(client, "workspace_id", "") or get_active_workspace_id()
+    seeded = 0
+    for person_id, peer in targets:
+        try:
+            if await asyncio.wait_for(
+                _seed_peer_identity(peer, person_id, workspace_id=workspace_id),
+                timeout=_IDENTITY_SEED_TIMEOUT_S,
+            ):
+                seeded += 1
+        except Exception as exc:
+            # Deliberately not ``exc_info=True``: a 4xx body from the card
+            # endpoint typically echoes the offending value back, which would
+            # put roster content into application logs.
+            logger.warning(
+                "honcho: could not seed peer identity for person_id=%s (%s)",
+                person_id,
+                type(exc).__name__,
+            )
+    return seeded
+
+
 async def prefetch(
     query: str,
     *,
@@ -570,7 +784,9 @@ async def prefetch(
     bump to ``"medium"``/``"high"`` for a richer answer at the cost of
     a few extra seconds and a Sonnet-tier OpenRouter call.
 
-    Times out at ``Settings.honcho_prefetch_timeout_s``; on any failure
+    Times out at ``prefetch_timeout_s(reasoning_level, ...)`` — the
+    configured ``Settings.honcho_prefetch_timeout_s`` scaled for the level,
+    so a deeper level gets a budget it can actually meet; on any failure
     we return an empty string so the turn still runs with whatever the
     builtin episodic block provides. Every outcome (ok/timeout/error/
     disabled/no_person) emits one `peer_memory` audit row.
@@ -589,10 +805,11 @@ async def prefetch(
         # construction-failed case (logged by `_get_client`).
         _emit_peer_memory(op="prefetch", person_id=person_id, outcome="error")
         return ""
+    budget_s = prefetch_timeout_s(reasoning_level, settings.honcho_prefetch_timeout_s)
     try:
         answer = await asyncio.wait_for(
             _do_prefetch(client, query, person_id, reasoning_level),
-            timeout=settings.honcho_prefetch_timeout_s,
+            timeout=budget_s,
         )
         _emit_peer_memory(
             op="prefetch",
@@ -603,6 +820,7 @@ async def prefetch(
                 "query_preview": query[:160],
                 "response_chars": len(answer),
                 "reasoning_level": reasoning_level,
+                "timeout_s": budget_s,
             },
         )
         return answer
@@ -613,7 +831,7 @@ async def prefetch(
             person_id=person_id,
             outcome="timeout",
             duration_ms=int((time.monotonic() - t0) * 1000),
-            details={"reasoning_level": reasoning_level},
+            details={"reasoning_level": reasoning_level, "timeout_s": budget_s},
         )
         return ""
     except Exception:
@@ -623,7 +841,7 @@ async def prefetch(
             person_id=person_id,
             outcome="error",
             duration_ms=int((time.monotonic() - t0) * 1000),
-            details={"reasoning_level": reasoning_level},
+            details={"reasoning_level": reasoning_level, "timeout_s": budget_s},
         )
         return ""
 
@@ -694,7 +912,8 @@ async def directional_chat(
     calls are typically deliberate deep-dives, not the per-turn budget
     path — the model already paid the latency cost by deciding to call.
 
-    Bounded at 30s. Longer than prefetch's 3s budget because the model
+    Bounded at ``_DIRECTIONAL_TIMEOUT_S``. Longer than any prefetch budget
+    (which is capped at ``_PREFETCH_CEILING_S``) because the model
     deliberately invoked this tool, but still a ceiling — without one a
     Honcho hang would pin the entire tool-call loop until
     CHAT_STREAM_TIMEOUT_S fires (~2 min), starving every other tool
@@ -712,7 +931,7 @@ async def directional_chat(
     try:
         answer = await asyncio.wait_for(
             _do_directional(client, person_id, question, target_person_id, reasoning_level),
-            timeout=30.0,
+            timeout=_DIRECTIONAL_TIMEOUT_S,
         )
         text = (answer or "").strip()
         _emit_peer_memory(
@@ -875,10 +1094,13 @@ async def _do_sync_body(
         co_present_unique = sorted(
             {pid for pid in co_present_person_ids if pid != person_id}
         )
-        if co_present_unique:
-            extra_peers = [
-                await client.aio.peer(str(pid)) for pid in co_present_unique
-            ]
+        extra_peers: list[Any] = []
+        seed_targets: list[tuple[int, Any]] = [(person_id, user_peer)]
+        for pid in co_present_unique:
+            co_peer = await client.aio.peer(str(pid))
+            extra_peers.append(co_peer)
+            seed_targets.append((pid, co_peer))
+        if extra_peers:
             await sess.aio.add_peers(extra_peers)
         msgs = []
         if user_message.strip():
@@ -887,6 +1109,11 @@ async def _do_sync_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
+        # Seed roster identity onto the peer cards only once the exchange is
+        # persisted: that write is the point of the sync and must not queue
+        # behind two card round trips per peer. Stays on this fire-and-forget
+        # path and never on the latency-budgeted prefetch path.
+        identity_seeded = await _seed_identities(client, seed_targets)
         _emit_peer_memory(
             op="sync_turn",
             person_id=person_id,
@@ -896,6 +1123,7 @@ async def _do_sync_body(
                 "peer_count": 2 + len(co_present_unique),
                 "co_present_person_ids": co_present_unique,
                 "message_count": len(msgs),
+                "identity_seeded": identity_seeded,
                 "session_id": session_id,
             },
         )
@@ -981,10 +1209,11 @@ async def prefetch_department(
             outcome="error",
         )
         return ""
+    budget_s = prefetch_timeout_s(reasoning_level, settings.honcho_prefetch_timeout_s)
     try:
         answer = await asyncio.wait_for(
             _do_prefetch_department(client, query, department_slug, reasoning_level),
-            timeout=settings.honcho_prefetch_timeout_s,
+            timeout=budget_s,
         )
         _emit_peer_memory(
             op="prefetch_department",
@@ -996,6 +1225,7 @@ async def prefetch_department(
                 "query_preview": query[:160],
                 "response_chars": len(answer),
                 "reasoning_level": reasoning_level,
+                "timeout_s": budget_s,
             },
         )
         return answer
@@ -1010,7 +1240,7 @@ async def prefetch_department(
             department_slug=department_slug,
             outcome="timeout",
             duration_ms=int((time.monotonic() - t0) * 1000),
-            details={"reasoning_level": reasoning_level},
+            details={"reasoning_level": reasoning_level, "timeout_s": budget_s},
         )
         return ""
     except Exception:
@@ -1024,7 +1254,7 @@ async def prefetch_department(
             department_slug=department_slug,
             outcome="error",
             duration_ms=int((time.monotonic() - t0) * 1000),
-            details={"reasoning_level": reasoning_level},
+            details={"reasoning_level": reasoning_level, "timeout_s": budget_s},
         )
         return ""
 
@@ -1207,11 +1437,19 @@ async def _do_sync_department_body(
         sess = await client.aio.session(scoped_session)
         extra_peers: list[Any] = [dept_peer]
         originator_peer: Any | None = None
+        # Person peers on this path are created from a bare Person.id exactly
+        # as they are on the person path, so they need the same identity seed
+        # — otherwise a person who only ever appears in a department turn
+        # keeps an integer for a name.
+        seed_targets: list[tuple[int, Any]] = []
         if originating_person_id is not None:
             originator_peer = await client.aio.peer(str(originating_person_id))
             extra_peers.append(originator_peer)
+            seed_targets.append((originating_person_id, originator_peer))
         for pid in co_present_person_ids:
-            extra_peers.append(await client.aio.peer(str(pid)))
+            co_peer = await client.aio.peer(str(pid))
+            extra_peers.append(co_peer)
+            seed_targets.append((pid, co_peer))
         for slug in co_present_department_slugs:
             extra_peers.append(await client.aio.peer(_department_peer_id(slug)))
         # Dept peer + originator (if any) + co-present extras must all be
@@ -1233,6 +1471,7 @@ async def _do_sync_department_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
+        identity_seeded = await _seed_identities(client, seed_targets)
         _emit_peer_memory(
             op="sync_department_turn",
             person_id=originating_person_id,
@@ -1245,6 +1484,7 @@ async def _do_sync_department_body(
                 "co_present_person_ids": co_present_person_ids,
                 "co_present_department_slugs": co_present_department_slugs,
                 "message_count": len(msgs),
+                "identity_seeded": identity_seeded,
                 "session_id": session_id,
             },
         )
