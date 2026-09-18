@@ -715,8 +715,13 @@ def test_sync_department_turn_audit_row_carries_snapshotted_ids(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] == "sess-abc"
     assert row["ctx_turn_id"] == "t-xyz"
 
@@ -750,8 +755,13 @@ def test_sync_turn_audit_row_carries_snapshotted_ids(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] == "sess-person"
     assert row["ctx_turn_id"] == "t-person"
 
@@ -781,8 +791,13 @@ def test_append_department_note_audit_row_carries_snapshotted_ids(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] == "sess-note"
     assert row["ctx_turn_id"] == "t-note"
 
@@ -816,7 +831,12 @@ def test_snapshot_is_none_when_called_outside_set_turn(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] is None
     assert row["ctx_turn_id"] is None
