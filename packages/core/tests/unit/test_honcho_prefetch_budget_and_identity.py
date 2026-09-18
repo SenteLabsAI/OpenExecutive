@@ -471,7 +471,13 @@ def test_messages_are_written_before_any_card_call(
 
     _run_sync(_OrderedClient(store), person_id=1, session_id="s1")
 
+    # Not just "add_messages came first": the card calls must actually have
+    # run, and every one of them after the write. A build that silently
+    # skipped seeding would otherwise satisfy a bare order[0] check.
     assert order[0] == "add_messages"
+    assert "get_card" in order and "set_card" in order
+    assert order.index("add_messages") < order.index("get_card") < order.index("set_card")
+    assert store["cards"]["1"] == ["IDENTITY: Name: Sarah Chen"]
 
 
 def test_card_write_failure_does_not_lose_the_message_sync(
@@ -505,11 +511,14 @@ def test_a_hanging_card_endpoint_is_bounded(monkeypatch: pytest.MonkeyPatch) -> 
     _roster(monkeypatch, {1: "Sarah Chen"})
     monkeypatch.setattr(honcho_client, "_IDENTITY_SEED_TIMEOUT_S", 0.05)
 
+    hang_attempts: list[int] = []
+
     class _HangingClient(_CardClient):
         async def peer(self, peer_id: str) -> Any:
             peer = await super().peer(peer_id)
 
             async def _hang() -> Any:
+                hang_attempts.append(1)
                 await asyncio.sleep(30)
 
             peer.get_card = _hang  # type: ignore[method-assign]
@@ -522,6 +531,8 @@ def test_a_hanging_card_endpoint_is_bounded(monkeypatch: pytest.MonkeyPatch) -> 
         assert loop.time() - started < 5
     finally:
         loop.close()
+    # The bound only means something if the hanging call was actually made.
+    assert hang_attempts == [1]
     assert len(store["messages"]) == 2
 
 
@@ -575,11 +586,14 @@ def test_roster_values_cannot_forge_extra_card_lines(
     assert store["cards"] == {}
 
 
-def test_structure_tokens_in_a_roster_value_are_refused(
+def test_values_outside_the_name_allow_list_are_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A value carrying a card structure token is refused rather than escaped
-    — forging a line's *kind* is the part that changes what the prompt says."""
+    """The control is a character allow-list, not token detection: every one
+    of these is refused because it carries a character outside
+    letters/marks/digits/light punctuation (a colon in some form, or `#`).
+    That is deliberately broader than "contains ATTRIBUTE:" — a colon is what
+    gives a card line its structure, however it is spelled."""
     _enable(monkeypatch)
     # Positive control: this fixture and roster shape does write when the value
     # is benign, so the refusals below are the sanitiser and not a dead path.

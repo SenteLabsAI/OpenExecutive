@@ -1242,6 +1242,10 @@ async def _do_sync_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
+        # The persist is done: snapshot its cost now, so duration_ms reports
+        # the message write alone rather than absorbing the card round trips
+        # that follow.
+        persist_ms = int((time.monotonic() - t0) * 1000)
         # Seed roster identity onto the peer cards only once the exchange is
         # persisted: that write is the point of the sync and must not queue
         # behind two card round trips per peer. Stays on this fire-and-forget
@@ -1253,14 +1257,13 @@ async def _do_sync_body(
             op="sync_turn",
             person_id=person_id,
             outcome="ok",
-            duration_ms=int((time.monotonic() - t0) * 1000),
+            duration_ms=persist_ms,
             details={
                 "peer_count": 2 + len(co_present_unique),
                 "co_present_person_ids": co_present_unique,
                 "message_count": len(msgs),
                 "identity_seeded": identity_seeded,
-                # Split out so duration_ms keeps meaning "how long the persist
-                # took" rather than silently absorbing the card round trips.
+                # Reported separately from duration_ms (the persist alone).
                 "seed_ms": seed_ms,
                 "session_id": session_id,
             },
@@ -1625,6 +1628,9 @@ async def _do_sync_department_body(
             msgs.append(exec_peer.message(assistant_response))
         if msgs:
             await sess.aio.add_messages(msgs)
+        # As in _do_sync_body: duration_ms is the persist alone; seeding is
+        # reported separately as seed_ms.
+        persist_ms = int((time.monotonic() - t0) * 1000)
         seed_t0 = time.monotonic()
         identity_seeded = await _seed_identities(client, seed_targets)
         seed_ms = int((time.monotonic() - seed_t0) * 1000)
@@ -1633,7 +1639,7 @@ async def _do_sync_department_body(
             person_id=originating_person_id,
             department_slug=department_slug,
             outcome="ok",
-            duration_ms=int((time.monotonic() - t0) * 1000),
+            duration_ms=persist_ms,
             details={
                 "peer_count": 1 + len(extra_peers),  # exec_peer + extras
                 "originating_person_id": originating_person_id,
