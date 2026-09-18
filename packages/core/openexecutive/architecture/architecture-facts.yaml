@@ -989,13 +989,15 @@ peer_memory:
       tool an inbound email sender can reach), so ``_card_value``
       NFKC-normalises, flattens whitespace, strips Cc/Cf characters,
       length-caps, and then holds the value to an ALLOW-LIST of letters,
-      combining marks, digits and a small punctuation set, minus an
-      explicit deny-set of colon lookalikes the category allow-list would
-      otherwise admit, taken from Unicode's confusables data (everything
-      mapped to U+003A) rather than from character names — U+A4FD is a
-      Lisu tone LETTER whose name never says colon. Modifier letters as a
-      class stay allowed — real names need them (々, ー, ʻ) — so the
-      lookalikes are named rather than the category dropped. A deny-list of structure
+      combining marks, digits and a small punctuation set, with the
+      colon lookalikes the category allow-list would otherwise admit
+      STRIPPED out — taken from Unicode's confusables data (everything
+      mapped to U+003A) rather than from character names; U+A4FD is a
+      Lisu tone LETTER whose name never says colon. Stripped rather than
+      refused, because the visarga is the nominative ending in formal
+      Devanagari/Gujarati names: refusing would leave those people never
+      seeded, stripping keeps the stem form and still lets no colon shape
+      reach the card. Modifier letters as a class stay allowed (々, ー, ʻ). A deny-list of structure
       tokens is not sufficient: the consumer is an LLM system prompt
       rather than a parser, so ``ATTRIBUTE :``, a fullwidth colon, a
       zero-width space and a Cyrillic homoglyph all read the same to the
@@ -1011,8 +1013,9 @@ peer_memory:
       is bounded per peer by ``_IDENTITY_SEED_TIMEOUT_S`` AND per pass by
       ``_SEED_TOTAL_TIMEOUT_S`` (the pass is serial, so the per-peer bound
       alone costs peers x budget on a wide thread), and is best-effort. It runs OUTSIDE the
-      sync ceiling and is audited as its own ``seed_identity`` row (``ok`` /
-      ``timeout`` / ``error`` / ``empty``), so the
+      sync ceiling and is audited as its own ``seed_identity`` row (``ok`` only when no
+      peer failed; ``error`` when any did, with the ``failed`` count on
+      the row; ``timeout``; ``empty``), so the
       sync row is a pure record of the persist, emitted the instant the
       write lands — a slow card round trip can neither delay nor replace
       it. Memoized per ``(workspace, person)`` on the facts

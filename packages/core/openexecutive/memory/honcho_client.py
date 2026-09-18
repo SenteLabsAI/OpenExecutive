@@ -725,9 +725,15 @@ _CARD_ALLOWED_CATEGORIES = frozenset(
 # intersected with the allowed categories — NOT a scan of character names,
 # which misses colon-shaped characters whose names never say "colon", such as
 # U+A4FD LISU LETTER TONE MYA JEU. The visarga marks are included on the same
-# basis; they render as a stacked pair of dots and are vanishingly rare in
-# personal names. Two tests guard this: an exhaustive scan of every
-# COLON-named codepoint, and the explicit confusables list below.
+# basis: they render as a stacked pair of dots.
+#
+# These are STRIPPED, not grounds for refusing the value. The visarga is the
+# nominative ending in formal Devanagari and Gujarati names (रामः, નરેશઃ), and
+# refusing the whole value would leave those people never seeded — the exact
+# defect this feature fixes. Stripping keeps the name (as its stem form) and
+# still guarantees no colon shape reaches the card; whatever prose remains is
+# the free-text exposure documented above. Two tests guard this: an exhaustive
+# scan of every COLON-named codepoint, and the explicit confusables list.
 #
 # Cross-checked against confusables.txt 18.0.0: of the 33 sources it maps to
 # U+003A, 12 survive the category allow-list and all 12 are here. The one
@@ -770,12 +776,14 @@ def _card_value(raw: str) -> str | None:
     # Remaining control and format characters (zero-width joiners, bidi
     # overrides) are invisible and only ever used to smuggle.
     text = "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf"))
-    flat = text[:_CARD_VALUE_MAX_CHARS].strip()
+    # Colon lookalikes are removed rather than refused — see the note on
+    # _CARD_COLON_LOOKALIKES. A real name survives minus the mark; a forged
+    # "ATTRIBUTEː" loses the one character that gave it structure.
+    text = "".join(c for c in text if c not in _CARD_COLON_LOOKALIKES)
+    flat = " ".join(text.split())[:_CARD_VALUE_MAX_CHARS].strip()
     if not flat:
         return None
     for char in flat:
-        if char in _CARD_COLON_LOOKALIKES:
-            return None
         if char in _CARD_ALLOWED_PUNCT:
             continue
         if unicodedata.category(char) in _CARD_ALLOWED_CATEGORIES:
@@ -858,7 +866,9 @@ async def _seed_peer_identity(
     return True
 
 
-async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple[int, str]:
+async def _seed_identities(
+    client: Any, targets: list[tuple[int, Any]]
+) -> tuple[int, str, int]:
     """Best-effort identity seeding for each ``(person_id, peer)``.
 
     Bounded per peer *and* in aggregate, and never allowed to raise: this runs
@@ -868,12 +878,13 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
     single turn, which a thread with many resolvable participants turns into a
     pile-up on the shared client.
 
-    Returns ``(peers written, outcome)`` where outcome is ``ok`` when the pass
-    ran to completion (whatever it wrote), ``timeout`` when the pass or the
-    roster read hit its ceiling, and ``error`` otherwise.
+    Returns ``(peers written, outcome, peers failed)``. Outcome is ``ok`` only
+    when every peer's attempt finished without raising (whatever it wrote),
+    ``timeout`` when the pass or the roster read hit its ceiling, and
+    ``error`` when any peer's own attempt raised or hit its budget.
     """
     if not targets:
-        return 0, "empty"
+        return 0, "empty", 0
     # One entry per person, first occurrence wins: `completed` is keyed on
     # person_id, so a duplicated target (the department path can receive
     # the originator again among the co-present ids) would let a cut-off
@@ -888,7 +899,7 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
         # Nothing here may escape: the caller has already written the messages
         # and a raise would audit the whole sync as failed after it succeeded.
         logger.warning("honcho: could not resolve workspace for identity seeding")
-        return 0, "error"
+        return 0, "error", 0
     from openexecutive.people.store import get_person
 
     # Roster reads first, in one hop off the loop. ``asyncio.wait_for`` cannot
@@ -907,14 +918,13 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
         )
     except Exception as exc:
         logger.warning("honcho: roster lookup for identity seeding failed (%s)", type(exc).__name__)
-        return 0, "timeout" if isinstance(exc, TimeoutError) else "error"
+        return 0, ("timeout" if isinstance(exc, TimeoutError) else "error"), 0
     seeded: list[int] = []
     failed_now: list[int] = []
     # Every target whose attempt FINISHED — written, already correct, skipped
     # by a memo, or failed. Deliberately not a ``finally``: a peer cut off
     # mid-flight by the pass ceiling must stay out of this set.
     completed: set[int] = set()
-    pass_started = time.monotonic()
 
     async def _pass() -> None:
         for person_id, peer in targets:
@@ -958,22 +968,32 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
         for person_id, _ in targets:
             if person_id in completed:
                 continue
-            # A cancellation can land after the write returned but before the
-            # peer was recorded as completed; its fresh memo entry is the
-            # evidence that it succeeded, and it must not be marked failed
-            # (which would block a rename for the whole retry window).
+            # Do not mark a peer whose card is already known-correct for the
+            # current roster facts within the recheck interval: its attempt
+            # would have been an instant memo no-op, so suppressing the retry
+            # gains nothing and would block a rename for the whole retry
+            # window. This also covers the cancellation that lands after a
+            # write returned but before the peer was recorded as completed —
+            # the fresh memo entry is the evidence it succeeded.
             seen = _identity_seeded.get((workspace_id, person_id))
-            if seen is not None and seen[1] >= pass_started:
+            person = people.get(person_id)
+            desired = tuple(_identity_lines(person)) if person is not None else ()
+            if (
+                seen is not None
+                and seen[0] == desired
+                and (now - seen[1]) < _IDENTITY_RECHECK_S
+            ):
                 continue
             _identity_failed[(workspace_id, person_id)] = now
         logger.warning(
             "honcho: identity seeding pass aborted (%s)", type(exc).__name__
         )
-    if outcome == "ok" and failed_now and len(failed_now) == len(targets):
-        # Every peer failed individually inside its own budget: that is a
-        # failed pass, not a quiet one, and must not read as "all correct".
+    if outcome == "ok" and failed_now:
+        # ``ok`` means nothing went wrong. A pass in which any peer's own
+        # attempt raised or hit its budget is degraded, and nine broken peers
+        # out of ten must not read the same as ten already-correct ones.
         outcome = "error"
-    return len(seeded), outcome
+    return len(seeded), outcome, len(failed_now)
 
 
 async def _seed_and_audit(
@@ -989,13 +1009,22 @@ async def _seed_and_audit(
     the card round trips are, they can neither delay nor replace it. Bounded
     entirely by the seeding pass's own per-peer and per-pass ceilings."""
     t0 = time.monotonic()
+    # One entry per person (first occurrence wins) BEFORE anything counts
+    # them, so the reported `targets` and the pass's own arithmetic agree.
+    # The department path can hand the originator back among the co-present
+    # ids; a sender cc'd under a second address resolving to the same Person
+    # does the same on the person path.
+    unique: dict[int, Any] = {}
+    for person_id, peer in targets:
+        unique.setdefault(person_id, peer)
+    targets = list(unique.items())
     client = await _get_client() if targets else None
     if not targets:
-        seeded, outcome = 0, "empty"
+        seeded, outcome, failed = 0, "empty", 0
     elif client is None:
-        seeded, outcome = 0, "error"
+        seeded, outcome, failed = 0, "error", 0
     else:
-        seeded, outcome = await _seed_identities(client, targets)
+        seeded, outcome, failed = await _seed_identities(client, targets)
     # Emitted on every path, ``empty`` included, so audit absence keeps
     # meaning "the code path never ran" rather than "nothing to do".
     _emit_peer_memory(
@@ -1006,6 +1035,9 @@ async def _seed_and_audit(
         duration_ms=int((time.monotonic() - t0) * 1000),
         details={
             "identity_seeded": seeded,
+            # Peers whose attempt raised or hit its budget this pass. Partial
+            # degradation is visible here rather than only at 100% failure.
+            "failed": failed,
             "targets": len(targets),
             "session_id": session_id,
         },
