@@ -715,15 +715,27 @@ _CARD_ALLOWED_PUNCT = frozenset(" .,'-&()/")
 _CARD_ALLOWED_CATEGORIES = frozenset(
     {"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No"}
 )
-# Colon lookalikes that are letters by Unicode category and survive NFKC
-# unchanged, so the category allow-list alone would admit them: U+02D0 "ː"
-# reads as a colon to the model but is a *modifier letter*. Lm cannot simply
-# be dropped — it also holds U+3005 々 and U+30FC ー (as in 佐々木, ジョーンズ)
-# and U+02BB ʻ (Hawaiʻi), which real names need — so the lookalikes are
-# named explicitly instead. Generated from an exhaustive scan of every
-# codepoint whose Unicode name contains COLON; the test of the same name
-# fails if a Unicode update adds one.
-_CARD_COLON_LOOKALIKES = frozenset("\u02d0\u02d1\U00010781\U00010782")
+# Colon lookalikes that the category allow-list would otherwise admit — they
+# are letters, marks or numerals by Unicode category and survive NFKC — so
+# they are named explicitly. Lm cannot simply be dropped: it also holds
+# U+3005 々 and U+30FC ー (as in 佐々木, ジョーンズ) and U+02BB ʻ (Hawaiʻi),
+# which real names need.
+#
+# Source: Unicode's confusables data (every character it maps to U+003A),
+# intersected with the allowed categories — NOT a scan of character names,
+# which misses colon-shaped characters whose names never say "colon", such as
+# U+A4FD LISU LETTER TONE MYA JEU. The visarga marks are included on the same
+# basis; they render as a stacked pair of dots and are vanishingly rare in
+# personal names. Two tests guard this: an exhaustive scan of every
+# COLON-named codepoint, and the explicit confusables list below.
+_CARD_COLON_LOOKALIKES = frozenset(
+    "\u02d0\u02d1"            # modifier letter (half) triangular colon
+    "\U00010781\U00010782"    # their superscript forms (NFKC-fold to the above)
+    "\ua4fd"                   # Lisu letter tone mya jeu
+    "\u0903\u0a83"            # Devanagari / Gujarati visarga
+    "\U00011002\U00011082\U00011182\U000115be\U000116ac\U00011838"  # Brahmi, Kaithi, Sharada, Siddham, Takri, Dogra visargas
+    "\U0001015b"               # Greek acrophonic Epidaurean two
+)
 
 _CARD_VALUE_MAX_CHARS = 120
 
@@ -855,6 +867,14 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
     """
     if not targets:
         return 0, "empty"
+    # One entry per person, first occurrence wins: `completed` is keyed on
+    # person_id, so a duplicated target (the department path can receive
+    # the originator again among the co-present ids) would let a cut-off
+    # second attempt hide behind the first's completion.
+    unique: dict[int, Any] = {}
+    for person_id, peer in targets:
+        unique.setdefault(person_id, peer)
+    targets = list(unique.items())
     try:
         workspace_id = getattr(client, "workspace_id", "") or get_active_workspace_id()
     except Exception:
@@ -882,10 +902,12 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
         logger.warning("honcho: roster lookup for identity seeding failed (%s)", type(exc).__name__)
         return 0, "timeout" if isinstance(exc, TimeoutError) else "error"
     seeded: list[int] = []
+    failed_now: list[int] = []
     # Every target whose attempt FINISHED — written, already correct, skipped
     # by a memo, or failed. Deliberately not a ``finally``: a peer cut off
     # mid-flight by the pass ceiling must stay out of this set.
     completed: set[int] = set()
+    pass_started = time.monotonic()
 
     async def _pass() -> None:
         for person_id, peer in targets:
@@ -902,6 +924,7 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
             except Exception as exc:
                 _identity_failed[(workspace_id, person_id)] = time.monotonic()
                 completed.add(person_id)
+                failed_now.append(person_id)
                 # Deliberately not ``exc_info=True``: a 4xx body from the card
                 # endpoint typically echoes the offending value back, which
                 # would put roster content into application logs.
@@ -926,11 +949,23 @@ async def _seed_identities(client: Any, targets: list[tuple[int, Any]]) -> tuple
         # paying the whole ceiling. Mark exactly the ones that did not finish.
         now = time.monotonic()
         for person_id, _ in targets:
-            if person_id not in completed:
-                _identity_failed[(workspace_id, person_id)] = now
+            if person_id in completed:
+                continue
+            # A cancellation can land after the write returned but before the
+            # peer was recorded as completed; its fresh memo entry is the
+            # evidence that it succeeded, and it must not be marked failed
+            # (which would block a rename for the whole retry window).
+            seen = _identity_seeded.get((workspace_id, person_id))
+            if seen is not None and seen[1] >= pass_started:
+                continue
+            _identity_failed[(workspace_id, person_id)] = now
         logger.warning(
             "honcho: identity seeding pass aborted (%s)", type(exc).__name__
         )
+    if outcome == "ok" and failed_now and len(failed_now) == len(targets):
+        # Every peer failed individually inside its own budget: that is a
+        # failed pass, not a quiet one, and must not read as "all correct".
+        outcome = "error"
     return len(seeded), outcome
 
 

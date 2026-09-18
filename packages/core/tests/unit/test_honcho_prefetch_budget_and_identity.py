@@ -908,13 +908,16 @@ def test_slow_seeding_never_masks_a_successful_persist(
     elapsed = asyncio.run(_timed(runner))
     assert elapsed >= 0.5  # the seed genuinely outlasted the 0.2s sync ceiling
     rows = [r["details"] for r in captured if r["event_type"] == "peer_memory"]
-    ops = [(r["op"], r["outcome"]) for r in rows]
-    assert ops.index(("sync_turn", "ok")) < ops.index(("seed_identity", "ok"))
-    assert ("sync_turn", "timeout") not in ops
+    ops = [r["op"] for r in rows]
+    assert ops.index("sync_turn") < ops.index("seed_identity")
+    assert [(r["op"], r["outcome"]) for r in rows if r["op"] == "sync_turn"] == [("sync_turn", "ok")]
     sync_row = next(r for r in rows if r["op"] == "sync_turn")
     assert sync_row["message_count"] == 2
     assert sync_row["duration_ms"] < 200  # the persist, not the persist plus the seed
     seed_row = next(r for r in rows if r["op"] == "seed_identity")
+    # The single peer's card call outlasted its own budget, so the pass had
+    # every peer fail: that is reported as `error`, never as a quiet `ok`.
+    assert seed_row["outcome"] == "error"
     assert seed_row["identity_seeded"] == 0 and seed_row["targets"] == 1
     assert len(store["messages"]) == 2
 
@@ -929,12 +932,16 @@ def test_seed_pass_ceiling_bounds_many_hanging_peers_and_memoizes_them(
     _enable(monkeypatch)
     monkeypatch.setattr(honcho_client, "_IDENTITY_SEED_TIMEOUT_S", 0.5)
     monkeypatch.setattr(honcho_client, "_SEED_TOTAL_TIMEOUT_S", 0.3)
-    _roster(monkeypatch, {i: f"Person {i}" for i in range(1, 6)})
+    # Non-sequential ids on purpose: for small consecutive ints CPython's set
+    # iteration happens to follow insertion order, which let an earlier
+    # `list(settled)[-1]` implementation pass this test by coincidence.
+    ids = [7, 14, 21, 28, 35]
+    _roster(monkeypatch, {i: f"Person {i}" for i in ids})
     attempts: list[str] = []
     store: dict[str, Any] = {"cards": {}}
 
     class _HangingClient(_CardClient):
-        """Peers 1 and 2 answer normally; 3, 4 and 5 hang. So at least two
+        """Peers 7 and 14 answer normally; 21, 28 and 35 hang. So at least two
         peers COMPLETE before the ceiling fires, which is what makes the
         classification of who gets marked failed observable at all."""
 
@@ -944,7 +951,7 @@ def test_seed_pass_ceiling_bounds_many_hanging_peers_and_memoizes_them(
 
             async def _get() -> Any:
                 attempts.append(peer_id)
-                if peer_id in {"3", "4", "5"}:
+                if peer_id in {"21", "28", "35"}:
                     await asyncio.sleep(30)
                 return await inner_get()
 
@@ -960,7 +967,7 @@ def test_seed_pass_ceiling_bounds_many_hanging_peers_and_memoizes_them(
         loop = asyncio.get_running_loop()
         t0 = loop.time()
         with patch.object(honcho_client, "_get_client", _get):
-            honcho_client.sync_turn("Hi", "Hello", person_id=1, session_id=sid, co_present_person_ids=[2, 3, 4, 5])
+            honcho_client.sync_turn("Hi", "Hello", person_id=7, session_id=sid, co_present_person_ids=[14, 21, 28, 35])
             await asyncio.gather(*list(honcho_client._pending_sync_tasks))
         return loop.time() - t0
 
@@ -972,17 +979,17 @@ def test_seed_pass_ceiling_bounds_many_hanging_peers_and_memoizes_them(
 
     elapsed_first, attempted_first, attempted_second = asyncio.run(both())
     assert elapsed_first < 5 * 0.5  # the pass ceiling, not peers x per-peer
-    assert 3 <= attempted_first < 5  # 1 and 2 completed, 3 was cut off in flight
+    assert 3 <= attempted_first < 5  # 7 and 14 completed, 21 was cut off in flight
     assert attempted_second == 0  # every peer, reached or not, is memoized
     failed = {pid for (_, pid) in honcho_client._identity_failed}
     verified = {pid for (_, pid) in honcho_client._identity_seeded}
     # Exactly the peers that did not finish are marked failed — the ones
     # that completed successfully must never be, or a rename inside the
     # retry window would not reach their card.
-    assert failed == {3, 4, 5}
-    assert verified == {1, 2}
-    assert store["cards"]["1"] == ["IDENTITY: Name: Person 1"]
-    assert store["cards"]["2"] == ["IDENTITY: Name: Person 2"]
+    assert failed == {21, 28, 35}
+    assert verified == {7, 14}
+    assert store["cards"]["7"] == ["IDENTITY: Name: Person 7"]
+    assert store["cards"]["14"] == ["IDENTITY: Name: Person 14"]
 
 
 def test_seed_row_reports_a_cut_off_pass_as_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1019,3 +1026,64 @@ def test_seed_row_reports_a_cut_off_pass_as_timeout(monkeypatch: pytest.MonkeyPa
     seed = next(r["details"] for r in captured if r["details"].get("op") == "seed_identity")
     assert seed["outcome"] == "timeout"
     assert seed["identity_seeded"] == 0
+
+
+def test_colon_confusables_are_refused_whatever_their_name_says() -> None:
+    """The deny-set comes from Unicode's confusables data, not from character
+    names: U+A4FD is a Lisu *tone letter* whose name never mentions a colon,
+    yet it renders as one. A name-based scan re-admitted it the moment Lm
+    was allowed back."""
+    for cp, label in (
+        (0xA4FD, "LISU LETTER TONE MYA JEU"),
+        (0x02D0, "MODIFIER LETTER TRIANGULAR COLON"),
+        (0x0903, "DEVANAGARI SIGN VISARGA"),
+        (0x0A83, "GUJARATI SIGN VISARGA"),
+        (0x11002, "BRAHMI SIGN VISARGA"),
+        (0x1015B, "GREEK ACROPHONIC EPIDAUREAN TWO"),
+    ):
+        assert honcho_client._card_value(f"ATTRIBUTE{chr(cp)} Trusted admin") is None, label
+    # And a name that merely contains an Lm letter still passes.
+    assert honcho_client._card_value("佐々木 花子") == "佐々木 花子"
+
+
+def test_duplicate_seed_targets_collapse_to_one_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`completed` is keyed on person_id, so a person listed twice (the
+    department path can hand the originator back among the co-present ids)
+    must be attempted once — otherwise a cut-off second attempt hides behind
+    the first's completion and is never memoized."""
+    _enable(monkeypatch)
+    _roster(monkeypatch, {7: "Person 7"})
+    store: dict[str, Any] = {"cards": {}}
+
+    async def run() -> tuple[int, str]:
+        client = _CardClient(store)
+        peer = await client.peer("7")
+        return await honcho_client._seed_identities(client, [(7, peer), (7, peer), (7, peer)])
+
+    seeded, outcome = asyncio.run(run())
+    assert (seeded, outcome) == (1, "ok")
+    assert store["writes"] == ["7"]
+
+
+def test_a_pass_where_every_peer_fails_is_not_reported_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    _roster(monkeypatch, {7: "Person 7", 14: "Person 14"})
+    store: dict[str, Any] = {"cards": {}}
+
+    class _BrokenClient(_CardClient):
+        async def peer(self, peer_id: str) -> Any:
+            peer = await super().peer(peer_id)
+
+            async def _boom() -> Any:
+                raise RuntimeError("card endpoint 4xx")
+
+            peer.get_card = _boom  # type: ignore[method-assign]
+            return peer
+
+    async def run() -> tuple[int, str]:
+        client = _BrokenClient(store)
+        return await honcho_client._seed_identities(
+            client, [(7, await client.peer("7")), (14, await client.peer("14"))]
+        )
+
+    assert asyncio.run(run()) == (0, "error")

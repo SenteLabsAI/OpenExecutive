@@ -990,16 +990,19 @@ peer_memory:
       NFKC-normalises, flattens whitespace, strips Cc/Cf characters,
       length-caps, and then holds the value to an ALLOW-LIST of letters,
       combining marks, digits and a small punctuation set, minus an
-      explicit deny-set of colon lookalikes that are letters by category
-      (U+02D0 is a modifier letter). Modifier letters as a class stay
-      allowed — real names need them (々, ー, ʻ) — so the lookalikes are
-      named rather than the category dropped. A deny-list of structure
+      explicit deny-set of colon lookalikes the category allow-list would
+      otherwise admit, taken from Unicode's confusables data (everything
+      mapped to U+003A) rather than from character names — U+A4FD is a
+      Lisu tone LETTER whose name never says colon. Modifier letters as a
+      class stay allowed — real names need them (々, ー, ʻ) — so the
+      lookalikes are named rather than the category dropped. A deny-list of structure
       tokens is not sufficient: the consumer is an LLM system prompt
       rather than a parser, so ``ATTRIBUTE :``, a fullwidth colon, a
       zero-width space and a Cyrillic homoglyph all read the same to the
       model while defeating a literal match. The allow-list refuses every
-      colon variant in one rule, checked by an exhaustive test over every
-      Unicode codepoint whose name contains COLON. It does NOT stop merely persuasive prose
+      colon variant, checked by an exhaustive test over every Unicode
+      codepoint whose name contains COLON plus an explicit test of the
+      confusables that names miss. It does NOT stop merely persuasive prose
       — OE already embeds ``full_name`` in its own system prompt, so that
       exposure is pre-existing, not introduced here.
 
