@@ -1,0 +1,48 @@
+{
+  "_comment": "F1: file present, MCP_ENABLED=false so gateway does not start. Secrets are $VAR names only.",
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "_class": "read"
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PERSONAL_ACCESS_TOKEN"
+      },
+      "_class": "write_gated"
+    },
+    "google_workspace": {
+      "command": "uvx",
+      "args": ["workspace-mcp", "--tool-tier", "core", "--single-user"],
+      "env": {
+        "GWORKSPACE_AUTH_MODE": "$GWORKSPACE_AUTH_MODE",
+        "WORKSPACE_MCP_CREDENTIALS_DIR": "$WORKSPACE_MCP_CREDENTIALS_DIR",
+        "GOOGLE_OAUTH_CLIENT_ID": "$GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "$GOOGLE_OAUTH_CLIENT_SECRET",
+        "USER_GOOGLE_EMAIL": "$USER_GOOGLE_EMAIL"
+      },
+      "_class": "write_gated"
+    }
+  },
+  "filters": {
+    "access_control": {
+      "allow_servers": ["fetch"],
+      "deny": [],
+      "deny_patterns": [
+        "*__delete_*", "*__drop_*", "*__destroy_*", "*__remove_*",
+        "*delete_email*", "*delete_message*", "*trash*",
+        "*delete_file*", "*delete_document*",
+        "*send*", "*mail*", "*slack*"
+      ]
+    },
+    "load_control": {
+      "deny_url_patterns": ["*"],
+      "deny_names": ["*"],
+      "allow_url_patterns": []
+    },
+    "similarity_threshold": 0.3
+  }
+}

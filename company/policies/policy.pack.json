@@ -1,0 +1,8 @@
+{
+  "version": "1",
+  "min_score": 80,
+  "required_deny_patterns": ["*__delete_*", "*__drop_*", "*__destroy_*", "*__remove_*", "*__trash_*"],
+  "load_mcp_server": "deny",
+  "mcp_enabled_default": false,
+  "exceptions": []
+}

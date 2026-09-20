@@ -1,0 +1,21 @@
+id: executive
+version: 0.1.0
+title: Executive
+voice: single
+description: C-suite judecată — Pack 0 pe OpenExecutive
+entrypoint: chat
+models:
+  default: sonnet
+  judgment: opus
+  routing: haiku
+tools:
+  class_default: none
+  allow_servers: []
+  deny_patterns: ["delete", "drop", "destroy", "send", "mail"]
+memory:
+  namespace: pack.executive
+  ambient_writeback: false
+hitl:
+  writes: always
+budget:
+  daily_usd_cap: 25
