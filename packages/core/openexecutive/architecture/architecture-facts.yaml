@@ -96,6 +96,17 @@ caching:
     Two cache_control blocks (down from four, consolidated in commit c27dcec
     to stay within the Anthropic 4-block API limit alongside any other
     ephemeral markers the request uses).
+  breakpoint_budget: |
+    The full 4-block budget, and why none of it is spare:
+      1. persona + knowledge (1h)      — system block 0
+      2. company + org (5m, optional)  — system block 1
+      3. last client tool (1h)         — executive tool list
+      4. newest tool_result (5m)       — the agent loop's intra-turn marker
+    History turns deliberately carry NO marker. A rolling marker on the
+    penultimate assistant turn used to claim a latent fifth breakpoint,
+    which Anthropic rejects outright on the direct (non-OpenRouter) path.
+    It never earned its slot: history turns are flat strings, and the
+    system + tool blocks already cover the expensive stable prefix.
   block_order:
     - id: persona_and_knowledge
       ttl: 1h
@@ -119,11 +130,46 @@ caching:
         Shorter TTL so org edits propagate quickly. Only emitted when
         non-empty.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
-  rolling_history_cache: The penultimate assistant turn is marked ephemeral, building a rolling cache for long conversations.
+  intra_turn_cache: |
+    executive._apply_loop_cache_marker moves a single ephemeral marker onto
+    the newest non-empty tool_result after each iteration of the tool-use
+    loop. Without it the loop caches only the static tools+system prefix and
+    re-sends its whole accumulated transcript at full input price on every
+    iteration; the runtime signature of that bug is cache_read_input_tokens
+    pinned flat while the prompt grows iteration over iteration.
+    The marker MOVES rather than accumulates — each pass sweeps every
+    tool_result clean before re-marking the newest. Left in place per
+    iteration it would reach max_iterations breakpoints and blow the 4-block
+    limit. Sweeping first also makes the helper idempotent and self-healing:
+    there is no bookkeeping index to drift out of sync.
+    The marker must stay at the tool_result block's own top level —
+    providers.feature_gate._strip_cache_control walks one level deep only, so
+    a marker nested inside tool_result["content"] would survive the gate and
+    reach a backend that rejects the field.
+  tool_result_bound: |
+    TOOL_RESULT_MAX_CHARS (default 50,000) caps one tool result before it
+    enters the prompt. Applied at the single point every result reaches the
+    model (the tool_results comprehension in _stream_agent_loop), not at each
+    producer: that also covers specialist output, tool errors and the
+    unknown-tool fallback, and leaves non-model consumers — the
+    propose_form_values json.loads, the audit trail — reading the full text.
+    Capping upstream of that parse would feed it truncated JSON and silently
+    drop the form_patch SSE event.
+    A circuit breaker, not a routine clipper: the default is set so ordinary
+    tool output never reaches it. A cut result carries an explicit marker
+    naming the tool and stating the result is incomplete — silent truncation
+    is worse than none, because the model reads the cut text as the whole
+    answer and confabulates the rest.
   openrouter_passthrough: |
     When OPENROUTER_ENABLED=true and the selected model is in the Claude
     family, cache_control markers pass through the OpenRouter translator
-    unchanged. OpenRouter forwards them to Anthropic, so prompt-cache hit
+    unchanged — on system content, user-turn content, tool entries, and
+    tool-result content. The tool-result case is the agent loop's intra-turn
+    marker and needs the translator to carry it onto the emitted `tool`
+    message as a typed array: a marker text block appended to the user
+    message would be re-ordered ahead of the tool messages (they are
+    appended last) and land before the very bytes it must cover.
+    OpenRouter forwards these markers to Anthropic, so prompt-cache hit
     rates stay roughly equivalent to direct routing. For non-Claude
     models the feature gate strips cache_control before translation —
     those backends have no equivalent feature and would reject the

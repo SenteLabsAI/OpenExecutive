@@ -138,3 +138,37 @@ def test_strip_web_search_drops_tools_key_when_only_web_search_present() -> None
     }
     out = apply_feature_gates(_non_claude_spec(), kwargs)
     assert "tools" not in out
+
+
+def test_strips_cache_control_from_tool_result_blocks() -> None:
+    """The agent loop's intra-turn breakpoint rides on a tool_result block.
+
+    Before that loop existed, `messages` almost never carried a marker, so
+    this branch of the strip was close to dead code. Now every tool-loop
+    request carries one, and a non-Claude backend 400s on the unknown
+    field — so the strip is load-bearing on every such request.
+
+    The marker must stay at the tool_result block's own top level: the
+    strip walks one level deep and does NOT recurse into a nested
+    tool_result["content"] list, so moving it inside would silently leak
+    it upstream.
+    """
+    kwargs = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": "output",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ]
+    }
+    out = apply_feature_gates(_non_claude_spec(), kwargs)
+    assert "cache_control" not in out["messages"][0]["content"][0]
+    # Never mutates the caller's dict — the loop reuses it next iteration.
+    assert "cache_control" in kwargs["messages"][0]["content"][0]

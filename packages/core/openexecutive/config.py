@@ -462,6 +462,16 @@ class Settings(BaseSettings):
     )
     google_chat_project_number: str | None = Field(None, alias="GOOGLE_CHAT_PROJECT_NUMBER")
 
+    # ---- Tool results ----
+    # Upper bound on a single tool result's characters before it enters the
+    # prompt. A circuit breaker against an unbounded result (a large document
+    # fetch) dominating a turn and then being re-sent on every remaining
+    # iteration of the tool loop — deliberately set high enough that ordinary
+    # tool output never reaches it. Applies to every tool, not just MCP.
+    tool_result_max_chars: int = Field(
+        50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
+    )
+
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"
     )

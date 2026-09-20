@@ -1114,3 +1114,238 @@ def test_stream_accumulator_drops_server_tool_call_continuation_chunks() -> None
     acc2.feed({"id": "s", "model": "m", "choices": [{"delta": {"content": "done"}, "finish_reason": "tool_calls"}]})
     final = acc2.finalize()
     assert [b.type for b in final.content] == ["text"] and final.stop_reason == "end_turn"
+
+
+# --------------------------------------------------------------------------
+# tool_result cache_control — the agent loop's intra-turn breakpoint
+# --------------------------------------------------------------------------
+
+
+def test_request_preserves_tool_result_cache_control_on_tool_message() -> None:
+    """The agent loop marks the newest tool_result to cache its own
+    transcript. Dropping that marker here is invisible in unit tests and
+    costs full input price on every loop iteration in production, so the
+    wire shape is pinned."""
+    body = to_openai_request(
+        "anthropic/claude-opus-4.7",
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "the tool output",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    tool_msgs = [m for m in body["messages"] if m["role"] == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "tu_1"
+    assert tool_msgs[0]["content"] == [
+        {
+            "type": "text",
+            "text": "the tool output",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def test_request_tool_result_marker_lands_after_every_tool_message() -> None:
+    """Ordering guard. A marker text block appended to the user message
+    would be emitted BEFORE the tool messages (they are appended last),
+    putting the breakpoint ahead of the very bytes it must cover. The
+    marked message must be the last one for the turn."""
+    body = to_openai_request(
+        "anthropic/claude-opus-4.7",
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "some user text"},
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_a",
+                            "content": "first result",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_b",
+                            "content": "second result",
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    msgs = body["messages"]
+    marked = [
+        i
+        for i, m in enumerate(msgs)
+        if isinstance(m.get("content"), list)
+        and any(
+            isinstance(b, dict) and "cache_control" in b for b in m["content"]
+        )
+    ]
+    assert len(marked) == 1
+    assert marked[0] == len(msgs) - 1, "the breakpoint must be the last message"
+    # And specifically after the unmarked sibling tool result.
+    tu_a_index = next(
+        i for i, m in enumerate(msgs) if m.get("tool_call_id") == "tu_a"
+    )
+    assert marked[0] > tu_a_index
+
+
+def test_request_unmarked_tool_result_stays_a_flat_string() -> None:
+    """Every non-cached call keeps the legacy shape — no gratuitous
+    array-form churn on the wire."""
+    body = to_openai_request(
+        "anthropic/claude-opus-4.7",
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "plain output",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    tool_msgs = [m for m in body["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0]["content"] == "plain output"
+
+
+def test_request_empty_tool_result_is_not_marked() -> None:
+    """An empty typed text block carries nothing to cache and risks an
+    upstream 400, so the marker is dropped rather than emitted empty."""
+    body = to_openai_request(
+        "anthropic/claude-opus-4.7",
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    tool_msgs = [m for m in body["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0]["content"] == ""
+    # The point of the test: the marker was dropped, not merely that the
+    # content is empty (the pre-change code produced "" here too).
+    assert not isinstance(tool_msgs[0]["content"], list)
+    assert "cache_control" not in json.dumps(tool_msgs[0])
+
+
+def test_tool_result_wire_shape_is_stable_as_the_marker_moves() -> None:
+    """The shape must not follow the marker.
+
+    The agent loop's marker moves each iteration, so a given tool result
+    is marked when it is newest and unmarked on every later iteration. If
+    the wire shape followed the marker, that result would serialize as a
+    typed array once and as a flat string afterwards — the cached prefix
+    bytes would change underneath the very breakpoint meant to read them
+    and every iteration would miss, making the whole feature a no-op on
+    this path. (The `cache_control` key itself is not an invalidator; a
+    content-shape change is.)
+    """
+    def body_for(marked_id: str) -> dict:
+        return to_openai_request(
+            "anthropic/claude-opus-4.7",
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tu_1",
+                                "content": "first result",
+                                **(
+                                    {"cache_control": {"type": "ephemeral"}}
+                                    if marked_id == "tu_1"
+                                    else {}
+                                ),
+                            }
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tu_2",
+                                "content": "second result",
+                                **(
+                                    {"cache_control": {"type": "ephemeral"}}
+                                    if marked_id == "tu_2"
+                                    else {}
+                                ),
+                            }
+                        ],
+                    },
+                ]
+            },
+        )
+
+    iter_n = body_for("tu_1")
+    iter_n1 = body_for("tu_2")
+
+    def tu1(body: dict) -> dict:
+        return next(m for m in body["messages"] if m.get("tool_call_id") == "tu_1")
+
+    # Strip the marker itself; everything else about tu_1 must be identical
+    # across the two requests, or the prefix broke.
+    a, b = dict(tu1(iter_n)), dict(tu1(iter_n1))
+    for m in (a, b):
+        if isinstance(m["content"], list):
+            m["content"] = [
+                {k: v for k, v in blk.items() if k != "cache_control"}
+                for blk in m["content"]
+            ]
+    assert a == b, (
+        "tu_1 serialized differently once the marker moved to tu_2 — the "
+        "cached prefix changed and iteration N+1 cannot read N's write"
+    )
+
+
+def test_uncached_request_keeps_the_legacy_flat_string_shape() -> None:
+    """No marker anywhere -> every tool message keeps the shape it has
+    always sent. The typed form is only paid for when caching is live."""
+    body = to_openai_request(
+        "anthropic/claude-opus-4.7",
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "a", "content": "one"},
+                        {"type": "tool_result", "tool_use_id": "b", "content": "two"},
+                    ],
+                }
+            ]
+        },
+    )
+    for m in body["messages"]:
+        if m.get("role") == "tool":
+            assert isinstance(m["content"], str)

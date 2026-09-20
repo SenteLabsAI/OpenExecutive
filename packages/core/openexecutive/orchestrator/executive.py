@@ -106,6 +106,142 @@ def _trunc(value: Any, limit: int = 200) -> str:
     return f"{s[:limit]}…[truncated {len(s) - limit} chars]"
 
 
+# Smallest cap for which the never-exceeds-limit guarantee holds; mirrored
+# by the ge= bound on TOOL_RESULT_MAX_CHARS in config.py.
+_MIN_USEFUL_CAP = 1_000
+
+# Longest tool name echoed into a truncation marker. Real names are well
+# under this (the longest in the MCP surface is ~40 chars); the bound exists
+# so a model-supplied name cannot inflate the marker past its own budget.
+_TOOL_NAME_MARKER_MAX = 80
+
+
+def _cap_tool_result(text: Any, *, tool_name: str, limit: int) -> Any:
+    """Bound one tool result before it enters the prompt.
+
+    A circuit breaker, not a routine clipper: the default budget is set so
+    it never fires on ordinary tool output. It exists because a single
+    unbounded result (a large document fetch) otherwise lands in the
+    context and is then re-sent on every remaining iteration of the tool
+    loop, which is the dominant token cost of a long turn.
+
+    The marker is load-bearing. Truncating silently is worse than not
+    truncating: the model reads the cut text as the whole answer and
+    confabulates the rest. Naming the tool and steering toward a
+    *narrower* re-request (rather than a retry, which would re-trigger
+    the cut and burn another iteration) is what makes the cut recoverable.
+
+    Non-``str`` results pass through untouched — every producer returns a
+    string today, and guessing at the size of some other type is not this
+    function's job.
+
+    ``limit`` is passed in rather than read here: ``get_settings()`` builds
+    a fresh ``Settings`` on every call, and this runs once per tool result.
+
+    Precondition: ``limit`` must be at least ``_MIN_USEFUL_CAP``. The
+    "never exceeds ``limit``" guarantee holds by reserving the marker
+    inside the budget, and the marker itself is ~284-383 chars — below
+    that floor there is no room for it and the guarantee breaks. The
+    config field enforces this with ``ge=1_000``.
+    """
+    if not isinstance(text, str):
+        return text
+    if len(text) <= limit:
+        return text
+
+    # ``tool_name`` comes from the model's tool_use block, so it is
+    # attacker-influenceable via prompt injection. Two consequences:
+    #   * it is never passed through ``str.format`` — a name containing
+    #     braces would otherwise be interpreted as a field reference,
+    #     substituting our locals or raising and killing the turn;
+    #   * it is length-bounded, so the marker cannot outgrow the budget
+    #     it is supposed to fit inside.
+    safe_name = tool_name[:_TOOL_NAME_MARKER_MAX] if isinstance(tool_name, str) else "?"
+
+    def marker(shown: int, pct: int) -> str:
+        return (
+            f"\n\n[TRUNCATED by Open Executive: showed the first {shown:,} of "
+            f"{len(text):,} characters from `{safe_name}` ({pct}% omitted). "
+            "This is NOT the full result. To see more, call the tool again "
+            "with a narrower request — a page range, a section name, a query "
+            "or filter — rather than re-requesting the whole document.]"
+        )
+
+    # Reserve the marker inside the budget so the capped result never
+    # exceeds ``limit``. Reserve against the widest form: ``shown`` can
+    # never exceed ``limit``, and ``pct`` can round up to 100 (three
+    # digits), so no real marker is longer than this one. With safe_name
+    # bounded, the reserve stays well under the config's 1_000 minimum.
+    shown = max(0, limit - len(marker(limit, 100)))
+    pct = round((len(text) - shown) * 100 / len(text))
+    logger.warning(
+        "tool_result truncated tool=%s original_chars=%d shown_chars=%d limit=%d",
+        safe_name, len(text), shown, limit,
+    )
+    return text[:shown] + marker(shown, pct)
+
+
+def _apply_loop_cache_marker(
+    messages: list[dict[str, Any]], start: int = 0
+) -> None:
+    """Move the agent loop's intra-turn cache breakpoint to the newest
+    tool result, in place.
+
+    Without this the loop caches only the static tools+system prefix, so
+    every iteration re-sends the whole accumulated transcript at full
+    input price and ``cache_read_input_tokens`` stays pinned flat while
+    the prompt grows. Marking the newest tool result makes each iteration
+    read the previous iteration's write and extend it, so hits accrue.
+
+    The marker MOVES rather than accumulates: a per-iteration marker left
+    in place would reach ``max_iterations`` breakpoints and blow the
+    4-breakpoint API limit. Sweeping first also makes this idempotent and
+    self-healing — there is no bookkeeping index to drift out of sync.
+
+    Placement is the newest non-empty ``tool_result`` in a user message.
+    That is normally the last block of the last user message; when the
+    newest results are empty it falls back to the newest non-empty one
+    before them, so an all-empty iteration still gets a breakpoint. Only
+    the empty blocks then sit outside the cached prefix, which costs
+    nothing.
+
+    The marker must stay at the ``tool_result`` block's own top level:
+    ``providers.feature_gate._strip_cache_control`` removes markers one
+    level deep only, so a marker nested inside ``tool_result["content"]``
+    would survive the gate and reach a provider that rejects the field.
+
+    ``start`` bounds the sweep to messages this loop appended. The loop's
+    ``current_messages`` is a SHALLOW copy, so the caller still owns the
+    dicts before that index; without the bound a caller-supplied
+    ``tool_result`` would be mutated in place. Today no caller builds one,
+    but making that structural beats guarding it with a comment.
+    """
+    # Sweep every marker, and remember every markable block in order. The
+    # newest one wins, but keeping the whole list means an iteration whose
+    # last results are all empty falls back to the newest earlier result
+    # rather than shipping with no breakpoint at all — losing the marker
+    # costs the entire accumulated transcript at full price for that step.
+    markable: list[dict[str, Any]] = []
+    for msg in messages[start:]:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        is_user = msg.get("role") == "user"
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            block.pop("cache_control", None)
+            # An empty result carries nothing worth caching and risks an
+            # upstream 400 on the translated typed block. Non-str content
+            # (a typed/image result) is markable — it is real bytes in the
+            # prefix — but is left to the translator to render.
+            body = block.get("content")
+            if is_user and body:
+                markable.append(block)
+    if markable:
+        markable[-1]["cache_control"] = {"type": "ephemeral"}
+
+
 def _tool_error_result(tool_name: str, exc: BaseException) -> str:
     """Render a crashed tool handler as a JSON tool_result the model can read.
 
@@ -381,23 +517,17 @@ class Executive:
         messages: list[dict[str, Any]] = []
         history = session.get_recent_history()
 
-        for i, turn in enumerate(history):
-            msg: dict[str, Any] = {"role": turn["role"], "content": turn["content"]}
-            # Cache the penultimate assistant turn to build a rolling cache
-            if (
-                turn["role"] == "assistant"
-                and i == len(history) - 2
-                and self._settings.enable_caching
-                and isinstance(turn["content"], str)
-            ):
-                msg["content"] = [
-                    {
-                        "type": "text",
-                        "text": turn["content"],
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-            messages.append(msg)
+        for turn in history:
+            # No cache_control on history turns. The breakpoint budget is 4
+            # per request and the other three are always spoken for: two
+            # system blocks (cache_manager.build_system_blocks) plus the tool
+            # block, leaving exactly one for the agent loop's intra-turn
+            # marker (_apply_loop_cache_marker). A rolling marker here used
+            # to claim a latent fifth, which Anthropic rejects outright on
+            # the direct path; it never earned its slot anyway, since history
+            # turns are flat strings and the system + tool blocks already
+            # cover the expensive stable prefix.
+            messages.append({"role": turn["role"], "content": turn["content"]})
 
         user_content_parts: list[dict[str, Any]] = []
 
@@ -1140,6 +1270,8 @@ class Executive:
         Also yields debug event dicts when a debug_collector is provided.
         """
         current_messages = list(messages)
+        # Shallow copy — the caller owns every dict up to this index.
+        caller_message_count = len(current_messages)
         last_full_text = ""
         specialists_consulted: list[str] = []
 
@@ -1570,17 +1702,29 @@ class Executive:
                     yield debug_collector.to_sse_dict(evt)
 
             current_messages.append({"role": "assistant", "content": response_content})
+            # Cap here, at the single point every result reaches the model,
+            # rather than at each producer: this also covers specialist
+            # output, tool errors and the unknown-tool fallback, and it
+            # leaves non-model consumers (the propose_form_values JSON
+            # parse above, the audit trail) reading the full text.
             tool_results = [
                 {
                     "type": "tool_result",
                     "tool_use_id": tu["id"],
-                    "content": results_by_id.get(
-                        tu["id"], f"Unknown tool: {tu['name']}"
+                    "content": _cap_tool_result(
+                        results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}"),
+                        tool_name=tu["name"],
+                        limit=self._settings.tool_result_max_chars,
                     ),
                 }
                 for tu in tool_uses
             ]
             current_messages.append({"role": "user", "content": tool_results})
+            # Bounded to the messages this loop appended: current_messages
+            # is a shallow copy, so anything at a lower index is still owned
+            # by the caller and must not be mutated.
+            if self._settings.enable_caching:
+                _apply_loop_cache_marker(current_messages, caller_message_count)
 
         logger.warning("max_iterations=%d reached — returning partial result", max_iterations)
         yield last_full_text or "I was unable to complete the analysis. Please try again."
