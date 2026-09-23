@@ -21,6 +21,7 @@ import {
   type ProposalItem,
   type Today,
 } from "@/lib/api";
+import { briefingMemoryLine } from "@/lib/briefing-memory";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
 import {
   HANDLED_REOPENABLE,
@@ -108,7 +109,7 @@ interface BriefingProps {
   // its main view from briefing → chat and seed the input with `prompt`.
   // When omitted, items render as plain navigation links so the standalone
   // /today page still works.
-  onContinue?: (prompt: string) => void;
+  onContinue?: ContinueHandler;
   // Set to true when this Briefing is the root landing surface — adds a
   // "Here's where we are" header. The standalone /today page already
   // gets the global AppShell breadcrumb, so it omits this prop.
@@ -131,7 +132,7 @@ function formatRelTime(iso: string): string {
 }
 
 interface ClickableProps {
-  onContinue?: (prompt: string) => void;
+  onContinue?: ContinueHandler;
   prompt: string;
   href: string;
   className: string;
@@ -171,6 +172,11 @@ function nodeToPlainText(node: unknown): string {
   return "";
 }
 
+// Hands a briefing item to chat. `memoryText` is what peer memory records as
+// the user's words for that turn; omit it when `prompt` is already just the
+// user's own ask.
+type ContinueHandler = (prompt: string, memoryText?: string) => void;
+
 // Seed prompt for a clicked narrative bullet. The Executive receives the
 // open-alert digest as a <briefing> block on every chat turn, so the seed only
 // needs to name the item — the exec matches it by headline. No alert_id is
@@ -199,7 +205,7 @@ function buildMonitoringSeed(proposal: ProposalItem): string {
   );
 }
 
-function DeptCard({ dept, onContinue, dimmed = false }: { dept: DepartmentBriefItem; onContinue?: (p: string) => void; dimmed?: boolean }) {
+function DeptCard({ dept, onContinue, dimmed = false }: { dept: DepartmentBriefItem; onContinue?: ContinueHandler; dimmed?: boolean }) {
   const hasIssues = dept.at_risk_count > 0 || dept.off_track_count > 0;
   const prompt = `Tell me about ${dept.title} — what's the current status?`;
   // Problem goals beyond the inline cap fall to the department page.
@@ -510,7 +516,7 @@ function buildProposalLifecycle({
 }: {
   proposal: ProposalItem;
   assignee: PersonBriefItem | null | undefined;
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   busy: boolean;
 }): {
   reviewLine: React.ReactNode;
@@ -585,6 +591,7 @@ const moveButton = (() => {
         onClick={() => onContinue(
           `Nudge ${who} about this item — it has gone quiet: ${proposal.headline}\n\n` +
           `Send a short, friendly check-in via message_person and tell me what you sent.`,
+          briefingMemoryLine(`Asked to nudge ${who} about`, proposal.headline),
         )}
         disabled={busy}
         className="text-xs font-medium text-indigo-300 hover:text-indigo-200 px-2 py-1 rounded border border-indigo-500/30 transition-colors disabled:opacity-50"
@@ -622,7 +629,7 @@ function ProposalCard({
 }: {
   proposal: ProposalItem;
   people: PersonBriefItem[];
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   onApprove?: (p: ProposalItem) => void;
   onDismiss?: (p: ProposalItem) => void;
   onApproveWithEdits?: (p: ProposalItem, editedBody: string) => void;
@@ -755,6 +762,16 @@ function ProposalCard({
     );
     return `Tell me about this proposal:\n\n${text}${suggested}${primer}`;
   })();
+  const handoffMemory = briefingMemoryLine(
+    isArtifact
+      ? "Asked to discuss the flagged artifact"
+      : isMonitoring
+        ? "Asked about the monitored signal"
+        : isDecision
+          ? "Asked to talk through the proposed meeting"
+          : "Asked about the proposal",
+    proposal.headline,
+  );
   // Suggested-action block: visually promoted so the user reads it as a
   // commitment ("if I approve, the exec will do THIS") rather than a
   // footnote. Renders only when suggested_action is non-empty — and never
@@ -945,7 +962,7 @@ function ProposalCard({
   const contentArea = onContinue ? (
     <button
       type="button"
-      onClick={() => onContinue(handoffPrompt)}
+      onClick={() => onContinue(handoffPrompt, handoffMemory)}
       className="block w-full text-left cursor-pointer transition-colors"
     >
       {content}
@@ -979,7 +996,7 @@ function ProposalCard({
             {onContinue && (
               <button
                 type="button"
-                onClick={() => onContinue(handoffPrompt)}
+                onClick={() => onContinue(handoffPrompt, handoffMemory)}
                 disabled={busy}
                 className="text-xs text-fg-muted hover:text-indigo-300 px-2 py-1 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -1162,7 +1179,7 @@ function MonitoringRow({
   onDismiss,
 }: {
   proposal: ProposalItem;
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   onDismiss?: (p: ProposalItem) => void;
 }) {
   const seed = buildMonitoringSeed(proposal);
@@ -1183,7 +1200,7 @@ function MonitoringRow({
       {onContinue ? (
         <button
           type="button"
-          onClick={() => onContinue(seed)}
+          onClick={() => onContinue(seed, briefingMemoryLine("Asked about the monitored signal", proposal.headline))}
           className="block w-full text-left pr-8 cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
         >
           {inner}
@@ -1218,7 +1235,7 @@ function MonitoringPanel({
   id,
 }: {
   proposals: ProposalItem[];
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   onDismiss?: (p: ProposalItem) => void;
   onBulkDismiss?: (ids: number[]) => void;
   id?: string;
@@ -1483,6 +1500,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
             `call schedule_followup so I get a fresh check at the right time. Do NOT just ` +
             `summarize what you would do, file it for later, or assign it to someone — ` +
             `the assignment IS to you.\n\nProposal:\n${text}${action}`,
+          briefingMemoryLine("Approved the proposal", proposal.headline),
         );
       }
     } catch (e) {
@@ -1589,6 +1607,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
             `call ack_alert. Use the text below VERBATIM when you deliver the message: do not ` +
             `rephrase, summarize, or restructure it. Then go execute (send the DM/email, ` +
             `schedule any follow-up via schedule_followup) and tell me what you did.\n\n${editedBody}`,
+          briefingMemoryLine("Approved the proposal with edits", proposal.headline),
         );
       }
     } catch (e) {
@@ -1814,7 +1833,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                                     <li className="list-none">
                                       <button
                                         type="button"
-                                        onClick={() => onContinue(buildNarrativeSeed(text))}
+                                        onClick={() => onContinue(buildNarrativeSeed(text), briefingMemoryLine("Asked to dig into the briefing item", text))}
                                         aria-label={`Discuss: ${text}`}
                                         className="group flex w-full items-start gap-2 text-left cursor-pointer rounded -mx-1.5 px-1.5 py-0.5 transition hover:bg-indigo-500/10 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
                                       >

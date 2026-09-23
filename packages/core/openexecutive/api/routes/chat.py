@@ -542,13 +542,16 @@ async def _run_chat_turn(
     request: Request,
     page_context: PageContext | None = None,
     client_turn_id: str | None = None,
+    memory_text: str | None = None,
 ) -> StreamingResponse:
     """Shared streaming-chat handler for both the JSON and multipart routes.
 
     `message` is the (already attachment-augmented) text the Executive will
     see and that we persist as the user turn. `attachment_blocks` carries
     image content blocks; document text is expected to already be inlined in
-    `message` by the caller.
+    `message` by the caller. `memory_text`, when set, is what peer memory
+    records as the caller's words instead of `message` (see
+    `Executive.stream_chat`).
     """
     from openexecutive.config import get_settings
     from openexecutive.knowledge.retriever import retrieve
@@ -621,7 +624,10 @@ async def _run_chat_turn(
             "is_first_turn": is_first_turn,
             "attachment_count": len(attachment_blocks or []),
         },
-        full={"message": message},
+        # memory_text reaches the caller's peer AND every consulted
+        # department's shared memory, but never the transcript: keep it
+        # auditable next to the message it stood in for.
+        full={"message": message, "memory_text": memory_text},
     )
 
     # Let the caller schedule to their own addresses. Runs per turn rather than
@@ -836,6 +842,7 @@ async def _run_chat_turn(
                     briefing_context=briefing_context,
                     page_context_block=page_context_block,
                     turn_id=turn_id,
+                    memory_text=memory_text,
                 ).__aiter__()
             else:
                 stream = executive.stream_chat(
@@ -850,6 +857,7 @@ async def _run_chat_turn(
                     briefing_context=briefing_context,
                     page_context_block=page_context_block,
                     turn_id=turn_id,
+                    memory_text=memory_text,
                 ).__aiter__()
 
             # Whole-turn deadline, not per-chunk: a stream that drips bytes
@@ -1167,6 +1175,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         request=request,
         page_context=body.page_context,
         client_turn_id=body.client_turn_id,
+        memory_text=body.memory_text,
     )
 
 
@@ -1225,9 +1234,11 @@ async def chat_upload(
 
     text_parts: list[str] = []
     image_blocks: list[dict[str, Any]] = []
+    filenames: list[str] = []
 
     for upload in files:
         filename = upload.filename or "attachment"
+        filenames.append(filename)
         data = await upload.read()
         if len(data) > _MAX_BYTES_PER_FILE:
             raise HTTPException(
@@ -1265,6 +1276,9 @@ async def chat_upload(
         attachment_blocks=image_blocks or None,
         request=request,
         client_turn_id=client_turn_id,
+        # The extracted document text is the document's words, not the
+        # caller's: recorded in peer memory it becomes facts about the caller.
+        memory_text=f"{message}\n\n[Attached: {', '.join(filenames)}]",
     )
 
 

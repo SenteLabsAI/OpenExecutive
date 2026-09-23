@@ -65,6 +65,13 @@ class ChatRequest(BaseModel):
     # would contradict `_clean_client_turn_id`, which drops it and carries on.
     # The max_length is a size bound, not a format check.
     client_turn_id: str | None = Field(None, max_length=64)
+    # What peer memory records as the caller's words for this turn, when
+    # `message` carries text the caller did not write — a briefing handoff
+    # seeds the turn with the Executive's own card body. Absent → `message`.
+    # Recorded under the caller's own peer and, like `message` would be, in
+    # the shared memory of each department consulted that turn; it is not in
+    # the transcript, so the chat_turn audit row keeps it next to `message`.
+    memory_text: str | None = Field(None, min_length=1, max_length=2000)
 
 
 class StopChatRequest(BaseModel):

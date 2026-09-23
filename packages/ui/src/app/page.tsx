@@ -44,6 +44,8 @@ export default function HomePage() {
   // Seeded into Chat's input when the user enters chat mode from a briefing
   // item. Cleared on every mode transition so it doesn't leak between turns.
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>(undefined);
+  // Companion to pendingPrompt: what peer memory records for the handoff turn.
+  const [pendingMemoryText, setPendingMemoryText] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     fetch("/api/backend/health")
@@ -75,6 +77,7 @@ export default function HomePage() {
       setMobileNavOpen(false);
       setMode("chat");
       setPendingPrompt(undefined);
+      setPendingMemoryText(undefined);
     } catch {
       // ignore — session may not exist yet
     }
@@ -89,18 +92,20 @@ export default function HomePage() {
     setMobileNavOpen(false);
     setMode("chat");
     setPendingPrompt(undefined);
+    setPendingMemoryText(undefined);
   }, []);
 
   // Continue a briefing thread in chat — invoked when the user clicks a
   // Department card, proposal, or activity row. Switches mode to "chat"
   // and seeds the input with the briefing context. The user can edit
   // before sending, or just hit send.
-  const handleContinueFromBriefing = useCallback((prompt: string) => {
+  const handleContinueFromBriefing = useCallback((prompt: string, memoryText?: string) => {
     setActiveSessionId(undefined);
     setActiveMessages([]);
     setDebugEvents([]);
     setMode("chat");
     setPendingPrompt(prompt);
+    setPendingMemoryText(memoryText);
   }, []);
 
   // Reset to the briefing view from anywhere. Used by the sidebar
@@ -111,6 +116,7 @@ export default function HomePage() {
     setDebugEvents([]);
     setMode("briefing");
     setPendingPrompt(undefined);
+    setPendingMemoryText(undefined);
     setMobileNavOpen(false);
   }, []);
 
@@ -372,6 +378,7 @@ export default function HomePage() {
               // ments, not drafts, so auto-fire the first turn instead of
               // making the user hit Send again.
               autoSubmitInitialInput={Boolean(pendingPrompt)}
+              initialMemoryText={pendingMemoryText}
               onTurnComplete={handleTurnComplete}
               onTurnStart={() => setIsTurnInFlight(true)}
             />
