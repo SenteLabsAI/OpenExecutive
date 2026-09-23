@@ -63,8 +63,9 @@ thing that builds `Dockerfile.ui`.
 **Cutting a release** is merging the release PR.
 [.github/workflows/release-please.yml](../.github/workflows/release-please.yml)
 runs release-please on every push to `main` and keeps one open PR,
-"chore(main): release X.Y.Z", up to date. The version comes from the
-conventional-commit types merged since the last release: `feat` → minor,
+"chore(main): release X.Y.Z", up to date. PRs are squash-merged, so each one
+lands as a single commit whose subject is the PR title, and the version comes
+from those titles' conventional-commit types since the last release: `feat` → minor,
 `fix` → patch, and before 1.0 a breaking change is also a minor. The PR bumps
 every place the version is written (listed in `release-please-config.json`)
 and adds the `CHANGELOG.md` entry, which can be edited in the PR before

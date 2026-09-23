@@ -220,7 +220,9 @@ cd evals && python run_evals.py --scenarios scenarios/ --output results/
   The type sets the next version (release-please: `feat` → minor, `fix` →
   patch; `chore`/`docs`/`test`/`refactor` release nothing on their own), and
   `feat`/`fix` titles become the changelog lines, so pick the type by what the
-  change is, not by how big it is.
+  change is, not by how big it is. PRs are squash-merged with the PR title as
+  the commit subject, which is what release-please reads — branch commit
+  messages do not reach `main`.
 - PR description is three sections and nothing else: **Problem**, **Approach**,
   **Checklist** (see `.github/PULL_REQUEST_TEMPLATE.md`). Rationale, review
   findings and alternatives go in the commit message; open questions go in the

@@ -1,7 +1,8 @@
 # Keep a standing release PR, and cut the release when it merges.
 #
-# Every push to main runs release-please. It reads the conventional-commit
-# titles merged since the last release (`feat` → minor, `fix` → patch; before
+# Every push to main runs release-please. PRs are squash-merged with the PR
+# title as the commit subject, so it reads the PR titles merged since the
+# last release (`feat` → minor, `fix` → patch; before
 # 1.0 a breaking change is also a minor) and opens or updates one PR titled
 # "chore(main): release X.Y.Z". That PR bumps every place the version is
 # written (see release-please-config.json) and adds the CHANGELOG.md entry.
