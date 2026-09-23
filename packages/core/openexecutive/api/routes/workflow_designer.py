@@ -20,6 +20,8 @@ import logging
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, HTTPException
@@ -64,6 +66,10 @@ class DesignerSession:
     last_hint: str = ""
     last_options: list[str] = field(default_factory=list)
     last_touched: float = field(default_factory=time.monotonic)
+    # One model turn at a time. Two tabs on the same ?session=, or a retry
+    # while a slow turn is still running, would otherwise interleave appends
+    # and roll back each other's turns.
+    busy: bool = False
 
 
 # In-memory, single-process, not persisted — the same trade-off as the
@@ -119,11 +125,33 @@ def _check_message(message: str, session: DesignerSession | None) -> str:
         raise HTTPException(
             status_code=422,
             detail=(
-                "This conversation has gotten long. Draft the workflow now "
+                "This conversation has gotten long. Create the workflow as it "
+                "is, or fine-tune it in the advanced editor."
+                if session.phase == "draft" and session.draft is not None
+                else "This conversation has gotten long. Draft the workflow now "
                 "and edit it in the advanced editor."
             ),
         )
     return text
+
+
+@contextmanager
+def _one_turn(session: DesignerSession) -> Iterator[None]:
+    """Hold the session for one model turn; 409 if another is in flight.
+
+    Check-and-set with no ``await`` in between, so it is atomic on the
+    single-process event loop these sessions already assume.
+    """
+    if session.busy:
+        raise HTTPException(
+            status_code=409,
+            detail="Still working on your last message — try again in a moment.",
+        )
+    session.busy = True
+    try:
+        yield
+    finally:
+        session.busy = False
 
 
 def _turn_response(session_id: str, session: DesignerSession) -> WorkflowDesignerTurnResponse:
@@ -229,21 +257,28 @@ async def start_designer(body: WorkflowDesignerStartRequest) -> WorkflowDesigner
 async def designer_message(body: WorkflowDesignerMessageRequest) -> WorkflowDesignerTurnResponse:
     session = _get_session(body.session_id)
     text = _check_message(body.message, session)
-    session.transcript.append(Turn(role="user", text=text))
-    try:
-        return await _advance(body.session_id, session)
-    except HTTPException:
-        # Roll the unanswered turn back so a retry does not send it twice and
-        # the transcript the client re-renders matches what the model saw.
-        session.transcript.pop()
-        raise
+    with _one_turn(session):
+        turn = Turn(role="user", text=text)
+        session.transcript.append(turn)
+        try:
+            return await _advance(body.session_id, session)
+        except HTTPException:
+            # Roll the unanswered turn back so a retry does not send it twice
+            # and the transcript the client re-renders matches what the model
+            # saw. Removed by identity, never "whatever is last".
+            for i in range(len(session.transcript) - 1, -1, -1):
+                if session.transcript[i] is turn:
+                    del session.transcript[i]
+                    break
+            raise
 
 
 @router.post("/workflows/designer/draft", response_model=WorkflowDesignerTurnResponse)
 async def designer_draft(body: WorkflowDesignerSessionRequest) -> WorkflowDesignerTurnResponse:
     """Draft now, however much is still unclear."""
     session = _get_session(body.session_id)
-    return await _advance(body.session_id, session, force_draft=True)
+    with _one_turn(session):
+        return await _advance(body.session_id, session, force_draft=True)
 
 
 @router.get("/workflows/designer/{session_id}", response_model=WorkflowDesignerTurnResponse)

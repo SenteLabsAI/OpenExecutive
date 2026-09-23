@@ -7,6 +7,7 @@ and that the literal paths resolve on the full app next to ``/workflows/{name}``
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections import OrderedDict
@@ -17,11 +18,17 @@ import pytest
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-not-used")
 
+from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from openexecutive.api.main import create_app  # noqa: E402
-from openexecutive.api.models import WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS  # noqa: E402
+from openexecutive.api.models import (  # noqa: E402
+    WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS,
+    WorkflowDesignerMessageRequest,
+    WorkflowDesignerSessionRequest,
+)
 from openexecutive.api.routes import workflow_designer as route  # noqa: E402
+from openexecutive.onboarding.interview import Turn  # noqa: E402
 from openexecutive.workflows import designer as wd  # noqa: E402
 from openexecutive.workflows import dynamic_store  # noqa: E402
 
@@ -239,3 +246,80 @@ def test_designer_routes_are_mounted_on_the_full_app(
     resp = client.get(f"/workflows/designer/{sid}")
     assert resp.status_code == 200
     assert resp.json()["session_id"] == sid
+
+
+def test_transcript_cap_wording_in_draft_phase(client: TestClient, seeded: _Queue) -> None:
+    """Once a draft exists, the cap points at Create / the editor, not 'draft now'."""
+    seeded.append(_draft())
+    sid = _start(client)["session_id"]
+    route._designer_sessions[sid].transcript[0].text = "x" * wd.MAX_TRANSCRIPT_CHARS
+    resp = client.post("/workflows/designer/message", json={"session_id": sid, "message": "hi"})
+    assert resp.status_code == 422
+    assert "Create the workflow as it is" in resp.json()["detail"]
+
+
+def _bare_session(monkeypatch: pytest.MonkeyPatch) -> tuple[str, route.DesignerSession]:
+    """A session registered directly, for calling the route coroutines concurrently."""
+    monkeypatch.setattr(route, "_designer_sessions", OrderedDict())
+    session = route.DesignerSession(
+        transcript=[Turn(role="user", text="Weekly digest."), Turn(role="assistant", text="How often?")],
+        questions_asked=1,
+    )
+    route._designer_sessions["sid"] = session
+    return "sid", session
+
+
+@pytest.mark.asyncio
+async def test_second_turn_while_one_is_in_flight_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    sid, session = _bare_session(monkeypatch)
+    release = asyncio.Event()
+
+    async def _slow_advance(transcript: list[Any], **kwargs: Any) -> Any:
+        await release.wait()
+        return wd.DesignerQuestion(question="Who receives it?")
+
+    monkeypatch.setattr(route, "advance", _slow_advance)
+    first = asyncio.create_task(
+        route.designer_message(WorkflowDesignerMessageRequest(session_id=sid, message="Weekly."))
+    )
+    await asyncio.sleep(0)
+    assert session.busy is True
+
+    for call in (
+        route.designer_draft(WorkflowDesignerSessionRequest(session_id=sid)),
+        route.designer_message(WorkflowDesignerMessageRequest(session_id=sid, message="again")),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await call
+        assert exc.value.status_code == 409
+
+    release.set()
+    resp = await first
+    assert resp.question == "Who receives it?"
+    assert session.busy is False
+    # The rejected calls left no trace in the transcript.
+    assert [t.text for t in session.transcript] == [
+        "Weekly digest.", "How often?", "Weekly.", "Who receives it?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rollback_removes_the_failed_turn_not_the_last_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even if something else appended after it, only the failed user turn goes."""
+    sid, session = _bare_session(monkeypatch)
+    late = Turn(role="assistant", text="appended by someone else")
+
+    async def _failing_advance(transcript: list[Any], **kwargs: Any) -> Any:
+        transcript.append(late)
+        raise wd.WorkflowDesignerError("The workflow assistant is unavailable right now. Try again.")
+
+    monkeypatch.setattr(route, "advance", _failing_advance)
+    with pytest.raises(HTTPException) as exc:
+        await route.designer_message(WorkflowDesignerMessageRequest(session_id=sid, message=SECRET))
+    assert exc.value.status_code == 502
+    assert session.busy is False
+    assert [t.text for t in session.transcript] == [
+        "Weekly digest.", "How often?", "appended by someone else",
+    ]

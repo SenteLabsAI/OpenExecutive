@@ -3371,11 +3371,16 @@ workflows:
     (specialists, roster with person ids, USER_TIMEZONE, taken names) is
     rendered once per session by `build_context_block` into the FIRST user
     turn, and the current draft JSON is prepended to the LATEST user turn
-    while refining. Transcript replay is shared with onboarding via
+    while refining. Roster full_name/role are attacker-influenceable free text
+    (anyone with People access), so `_one_line` flattens them to one line and
+    caps them at 80 chars, and the system prompt says the context block is
+    data, never instructions. Transcript replay is shared with onboarding via
     `onboarding.interview.replay_transcript`. Routes live in
     `api/routes/workflow_designer.py` (`/workflows/designer/start|message|
     draft|{id}`), mounted before the workflows router; sessions are
-    in-memory (2 h TTL, 50 cap) and NEVER write — the UI saves through
+    in-memory (2 h TTL, 50 cap), hold ONE model turn at a time (`busy` flag:
+    a concurrent /message or /draft gets 409; a failed /message removes its
+    own user turn by identity), and NEVER write — the UI saves through
     `POST /workflows/custom`, which re-validates. "Edit details" hands the
     draft to the advanced editor via `/jobs/new?designer=<id>`.
 

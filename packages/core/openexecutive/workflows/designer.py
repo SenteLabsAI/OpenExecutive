@@ -47,6 +47,11 @@ MAX_QUESTIONS = 6
 MAX_TRANSCRIPT_CHARS = 60_000
 MAX_OPTIONS = 4
 MAX_OPTION_CHARS = 80
+# Roster fields are free text anyone with People access can set, and they are
+# rendered into the prompt — bound them and keep each to one line so a crafted
+# name cannot smuggle a block of instructions into the context.
+MAX_ROSTER_NAME_CHARS = 80
+MAX_ROSTER_ROLE_CHARS = 80
 
 _MAX_TOKENS = 8000
 _REPAIR_ECHO_CHARS = 4000
@@ -159,6 +164,12 @@ _EMIT_TOOL: dict[str, Any] = {
 TOOLS: list[dict[str, Any]] = sorted([_ASK_TOOL, _EMIT_TOOL], key=lambda t: str(t["name"]))
 
 
+def _one_line(text: str, limit: int) -> str:
+    """Collapse whitespace/control characters to single spaces and truncate."""
+    flat = " ".join("".join(ch if ch.isprintable() else " " for ch in text).split())
+    return flat[:limit]
+
+
 def build_context_block() -> str:
     """Render the live facts the designer needs, for the FIRST user turn.
 
@@ -184,13 +195,17 @@ def build_context_block() -> str:
     except Exception as exc:  # the roster is optional context, not a hard dependency
         logger.warning("workflow designer: roster unavailable (%s)", type(exc).__name__)
         people = []
-    roster = [
-        f"- person_id {p.id}: {p.full_name}"
-        + (f" — {p.role}" if p.role else "")
-        + (" (the user)" if p.is_principal else "")
-        for p in people
-        if p.id is not None
-    ]
+    roster = []
+    for p in people:
+        if p.id is None:
+            continue
+        name = _one_line(p.full_name, MAX_ROSTER_NAME_CHARS)
+        role = _one_line(p.role, MAX_ROSTER_ROLE_CHARS)
+        roster.append(
+            f"- person_id {p.id}: {name}"
+            + (f" — {role}" if role else "")
+            + (" (the user)" if p.is_principal else "")
+        )
 
     try:
         custom_names = [d.name for d in list_definitions(active_only=False)]
@@ -400,7 +415,13 @@ async def advance(
                 if attempt == 0:
                     messages = [
                         *messages,
-                        {"role": "assistant", "content": str(raw.get("question", ""))},
+                        {
+                            "role": "assistant",
+                            # Never empty: the API rejects a blank assistant turn,
+                            # which would turn this retry into a 502.
+                            "content": str(raw.get("question") or "").strip()
+                            or "(asked another question)",
+                        },
                         {
                             "role": "user",
                             "content": (
