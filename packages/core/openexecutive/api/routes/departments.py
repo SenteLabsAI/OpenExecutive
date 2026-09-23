@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field, field_validator
 
 from openexecutive.departments import registry, store
+from openexecutive.departments.cadence import CADENCE_FORMATS_HINT, is_valid_cadence_spec
 from openexecutive.departments.models import (
     AuthorityLevel,
     DepartmentCharter,
@@ -184,6 +185,16 @@ def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentState:
     raw = patch.model_dump(exclude_unset=True)
     if not raw:
         return _must_get(slug)
+
+    # An unparseable spec would be stored and then silently skipped by the
+    # scheduler, so reject it here. Only an exactly empty spec means "no
+    # cadence" (the scheduler's own check is `if not spec`).
+    for name, spec in (patch.cadences or {}).items():
+        if spec and not is_valid_cadence_spec(spec):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid {name} cadence {spec!r}: use {CADENCE_FORMATS_HINT}.",
+            )
 
     store.update_department(
         slug,

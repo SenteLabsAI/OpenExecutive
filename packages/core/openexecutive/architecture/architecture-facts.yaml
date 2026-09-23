@@ -1757,6 +1757,9 @@ departments:
     openexecutive.departments.cadence — supports `daily@HH:MM`,
     `weekly@DOW@HH:MM` or `weekly@DOW-HH:MM` (DOW is a 3-letter day,
     e.g. `weekly@thu@09:00`), and `quarterly@DD-HH:MM`. Times are UTC.
+    `PATCH /departments/{slug}` rejects a spec that does not parse (bad
+    format, unknown DOW, out-of-range time) with a 422 naming the valid
+    formats (`is_valid_cadence_spec`); an empty spec means no cadence.
     The scheduler runner enqueues a `department_check_in` workflow
     when a cadence is due, then `enqueue_next()` chains the following
     occurrence. Lifecycle cleanup: deleting a department cancels its

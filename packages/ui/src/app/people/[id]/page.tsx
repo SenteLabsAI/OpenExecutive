@@ -542,6 +542,8 @@ export default function PersonDetailPage() {
         preferred_channel: form.preferred_channel,
         response_sla_hours: slaNum >= 1 ? slaNum : 24,
         on_leave_until: form.on_leave_until || null,
+        // The backend only clears the date on an explicit flag; null alone is ignored.
+        clear_on_leave: !form.on_leave_until,
         authority_scope: form.authority_scope,
         availability: form.availability,
       });
