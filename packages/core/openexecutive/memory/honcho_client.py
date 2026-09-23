@@ -1448,11 +1448,15 @@ def sync_turn(
     own retention is best-effort and we don't want a sync error to
     surface after the user already has their answer.
 
-    ``user_message`` is recorded as the person's own words, so the
-    ``<outbound_reply_context>`` block inbound hydration prepends for the
-    LLM turn is stripped first. Left in, Honcho's deriver attributes the
-    Executive's own DM to the person who replied to it ("<person> created
-    the tracker", "<person>'s email is the Executive's").
+    ``user_message`` is recorded as the person's own words, so callers pass
+    what the person actually wrote rather than the framed prompt the LLM saw
+    (see ``memory_text`` on ``Executive.stream_chat``): an inbound email's
+    headers, a briefing card's body or an attachment's extracted text
+    recorded here teach Honcho that the person did what the Executive did.
+    The ``<outbound_reply_context>`` block inbound hydration prepends for the
+    LLM turn is still stripped here as a backstop. Left in, Honcho's deriver
+    attributes the Executive's own DM to the person who replied to it
+    ("<person> created the tracker", "<person>'s email is the Executive's").
     """
     if person_id is None:
         _emit_peer_memory(op="sync_turn", person_id=None, outcome="no_person")

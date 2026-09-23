@@ -40,6 +40,10 @@ interface ChatProps {
   // already committed by clicking the action; making them hit Send again
   // is friction. One-shot per mount; ignored on subsequent prop updates.
   autoSubmitInitialInput?: boolean;
+  // Sent with the auto-submitted `initialInput` only: the short line peer
+  // memory records instead of the seed, which quotes the Executive's own
+  // briefing card. Typed messages record exactly what was typed.
+  initialMemoryText?: string;
   onTurnComplete?: (sessionId: string) => void;
   onTurnStart?: () => void;
 }
@@ -66,7 +70,7 @@ function endsOnReply(messages: ChatMessage[] | undefined): boolean {
 const FALLBACK_SUBTITLE =
   "Pick up where we left off — decisions to revisit, drafts to push forward, people to pull in.";
 
-export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, onTurnComplete, onTurnStart }: ChatProps) {
+export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart }: ChatProps) {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
 
@@ -189,13 +193,18 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   }, [isLoading, handleStop]);
 
   const didAutoSubmitRef = useRef(false);
+  // A handoff turn stopped before any output is returned to the composer as
+  // its seed. Resent unchanged it is still the Executive's text, so it keeps
+  // recording the short memory line; anything else sent next (an edit, a
+  // new question, a suggestion chip) records its own text. Cleared on send.
+  const restoredHandoffRef = useRef<{ seed: string; memoryText: string } | undefined>(undefined);
   useEffect(() => {
     if (didAutoSubmitRef.current) return;
     if (!autoSubmitInitialInput) return;
     const seed = (initialInput ?? "").trim();
     if (!seed) return;
     didAutoSubmitRef.current = true;
-    handleSend(seed);
+    handleSend(seed, initialMemoryText);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -209,9 +218,14 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setSessionId(id);
   }
 
-  async function handleSend(text?: string) {
+  async function handleSend(text?: string, memoryText?: string) {
     const message = (text ?? input).trim();
     if ((!message && pendingFiles.length === 0) || isLoading) return;
+    const restored = restoredHandoffRef.current;
+    restoredHandoffRef.current = undefined;
+    const turnMemoryText =
+      memoryText ??
+      (text === undefined && restored?.seed === message ? restored.memoryText : undefined);
 
     const filesForTurn = pendingFiles;
     const userBubbleContent = filesForTurn.length
@@ -255,6 +269,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         files: filesForTurn,
         clientTurnId,
         signal,
+        memoryText: turnMemoryText,
       })) {
         if (item.type === "debug_event") {
           onDebugEvent?.(item);
@@ -320,6 +335,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               : prev,
           );
           setInput(message);
+          restoredHandoffRef.current = turnMemoryText
+            ? { seed: message, memoryText: turnMemoryText }
+            : undefined;
         }
       } else if (accumulated || turnActions.length > 0) {
         setMessages((prev) => [

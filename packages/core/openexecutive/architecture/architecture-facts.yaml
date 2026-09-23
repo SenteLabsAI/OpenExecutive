@@ -1142,7 +1142,22 @@ peer_memory:
       place where a person's words were misattributed to the Executive.
       The async ``peer()`` is a get-or-create POST that applies a changed
       configuration to an existing peer, so the flag is re-asserted on
-      every sync for free. ``co_present_person_ids``
+      every sync for free.
+
+      The "person's message" is ``memory_text`` when the entry point
+      passes one (``Executive.chat`` / ``stream_chat`` /
+      ``stream_chat_with_committee``), else the LLM-facing
+      ``user_message``. Honcho derives facts about a person from every
+      message posted under their peer, and several prompts carry text the
+      person did not write. Observed in production: an inbound email's
+      framing, headers (the Executive's own address in ``To:``) and quoted
+      chain produced "<person> is associated with <exec address>" and
+      "<person> received an email from <person>"; a briefing Discuss seed
+      quoting the Executive's artifact produced "<person> assigned a
+      colleague to …". So the email poller passes ``_email_memory_text`` (subject, the
+      sender's new text, attachment filenames), ``/chat/upload`` passes
+      the typed text plus filenames, and the briefing handoffs send a short
+      ``memory_text`` line through ``POST /chat``. ``co_present_person_ids``
       enumerates other humans in the conversation context (Discord
       thread members, Slack thread participants, email To+Cc) so
       Honcho can store them as session peers — the data shape that
@@ -3583,6 +3598,17 @@ integrations:
     to-roster) instead of wasting a turn discovering the outbound
     block. The outbound gate at ``mcp_gateway._check_gmail_recipients``
     is the actual security boundary against auto-replying to spam.
+    Peer memory records ``_email_memory_text(raw)`` as the sender's
+    words, not the prompt: the subject, the body cut at the first quoted
+    or forwarded message (Gmail's possibly-wrapped "On … wrote:",
+    "-----Original Message-----", an Outlook From:/Sent: block, "--
+    Forwarded message --", ">" lines) and the ``--- ATTACHMENTS ---``
+    filenames — see ``honcho.sync_turn``. Only computed for a rostered
+    sender (an unrostered one has no peer). The email text is sender-
+    controlled, so attachment lines are split from the right and length-
+    capped rather than matched with one regex: a pattern with adjacent
+    ``\s+`` / ``.+?`` groups backtracked cubically on a long run of spaces
+    (30 s at 4,000), stalling the whole API process from one inbound email.
     Like every other channel adapter, the poller calls
     ``Executive.chat`` on the standard path — it does NOT force
     ``committee_review=True``. Committee review is a per-request

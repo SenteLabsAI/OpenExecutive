@@ -139,6 +139,184 @@ def _parse_recipients(raw: str) -> list[str]:
     return found
 
 
+# Section markers in get_gmail_message_content's text output: header lines,
+# then the body, then an optional numbered attachment list whose lines read
+# `1. <filename> (<mime type>, <size> KB)`. The attachment list is appended
+# last, so a marker-looking line inside the body is told apart by position.
+_BODY_MARKER = "--- BODY ---"
+_ATTACHMENTS_MARKER = "--- ATTACHMENTS ---"
+# What the MCP writes when a message has no text/plain part — not the
+# sender's words.
+_NO_BODY_PLACEHOLDER = "[No text/plain body found]"
+_NO_SUBJECT_PLACEHOLDER = "(no subject)"
+# An attachment line is `N. <filename> (<mime>, <size> KB)`, optionally
+# followed by ` [in attached message]`. Parsed by splitting from the right
+# rather than one regex: the filename is free text an email sender controls,
+# and a pattern with adjacent `\s+` / `.+?` groups backtracks cubically on a
+# long run of spaces — enough for one inbound email to stall the process.
+_ATTACHMENT_INDEX_RE = re.compile(r"\d+\.\s")
+_ATTACHMENT_SIZE_RE = re.compile(r"[\d.]+ KB")
+_ATTACHMENT_NESTED_SUFFIX = " [in attached message]"
+# Longer lines are not the MCP's; skipping them bounds the work per line.
+_ATTACHMENT_LINE_MAX_CHARS = 512
+# A reply attribution ("On <date>, <name> <addr> wrote:"). One on a single
+# line is trusted: what follows is the older message, quoted with ">" (then
+# skipped line by line, so text the sender wrote below it survives) or not
+# (then the scan ends there). Gmail wraps a long one over several lines; that
+# shape is only trusted when ">" lines follow, so the sender's own
+# "On Monday I'll ..." above a "... wrote:" line is never mistaken for one.
+_ATTRIBUTION_RE = re.compile(r"^On\s.+wrote:\s*$")
+_ATTRIBUTION_TAIL_RE = re.compile(r"wrote:\s*$")
+_ATTRIBUTION_MAX_LINES = 4
+# Where everything below is an older message rather than the sender's text.
+_ORIGINAL_MESSAGE_RE = re.compile(r"^-{2,}\s*Original Message\s*-{2,}", re.IGNORECASE)
+_FORWARDED_RE = re.compile(r"^-{2,}\s*Forwarded message\s*-{2,}", re.IGNORECASE)
+_OUTLOOK_RULE_RE = re.compile(r"^_{10,}\s*$")
+_OUTLOOK_HEADER_RE = re.compile(r"^From:\s")
+_OUTLOOK_SENT_RE = re.compile(r"^(Sent|Date):\s")
+# How far below an Outlook-style "From:" line its "Sent:" line may sit.
+_OUTLOOK_HEADER_SPAN = 4
+
+
+def _split_gmail_content(raw: str) -> tuple[list[str], list[str], list[str]]:
+    """Split get_gmail_message_content text into (header, body, attachment) lines.
+
+    Without a ``--- BODY ---`` marker, the body is everything after the
+    first blank line, like an RFC 822 message. The attachment list starts at
+    the LAST ``--- ATTACHMENTS ---`` line, since the MCP appends it after the
+    body and the body itself may contain that text.
+    """
+    lines = raw.splitlines()
+    stripped = [ln.strip() for ln in lines]
+    if _BODY_MARKER in stripped:
+        start = stripped.index(_BODY_MARKER)
+        header, rest = lines[:start], lines[start + 1:]
+    else:
+        blank = next((i for i, ln in enumerate(stripped) if not ln), len(lines))
+        header, rest = lines[:blank], lines[blank + 1:]
+    rest_stripped = [ln.strip() for ln in rest]
+    if _ATTACHMENTS_MARKER in rest_stripped:
+        end = len(rest_stripped) - 1 - rest_stripped[::-1].index(_ATTACHMENTS_MARKER)
+        return header, rest[:end], rest[end + 1:]
+    return header, rest, []
+
+
+def _quote_follows(body: list[str], j: int) -> bool:
+    """Whether the next non-blank line after ``body[j]`` is a ">" quote."""
+    k = j + 1
+    # Indexing, not slicing: a body of many attribution-like lines must not
+    # make this quadratic.
+    while k < len(body) and not body[k].strip():
+        k += 1
+    return k < len(body) and body[k].strip().startswith(">")
+
+
+def _attachment_name(line: str) -> str | None:
+    """The filename in one attachment-list line, or None if it isn't one."""
+    text = line.strip()
+    if len(text) > _ATTACHMENT_LINE_MAX_CHARS:
+        return None
+    index = _ATTACHMENT_INDEX_RE.match(text)
+    if index is None:
+        return None
+    text = text[index.end():].removesuffix(_ATTACHMENT_NESTED_SUFFIX)
+    if not text.endswith(")"):
+        return None
+    name, sep, meta = text[:-1].rpartition(" (")
+    _mime, comma, size = meta.rpartition(", ")
+    if not (sep and comma and _ATTACHMENT_SIZE_RE.fullmatch(size)):
+        return None
+    return name.strip() or None
+
+
+def _attribution_end(body: list[str], i: int) -> tuple[int, bool] | None:
+    """If ``body[i]`` opens a reply attribution: the index of its last line
+    and whether ">" quote lines follow it."""
+    text = body[i].strip()
+    if not text.startswith("On "):
+        return None
+    if _ATTRIBUTION_RE.match(text):
+        return i, _quote_follows(body, i)
+    for j in range(i + 1, min(i + _ATTRIBUTION_MAX_LINES, len(body))):
+        line = body[j].strip()
+        # A wrapped attribution is one unbroken run of lines: a blank, a quote
+        # or another "On ..." line means body[i] was the sender's own text
+        # ("On it, will send Friday.") and any real attribution is later.
+        if not line or line.startswith((">", "On ")):
+            return None
+        if _ATTRIBUTION_TAIL_RE.search(line):
+            return (j, True) if _quote_follows(body, j) else None
+    return None
+
+
+def _new_text_lines(body: list[str]) -> tuple[list[str], bool]:
+    """The sender's own lines, without quoted replies, stopping where an
+    older message is appended below. Returns (lines, whether a forwarded
+    message was cut off).
+
+    A reply attribution followed by ">" lines is skipped rather than ending
+    the scan, so text the sender wrote below a quote (bottom-posting or an
+    interleaved reply) is kept.
+    """
+    kept: list[str] = []
+    i = 0
+    while i < len(body):
+        text = body[i].strip()
+        if _FORWARDED_RE.match(text):
+            return kept, True
+        if _ORIGINAL_MESSAGE_RE.match(text) or _OUTLOOK_RULE_RE.match(text):
+            break
+        if _OUTLOOK_HEADER_RE.match(text) and any(
+            _OUTLOOK_SENT_RE.match(b.strip())
+            for b in body[i + 1:i + 1 + _OUTLOOK_HEADER_SPAN]
+        ):
+            break
+        attribution = _attribution_end(body, i)
+        if attribution is not None:
+            end, quoted = attribution
+            if not quoted:
+                break
+            i = end + 1
+            continue
+        if not text.startswith(">") and text != _NO_BODY_PLACEHOLDER:
+            kept.append(body[i].rstrip())
+        i += 1
+    return kept, False
+
+
+def _email_memory_text(raw: str) -> str:
+    """What peer memory should record as the sender's own words for an email.
+
+    The Executive's turn carries the whole message — the "You have an
+    inbound email" framing, any [POLICY] notice, every header (including
+    the Executive's own address in To:) and the quoted chain, which often
+    holds the Executive's earlier email. Recorded under the sender's peer,
+    Honcho reads all of that as the sender speaking and concludes the sender
+    *is* the Executive ("received an email from <sender>", "is associated
+    with <exec address>"). So memory gets only the subject, the sender's new
+    text and the attachment filenames.
+    """
+    header, body, attachments = _split_gmail_content(raw)
+    subject = next(
+        (ln.split(":", 1)[1].strip() for ln in header if ln.lower().startswith("subject:")),
+        "",
+    )
+    new_lines, forwarded = _new_text_lines(body)
+    new_text = "\n".join(new_lines).strip()
+    names = [name for name in map(_attachment_name, attachments) if name]
+
+    parts: list[str] = []
+    if subject and subject != _NO_SUBJECT_PLACEHOLDER:
+        parts.append(f"Subject: {subject}")
+    if new_text:
+        parts.append(new_text)
+    if forwarded:
+        parts.append("[Forwarded an earlier message]")
+    if names:
+        parts.append(f"[Attached: {', '.join(names)}]")
+    return "\n\n".join(parts)
+
+
 def _parse_search_results(raw: str) -> list[dict[str, str]]:
     """Parse plain-text search_gmail_messages response into [{message_id, thread_id}].
 
@@ -421,6 +599,9 @@ async def _run_executive(
         episodic_context=format_for_prompt(),
         person_id=person_id,
         co_present_person_ids=co_present_person_ids or None,
+        # Only the sender's own words reach peer memory — see _email_memory_text.
+        # An unrostered sender has no peer to record into, so skip the parse.
+        memory_text=_email_memory_text(raw_email) if person_id is not None else None,
     )
 
 

@@ -145,6 +145,11 @@ export interface StreamChatOptions {
   // Client-minted id for this turn, so it can be addressed by `stopChat`.
   // Omit it and the turn simply isn't stoppable.
   clientTurnId?: string;
+  // What peer memory records as the user's words for this turn, when
+  // `message` carries text they did not write (a briefing handoff seeds the
+  // Executive's own card body). JSON route only; the multipart route derives
+  // its own from the typed text and filenames.
+  memoryText?: string;
   // Safety net only. The normal stop path leaves the stream open and lets the
   // server wind down and send `stopped` + `done`; this aborts the fetch
   // outright if that never arrives.
@@ -182,6 +187,7 @@ export async function* streamChat(
         committee_review: committeeReview,
         page_context: opts?.pageContext ?? undefined,
         client_turn_id: opts?.clientTurnId ?? undefined,
+        memory_text: opts?.memoryText ?? undefined,
       }),
       signal: opts?.signal,
     });

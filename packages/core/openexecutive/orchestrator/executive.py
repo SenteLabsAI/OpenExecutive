@@ -347,6 +347,13 @@ _ALL_SKILL_HANDLERS = {
 }
 
 
+def _peer_memory_text(memory_text: str | None, user_message: str) -> str:
+    """What the post-turn syncs record as the person's words: the caller's
+    ``memory_text`` when given (``""`` included — it means "nothing the
+    person wrote"), else the prompt itself."""
+    return memory_text if memory_text is not None else user_message
+
+
 def _sync_consulted_departments_to_honcho(
     consulted_specialists: list[str],
     user_message: str,
@@ -640,6 +647,7 @@ class Executive:
         channel_context_block: str = "",
         page_context_block: str = "",
         turn_id: str | None = None,
+        memory_text: str | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Stream a response from the Executive, routing to specialists as needed.
 
@@ -663,6 +671,13 @@ class Executive:
         ``"low"`` was hitting the ~5s tail consistently for power-user
         peers as their representations grew. The committee path keeps
         ``"medium"`` since it already pays the deep-review latency cost.
+
+        ``memory_text`` is what peer memory records as the person's words
+        for this turn; ``None`` records ``user_message``. Pass it whenever
+        ``user_message`` carries text the person did not write (an inbound
+        email's headers and quoted chain, a briefing card's body, an
+        attachment's extracted text): Honcho derives facts about the
+        person from everything recorded under their peer.
         """
         logger.info(
             "chat turn: %s",
@@ -868,8 +883,9 @@ class Executive:
             # extraction can update the peer card. Fire-and-forget; the
             # wrapper no-ops when person_id is None or Honcho is disabled.
             from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+            peer_memory_text = _peer_memory_text(memory_text, user_message)
             _honcho_sync(
-                user_message,
+                peer_memory_text,
                 full_response,
                 person_id=person_id,
                 session_id=session.session_id,
@@ -880,7 +896,7 @@ class Executive:
             # syncs are visible in the audit log as a related pair.
             _sync_consulted_departments_to_honcho(
                 consulted,
-                user_message,
+                peer_memory_text,
                 full_response,
                 person_id=person_id,
                 session_id=session.session_id,
@@ -904,6 +920,7 @@ class Executive:
         channel_context_block: str = "",
         page_context_block: str = "",
         turn_id: str | None = None,
+        memory_text: str | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Committee-reviewed variant of stream_chat.
 
@@ -1306,8 +1323,9 @@ class Executive:
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale). Fire-and-forget; no-ops when person_id is None.
         from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+        peer_memory_text = _peer_memory_text(memory_text, user_message)
         _honcho_sync(
-            user_message,
+            peer_memory_text,
             final_response,
             person_id=person_id,
             session_id=session.session_id,
@@ -1315,7 +1333,7 @@ class Executive:
         )
         _sync_consulted_departments_to_honcho(
             consulted,
-            user_message,
+            peer_memory_text,
             final_response,
             person_id=person_id,
             session_id=session.session_id,
@@ -1839,6 +1857,7 @@ class Executive:
         peer_memory_context: str | None = None,
         briefing_context: str = "",
         channel_context_block: str = "",
+        memory_text: str | None = None,
     ) -> str:
         """Non-streaming chat — collects and returns the full response.
 
@@ -1858,6 +1877,8 @@ class Executive:
         for details. ``peer_memory_reasoning_level=None`` (default)
         keeps each underlying entry point's own default (``"minimal"``
         for the streaming path, ``"medium"`` for the committee path).
+        ``memory_text`` overrides what peer memory records as the person's
+        words (see ``stream_chat``).
         """
         # Build the kwargs dict so we can conditionally include the
         # reasoning_level only when caller specified one — otherwise
@@ -1874,6 +1895,7 @@ class Executive:
             "co_present_person_ids": co_present_person_ids,
             "briefing_context": briefing_context,
             "channel_context_block": channel_context_block,
+            "memory_text": memory_text,
         }
         if peer_memory_reasoning_level is not None:
             common_kwargs["peer_memory_reasoning_level"] = peer_memory_reasoning_level
