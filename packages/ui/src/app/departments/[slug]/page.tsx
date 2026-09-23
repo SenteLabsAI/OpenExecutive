@@ -770,7 +770,7 @@ export default function DepartmentDetailPage() {
                         ))}
                         <p className="text-[10px] text-fg-muted mt-1">
                           When set, the specialist posts a check-in on this schedule. You'll see it in Today.
-                          Example: <code className="font-mono">daily@09:00</code>, <code className="font-mono">mondays@09:00</code>.
+                          Examples (UTC): <code className="font-mono">daily@09:00</code>, <code className="font-mono">weekly@mon@09:00</code>, <code className="font-mono">quarterly@01-09:00</code>.
                         </p>
                       </div>
                     </div>

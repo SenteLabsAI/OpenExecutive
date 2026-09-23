@@ -13,6 +13,7 @@ from openexecutive.departments.cadence import (
     bootstrap_cadences,
     cancel_orphaned_cadences,
     enqueue_next,
+    is_valid_cadence_spec,
 )
 from openexecutive.memory import episodic
 
@@ -409,3 +410,22 @@ class TestCancelOrphanedCadences:
         bootstrap_cadences(db_path=db)
 
         assert cancel_orphaned_cadences(db_path=db) == 0
+
+
+@pytest.mark.parametrize(
+    ("spec", "valid"),
+    [
+        ("daily@09:00", True),
+        ("weekly@mon@09:00", True),
+        ("weekly@thu-17:30", True),
+        ("quarterly@15-08:00", True),
+        ("mondays@09:00", False),
+        ("weekly@xyz@09:00", False),
+        ("daily@24:00", False),
+        ("daily@09:60", False),
+        ("quarterly@32-09:00", False),
+        ("", False),
+    ],
+)
+def test_is_valid_cadence_spec(spec: str, valid: bool) -> None:
+    assert is_valid_cadence_spec(spec) is valid

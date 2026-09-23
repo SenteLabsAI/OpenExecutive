@@ -95,6 +95,25 @@ def test_patch_watched_entities_cleans_and_validates(client: TestClient) -> None
     assert client.patch("/departments/finance", json={"watched_entities": [f"e{i}" for i in range(51)]}).status_code == 422
 
 
+@pytest.mark.parametrize("spec", ["mondays@09:00", "daily@25:00", "weekly@xyz@09:00", "quarterly@00-09:00", " "])
+def test_patch_rejects_invalid_cadence(client: TestClient, spec: str) -> None:
+    before = client.get("/departments/finance").json()["config"]["cadences"]
+    resp = client.patch("/departments/finance", json={"cadences": {"check_in": spec}})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert spec in detail
+    assert "weekly@mon@09:00" in detail
+    # Nothing was stored.
+    assert client.get("/departments/finance").json()["config"]["cadences"] == before
+
+
+@pytest.mark.parametrize("spec", ["daily@09:00", "weekly@mon@09:00", "weekly@Mon-09:00", "quarterly@01-09:00", ""])
+def test_patch_accepts_valid_or_empty_cadence(client: TestClient, spec: str) -> None:
+    resp = client.patch("/departments/finance", json={"cadences": {"check_in": spec}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["cadences"]["check_in"] == spec
+
+
 def test_patch_unknown_department(client: TestClient) -> None:
     resp = client.patch("/departments/nope", json={"headcount": 1})
     assert resp.status_code == 404

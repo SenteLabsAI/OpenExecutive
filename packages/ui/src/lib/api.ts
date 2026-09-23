@@ -2341,7 +2341,7 @@ export async function updateDepartment(slug: string, patch: DepartmentPatch): Pr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`Failed to update department: ${res.statusText}`);
+  if (!res.ok) throw await onboardError(res, `Failed to update department: ${res.statusText}`);
   return res.json();
 }
 

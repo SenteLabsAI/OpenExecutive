@@ -193,3 +193,15 @@ def test_create_invalidates_registry(client: TestClient) -> None:
 
     after = people_registry.list_people()
     assert len(after) == 1
+
+
+def test_patch_clears_on_leave_with_flag(client: TestClient) -> None:
+    # Mirrors the person page: an emptied date sends null plus clear_on_leave.
+    pid = client.post("/people", json={"full_name": "Sam Lee", "role": "COO"}).json()["id"]
+    resp = client.patch(f"/people/{pid}", json={"on_leave_until": "2026-12-01", "clear_on_leave": False})
+    assert resp.json()["on_leave_until"] == "2026-12-01"
+    # null alone leaves the date in place.
+    assert client.patch(f"/people/{pid}", json={"on_leave_until": None}).json()["on_leave_until"] == "2026-12-01"
+    resp = client.patch(f"/people/{pid}", json={"on_leave_until": None, "clear_on_leave": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["on_leave_until"] is None
