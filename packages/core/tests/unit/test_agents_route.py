@@ -34,6 +34,18 @@ def test_list_models_returns_allowed_models(client: TestClient) -> None:
     assert "claude-sonnet-5" in res.json()
 
 
+def test_list_model_options_returns_grouped_allowlist(client: TestClient) -> None:
+    flat = client.get("/agents/models").json()
+    res = client.get("/agents/models/options", params={"agent_id": "cso"})
+    assert res.status_code == 200
+    body = res.json()
+    assert [o["id"] for o in body] == flat
+    opus = next(o for o in body if o["id"] == "claude-opus-5-5")
+    assert opus["provider"] == "anthropic"
+    assert opus["label"] == "Claude Opus 5.5"
+    assert set(opus) == {"id", "provider", "provider_label", "route", "label"}
+
+
 def test_list_agents_returns_all_specialists(client: TestClient) -> None:
     res = client.get("/agents")
     assert res.status_code == 200

@@ -1842,9 +1842,20 @@ export async function testAgent(
   return res.json();
 }
 
-export async function listAgentModels(agentId?: string): Promise<string[]> {
+// One allowlisted model, grouped for the Council's Provider → Model picker.
+// Mirrors ModelOption in api/routes/agents.py. `route` says which backend
+// actually serves the id (it mirrors providers.registry.get_provider).
+export interface ModelOption {
+  id: string;
+  provider: string;
+  provider_label: string;
+  route: "direct" | "openrouter" | "local";
+  label: string;
+}
+
+export async function listAgentModelOptions(agentId?: string): Promise<ModelOption[]> {
   const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
-  const res = await fetch(`${API_BASE}/agents/models${qs}`);
+  const res = await fetch(`${API_BASE}/agents/models/options${qs}`);
   if (!res.ok) throw new Error("Failed to list models");
   return res.json();
 }

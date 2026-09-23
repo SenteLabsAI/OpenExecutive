@@ -403,3 +403,120 @@ def test_claude_without_key_or_openrouter_raises_actionable_400(
         get_provider("claude-sonnet-4-6")
     assert exc_info.value.status_code == 400
     assert "ANTHROPIC_API_KEY" in exc_info.value.detail
+
+
+# --------------------------------------------------------------------------
+# model_options_for — Council Provider → Model picker grouping
+# --------------------------------------------------------------------------
+
+
+def test_model_options_match_allowlist_ids_and_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The grouped view must never drift from the PATCH validator's list."""
+    from openexecutive.providers import allowed_models_for, model_options_for
+    from openexecutive.providers import openrouter_catalog as catalog
+
+    monkeypatch.setattr(catalog, "_loaded_models", None)
+    for stub in (
+        _settings_stub(enabled=False),
+        _settings_stub(enabled=True),
+        _settings_stub(
+            enabled=True,
+            local_enabled=True,
+            local_base_url="http://localhost:11434/v1",
+            local_models=["qwen/qwen3-8b"],
+        ),
+    ):
+        monkeypatch.setattr(
+            "openexecutive.providers.registry.get_settings", lambda s=stub: s
+        )
+        ids = [o["id"] for o in model_options_for("cso")]
+        assert ids == allowed_models_for("cso")
+
+
+def test_model_options_group_claude_direct_under_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.providers import model_options_for
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=False),
+    )
+    by_id = {o["id"]: o for o in model_options_for(None)}
+    assert by_id["claude-opus-5-5"] == {
+        "id": "claude-opus-5-5",
+        "provider": "anthropic",
+        "provider_label": "Anthropic",
+        "route": "direct",
+        "label": "Claude Opus 5.5",
+    }
+    assert by_id["claude-fable-5-1"]["label"] == "Claude Fable 5.1"
+    assert by_id["claude-haiku-4-5"]["label"] == "Claude Haiku 4.5"
+    assert by_id["claude-sonnet-5"]["label"] == "Claude Sonnet 5"
+
+
+def test_model_options_route_and_merge_with_openrouter_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With OpenRouter on, Claude ids route via OpenRouter (mirrors
+    get_provider), OpenRouter-only Claude slugs join the same Anthropic group,
+    and a catalog duplicate of a direct id is not listed twice."""
+    from openexecutive.providers import model_options_for
+    from openexecutive.providers import openrouter_catalog as catalog
+
+    monkeypatch.setattr(
+        catalog,
+        "_loaded_models",
+        [
+            "anthropic/claude-fable-5.1",  # duplicate of claude-fable-5-1
+            "anthropic/claude-opus-4.8",  # OpenRouter-only generation
+            "openai/gpt-6",
+            "x-ai/grok-4.6",
+            "newvendor/model-1",
+        ],
+    )
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(enabled=True),
+    )
+    opts = model_options_for(None)
+    ids = [o["id"] for o in opts]
+    by_id = {o["id"]: o for o in opts}
+    assert "anthropic/claude-fable-5.1" not in ids
+    assert by_id["claude-fable-5-1"]["route"] == "openrouter"
+    assert by_id["anthropic/claude-opus-4.8"] == {
+        "id": "anthropic/claude-opus-4.8",
+        "provider": "anthropic",
+        "provider_label": "Anthropic",
+        "route": "openrouter",
+        "label": "Claude Opus 4.8",
+    }
+    assert by_id["openai/gpt-6"]["provider_label"] == "OpenAI"
+    assert by_id["openai/gpt-6"]["label"] == "gpt-6"
+    assert by_id["x-ai/grok-4.6"]["provider_label"] == "xAI"
+    # Unknown vendor: grouped under its raw prefix rather than dropped.
+    assert by_id["newvendor/model-1"]["provider"] == "newvendor"
+    assert by_id["newvendor/model-1"]["provider_label"] == "newvendor"
+
+
+def test_model_options_local_wins_over_vendor_shaped_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.providers import model_options_for
+
+    monkeypatch.setattr(
+        "openexecutive.providers.registry.get_settings",
+        lambda: _settings_stub(
+            enabled=False,
+            local_enabled=True,
+            local_base_url="http://localhost:11434/v1",
+            local_models=["qwen/qwen3-8b", "claude-proxy-1"],
+        ),
+    )
+    by_id = {o["id"]: o for o in model_options_for(None)}
+    for slug in ("qwen/qwen3-8b", "claude-proxy-1"):
+        assert by_id[slug]["provider"] == "local"
+        assert by_id[slug]["route"] == "local"
+        assert by_id[slug]["label"] == slug

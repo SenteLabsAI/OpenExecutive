@@ -301,13 +301,23 @@ providers:
     - Non-Claude model + OPENROUTER_ENABLED=false → HTTP 400 at the API boundary. No silent fallback.
   council_ui_dropdown_source: |
     openexecutive.providers.allowed_models_for(agent_id) — returns
-    ANTHROPIC_DIRECT_MODELS (claude-opus-5, claude-sonnet-5, claude-haiku-4-5)
-    plus registry.openrouter_models() (live catalog, else the OPENROUTER_MODELS
-    fallback snapshot) when the toggle is on.
+    ANTHROPIC_DIRECT_MODELS (claude-fable-5-1, claude-opus-5-5, claude-opus-5,
+    claude-sonnet-5, claude-haiku-4-5) plus registry.openrouter_models() (live
+    catalog, else the OPENROUTER_MODELS fallback snapshot) when the toggle is
+    on; catalog slugs that duplicate a direct id are dropped.
     Every agent (including utility_fast) gets the same list; the
-    utility_fast-only free/cheap OpenRouter matrix was removed. The Council
-    UI dropdown (GET /agents/models?agent_id=) and the PATCH /agents/{id}
-    validator share this function.
+    utility_fast-only free/cheap OpenRouter matrix was removed. The PATCH
+    /agents/{id} validator and GET /agents/models share this function.
+    The Council UI reads GET /agents/models/options?agent_id= instead —
+    registry.model_options_for(), the same ids in the same order, each
+    annotated with provider (anthropic for claude-* ids and anthropic/*
+    slugs, the vendor prefix otherwise, local for LOCAL_MODELS — local
+    checked first), provider_label, route (mirrors get_provider: local /
+    direct / openrouter — Claude ids route via OpenRouter whenever
+    OPENROUTER_ENABLED is on) and a display label ("Claude Opus 5.5"). The
+    UI renders it as a Provider dropdown plus a Model dropdown filtered to
+    that provider; a stored model missing from the list (a stale override)
+    is kept selectable and marked "not in the current allowlist".
   scope_caveat: |
     Non-specialist fast classifiers (workflows.wait_for_human.parse_decision,
     workflows.inbound_resolver._llm_disambiguate, the Discord response

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
@@ -28,10 +28,21 @@ router = APIRouter()
 # what the runtime can actually serve — when OPENROUTER_ENABLED is on,
 # the curated OpenRouter set folds in automatically.
 from openexecutive.providers import allowed_models_for as _allowed_models_for  # noqa: E402
+from openexecutive.providers import model_options_for as _model_options_for  # noqa: E402
 
 
 def _allowed(agent_id: str | None = None) -> list[str]:
     return _allowed_models_for(agent_id)
+
+
+class ModelOption(BaseModel):
+    """One allowlisted model, grouped for the Council's Provider → Model picker."""
+
+    id: str
+    provider: str
+    provider_label: str
+    route: Literal["direct", "openrouter", "local"]
+    label: str
 
 
 class AgentMeta(BaseModel):
@@ -325,6 +336,13 @@ def list_models(agent_id: str | None = None) -> list[str]:
     """Return the model allowlist. ``agent_id`` is accepted (and forwarded)
     for call-site stability, but every agent currently gets the same list."""
     return _allowed(agent_id)
+
+
+@router.get("/agents/models/options", response_model=list[ModelOption])
+def list_model_options(agent_id: str | None = None) -> list[ModelOption]:
+    """The ``/agents/models`` allowlist (same ids, same order) annotated with
+    provider, route and a display label so the UI can group it."""
+    return [ModelOption(**o) for o in _model_options_for(agent_id)]
 
 
 def _is_known_agent(agent_id: str) -> bool:
