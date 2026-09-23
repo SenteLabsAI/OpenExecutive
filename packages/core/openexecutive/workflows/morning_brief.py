@@ -76,6 +76,7 @@ class MorningBriefWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 1
+    background = True
 
     def input_model(self) -> type[BaseModel]:
         return MorningBriefInput

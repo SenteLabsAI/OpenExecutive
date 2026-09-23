@@ -3325,8 +3325,9 @@ workflows:
     cron fire has no interactive human to ask.
 
   dynamic_user_created: |
-    Users create reusable workflows on the fly — from the executive chat or a
-    builder UI on /jobs — without shipping a Workflow subclass. A dynamic
+    Users create reusable workflows on the fly — from the executive chat, the
+    conversational wizard at /jobs/new, or the step-by-step advanced editor —
+    without shipping a Workflow subclass. A dynamic
     workflow is a stored JSON definition (the `dynamic_workflows` table;
     `openexecutive.workflows.dynamic_store`) interpreted at runtime by ONE
     generic engine, `openexecutive.workflows.dynamic.DynamicWorkflow`, which
@@ -3351,8 +3352,37 @@ workflows:
     (no persistence); after the user approves, `save_workflow` re-validates
     and persists only if the token still matches the definition (a mismatch is
     rejected, so the saved workflow is exactly what the user saw). Both tool
-    schemas are fixed, so the cached tool list stays stable. The builder UI
-    drives the `/workflows/custom` CRUD endpoints directly.
+    schemas are fixed, so the cached tool list stays stable. The step-by-step
+    advanced editor drives the `/workflows/custom` CRUD endpoints directly.
+
+    New workflow wizard (`/jobs/new`, the UI default): a conversational
+    designer modelled on the onboarding interview. `workflows.designer.advance`
+    is the loop; `agents.workflow_designer.WorkflowDesignerAgent` is a
+    Council-only agent (outside SPECIALIST_REGISTRY). Two fixed, name-sorted
+    tools every call — `ask_clarifying_question` {question, hint, options<=4}
+    and `emit_workflow_draft` {definition (reuses DEFINITION_SCHEMA from
+    workflow_authoring_tools), summary, assumptions}. `tool_choice` is `any`
+    and flips to the emit tool exactly once: MAX_QUESTIONS=6 spent, a
+    60k-char transcript, or the user's "Draft it now". Emitted drafts go
+    through DynamicWorkflowDef validation + `validate_definition` + a check
+    against saved custom names, with ONE repair turn feeding the errors back;
+    a second failure raises WorkflowDesignerError (fixed string). Cache
+    layout: one constant system block with cache_control; the live context
+    (specialists, roster with person ids, USER_TIMEZONE, taken names) is
+    rendered once per session by `build_context_block` into the FIRST user
+    turn, and the current draft JSON is prepended to the LATEST user turn
+    while refining. Transcript replay is shared with onboarding via
+    `onboarding.interview.replay_transcript`. Routes live in
+    `api/routes/workflow_designer.py` (`/workflows/designer/start|message|
+    draft|{id}`), mounted before the workflows router; sessions are
+    in-memory (2 h TTL, 50 cap) and NEVER write — the UI saves through
+    `POST /workflows/custom`, which re-validates. "Edit details" hands the
+    draft to the advanced editor via `/jobs/new?designer=<id>`.
+
+    Catalog: `Workflow.background` / `WorkflowMeta.background` is True for
+    the system-run built-ins (morning_brief, end_of_day_digest,
+    executive_reflection, executive_research); /jobs files them under a
+    "System" chip instead of the default view.
 
     Optional cadence: a definition may carry the cadence DSL +
     `cadence_person_id`. `workflows.dynamic_cadence` enqueues a

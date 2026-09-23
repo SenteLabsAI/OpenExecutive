@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
+import WorkflowWizard from "@/components/jobs/WorkflowWizard";
 import {
   DYNAMIC_SPECIALISTS,
   DynamicInputField,
@@ -14,6 +15,7 @@ import {
   WorkflowSection,
   createCustomWorkflow,
   getCustomWorkflow,
+  getWorkflowDesignerSession,
   listPeople,
   updateCustomWorkflow,
 } from "@/lib/api";
@@ -131,6 +133,9 @@ function BuilderInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editName = searchParams.get("edit");
+  // A wizard session whose draft seeds this form ("Edit details"). Create
+  // mode — the draft has not been saved yet.
+  const designerId = editName ? null : searchParams.get("designer");
 
   const [people, setPeople] = useState<Person[]>([]);
   const [name, setName] = useState("");
@@ -149,7 +154,7 @@ function BuilderInner() {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(!!editName);
+  const [loading, setLoading] = useState(!!editName || !!designerId);
 
   useEffect(() => {
     listPeople()
@@ -158,8 +163,16 @@ function BuilderInner() {
   }, []);
 
   useEffect(() => {
-    if (!editName) return;
-    getCustomWorkflow(editName)
+    const load: Promise<DynamicWorkflowDef> | null = editName
+      ? getCustomWorkflow(editName)
+      : designerId
+      ? getWorkflowDesignerSession(designerId).then((t) => {
+          if (!t.draft) throw new Error("That conversation has no draft yet.");
+          return t.draft.definition;
+        })
+      : null;
+    if (!load) return;
+    load
       .then((d) => {
         setName(d.name);
         setTitle(d.title);
@@ -176,7 +189,7 @@ function BuilderInner() {
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [editName]);
+  }, [editName, designerId]);
 
   // ---- Ask OE registration -------------------------------------------------
   // Recreated each render so getFields/applyPatch close over current state;
@@ -631,8 +644,15 @@ function BuilderInner() {
         >
           {saving ? "Saving…" : editName ? "Save changes" : "Create workflow"}
         </button>
-        <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          Cancel
+        <Link
+          href={
+            designerId
+              ? `/jobs/new?session=${encodeURIComponent(designerId)}`
+              : "/jobs"
+          }
+          className="text-sm text-fg-muted hover:text-fg"
+        >
+          {designerId ? "Back to conversation" : "Cancel"}
         </Link>
       </div>
     </div>
@@ -826,7 +846,9 @@ function StepEditor({
   );
 }
 
-export default function NewWorkflowPage() {
+function AdvancedBuilderPage() {
+  const searchParams = useSearchParams();
+  const editing = !!searchParams.get("edit");
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto px-6 py-8">
@@ -836,19 +858,62 @@ export default function NewWorkflowPage() {
               ← Back to jobs
             </Link>
             <h1 className="text-2xl font-semibold text-fg mt-2 mb-1">
-              New workflow
+              {editing ? "Edit workflow" : "New workflow"}
             </h1>
             <p className="text-sm text-fg-muted">
               Build a reusable executive job from specialist steps, optional
-              approval gates, and a final synthesis step. You can also ask the
-              Executive in chat to create one for you.
+              approval gates, and a final synthesis step.
+              {!editing && (
+                <>
+                  {" "}
+                  <Link href="/jobs/new" className="text-indigo-400 hover:text-indigo-300">
+                    Describe it instead
+                  </Link>{" "}
+                  and let the assistant draft it.
+                </>
+              )}
             </p>
           </div>
-          <Suspense fallback={null}>
-            <BuilderInner />
-          </Suspense>
+          <BuilderInner />
         </div>
       </main>
     </div>
+  );
+}
+
+function WizardPage() {
+  return (
+    <div className="flex flex-col h-full min-h-0 bg-surface text-fg">
+      <div className="border-b border-line px-6 py-4">
+        <div className="max-w-3xl mx-auto">
+          <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
+            ← Back to jobs
+          </Link>
+          <h1 className="text-xl font-semibold text-fg mt-1">New workflow</h1>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0">
+        <WorkflowWizard />
+      </div>
+    </div>
+  );
+}
+
+function NewWorkflowRouter() {
+  const searchParams = useSearchParams();
+  // The step-by-step form is the advanced editor: editing a saved workflow,
+  // refining a wizard draft ("Edit details"), or opting in explicitly.
+  const advanced =
+    !!searchParams.get("edit") ||
+    !!searchParams.get("designer") ||
+    searchParams.get("mode") === "advanced";
+  return advanced ? <AdvancedBuilderPage /> : <WizardPage />;
+}
+
+export default function NewWorkflowPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewWorkflowRouter />
+    </Suspense>
   );
 }

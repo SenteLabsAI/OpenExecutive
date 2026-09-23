@@ -36,19 +36,31 @@ const SECTION_ORDER: WorkflowSection[] = [
   "Operating Cadence",
 ];
 
-const SECTION_BLURB: Record<WorkflowSection, string> = {
-  Board: "Decks, memos, and talking points for your board meetings.",
-  "Capital & Investors":
-    "Materials for raising capital and reporting to investors.",
-  "Growth & GTM":
-    "Positioning, launches, pricing, and competitive plays.",
-  Product: "Strategy memos, retention and product decisions.",
-  People: "Hiring, performance, org design, and compensation.",
-  "Risk, Legal & Crisis":
-    "Risk register, M&A diligence, and crisis-comms preparation.",
-  "Operating Cadence":
-    "The monthly, quarterly, and annual rhythm of running the company.",
+// Chip labels. "All" hides the background (system-run) jobs; they get their
+// own chip so the default view is only what a user starts by hand.
+type SectionFilter = "all" | "custom" | "system" | WorkflowSection;
+
+const SECTION_CHIP_LABEL: Record<WorkflowSection, string> = {
+  Board: "Board",
+  "Capital & Investors": "Capital",
+  "Growth & GTM": "Growth & GTM",
+  Product: "Product",
+  People: "People",
+  "Risk, Legal & Crisis": "Risk & Legal",
+  "Operating Cadence": "Operating",
 };
+
+function isSectionFilter(v: string | null): v is SectionFilter {
+  return (
+    v === "all" ||
+    v === "custom" ||
+    v === "system" ||
+    (SECTION_ORDER as string[]).includes(v ?? "")
+  );
+}
+
+// Runs shown per workflow group before "Show more".
+const RUNS_PER_GROUP = 5;
 
 type Tab = "catalog" | "runs";
 type RunStatus = RunBucket;
@@ -112,6 +124,8 @@ function JobsPageInner() {
     : "catalog";
   const statusParam = searchParams.get("status");
   const status: RunStatus | null = isStatus(statusParam) ? statusParam : null;
+  const sectionParam = searchParams.get("section");
+  const section: SectionFilter = isSectionFilter(sectionParam) ? sectionParam : "all";
 
   const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
   const [runs, setRuns] = useState<WorkflowRunSummary[]>([]);
@@ -120,6 +134,7 @@ function JobsPageInner() {
   const [catalogQuery, setCatalogQuery] = useState("");
   const [runsQuery, setRunsQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -200,7 +215,7 @@ function JobsPageInner() {
 
   return (
     <>
-      <div className="flex items-center gap-1 border-b border-line mb-6">
+      <div className="flex items-center gap-1 border-b border-line mb-4">
             <TabButton
               active={tab === "catalog"}
               onClick={() => setParam({ tab: "catalog" })}
@@ -227,6 +242,8 @@ function JobsPageInner() {
               workflows={workflows}
               query={catalogQuery}
               onQueryChange={setCatalogQuery}
+              section={section}
+              onSectionChange={(s) => setParam({ section: s === "all" ? null : s })}
               onDeleteCustom={handleDeleteCustom}
             />
           )}
@@ -244,6 +261,8 @@ function JobsPageInner() {
               onToggleCollapsed={(key) =>
                 setCollapsed((c) => ({ ...c, [key]: !c[key] }))
               }
+              expanded={expanded}
+              onExpand={(key) => setExpanded((c) => ({ ...c, [key]: true }))}
               onDelete={handleDelete}
             />
           )}
@@ -302,135 +321,150 @@ function CatalogView({
   workflows,
   query,
   onQueryChange,
+  section,
+  onSectionChange,
   onDeleteCustom,
 }: {
   workflows: WorkflowMeta[];
   query: string;
   onQueryChange: (v: string) => void;
+  section: SectionFilter;
+  onSectionChange: (s: SectionFilter) => void;
   onDeleteCustom: (name: string) => void;
 }) {
-  const filtered = workflows.filter((w) =>
+  const matching = workflows.filter((w) =>
     matchesQuery(query, w.title, w.description)
   );
-
-  // User-created workflows are grouped together under "Custom" regardless of
-  // their declared section, so they're easy to find, edit, and delete.
-  const custom = filtered.filter((w) => w.is_custom);
-  const builtin = filtered.filter((w) => !w.is_custom);
+  const inFilter = (w: WorkflowMeta, f: SectionFilter): boolean => {
+    if (f === "system") return !!w.background;
+    if (w.background) return false;
+    if (f === "all") return true;
+    if (f === "custom") return !!w.is_custom;
+    return !w.is_custom && w.section === f;
+  };
   const known = new Set<string>(SECTION_ORDER);
-  const others = builtin.filter((w) => !known.has(w.section));
+  const chips: { key: SectionFilter; label: string; count: number }[] = [
+    { key: "all" as SectionFilter, label: "All", count: 0 },
+    { key: "custom" as SectionFilter, label: "Custom", count: 0 },
+    ...SECTION_ORDER.map((s) => ({
+      key: s as SectionFilter,
+      label: SECTION_CHIP_LABEL[s],
+      count: 0,
+    })),
+    { key: "system" as SectionFilter, label: "System", count: 0 },
+  ]
+    .map((c) => ({ ...c, count: matching.filter((w) => inFilter(w, c.key)).length }))
+    // Keep the active chip even at zero so the selection stays visible.
+    .filter((c) => c.key === "all" || c.key === section || c.count > 0);
+
+  const visible = matching.filter((w) => inFilter(w, section));
 
   const renderCard = (w: WorkflowMeta) => (
-    <Link
-      key={w.name}
-      href={`/jobs/${encodeURIComponent(w.name)}`}
-      className="block rounded-lg border border-line bg-surface/40 hover:border-line-strong hover:bg-surface-elevated/40 p-5 transition"
-    >
-      <h3 className="text-base font-semibold text-fg mb-2">{w.title}</h3>
-      <p className="text-sm text-fg-muted leading-relaxed mb-3">
-        {w.description}
-      </p>
-      <div className="flex items-center justify-between text-xs text-fg-muted">
-        <span>{w.steps.length} steps</span>
-        <span>~{w.estimated_minutes} min</span>
-      </div>
-    </Link>
-  );
-
-  const renderCustomCard = (w: WorkflowMeta) => (
     <div
       key={w.name}
-      className="rounded-lg border border-line bg-surface/40 p-5 transition hover:border-line-strong"
+      className="group relative min-w-0 rounded-md border border-line bg-surface/40 hover:border-line-strong hover:bg-surface-elevated/40 transition"
     >
-      <Link href={`/jobs/${encodeURIComponent(w.name)}`} className="block">
-        <h3 className="text-base font-semibold text-fg mb-2">{w.title}</h3>
-        <p className="text-sm text-fg-muted leading-relaxed mb-3">
-          {w.description}
+      <Link
+        href={`/jobs/${encodeURIComponent(w.name)}`}
+        className="block px-3 py-2.5"
+        title={w.description}
+      >
+        <h3 className="text-sm font-medium text-fg truncate pr-16">{w.title}</h3>
+        <p className="text-xs text-fg-muted truncate mt-0.5">{w.description}</p>
+        <p className="text-[11px] text-fg-subtle mt-1">
+          {w.steps.length} steps · ~{w.estimated_minutes} min
         </p>
-        <div className="flex items-center justify-between text-xs text-fg-muted">
-          <span>{w.steps.length} steps</span>
-          <span>~{w.estimated_minutes} min</span>
-        </div>
       </Link>
-      <div className="mt-3 flex items-center gap-3 border-t border-line pt-3 text-xs">
-        <Link
-          href={`/jobs/new?edit=${encodeURIComponent(w.name)}`}
-          className="text-indigo-400 hover:text-indigo-300"
-        >
-          Edit
-        </Link>
-        <button
-          type="button"
-          onClick={() => onDeleteCustom(w.name)}
-          className="text-fg-muted hover:text-red-400 transition"
-        >
-          Delete
-        </button>
-      </div>
+      {w.is_custom && (
+        <div className="absolute top-2 right-2 flex items-center gap-2 text-[11px]">
+          <Link
+            href={`/jobs/new?edit=${encodeURIComponent(w.name)}`}
+            className="text-indigo-400 hover:text-indigo-300"
+          >
+            Edit
+          </Link>
+          <button
+            type="button"
+            onClick={() => onDeleteCustom(w.name)}
+            className="text-fg-muted hover:text-red-400 transition"
+          >
+            Delete
+          </button>
+        </div>
+      )}
     </div>
   );
 
-  const renderSection = (
-    section: string,
-    blurb: string,
-    items: WorkflowMeta[],
-    card: (w: WorkflowMeta) => React.ReactNode = renderCard
-  ) => (
-    <div key={section}>
-      <div className="mb-3 flex items-baseline gap-3">
-        <h2 className="text-base font-semibold text-fg">{section}</h2>
-        <span className="text-xs text-fg-muted">
-          {items.length} {items.length === 1 ? "job" : "jobs"}
-        </span>
-      </div>
-      <p className="text-xs text-fg-muted mb-3 leading-relaxed">{blurb}</p>
-      <div className="grid sm:grid-cols-2 gap-4">{items.map(card)}</div>
-    </div>
+  const grid = (items: WorkflowMeta[]) => (
+    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{items.map(renderCard)}</div>
   );
+
+  // Under "All", keep light section headings so the list stays scannable;
+  // any single chip is already one group, so it renders as a flat grid.
+  const grouped: { label: string; items: WorkflowMeta[] }[] =
+    section === "all"
+      ? [
+          { label: "Custom", items: visible.filter((w) => w.is_custom) },
+          ...SECTION_ORDER.map((s) => ({
+            label: s as string,
+            items: visible.filter((w) => !w.is_custom && w.section === s),
+          })),
+          {
+            label: "Other",
+            items: visible.filter((w) => !w.is_custom && !known.has(w.section)),
+          },
+        ].filter((g) => g.items.length > 0)
+      : [];
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between gap-4">
+      <div className="mb-3">
         <SearchInput
           value={query}
           onChange={onQueryChange}
-          placeholder="Search workflows by title or description…"
+          placeholder="Search jobs…"
         />
-        <Link
-          href="/jobs/new"
-          className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 transition"
-        >
-          + New workflow
-        </Link>
+      </div>
+      <div className="mb-4 flex flex-wrap gap-1.5">
+        {chips.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            onClick={() => onSectionChange(c.key)}
+            className={`rounded-full px-2.5 py-1 text-xs ring-1 transition ${
+              section === c.key
+                ? "bg-surface-elevated ring-indigo-500/50 text-fg"
+                : "ring-line text-fg-muted hover:text-fg hover:ring-line-strong"
+            }`}
+          >
+            {c.label}
+            <span className="ml-1 text-fg-subtle">{c.count}</span>
+          </button>
+        ))}
       </div>
 
       {workflows.length === 0 ? (
         <div className="text-sm text-fg-muted">No jobs registered yet.</div>
-      ) : filtered.length === 0 ? (
+      ) : visible.length === 0 ? (
         <div className="text-sm text-fg-muted">
-          No jobs match &ldquo;{query}&rdquo;.
+          {query ? <>No jobs match &ldquo;{query}&rdquo;.</> : "Nothing here yet."}
+        </div>
+      ) : section === "all" ? (
+        <div className="space-y-5">
+          {grouped.map((g) => (
+            <div key={g.label}>
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
+                {g.label}
+                <span className="ml-2 font-normal normal-case tracking-normal">
+                  {g.items.length}
+                </span>
+              </h2>
+              {grid(g.items)}
+            </div>
+          ))}
         </div>
       ) : (
-        <div className="space-y-10">
-          {custom.length > 0 &&
-            renderSection(
-              "Custom",
-              "Workflows you created. Edit or delete them anytime.",
-              custom,
-              renderCustomCard
-            )}
-          {SECTION_ORDER.map((section) => {
-            const items = builtin.filter((w) => w.section === section);
-            if (items.length === 0) return null;
-            return renderSection(section, SECTION_BLURB[section], items);
-          })}
-          {others.length > 0 &&
-            renderSection(
-              "Other",
-              "Workflows not yet assigned to a known section.",
-              others
-            )}
-        </div>
+        grid(visible)
       )}
     </div>
   );
@@ -446,6 +480,8 @@ function RunsView({
   workflowTitleMap,
   collapsed,
   onToggleCollapsed,
+  expanded,
+  onExpand,
   onDelete,
 }: {
   runs: WorkflowRunSummary[];
@@ -457,6 +493,8 @@ function RunsView({
   workflowTitleMap: Map<string, string>;
   collapsed: Record<string, boolean>;
   onToggleCollapsed: (key: string) => void;
+  expanded: Record<string, boolean>;
+  onExpand: (key: string) => void;
   onDelete: (runId: string) => void;
 }) {
   const visible = runs.filter(
@@ -481,7 +519,7 @@ function RunsView({
 
   return (
     <div>
-      <div className="flex items-center gap-1 mb-4">
+      <div className="flex flex-wrap items-center gap-1 mb-4">
         <StatusSegment
           active={status === "active"}
           onClick={() => onStatusChange("active")}
@@ -510,14 +548,13 @@ function RunsView({
           count={counts.error}
           tone="red"
         />
-      </div>
-
-      <div className="mb-4">
-        <SearchInput
-          value={query}
-          onChange={onQueryChange}
-          placeholder="Search runs by title or workflow…"
-        />
+        <div className="w-full sm:w-auto sm:ml-auto mt-2 sm:mt-0">
+          <SearchInput
+            value={query}
+            onChange={onQueryChange}
+            placeholder="Search runs…"
+          />
+        </div>
       </div>
 
       {visible.length === 0 ? (
@@ -525,10 +562,12 @@ function RunsView({
           {query ? `No runs match “${query}”.` : emptyMsg}
         </div>
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {Array.from(groups.entries()).map(([workflowName, items]) => {
             const title = workflowTitleMap.get(workflowName) ?? workflowName;
             const isCollapsed = !!collapsed[workflowName];
+            const shown = expanded[workflowName] ? items : items.slice(0, RUNS_PER_GROUP);
+            const hidden = items.length - shown.length;
             return (
               <div key={workflowName}>
                 <button
@@ -551,36 +590,41 @@ function RunsView({
                   </span>
                 </button>
                 {!isCollapsed && (
-                  <div className="space-y-2">
-                    {items.map((r) => (
+                  <div className="divide-y divide-line rounded-md border border-line bg-surface/30">
+                    {shown.map((r) => (
                       <div
                         key={r.run_id}
-                        className="flex items-center justify-between gap-4 rounded-md border border-line bg-surface/30 px-4 py-3"
+                        className="flex items-center gap-3 px-3 py-2"
                       >
                         <Link
                           href={`/jobs/runs/${encodeURIComponent(r.run_id)}`}
-                          className="flex-1 min-w-0"
+                          className="flex flex-1 min-w-0 items-center gap-2"
                         >
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-sm font-medium text-fg truncate">
-                              {r.title}
-                            </span>
-                            {statusBadge(r.status)}
-                          </div>
-                          <div className="text-xs text-fg-muted">
-                            updated {formatRelativeTime(r.updated_at)}
-                          </div>
+                          <span className="text-sm text-fg truncate">{r.title}</span>
+                          {statusBadge(r.status)}
+                          <span className="ml-auto shrink-0 text-xs text-fg-subtle">
+                            {formatRelativeTime(r.updated_at)}
+                          </span>
                         </Link>
                         <button
                           type="button"
                           onClick={() => onDelete(r.run_id)}
-                          className="text-xs text-fg-muted hover:text-red-400 transition"
+                          className="shrink-0 text-xs text-fg-muted hover:text-red-400 transition"
                           aria-label="Delete run"
                         >
                           Delete
                         </button>
                       </div>
                     ))}
+                    {hidden > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onExpand(workflowName)}
+                        className="w-full px-3 py-1.5 text-left text-xs text-indigo-400 hover:text-indigo-300"
+                      >
+                        Show {hidden} more
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -630,17 +674,21 @@ function StatusSegment({
 export default function JobsPage() {
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
-        <div className="max-w-5xl mx-auto">
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-fg mb-1">
-              Executive Jobs
-            </h1>
-            <p className="text-sm text-fg-muted">
-              Structured executive workflows that produce a deliverable — not a
-              conversation. Each job orchestrates the relevant specialists and
-              knowledge to draft a complete artifact.
-            </p>
+      <main className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="max-w-6xl mx-auto">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold text-fg">Executive Jobs</h1>
+              <p className="text-sm text-fg-muted">
+                Multi-step jobs that produce a finished deliverable.
+              </p>
+            </div>
+            <Link
+              href="/jobs/new"
+              className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 transition"
+            >
+              + New workflow
+            </Link>
           </div>
           <Suspense fallback={null}>
             <JobsPageInner />

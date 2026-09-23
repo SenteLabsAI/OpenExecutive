@@ -86,6 +86,10 @@ class WorkflowMeta(BaseModel):
     # True for user-created (dynamic) workflows; False for the built-ins.
     # Lets the catalog UI offer edit/delete only for custom workflows.
     is_custom: bool = False
+    # True for workflows the system runs on its own (scheduler, onboarding,
+    # reflection). Still runnable by hand; the catalog files them under
+    # "System" instead of mixing them in with the jobs a user starts.
+    background: bool = False
 
 
 class Workflow(ABC):
@@ -101,6 +105,8 @@ class Workflow(ABC):
     description: str
     section: WorkflowSection  # UI grouping
     estimated_minutes: int = 3
+    # See WorkflowMeta.background.
+    background: bool = False
 
     @abstractmethod
     def input_model(self) -> type[BaseModel]:
@@ -154,4 +160,5 @@ class Workflow(ABC):
             estimated_minutes=self.estimated_minutes,
             input_schema=self.input_model().model_json_schema(),
             steps=self.steps(),
+            background=self.background,
         )

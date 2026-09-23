@@ -330,3 +330,48 @@ class OnboardCommitRequest(BaseModel):
     profile: CompanyProfileUpdateRequest
     people: list[OnboardPersonDraft] = Field(default_factory=list)
     departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+
+
+# ── /workflows/designer/* (conversational "New workflow" wizard) ─────────────
+# Bounded in the route, not with Field(max_length=...), so a rejection is a
+# fixed string instead of FastAPI's 422 echo of the whole message. The question
+# and transcript budgets live in workflows/designer.py, which enforces them.
+WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS = 8_000
+
+
+class WorkflowDesignerStartRequest(BaseModel):
+    message: str
+
+
+class WorkflowDesignerMessageRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class WorkflowDesignerSessionRequest(BaseModel):
+    session_id: str
+
+
+class WorkflowDesignerTranscriptTurn(BaseModel):
+    role: str
+    text: str
+
+
+class WorkflowDesignerDraftResponse(BaseModel):
+    # A DynamicWorkflowDef dump — the exact body POST /workflows/custom takes.
+    definition: dict[str, Any]
+    summary: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class WorkflowDesignerTurnResponse(BaseModel):
+    session_id: str
+    # "question" while designing, "draft" once a reviewable draft exists.
+    phase: str
+    questions_asked: int
+    max_questions: int
+    question: str | None = None
+    hint: str | None = None
+    options: list[str] = Field(default_factory=list)
+    draft: WorkflowDesignerDraftResponse | None = None
+    transcript: list[WorkflowDesignerTranscriptTurn] = Field(default_factory=list)

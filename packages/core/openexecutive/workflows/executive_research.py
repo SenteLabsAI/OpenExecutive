@@ -334,6 +334,7 @@ class ExecutiveResearchWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 3
+    background = True
 
     def input_model(self) -> type[BaseModel]:
         return ExecutiveResearchInput

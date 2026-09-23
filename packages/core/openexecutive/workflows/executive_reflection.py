@@ -377,6 +377,7 @@ class ExecutiveReflectionWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 2
+    background = True
 
     def input_model(self) -> type[BaseModel]:
         return ExecutiveReflectionInput

@@ -1096,6 +1096,9 @@ export interface WorkflowMeta {
   input_schema: WorkflowJsonSchema;
   steps: WorkflowStepDef[];
   is_custom?: boolean;
+  // Run by the system itself (scheduler, onboarding, reflection); the catalog
+  // files these under "System".
+  background?: boolean;
 }
 
 // ---- User-created (dynamic) workflows ----
@@ -1218,6 +1221,70 @@ export async function deleteCustomWorkflow(name: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete custom workflow");
+}
+
+// ---- Conversational workflow designer (/jobs/new wizard) ----
+
+export interface WorkflowDesignerDraft {
+  // Exactly the body POST /workflows/custom takes.
+  definition: DynamicWorkflowDef;
+  summary: string;
+  assumptions: string[];
+}
+
+export interface WorkflowDesignerTurn {
+  session_id: string;
+  phase: "question" | "draft";
+  questions_asked: number;
+  max_questions: number;
+  question: string | null;
+  hint: string | null;
+  options: string[];
+  draft: WorkflowDesignerDraft | null;
+  transcript: { role: "user" | "assistant"; text: string }[];
+}
+
+async function _designerPost(
+  path: string,
+  body: Record<string, string>,
+  fallback: string
+): Promise<WorkflowDesignerTurn> {
+  const res = await fetch(`${API_BASE}/workflows/designer/${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await onboardError(res, fallback);
+  return res.json();
+}
+
+export function startWorkflowDesigner(message: string): Promise<WorkflowDesignerTurn> {
+  return _designerPost("start", { message }, "Could not start the workflow assistant");
+}
+
+export function sendWorkflowDesignerMessage(
+  sessionId: string,
+  message: string
+): Promise<WorkflowDesignerTurn> {
+  return _designerPost(
+    "message",
+    { session_id: sessionId, message },
+    "Could not send that message"
+  );
+}
+
+export function forceWorkflowDesignerDraft(sessionId: string): Promise<WorkflowDesignerTurn> {
+  return _designerPost("draft", { session_id: sessionId }, "Could not draft the workflow");
+}
+
+export async function getWorkflowDesignerSession(
+  sessionId: string
+): Promise<WorkflowDesignerTurn> {
+  const res = await fetch(
+    `${API_BASE}/workflows/designer/${encodeURIComponent(sessionId)}`
+  );
+  if (!res.ok) throw await onboardError(res, "That workflow draft has expired");
+  return res.json();
 }
 
 export interface WorkflowSample {

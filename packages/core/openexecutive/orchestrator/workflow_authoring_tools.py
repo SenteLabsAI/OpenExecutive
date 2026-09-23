@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Shared JSON-schema fragment describing a definition. Kept permissive on the
 # step union (additionalProperties) — validate_definition does the real work
 # and returns precise, model-readable errors.
-_DEFINITION_SCHEMA: dict[str, Any] = {
+DEFINITION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": "The full workflow definition.",
     "properties": {
@@ -101,7 +101,7 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
     ),
     "input_schema": {
         "type": "object",
-        "properties": {"definition": _DEFINITION_SCHEMA},
+        "properties": {"definition": DEFINITION_SCHEMA},
         "required": ["definition"],
     },
 }
@@ -120,7 +120,7 @@ SAVE_WORKFLOW_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "definition": _DEFINITION_SCHEMA,
+            "definition": DEFINITION_SCHEMA,
             "confirm_token": {
                 "type": "string",
                 "description": "The token returned by draft_workflow for this exact definition.",
