@@ -217,8 +217,9 @@ cd evals && python run_evals.py --scenarios scenarios/ --output results/
   `ui`, `deps`, …), not a file path; drop it only when the change genuinely
   spans the repo. Say what changed rather than what it is about, lowercase
   after the colon, no trailing period. See `.github/PULL_REQUEST_TEMPLATE.md`.
-  The type sets the next version (release-please: `feat` → minor, `fix` →
-  patch; `chore`/`docs`/`test`/`refactor` release nothing on their own), and
+  The type sets the next version (release-please, before 1.0: `feat` and `fix`
+  → patch, a breaking change (`!` / `BREAKING CHANGE:`) → minor;
+  `chore`/`docs`/`test`/`refactor` release nothing on their own), and
   `feat`/`fix` titles become the changelog lines, so pick the type by what the
   change is, not by how big it is. PRs are squash-merged with the PR title as
   the commit subject, which is what release-please reads — branch commit

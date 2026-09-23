@@ -9,7 +9,7 @@
       "package-name": "openexecutive",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": false,
+      "bump-patch-for-minor-pre-major": true,
       "changelog-sections": [
         { "type": "feat", "section": "Added" },
         { "type": "fix", "section": "Fixed" },

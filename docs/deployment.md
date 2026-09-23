@@ -65,8 +65,11 @@ thing that builds `Dockerfile.ui`.
 runs release-please on every push to `main` and keeps one open PR,
 "chore(main): release X.Y.Z", up to date. PRs are squash-merged, so each one
 lands as a single commit whose subject is the PR title, and the version comes
-from those titles' conventional-commit types since the last release: `feat` → minor,
-`fix` → patch, and before 1.0 a breaking change is also a minor. The PR bumps
+from those titles' conventional-commit types since the last release. Before 1.0,
+`feat` and `fix` both bump the patch version and a breaking change (`!` or a
+`BREAKING CHANGE:` footer) bumps the minor; minor versions are kept for
+milestones. From 1.0 the usual rule applies: `feat` → minor, `fix` → patch,
+breaking → major. The PR bumps
 every place the version is written (listed in `release-please-config.json`)
 and adds the `CHANGELOG.md` entry, which can be edited in the PR before
 merging. Merges that are only `chore`/`docs`/`test`/`refactor` wait for the

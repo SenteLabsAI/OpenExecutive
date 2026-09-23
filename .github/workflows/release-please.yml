@@ -2,8 +2,9 @@
 #
 # Every push to main runs release-please. PRs are squash-merged with the PR
 # title as the commit subject, so it reads the PR titles merged since the
-# last release (`feat` → minor, `fix` → patch; before
-# 1.0 a breaking change is also a minor) and opens or updates one PR titled
+# last release (before 1.0: `feat` and `fix` → patch, a breaking change →
+# minor; from 1.0: `feat` → minor, `fix` → patch, breaking → major) and opens
+# or updates one PR titled
 # "chore(main): release X.Y.Z". That PR bumps every place the version is
 # written (see release-please-config.json) and adds the CHANGELOG.md entry.
 # Merges that are only chore/docs/test/refactor do not start a release on
