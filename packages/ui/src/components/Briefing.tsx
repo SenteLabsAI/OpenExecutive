@@ -21,7 +21,7 @@ import {
   type ProposalItem,
   type Today,
 } from "@/lib/api";
-import { briefingMemoryLine } from "@/lib/briefing-memory";
+import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
 import {
   HANDLED_REOPENABLE,
@@ -591,7 +591,7 @@ const moveButton = (() => {
         onClick={() => onContinue(
           `Nudge ${who} about this item — it has gone quiet: ${proposal.headline}\n\n` +
           `Send a short, friendly check-in via message_person and tell me what you sent.`,
-          briefingMemoryLine(`Asked to nudge ${who} about`, proposal.headline),
+          briefingMemoryLine(nudgeAction(who), proposal.headline),
         )}
         disabled={busy}
         className="text-xs font-medium text-indigo-300 hover:text-indigo-200 px-2 py-1 rounded border border-indigo-500/30 transition-colors disabled:opacity-50"
@@ -764,12 +764,12 @@ function ProposalCard({
   })();
   const handoffMemory = briefingMemoryLine(
     isArtifact
-      ? "Asked to discuss the flagged artifact"
+      ? MEMORY_ACTIONS.artifact
       : isMonitoring
-        ? "Asked about the monitored signal"
+        ? MEMORY_ACTIONS.monitoring
         : isDecision
-          ? "Asked to talk through the proposed meeting"
-          : "Asked about the proposal",
+          ? MEMORY_ACTIONS.meeting
+          : MEMORY_ACTIONS.proposal,
     proposal.headline,
   );
   // Suggested-action block: visually promoted so the user reads it as a
@@ -1200,7 +1200,7 @@ function MonitoringRow({
       {onContinue ? (
         <button
           type="button"
-          onClick={() => onContinue(seed, briefingMemoryLine("Asked about the monitored signal", proposal.headline))}
+          onClick={() => onContinue(seed, briefingMemoryLine(MEMORY_ACTIONS.monitoring, proposal.headline))}
           className="block w-full text-left pr-8 cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
         >
           {inner}
@@ -1500,7 +1500,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
             `call schedule_followup so I get a fresh check at the right time. Do NOT just ` +
             `summarize what you would do, file it for later, or assign it to someone — ` +
             `the assignment IS to you.\n\nProposal:\n${text}${action}`,
-          briefingMemoryLine("Approved the proposal", proposal.headline),
+          briefingMemoryLine(MEMORY_ACTIONS.approve, proposal.headline),
         );
       }
     } catch (e) {
@@ -1607,7 +1607,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
             `call ack_alert. Use the text below VERBATIM when you deliver the message: do not ` +
             `rephrase, summarize, or restructure it. Then go execute (send the DM/email, ` +
             `schedule any follow-up via schedule_followup) and tell me what you did.\n\n${editedBody}`,
-          briefingMemoryLine("Approved the proposal with edits", proposal.headline),
+          briefingMemoryLine(MEMORY_ACTIONS.approveWithEdits, proposal.headline),
         );
       }
     } catch (e) {
@@ -1833,7 +1833,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                                     <li className="list-none">
                                       <button
                                         type="button"
-                                        onClick={() => onContinue(buildNarrativeSeed(text), briefingMemoryLine("Asked to dig into the briefing item", text))}
+                                        onClick={() => onContinue(buildNarrativeSeed(text), briefingMemoryLine(MEMORY_ACTIONS.narrative, text))}
                                         aria-label={`Discuss: ${text}`}
                                         className="group flex w-full items-start gap-2 text-left cursor-pointer rounded -mx-1.5 px-1.5 py-0.5 transition hover:bg-indigo-500/10 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
                                       >

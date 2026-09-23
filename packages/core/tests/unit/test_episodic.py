@@ -528,7 +528,12 @@ def test_executive_call_sites_use_the_shared_gate() -> None:
         assert isinstance(test.func, ast.Name) and test.func.id == "should_extract", (
             f"line {guard.lineno}: guard must call should_extract"
         )
-        assert [a.id for a in test.args if isinstance(a, ast.Name)] == ["user_message"]
+        # The speaker's own words (`memory_text` when given), not the prompt:
+        # a quoted Executive email or a briefing card's body in the prompt
+        # would satisfy the verbatim-quote gate with the Executive's words.
+        assert [a.id for a in test.args if isinstance(a, ast.Name)] == ["speaker_text"], (
+            f"line {guard.lineno}: guard must read speaker_text, not the prompt"
+        )
         # The speaker check is not optional: a channel turn carries someone
         # else's words, and the quote validator cannot tell whose they are.
         assert {kw.arg for kw in test.keywords} == {"origin_channel", "person_id"}, (

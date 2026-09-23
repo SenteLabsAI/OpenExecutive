@@ -149,6 +149,16 @@ _ATTACHMENTS_MARKER = "--- ATTACHMENTS ---"
 # sender's words.
 _NO_BODY_PLACEHOLDER = "[No text/plain body found]"
 _NO_SUBJECT_PLACEHOLDER = "(no subject)"
+# A reply or forward carries the earlier message's subject — often the
+# Executive's own ("Re: Approve the Acme renewal") — which would let its words
+# pass the extraction and open-loop quote gates as the sender's.
+# Covers the common client prefixes (English, German AW/WG, Scandinavian SV,
+# Dutch Antw, Italian R), a counter ("Re[2]:"), and tags an MTA prepends
+# ("[EXT] Re:"). Each tag is bounded and ends at "]", so this stays linear.
+_REPLY_SUBJECT_RE = re.compile(
+    r"^(\[[^\]]{0,40}\]\s*)*(re|fwd?|fw|aw|wg|sv|antw|r)(\[\d{1,3}\])?\s*:",
+    re.IGNORECASE,
+)
 # An attachment line is `N. <filename> (<mime>, <size> KB)`, optionally
 # followed by ` [in attached message]`. Parsed by splitting from the right
 # rather than one regex: the filename is free text an email sender controls,
@@ -293,8 +303,9 @@ def _email_memory_text(raw: str) -> str:
     holds the Executive's earlier email. Recorded under the sender's peer,
     Honcho reads all of that as the sender speaking and concludes the sender
     *is* the Executive ("received an email from <sender>", "is associated
-    with <exec address>"). So memory gets only the subject, the sender's new
-    text and the attachment filenames.
+    with <exec address>"). So memory gets only the sender's new text, the
+    attachment filenames and the subject — unless it is a reply's or
+    forward's, which is the earlier message's subject, not the sender's.
     """
     header, body, attachments = _split_gmail_content(raw)
     subject = next(
@@ -306,14 +317,16 @@ def _email_memory_text(raw: str) -> str:
     names = [name for name in map(_attachment_name, attachments) if name]
 
     parts: list[str] = []
-    if subject and subject != _NO_SUBJECT_PLACEHOLDER:
+    if subject and subject != _NO_SUBJECT_PLACEHOLDER and not _REPLY_SUBJECT_RE.match(subject):
         parts.append(f"Subject: {subject}")
     if new_text:
         parts.append(new_text)
     if forwarded:
         parts.append("[Forwarded an earlier message]")
     if names:
-        parts.append(f"[Attached: {', '.join(names)}]")
+        # Not "[Attached: …]": that line marks inlined document text, and the
+        # open-loop pass skips any turn carrying it (see open_loops).
+        parts.append(f"(Attached files: {', '.join(names)})")
     return "\n\n".join(parts)
 
 

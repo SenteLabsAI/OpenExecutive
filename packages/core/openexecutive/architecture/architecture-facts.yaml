@@ -974,6 +974,12 @@ memory:
     against the user's own words — is the gate that can, and it is the one
     that runs. The cost of admitting acknowledgements is one utility-fast
     call per turn that proposes nothing.
+    The "user's own words" are the turn's speaker text
+    (`executive._speaker_text`: `memory_text` when the entry point passes
+    one, else the prompt). An inbound email's prompt carries the quoted
+    chain and a briefing handoff's carries the Executive's card body, either
+    of which let the Executive's own recommendation pass the quote check as
+    the principal's decision.
     That quote check presumes `user_message` holds the PRINCIPAL's words, and
     on a chat channel it does not: `Executive.chat()` is reached from Slack,
     Discord, Telegram, Google Chat and the email poller, so a teammate's line
@@ -1167,7 +1173,13 @@ peer_memory:
       colleague to …". So the email poller passes ``_email_memory_text`` (subject, the
       sender's new text, attachment filenames), ``/chat/upload`` passes
       the typed text plus filenames, and the briefing handoffs send a short
-      ``memory_text`` line through ``POST /chat``. ``co_present_person_ids``
+      ``memory_text`` line through ``POST /chat``, phrased as the user
+      speaking and ended with "." before the headline on its own line
+      ("I approve this proposal." / "<headline>"): an "Asked to …" line
+      was derived as "<person> was asked to …", and a "?" in a headline
+      inside the sentence voided the extraction quote gate. An email's
+      subject is dropped when it is a reply's or forward's (Re:/Fwd:) —
+      the earlier message's subject, often the Executive's own. ``co_present_person_ids``
       enumerates other humans in the conversation context (Discord
       thread members, Slack thread participants, email To+Cc) so
       Honcho can store them as session peers — the data shape that
@@ -1536,6 +1548,13 @@ attunement:
       Owner resolution: exact full name, or a UNIQUE first name only when the
       model gave a single token — never a first-name fallback from an unknown
       full name.
+      The "speaker's own message" is the turn's speaker text
+      (``executive._speaker_text``: ``memory_text`` when the entry point
+      passes one, else the prompt) — never an inbound email's quoted chain
+      or a briefing card's body, which would let the Executive's own words
+      satisfy the quote gate. The email / upload filename note is
+      "(Attached files: …)", deliberately not the "[Attached: …]" label
+      below, so a turn with attachments is not skipped.
       Enforced in code: verbatim quote from the speaker's own message
       (commitments via `_is_valid_user_commitment`, asks/closures by
       normalized substring); owner resolves to exactly one rostered,

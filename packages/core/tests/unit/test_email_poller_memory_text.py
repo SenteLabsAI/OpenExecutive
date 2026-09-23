@@ -61,7 +61,7 @@ def test_reply_keeps_subject_new_text_and_attachment_only() -> None:
     assert _email_memory_text(REPLY) == (
         "Subject: Q3 appraisal\n\n"
         "Here you go.\n\nSam\n\n"
-        "[Attached: Harbor Point appraisal (1).pdf]"
+        "(Attached files: Harbor Point appraisal (1).pdf)"
     )
 
 
@@ -113,7 +113,7 @@ def test_forwarded_message_is_replaced_by_a_note() -> None:
         subject="Fwd: Rates",
     )
     assert _email_memory_text(raw) == (
-        "Subject: Fwd: Rates\n\nFYI see below.\n\n[Forwarded an earlier message]"
+        "FYI see below.\n\n[Forwarded an earlier message]"
     )
 
 
@@ -126,7 +126,7 @@ def test_multiple_attachments_are_listed_by_name() -> None:
             "   Attachment ID: y"
         ),
     )
-    assert _email_memory_text(raw).endswith("[Attached: a.pdf, b (final).xlsx]")
+    assert _email_memory_text(raw).endswith("(Attached files: a.pdf, b (final).xlsx)")
 
 
 def test_attachment_only_email_records_subject_and_names() -> None:
@@ -136,7 +136,7 @@ def test_attachment_only_email_records_subject_and_names() -> None:
         attachments="1. appraisal.pdf (application/pdf, 1.0 KB)",
     )
     # The MCP's placeholder is not the sender's words.
-    assert _email_memory_text(raw) == "Subject: Appraisal\n\n[Attached: appraisal.pdf]"
+    assert _email_memory_text(raw) == "Subject: Appraisal\n\n(Attached files: appraisal.pdf)"
 
 
 def test_no_subject_placeholder_is_not_recorded() -> None:
@@ -195,7 +195,7 @@ def test_attachments_marker_inside_the_body_is_body_text() -> None:
         attachments="1. real.pdf (application/pdf, 2.0 KB)",
     )
     text = _email_memory_text(raw)
-    assert text.endswith("[Attached: real.pdf]")
+    assert text.endswith("(Attached files: real.pdf)")
     assert "Thanks" in text
 
 
@@ -222,7 +222,7 @@ def test_non_attachment_lines_in_the_list_are_ignored() -> None:
             "2. no size (application/pdf)\n3. bad size (x, lots KB)"
         ),
     )
-    assert _email_memory_text(raw).endswith("[Attached: ok.pdf]")
+    assert _email_memory_text(raw).endswith("(Attached files: ok.pdf)")
 
 
 def test_many_on_lines_parse_in_linear_time() -> None:
@@ -296,3 +296,44 @@ def test_run_executive_skips_the_parse_for_an_unrostered_sender() -> None:
     captured = _run(lambda _addr: None)
     assert captured["person_id"] is None
     assert captured["memory_text"] is None
+
+
+def test_memory_text_does_not_trip_the_open_loop_document_skip() -> None:
+    """The open-loop pass reads this text and skips any turn carrying the
+    "[Attached: …]" label for inlined document text. A filename note using
+    that label would silently drop every email with an attachment."""
+    from openexecutive.attunement.open_loops import _ATTACHMENT_MARKER
+
+    assert "Harbor Point appraisal (1).pdf" in _email_memory_text(REPLY)
+    assert _ATTACHMENT_MARKER.search(_email_memory_text(REPLY)) is None
+
+
+def test_reply_subject_is_dropped_because_it_is_the_earlier_senders() -> None:
+    """A reply's subject is usually the Executive's own; kept, its words pass
+    the extraction quote gate as the sender's decision ("Approve the …")."""
+    for subject in (
+        "Re: Approve the Acme renewal", "RE:Approve it", "Fw: Approve it", "FWD: x",
+        "Re[2]: Approve it", "AW: Approve it", "SV: Approve it", "Antw: Approve it",
+        "[EXT] Re: Approve it", "[EXT] [ext] RE: Approve it",
+    ):
+        assert _email_memory_text(_email("Not yet.", subject=subject)) == "Not yet."
+
+
+def test_reply_subject_cannot_become_the_senders_decision() -> None:
+    from openexecutive.memory.episodic import _is_valid_user_commitment
+
+    text = _email_memory_text(_email("Not yet.", subject="Re: Approve the Acme renewal at 3%"))
+    assert not _is_valid_user_commitment("Approve the Acme renewal at 3%", text)
+
+
+def test_a_new_subject_the_sender_wrote_is_kept() -> None:
+    assert _email_memory_text(_email("See you then.", subject="Regarding Friday")) == (
+        "Subject: Regarding Friday\n\nSee you then."
+    )
+
+
+def test_reply_subject_prefix_check_is_linear() -> None:
+    raw = _email("Hi", subject="[" + "x" * 30 + "] " * 5000 + "no prefix")
+    started = time.monotonic()
+    _email_memory_text(raw)
+    assert time.monotonic() - started < 0.5

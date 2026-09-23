@@ -347,10 +347,11 @@ _ALL_SKILL_HANDLERS = {
 }
 
 
-def _peer_memory_text(memory_text: str | None, user_message: str) -> str:
-    """What the post-turn syncs record as the person's words: the caller's
-    ``memory_text`` when given (``""`` included — it means "nothing the
-    person wrote"), else the prompt itself."""
+def _speaker_text(memory_text: str | None, user_message: str) -> str:
+    """The speaker's own words for this turn, which every post-turn pass reads
+    instead of the prompt — episodic extraction, open loops and peer memory:
+    the caller's ``memory_text`` when given (``""`` included — it means
+    "nothing the person wrote"), else the prompt itself."""
     return memory_text if memory_text is not None else user_message
 
 
@@ -672,12 +673,15 @@ class Executive:
         peers as their representations grew. The committee path keeps
         ``"medium"`` since it already pays the deep-review latency cost.
 
-        ``memory_text`` is what peer memory records as the person's words
-        for this turn; ``None`` records ``user_message``. Pass it whenever
-        ``user_message`` carries text the person did not write (an inbound
-        email's headers and quoted chain, a briefing card's body, an
-        attachment's extracted text): Honcho derives facts about the
-        person from everything recorded under their peer.
+        ``memory_text`` is the person's own words for this turn — what peer
+        memory records, and what episodic extraction and the open-loop pass
+        must quote a commitment from; ``None`` uses ``user_message``. Pass it
+        whenever ``user_message`` carries text the person did not write (an
+        inbound email's headers and quoted chain, a briefing card's body, an
+        attachment's extracted text): Honcho derives facts about the person
+        from everything recorded under their peer, and a quote gate satisfied
+        by the Executive's own words stores its recommendation as the
+        person's decision or open loop.
         """
         logger.info(
             "chat turn: %s",
@@ -842,6 +846,14 @@ class Executive:
             should_extract,
         )
 
+        # Everything below reads the speaker's own words, not the prompt: the
+        # extraction and open-loop passes accept an item only with a verbatim
+        # quote from this text, and peer memory records it as what the person
+        # said. A quoted Executive email or a briefing card's body in the
+        # prompt would otherwise satisfy that quote gate with the Executive's
+        # own words.
+        speaker_text = _speaker_text(memory_text, user_message)
+
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
         # session_id/turn_id (the main `with set_turn(...)` block above
@@ -855,12 +867,12 @@ class Executive:
             # None) and the memory_extractor's model call would record
             # unattributed however correct the snapshot itself was.
             if should_extract(
-                user_message,
+                speaker_text,
                 origin_channel=session.origin_channel,
                 person_id=person_id,
             ):
                 schedule_extraction(
-                    user_message, full_response, session_id=session.session_id
+                    speaker_text, full_response, session_id=session.session_id
                 )
 
             # Open loops from ANY rostered speaker (not just the principal):
@@ -870,7 +882,7 @@ class Executive:
             from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
             schedule_open_loop_pass(
-                user_message, full_response, person_id=person_id,
+                speaker_text, full_response, person_id=person_id,
                 session_id=session.session_id,
             )
             # Re-learn this speaker's working style once enough new
@@ -883,9 +895,8 @@ class Executive:
             # extraction can update the peer card. Fire-and-forget; the
             # wrapper no-ops when person_id is None or Honcho is disabled.
             from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
-            peer_memory_text = _peer_memory_text(memory_text, user_message)
             _honcho_sync(
-                peer_memory_text,
+                speaker_text,
                 full_response,
                 person_id=person_id,
                 session_id=session.session_id,
@@ -896,7 +907,7 @@ class Executive:
             # syncs are visible in the audit log as a related pair.
             _sync_consulted_departments_to_honcho(
                 consulted,
-                peer_memory_text,
+                speaker_text,
                 full_response,
                 person_id=person_id,
                 session_id=session.session_id,
@@ -1300,20 +1311,23 @@ class Executive:
             schedule_extraction,
             should_extract,
         )
+        # The speaker's own words, for extraction, open loops and peer
+        # memory alike — see stream_chat.
+        speaker_text = _speaker_text(memory_text, user_message)
         if should_extract(
-            user_message,
+            speaker_text,
             origin_channel=session.origin_channel,
             person_id=person_id,
         ):
             schedule_extraction(
-                user_message, final_response, session_id=session.session_id
+                speaker_text, final_response, session_id=session.session_id
             )
 
         # Open loops — see stream_chat.
         from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
         schedule_open_loop_pass(
-            user_message, final_response, person_id=person_id,
+            speaker_text, final_response, person_id=person_id,
             session_id=session.session_id,
         )
         from openexecutive.attunement.style import schedule_style_pass
@@ -1323,9 +1337,8 @@ class Executive:
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale). Fire-and-forget; no-ops when person_id is None.
         from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
-        peer_memory_text = _peer_memory_text(memory_text, user_message)
         _honcho_sync(
-            peer_memory_text,
+            speaker_text,
             final_response,
             person_id=person_id,
             session_id=session.session_id,
@@ -1333,7 +1346,7 @@ class Executive:
         )
         _sync_consulted_departments_to_honcho(
             consulted,
-            peer_memory_text,
+            speaker_text,
             final_response,
             person_id=person_id,
             session_id=session.session_id,
@@ -1877,8 +1890,8 @@ class Executive:
         for details. ``peer_memory_reasoning_level=None`` (default)
         keeps each underlying entry point's own default (``"minimal"``
         for the streaming path, ``"medium"`` for the committee path).
-        ``memory_text`` overrides what peer memory records as the person's
-        words (see ``stream_chat``).
+        ``memory_text`` is the person's own words for the post-turn passes
+        (see ``stream_chat``).
         """
         # Build the kwargs dict so we can conditionally include the
         # reasoning_level only when caller specified one — otherwise

@@ -1278,7 +1278,9 @@ async def chat_upload(
         client_turn_id=client_turn_id,
         # The extracted document text is the document's words, not the
         # caller's: recorded in peer memory it becomes facts about the caller.
-        memory_text=f"{message}\n\n[Attached: {', '.join(filenames)}]",
+        # "(Attached files: …)", not the "[Attached: …]" label that marks
+        # inlined document text — the open-loop pass skips turns carrying that.
+        memory_text=f"{message}\n\n(Attached files: {', '.join(filenames)})",
     )
 
 

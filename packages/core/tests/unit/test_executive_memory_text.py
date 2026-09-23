@@ -4,9 +4,9 @@ A turn's ``user_message`` often carries text the person did not write: an
 inbound email's framing, headers and quoted chain, or a briefing card's
 body. Recorded under the person's peer, Honcho derives facts about the
 person from it ("<person> is associated with <the Executive's address>").
-Every entry point must hand ``memory_text`` — not the prompt — to both the
-person sync and the per-department sync, and fall back to ``user_message``
-when it is not given.
+Every entry point must hand ``memory_text`` — not the prompt — to the person
+sync, the per-department sync, episodic extraction and the open-loop pass,
+and fall back to ``user_message`` when it is not given.
 """
 from __future__ import annotations
 
@@ -71,20 +71,26 @@ def _provider() -> SimpleNamespace:
     )
 
 
-def _drive(entry: str, **kwargs: Any) -> tuple[list[str], list[str]]:
-    """Run one turn through ``entry`` and return (person-sync texts,
-    department-sync texts)."""
+def _drive(entry: str, **kwargs: Any) -> dict[str, list[str]]:
+    """Run one turn through ``entry`` and return the text each post-turn pass
+    received: the person sync, the department sync, episodic extraction and
+    the open-loop pass."""
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.session import Session
 
-    person_texts: list[str] = []
-    dept_texts: list[str] = []
+    seen: dict[str, list[str]] = {"person": [], "dept": [], "extract": [], "loops": []}
 
     def _sync_turn(user_message: str, *_a: Any, **_k: Any) -> None:
-        person_texts.append(user_message)
+        seen["person"].append(user_message)
 
     def _dept_sync(_consulted: Any, user_message: str, *_a: Any, **_k: Any) -> None:
-        dept_texts.append(user_message)
+        seen["dept"].append(user_message)
+
+    def _extract(user_message: str, *_a: Any, **_k: Any) -> None:
+        seen["extract"].append(user_message)
+
+    def _loops(user_message: str, *_a: Any, **_k: Any) -> None:
+        seen["loops"].append(user_message)
 
     exec_ = Executive()
 
@@ -106,27 +112,47 @@ def _drive(entry: str, **kwargs: Any) -> tuple[list[str], list[str]]:
             "openexecutive.orchestrator.executive._sync_consulted_departments_to_honcho",
             new=_dept_sync,
         ),
+        patch("openexecutive.memory.episodic.schedule_extraction", new=_extract),
+        patch("openexecutive.attunement.open_loops.schedule_open_loop_pass", new=_loops),
     ):
         asyncio.run(_run())
-    return person_texts, dept_texts
+    return seen
 
 
 @pytest.mark.parametrize("entry", ["stream_chat", "stream_chat_with_committee", "chat"])
-def test_memory_text_is_what_peer_memory_records(entry: str) -> None:
-    person, dept = _drive(entry, memory_text=MEMORY)
-    assert person == [MEMORY]
-    assert dept == [MEMORY]
+def test_memory_text_is_what_every_post_turn_pass_reads(entry: str) -> None:
+    """Extraction and open loops only accept an item with a verbatim quote
+    from the text they get; the prompt would let a quoted Executive email
+    satisfy that quote."""
+    seen = _drive(entry, memory_text=MEMORY)
+    assert seen == {"person": [MEMORY], "dept": [MEMORY], "extract": [MEMORY], "loops": [MEMORY]}
 
 
 @pytest.mark.parametrize("entry", ["stream_chat", "stream_chat_with_committee", "chat"])
 def test_without_memory_text_the_message_is_recorded(entry: str) -> None:
-    person, dept = _drive(entry)
-    assert person == [PROMPT]
-    assert dept == [PROMPT]
+    seen = _drive(entry)
+    assert seen == {"person": [PROMPT], "dept": [PROMPT], "extract": [PROMPT], "loops": [PROMPT]}
 
 
 def test_empty_memory_text_is_honoured_not_replaced_by_the_prompt() -> None:
     """An email with no subject, body or attachment yields "" — that must
-    record nothing for the person, not fall back to the framed prompt."""
-    person, _ = _drive("stream_chat", memory_text="")
-    assert person == [""]
+    record nothing for the person, not fall back to the framed prompt, and
+    gives extraction nothing to quote from (should_extract skips it)."""
+    seen = _drive("stream_chat", memory_text="")
+    assert seen["person"] == [""]
+    assert seen["extract"] == []
+    assert seen["loops"] == [""]
+
+
+def test_briefing_approve_line_passes_the_quote_gate_with_a_question_headline() -> None:
+    """The UI's line (packages/ui/src/lib/briefing-memory.ts) ends the action
+    sentence before the headline, so a "?" in the headline cannot void the
+    approval as the principal's decision."""
+    from openexecutive.memory.episodic import _is_valid_user_commitment
+
+    line = 'I approve this proposal.\n"Should we renew Acme at 3%?"'
+    assert _is_valid_user_commitment("I approve this proposal", line)
+    # The shape it replaced put the headline first inside the sentence.
+    assert not _is_valid_user_commitment(
+        "I approve the proposal", 'I approve the proposal "Should we renew Acme at 3%?".'
+    )

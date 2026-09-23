@@ -77,7 +77,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 SEED = "Let's discuss this artifact you flagged for my review:\n\n# Plan\n\nAssign Sam to sign."
-LINE = 'Asked to discuss the flagged artifact "Plan".'
+LINE = 'Let\'s discuss the flagged artifact "Plan".'
 
 
 @pytest.mark.parametrize(
@@ -133,7 +133,7 @@ def test_upload_records_typed_text_and_filenames_not_document_text(
     assert resp.status_code == 200
     _ = resp.text
     kwargs = captured["stream_chat"]
-    assert kwargs["memory_text"] == "Summarise these\n\n[Attached: appraisal (1).pdf, notes.txt]"
+    assert kwargs["memory_text"] == "Summarise these\n\n(Attached files: appraisal (1).pdf, notes.txt)"
     # The Executive still sees the extracted text.
     assert "EXTRACTED DOCUMENT TEXT" in kwargs["user_message"]
 
