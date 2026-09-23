@@ -3,13 +3,16 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  DYNAMIC_SPECIALISTS,
   DynamicStep,
   Person,
   WorkflowDesignerDraft,
   createCustomWorkflow,
 } from "@/lib/api";
 
-const SPECIALIST_LABELS: Record<string, string> = {
+// Keyed by DYNAMIC_SPECIALISTS so adding a specialist there without a label
+// here fails the build instead of falling back to the raw key.
+const SPECIALIST_LABELS: Record<(typeof DYNAMIC_SPECIALISTS)[number], string> = {
   cso: "Strategy",
   cfo: "Finance",
   chro: "People",
@@ -32,7 +35,7 @@ const DAYS: Record<string, string> = {
 
 function specialistLabel(key: string | undefined): string {
   if (!key) return "Strategy";
-  return SPECIALIST_LABELS[key] ?? key;
+  return (SPECIALIST_LABELS as Record<string, string>)[key] ?? key;
 }
 
 /** Plain-words rendering of the cadence DSL (daily@HH:MM, weekly@DOW@HH:MM, quarterly@DD-HH:MM). */
@@ -159,7 +162,8 @@ export default function WorkflowDraftReview({
                   {step.title}{" "}
                   <span className="text-xs text-fg-muted">· {who}</span>
                 </p>
-                <p className="text-xs text-fg-muted line-clamp-2">{what}</p>
+                {/* Unclamped: this card is the human check on every goal before it is saved. */}
+                <p className="text-xs text-fg-muted whitespace-pre-wrap break-words">{what}</p>
               </div>
             </li>
           );

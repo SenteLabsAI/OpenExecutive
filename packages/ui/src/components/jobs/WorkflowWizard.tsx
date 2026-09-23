@@ -68,10 +68,10 @@ export default function WorkflowWizard() {
   }, [turn, pending, busy]);
 
   const run = useCallback(
-    async (op: () => Promise<WorkflowDesignerTurn>, shown: string | null) => {
+    async (op: () => Promise<WorkflowDesignerTurn>, pendingText: string | null) => {
       setError(null);
       setBusy(true);
-      setPending(shown);
+      setPending(pendingText);
       try {
         const next = await op();
         setTurn(next);

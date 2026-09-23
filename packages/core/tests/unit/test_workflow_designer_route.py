@@ -323,3 +323,54 @@ async def test_rollback_removes_the_failed_turn_not_the_last_one(
     assert [t.text for t in session.transcript] == [
         "Weekly digest.", "How often?", "appended by someone else",
     ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_is_rolled_back_and_releases_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client disconnect mid-turn must not leave the user turn (or busy) behind."""
+    sid, session = _bare_session(monkeypatch)
+    started = asyncio.Event()
+
+    async def _hanging_advance(transcript: list[Any], **kwargs: Any) -> Any:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(route, "advance", _hanging_advance)
+    task = asyncio.create_task(
+        route.designer_message(WorkflowDesignerMessageRequest(session_id=sid, message="Weekly."))
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert session.busy is False
+    assert [t.text for t in session.transcript] == ["Weekly digest.", "How often?"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_message_gets_409_before_the_length_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap must not be measured against another request's in-flight turn."""
+    sid, session = _bare_session(monkeypatch)
+    session.transcript[0].text = "x" * (wd.MAX_TRANSCRIPT_CHARS - 50)
+    release = asyncio.Event()
+
+    async def _slow_advance(transcript: list[Any], **kwargs: Any) -> Any:
+        await release.wait()
+        return wd.DesignerQuestion(question="Anything else?")
+
+    monkeypatch.setattr(route, "advance", _slow_advance)
+    first = asyncio.create_task(
+        route.designer_message(WorkflowDesignerMessageRequest(session_id=sid, message="a" * 40))
+    )
+    await asyncio.sleep(0)
+    with pytest.raises(HTTPException) as exc:
+        await route.designer_message(
+            WorkflowDesignerMessageRequest(session_id=sid, message="b" * 20)
+        )
+    assert exc.value.status_code == 409
+    release.set()
+    await first

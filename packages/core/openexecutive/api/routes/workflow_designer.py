@@ -256,16 +256,20 @@ async def start_designer(body: WorkflowDesignerStartRequest) -> WorkflowDesigner
 @router.post("/workflows/designer/message", response_model=WorkflowDesignerTurnResponse)
 async def designer_message(body: WorkflowDesignerMessageRequest) -> WorkflowDesignerTurnResponse:
     session = _get_session(body.session_id)
-    text = _check_message(body.message, session)
     with _one_turn(session):
+        # Checked inside the turn so a concurrent request gets 409, not a cap
+        # measured against another request's not-yet-settled user turn.
+        text = _check_message(body.message, session)
         turn = Turn(role="user", text=text)
         session.transcript.append(turn)
         try:
             return await _advance(body.session_id, session)
-        except HTTPException:
-            # Roll the unanswered turn back so a retry does not send it twice
-            # and the transcript the client re-renders matches what the model
-            # saw. Removed by identity, never "whatever is last".
+        except BaseException:
+            # Any failure — an HTTP error, a bug, or the request being
+            # cancelled (client disconnect, shutdown) — rolls the unanswered
+            # turn back, so a retry does not send it twice and the transcript
+            # the client re-renders matches what the model saw. Removed by
+            # identity, never "whatever is last".
             for i in range(len(session.transcript) - 1, -1, -1):
                 if session.transcript[i] is turn:
                     del session.transcript[i]

@@ -59,6 +59,15 @@ function isSectionFilter(v: string | null): v is SectionFilter {
   );
 }
 
+/** Which chip a workflow belongs to. Background jobs only ever show under "System". */
+function inSectionFilter(w: WorkflowMeta, f: SectionFilter): boolean {
+  if (f === "system") return !!w.background;
+  if (w.background) return false;
+  if (f === "all") return true;
+  if (f === "custom") return !!w.is_custom;
+  return !w.is_custom && w.section === f;
+}
+
 // Runs shown per workflow group before "Show more".
 const RUNS_PER_GROUP = 5;
 
@@ -335,13 +344,6 @@ function CatalogView({
   const matching = workflows.filter((w) =>
     matchesQuery(query, w.title, w.description)
   );
-  const inFilter = (w: WorkflowMeta, f: SectionFilter): boolean => {
-    if (f === "system") return !!w.background;
-    if (w.background) return false;
-    if (f === "all") return true;
-    if (f === "custom") return !!w.is_custom;
-    return !w.is_custom && w.section === f;
-  };
   const known = new Set<string>(SECTION_ORDER);
   const chips: { key: SectionFilter; label: string; count: number }[] = [
     { key: "all" as SectionFilter, label: "All", count: 0 },
@@ -353,11 +355,11 @@ function CatalogView({
     })),
     { key: "system" as SectionFilter, label: "System", count: 0 },
   ]
-    .map((c) => ({ ...c, count: matching.filter((w) => inFilter(w, c.key)).length }))
+    .map((c) => ({ ...c, count: matching.filter((w) => inSectionFilter(w, c.key)).length }))
     // Keep the active chip even at zero so the selection stays visible.
     .filter((c) => c.key === "all" || c.key === section || c.count > 0);
 
-  const visible = matching.filter((w) => inFilter(w, section));
+  const visible = matching.filter((w) => inSectionFilter(w, section));
 
   const renderCard = (w: WorkflowMeta) => (
     <div
