@@ -17,6 +17,7 @@ import {
   CommitteePhase,
   DebugEvent,
   FALLBACK_ACTIVITY_LABEL,
+  getFollowupSuggestion,
   getSuggestedPrompts,
   setMessageFeedback,
   streamChat,
@@ -53,6 +54,15 @@ const SUGGESTED_PROMPTS = [
   "What's changed since our last sync?",
 ];
 
+const DEFAULT_PLACEHOLDER = "What's on your mind?";
+
+// A follow-up is only worth suggesting when the conversation ends on a
+// persisted reply — the backend keys its suggestion on that reply's id.
+function endsOnReply(messages: ChatMessage[] | undefined): boolean {
+  const last = messages?.[messages.length - 1];
+  return last?.role === "assistant" && Boolean(last.id);
+}
+
 const FALLBACK_SUBTITLE =
   "Pick up where we left off — decisions to revisit, drafts to push forward, people to pull in.";
 
@@ -79,6 +89,10 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   const [isLoadingPrompts, setIsLoadingPrompts] = useState(true);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
+  // Suggested next message, shown as the composer's greyed placeholder and
+  // accepted with Tab / → or the inline chip. Refreshed after every reply.
+  const [followup, setFollowup] = useState<string | null>(null);
+  const followupCtrlRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -103,6 +117,33 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     return () => ctrl.abort();
   }, []);
 
+  function clearFollowup() {
+    followupCtrlRef.current?.abort();
+    followupCtrlRef.current = null;
+    setFollowup(null);
+  }
+
+  function loadFollowup(id: string) {
+    followupCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    followupCtrlRef.current = ctrl;
+    getFollowupSuggestion(id, ctrl.signal)
+      .then((suggestion) => {
+        // A newer fetch (or a send) superseded this one.
+        if (followupCtrlRef.current === ctrl) setFollowup(suggestion);
+      })
+      // Abort or network failure: keep the static placeholder.
+      .catch(() => {});
+  }
+
+  // Opening an existing session suggests a follow-up to its last reply.
+  // Later session switches are handled in the sync effect below.
+  useEffect(() => {
+    if (initialSessionId && endsOnReply(initialMessages)) loadFollowup(initialSessionId);
+    return () => followupCtrlRef.current?.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Sync when parent selects a different session (or clears for new chat).
   // Skip when the prop change is the parent echoing back an id this turn
   // already adopted locally — otherwise we'd wipe the just-streamed reply.
@@ -112,6 +153,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setMessages(initialMessages ?? []);
     setSessionId(initialSessionId);
     setStreamingContent("");
+    clearFollowup();
+    if (initialSessionId && endsOnReply(initialMessages)) loadFollowup(initialSessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSessionId]);
 
   useEffect(() => {
@@ -177,6 +221,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setInput("");
     setPendingFiles([]);
     setFileError(null);
+    clearFollowup();
     setMessages((prev) => [...prev, { role: "user", content: userBubbleContent }]);
     setIsLoading(true);
     setStreamingContent("");
@@ -201,6 +246,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     // Row id of the persisted reply, from `done`; it is what makes the reply
     // rateable with 👍/👎.
     let replyId: number | undefined;
+    // Session id from `done`, used to fetch the follow-up for this reply.
+    let doneSessionId: string | undefined;
 
     try {
       for await (const item of streamChat(message, sessionId, {
@@ -249,6 +296,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         } else if (item.type === "done") {
           if (item.message_id) replyId = item.message_id;
           if (item.session_id) {
+            doneSessionId = item.session_id;
             adoptSessionId(item.session_id);
             onTurnComplete?.(item.session_id);
           }
@@ -284,6 +332,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             id: replyId,
           },
         ]);
+        // Only a complete, persisted reply gets a follow-up: a stopped one
+        // is half an answer, and without an id there is nothing to key on.
+        if (!wasStopped && replyId && doneSessionId) loadFollowup(doneSessionId);
       }
       setStreamingContent("");
       setStreamingActions([]);
@@ -337,7 +388,34 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setMessageFeedback(sessionId, target.id, value).catch(() => apply(previous));
   }
 
+  // Fill the composer with the suggestion without sending it, so the user
+  // can edit first. The suggestion is kept: clearing the box shows it again.
+  function acceptFollowup() {
+    if (!followup) return;
+    setInput(followup);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(followup.length, followup.length);
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    });
+  }
+
+  const showFollowup = Boolean(followup) && !input && !isLoading;
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Tab / → take the suggestion only while the box is empty; otherwise
+    // both keep their usual meaning (focus move, caret move).
+    if (
+      showFollowup &&
+      ((e.key === "Tab" && !e.shiftKey) || e.key === "ArrowRight")
+    ) {
+      e.preventDefault();
+      acceptFollowup();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -347,7 +425,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setInput(e.target.value);
     e.target.style.height = "auto";
-    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+    // Emptied: drop the pixel height so the textarea stretches to its grid
+    // cell again, which the suggestion ghost may have made taller.
+    if (e.target.value) e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
   }
 
   function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
@@ -533,18 +613,47 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             >
               <Icon name="paperclip" size="w-4 h-4" />
             </button>
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={handleTextareaChange}
-              onKeyDown={handleKeyDown}
-              placeholder="What's on your mind?"
-              rows={1}
-              disabled={isLoading}
-              aria-label="Message"
-              className="flex-1 bg-transparent text-fg placeholder:text-fg-muted text-sm sm:text-base leading-relaxed resize-none focus:outline-none disabled:opacity-50 max-h-40 overflow-y-auto"
-              style={{ minHeight: "24px" }}
-            />
+            {/* The suggestion is drawn by a ghost layer sharing the textarea's
+                grid cell rather than by the native placeholder, which a
+                one-row textarea clips to its first line. The cell grows to
+                the ghost's wrapped height; the placeholder attribute still
+                carries the text for screen readers, just painted transparent. */}
+            <div className="grid flex-1 min-w-0">
+              {showFollowup && (
+                <div
+                  aria-hidden
+                  className="col-start-1 row-start-1 pointer-events-none text-fg-muted text-sm sm:text-base leading-relaxed whitespace-pre-wrap break-words max-h-40 overflow-hidden"
+                >
+                  {followup}
+                </div>
+              )}
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={handleTextareaChange}
+                onKeyDown={handleKeyDown}
+                placeholder={followup ?? DEFAULT_PLACEHOLDER}
+                rows={1}
+                disabled={isLoading}
+                aria-label="Message"
+                className={
+                  "col-start-1 row-start-1 w-full bg-transparent text-fg text-sm sm:text-base leading-relaxed resize-none focus:outline-none disabled:opacity-50 max-h-40 overflow-y-auto " +
+                  (showFollowup ? "placeholder:text-transparent" : "placeholder:text-fg-muted")
+                }
+                style={{ minHeight: "24px" }}
+              />
+            </div>
+            {showFollowup && (
+              <button
+                type="button"
+                onClick={acceptFollowup}
+                title="Use the suggested follow-up (Tab)"
+                aria-label={`Use suggested follow-up: ${followup}`}
+                className="hidden sm:flex flex-shrink-0 min-h-touch px-2.5 rounded-lg border border-line bg-surface-overlay text-xs font-mono text-fg-muted hover:text-fg hover:border-line-strong transition-all duration-150 items-center cursor-pointer"
+              >
+                Tab ↹
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setCommitteeEnabled((v) => !v)}
@@ -585,8 +694,23 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             )}
           </div>
           <p className="text-center text-xs text-fg-muted mt-2 inline-flex items-center justify-center gap-1.5 w-full">
-            <span className="hidden sm:inline">Enter to send · Shift+Enter for new line</span>
+            <span className="hidden sm:inline">
+              Enter to send · Shift+Enter for new line
+              {showFollowup && " · Tab to use suggestion"}
+            </span>
             <span className="sm:hidden">Tap send</span>
+            {/* Phones have no Tab key and no room in the input row, so the
+                tap target for the suggestion lives on this line instead. */}
+            {showFollowup && (
+              <button
+                type="button"
+                onClick={acceptFollowup}
+                aria-label={`Use suggested follow-up: ${followup}`}
+                className="sm:hidden min-h-touch px-1 text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer"
+              >
+                · Use suggestion
+              </button>
+            )}
             <InfoTip align="right">
               Your Executive routes your question to the right specialist
               behind the scenes — you don&apos;t pick which one.

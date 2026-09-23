@@ -1419,18 +1419,14 @@ def _cache_key(
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-async def _generate_prompts_via_llm(
-    user_content: str,
-) -> tuple[list[str], str] | None:
-    """Returns (prompts, subtitle) on success, None on any failure.
+async def _fast_json_call(
+    system: str, user_content: str, max_tokens: int, log_tag: str
+) -> dict[str, Any] | None:
+    """One utility-fast call that must answer with a JSON object.
 
-    Both fields must validate: prompts >= 4 non-empty strings, subtitle a
-    non-empty string. Any short-fall returns None so the caller can fall
-    back rather than render a half-broken empty state.
+    Returns the parsed object, or None on any failure (timeout, API error,
+    malformed or non-object JSON) — callers fall back rather than raise.
     """
-    import asyncio
-    import json as _json
-
     from openexecutive.agents.utility_fast import get_fast_model
     from openexecutive.config import get_settings
     from openexecutive.providers import get_provider
@@ -1440,8 +1436,8 @@ async def _generate_prompts_via_llm(
         response = await asyncio.wait_for(
             get_provider(model).messages_create(
                 model=model,
-                max_tokens=500,
-                system=_PROMPTS_SYSTEM,
+                max_tokens=max_tokens,
+                system=system,
                 messages=[{"role": "user", "content": user_content}],
             ),
             timeout=get_settings().utility_fast_timeout_s,
@@ -1455,21 +1451,91 @@ async def _generate_prompts_via_llm(
             parts = raw.split("```")
             if len(parts) >= 2:
                 raw = parts[1].removeprefix("json").strip()
-        data = _json.loads(raw)
-        if not isinstance(data, dict):
-            return None
-        prompts_raw = data.get("prompts")
-        subtitle_raw = data.get("subtitle")
-        if not isinstance(prompts_raw, list) or not isinstance(subtitle_raw, str):
-            return None
-        prompts = [str(p).strip() for p in prompts_raw if isinstance(p, str) and p.strip()]
-        subtitle = subtitle_raw.strip()
-        if len(prompts) < 4 or not subtitle:
-            return None
-        return prompts[:4], subtitle
+        data = json.loads(raw)
     except Exception:
-        logger.exception("suggested_prompts: LLM call failed")
+        logger.exception("%s: LLM call failed", log_tag)
         return None
+    return data if isinstance(data, dict) else None
+
+
+async def _generate_prompts_via_llm(
+    user_content: str,
+) -> tuple[list[str], str] | None:
+    """Returns (prompts, subtitle) on success, None on any failure.
+
+    Both fields must validate: prompts >= 4 non-empty strings, subtitle a
+    non-empty string. Any short-fall returns None so the caller can fall
+    back rather than render a half-broken empty state.
+    """
+    data = await _fast_json_call(_PROMPTS_SYSTEM, user_content, 500, "suggested_prompts")
+    if data is None:
+        return None
+    prompts_raw = data.get("prompts")
+    subtitle_raw = data.get("subtitle")
+    if not isinstance(prompts_raw, list) or not isinstance(subtitle_raw, str):
+        return None
+    prompts = [str(p).strip() for p in prompts_raw if isinstance(p, str) and p.strip()]
+    subtitle = subtitle_raw.strip()
+    if len(prompts) < 4 or not subtitle:
+        return None
+    return prompts[:4], subtitle
+
+
+# ---------------------------------------------------------------------------
+# Suggested follow-up for the chat composer, shown after each reply.
+# ---------------------------------------------------------------------------
+
+_FOLLOWUP_SYSTEM = (
+    "You suggest the user's next message in a conversation with their "
+    "virtual executive — a peer on their executive team who helps them "
+    "think, decide, draft, prioritize, and pull the right people in.\n\n"
+    "Read the transcript and write the ONE message the user would most "
+    "naturally send next, in the user's own voice (first person, "
+    "addressed to the executive). Build on the executive's last reply: "
+    "take the obvious next step it opens up — go deeper on one point, "
+    "act on a recommendation, get a draft, pressure-test a claim, or "
+    "decide between options it laid out. Name the concrete thing "
+    "(the person, metric, draft, or decision) rather than saying 'this' "
+    "or 'that'. Never repeat a question the user already asked. Never "
+    "suggest looping in, messaging, or following up with the user "
+    "themselves.\n\n"
+    "Output ONLY a JSON object with exactly one key — no prose, no "
+    "markdown, no fences:\n"
+    '  "suggestion": one sentence, 4-14 words, no greeting, no '
+    "exclamation marks, ending with a period or question mark."
+)
+
+# Per-message budget when building the transcript. The follow-up only
+# needs the thread's gist, and the reply being followed up on can be long.
+_FOLLOWUP_MAX_MESSAGES = 6
+_FOLLOWUP_MAX_CHARS_PER_MESSAGE = 1500
+_FOLLOWUP_MAX_WORDS = 24
+
+
+def _build_followup_transcript(messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for m in messages[-_FOLLOWUP_MAX_MESSAGES:]:
+        speaker = "EXECUTIVE" if m.get("role") == "assistant" else "USER"
+        text = str(m.get("content") or "").strip()
+        if len(text) > _FOLLOWUP_MAX_CHARS_PER_MESSAGE:
+            text = text[:_FOLLOWUP_MAX_CHARS_PER_MESSAGE] + " […]"
+        lines.append(f"{speaker}: {text}")
+    return "\n\n".join(lines)
+
+
+async def _generate_followup_via_llm(transcript: str) -> str | None:
+    """Returns one suggested next user message, or None on any failure."""
+    data = await _fast_json_call(_FOLLOWUP_SYSTEM, transcript, 150, "followup_suggestion")
+    if data is None:
+        return None
+    raw = data.get("suggestion")
+    if not isinstance(raw, str):
+        return None
+    suggestion = " ".join(raw.split())
+    # A runaway or empty answer is worse than no suggestion in the composer.
+    if not suggestion or len(suggestion.split()) > _FOLLOWUP_MAX_WORDS:
+        return None
+    return suggestion
 
 
 @router.get("/chat/suggested-prompts")

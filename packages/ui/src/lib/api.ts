@@ -803,6 +803,25 @@ export async function getSuggestedPrompts(
   return res.json();
 }
 
+// One suggested next message for the chat composer, grounded in the tail of
+// the session. Resolves to null on any non-OK response — the composer then
+// keeps its static placeholder — but rejects on abort so callers can tell a
+// cancelled fetch apart from "no suggestion".
+export async function getFollowupSuggestion(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const res = await fetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/followup`,
+    { signal },
+  );
+  if (!res.ok) return null;
+  const body: { suggestion?: unknown } = await res.json();
+  return typeof body.suggestion === "string" && body.suggestion.trim()
+    ? body.suggestion.trim()
+    : null;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;

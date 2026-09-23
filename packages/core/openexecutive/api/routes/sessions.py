@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+import time
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from openexecutive.api.models import SessionSummary
+from openexecutive.api.routes import chat as chat_route
 from openexecutive.api.routes.chat import _resolve_caller_person_id
 from openexecutive.memory.session_store import (
     delete_session,
@@ -110,3 +112,50 @@ def post_message_feedback(
         if caller is not None and rated_reply_speaker(session_id, message_id) == caller:
             schedule_style_pass(caller, force=True, session_id=session_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# (session_id, last assistant message id) -> (monotonic ts, suggestion).
+# Keyed on the reply being followed up on, so reopening a session or
+# remounting the composer does not re-bill the fast model; a new reply is a
+# new key. Single-process, like `_suggested_prompts_cache`.
+_FOLLOWUP_TTL_S = 3600
+_FOLLOWUP_CACHE_MAX = 512
+_followup_cache: dict[tuple[str, int], tuple[float, str]] = {}
+
+
+@router.get("/sessions/{session_id}/followup")
+async def get_followup_suggestion(session_id: str, request: Request) -> dict[str, Any]:
+    """One suggested next message for the chat composer.
+
+    Grounded in the tail of the conversation. ``suggestion`` is null when the
+    conversation does not end on a reply, or when the fast model fails — the
+    composer then falls back to its static placeholder. Only the session's
+    own caller, or the principal, may ask: the suggestion paraphrases the
+    conversation.
+    """
+    exists, owner = get_session_owner(session_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not is_principal_or_self(_resolve_caller_person_id(request), owner):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    messages = load_messages(session_id)
+    last = messages[-1] if messages else None
+    if last is None or last.get("role") != "assistant" or not last.get("id"):
+        return {"suggestion": None}
+
+    key = (session_id, int(last["id"]))
+    now = time.monotonic()
+    hit = _followup_cache.get(key)
+    if hit is not None and (now - hit[0]) < _FOLLOWUP_TTL_S:
+        return {"suggestion": hit[1]}
+
+    transcript = chat_route._build_followup_transcript(messages)
+    suggestion = await chat_route._generate_followup_via_llm(transcript)
+    if suggestion is not None:
+        # Failures are not cached: a transient blip should not pin the
+        # static placeholder on this reply for an hour.
+        if len(_followup_cache) >= _FOLLOWUP_CACHE_MAX:
+            _followup_cache.clear()
+        _followup_cache[key] = (now, suggestion)
+    return {"suggestion": suggestion}

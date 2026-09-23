@@ -1484,6 +1484,15 @@ attunement:
     AskOEPanel renders 👍/👎. `load_messages` adds `id` (+ `feedback`) to
     assistant rows only. Audited as event_type `attunement`, op=feedback.
     Stored for later per-person learning; nothing consumes it yet.
+  followup_suggestion: |
+    GET /sessions/{id}/followup → {"suggestion": str|null}. Chat composer's
+    greyed placeholder after each reply (Tab / → / inline chip fills it,
+    never sends). Utility-fast call (`chat._fast_json_call`, shared with
+    /chat/suggested-prompts) over the last 6 messages, each capped at 1500
+    chars; transcript in the user turn, no cached system blocks. Null when
+    the session doesn't end on a persisted assistant reply, or on model
+    failure (not cached). Owner-or-principal only (403). In-process cache
+    keyed (session_id, last assistant message id), 1h TTL.
   open_loops:
     module: openexecutive.attunement.open_loops
     pass: |
