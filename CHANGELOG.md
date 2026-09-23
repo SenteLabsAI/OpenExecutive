@@ -9,6 +9,18 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.3.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.1...v0.3.2) (2026-09-23)
+
+
+### Added
+
+* **ui:** add an assistant-led workflow wizard and compact the jobs catalog ([#189](https://github.com/SenteLabsAI/OpenExecutive/issues/189)) ([c52b96c](https://github.com/SenteLabsAI/OpenExecutive/commit/c52b96c551143246e15fc938806f9fe9b6975de9))
+
+
+### Fixed
+
+* **ui:** validate check-in cadences and clear emptied leave dates ([#191](https://github.com/SenteLabsAI/OpenExecutive/issues/191)) ([5940557](https://github.com/SenteLabsAI/OpenExecutive/commit/594055792c346622fb174d65164c67cc77e346bd))
+
 ## [0.3.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.0...v0.3.1) (2026-09-23)
 
 
