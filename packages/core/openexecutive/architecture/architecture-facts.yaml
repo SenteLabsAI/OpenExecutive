@@ -3486,7 +3486,7 @@ artifacts:
 user_guide:
   summary: |
     `/guide` is a plain-language overview of every user-facing feature —
-    "what it is, what it does" — for non-engineers. It is deliberately
+    "what it is, what it does, how to use it" — for non-engineers. It is deliberately
     SEPARATE from the `/architecture` technical reference: Architecture
     explains how the system is built; the User Guide explains what each
     feature does for the user. Reached from a tile on the Settings hub
@@ -3519,8 +3519,12 @@ user_guide:
     When a user-facing feature is added or materially changed, add/update
     the matching `guide/prebuilt/<id>.json` plus its registry entry in
     `guide/sections.py` and the mirror list in `app/guide/page.tsx` (IDs
-    must match). The `user_guide` architecture section documents this
-    surface for engineers.
+    must match). Every section carries a `**How to use:**` walkthrough
+    (where to click, which fields matter, what to say in chat) and, where
+    it helps, an `**Example:**` — enforced by
+    `tests/unit/test_guide_prebuilt.py`. Ask OE injects the page's section
+    into the user turn, so the how-to steps also ground its answers. The
+    `user_guide` architecture section documents this surface for engineers.
 
 auth:
   ui_provider: |

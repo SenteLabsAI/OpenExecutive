@@ -1,10 +1,11 @@
 """The fixed registry of user-guide sections.
 
 The ``/guide`` page is a plain-language overview of every user-facing
-feature — "what it is, what it does" — kept separate from the technical
-``/architecture`` reference. Like the architecture page, each section is
-rendered from a static, version-controlled JSON file under
-``guide/prebuilt/<id>.json``; nothing on the serving path calls an LLM.
+feature — "what it is, what it does, how to use it" — kept separate from
+the technical ``/architecture`` reference. Like the architecture page,
+each section is rendered from a static, version-controlled JSON file
+under ``guide/prebuilt/<id>.json``; nothing on the serving path calls an
+LLM.
 
 The section IDs must match the ``GUIDE_SECTIONS`` const in
 ``packages/ui/src/app/guide/page.tsx`` so deep links keep working and the

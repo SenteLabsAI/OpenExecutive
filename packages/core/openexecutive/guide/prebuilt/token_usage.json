@@ -1,7 +1,7 @@
 {
   "section_id": "token_usage",
   "title": "Token Usage",
-  "markdown": "**What it is:** Cost and token accounting — a breakdown of where your AI spend is going.\n\n**What it does:**\n\n- Show total tokens and cost over all time or a date range.\n- Break usage down by day and by model.\n- Compare fresh input vs cached tokens, so you can see caching paying off.\n- Drill into a single session's cost, turn by turn.\n\n*Note: cached reads cost far less than fresh input — the system is built around caching to keep spend down. Lives under the Audit area in Settings.*",
+  "markdown": "**What it is:** Cost and token accounting — a breakdown of where your AI spend is going.\n\n**What it does:**\n\n- Show total tokens and cost over all time or a date range.\n- Break usage down by source, by day, and by model.\n- Compare fresh input vs cached tokens, so you can see caching paying off.\n- Drill into a single session's cost, turn by turn, from the Audit log.\n\n**How to use:**\n\n1. Open **Settings → Token usage**.\n2. Set **From / Until** to look at a date range, or leave them blank for all time. **Clear filters** resets.\n3. Read the cards at the top: **Cost (USD)**, **Calls**, **Cache hit**, **Output tokens**, **Fresh input**, **Cache read**, **Cache write**, and **Searches**. A high cache-hit rate means you're paying the discounted rate for most input.\n4. Use the **By source**, **By model** and **By day (UTC)** tables to find what's driving spend.\n5. For one conversation's cost, go **← Audit log** and open that session.\n\n**Example:** spend jumped last week? Set **From / Until** to that week, check **By day** for the spike, then **By source** and **By model** to see what drove it.\n\n*Note: cached reads cost far less than fresh input — the system is built around caching to keep spend down. Lives under the Audit area in Settings.*",
   "mermaid": null,
-  "generated_at": "2026-06-06T00:00:00+00:00"
+  "generated_at": "2026-09-23T00:00:00+00:00"
 }
