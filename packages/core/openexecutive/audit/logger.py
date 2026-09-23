@@ -87,7 +87,7 @@ class AuditEvent:
 @contextmanager
 def _get_conn(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     # 5s busy_timeout + WAL so concurrent writers (FastAPI worker, scheduler
-    # task, IMAP poller thread, Slack/Telegram webhook threads) don't hit
+    # task, email poller task, Slack/Telegram webhook threads) don't hit
     # "database is locked". Audit writes swallow exceptions, so silent loss
     # under contention would be undetectable.
     conn = sqlite3.connect(str(db_path), timeout=5.0)

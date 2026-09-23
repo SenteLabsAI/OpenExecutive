@@ -463,7 +463,7 @@ async def _handle_email(
     subject = subject_line[len("subject:"):].strip()[:160] if subject_line else ""
     # Deterministic per-thread session id so every audit row from this inbound
     # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
-    # with the integration_inbound row. Falls back to from_addr when the IMAP
+    # with the integration_inbound row. Falls back to from_addr when the Gmail
     # message exposes no thread header.
     session_id = f"email:{thread_id or from_addr}"
     audit_log(

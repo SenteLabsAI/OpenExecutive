@@ -3616,8 +3616,10 @@ integrations:
     TELEGRAM_ALLOWED_CHAT_IDS / DISCORD_ALLOWED_USER_IDS) have been
     removed; access is managed entirely via the /people UI.
   email_poller: |
-    IMAP poll loop in openexecutive.integrations.email_poller — runs
-    as an asyncio task in the FastAPI lifespan. Strips Reply-To
+    Gmail poll loop in openexecutive.integrations.email_poller — reads
+    and marks mail through the Google Workspace MCP's Gmail tools (no
+    IMAP/SMTP), and runs as an asyncio task in the FastAPI lifespan,
+    started only once the MCP gateway is up. Strips Reply-To
     headers to defend against redirect attacks; filters auto-replies
     (mailer-daemon, noreply senders) and self-sent messages. INBOUND
     is NOT roster-gated — see ``channel_access`` for the split. When

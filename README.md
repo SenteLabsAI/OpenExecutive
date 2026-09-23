@@ -174,7 +174,7 @@ make dev
 
 The bot is embedded in the API process (alongside the email poller, scheduler, and resumer) so it shares the same SQLite database and ChromaDB vector store under `/data` in production. Skip the token to disable.
 
-For iterating on bot-only code without restarting the API, `make discord` runs the bot as a standalone process against the same local DB.
+For iterating on bot-only code without restarting the API, `make discord` runs the bot as a standalone process against the same local DB. Use it **instead of** the embedded bot, not alongside it: stop the API, or start it without `DISCORD_BOT_TOKEN`, first — two processes on one token each open a gateway connection and every message gets answered twice.
 
 Users can DM the bot, `@mention` it in a channel (replies in a thread), or use `/ask` and `/today` slash commands. Slash commands sync to `DISCORD_GUILD_IDS` instantly on startup; leave blank for global registration (up to 1-hour propagation delay).
 
@@ -212,7 +212,7 @@ The built-in knowledge base is **trusted by default** — the Executive can use 
 |-----------|-----------|
 | **Web UI** | `http://localhost:3000` |
 | **Slack** | Mention `@OpenExecutive` or DM the app |
-| **Email** | CC or email the configured address (IMAP/SMTP poller) |
+| **Email** | CC or email the configured address (Gmail poller via the Google Workspace MCP) |
 | **Telegram** | Message the configured bot |
 | **Google Chat** | Mention the app in a space |
 | **Discord** | DM the bot, `@mention` it in a channel, or use `/ask` / `/today` slash commands |

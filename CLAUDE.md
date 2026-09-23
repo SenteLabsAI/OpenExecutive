@@ -144,7 +144,7 @@ and deploy configuration for a specific environment are kept outside this repo.
 
 ## Environment Variables
 
-See `.env.example`. Required: `ANTHROPIC_API_KEY`. Optional integrations: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_IMAP_HOST`, `EMAIL_SMTP_HOST`.
+See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no default). Optional integrations: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET` (`docs/telegram_setup.md`), `DISCORD_BOT_TOKEN` + `DISCORD_APP_ID`, `GOOGLE_CHAT_PROJECT_NUMBER` + one of `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` / `_EMAIL` (`docs/google_chat_setup.md`). Email has no IMAP/SMTP settings: the poller (`integrations/email_poller.py`) reads and sends through the Gmail tools of the Google Workspace MCP (`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`), signed in as `EXEC_EMAIL_ADDRESS`.
 
 ## Testing
 

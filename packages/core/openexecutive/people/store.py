@@ -357,7 +357,7 @@ def find_person_by_telegram_chat_id(telegram_chat_id: str, db_path: Path | None 
 def find_person_by_email(email: str, db_path: Path | None = None) -> Person | None:
     """Return the first non-archived Person with this email address, or None.
 
-    Case-insensitive match — IMAP `From:` headers come back with the
+    Case-insensitive match — email `From:` headers come back with the
     sender's chosen capitalization, which isn't necessarily what was
     stored on the Person row.
     """

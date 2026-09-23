@@ -4,7 +4,9 @@ Mirrors the structure of slack_bot.py. In production the bot is embedded in
 the FastAPI lifespan (api/main.py) so it shares the same /data volume as the
 API. `run_discord_bot()` / `python -m openexecutive.integrations.discord_bot`
 is a standalone dev entry point — useful for iterating on bot-only changes
-without restarting the API. Both rely on `create_discord_bot()` returning a
+without restarting the API. Run it only while the API is stopped or has no
+DISCORD_BOT_TOKEN: the lifespan starts its own bot whenever the token is set,
+and two gateway connections on one token reply to every message twice. Both rely on `create_discord_bot()` returning a
 `commands.Bot` whose `.start()` / `.close()` work in any event loop.
 
 Supported interactions:

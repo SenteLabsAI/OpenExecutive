@@ -506,22 +506,25 @@ Polls the configured Gmail inbox via Gmail MCP OAuth every `EMAIL_POLL_INTERVAL_
 Required env var: `EXEC_EMAIL_ADDRESS`  
 Optional: `EMAIL_POLL_INTERVAL_SECONDS`
 
-**Access control**: roster-driven. A sender's address must match the `email` field of a non-archived Person row to receive a response; unknown senders are silently dropped and marked read. Manage via the /people UI.
+**Access control**: inbound is **not** roster-gated. Mail from a sender who isn't on the People roster still reaches the Executive — prefixed with a `[POLICY]` notice and audited as `integration_inbound` with `outcome=accepted_non_roster` — so it can be triaged, logged, or raised as an alert. What it cannot do is auto-reply: the outbound Gmail gate (`orchestrator.mcp_gateway._check_gmail_recipients`) refuses any send whose recipient isn't a non-archived Person's `email`. Self-sent mail and automated senders (noreply, mailer-daemon, postmaster) are skipped before routing. Manage the roster via the /people UI.
 
 ### Telegram Bot
 `integrations/telegram_bot.py`
 
-Webhook-based bot registered via FastAPI (`POST /webhook/telegram`). Validates incoming requests against `TELEGRAM_WEBHOOK_SECRET` using HMAC. Splits long responses at paragraph boundaries to stay within Telegram's 4096-char limit.
+Webhook-based bot registered via FastAPI (`POST /webhook/telegram`). When `TELEGRAM_WEBHOOK_SECRET` is set, rejects (401) any request whose `X-Telegram-Bot-Api-Secret-Token` header doesn't match it (constant-time comparison). Splits long responses at paragraph boundaries to stay within Telegram's 4096-char limit.
 
 Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`
 
 **Access control**: roster-driven. A sender's chat_id must match the `telegram_chat_id` field of a non-archived Person row to receive a response.
 
-Setup: register the webhook once with Telegram after the API is deployed:
+Setup: register the webhook once with Telegram after the API is deployed, passing the same secret as `secret_token` — without it Telegram sends no header and every update gets a 401:
 ```bash
 curl -F "url=https://your-api-host/webhook/telegram" \
-  "https://api.telegram.org/bot<TOKEN>/setWebhook"
+  -F "secret_token=$TELEGRAM_WEBHOOK_SECRET" \
+  "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook"
 ```
+
+See [docs/telegram_setup.md](telegram_setup.md) for full setup instructions.
 
 ### Google Chat
 `integrations/google_chat.py`
@@ -531,10 +534,9 @@ Webhook-based integration registered via FastAPI (`POST /webhook/google-chat`). 
 Three auth modes (selected by which env vars are set):
 1. **Key file** (`GOOGLE_CHAT_SERVICE_ACCOUNT_FILE`) — standard SA JSON key; blocked by some org policies
 2. **Impersonation** (`GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL`, no key file) — uses ADC to impersonate the SA
-3. **ADC direct** — neither var set; ambient credential must already be the Chat bot SA
+3. **ADC direct** — neither var set; ambient credential must already be the Chat bot SA. `_build_credentials` supports this, but the webhook currently rejects it: it returns 503 unless one of the two vars above is set.
 
-Required env var: `GOOGLE_CHAT_PROJECT_NUMBER`  
-Optional: `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE`, `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL`
+Required env vars: `GOOGLE_CHAT_PROJECT_NUMBER`, plus one of `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` / `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL`
 
 See [docs/google_chat_setup.md](google_chat_setup.md) for full setup instructions.
 
@@ -558,13 +560,13 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | `SCHEDULER_POLL_INTERVAL_SECONDS` | No | `30` | Scheduler poll frequency |
 | `SLACK_BOT_TOKEN` | No | — | Slack bot OAuth token |
 | `SLACK_APP_TOKEN` | No | — | Slack socket mode token |
-| `EXEC_EMAIL_ADDRESS` | No | — | Executive Gmail address (Gmail MCP OAuth) |
+| `EXEC_EMAIL_ADDRESS` | Yes | — | Executive Gmail address (Gmail MCP OAuth) |
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | Email poll frequency |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token |
-| `TELEGRAM_WEBHOOK_SECRET` | No | — | HMAC secret for webhook validation |
+| `TELEGRAM_WEBHOOK_SECRET` | No | — | Must match the `secret_token` given to `setWebhook`; checked against `X-Telegram-Bot-Api-Secret-Token` |
 | `GOOGLE_CHAT_PROJECT_NUMBER` | No | — | GCP project number |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | No | — | Path to SA JSON key |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` | No | — | SA email for ADC impersonation |
+| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | No | — | Path to SA JSON key (Google Chat needs this or `_EMAIL`) |
+| `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` | No | — | SA email for ADC impersonation (Google Chat needs this or `_FILE`) |
 | `GOOGLE_OAUTH_CLIENT_ID` | No | — | Google OAuth client ID (Gmail MCP) |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | No | — | Google OAuth client secret (Gmail MCP) |
 | `MCP_ENABLED` | No | `false` | Enable MCP tool gateway |
