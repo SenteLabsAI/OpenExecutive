@@ -60,25 +60,38 @@ thing that builds `Dockerfile.ui`.
 | `sha-<short>` | every push | The commit the image was built from. |
 | `buildcache` | every push | BuildKit layer cache. Not an image; ignore it. |
 
-**Cutting a release** is pushing a `vX.Y.Z` tag:
+**Cutting a release** is merging the release PR.
+[.github/workflows/release-please.yml](../.github/workflows/release-please.yml)
+runs release-please on every push to `main` and keeps one open PR,
+"chore(main): release X.Y.Z", up to date. The version comes from the
+conventional-commit types merged since the last release: `feat` → minor,
+`fix` → patch, and before 1.0 a breaking change is also a minor. The PR bumps
+every place the version is written (listed in `release-please-config.json`)
+and adds the `CHANGELOG.md` entry, which can be edited in the PR before
+merging. Merges that are only `chore`/`docs`/`test`/`refactor` wait for the
+next `feat` or `fix`. Merging the release PR tags the merge commit `vX.Y.Z`
+and creates the GitHub Release; the tag push then runs the image workflow.
+It needs the `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained token
+for this repository with Contents and Pull requests read/write), because
+events made with the default `GITHUB_TOKEN` start no workflows: without it
+the release PR would get no CI and the tag would publish no images.
 
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
+Pushing a `vX.Y.Z` tag by hand still works (`git tag v0.3.0 && git push
+origin v0.3.0`) but bypasses the version bump and changelog, so the release
+PR is the normal path.
 
-The workflow runs on the tag push and publishes the versioned tags. It does
-not check CI: it publishes whatever commit the tag points at, and the `main`
-tag is published in parallel with CI on every push, so tag only a commit on
-`main` that CI has passed. The two images are separate jobs, so a release is
-not atomic — if one fails, check the package pages and re-run the failed job
-from the Actions UI. Nothing bumps the version strings in
-`packages/core/pyproject.toml` or `packages/ui/package.json` for you; update
-them in the release commit.
+The image workflow runs on the tag push and publishes the versioned tags. It
+does not check CI: it publishes whatever commit the tag points at, and the
+`main` tag is published in parallel with CI on every push, so the release PR
+should only be merged once its CI is green. The two images are separate jobs,
+so a release is not atomic — if one fails, check the package pages and re-run
+the failed job from the Actions UI.
 
 Once both images are published, the same run creates the GitHub Release for
-the tag, with that version's `CHANGELOG.md` section as the notes. So merge the
-changelog entry before tagging: a tag with no `## [X.Y.Z]` section fails that
-job instead of publishing an empty release. If the images fail, no release is
+the tag if it does not exist yet (release-please normally already made it),
+with that version's `CHANGELOG.md` section as the notes. A hand-pushed tag
+with no `## [X.Y.Z]` section fails that job instead of publishing an empty
+release. If the images fail, no release is
 created; re-running the failed job from the Actions UI creates it once the
 images succeed. A release that already exists for the tag is left alone.
 

@@ -19,9 +19,11 @@
 # hardcoded ghcr.io/sentelabsai/* names. A fork that wants its own images
 # changes the guard and the image names.
 #
-# A `vX.Y.Z` tag also creates the GitHub Release once both images are
-# published, using that version's CHANGELOG.md section as the notes, so the
-# changelog entry must be merged before the commit is tagged. A tag alone
+# Version tags normally come from merging the release PR that
+# release-please.yml maintains; that also creates the GitHub Release. For a
+# tag pushed by hand, a `vX.Y.Z` tag also creates the GitHub Release once both
+# images are published, using that version's CHANGELOG.md section as the
+# notes, so the changelog entry must be merged before the commit is tagged. A tag alone
 # never shows under Releases. If the images fail, no release is created; if a
 # release for the tag already exists (made by hand), the job leaves it alone.
 #

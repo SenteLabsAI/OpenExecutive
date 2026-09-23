@@ -217,6 +217,10 @@ cd evals && python run_evals.py --scenarios scenarios/ --output results/
   `ui`, `deps`, …), not a file path; drop it only when the change genuinely
   spans the repo. Say what changed rather than what it is about, lowercase
   after the colon, no trailing period. See `.github/PULL_REQUEST_TEMPLATE.md`.
+  The type sets the next version (release-please: `feat` → minor, `fix` →
+  patch; `chore`/`docs`/`test`/`refactor` release nothing on their own), and
+  `feat`/`fix` titles become the changelog lines, so pick the type by what the
+  change is, not by how big it is.
 - PR description is three sections and nothing else: **Problem**, **Approach**,
   **Checklist** (see `.github/PULL_REQUEST_TEMPLATE.md`). Rationale, review
   findings and alternatives go in the commit message; open questions go in the

@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+From 0.3.0 on, entries are written by release-please from the titles of the
+merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
+the next entry; edit it there before merging if a line needs rewording.
 
 ## [0.3.0] - 2026-09-23
 
@@ -442,7 +444,6 @@ Initial public release.
 - Open-source project setup: Apache-2.0 license, contribution guide, code of
   conduct, security policy, issue/PR templates, and CI.
 
-[Unreleased]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.2.0...v0.2.1

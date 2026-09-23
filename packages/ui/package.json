@@ -2,7 +2,7 @@
   "name": "open-executive-ui",
   "version": "0.3.0",
   "private": true,
-  "description": "Next.js 15 web UI for Open Executive \u2014 an AI-powered virtual executive team.",
+  "description": "Next.js 15 web UI for Open Executive — an AI-powered virtual executive team.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
