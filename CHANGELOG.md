@@ -9,6 +9,20 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.3.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.0...v0.3.1) (2026-09-23)
+
+
+### Added
+
+* **chat:** suggest a follow-up in the composer ([#182](https://github.com/SenteLabsAI/OpenExecutive/issues/182)) ([7f7c1c1](https://github.com/SenteLabsAI/OpenExecutive/commit/7f7c1c1e2304c7333f83282fdcfb544f54fb47f0))
+* **ui:** group council model picker by provider ([#186](https://github.com/SenteLabsAI/OpenExecutive/issues/186)) ([8b3fb2f](https://github.com/SenteLabsAI/OpenExecutive/commit/8b3fb2fdf531eab1687443b99aa7f439c5dfd16f))
+
+
+### Fixed
+
+* **memory:** quote extraction and open loops from the speaker's own words ([#187](https://github.com/SenteLabsAI/OpenExecutive/issues/187)) ([100f7d9](https://github.com/SenteLabsAI/OpenExecutive/commit/100f7d9ba07de8ce06a8a0434815f173a39271ee))
+* **memory:** record only the person's own words in peer memory ([#185](https://github.com/SenteLabsAI/OpenExecutive/issues/185)) ([c32cf49](https://github.com/SenteLabsAI/OpenExecutive/commit/c32cf49c43137d20b325a29e2f576e1cda6e7fa9))
+
 ## [0.3.0] - 2026-09-23
 
 ### Added
