@@ -170,6 +170,9 @@ def test_email_poller_skips_gmail_while_paused(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(email_poller, "_discover_mail_tools", _discover)
     monkeypatch.setattr(email_poller, "poll_once", _poll)
+    # The loop also skips a cycle when the provider's MCP server is missing
+    # from the local config; keep that out of this test.
+    monkeypatch.setattr(email_poller, "provider_server_missing", lambda *_a: False)
 
     pause_store.pause("ceo@example.com")
     asyncio.run(_run_briefly(email_poller.run_email_poller(object())))  # type: ignore[arg-type]

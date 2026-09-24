@@ -201,6 +201,7 @@ def test_gateway_launches_the_pinned_extensible_mcp(tmp_path: Path) -> None:
     assert kwargs["command"] == "uvx"
     assert kwargs["args"] == [*_EXTENSIBLE_MCP_LAUNCH_ARGS, "--config", str(config)]
 
+
 def test_gateway_env_none_when_no_cache_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

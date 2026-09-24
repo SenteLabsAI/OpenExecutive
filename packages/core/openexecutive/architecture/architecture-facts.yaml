@@ -591,18 +591,31 @@ routing:
       `artifact_records` (unknown / non-artifact ids error, nothing sent).
       The link rides the normal DM path, outbound guard included; it only
       opens for people with Open Executive access.
-    - Gmail send / draft through the MCP gateway may attach
-      `{"artifact_id", "as"?}`; `mcp_gateway._expand_artifact_attachments`
-      renders it with `artifact_records.render_artifact_file` (shared with
-      `/download`) into workspace-mcp's `{content, filename, mime_type}`
-      shape, AFTER the recipient gate passes. Normalises a stringified or
+    - A mail send / draft through the MCP gateway may attach
+      `{"artifact_id", "as"?}`; the shared `mcp_gateway._expand_artifact_
+      entries` renders it with `artifact_records.render_artifact_file`
+      (shared with `/download`) AFTER the recipient gate passes, into the
+      backend's shape: workspace-mcp's `{content, filename, mime_type}` for
+      the Gmail tools (`_expand_artifact_attachments`, top-level
+      `attachments`), or a Graph `#microsoft.graph.fileAttachment`
+      (`name, contentType, contentBytes`) for the Microsoft 365 mail writes
+      (`_expand_m365_artifact_attachments`). The Graph location is per tool
+      (`_M365_ARTIFACT_MESSAGE_PATHS`: `body.Message.attachments` for
+      send-mail / reply / forward / createReply* drafts, `body.attachments`
+      for create-draft-email); an entry the model put at the top level (where
+      the artifact tool text says) or inside the message is read from either
+      place and written to the Graph one, and update-mail-message /
+      send-draft-message, whose requests cannot carry attachments, refuse an
+      artifact entry instead of forwarding it. Normalises a stringified or
       single-object `attachments` first (an unexpanded artifact entry would be
-      silently skipped by workspace-mcp). Refuses unknown / non-artifact ids,
-      links, extra keys, more than 5 distinct artifacts (repeats dropped) and
-      over 15 MB rendered in total; renders via `asyncio.to_thread`. Audits
-      `artifact_attachment_refused` on refusal and `artifact_attached` only
-      after a non-error send, both with recipients. Other attachment entries
-      are untouched.
+      silently skipped by workspace-mcp, rejected by Graph). Refuses unknown /
+      non-artifact ids, links, extra keys, more than 5 distinct artifacts
+      (repeats dropped) and over 15 MB rendered in total; renders via
+      `asyncio.to_thread`. Audits `artifact_attachment_refused` on refusal and
+      `artifact_attached` only after a non-error send, both with recipients
+      (`_audit_recipients`: Gmail's to/cc/bcc or the Graph message's
+      recipient lists). Other attachment entries are untouched; the gate
+      skips OData annotation KEYS (`@odata.type`) whose `@` is not an address.
     Side-effecting (`draft_artifact` only): a `tool_invocation` audit row
     (actor="executive", details carry `format`, `supersedes`) and an
     `action_taken` chip ("Drafted artifact for review: {title}") linking to
@@ -4162,7 +4175,12 @@ integrations:
     polling via list-mail-folder-messages (mailFolderId=inbox, filter
     "isRead eq false" — never the all-folders /me/messages, which includes
     Junk/Deleted), get-mail-message with HTML→text (workspace/_html, a real
-    HTMLParser), mark read via update-mail-message {isRead:true}, send via
+    HTMLParser) plus one list-mail-attachments call when hasAttachments, so
+    the ATTACHMENTS section carries the same `N. name (mime, size KB)` lines
+    workspace-mcp prints for Gmail (inline parts skipped; names go to peer
+    memory via email_poller._attachment_name; on a failed listing only the
+    download-bytes hint remains), mark read via update-mail-message
+    {isRead:true}, send via
     send-mail's nested Graph shape (body.Message.toRecipients[].emailAddress),
     events via create-calendar-event with isOnlineMeeting +
     onlineMeetingProvider=teamsForBusiness and the Teams join link read from

@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from email.utils import getaddresses
 from pathlib import Path
 from typing import Any
@@ -239,6 +239,10 @@ _GATED_M365_CALENDAR_TOOLS = frozenset({
 # `body` itself is NOT here: it is also the name of the request-body wrapper
 # (`{"body": {"Message": …}}`), so exempting it would exempt everything.
 _M365_FREE_TEXT_KEYS = frozenset({"content", "subject", "comment", "bodypreview"})
+# OData annotation KEYS (`@odata.type` on a Graph fileAttachment, `@odata.id`,
+# …) carry a literal `@` that is not an address. The key itself is skipped by
+# the malformed-address check; its VALUE is still scanned like any other.
+_ODATA_ANNOTATION_KEY_RE = re.compile(r"^@odata\.[A-Za-z]+$")
 
 # The one M365 send whose arguments name the recipients explicitly, so an
 # outbound-context linkage can be recorded after it succeeds. Reply/forward
@@ -411,6 +415,26 @@ _MAX_ARTIFACT_ATTACHMENT_BYTES = 15 * 1024 * 1024
 _ARTIFACT_ATTACHMENT_KEYS = frozenset({"artifact_id", "as"})
 
 
+# Where Graph expects a message's `attachments` for each Microsoft 365 mail
+# write, as a key path (matched case-insensitively; created with this casing
+# when absent). The send / reply / forward ACTIONS and the createReply* draft
+# actions wrap the message in a `Message` parameter; `create-draft-email`
+# POSTs the message itself. `update-mail-message` (PATCH) cannot add
+# attachments and `send-draft-message` takes no body, so an artifact entry on
+# either is refused rather than passed through unexpanded.
+_M365_ARTIFACT_MESSAGE_PATHS: dict[str, tuple[str, ...]] = {
+    "microsoft_365__send_mail": ("body", "Message"),
+    "microsoft_365__reply_mail_message": ("body", "Message"),
+    "microsoft_365__reply_all_mail_message": ("body", "Message"),
+    "microsoft_365__forward_mail_message": ("body", "Message"),
+    "microsoft_365__create_reply_draft": ("body", "Message"),
+    "microsoft_365__create_reply_all_draft": ("body", "Message"),
+    "microsoft_365__create_forward_draft": ("body", "Message"),
+    "microsoft_365__create_draft_email": ("body",),
+}
+_GRAPH_FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment"
+
+
 def _recipients(arguments: dict[str, Any]) -> list[str]:
     """Every to/cc/bcc address on a Gmail call, for audit rows."""
     raw = [arguments.get(f) for f in _GMAIL_RECIPIENT_FIELDS]
@@ -421,6 +445,21 @@ def _recipients(arguments: dict[str, Any]) -> list[str]:
     return [addr for _, addr in getaddresses(values) if addr]
 
 
+def _audit_recipients(tool: str, arguments: dict[str, Any]) -> list[str]:
+    """The addresses an attachment audit row names: Gmail's flat to/cc/bcc,
+    or the Graph message's recipient lists for a Microsoft 365 tool (a reply
+    or forward names none in its arguments — the row then carries []).
+    """
+    normalized = _normalize_tool_name(tool)
+    if not normalized.startswith(_M365_PREFIX):
+        return _recipients(arguments)
+    message = _ci_walk(arguments, _M365_ARTIFACT_MESSAGE_PATHS.get(normalized, ("body",)))
+    out: list[str] = []
+    for field in ("toRecipients", "ccRecipients", "bccRecipients"):
+        out.extend(_m365_recipient_addresses(_ci_get(message, field)))
+    return out
+
+
 def _refuse_attachment(tool: str, arguments: dict[str, Any], reason: str) -> str:
     from openexecutive.audit import log_event as audit_log
 
@@ -429,43 +468,71 @@ def _refuse_attachment(tool: str, arguments: dict[str, Any], reason: str) -> str
         "artifact_attachment_refused",
         f"Refused an artifact attachment on {tool}: {reason[:160]}",
         actor="mcp_gateway",
-        details={"tool": tool, "reason": reason, "recipients": _recipients(arguments)},
+        details={
+            "tool": tool, "reason": reason, "recipients": _audit_recipients(tool, arguments),
+        },
     )
     return json.dumps({"error": f"attachment: {reason}"})
 
 
-async def _expand_artifact_attachments(
-    tool: str, arguments: dict[str, Any]
-) -> tuple[dict[str, Any], list[str]] | str:
-    """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` attachment entries
-    with the rendered file (`content` base64 + `filename` + `mime_type`, the
-    shape workspace-mcp's Gmail tools accept).
+def _normalize_attachment_list(attachments: Any) -> list[Any] | None | str:
+    """The attachment entries as a list, None when there is nothing artifact-
+    shaped to expand, or an error reason. Models sometimes stringify nested
+    arguments, or send one object instead of a list; both are normalised so
+    an artifact entry can never reach the MCP unexpanded (workspace-mcp would
+    skip it and send the mail without it; Graph would reject the shape).
+    """
+    if isinstance(attachments, str) and "artifact_id" in attachments:
+        try:
+            attachments = json.loads(attachments)
+        except json.JSONDecodeError:
+            return "attachments is not valid JSON"
+    if isinstance(attachments, dict):
+        attachments = [attachments]
+    if not isinstance(attachments, list) or not any(
+        isinstance(a, dict) and "artifact_id" in a for a in attachments
+    ):
+        return None
+    return attachments
+
+
+def _gmail_file_entry(file: Any) -> dict[str, str]:
+    """workspace-mcp's own attachment shape."""
+    return {
+        "content": base64.b64encode(file.content).decode("ascii"),
+        "filename": file.filename,
+        "mime_type": file.mime,
+    }
+
+
+def _graph_file_entry(file: Any) -> dict[str, str]:
+    """Graph's `fileAttachment` shape, inline in the message."""
+    return {
+        "@odata.type": _GRAPH_FILE_ATTACHMENT_TYPE,
+        "name": file.filename,
+        "contentType": file.mime,
+        "contentBytes": base64.b64encode(file.content).decode("ascii"),
+    }
+
+
+async def _expand_artifact_entries(
+    tool: str,
+    arguments: dict[str, Any],
+    attachments: list[Any],
+    to_entry: Callable[[Any], dict[str, str]],
+) -> tuple[list[Any], list[str]] | str:
+    """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` entries in
+    ``attachments`` with the rendered file in the backend's shape
+    (``to_entry``), keeping every other entry as it is.
 
     Lets the Executive email one of its artifacts without ever holding the
     bytes: the file is rendered server-side exactly as `/artifacts/{id}/
     download` serves it, and only artifact rows can resolve (see
     `artifact_records`). At most `_MAX_ARTIFACT_ATTACHMENTS` distinct entries
     (repeats are dropped) and `_MAX_ARTIFACT_ATTACHMENT_BYTES` in total;
-    rendering runs off the event loop. Returns the (copied) arguments plus
-    the attached artifact ids, or an audited JSON error string. Other
-    attachment entries pass through untouched.
+    rendering runs off the event loop. Returns the expanded list plus the
+    attached artifact ids, or an audited JSON error string.
     """
-    attachments = arguments.get("attachments")
-    # Models sometimes stringify nested arguments, or send one object instead
-    # of a list. Normalise both, so an artifact entry can never reach the MCP
-    # unexpanded (workspace-mcp would skip it and send the mail without it).
-    if isinstance(attachments, str) and "artifact_id" in attachments:
-        try:
-            attachments = json.loads(attachments)
-        except json.JSONDecodeError:
-            return _refuse_attachment(tool, arguments, "attachments is not valid JSON")
-    if isinstance(attachments, dict):
-        attachments = [attachments]
-    if not isinstance(attachments, list) or not any(
-        isinstance(a, dict) and "artifact_id" in a for a in attachments
-    ):
-        return arguments, []
-
     from openexecutive.orchestrator.artifact_records import (
         ArtifactNotFound,
         MalformedArtifactId,
@@ -512,11 +579,7 @@ async def _expand_artifact_attachments(
                 f"{_MAX_ARTIFACT_ATTACHMENT_BYTES}-byte email limit — send "
                 "a link instead"
             ))
-        rendered[(artifact_id, as_)] = {
-            "content": base64.b64encode(file.content).decode("ascii"),
-            "filename": file.filename,
-            "mime_type": file.mime,
-        }
+        rendered[(artifact_id, as_)] = to_entry(file)
         attached.append(rec.id)
 
     expanded: list[Any] = []
@@ -531,7 +594,107 @@ async def _expand_artifact_attachments(
         if key not in emitted:
             emitted.add(key)
             expanded.append(rendered[key])
+    return expanded, attached
+
+
+async def _expand_artifact_attachments(
+    tool: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]] | str:
+    """Gmail: expand artifact entries in the top-level ``attachments`` into
+    workspace-mcp's `{content, filename, mime_type}` shape. Returns the
+    (copied) arguments plus the attached artifact ids, or an audited JSON
+    error string; arguments without an artifact entry come back untouched.
+    """
+    attachments = _normalize_attachment_list(arguments.get("attachments"))
+    if attachments is None:
+        return arguments, []
+    if isinstance(attachments, str):
+        return _refuse_attachment(tool, arguments, attachments)
+    out = await _expand_artifact_entries(tool, arguments, attachments, _gmail_file_entry)
+    if isinstance(out, str):
+        return out
+    expanded, attached = out
     return {**arguments, "attachments": expanded}, attached
+
+
+def _ci_walk(mapping: Any, path: tuple[str, ...]) -> Any:
+    """`_ci_get` along a key path; None as soon as a step is missing."""
+    cursor = mapping
+    for key in path:
+        cursor = _ci_get(cursor, key)
+        if cursor is None:
+            return None
+    return cursor
+
+
+def _with_message_attachments(
+    arguments: dict[str, Any], path: tuple[str, ...], expanded: list[Any]
+) -> dict[str, Any]:
+    """A copy of ``arguments`` with ``expanded`` as the message's
+    `attachments` at ``path`` (existing key casing kept, the canonical casing
+    used for a level that does not exist yet) and no top-level `attachments`.
+    """
+    result = dict(arguments)
+    result.pop("attachments", None)
+    cursor: dict[str, Any] = result
+    for key in path:
+        actual = next(
+            (k for k in cursor if isinstance(k, str) and k.lower() == key.lower()), key
+        )
+        existing = cursor.get(actual)
+        child: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        cursor[actual] = child
+        cursor = child
+    actual = next((k for k in cursor if isinstance(k, str) and k.lower() == "attachments"),
+                  "attachments")
+    cursor[actual] = expanded
+    return result
+
+
+async def _expand_m365_artifact_attachments(
+    tool: str, normalized: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]] | str:
+    """Microsoft 365: expand artifact entries into Graph `fileAttachment`
+    objects on the message.
+
+    The artifact tool text tells the model to pass `attachments=[{"artifact_id"
+    …}]` on "the mail send or draft tool", so the entries may arrive at the top
+    level of the arguments (where Gmail takes them) or already inside the
+    Graph message (`body.Message.attachments` / `body.attachments`, see
+    `_M365_ARTIFACT_MESSAGE_PATHS`). Both are read, expanded together, and
+    written to the Graph location — a top-level list is moved, never left for
+    the server to reject. Tools whose request cannot carry attachments refuse
+    an artifact entry instead of passing it through.
+    """
+    path = _M365_ARTIFACT_MESSAGE_PATHS.get(normalized)
+    top = _normalize_attachment_list(arguments.get("attachments"))
+    nested_raw = _ci_get(_ci_walk(arguments, path), "attachments") if path else None
+    nested = _normalize_attachment_list(nested_raw)
+    if isinstance(top, str):
+        return _refuse_attachment(tool, arguments, top)
+    if isinstance(nested, str):
+        return _refuse_attachment(tool, arguments, nested)
+    if top is None and nested is None:
+        return arguments, []
+    if path is None:
+        return _refuse_attachment(tool, arguments, (
+            f"{tool} cannot carry attachments; send with "
+            f"{_M365_PREFIX}send-mail or create a draft with them instead"
+        ))
+    combined: list[Any] = []
+    if nested is not None:
+        combined.extend(nested)
+    elif isinstance(nested_raw, list):
+        combined.extend(nested_raw)
+    if top is not None:
+        combined.extend(top)
+    elif isinstance(arguments.get("attachments"), list):
+        combined.extend(arguments["attachments"])
+    out = await _expand_artifact_entries(tool, arguments, combined, _graph_file_entry)
+    if isinstance(out, str):
+        return out
+    expanded, attached = out
+    return _with_message_attachments(arguments, path, expanded), attached
 
 
 def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -759,6 +922,8 @@ def _check_m365_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
     """
     allow = _roster_allow_set()
     for s in _iter_arg_strings_skipping(arguments, _M365_FREE_TEXT_KEYS):
+        if _ODATA_ANNOTATION_KEY_RE.match(s):
+            continue
         if any(ord(ch) < 0x20 for ch in s):
             return _block(
                 "recipient", "<contains-control-char>", tool,
@@ -1366,6 +1531,12 @@ class MCPGateway:
             blocked = _check_m365_download_target(tool_name, arguments)
             if blocked is not None:
                 return blocked
+        if normalized in _GATED_M365_MAIL_TOOLS:
+            # Same order as Gmail: only after every recipient gate above passed.
+            expanded = await _expand_m365_artifact_attachments(tool_name, normalized, arguments)
+            if isinstance(expanded, str):
+                return expanded
+            arguments, attached_artifacts = expanded
         result = await session.call_tool(
             "call_tool",
             {"tool_name": tool_input["name"], "arguments": arguments},
@@ -1389,7 +1560,7 @@ class MCPGateway:
                 details={
                     "tool": tool_name,
                     "artifact_ids": attached_artifacts,
-                    "recipients": _recipients(arguments),
+                    "recipients": _audit_recipients(tool_name, arguments),
                 },
             )
         return result_text

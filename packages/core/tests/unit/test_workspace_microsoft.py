@@ -86,9 +86,9 @@ def test_list_unread_tolerates_errors_and_junk() -> None:
 def test_fetch_parses_graph_message_and_renders_text() -> None:
     gw = _gateway(json.dumps(_graph_message()))
     msg = asyncio.run(MicrosoftMail().fetch(gw, MessageRef("AAMk1", ""), MAILBOX))
-    assert _args(gw)["name"] == "microsoft_365__get-mail-message"
-    assert _args(gw)["arguments"]["messageId"] == "AAMk1"
-    assert "body" in _args(gw)["arguments"]["select"]
+    assert _args(gw, 0)["name"] == "microsoft_365__get-mail-message"
+    assert _args(gw, 0)["arguments"]["messageId"] == "AAMk1"
+    assert "body" in _args(gw, 0)["arguments"]["select"]
     assert msg is not None
     assert msg.from_addr == "Alice@Contoso.com"
     assert msg.from_name == "Alice"
@@ -111,6 +111,51 @@ def test_fetch_parses_graph_message_and_renders_text() -> None:
     # The poller's recipient parser reads the rendered To/Cc lines.
     from openexecutive.integrations.email_poller import _parse_recipients
     assert _parse_recipients(rendered) == ["exec@contoso.com", "bob@contoso.com"]
+
+
+def test_fetch_lists_attachment_names_in_the_gmail_line_shape() -> None:
+    """A message with attachments costs one extra call (list-mail-attachments);
+    each file becomes the `N. name (mime, size KB)` line workspace-mcp prints
+    for Gmail, so the Executive sees the names and `email_poller.
+    _attachment_name` records them in peer memory. Inline parts are skipped."""
+    listing = {"value": [
+        {"id": "a1", "name": "  Q3  deck (final).pdf ", "contentType": "application/pdf",
+         "size": 15360, "isInline": False},
+        {"id": "a2", "name": "image001.png", "contentType": "image/png", "size": 10,
+         "isInline": True},
+        {"id": "a3", "name": "notes.txt", "size": 2048},
+        {"id": "a4", "name": "   "},
+    ]}
+    gw = _gateway(json.dumps(_graph_message()), json.dumps(listing))
+    msg = asyncio.run(MicrosoftMail().fetch(gw, MessageRef("AAMk1", ""), MAILBOX))
+    assert msg is not None
+    assert _args(gw, 1) == {
+        "name": "microsoft_365__list-mail-attachments",
+        "arguments": {"messageId": "AAMk1", "select": "id,name,contentType,size,isInline"},
+    }
+    assert msg.attachments == [
+        "1. Q3 deck (final).pdf (application/pdf, 15.0 KB)",
+        "2. notes.txt (application/octet-stream, 2.0 KB)",
+        "Fetch one with microsoft_365__download-bytes; list them with "
+        "microsoft_365__list-mail-attachments (messageId=AAMk1).",
+    ]
+    from openexecutive.integrations.email_poller import _email_memory_text
+
+    rendered = render_for_executive(msg, MicrosoftMail().reply_block(msg))
+    assert _email_memory_text(rendered).endswith(
+        "(Attached files: Q3 deck (final).pdf, notes.txt)"
+    )
+
+
+def test_fetch_keeps_only_the_hint_when_the_listing_fails() -> None:
+    for listing in (json.dumps({"error": "denied"}), "not json", RuntimeError("down")):
+        gw = MagicMock()
+        gw.call_tool = AsyncMock(side_effect=[json.dumps(_graph_message()), listing])
+        msg = asyncio.run(MicrosoftMail().fetch(gw, MessageRef("AAMk1", ""), MAILBOX))
+        assert msg is not None
+        assert msg.has_attachments is True
+        assert len(msg.attachments) == 1
+        assert msg.attachments[0].startswith("Fetch one with microsoft_365__download-bytes")
 
 
 def test_fetch_text_body_and_no_attachments() -> None:

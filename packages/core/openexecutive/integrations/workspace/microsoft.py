@@ -37,6 +37,10 @@ _FETCH_SELECT = (
     "id,conversationId,subject,from,toRecipients,ccRecipients,body,"
     "hasAttachments,receivedDateTime"
 )
+_ATTACHMENT_SELECT = "id,name,contentType,size,isInline"
+# Attachment names are sender-controlled; keep one line per file short enough
+# for email_poller._attachment_name (which caps a line at 512 chars).
+_ATTACHMENT_NAME_MAX = 200
 # showAs values that mean the slot is taken. `free` and `workingElsewhere`
 # are not conflicts.
 _BUSY_STATES = frozenset({"busy", "oof", "tentative"})
@@ -173,13 +177,7 @@ class MicrosoftMail:
             text = html_to_text(text)
         has_attachments = bool(parsed.get("hasAttachments"))
         attachments = (
-            [
-                f"This message has attachments. List them with "
-                f"{_PREFIX}list-mail-attachments (messageId={ref.message_id}); "
-                f"fetch one with {_PREFIX}download-bytes."
-            ]
-            if has_attachments
-            else []
+            await self._attachment_lines(gateway, ref.message_id) if has_attachments else []
         )
         thread_id = parsed.get("conversationId")
         subject = parsed.get("subject")
@@ -195,6 +193,48 @@ class MicrosoftMail:
             has_attachments=has_attachments,
             attachments=attachments,
         )
+
+    async def _attachment_lines(self, gateway: Any, message_id: str) -> list[str]:
+        """The `--- ATTACHMENTS ---` lines for a message that has attachments:
+        one `N. <name> (<contentType>, <size> KB)` line per file — the exact
+        shape workspace-mcp prints for Gmail, which `email_poller.
+        _attachment_name` parses for peer memory — plus the fetch hint. Inline
+        parts (signature images) are left out. Best-effort: a failed listing
+        leaves only the hint, so the Executive can still list them itself.
+        """
+        hint = (
+            f"Fetch one with {_PREFIX}download-bytes; list them with "
+            f"{_PREFIX}list-mail-attachments (messageId={message_id})."
+        )
+        try:
+            raw = await gateway.call_tool({
+                "name": _PREFIX + "list-mail-attachments",
+                "arguments": {"messageId": message_id, "select": _ATTACHMENT_SELECT},
+            })
+        except Exception:
+            logger.warning("list-mail-attachments %s failed", message_id, exc_info=True)
+            return [hint]
+        parsed = _parse_json(raw)
+        items = parsed.get("value") if isinstance(parsed, dict) else None
+        if _error_of(parsed) is not None or not isinstance(items, list):
+            return [hint]
+        lines: list[str] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("isInline"):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            name = " ".join(name.split())[:_ATTACHMENT_NAME_MAX]
+            mime = item.get("contentType")
+            size = item.get("size")
+            kb = size / 1024 if isinstance(size, int | float) and size >= 0 else 0.0
+            lines.append(
+                f"{len(lines) + 1}. {name} "
+                f"({mime if isinstance(mime, str) and mime else 'application/octet-stream'}, "
+                f"{kb:.1f} KB)"
+            )
+        return [*lines, hint]
 
     async def mark_read(self, gateway: Any, ref: MessageRef, mailbox: str) -> None:
         try:

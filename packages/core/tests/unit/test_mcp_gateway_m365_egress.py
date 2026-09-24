@@ -628,3 +628,28 @@ def test_google_tools_are_unaffected() -> None:
     )
     assert session_call.await_count == 1
     assert result == '{"ok": true}'
+
+
+def test_odata_annotation_key_is_not_an_address_but_its_value_is_scanned() -> None:
+    """A Graph `fileAttachment` carries `@odata.type`; the `@` in that KEY
+    must not trip the malformed-address refusal, while an address hidden in
+    the entry's value (or any other key) is still roster-checked."""
+    gateway, session_call = _make_gateway()
+    args = _send_mail_args(to=[ROSTER])
+    args["body"]["Message"]["attachments"] = [{
+        "@odata.type": "#microsoft.graph.fileAttachment", "name": "plan.pdf",
+        "contentBytes": "aGk=",
+    }]
+    assert not _blocked(_call(gateway, args, allowed=[ROSTER]))
+    assert session_call.await_count == 1
+
+    gateway, session_call = _make_gateway()
+    args["body"]["Message"]["attachments"][0]["@odata.type"] = f"x {STRANGER}"
+    assert _blocked(_call(gateway, args, allowed=[ROSTER]))
+    assert session_call.await_count == 0
+
+    gateway, session_call = _make_gateway()
+    args["body"]["Message"]["attachments"][0]["@odata.type"] = "#microsoft.graph.fileAttachment"
+    args["body"]["Message"]["attachments"][0]["name"] = f"for {STRANGER}"
+    assert _blocked(_call(gateway, args, allowed=[ROSTER]))
+    assert session_call.await_count == 0
