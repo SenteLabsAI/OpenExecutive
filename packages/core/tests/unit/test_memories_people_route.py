@@ -109,7 +109,7 @@ class _ConclusionsAio:
         self._no_total = no_total
 
     async def list(self, page: int = 1, size: int = 50, session: Any = None, *, reverse: bool = False) -> _Page:
-        self._calls.append({"size": size, "reverse": reverse})
+        self._calls.append({"page": page, "size": size, "reverse": reverse})
         # Mirrors the real server: the default (reverse=False) is newest-first
         # ("ordered by recency unless reverse is true"), so the list passed to
         # `_Peer(conclusions=...)` IS taken as that default order, whatever
@@ -119,7 +119,8 @@ class _ConclusionsAio:
         # what would have caught the production bug where the code asked for
         # `reverse=True` and silently got the oldest page every time.
         ordered = list(reversed(self._conclusions)) if reverse else self._conclusions
-        return _Page(ordered[:size], self._total, no_total=self._no_total)
+        start = (page - 1) * size
+        return _Page(ordered[start:start + size], self._total, no_total=self._no_total)
 
 
 class _Conclusions:
@@ -255,7 +256,7 @@ def test_ok_maps_rostered_peers_principal_first(
     assert [c["content"] for c in top["recent"]] == ["3 prefers a short table", "3 runs 48 units"]
     assert top["error"] is None
     assert body["conclusion_total"] == 14
-    assert principal.calls == [{"size": 2, "reverse": False}], "newest first, capped by ?recent="
+    assert principal.calls == [{"page": 1, "size": 2, "reverse": False}], "newest first, capped by ?recent="
     assert client.aio.peer_calls == [], "a read-only page must never get-or-create a peer"
 
     audit = [r for r in audit_rows if r["event_type"] == "peer_memory"]
@@ -525,3 +526,95 @@ def test_an_edge_of_range_timestamp_does_not_blank_the_person(roster: dict[str, 
         person = _client().get("/memories/people").json()["people"][0]
     assert person["error"] is None
     assert [c["content"] for c in person["recent"]] == ["real", "edge"]
+
+
+# --------------------------------------------------------------------------- #
+# GET /memories/people/{id}/conclusions — every note, one page at a time
+# --------------------------------------------------------------------------- #
+
+
+def _stamps(n: int) -> list[_Conclusion]:
+    """n conclusions, newest first (the server's default order)."""
+    return [_Conclusion(f"note {i}", datetime(2026, 9, 1, tzinfo=UTC).replace(hour=23 - i)) for i in range(n)]
+
+
+def test_conclusions_pages_through_everything_newest_first(
+    roster: dict[str, int], audit_rows: list[dict[str, Any]]
+) -> None:
+    member = _Peer(str(roster["member"]), conclusions=_stamps(5), total=5)
+    client = _Client([member])
+    with _with_client(client):
+        first = _client().get(f"/memories/people/{roster['member']}/conclusions?size=2").json()
+        last = _client().get(f"/memories/people/{roster['member']}/conclusions?page=3&size=2").json()
+
+    assert first["status"] == "ok" and first["person_id"] == roster["member"]
+    assert [c["content"] for c in first["items"]] == ["note 0", "note 1"]
+    assert first["total"] == 5 and first["has_more"] is True
+    assert [c["content"] for c in last["items"]] == ["note 4"]
+    assert last["has_more"] is False
+    assert member.calls == [
+        {"page": 1, "size": 2, "reverse": False},
+        {"page": 3, "size": 2, "reverse": False},
+    ], "newest first, the page the caller asked for"
+    assert client.aio.peer_calls == [], "a read-only page must never get-or-create a peer"
+    audit = [r["details"] for r in audit_rows if r["event_type"] == "peer_memory"]
+    assert [(a["op"], a["outcome"], a["person_id"]) for a in audit] == [
+        ("conclusions", "ok", roster["member"])
+    ] * 2
+
+
+def test_conclusions_without_a_total_guess_more_from_a_full_page(roster: dict[str, int]) -> None:
+    client = _Client([_Peer(str(roster["member"]), conclusions=_stamps(3), no_total=True)])
+    with _with_client(client):
+        full = _client().get(f"/memories/people/{roster['member']}/conclusions?size=2").json()
+        short = _client().get(f"/memories/people/{roster['member']}/conclusions?page=2&size=2").json()
+    assert full["total"] is None and full["has_more"] is True
+    assert short["has_more"] is False
+
+
+def test_conclusions_are_block_safe(roster: dict[str, int]) -> None:
+    client = _Client([_Peer(
+        str(roster["member"]), conclusions=[_Conclusion("likes\x00 tea\nand\u202e cake", _T1)],
+    )])
+    with _with_client(client):
+        body = _client().get(f"/memories/people/{roster['member']}/conclusions").json()
+    overview_item = honcho_client._to_conclusion(_Conclusion("likes\x00 tea\nand\u202e cake", _T1))
+    assert body["items"] == [overview_item.model_dump()], "the same scrub as the overview"
+    assert "\x00" not in body["items"][0]["content"] and "\u202e" not in body["items"][0]["content"]
+
+
+@pytest.mark.parametrize("who", ["archived", "unknown", "no_peer"])
+def test_conclusions_404_for_anyone_without_a_peer(who: str, roster: dict[str, int]) -> None:
+    person_id = {"archived": roster["archived"], "unknown": 999, "no_peer": roster["principal"]}[who]
+    client = _Client([
+        _Peer(str(roster["archived"]), conclusions=[_Conclusion("gone", _T1)]),
+        _Peer("999", conclusions=[_Conclusion("nobody", _T1)]),
+        _Peer(str(roster["member"])),
+    ])
+    with _with_client(client):
+        resp = _client().get(f"/memories/people/{person_id}/conclusions")
+    assert resp.status_code == 404
+    assert client.aio.peer_calls == [], "a miss must not mint the peer either"
+
+
+def test_conclusions_disabled(monkeypatch: pytest.MonkeyPatch, roster: dict[str, int]) -> None:
+    monkeypatch.setenv("HONCHO_ENABLED", "false")
+    body = _client().get(f"/memories/people/{roster['member']}/conclusions").json()
+    assert body["status"] == "disabled" and body["items"] == [] and body["has_more"] is False
+
+
+def test_conclusions_read_failure_is_an_error_status(
+    roster: dict[str, int], audit_rows: list[dict[str, Any]]
+) -> None:
+    client = _Client([], fail=RuntimeError("down"))
+    with _with_client(client):
+        body = _client().get(f"/memories/people/{roster['member']}/conclusions").json()
+    assert body["status"] == "error" and body["items"] == []
+    audit = [r["details"] for r in audit_rows if r["event_type"] == "peer_memory"]
+    assert audit[0]["op"] == "conclusions" and audit[0]["error_type"] == "RuntimeError"
+
+
+@pytest.mark.parametrize("query", ["page=0", "size=0", "size=101"])
+def test_conclusions_paging_is_bounded(query: str, roster: dict[str, int]) -> None:
+    resp = _client().get(f"/memories/people/{roster['member']}/conclusions?{query}")
+    assert resp.status_code == 422
