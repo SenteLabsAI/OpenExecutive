@@ -1,10 +1,9 @@
 import { IconName } from "@/components/Icon";
 
-// Single source of truth for the app's navigation. Both the chat-home
-// sidebar (`app/page.tsx`, via `SidebarNav`) and the persistent rail
-// (`components/shell/AppShell.tsx`) build their menus from here, so the
-// two navs can never drift apart again. When adding a destination, add
-// it ONCE in this file.
+// Single source of truth for the app's navigation. The one sidebar
+// (`components/shell/AppSidebar.tsx`, rendered by both the chat home and
+// the AppShell) and the mobile bottom bar build their menus from here.
+// When adding a destination, add it ONCE in this file.
 
 export interface NavItem {
   href: string;
@@ -232,3 +231,10 @@ export const MOBILE_PRIMARY: NavItem[] = [
       "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",
   },
 ];
+
+// Is `href` the active destination for `pathname`? Active on an exact match
+// or anywhere below it (`/jobs` is active on `/jobs/runs/42`).
+export function isNavActive(href: string, pathname: string): boolean {
+  if (href === "/") return pathname === "/";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}

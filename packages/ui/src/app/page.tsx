@@ -2,17 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import BrandMark from "@/components/BrandMark";
 import Briefing from "@/components/Briefing";
 import Chat from "@/components/Chat";
 import DebugPanel from "@/components/DebugPanel";
 import Icon from "@/components/Icon";
-import RecentSessions from "@/components/RecentSessions";
-import SidebarNav from "@/components/SidebarNav";
+import { useSessions } from "@/components/sessions/SessionsContext";
 import { MobileBottomNav } from "@/components/shell/AppShell";
-import { buildPrimaryNav, GUIDE_NAV_ITEM, SETTINGS_NAV_ITEM } from "@/components/shell/navConfig";
-import UserBadge from "@/components/UserBadge";
-import { ChatMessage, DebugEvent, ReviewStats, SessionSummary, deleteSession, getReviewStats, getSessionMessages, listSessions } from "@/lib/api";
+import AppSidebar from "@/components/shell/AppSidebar";
+import { ChatMessage, DebugEvent, getSessionMessages } from "@/lib/api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -31,10 +28,9 @@ export default function HomePage() {
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const activeTurnIdRef = useRef<string | null>(null);
   const [isTurnInFlight, setIsTurnInFlight] = useState(false);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const { refresh: refreshSessions } = useSessions();
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
-  const [reviewStats, setReviewStats] = useState<ReviewStats | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // Briefing-first landing: default to "briefing" so opening the app shows
   // what's been happening, not an empty chat. Switches to "chat" when the
@@ -52,20 +48,6 @@ export default function HomePage() {
       .then((r) => r.json())
       .then(setHealth)
       .catch(() => setHealth({ status: "error", company_profile_loaded: false }));
-  }, []);
-
-  const refreshSessions = useCallback(() => {
-    listSessions()
-      .then(setSessions)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    refreshSessions();
-  }, [refreshSessions]);
-
-  useEffect(() => {
-    getReviewStats().then(setReviewStats).catch(() => {});
   }, []);
 
   const handleSelectSession = useCallback(async (sessionId: string) => {
@@ -120,29 +102,6 @@ export default function HomePage() {
     setMobileNavOpen(false);
   }, []);
 
-  const handleDeleteSession = useCallback(
-    async (sessionId: string) => {
-      if (!window.confirm("Delete this chat? This cannot be undone.")) return;
-      try {
-        await deleteSession(sessionId);
-      } catch (err) {
-        console.error(err);
-        window.alert("Failed to delete chat.");
-        return;
-      }
-      setActiveSessionId((current) => {
-        if (current === sessionId) {
-          setActiveMessages([]);
-          setDebugEvents([]);
-          return undefined;
-        }
-        return current;
-      });
-      refreshSessions();
-    },
-    [refreshSessions]
-  );
-
   const handleTurnComplete = useCallback((sessionId: string) => {
     // Only adopt a real id. A turn that ends without ever learning one (an
     // aborted stream) would otherwise set this to "", which <Chat> reads as
@@ -154,10 +113,10 @@ export default function HomePage() {
     refreshSessions();
   }, [refreshSessions]);
 
-  // Cross-route "New chat" entry: the AppShell rail and mobile bottom
-  // nav link to `/?new=1` from every inner route. When that param is
-  // present on mount, reset to a fresh chat and strip the query so a
-  // refresh doesn't reapply the action.
+  // Cross-route entries: from every inner route the sidebar and mobile
+  // bottom nav link to `/?new=1` (New chat) and `/?session=<id>` (a
+  // Recent chat, or a row on /chats). When either param is present on
+  // mount, apply it and strip the query so a refresh doesn't reapply it.
   //
   // Read directly from `window.location` rather than `useSearchParams`:
   // that hook opts the page out of static rendering in Next 15 unless
@@ -167,11 +126,15 @@ export default function HomePage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
+    const sessionParam = params.get("session");
     if (params.get("new") === "1") {
       handleNewChat();
       router.replace("/");
+    } else if (sessionParam) {
+      void handleSelectSession(sessionParam);
+      router.replace("/");
     }
-  }, [handleNewChat, router]);
+  }, [handleNewChat, handleSelectSession, router]);
 
   // Group debug events by turn_id. When we see a new turn_id, reset the
   // panel. Track the current turn_id in a ref — state updater functions
@@ -195,15 +158,6 @@ export default function HomePage() {
   const isOnboarded = health?.company_profile_loaded === true;
   const companyName = health?.company_name;
 
-  const reviewBadge = reviewStats != null ? reviewStats.pending + reviewStats.needs_revision : 0;
-  // Primary nav is built from the shared config in
-  // `components/shell/navConfig.ts` — the single source of truth the
-  // AppShell rail also uses, so the two navs can never drift. Admin /
-  // power tools are NOT here; they live on the Settings hub (linked from
-  // the footer below). "Today" is intentionally omitted — the Briefing
-  // button above is the in-app way back to that content.
-  const navSections = buildPrimaryNav({ isOnboarded, reviewBadge });
-
   return (
     <div className="flex h-full relative">
       {/* Mobile backdrop */}
@@ -215,97 +169,24 @@ export default function HomePage() {
         />
       )}
 
-      {/* Sidebar — slides in on mobile, static on md+ */}
-      <aside
-        className={`
-          fixed top-8 bottom-0 left-0 z-40 w-64 md:w-56 md:top-0 flex-shrink-0
-          border-r border-line flex flex-col bg-surface-elevated
-          transform transition-transform duration-200
-          md:relative md:translate-x-0 md:transition-none
-          ${mobileNavOpen ? "translate-x-0" : "-translate-x-full"}
-        `}
-      >
-        {/* Logo — clicking returns to the briefing landing */}
-        <div className="px-4 py-5 border-b border-line flex items-center justify-between flex-shrink-0">
-          <button
-            type="button"
-            onClick={handleBackToBriefing}
-            aria-label="Back to briefing"
-            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer hover:opacity-80 transition-opacity"
-          >
-            <div className="flex-shrink-0">
-              <BrandMark size="sm" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-fg">Open Executive</p>
-              {companyName && (
-                <p className="text-xs text-fg-muted truncate">{companyName}</p>
-              )}
-            </div>
-          </button>
-          {/* Close button on mobile only */}
-          <button
-            type="button"
-            aria-label="Close menu"
-            onClick={() => setMobileNavOpen(false)}
-            className="md:hidden min-h-touch min-w-touch flex items-center justify-center text-fg-muted hover:text-fg cursor-pointer rounded-lg hover:bg-surface-overlay transition-colors"
-          >
-            <Icon name="close" size="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Nav region — own scroll; compresses/scrolls internally only when the
-            sidebar is too short, so Recent below always keeps a usable height */}
-        <div className="min-h-0 overflow-y-auto pt-3">
-        <SidebarNav
-          sections={navSections}
-          briefingActive={mode === "briefing"}
-          newChatActive={mode === "chat" && activeSessionId === undefined}
-          onBriefing={handleBackToBriefing}
-          onNewChat={handleNewChat}
-          onNavigate={() => setMobileNavOpen(false)}
-        />
-
-        </div>
-
-        {/* Recent conversations — date-grouped, searchable, own scroll region */}
-        <RecentSessions
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelect={handleSelectSession}
-          onDelete={(id) => void handleDeleteSession(id)}
-        />
-
-        {/* Spacer — pins the footer to the bottom now that Recent is content-sized */}
-        <div className="flex-1 min-h-0" />
-
-        {/* Footer — User Guide (always-visible help) and Settings (the hub
-            for admin/power tools), kept out of the primary groups above so
-            day-to-day nav stays focused. */}
-        <div className="px-2 py-2 border-t border-line flex-shrink-0 space-y-0.5">
-          <Link
-            href={GUIDE_NAV_ITEM.href}
-            onClick={() => setMobileNavOpen(false)}
-            title={GUIDE_NAV_ITEM.description}
-            className="px-3 py-2.5 min-h-touch rounded-lg hover:bg-surface-overlay text-fg-muted hover:text-fg flex items-center gap-2.5 text-sm transition-colors cursor-pointer"
-          >
-            <Icon name={GUIDE_NAV_ITEM.icon} size="w-4 h-4" />
-            <span className="flex-1">{GUIDE_NAV_ITEM.label}</span>
-          </Link>
-          <Link
-            href={SETTINGS_NAV_ITEM.href}
-            onClick={() => setMobileNavOpen(false)}
-            title={SETTINGS_NAV_ITEM.description}
-            className="px-3 py-2.5 min-h-touch rounded-lg hover:bg-surface-overlay text-fg-muted hover:text-fg flex items-center gap-2.5 text-sm transition-colors cursor-pointer"
-          >
-            <Icon name={SETTINGS_NAV_ITEM.icon} size="w-4 h-4" />
-            <span className="flex-1">{SETTINGS_NAV_ITEM.label}</span>
-          </Link>
-        </div>
-
-        {/* Signed-in user */}
-        <UserBadge variant="sidebar" />
-      </aside>
+      {/* Sidebar — the same one every route renders (AppShell uses it
+          too); slides in on mobile, static on md+. On the home page its
+          entries drive this page's in-memory state instead of navigating. */}
+      <AppSidebar
+        pathname="/"
+        open={mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+        breakpoint="md"
+        isOnboarded={health ? isOnboarded : undefined}
+        companyName={companyName}
+        home={{
+          mode,
+          activeSessionId,
+          onBriefing: handleBackToBriefing,
+          onNewChat: handleNewChat,
+          onSelectSession: (id) => void handleSelectSession(id),
+        }}
+      />
 
       {/* Main */}
       <main className="flex-1 flex flex-col min-w-0">
