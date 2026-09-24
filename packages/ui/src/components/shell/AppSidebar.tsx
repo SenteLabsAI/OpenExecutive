@@ -70,8 +70,9 @@ export default function AppSidebar({
   const { sessions } = useSessions();
   const [reviewBadge, setReviewBadge] = useState(0);
 
-  // Refetched on navigation so approving items on /review clears the badge
-  // once you move on, rather than only on a full reload.
+  // Knowledge base badge: items waiting in its review queue. Refetched on
+  // navigation so approving items clears the badge once you move on, rather
+  // than only on a full reload.
   useEffect(() => {
     getReviewStats()
       .then((s) => setReviewBadge(s.pending + s.needs_revision))

@@ -3,7 +3,8 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { BuiltinFileContent } from "@/lib/api";
+import type { BuiltinFileContent, ReviewItem, ReviewStatus } from "@/lib/api";
+import ReviewStatusPill from "@/components/ReviewStatusPill";
 
 interface FileEditorProps {
   file: BuiltinFileContent;
@@ -11,6 +12,9 @@ interface FileEditorProps {
   isDirty: boolean;
   isSaving: boolean;
   variant: "playbook" | "failure";
+  /** The file's review record, or null when it has none. */
+  review: ReviewItem | null;
+  onSetReviewStatus: (status: ReviewStatus) => void;
   onChange: (v: string) => void;
   onSave: () => void;
   onDelete: () => void;
@@ -25,6 +29,8 @@ export default function FileEditor({
   isDirty,
   isSaving,
   variant,
+  review,
+  onSetReviewStatus,
   onChange,
   onSave,
   onDelete,
@@ -42,6 +48,31 @@ export default function FileEditor({
             {file.domain}
           </span>
           <h2 className="text-base font-semibold text-fg mt-0.5">{file.filename}</h2>
+          {review && (
+            <div className="flex items-center gap-2 mt-1">
+              <ReviewStatusPill
+                status={review.status}
+                reviewedAt={review.reviewed_at}
+                trustedDefault={review.trusted_default}
+              />
+              {review.status !== "approved" && (
+                <button
+                  onClick={() => onSetReviewStatus("approved")}
+                  className="text-[11px] text-emerald-400 hover:text-emerald-300 transition-colors"
+                >
+                  Approve
+                </button>
+              )}
+              {review.status !== "needs_revision" && (
+                <button
+                  onClick={() => onSetReviewStatus("needs_revision")}
+                  className="text-[11px] text-violet-400 hover:text-violet-300 transition-colors"
+                >
+                  Flag
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex gap-0.5 p-0.5 bg-surface-overlay rounded-lg border border-line-strong/50">

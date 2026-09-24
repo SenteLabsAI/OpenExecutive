@@ -1,11 +1,7 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import ReviewQueue from "@/components/ReviewQueue";
-
+// The review queue lives inside the Knowledge base now. Keep the old route so
+// bookmarks and links still land on it.
 export default function ReviewPage() {
-  return (
-    <main className="flex-1 min-h-0 overflow-y-auto">
-      <ReviewQueue />
-    </main>
-  );
+  redirect("/knowledge?view=review");
 }

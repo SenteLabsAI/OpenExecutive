@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   createBuiltinFile,
   createFailureFile,
@@ -8,13 +9,19 @@ import {
   deleteFailureFile,
   getBuiltinFile,
   getFailureFile,
+  getReviewItem,
+  getReviewStats,
   listBuiltinFiles,
   listFailureFiles,
+  patchReviewItem,
   updateBuiltinFile,
   updateFailureFile,
   type BuiltinFileContent,
   type BuiltinFileMeta,
+  type ReviewItem,
+  type ReviewStatus,
 } from "@/lib/api";
+import ReviewQueue from "@/components/ReviewQueue";
 import CompanyPanel from "./CompanyPanel";
 import FileEditor from "./FileEditor";
 import NewFileForm from "./NewFileForm";
@@ -33,10 +40,26 @@ const DOMAINS = [
   "strategy",
 ];
 
+// Review item ids are `<content_type>:<domain>:<filename>`
+// (knowledge/review_store.py build_item_id). Failure docs use `failure`.
+function reviewItemId(fileKind: FileKind, domain: string, filename: string): string {
+  return `${fileKind === "failures" ? "failure" : "builtin"}:${domain}:${filename}`;
+}
+
 export default function KnowledgeWorkspace() {
+  const searchParams = useSearchParams();
   const [builtinFiles, setBuiltinFiles] = useState<BuiltinFileMeta[]>([]);
   const [failureFiles, setFailureFiles] = useState<BuiltinFileMeta[]>([]);
-  const [selection, setSelection] = useState<Selection>(null);
+  // `/knowledge?view=review` (and the old `/review` route, which redirects
+  // here) opens straight onto the review queue.
+  const [selection, setSelection] = useState<Selection>(() =>
+    searchParams.get("view") === "review" ? { kind: "review" } : null
+  );
+  const [reviewCount, setReviewCount] = useState(0);
+  const [fileReview, setFileReview] = useState<ReviewItem | null>(null);
+  // The file whose review status we want; a slower response for a file the
+  // user has already left must not overwrite it.
+  const wantedReviewId = useRef<string | null>(null);
   const [selectedContent, setSelectedContent] = useState<BuiltinFileContent | null>(null);
   const [editContent, setEditContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
@@ -57,6 +80,45 @@ export default function KnowledgeWorkspace() {
   useEffect(() => {
     loadIndex();
   }, [loadIndex]);
+
+  // Refetched whenever the view changes, so approving in the queue updates
+  // the tree's count once you move on.
+  useEffect(() => {
+    getReviewStats()
+      .then((s) => setReviewCount(s.pending + s.needs_revision))
+      .catch(() => {});
+  }, [selection]);
+
+  const loadFileReview = useCallback(async (sel: Selection) => {
+    const id = sel?.kind === "file" ? reviewItemId(sel.fileKind, sel.domain, sel.filename) : null;
+    wantedReviewId.current = id;
+    if (id === null) return;
+    try {
+      const detail = await getReviewItem(id);
+      if (wantedReviewId.current === id) setFileReview(detail.item);
+    } catch {
+      // No review record (e.g. a file added outside the app before
+      // registration) — show no status rather than an error.
+      if (wantedReviewId.current === id) setFileReview(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    setFileReview(null);
+    loadFileReview(selection);
+  }, [selection, loadFileReview]);
+
+  async function handleSetReviewStatus(status: ReviewStatus) {
+    if (!fileReview) return;
+    try {
+      const updated = await patchReviewItem(fileReview.item_id, { status });
+      if (wantedReviewId.current === updated.item_id) setFileReview(updated);
+      const stats = await getReviewStats();
+      setReviewCount(stats.pending + stats.needs_revision);
+    } catch {
+      setError("Failed to update review status");
+    }
+  }
 
   // Load file content whenever selection points at a file.
   useEffect(() => {
@@ -91,6 +153,8 @@ export default function KnowledgeWorkspace() {
     try {
       await updater(selection.domain, selection.filename, editContent);
       setIsDirty(false);
+      // The server moves an edited file to needs_revision; reflect that now.
+      await loadFileReview(selection);
     } catch {
       setError("Failed to save file");
     } finally {
@@ -151,6 +215,7 @@ export default function KnowledgeWorkspace() {
           failureFiles={failureFiles}
           selection={selection}
           filter={filter}
+          reviewCount={reviewCount}
           onSelect={setSelection}
         />
       </aside>
@@ -173,6 +238,8 @@ export default function KnowledgeWorkspace() {
             isDirty={isDirty}
             isSaving={isSaving}
             variant={selection.fileKind === "failures" ? "failure" : "playbook"}
+            review={fileReview}
+            onSetReviewStatus={handleSetReviewStatus}
             onChange={(v) => {
               setEditContent(v);
               setIsDirty(true);
@@ -198,6 +265,7 @@ export default function KnowledgeWorkspace() {
           />
         )}
 
+        {selection?.kind === "review" && <ReviewQueue />}
         {selection?.kind === "company" && <CompanyPanel domains={DOMAINS} />}
         {selection?.kind === "reference" && <ReferencePanel />}
         {selection?.kind === "query" && (
@@ -232,6 +300,10 @@ function EmptyState() {
         <li>
           <span className="text-fg">Reference Library</span> — open-licensed
           textbooks and handbooks.
+        </li>
+        <li>
+          <span className="text-fg">Review queue</span> — approve, reject, or
+          correct knowledge before the Executive relies on it.
         </li>
         <li>
           <span className="text-indigo-300">Query mode</span> — see exactly what the

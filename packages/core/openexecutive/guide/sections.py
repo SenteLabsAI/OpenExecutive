@@ -48,7 +48,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     GuideSection(
         id="review",
         title="Review Queue",
-        sub="Approve, reject, or correct incoming knowledge before the Executive relies on it.",
+        sub="In the Knowledge base: approve, reject, or correct knowledge before the Executive relies on it.",
     ),
     GuideSection(
         id="jobs",

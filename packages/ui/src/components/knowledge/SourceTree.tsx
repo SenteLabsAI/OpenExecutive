@@ -12,6 +12,7 @@ export type Selection =
   | { kind: "company" }
   | { kind: "reference" }
   | { kind: "query" }
+  | { kind: "review" }
   | null;
 
 interface SourceTreeProps {
@@ -20,6 +21,8 @@ interface SourceTreeProps {
   failureFiles: BuiltinFileMeta[];
   selection: Selection;
   filter: string;
+  /** Pending + needs-revision items, shown on the Review queue entry. */
+  reviewCount: number;
   onSelect: (sel: Selection) => void;
 }
 
@@ -29,6 +32,7 @@ export default function SourceTree({
   failureFiles,
   selection,
   filter,
+  reviewCount,
   onSelect,
 }: SourceTreeProps) {
   const [collapsedBuiltin, setCollapsedBuiltin] = useState(true);
@@ -61,6 +65,14 @@ export default function SourceTree({
 
   return (
     <nav className="text-sm space-y-3">
+      <RootButton
+        active={selection?.kind === "review"}
+        onClick={() => onSelect({ kind: "review" })}
+        icon="check-circle"
+        badge={reviewCount}
+      >
+        Review queue
+      </RootButton>
       <Section
         label="Built-in"
         icon="grid"
@@ -252,12 +264,14 @@ function RootButton({
   onClick,
   accent,
   icon,
+  badge = 0,
   children,
 }: {
   active: boolean;
   onClick: () => void;
   accent?: "indigo";
   icon?: IconName;
+  badge?: number;
   children: React.ReactNode;
 }) {
   const activeClass = accent === "indigo" ? "bg-indigo-500/15 text-indigo-200" : "bg-surface-input text-fg";
@@ -270,6 +284,11 @@ function RootButton({
     >
       {icon && <Icon name={icon} size="w-3.5 h-3.5" />}
       {children}
+      {badge > 0 && (
+        <span className="ml-auto text-[10px] font-semibold normal-case tracking-normal px-1.5 rounded-full bg-amber-950/60 text-amber-400 border border-amber-900/60">
+          {badge}
+        </span>
+      )}
     </button>
   );
 }

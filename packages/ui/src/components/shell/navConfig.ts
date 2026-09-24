@@ -46,14 +46,6 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
       label: "Workspace",
       items: [
         {
-          href: "/review",
-          label: "Review",
-          icon: "check-circle",
-          badge: reviewBadge,
-          description:
-            "Approve, reject, or correct incoming knowledge before the Executive relies on it.",
-        },
-        {
           href: "/jobs",
           label: "Workflows",
           icon: "doc",
@@ -107,8 +99,9 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
           href: "/knowledge",
           label: "Knowledge base",
           icon: "book",
+          badge: reviewBadge,
           description:
-            "Upload company documents so the Executive can ground its answers in your context.",
+            "Upload company documents so the Executive can ground its answers in your context, and approve what it relies on.",
         },
       ],
     },
