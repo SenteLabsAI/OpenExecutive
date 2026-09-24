@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 import uuid
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -378,6 +378,54 @@ def _request_stop(client_turn_id: str, owner: str) -> str | None:
     return entry.turn_id
 
 
+# Who started each chat this process has served, as a `_stop_owner_key`. Lets
+# a caller the roster can't resolve (a fresh install with no principal yet, or
+# an allowlisted user who isn't on the roster) keep talking in a chat they
+# started, without opening every ownerless session to every unresolved
+# caller. In-memory like `_sessions`, so it does not survive a restart.
+_session_starters: dict[str, str] = {}
+
+SessionAccess = Literal["missing", "allowed", "forbidden"]
+
+
+def _session_access(
+    request: Request, session_id: str, caller_person_id: int | None
+) -> SessionAccess:
+    """May this caller read, continue or delete ``session_id``?
+
+    The session's owner or the principal may (`is_principal_or_self`, the same
+    rule as feedback and followup; an ownerless legacy row is the principal's
+    alone). The one other way in is having started it in this process: that is
+    how an unresolved caller continues their own chat, whose row has no owner.
+    "missing" means neither a stored row nor a live chat has that id.
+    """
+    from openexecutive.memory.session_store import get_session_owner
+    from openexecutive.people.store import is_principal_or_self
+
+    exists, owner = get_session_owner(session_id)
+    starter = _session_starters.get(session_id)
+    if not exists and starter is None:
+        return "missing"
+    if exists and is_principal_or_self(caller_person_id, owner):
+        return "allowed"
+    if (
+        starter is not None
+        and starter == _stop_owner_key(request, caller_person_id)
+        and (not exists or owner is None)
+    ):
+        return "allowed"
+    return "forbidden"
+
+
+def forget_session(session_id: str) -> None:
+    """Drop a deleted session's in-process state.
+
+    Without this, a later turn naming the deleted id would pick the cached
+    `Session` (history and all) back up out of `_sessions`."""
+    _session_starters.pop(session_id, None)
+    _sessions.pop(session_id, None)
+
+
 def _get_or_create_session(session_id: str | None, request: Request) -> Any:
     from openexecutive.memory.session_store import load_messages
     from openexecutive.onboarding.profile_builder import load_or_create_profile
@@ -579,6 +627,24 @@ async def _run_chat_turn(
     # by signed-in user); see its docstring for the precedence rule that
     # protects against cross-identity leakage.
     caller_person_id = _resolve_caller_person_id(request)
+    # A client-supplied id must be the caller's own chat. Refused before the
+    # stop switch is armed, so a 403 strands nothing in the registry.
+    requested_id = _clean_session_id(session_id)
+    if requested_id is not None:
+        access = _session_access(request, requested_id, caller_person_id)
+        if access == "forbidden":
+            logger.warning("chat.session_forbidden session_id=%s", requested_id)
+            raise HTTPException(status_code=403, detail="Not your session")
+        if access == "missing" and ":" in requested_id:
+            # Namespaced ids (`slack:dm:…`, `telegram:…`) belong to the channel
+            # adapters, which create their rows server-side. A web caller
+            # minting one would squat it: the adapter's INSERT OR IGNORE keeps
+            # the first owner, so whoever claimed `slack:dm:<someone>` first
+            # would own that person's DM history. Start a fresh chat instead.
+            logger.warning("chat.session_id_reserved session_id=%s", requested_id)
+            session_id = None
+    else:
+        access = "missing"
     client_turn_id = _clean_client_turn_id(client_turn_id)
     stop_event: asyncio.Event | None = None
     if client_turn_id:
@@ -605,6 +671,10 @@ async def _run_chat_turn(
     except BaseException:
         _release_stop(client_turn_id, turn_id)
         raise
+    if access == "missing":
+        _session_starters.setdefault(
+            session.session_id, _stop_owner_key(request, caller_person_id)
+        )
     is_first_turn = len(session.conversation_history) == 0
 
     logger.info(

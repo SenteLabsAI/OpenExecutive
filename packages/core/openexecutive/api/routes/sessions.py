@@ -8,7 +8,11 @@ from pydantic import BaseModel, Field
 
 from openexecutive.api.models import SessionSummary
 from openexecutive.api.routes import chat as chat_route
-from openexecutive.api.routes.chat import _resolve_caller_person_id
+from openexecutive.api.routes.chat import (
+    _resolve_caller_person_id,
+    _session_access,
+    forget_session,
+)
 from openexecutive.memory.session_store import (
     delete_session,
     get_session_metadata,
@@ -34,8 +38,21 @@ def get_sessions(request: Request) -> list[SessionSummary]:
     return [SessionSummary(**s) for s in list_sessions(caller_person_id)]
 
 
+def _require_session_access(request: Request, session_id: str) -> None:
+    """404 for an unknown session, 403 for someone else's.
+
+    Session ids are guessable (`slack:dm:<user id>`, `telegram:<chat id>`), so
+    every per-session route checks ownership rather than trusting the id."""
+    access = _session_access(request, session_id, _resolve_caller_person_id(request))
+    if access == "missing":
+        raise HTTPException(status_code=404, detail="Session not found")
+    if access == "forbidden":
+        raise HTTPException(status_code=403, detail="Not your session")
+
+
 @router.get("/sessions/{session_id}", response_model=SessionSummary)
-def get_session(session_id: str) -> SessionSummary:
+def get_session(session_id: str, request: Request) -> SessionSummary:
+    _require_session_access(request, session_id)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -43,7 +60,8 @@ def get_session(session_id: str) -> SessionSummary:
 
 
 @router.get("/sessions/{session_id}/messages")
-def get_session_messages(session_id: str) -> list[dict]:
+def get_session_messages(session_id: str, request: Request) -> list[dict]:
+    _require_session_access(request, session_id)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -51,8 +69,11 @@ def get_session_messages(session_id: str) -> list[dict]:
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_session_route(session_id: str) -> Response:
-    if not delete_session(session_id):
+def delete_session_route(session_id: str, request: Request) -> Response:
+    _require_session_access(request, session_id)
+    deleted = delete_session(session_id)
+    forget_session(session_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

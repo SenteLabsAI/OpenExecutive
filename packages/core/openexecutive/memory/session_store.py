@@ -152,7 +152,8 @@ def list_sessions(
 
     Legacy rows with caller_person_id IS NULL (created before this column
     existed) are excluded — the comparison `NULL = ?` never matches in
-    SQLite. They remain reachable by direct session_id URL.
+    SQLite. Only the principal can still open them by id (see
+    `api.routes.chat._session_access`).
     """
     if not db_path.exists():
         return []
