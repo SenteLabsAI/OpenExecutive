@@ -2044,7 +2044,7 @@ today:
     explicit ids to `POST /alerts/bulk-ack` (never a server-side age sweep),
     and "Re-check relevance" (`POST /alerts/review`); Monitoring gets the
     same footer at 3 days; the ack body may carry `mute_topic`.
-  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the rail, the chat-home sidebar, and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge` and Skills). Both navs render it from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
+  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge` and Skills), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
   briefing_first_landing: |
     The root page (`packages/ui/src/app/page.tsx`) defaults to `mode="briefing"`
     and renders `<Briefing>` (`packages/ui/src/components/Briefing.tsx`) in the
@@ -2162,8 +2162,8 @@ chat:
     round-trip with a ~10s budget) is skipped on the stop path, so persisting
     first does not make the button feel dead.
 
-    `_active_stops` is single-process, exactly like `_sessions` and
-    `_last_turn_*` in the same module and `_active_cancellations` in
+    `_active_stops` is single-process, exactly like `_sessions` in the
+    same module and `_active_cancellations` in
     api/routes/evals.py (the pattern this copies). A second uvicorn worker
     would break in-flight session continuity before it broke stop. It is
     bounded (`_STOP_REGISTRY_MAX`) so a leaked entry cannot grow without limit.

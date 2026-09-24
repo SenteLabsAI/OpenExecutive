@@ -31,11 +31,6 @@ logger = logging.getLogger(__name__)
 
 _sessions: dict[str, Any] = {}
 
-# Most-recent completed turn's debug events, for the /debug/last-turn endpoint.
-# Single-process only; replaced wholesale at the end of every turn.
-_last_turn_events: list[dict[str, Any]] = []
-_last_turn_meta: dict[str, Any] = {}
-
 _TITLE_MAX_LEN = 60
 
 
@@ -112,7 +107,7 @@ class _StopEntry(NamedTuple):
 # user, and says `stopped`, because that is the word on the button. If you are
 # looking for every stoppable-async pattern in this codebase, grep both.
 #
-# Single-process only — exactly like `_sessions` above and `_last_turn_*` below. A second
+# Single-process only — exactly like `_sessions` above. A second
 # uvicorn worker would break in-flight session continuity before it broke this.
 _active_stops: dict[str, _StopEntry] = {}
 
@@ -930,7 +925,7 @@ async def _run_chat_turn(
         # aclosing is load-bearing, not decoration: `async for` does NOT
         # close its sub-iterator when the enclosing generator is closed. This
         # body used to BE event_generator, so a client disconnect ran its
-        # `finally` directly (the /debug/last-turn snapshot, and the
+        # `finally` directly (releasing the stop switch, and the
         # Executive's upstream stream aclose). Wrapping it in a plain
         # `async for` would leave `_sse_body` suspended at its yield until a
         # later GC hop — or never, if the loop closes first.
@@ -1284,19 +1279,6 @@ async def _run_chat_turn(
             done = json.dumps({"type": "done", "session_id": session.session_id})
             yield f"data: {done}\n\n"
         finally:
-            # Snapshot for /debug/last-turn.
-            global _last_turn_events, _last_turn_meta
-            _last_turn_events = [collector.to_sse_dict(e) for e in collector._events]
-            _last_turn_meta = {
-                "turn_id": turn_id,
-                "session_id": session.session_id,
-                "is_first_turn": is_first_turn,
-                "chunks": chunk_count,
-                "duration_s": round(time.monotonic() - exec_t0, 3),
-                "timed_out": timed_out,
-                "client_disconnected": client_disconnected,
-                "stopped": stopped,
-            }
             _release_stop(client_turn_id, turn_id)
 
     return StreamingResponse(
@@ -1426,15 +1408,6 @@ async def chat_upload(
         # inlined document text — the open-loop pass skips turns carrying that.
         memory_text=f"{message}\n\n(Attached files: {', '.join(filenames)})",
     )
-
-
-@router.get("/debug/last-turn")
-def get_last_turn() -> dict[str, Any]:
-    """Returns the most recently completed turn's debug events.
-
-    Single-process only — for local debugging when SSE itself failed.
-    """
-    return {"meta": _last_turn_meta, "events": _last_turn_events}
 
 
 # ---------------------------------------------------------------------------

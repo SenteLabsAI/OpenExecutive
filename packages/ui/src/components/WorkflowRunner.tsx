@@ -116,7 +116,7 @@ export default function WorkflowRunner({
             onClick={handleStart}
             className="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition"
           >
-            Run job
+            Run workflow
           </button>
           <button
             type="button"
