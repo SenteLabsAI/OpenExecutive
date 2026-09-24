@@ -117,3 +117,67 @@ def test_run_validates_dynamic_input_schema(client: TestClient) -> None:
 def test_get_missing_custom_returns_404(client: TestClient) -> None:
     assert client.get("/workflows/custom/nope").status_code == 404
     assert client.delete("/workflows/custom/nope").status_code == 404
+
+
+# --- action steps & tool search ---------------------------------------------
+
+
+def _action_definition(tools: list[str]) -> dict[str, Any]:
+    return _definition(
+        name="file_bills",
+        input_fields=[],
+        steps=[
+            {"kind": "action", "id": "file", "title": "File bills",
+             "goal": "Add bills to the tracker.", "tools": tools},
+            {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+        ],
+    )
+
+
+def test_create_rejects_unknown_tools(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.mcp_gateway.get_active_gateway", lambda: None
+    )
+    r = client.post("/workflows/custom", json=_action_definition(["srv__ghost"]))
+    assert r.status_code == 422
+    assert "srv__ghost" in " ".join(r.json()["detail"])
+    # Built-ins need no gateway.
+    r = client.post("/workflows/custom", json=_action_definition(["oe__read_file"]))
+    assert r.status_code == 201, r.text
+
+
+def test_update_rejects_unknown_tools(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.mcp_gateway.get_active_gateway", lambda: None
+    )
+    assert client.post("/workflows/custom", json=_action_definition(["oe__read_file"])).status_code == 201
+    r = client.put("/workflows/custom/file_bills", json=_action_definition(["srv__ghost"]))
+    assert r.status_code == 422
+
+
+def test_tool_search_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.mcp_gateway.get_active_gateway", lambda: None
+    )
+    assert client.get("/workflows/tools/search").json() == {"tools": []}
+    tools = client.get("/workflows/tools/search", params={"q": "read a file"}).json()["tools"]
+    assert tools[0] == {
+        "name": "oe__read_file",
+        "description": tools[0]["description"],
+        "read_only": True,
+        "source": "builtin",
+    }
+
+
+def test_tool_describe_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.mcp_gateway.get_active_gateway", lambda: None
+    )
+    assert client.get("/workflows/tools/describe").json() == {"tools": []}
+    tools = client.get(
+        "/workflows/tools/describe", params={"names": "oe__message_person, srv__ghost,oe__read_file"}
+    ).json()["tools"]
+    assert [(t["name"], t["read_only"]) for t in tools] == [
+        ("oe__message_person", None),
+        ("oe__read_file", True),
+    ]

@@ -16,6 +16,9 @@ Step interpretation:
                     step (see "Pause and resume" below).
 - ``synthesis``   → assemble prior outputs into the final Markdown artifact,
                     either by concatenation or via one synthesis consult.
+- ``action``      → run the ``workflow_actor`` agent with ONLY the step's
+                    approved tools (``workflows/action_step.py``); its report
+                    of what it did becomes the step's output.
 
 Pause and resume
 ----------------
@@ -51,6 +54,7 @@ from openexecutive.workflows.base import (
     WorkflowStepDef,
 )
 from openexecutive.workflows.dynamic_models import (
+    ActionStepSpec,
     ApprovalGateStepSpec,
     DynamicWorkflowDef,
     SpecialistStepSpec,
@@ -429,6 +433,42 @@ class DynamicWorkflow(Workflow):
                 yield gate  # type: ignore[misc]
                 return
 
+            elif isinstance(step, ActionStepSpec):
+                from openexecutive.workflows.action_step import run_action_step
+
+                yield WorkflowEvent(
+                    type="step_start", step_id=step.id, step_title=step.title
+                )
+                try:
+                    goal = _render(step.goal, values)
+                except (KeyError, IndexError) as exc:
+                    yield WorkflowEvent(
+                        type="error",
+                        message=f"step {step.id!r} placeholder error: {exc}",
+                    )
+                    return
+                async for kind, payload in run_action_step(
+                    step,
+                    workflow_name=self.name,
+                    workflow_title=self.title,
+                    goal=goal,
+                    values=values,
+                    company_block=company_block,
+                    prior_outputs=dict(outputs),
+                ):
+                    if kind == "progress":
+                        yield WorkflowEvent(
+                            type="progress", step_id=step.id, summary=payload
+                        )
+                    elif kind == "error":
+                        yield WorkflowEvent(type="error", message=payload)
+                        return
+                    else:
+                        outputs[step.id] = (step.title, payload)
+                        yield WorkflowEvent(
+                            type="step_done", step_id=step.id, summary=_first_line(payload)
+                        )
+
             elif isinstance(step, SynthesisStepSpec):
                 yield WorkflowEvent(
                     type="step_start", step_id=step.id, step_title=step.title
@@ -559,7 +599,7 @@ def _stale_specialist_steps(defn: DynamicWorkflowDef) -> list[tuple[str, str]]:
     has `instructions`."""
     stale: list[tuple[str, str]] = []
     for step in defn.steps:
-        if isinstance(step, ApprovalGateStepSpec):
+        if isinstance(step, ApprovalGateStepSpec | ActionStepSpec):
             continue
         if isinstance(step, SynthesisStepSpec) and not step.instructions:
             continue

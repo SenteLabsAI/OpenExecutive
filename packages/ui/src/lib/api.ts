@@ -1138,6 +1138,17 @@ export type DynamicStep =
       description?: string;
       instructions?: string;
       specialist?: string;
+    }
+  | {
+      // Gets something done with tools. `tools` is the exact allowlist the
+      // user approves when they create the workflow.
+      kind: "action";
+      id: string;
+      title: string;
+      description?: string;
+      goal: string;
+      tools: string[];
+      max_tool_calls?: number;
     };
 
 export interface DynamicWorkflowDef {
@@ -1221,6 +1232,35 @@ export async function deleteCustomWorkflow(name: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete custom workflow");
+}
+
+// ---- Tools a workflow action step can use ----
+
+export interface WorkflowToolInfo {
+  name: string;
+  description: string;
+  // true = only reads; null = may change something (can't tell from the name)
+  read_only: boolean | null;
+  source: "mcp" | "builtin";
+}
+
+export async function searchWorkflowTools(q: string): Promise<WorkflowToolInfo[]> {
+  const res = await fetch(
+    `${API_BASE}/workflows/tools/search?q=${encodeURIComponent(q)}`
+  );
+  if (!res.ok) throw new Error("Tool search failed");
+  return (await res.json()).tools;
+}
+
+export async function describeWorkflowTools(
+  names: string[]
+): Promise<WorkflowToolInfo[]> {
+  if (names.length === 0) return [];
+  const res = await fetch(
+    `${API_BASE}/workflows/tools/describe?names=${encodeURIComponent(names.join(","))}`
+  );
+  if (!res.ok) throw new Error("Tool lookup failed");
+  return (await res.json()).tools;
 }
 
 // ---- Conversational workflow designer (/jobs/new wizard) ----
@@ -1363,6 +1403,8 @@ export interface WorkflowEvent {
     | "run_created"
     | "step_start"
     | "step_done"
+    // A running step reports activity (an action step using a tool).
+    | "progress"
     | "result"
     | "artifact"
     | "done"

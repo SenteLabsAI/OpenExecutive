@@ -526,11 +526,12 @@ def to_openai_request(
 
 def _translate_tool_choice(tc: Any) -> Any:
     """``{"type":"tool","name":"X"}`` → ``{"type":"function","function":{"name":"X"}}``.
-    Pass-through for ``{"type":"any"}`` and ``{"type":"auto"}``."""
+    Pass-through for ``{"type":"any"}``, ``{"type":"auto"}`` and
+    ``{"type":"none"}`` (a workflow action step's final, tools-off turn)."""
     if isinstance(tc, dict):
         if tc.get("type") == "tool" and "name" in tc:
             return {"type": "function", "function": {"name": tc["name"]}}
-        if tc.get("type") in ("any", "auto"):
+        if tc.get("type") in ("any", "auto", "none"):
             return tc.get("type")
     return tc
 

@@ -47,6 +47,8 @@ class WorkflowEvent(BaseModel):
 
     - `step_start`: a step has begun. `step_id`, `step_title` set.
     - `step_done`:  a step finished. `step_id`, `summary` (short preview) set.
+    - `progress`:   a running step reports activity (e.g. a workflow action
+                    step calling a tool). `step_id`, `summary` set.
     - `result`:     structured output ready for programmatic consumers
                     (e.g. a chat tool that needs to iterate). `data` is the
                     typed payload; the human-targeted artifact still

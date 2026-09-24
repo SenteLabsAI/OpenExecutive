@@ -60,7 +60,11 @@ DEFINITION_SCHEMA: dict[str, Any] = {
             "type": "array",
             "description": (
                 "Ordered steps. Each has a 'kind': "
-                "'specialist' {id,title,specialist,goal,rag_query?}, "
+                "'specialist' {id,title,specialist,goal,rag_query?} (analysis by an advisor), "
+                "'action' {id,title,goal,tools,max_tool_calls?} (gets something done with "
+                "tools — 'tools' is the exact list of tool names the step may call, e.g. "
+                "'google_workspace__append_table_rows' or 'oe__read_file'; max_tool_calls "
+                "1-50, default 20), "
                 "'approval_gate' {id,title,person_id,question,timeout_hours?,on_timeout?}, "
                 "or 'synthesis' {id,title,instructions?,specialist?}. "
                 "Exactly ONE synthesis step, and it MUST be last. Goals may use "
@@ -147,12 +151,13 @@ def _canonical_token(definition: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
-def _build_def(definition: Any) -> tuple[Any, str | None]:
+async def _build_def(definition: Any) -> tuple[Any, str | None]:
     """Validate shape + rules. Returns (DynamicWorkflowDef, None) or (None, error)."""
     from openexecutive.workflows.dynamic_models import (
         DynamicWorkflowDef,
         validate_definition,
     )
+    from openexecutive.workflows.tool_catalog import validate_tools_available
 
     if not isinstance(definition, dict):
         return None, "definition must be an object"
@@ -160,7 +165,7 @@ def _build_def(definition: Any) -> tuple[Any, str | None]:
         defn = DynamicWorkflowDef.model_validate(definition)
     except ValidationError as exc:
         return None, f"definition shape invalid: {exc.errors()}"
-    errors = validate_definition(defn)
+    errors = validate_definition(defn) or await validate_tools_available(defn)
     if errors:
         return None, "validation failed: " + "; ".join(errors)
     return defn, None
@@ -179,6 +184,8 @@ def _summarize(defn: Any) -> str:
             lines.append(f"{i}. [{step.specialist}] {step.title}")
         elif kind == "approval_gate":
             lines.append(f"{i}. [approval gate → person {step.person_id}] {step.title}")
+        elif kind == "action":
+            lines.append(f"{i}. [action · tools: {', '.join(step.tools)}] {step.title}")
         else:
             lines.append(f"{i}. [synthesis] {step.title}")
     if defn.cadence:
@@ -189,7 +196,7 @@ def _summarize(defn: Any) -> str:
 async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.workflows.dynamic_store import get_definition
 
-    defn, error = _build_def(tool_input.get("definition"))
+    defn, error = await _build_def(tool_input.get("definition"))
     if error is not None:
         return json.dumps({"error": error})
     token = _canonical_token(tool_input["definition"])
@@ -223,7 +230,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     definition = tool_input.get("definition")
     provided_token = str(tool_input.get("confirm_token", ""))
 
-    defn, error = _build_def(definition)
+    defn, error = await _build_def(definition)
     if error is not None:
         return json.dumps({"error": error})
 

@@ -113,6 +113,8 @@ def _role_default(name: str) -> str:
         return "Utility · Company setup interviewer (conversational onboarding)"
     if name == "workflow_designer":
         return "Utility · Workflow designer (conversational New workflow wizard)"
+    if name == "workflow_actor":
+        return "Utility · Workflow actor (runs workflow action steps with tools)"
     from openexecutive.orchestrator.router import SPECIALIST_DESCRIPTIONS
 
     description = SPECIALIST_DESCRIPTIONS.get(name, name)
@@ -127,6 +129,7 @@ _fixture_generator_agent: Any = None
 _engagement_intake_agent: Any = None
 _onboarding_interviewer_agent: Any = None
 _workflow_designer_agent: Any = None
+_workflow_actor_agent: Any = None
 
 
 def _agent_registry() -> dict[str, Any]:
@@ -139,7 +142,8 @@ def _agent_registry() -> dict[str, Any]:
     disambiguation), and the ``fixture_generator`` that authors company
     simulator fixtures, the ``onboarding_interviewer`` that runs the
     conversational company-setup flow, the ``workflow_designer`` behind the
-    conversational New workflow wizard, and the ``research`` virtual agent
+    conversational New workflow wizard, the ``workflow_actor`` that runs
+    workflow action steps with tools, and the ``research`` virtual agent
     whose model + deep-reasoning drive the executive_research fan-out. These
     live here (not in SPECIALIST_REGISTRY) because we want them overridable
     through the Council but NOT callable via the ``consult_specialist`` tool.
@@ -147,7 +151,7 @@ def _agent_registry() -> dict[str, Any]:
     global _executive_proxy, _quality_judge_agent, _utility_fast_agent
     global _research_council_agent, _fixture_generator_agent
     global _engagement_intake_agent, _onboarding_interviewer_agent
-    global _workflow_designer_agent
+    global _workflow_designer_agent, _workflow_actor_agent
     if _executive_proxy is None:
         from openexecutive.agents.executive_proxy import ExecutiveProxy
         _executive_proxy = ExecutiveProxy()
@@ -174,6 +178,9 @@ def _agent_registry() -> dict[str, Any]:
     if _workflow_designer_agent is None:
         from openexecutive.agents.workflow_designer import WorkflowDesignerAgent
         _workflow_designer_agent = WorkflowDesignerAgent()
+    if _workflow_actor_agent is None:
+        from openexecutive.agents.workflow_actor import WorkflowActorAgent
+        _workflow_actor_agent = WorkflowActorAgent()
     from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
 
     return {
@@ -186,6 +193,7 @@ def _agent_registry() -> dict[str, Any]:
         "engagement_intake": _engagement_intake_agent,
         "onboarding_interviewer": _onboarding_interviewer_agent,
         "workflow_designer": _workflow_designer_agent,
+        "workflow_actor": _workflow_actor_agent,
     }
 
 

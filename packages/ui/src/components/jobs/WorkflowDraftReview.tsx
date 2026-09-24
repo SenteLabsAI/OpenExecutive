@@ -9,6 +9,7 @@ import {
   WorkflowDesignerDraft,
   createCustomWorkflow,
 } from "@/lib/api";
+import ToolChips, { mayWrite, toolLabel, useToolInfo } from "./ToolChips";
 
 // Keyed by DYNAMIC_SPECIALISTS so adding a specialist there without a label
 // here fails the build instead of falling back to the raw key.
@@ -67,6 +68,11 @@ function stepLine(step: DynamicStep, people: Person[]): { who: string; what: str
       who: `Sign-off · ${personName(people, step.person_id)}`,
       what: step.question,
     };
+  if (step.kind === "action")
+    return {
+      who: `Action · ${step.tools.length} ${step.tools.length === 1 ? "tool" : "tools"}`,
+      what: step.goal,
+    };
   return {
     who: `Assemble · ${specialistLabel(step.specialist)}`,
     what: step.instructions || "Combines the steps above into the final deliverable.",
@@ -90,6 +96,9 @@ export default function WorkflowDraftReview({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const def = draft.definition;
+  const stepTools = def.steps.flatMap((s) => (s.kind === "action" ? s.tools : []));
+  const toolInfo = useToolInfo(stepTools);
+  const writeTools = Array.from(new Set(stepTools)).filter((t) => mayWrite(t, toolInfo));
 
   async function create() {
     setError(null);
@@ -164,6 +173,11 @@ export default function WorkflowDraftReview({
                 </p>
                 {/* Unclamped: this card is the human check on every goal before it is saved. */}
                 <p className="text-xs text-fg-muted whitespace-pre-wrap break-words">{what}</p>
+                {step.kind === "action" && (
+                  <div className="mt-1.5">
+                    <ToolChips names={step.tools} info={toolInfo} />
+                  </div>
+                )}
               </div>
             </li>
           );
@@ -178,6 +192,18 @@ export default function WorkflowDraftReview({
               <li key={i}>{a}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {writeTools.length > 0 && (
+        <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 text-xs">
+          <p className="text-fg">
+            Creating this workflow lets it use these tools on every run without
+            asking again:
+          </p>
+          <p className="mt-1 text-fg-muted">
+            {writeTools.map((t) => toolLabel(t).label).join(" · ")}
+          </p>
         </div>
       )}
 

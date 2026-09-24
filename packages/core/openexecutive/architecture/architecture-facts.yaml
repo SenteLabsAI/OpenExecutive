@@ -3387,6 +3387,33 @@ workflows:
     `POST /workflows/custom`, which re-validates. "Edit details" hands the
     draft to the advanced editor via `/jobs/new?designer=<id>`.
 
+    Action steps (workflows that act): `ActionStepSpec` {goal, tools,
+    max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
+    of exact names — MCP gateway tools (`server__tool`) and built-ins
+    `oe__read_file`, `oe__message_person`, `oe__create_alert` — and the user's
+    click on Create IS the approval (the review card lists every tool, flags
+    ones that may change things, and names them in a "can use these without
+    asking again" notice). Gateway meta-tools (search_tools / call_tool /
+    load_mcp_server) are forbidden as step tools. `workflows/tool_catalog.py`
+    parses extensible-mcp's Markdown `search_tools` output, resolves exact names
+    (which doubles as the per-session discovery `call_tool` requires), and
+    `validate_tools_available` runs on every save path (custom POST/PUT, chat
+    draft/save, designer drafts). `workflows/action_step.py` runs the
+    `workflow_actor` Council agent: constant cached system block, only the
+    allowlisted tools (sorted), per-run goal/inputs/earlier results in the user
+    turn; every tool_use re-checked against the allowlist; MCP calls go through
+    `MCPGateway.call_tool` (deny-list + Gmail/Calendar/Drive recipient gates);
+    budget enforced, then a tools-off (`tool_choice: none`) final turn; tool
+    errors return as is_error; each call emits a `progress` WorkflowEvent and a
+    `workflow_tool_call` audit row (tool + outcome, never arguments). Output =
+    the agent's report + an "Actions taken" list. `oe__read_file` reads only
+    under WORKFLOW_FILE_DIRS (default workspace-mcp's attachment dir), resolving
+    symlinks/`..` first. Action steps are allowed in cadence workflows. The
+    designer gained a third constant tool, `search_available_tools`, answered
+    inside the same `advance` call (≤4 per turn; tool_use/tool_result pairs are
+    never stored in the transcript). Endpoints: GET /workflows/tools/search?q=
+    and GET /workflows/tools/describe?names=.
+
     Catalog: `Workflow.background` / `WorkflowMeta.background` is True for
     the system-run built-ins (morning_brief, end_of_day_digest,
     executive_reflection, executive_research); /jobs files them under a

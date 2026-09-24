@@ -9,6 +9,7 @@ raised to the route is a fixed string.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -155,7 +156,11 @@ async def test_tools_are_constant_and_sorted(monkeypatch: pytest.MonkeyPatch) ->
     await wd.advance(_opening(), questions_asked=0)
     await wd.advance(_opening(), questions_asked=wd.MAX_QUESTIONS)
     for call in provider.calls:
-        assert [t["name"] for t in call["tools"]] == [wd.ASK_TOOL_NAME, wd.EMIT_TOOL_NAME]
+        assert [t["name"] for t in call["tools"]] == [
+            wd.ASK_TOOL_NAME,
+            wd.EMIT_TOOL_NAME,
+            wd.SEARCH_TOOL_NAME,
+        ]
         assert call["tools"] is wd.TOOLS
 
 
@@ -436,3 +441,128 @@ def test_agent_is_in_council_but_not_consultable() -> None:
 
     assert WORKFLOW_DESIGNER_AGENT_ID in _agent_registry()
     assert WORKFLOW_DESIGNER_AGENT_ID not in SPECIALIST_REGISTRY
+
+
+# --- tool search & action steps ---------------------------------------------
+
+
+def _search_response(query: str, use_id: str = "s1") -> SimpleNamespace:
+    return SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                type="tool_use", id=use_id, name=wd.SEARCH_TOOL_NAME, input={"query": query}
+            )
+        ]
+    )
+
+
+_ACTION_STEPS = [
+    {
+        "kind": "action",
+        "id": "file_bills",
+        "title": "File bills",
+        "goal": "Add each emailed bill to the Bill tracker sheet.",
+        "tools": ["sheets__append_rows"],
+    },
+    {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+]
+
+
+def _fake_catalog(monkeypatch: pytest.MonkeyPatch, known: set[str]) -> list[str]:
+    queries: list[str] = []
+
+    async def _search(query: str) -> list[Any]:
+        queries.append(query)
+        return [
+            wd.tool_catalog.ToolInfo(name=n, description=f"{n} tool", read_only=None)
+            for n in sorted(known)
+        ]
+
+    async def _resolve(names: list[str]) -> dict[str, Any]:
+        return {n: wd.tool_catalog.ToolInfo(name=n, description="") for n in names if n in known}
+
+    monkeypatch.setattr(wd.tool_catalog, "search", _search)
+    monkeypatch.setattr(wd.tool_catalog, "resolve", _resolve)
+    monkeypatch.setattr(wd.tool_catalog, "gateway_available", lambda: True)
+    return queries
+
+
+@pytest.mark.asyncio
+async def test_search_is_answered_within_the_same_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    queries = _fake_catalog(monkeypatch, {"sheets__append_rows"})
+    provider = _ScriptedProvider(
+        [
+            _search_response("append rows to a spreadsheet", "s1"),
+            _tool_response(wd.EMIT_TOOL_NAME, _emit(steps=_ACTION_STEPS)),
+        ]
+    )
+    _install(monkeypatch, provider)
+    result = await wd.advance(_opening("File my emailed bills into the tracker sheet."))
+
+    assert isinstance(result, wd.WorkflowDraft)
+    assert result.definition.steps[0].kind == "action"
+    assert queries == ["append rows to a spreadsheet"]
+    # Second call carries the tool_use/tool_result pair, correctly paired.
+    msgs = provider.calls[1]["messages"]
+    assert msgs[-2]["role"] == "assistant"
+    assert msgs[-2]["content"][0]["type"] == "tool_use" and msgs[-2]["content"][0]["id"] == "s1"
+    tool_result = msgs[-1]["content"][0]
+    assert tool_result["type"] == "tool_result" and tool_result["tool_use_id"] == "s1"
+    assert json.loads(tool_result["content"])["tools"][0]["name"] == "sheets__append_rows"
+    # Tools and tool_choice unchanged while searching (cache prefix intact).
+    assert all(c["tools"] is wd.TOOLS for c in provider.calls)
+    assert all(c["tool_choice"] == {"type": "any"} for c in provider.calls)
+
+
+@pytest.mark.asyncio
+async def test_search_budget_per_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    queries = _fake_catalog(monkeypatch, set())
+    provider = _ScriptedProvider(
+        [_search_response(f"q{i}", f"s{i}") for i in range(wd.MAX_SEARCHES_PER_TURN + 1)]
+        + [_tool_response(wd.ASK_TOOL_NAME, {"question": "Which sheet?"})]
+    )
+    _install(monkeypatch, provider)
+    result = await wd.advance(_opening())
+    assert isinstance(result, wd.DesignerQuestion)
+    assert len(queries) == wd.MAX_SEARCHES_PER_TURN  # the extra search was refused
+    refused = provider.calls[-1]["messages"][-1]["content"][0]["content"]
+    assert "search limit" in refused
+
+
+@pytest.mark.asyncio
+async def test_endless_searching_is_a_fixed_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_catalog(monkeypatch, set())
+    provider = _ScriptedProvider(
+        [_search_response(f"q{i}", f"s{i}") for i in range(wd.MAX_SEARCHES_PER_TURN + 2)]
+    )
+    _install(monkeypatch, provider)
+    with pytest.raises(wd.WorkflowDesignerError):
+        await wd.advance(_opening())
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_in_draft_gets_a_repair_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_catalog(monkeypatch, {"sheets__append_rows"})
+    hallucinated = [{**_ACTION_STEPS[0], "tools": ["sheets__magic_fill"]}, _ACTION_STEPS[1]]
+    provider = _ScriptedProvider(
+        [
+            _tool_response(wd.EMIT_TOOL_NAME, _emit(steps=hallucinated)),
+            _tool_response(wd.EMIT_TOOL_NAME, _emit(steps=_ACTION_STEPS)),
+        ]
+    )
+    _install(monkeypatch, provider)
+    result = await wd.advance(_opening())
+    assert isinstance(result, wd.WorkflowDraft)
+    assert "sheets__magic_fill" in provider.calls[1]["messages"][-1]["content"]
+
+
+def test_context_block_reports_gateway_and_builtins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("openexecutive.people.store.list_people", lambda: [])
+    monkeypatch.setattr(
+        "openexecutive.workflows.dynamic_store.list_definitions", lambda active_only=True: []
+    )
+    monkeypatch.setattr(wd.tool_catalog, "gateway_available", lambda: False)
+    block = wd.build_context_block()
+    assert "NOT running" in block and "oe__read_file" in block
+    monkeypatch.setattr(wd.tool_catalog, "gateway_available", lambda: True)
+    assert "connected" in wd.build_context_block()

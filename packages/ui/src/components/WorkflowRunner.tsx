@@ -71,6 +71,15 @@ export default function WorkflowRunner({
       );
       return;
     }
+    if (evt.type === "progress" && evt.step_id) {
+      // A running action step reports each tool it uses; show the latest.
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.def.id === evt.step_id ? { ...s, summary: evt.summary } : s
+        )
+      );
+      return;
+    }
     if (evt.type === "step_done" && evt.step_id) {
       const isSkipped =
         typeof evt.summary === "string" && evt.summary.startsWith("Skipped");

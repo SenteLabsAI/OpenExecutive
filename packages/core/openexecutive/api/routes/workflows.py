@@ -45,6 +45,9 @@ from openexecutive.workflows.persistence import (
     initialize_runs_db,
     list_runs,
 )
+from openexecutive.workflows.tool_catalog import resolve as resolve_tools_catalog
+from openexecutive.workflows.tool_catalog import search as search_tools_catalog
+from openexecutive.workflows.tool_catalog import validate_tools_available
 from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
 router = APIRouter()
@@ -94,6 +97,40 @@ async def delete_workflow_run(run_id: str) -> dict[str, str]:
 # -----------------------------------------------------------------------------
 
 
+_TOOL_SEARCH_MAX_QUERY = 200
+
+
+@router.get("/workflows/tools/search")
+async def search_workflow_tools(q: str = "") -> dict[str, Any]:
+    """Tools an action step can use that match ``q`` (built-ins + MCP gateway).
+
+    Backs the advanced editor's tool picker. Literal path, declared before
+    ``/workflows/{name}``.
+    """
+    query = q.strip()[:_TOOL_SEARCH_MAX_QUERY]
+    if not query:
+        return {"tools": []}
+    return {"tools": [t.as_dict() for t in await search_tools_catalog(query)]}
+
+
+_TOOL_DESCRIBE_MAX_NAMES = 64
+
+
+@router.get("/workflows/tools/describe")
+async def describe_workflow_tools(names: str = "") -> dict[str, Any]:
+    """Exact-name lookup for a comma-separated list of tool names.
+
+    Lets the review card and the advanced editor label each approved tool
+    (description, reads-only) — the definition itself only stores names.
+    Unknown names are simply absent from the result.
+    """
+    wanted = [n.strip() for n in names.split(",") if n.strip()][:_TOOL_DESCRIBE_MAX_NAMES]
+    if not wanted:
+        return {"tools": []}
+    found = await resolve_tools_catalog(wanted)
+    return {"tools": [found[n].as_dict() for n in wanted if n in found]}
+
+
 @router.get("/workflows/custom")
 async def list_custom_workflows() -> dict[str, Any]:
     """All dynamic definitions (active and inactive) for the builder UI."""
@@ -108,7 +145,7 @@ async def create_custom_workflow(request: Request) -> dict[str, Any]:
         raise HTTPException(
             status_code=409, detail=f"A custom workflow named {defn.name!r} already exists"
         )
-    errors = validate_definition(defn)
+    errors = validate_definition(defn) or await validate_tools_available(defn)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     stored = upsert_definition(defn)
@@ -133,7 +170,7 @@ async def update_custom_workflow(name: str, request: Request) -> dict[str, Any]:
         raise HTTPException(
             status_code=422, detail="definition name does not match the path name"
         )
-    errors = validate_definition(defn)
+    errors = validate_definition(defn) or await validate_tools_available(defn)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     stored = upsert_definition(defn)

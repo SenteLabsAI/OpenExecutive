@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
+import ToolPicker from "@/components/jobs/ToolPicker";
 import WorkflowWizard from "@/components/jobs/WorkflowWizard";
 import {
   DYNAMIC_SPECIALISTS,
@@ -46,6 +47,8 @@ function newStep(kind: StepKind, idx: number): DynamicStep {
       timeout_hours: 48,
       on_timeout: "escalate",
     };
+  if (kind === "action")
+    return { kind, id, title: "", goal: "", tools: [], max_tool_calls: 20 };
   return { kind, id, title: "Assemble", instructions: "", specialist: "cso" };
 }
 
@@ -63,12 +66,15 @@ const INPUT_FIELDS_SCHEMA =
 function stepsSchema(people: Person[]): string {
   const roster = people.map((p) => `${p.id} = ${p.full_name} (${p.role})`).join("; ");
   return (
-    "JSON array of step objects, run in order. Three kinds: " +
+    "JSON array of step objects, run in order. Four kinds: " +
     '{"kind": "specialist", "id": string, "title": string, "specialist": one of [' +
     DYNAMIC_SPECIALISTS.join(", ") +
     '], "goal": string (may use {field} placeholders), "rag_query"?: string} | ' +
     '{"kind": "approval_gate", "id": string, "title": string, "person_id": number, ' +
     '"question": string, "timeout_hours"?: number, "on_timeout"?: "escalate" | "auto_proceed" | "fail"} | ' +
+    '{"kind": "action", "id": string, "title": string, "goal": string (what to get done with tools), ' +
+    '"tools": string[] (exact tool names — keep the ones already chosen; new ones must come from the tool search), ' +
+    '"max_tool_calls"?: number (1-50)} | ' +
     '{"kind": "synthesis", "id": string, "title": string, "specialist"?: string, "instructions"?: string}. ' +
     "The LAST step must be a synthesis step. " +
     (roster ? `person_id must be one of: ${roster}.` : "No people on the roster yet.")
@@ -106,6 +112,7 @@ function coerceInputFields(raw: unknown): DynamicInputField[] | null {
 
 const STEP_KINDS: ReadonlySet<string> = new Set([
   "specialist",
+  "action",
   "approval_gate",
   "synthesis",
 ]);
@@ -557,6 +564,13 @@ function BuilderInner() {
             <button
               type="button"
               className="text-xs text-indigo-400 hover:text-indigo-300"
+              onClick={() => setSteps((ss) => [...ss, newStep("action", ss.length)])}
+            >
+              + Action
+            </button>
+            <button
+              type="button"
+              className="text-xs text-indigo-400 hover:text-indigo-300"
               onClick={() =>
                 setSteps((ss) => [...ss, newStep("approval_gate", ss.length)])
               }
@@ -566,8 +580,10 @@ function BuilderInner() {
           </div>
         </div>
         <p className="text-xs text-fg-muted">
-          Steps run in order. The last step must be a <b>synthesis</b> step that
-          assembles the artifact. Place any approval gate just before it.
+          Steps run in order. <b>Specialist</b> steps analyze and write;{" "}
+          <b>action</b> steps get things done with the tools you choose. The last
+          step must be a <b>synthesis</b> step that assembles the result. Place any
+          approval gate just before it.
         </p>
         {steps.map((s, i) => (
           <StepEditor
@@ -752,6 +768,43 @@ function StepEditor({
               className={inputCls}
               value={step.rag_query ?? ""}
               onChange={(e) => onChange({ rag_query: e.target.value })}
+            />
+          </div>
+        </>
+      )}
+
+      {step.kind === "action" && (
+        <>
+          <div>
+            <label className={labelCls}>
+              Goal — what to get done, and where (use {"{field}"} placeholders)
+            </label>
+            <textarea
+              className={`${inputCls} min-h-[80px]`}
+              value={step.goal}
+              placeholder="e.g. Find today's emailed bills, read each PDF, and add a row per bill (vendor, amount, due date) to the Bill tracker sheet. Skip bills already listed."
+              onChange={(e) => onChange({ goal: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>
+              Tools this step may use — saving the workflow approves them
+            </label>
+            <ToolPicker
+              value={step.tools}
+              onChange={(tools) => onChange({ tools })}
+              inputCls={inputCls}
+            />
+          </div>
+          <div className="sm:w-48">
+            <label className={labelCls}>Max tool calls per run</label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              className={inputCls}
+              value={step.max_tool_calls ?? 20}
+              onChange={(e) => onChange({ max_tool_calls: Number(e.target.value) })}
             />
           </div>
         </>

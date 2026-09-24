@@ -50,6 +50,17 @@ _MAX_STEPS = 12
 _MAX_INPUT_FIELDS = 16
 _MAX_GOAL_CHARS = 4000
 
+# Action steps: the tool allowlist IS the user's approval, so it is kept short
+# enough to read on the review card. Names are the exact tool names the engine
+# will call — MCP tools are ``server__tool``; built-ins are ``oe__*``.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_MAX_STEP_TOOLS = 16
+MAX_TOOL_CALLS_CAP = 50
+# The gateway's own meta-tools. A step naming one of these could reach every
+# downstream tool (call_tool) or attach a new server (load_mcp_server), which
+# would make the per-step allowlist meaningless.
+FORBIDDEN_STEP_TOOLS = frozenset({"search_tools", "call_tool", "load_mcp_server"})
+
 
 class InputFieldSpec(BaseModel):
     """One free-text input field on a dynamic workflow's form.
@@ -139,8 +150,26 @@ class SynthesisStepSpec(BaseModel):
     specialist: str = "cso"
 
 
+class ActionStepSpec(BaseModel):
+    """Get something done with tools (send, update, file, look up…).
+
+    An agent works toward ``goal`` using ONLY the tools named in ``tools`` —
+    the allowlist the user approved when they created the workflow — for at
+    most ``max_tool_calls`` calls. Its report of what it did becomes the
+    step's output. See ``workflows/action_step.py``.
+    """
+
+    kind: Literal["action"] = "action"
+    id: str
+    title: str
+    description: str = ""
+    goal: str
+    tools: list[str] = Field(default_factory=list)
+    max_tool_calls: int = 20
+
+
 StepSpec = Annotated[
-    SpecialistStepSpec | ApprovalGateStepSpec | SynthesisStepSpec,
+    SpecialistStepSpec | ApprovalGateStepSpec | SynthesisStepSpec | ActionStepSpec,
     Field(discriminator="kind"),
 ]
 
@@ -200,6 +229,31 @@ def _person_exists(person_id: int) -> bool:
         return person is not None and not getattr(person, "archived", False)
     except Exception:
         return False
+
+
+def _check_action_tools(step: ActionStepSpec) -> list[str]:
+    """Shape rules for an action step's tool allowlist (existence is async —
+    see ``tool_catalog.validate_tools_available``)."""
+    errors: list[str] = []
+    if not step.tools:
+        errors.append(f"action step {step.id!r} must name at least one tool")
+    if len(step.tools) > _MAX_STEP_TOOLS:
+        errors.append(f"action step {step.id!r} names too many tools (max {_MAX_STEP_TOOLS})")
+    if len(set(step.tools)) != len(step.tools):
+        errors.append(f"action step {step.id!r} lists a tool more than once")
+    for tool in step.tools:
+        if not _TOOL_NAME_RE.match(tool):
+            errors.append(f"action step {step.id!r} has an invalid tool name {tool!r}")
+        elif tool in FORBIDDEN_STEP_TOOLS:
+            errors.append(
+                f"action step {step.id!r} may not use {tool!r} — name the specific "
+                "tools the step needs instead"
+            )
+    if not 1 <= step.max_tool_calls <= MAX_TOOL_CALLS_CAP:
+        errors.append(
+            f"action step {step.id!r} max_tool_calls must be 1-{MAX_TOOL_CALLS_CAP}"
+        )
+    return errors
 
 
 def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
@@ -300,10 +354,21 @@ def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
             if step.instructions:
                 errors.extend(_check_placeholders(step.id, step.instructions, field_names))
 
+        elif isinstance(step, ActionStepSpec):
+            specialist_step_count += 1
+            if not step.goal.strip():
+                errors.append(f"step {step.id!r} must have a goal")
+            if len(step.goal) > _MAX_GOAL_CHARS:
+                errors.append(f"step {step.id!r} goal exceeds {_MAX_GOAL_CHARS} chars")
+            errors.extend(_check_placeholders(step.id, step.goal, field_names))
+            errors.extend(_check_action_tools(step))
+
     if synthesis_count != 1:
         errors.append("workflow must have exactly one synthesis step (and it must be last)")
     if specialist_step_count < 1:
-        errors.append("workflow must have at least one specialist step before synthesis")
+        errors.append(
+            "workflow must have at least one specialist or action step before synthesis"
+        )
 
     # --- cadence ---
     if defn.cadence:
