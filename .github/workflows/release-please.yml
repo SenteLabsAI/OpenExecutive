@@ -10,12 +10,14 @@
 # Merges that are only chore/docs/test/refactor do not start a release on
 # their own; they ride along with the next feat or fix.
 #
-# To pick a bigger version without calling anything breaking, end a PR
-# description with a `Release-As: X.Y.Z` line; it lands on main as a commit
-# footer and sets the next release only. To correct a merged PR's message
-# (e.g. drop a wrong `!`), add a BEGIN_COMMIT_OVERRIDE / END_COMMIT_OVERRIDE
-# block holding the corrected message to that PR's description; it is read
-# on the next push to main.
+# To pick a bigger version without calling anything breaking, end one PR's
+# description with a BEGIN_COMMIT_OVERRIDE / END_COMMIT_OVERRIDE block holding
+# the PR title, a blank line, and `Release-As: X.Y.Z`; release-please reads it
+# in place of the squash message and applies it to the next release only. A
+# bare `Release-As:` line in the description is not enough: footers count only
+# in the commit's final paragraph, and text appended on merge pushes it out.
+# The same block with a corrected message fixes a merged PR (e.g. drops a
+# wrong `!`). Either is read on the next push to main.
 #
 # Merging the release PR makes this workflow tag the merge commit `vX.Y.Z`
 # and create the GitHub Release from the changelog entry. The tag push then
