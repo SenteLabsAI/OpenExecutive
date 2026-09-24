@@ -363,3 +363,18 @@ def test_delete_of_a_never_persisted_chat_reports_success(
     assert client.delete("/sessions/live-only", headers=SABIN).status_code == 204
     assert "live-only" not in chat_route._sessions
 
+
+def test_orphaned_messages_are_not_inherited_by_whoever_claims_the_id(
+    client: TestClient, db: Path, people: dict[str, int]
+) -> None:
+    """Messages left under an id with no session row (a delete racing a
+    stream, a reset mid-turn) must not become the next claimant's history."""
+    session_store.save_message("gone-chat", "user", "SABIN'S SECRET")
+
+    assert _chat(client, RIYA, "gone-chat") == 200
+
+    assert "SABIN'S SECRET" not in repr(chat_route._sessions["gone-chat"].conversation_history)
+    resp = client.get("/sessions/gone-chat/messages", headers=RIYA)
+    assert resp.status_code == 200
+    assert "SABIN'S SECRET" not in resp.text
+

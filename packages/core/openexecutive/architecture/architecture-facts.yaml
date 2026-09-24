@@ -1538,7 +1538,9 @@ attunement:
     rows without clearing `_sessions`, and the stale transcript must not be
     handed to the next claimant. A turn whose Session was deleted mid-stream
     (no longer the cached object) skips persisting, so no orphan messages are
-    left under the deleted id.
+    left under the deleted id. Claiming an unused bare id also deletes any
+    messages already stored under it (orphans from a delete/reset race or from
+    before this check), so they are never loaded as the claimant's history.
     DELETE also evicts the in-memory Session so the id cannot resume its history.
     Known gaps, not covered: GET /audit/sessions/{id} is not owner-scoped, and
     GET /debug/last-turn returns the last turn's session id and events to any

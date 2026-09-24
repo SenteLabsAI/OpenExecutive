@@ -679,8 +679,9 @@ async def _run_chat_turn(
             # Someone else's chat, or an ownerless one nobody here can vouch
             # for (its starter was lost to a restart). Continue in a fresh
             # chat: that neither fails every send nor answers differently for
-            # "exists but not yours" than for an unknown id, so guessable ids
-            # (`slack:dm:<user id>`) can't be probed for which chats exist.
+            # "exists but not yours" than for an unknown namespaced id, so the
+            # guessable ones (`slack:dm:<user id>`) can't be probed for which
+            # chats exist. (A bare web id is a uuid4, so not guessable.)
             logger.warning("chat.session_refused access=%s session_id=%s", access, requested_id)
             requested_id, access = None, "missing"
         elif access == "missing":
@@ -696,6 +697,14 @@ async def _run_chat_turn(
             # history. Start a fresh chat instead.
             logger.warning("chat.session_id_reserved session_id=%s", requested_id)
             requested_id = None
+        if access == "missing" and requested_id:
+            # Claiming an unused id. Any messages already stored under it are
+            # orphans (a delete that raced a streaming turn, a reset mid-turn,
+            # or rows left before this check existed): clear them so this
+            # caller neither loads them as history nor becomes their owner.
+            from openexecutive.memory.session_store import delete_session
+
+            delete_session(requested_id)
     # Only the chat's starter binds an ownerless row to themselves. Anyone else
     # allowed in (the principal) must not take it over just by continuing it.
     bind_owner = requested_id is None or (
