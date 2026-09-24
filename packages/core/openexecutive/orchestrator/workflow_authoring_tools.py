@@ -65,7 +65,8 @@ DEFINITION_SCHEMA: dict[str, Any] = {
             "type": "array",
             "description": (
                 "Ordered steps. Each has a 'kind': "
-                "'specialist' {id,title,specialist,goal,rag_query?} (analysis by an advisor), "
+                "'specialist' {id,title,specialist,goal,rag_query?,playbook?} (analysis by an "
+                "advisor; playbook = name of an existing playbook the step follows), "
                 "'action' {id,title,goal,tools,max_tool_calls?} (gets something done with "
                 "tools — 'tools' is the exact list of tool names the step may call, e.g. "
                 "'google_workspace__append_table_rows' or 'oe__read_file'; max_tool_calls "

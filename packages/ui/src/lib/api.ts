@@ -736,6 +736,8 @@ export interface SkillMeta {
   customized: boolean;
   /** A built-in hidden for this company (only listed with includeHidden). */
   hidden: boolean;
+  /** Runnable workflows whose steps follow this playbook. */
+  used_by: { name: string; title: string }[];
 }
 
 export interface SkillDetail extends SkillMeta {
@@ -1187,6 +1189,8 @@ export interface WorkflowMeta {
   // Run by the system itself (scheduler, onboarding, reflection); the catalog
   // files these under "System".
   background?: boolean;
+  /** Playbooks (skills) this workflow's steps follow. */
+  playbooks?: string[];
 }
 
 // ---- User-created (dynamic) workflows ----
@@ -1208,6 +1212,8 @@ export type DynamicStep =
       specialist: string;
       goal: string;
       rag_query?: string;
+      /** Name of a playbook (skill) the step follows. */
+      playbook?: string;
     }
   | {
       kind: "approval_gate";

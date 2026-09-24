@@ -18,6 +18,7 @@ from openexecutive.knowledge.skills_repo import (
     SkillNotFoundError,
 )
 from openexecutive.knowledge.store import ChromaDBStore
+from openexecutive.workflows.playbooks import playbook_users
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ SKILL_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Search the skills library for reusable procedures relevant to the current task. "
             "Returns up to N matches with name, description, and when_to_use — but NOT the body. "
+            "A hit's `workflows` lists runnable workflows that follow it: when the user "
+            "wants that full deliverable, offer or run the workflow instead. "
             "Use this when you suspect a task is something you've codified before, or when a "
             "user request looks repeatable. Follow up with `load_skill` to read the chosen procedure."
         ),
@@ -150,6 +153,9 @@ async def handle_search_skills(input: dict[str, Any]) -> str:
     if not query:
         return json.dumps({"error": "missing required field: query"})
     hits = _search_skills(query=query, store=_get_store(), n_results=n)
+    users = playbook_users()
+    for hit in hits:
+        hit["workflows"] = [u.name for u in users.get(hit["name"], [])]
     return json.dumps({"results": hits}, ensure_ascii=False)
 
 

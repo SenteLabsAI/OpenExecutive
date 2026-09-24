@@ -96,6 +96,13 @@ class SpecialistStepSpec(BaseModel):
         default="",
         description="Optional retrieval query; when set, RAG chunks are fetched and passed in.",
     )
+    playbook: str = Field(
+        default="",
+        description=(
+            "Optional name of an existing playbook (skill) the step follows — its "
+            "steps are appended to the goal. Leave empty unless one clearly fits."
+        ),
+    )
 
 
 class ApprovalGateStepSpec(BaseModel):
@@ -257,6 +264,18 @@ def _check_action_tools(step: ActionStepSpec) -> list[str]:
     return errors
 
 
+def _playbook_exists(name: str) -> bool:
+    """True when `name` is a playbook in effect (hidden built-ins don't count)."""
+    from openexecutive.knowledge.skills import SkillParseError
+    from openexecutive.knowledge.skills_repo import SkillNotFoundError, get_skill
+
+    try:
+        get_skill(name)
+    except (SkillNotFoundError, SkillParseError):
+        return False
+    return True
+
+
 def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
     """Return a list of human-readable validation errors (empty == valid).
 
@@ -330,6 +349,11 @@ def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
             errors.extend(_check_placeholders(step.id, step.goal, field_names))
             if step.rag_query:
                 errors.extend(_check_placeholders(step.id, step.rag_query, field_names))
+            if step.playbook and not _playbook_exists(step.playbook):
+                errors.append(
+                    f"step {step.id!r} names unknown playbook {step.playbook!r} "
+                    "(see the Playbooks tab for names)"
+                )
 
         elif isinstance(step, ApprovalGateStepSpec):
             if not step.question.strip():

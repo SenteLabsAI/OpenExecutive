@@ -65,6 +65,14 @@ function groupByCategory(items: SkillMeta[]): Record<string, SkillMeta[]> {
   }, {});
 }
 
+/** "The MBR workflow" / "The Board prep and MBR workflows", or "" when none follow it. */
+function workflowList(skill: SkillMeta): string {
+  const titles = skill.used_by.map((w) => w.title);
+  if (titles.length === 0) return "";
+  if (titles.length === 1) return `The ${titles[0]} workflow`;
+  return `The ${titles.slice(0, -1).join(", ")} and ${titles[titles.length - 1]} workflows`;
+}
+
 function tryInChatHref(name: string): string {
   const draft = `Use the "${name}" playbook to `;
   return `/?new=1&draft=${encodeURIComponent(draft)}`;
@@ -72,8 +80,11 @@ function tryInChatHref(name: string): string {
 
 export default function PlaybooksBrowser({
   onCountChange,
+  initialPlaybook,
 }: {
   onCountChange?: (count: number) => void;
+  /** Playbook to open on mount (from a `?playbook=` link). */
+  initialPlaybook?: string;
 }) {
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [showHidden, setShowHidden] = useState(false);
@@ -111,6 +122,14 @@ export default function PlaybooksBrowser({
     load();
   }, [load]);
 
+  const openedInitialRef = useRef(false);
+  useEffect(() => {
+    if (!initialPlaybook || openedInitialRef.current) return;
+    openedInitialRef.current = true;
+    void select(initialPlaybook);
+    // select() only reads setters; runs once, for the link's playbook.
+  }, [initialPlaybook]);
+
   async function select(name: string) {
     setError(null);
     setNotice(null);
@@ -143,11 +162,15 @@ export default function PlaybooksBrowser({
   }
 
   function handleDelete(skill: SkillDetail) {
+    const workflows = workflowList(skill);
     const prompt = skill.customized
-      ? `Revert “${skill.name}” to the built-in version? Your changes will be lost.`
+      ? `Revert “${skill.name}” to the built-in version? Your changes will be lost.` +
+        (workflows ? ` ${workflows} will follow the built-in again.` : "")
       : skill.source === "builtin"
-        ? `Hide “${skill.name}”? The Executive will stop using it. You can restore it from “Show hidden”.`
-        : `Delete the playbook “${skill.name}”? This cannot be undone.`;
+        ? `Hide “${skill.name}”? The Executive will stop using it. You can restore it from “Show hidden”.` +
+          (workflows ? ` ${workflows} will run without it until you do.` : "")
+        : `Delete the playbook “${skill.name}”? This cannot be undone.` +
+          (workflows ? ` ${workflows} will run without it.` : "");
     if (!confirm(prompt)) return;
     void run(async () => {
       const outcome = await deleteSkill(skill.name);
@@ -478,6 +501,21 @@ function PlaybookView({
           <h2 className="text-base font-semibold text-fg mt-1 break-words">{skill.name}</h2>
           <p className="text-sm text-fg-muted mt-1">{skill.description}</p>
           <p className="text-xs text-fg-muted italic mt-1">When to use: {skill.when_to_use}</p>
+          {skill.used_by.length > 0 && (
+            <p className="text-xs text-fg-muted mt-1">
+              Followed by{" "}
+              {skill.used_by.map((w, i) => (
+                <span key={w.name}>
+                  {i > 0 && ", "}
+                  <Link href={`/jobs/${encodeURIComponent(w.name)}`} className="text-indigo-400 hover:underline">
+                    {w.title}
+                  </Link>
+                </span>
+              ))}
+              {" "}— {skill.used_by.length === 1 ? "that workflow uses" : "those workflows use"} this
+              playbook{skill.source === "builtin" ? " (or your customized copy)" : ""}.
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2 flex-shrink-0">
           {skill.hidden ? (

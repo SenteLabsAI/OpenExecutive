@@ -178,3 +178,24 @@ def test_put_body_name_mismatch_400(client: TestClient) -> None:
         json={**create_payload, "name": "different"},
     )
     assert resp.status_code == 400
+
+
+def test_list_and_detail_report_workflows_that_follow_a_playbook(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows.playbooks import PlaybookUser
+
+    monkeypatch.setattr(
+        skills_route,
+        "playbook_users",
+        lambda: {
+            "competitive-teardown": [
+                PlaybookUser(name="competitive_teardown", title="Competitive teardown")
+            ]
+        },
+    )
+    expected = [{"name": "competitive_teardown", "title": "Competitive teardown"}]
+    listed = {s["name"]: s for s in client.get("/skills").json()["skills"]}
+    assert listed["competitive-teardown"]["used_by"] == expected
+    detail = client.get("/skills/competitive-teardown").json()
+    assert detail["used_by"] == expected

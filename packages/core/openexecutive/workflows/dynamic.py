@@ -60,6 +60,7 @@ from openexecutive.workflows.dynamic_models import (
     SpecialistStepSpec,
     SynthesisStepSpec,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 from openexecutive.workflows.tool_catalog import unavailable_step_tools
 from openexecutive.workflows.wait_for_human import (
     CONTINUE_DECISIONS,
@@ -202,6 +203,14 @@ class DynamicWorkflow(Workflow):
     def meta(self) -> WorkflowMeta:
         m = super().meta()
         return m.model_copy(update={"is_custom": True})
+
+    def followed_playbooks(self) -> list[str]:
+        names = [
+            s.playbook
+            for s in self._defn.steps
+            if isinstance(s, SpecialistStepSpec) and s.playbook
+        ]
+        return list(dict.fromkeys(names))
 
     def sample_inputs(self) -> dict[str, Any] | None:
         if not self._defn.input_fields:
@@ -565,6 +574,10 @@ class DynamicWorkflow(Workflow):
                 )
                 try:
                     goal = _render(step.goal, values)
+                    if step.playbook:
+                        goal += playbook_clause(
+                            load_playbook(step.playbook), "Follow this playbook"
+                        )
                     rag = ""
                     if step.rag_query:
                         rag = retrieve(

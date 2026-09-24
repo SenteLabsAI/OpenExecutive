@@ -1,0 +1,11 @@
+id: playbook_routing_001
+domain: workflows
+description: "Asked for a finished MBR packet, the Executive finds the playbook, sees the mbr workflow follows it, and runs or offers that workflow instead of hand-writing the packet"
+query: "I need the full monthly business review packet for September to send to the leadership team. Can you put it together?"
+expected_tool_calls:
+  - search_skills
+quality_criteria:
+  checks_playbooks_first: true
+  runs_or_offers_the_mbr_workflow: true
+  does_not_hand_write_the_whole_packet_in_chat: true
+  asks_for_or_uses_the_needed_inputs: true

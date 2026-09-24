@@ -23,6 +23,7 @@ from openexecutive.workflows.base import (
     WorkflowSection,
     WorkflowStepDef,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
 # Map of human-friendly function names → specialist registry keys.
 _FUNCTION_TO_SPECIALIST = {
@@ -117,6 +118,7 @@ class ExecSearchBriefWorkflow(Workflow):
     )
     section = WorkflowSection.PEOPLE
     estimated_minutes = 4
+    playbooks = ("role-scorecard",)
 
     def input_model(self) -> type[BaseModel]:
         return ExecSearchBriefInput
@@ -179,6 +181,7 @@ class ExecSearchBriefWorkflow(Workflow):
 
         yield WorkflowEvent(type="step_start", step_id="context", step_title="Load context")
         ctx.profile = load_or_create_profile()
+        ctx.playbook = load_playbook("role-scorecard")
         ctx.rag = retrieve(
             query=f"executive hiring scorecard interview {ctx.inputs.role_title}",
             specialist_name="chro",
@@ -283,6 +286,7 @@ class _ESCtx:
     def __init__(self, inputs: ExecSearchBriefInput) -> None:
         self.inputs = inputs
         self.profile: CompanyProfile | None = None
+        self.playbook: str = ""
         self.rag: str = ""
         self.profile_section: str = ""
         self.function_view: str = ""
@@ -347,6 +351,9 @@ def _build_profile_prompt(ctx: _ESCtx) -> str:
         "For each: how we score 1-5 from the loop.\n\n"
         "Discipline: must-haves and nice-to-haves must be drawn from the "
         "year-one outcomes, not from a generic role template."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Follow this role-scorecard playbook for the role profile and scorecard",
     )
 
 

@@ -174,3 +174,24 @@ def test_missing_required_fields(isolated: None) -> None:
 
     result = json.loads(_run(SKILL_TOOL_HANDLERS["load_skill"]({})))
     assert "error" in result
+
+
+def test_search_hits_name_the_workflows_that_follow_them(
+    isolated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows.playbooks import PlaybookUser
+
+    _run(SKILL_TOOL_HANDLERS["create_skill"]({
+        "name": "month-review",
+        "description": "Monthly business review",
+        "when_to_use": "month-end review",
+        "category": "finance",
+        "body": "steps",
+    }))
+    monkeypatch.setattr(
+        skills_tools,
+        "playbook_users",
+        lambda: {"month-review": [PlaybookUser(name="mbr", title="MBR")]},
+    )
+    hits = json.loads(_run(SKILL_TOOL_HANDLERS["search_skills"]({"query": "monthly review"})))
+    assert hits["results"][0]["workflows"] == ["mbr"]
