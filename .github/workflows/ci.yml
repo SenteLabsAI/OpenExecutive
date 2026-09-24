@@ -58,7 +58,7 @@ jobs:
 
       # pytest-xdist: one worker per core (4 on ubuntu-latest). `loadfile` keeps
       # each test module on a single worker, so module-level state behaves as in
-      # a serial run; tests/conftest.py gives each worker its own default DB.
+      # a serial run.
       - name: Run unit tests
         run: cd packages/core && uv run pytest tests/unit/ -n auto --dist loadfile --tb=short
 
