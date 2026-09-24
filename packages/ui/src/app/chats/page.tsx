@@ -20,7 +20,7 @@ type ChannelFilter = SessionChannel | "all";
 // Slack, Telegram and Discord.
 export default function ChatsPage() {
   const router = useRouter();
-  const { sessions, loaded, refresh, remove } = useSessions();
+  const { sessions, loaded, error, refresh, remove } = useSessions();
   const [channel, setChannel] = useState<ChannelFilter>("all");
   const [query, setQuery] = useState("");
 
@@ -35,8 +35,14 @@ export default function ChatsPage() {
     ...CHANNEL_ORDER.filter((c) => c === "web" || (counts[c] ?? 0) > 0),
   ];
   // Deleting a channel's last chat removes its tab; fall back to "All" rather
-  // than leave an invisible filter selected over an empty list.
-  const activeChannel: ChannelFilter = tabs.includes(channel) ? channel : "all";
+  // than leave an invisible filter selected over an empty list. The derived
+  // value covers this render; the effect makes it stick, so a later refresh
+  // that brings the channel back doesn't silently re-select it.
+  const channelShown = tabs.includes(channel);
+  const activeChannel: ChannelFilter = channelShown ? channel : "all";
+  useEffect(() => {
+    if (!channelShown) setChannel("all");
+  }, [channelShown]);
   const visible = useMemo(
     () => filterSessions(sessions, { channel: activeChannel, query }),
     [sessions, activeChannel, query],
@@ -100,6 +106,17 @@ export default function ChatsPage() {
 
           {!loaded ? (
             <p className="px-3 py-6 text-sm text-fg-muted">Loading conversations…</p>
+          ) : error && sessions.length === 0 ? (
+            <p className="px-3 py-6 text-sm text-fg-muted">
+              Couldn&apos;t load your conversations.{" "}
+              <button
+                type="button"
+                onClick={refresh}
+                className="text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer"
+              >
+                Try again
+              </button>
+            </p>
           ) : sessions.length === 0 ? (
             <p className="px-3 py-6 text-sm text-fg-muted">
               No conversations yet. Start one with New chat.

@@ -28,7 +28,7 @@ export default function HomePage() {
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const activeTurnIdRef = useRef<string | null>(null);
   const [isTurnInFlight, setIsTurnInFlight] = useState(false);
-  const { refresh: refreshSessions } = useSessions();
+  const { sessions, loaded: sessionsLoaded, refresh: refreshSessions } = useSessions();
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -50,9 +50,17 @@ export default function HomePage() {
       .catch(() => setHealth({ status: "error", company_profile_loaded: false }));
   }, []);
 
+  // Bumped by every navigation handler below. A session load that resolves
+  // after the user has already moved on (new chat, briefing, a hand-off, or
+  // another session) sees a stale generation and is dropped instead of
+  // yanking them into the old chat mid-turn.
+  const selectGenRef = useRef(0);
+
   const handleSelectSession = useCallback(async (sessionId: string) => {
+    const gen = ++selectGenRef.current;
     try {
       const msgs = await getSessionMessages(sessionId);
+      if (gen !== selectGenRef.current) return;
       setActiveSessionId(sessionId);
       setActiveMessages(msgs);
       setDebugEvents([]);
@@ -66,6 +74,7 @@ export default function HomePage() {
   }, []);
 
   const handleNewChat = useCallback(() => {
+    selectGenRef.current++;
     setActiveSessionId(undefined);
     setActiveMessages([]);
     setDebugEvents([]);
@@ -82,6 +91,7 @@ export default function HomePage() {
   // and seeds the input with the briefing context. The user can edit
   // before sending, or just hit send.
   const handleContinueFromBriefing = useCallback((prompt: string, memoryText?: string) => {
+    selectGenRef.current++;
     setActiveSessionId(undefined);
     setActiveMessages([]);
     setDebugEvents([]);
@@ -93,6 +103,7 @@ export default function HomePage() {
   // Reset to the briefing view from anywhere. Used by the sidebar
   // brandmark/header — clicking it returns home from a chat session.
   const handleBackToBriefing = useCallback(() => {
+    selectGenRef.current++;
     setActiveSessionId(undefined);
     setActiveMessages([]);
     setDebugEvents([]);
@@ -117,12 +128,18 @@ export default function HomePage() {
   // bottom nav link to `/?new=1` (New chat) and `/?session=<id>` (a
   // Recent chat, or a row on /chats). When either param is present on
   // mount, apply it and strip the query so a refresh doesn't reapply it.
+  // A `session` id is held until the caller's own (owner-scoped) session
+  // list has loaded, and opened only if that list contains it: the id comes
+  // from the URL, and the per-session backend routes don't check ownership,
+  // so a crafted link must not open — or send turns into — someone else's
+  // conversation. It is also dropped if the user navigates first.
   //
   // Read directly from `window.location` rather than `useSearchParams`:
   // that hook opts the page out of static rendering in Next 15 unless
   // wrapped in <Suspense>, and the chat home is a heavy static page we
   // want to keep prerendered. The effect runs client-only anyway.
   const router = useRouter();
+  const deepLinkRef = useRef<{ sessionId: string; gen: number } | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -131,10 +148,20 @@ export default function HomePage() {
       handleNewChat();
       router.replace("/");
     } else if (sessionParam) {
-      void handleSelectSession(sessionParam);
+      deepLinkRef.current = { sessionId: sessionParam, gen: selectGenRef.current };
       router.replace("/");
     }
-  }, [handleNewChat, handleSelectSession, router]);
+  }, [handleNewChat, router]);
+
+  useEffect(() => {
+    const pending = deepLinkRef.current;
+    if (!pending || !sessionsLoaded) return;
+    deepLinkRef.current = null;
+    if (pending.gen !== selectGenRef.current) return;
+    if (sessions.some((s) => s.session_id === pending.sessionId)) {
+      void handleSelectSession(pending.sessionId);
+    }
+  }, [sessions, sessionsLoaded, handleSelectSession]);
 
   // Group debug events by turn_id. When we see a new turn_id, reset the
   // panel. Track the current turn_id in a ref — state updater functions
