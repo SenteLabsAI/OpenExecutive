@@ -811,7 +811,11 @@ knowledge:
     draft JSON in company/skills/.drafts/<name>.json (one per name, newest
     wins; not *.md, so never listed, indexed, searched, loaded or followed;
     carried by client slots and cleared by fixture reset with the rest of
-    company/skills). The Playbooks tab's "To review" strip approves
+    company/skills). Every save stamps a new `id`; approve (body {id}) and
+    discard (?id=) act only on that version (409 SkillDraftChangedError
+    otherwise), and approval removes the draft only if it is still that
+    version. Drafts also report `followers` (workflows naming the playbook),
+    creates included. The Playbooks tab's "To review" strip approves
     (POST /skill-drafts/{name}/approve -> the ordinary repo op; 409 keeps
     the draft on conflict / vanished target), edits then saves, or discards.
     Chips read "Drafted playbook / Drafted a change to / Proposed deleting"

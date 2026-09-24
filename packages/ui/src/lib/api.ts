@@ -843,8 +843,12 @@ export interface SkillDraft {
   when_to_use: string;
   body: string;
   proposed_at: string;
+  /** Version token: approve/discard act only on this exact draft. */
+  id: string;
   /** The playbook in effect now (null for a create). */
   current: SkillDetail | null;
+  /** Workflows that follow this name (for a create too). */
+  followers: { name: string; title: string; is_custom: boolean }[];
 }
 
 export async function listSkillDrafts(): Promise<SkillDraft[]> {
@@ -860,20 +864,27 @@ export async function getSkillDraft(name: string): Promise<SkillDraft> {
   return res.json();
 }
 
+/** Approve the reviewed version (`id`); 409 if the draft changed since. */
 export async function approveSkillDraft(
-  name: string
+  name: string,
+  id: string
 ): Promise<{ action: SkillDraft["action"]; skill: SkillDetail | null }> {
   const res = await fetch(
     `${API_BASE}/skill-drafts/${encodeURIComponent(name)}/approve`,
-    { method: "POST" }
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }
   );
   if (!res.ok) throw await skillError(res, "Failed to approve draft");
   return res.json();
 }
 
-/** Resolves quietly if the draft is already gone. */
-export async function discardSkillDraft(name: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/skill-drafts/${encodeURIComponent(name)}`, {
+/** Discard the reviewed version (`id`); resolves quietly if it's already gone. */
+export async function discardSkillDraft(name: string, id: string): Promise<void> {
+  const qs = new URLSearchParams({ id }).toString();
+  const res = await fetch(`${API_BASE}/skill-drafts/${encodeURIComponent(name)}?${qs}`, {
     method: "DELETE",
   });
   if (!res.ok && res.status !== 404) throw await skillError(res, "Failed to discard draft");

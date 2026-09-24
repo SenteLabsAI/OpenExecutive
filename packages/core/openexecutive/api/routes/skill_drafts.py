@@ -5,16 +5,18 @@ draft; a person approves or discards it here (the Playbooks tab).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from openexecutive.api.models import (
     SkillDraftApproval,
+    SkillDraftDecision,
     SkillDraftListResponse,
     SkillDraftOut,
 )
-from openexecutive.api.routes.skills import _detail, _get_store
+from openexecutive.api.routes.skills import _detail, _get_store, _refs
 from openexecutive.knowledge.skill_drafts import (
     SkillDraft,
+    SkillDraftChangedError,
     SkillDraftNotFoundError,
     approve_draft,
     discard_draft,
@@ -27,6 +29,7 @@ from openexecutive.knowledge.skills_repo import (
     SkillNotFoundError,
     get_skill,
 )
+from openexecutive.workflows.playbooks import playbook_users
 
 router = APIRouter(prefix="/skill-drafts")
 
@@ -38,7 +41,8 @@ def _out(draft: SkillDraft) -> SkillDraftOut:
             current = _detail(get_skill(draft.name, include_hidden=True))
         except (SkillNotFoundError, SkillParseError):
             current = None
-    return SkillDraftOut(**draft.model_dump(), current=current)
+    followers = _refs(playbook_users().get(draft.name, []))
+    return SkillDraftOut(**draft.model_dump(), current=current, followers=followers)
 
 
 @router.get("", response_model=SkillDraftListResponse)
@@ -57,12 +61,16 @@ async def get_skill_draft(name: str) -> SkillDraftOut:
 
 
 @router.post("/{name}/approve", response_model=SkillDraftApproval)
-async def approve_skill_draft(name: str, request: Request) -> SkillDraftApproval:
-    """Apply the draft. On a conflict or a vanished playbook the draft is kept."""
+async def approve_skill_draft(
+    name: str, body: SkillDraftDecision, request: Request
+) -> SkillDraftApproval:
+    """Apply the reviewed version (`body.id`). On any error the draft is kept."""
     try:
-        result = approve_draft(name, store=_get_store(request))
+        result = approve_draft(name, body.id, store=_get_store(request))
     except SkillDraftNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except SkillDraftChangedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except SkillNotFoundError as e:
         raise HTTPException(status_code=409, detail=f"{e} — discard or edit the draft") from e
     except SkillConflictError as e:
@@ -79,11 +87,14 @@ async def approve_skill_draft(name: str, request: Request) -> SkillDraftApproval
 
 
 @router.delete("/{name}", status_code=204)
-async def discard_skill_draft(name: str) -> Response:
+async def discard_skill_draft(name: str, id: str = Query(...)) -> Response:
+    """Discard the reviewed version (`?id=`); a newer draft is left alone (409)."""
     try:
-        discard_draft(name)
+        discard_draft(name, id)
     except SkillDraftNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except SkillDraftChangedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except SkillParseError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return Response(status_code=204)

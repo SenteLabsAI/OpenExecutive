@@ -81,7 +81,8 @@ def test_create_saves_a_draft_that_is_not_live_until_approved(isolated: None) ->
     assert "revenue-summary" not in [h["name"] for h in search["results"]]
     assert "error" in json.loads(_run(SKILL_TOOL_HANDLERS["load_skill"]({"name": "revenue-summary"})))
 
-    skill_drafts.approve_draft("revenue-summary", store=skills_tools._get_store())
+    draft_id = skill_drafts.get_draft("revenue-summary").id
+    skill_drafts.approve_draft("revenue-summary", draft_id, store=skills_tools._get_store())
     search = json.loads(_run(SKILL_TOOL_HANDLERS["search_skills"]({"query": "weekly revenue"})))
     assert "revenue-summary" in [h["name"] for h in search["results"]]
     assert all("body" not in h for h in search["results"])
@@ -265,3 +266,13 @@ def test_chat_guard_fails_closed_when_workflows_cannot_be_listed(
     deleted = json.loads(_run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": "weekly-update"})))
     assert deleted["code"] == "unverifiable"
     assert skills_repo.get_skill("weekly-update").body.strip() == "original"
+
+
+def test_non_text_fields_are_rejected_not_crashed(isolated: None) -> None:
+    bad = json.loads(_run(SKILL_TOOL_HANDLERS["create_skill"]({
+        "name": "x-y", "description": None, "when_to_use": "w",
+        "category": "general", "body": "b",
+    })))
+    assert bad["code"] == "invalid"
+    bad = json.loads(_run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": 7})))
+    assert bad["code"] == "invalid"

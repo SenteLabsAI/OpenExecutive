@@ -10,6 +10,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import ValidationError
+
 from openexecutive.knowledge import skills_repo
 from openexecutive.knowledge.skill_drafts import DraftAction, SkillDraft, save_draft
 from openexecutive.knowledge.skills import (
@@ -190,6 +192,14 @@ async def handle_load_skill(input: dict[str, Any]) -> str:
     )
 
 
+def _invalid(e: Exception) -> str:
+    if isinstance(e, ValidationError):
+        return "Every field must be text: " + "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+    return str(e)
+
+
 def _review_link(name: str) -> str:
     return f"/jobs?tab=playbooks&draft={name}"
 
@@ -240,8 +250,8 @@ async def handle_create_skill(input: dict[str, Any]) -> str:
         return json.dumps({"error": f"missing required field: {e.args[0]}"})
     except SkillConflictError as e:
         return json.dumps({"error": str(e), "code": "conflict"})
-    except SkillParseError as e:
-        return json.dumps({"error": str(e), "code": "invalid"})
+    except (SkillParseError, ValidationError) as e:
+        return json.dumps({"error": _invalid(e), "code": "invalid"})
 
 
 # Playbooks that workflows follow are read at run time — including by
@@ -311,14 +321,16 @@ async def handle_update_skill(input: dict[str, Any]) -> str:
         return json.dumps({"error": f"missing required field: {e.args[0]}"})
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
-    except SkillParseError as e:
-        return json.dumps({"error": str(e), "code": "invalid"})
+    except (SkillParseError, ValidationError) as e:
+        return json.dumps({"error": _invalid(e), "code": "invalid"})
 
 
 async def handle_delete_skill(input: dict[str, Any]) -> str:
     name = input.get("name", "")
     if not name:
         return json.dumps({"error": "missing required field: name"})
+    if not isinstance(name, str):
+        return json.dumps({"error": "name must be text", "code": "invalid"})
     refusal = _protected_refusal(name)
     if refusal:
         return refusal

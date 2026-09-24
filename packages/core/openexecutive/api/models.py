@@ -187,9 +187,18 @@ class SkillDraftOut(BaseModel):
     when_to_use: str
     body: str
     proposed_at: str
+    # Version token: send it back to approve or discard exactly this draft.
+    id: str
     # The playbook in effect now (None for a create) — what an update or
     # delete would change.
     current: SkillDetail | None = None
+    # Workflows that follow this name — for a create too, since a workflow
+    # may still name a playbook that was deleted.
+    followers: list[SkillWorkflowRef] = []
+
+
+class SkillDraftDecision(BaseModel):
+    id: str
 
 
 class SkillDraftListResponse(BaseModel):

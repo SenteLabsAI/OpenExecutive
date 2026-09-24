@@ -16,6 +16,7 @@ skills.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -37,6 +38,10 @@ class SkillDraftNotFoundError(LookupError):
     pass
 
 
+class SkillDraftChangedError(ValueError):
+    """The pending draft is no longer the version the reviewer saw."""
+
+
 class SkillDraft(BaseModel):
     action: DraftAction
     name: str
@@ -46,6 +51,9 @@ class SkillDraft(BaseModel):
     when_to_use: str = ""
     body: str = ""
     proposed_at: str = ""
+    # New on every save: approve/discard name the version the person
+    # reviewed, so a proposal swapped in meanwhile is never applied unseen.
+    id: str = ""
 
 
 def _drafts_dir() -> Path:
@@ -61,7 +69,9 @@ def _draft_path(name: str) -> Path:
 
 def save_draft(draft: SkillDraft) -> SkillDraft:
     """Store `draft`, replacing any pending draft for the same playbook."""
-    stamped = draft.model_copy(update={"proposed_at": datetime.now(UTC).isoformat()})
+    stamped = draft.model_copy(
+        update={"proposed_at": datetime.now(UTC).isoformat(), "id": uuid.uuid4().hex}
+    )
     path = _draft_path(stamped.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(stamped.model_dump_json(indent=2), encoding="utf-8")
@@ -72,7 +82,8 @@ def _read(path: Path) -> SkillDraft:
     try:
         draft = SkillDraft.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValidationError) as e:
-        raise SkillParseError(f"Playbook draft {path.name} is unreadable: {e}") from e
+        logger.warning("Unreadable playbook draft %s: %s", path, e)
+        raise SkillParseError(f"Playbook draft {path.name} is unreadable") from e
     if draft.name != path.stem:
         raise SkillParseError(f"Playbook draft {path.name} names '{draft.name}'")
     return draft
@@ -99,22 +110,39 @@ def get_draft(name: str) -> SkillDraft:
     return _read(path)
 
 
-def discard_draft(name: str) -> None:
-    path = _draft_path(name)
-    if not path.exists():
-        raise SkillDraftNotFoundError(f"No pending draft for playbook '{name}'")
-    path.unlink()
-
-
-def approve_draft(name: str, store: ChromaDBStore) -> dict[str, Any]:
-    """Apply a draft to the library, then remove it.
-
-    Goes through the ordinary repo operations, so their rules still hold (a
-    create conflicts with any existing name; an update or delete needs the
-    playbook to exist). On any error the draft is kept for the person to
-    edit or discard.
-    """
+def _reviewed(name: str, draft_id: str) -> SkillDraft:
     draft = get_draft(name)
+    if draft.id != draft_id:
+        raise SkillDraftChangedError(
+            f"The draft for '{name}' changed since it was opened — review the new version"
+        )
+    return draft
+
+
+def _remove_if_current(name: str, draft_id: str) -> None:
+    """Remove the draft only if it is still `draft_id` — never a newer one."""
+    try:
+        if get_draft(name).id == draft_id:
+            _draft_path(name).unlink(missing_ok=True)
+    except (SkillDraftNotFoundError, SkillParseError):
+        return
+
+
+def discard_draft(name: str, draft_id: str) -> None:
+    _reviewed(name, draft_id)
+    _draft_path(name).unlink(missing_ok=True)
+
+
+def approve_draft(name: str, draft_id: str, store: ChromaDBStore) -> dict[str, Any]:
+    """Apply the reviewed version of a draft to the library, then remove it.
+
+    `draft_id` is the version the person saw; if the pending draft is now a
+    different one, nothing is applied. Goes through the ordinary repo
+    operations, so their rules still hold (a create conflicts with any
+    existing name; an update or delete needs the playbook to exist). On any
+    error the draft is kept for the person to edit or discard.
+    """
+    draft = _reviewed(name, draft_id)
     result: dict[str, Any] = {"action": draft.action, "name": name}
     skill: Skill | None = None
     if draft.action == "delete":
@@ -130,5 +158,5 @@ def approve_draft(name: str, store: ChromaDBStore) -> dict[str, Any]:
             store=store,
         )
     result["skill"] = skill
-    discard_draft(name)
+    _remove_if_current(name, draft_id)
     return result

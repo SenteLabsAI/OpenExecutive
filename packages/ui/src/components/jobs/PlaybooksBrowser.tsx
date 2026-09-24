@@ -43,8 +43,8 @@ interface EditorState {
   /** Editing a built-in: saving creates this company's customized copy. */
   customizing: boolean;
   initial: SkillInput;
-  /** Editing a chat draft: a successful save also clears that draft. */
-  fromDraft?: string;
+  /** Editing a chat draft: a successful save also clears that version of it. */
+  fromDraft?: { name: string; id: string };
 }
 
 const DRAFT_ACTION_LABEL: Record<SkillDraft["action"], string> = {
@@ -141,10 +141,16 @@ export default function PlaybooksBrowser({
       const [data, pending] = await Promise.all([
         listSkills(showHidden),
         // The review strip is optional; never fail the tab over it.
-        listSkillDrafts().catch(() => [] as SkillDraft[]),
+        listSkillDrafts().catch(() => null),
       ]);
       setSkills(data);
-      setDrafts(pending);
+      if (pending) {
+        setDrafts(pending);
+        // Drop an open draft that was approved, discarded or replaced.
+        setSelectedDraft((cur) =>
+          cur && pending.some((d) => d.name === cur.name && d.id === cur.id) ? cur : null
+        );
+      }
       onCountChange?.(data.filter((s) => !s.hidden).length);
     } catch {
       setError("Failed to load playbooks");
@@ -170,14 +176,20 @@ export default function PlaybooksBrowser({
     void selectDraft(initialDraft);
   }, [initialDraft]);
 
+  // Last selection wins: a slow response for an earlier click is dropped.
+  const selectSeqRef = useRef(0);
+
   async function selectDraft(name: string) {
+    const seq = ++selectSeqRef.current;
     setError(null);
     setNotice(null);
     setEditor(null);
     setSelected(null);
     try {
-      setSelectedDraft(await getSkillDraft(name));
+      const draft = await getSkillDraft(name);
+      if (seq === selectSeqRef.current) setSelectedDraft(draft);
     } catch (e) {
+      if (seq !== selectSeqRef.current) return;
       setSelectedDraft(null);
       setError(
         e instanceof Error ? `${e.message} — it may already have been reviewed.` : "Failed to load draft"
@@ -192,7 +204,7 @@ export default function PlaybooksBrowser({
     )
       return;
     void run(async () => {
-      const result = await approveSkillDraft(draft.name);
+      const result = await approveSkillDraft(draft.name, draft.id);
       setSelectedDraft(null);
       setSelected(result.skill);
       setNotice(
@@ -207,20 +219,23 @@ export default function PlaybooksBrowser({
 
   function handleDiscardDraft(draft: SkillDraft) {
     void run(async () => {
-      await discardSkillDraft(draft.name);
+      await discardSkillDraft(draft.name, draft.id);
       setSelectedDraft(null);
       setNotice(`Discarded the Executive's proposal for “${draft.name}”.`);
     });
   }
 
   async function select(name: string) {
+    const seq = ++selectSeqRef.current;
     setError(null);
     setNotice(null);
     setEditor(null);
     setSelectedDraft(null);
     try {
-      setSelected(await getSkill(name));
+      const skill = await getSkill(name);
+      if (seq === selectSeqRef.current) setSelected(skill);
     } catch (e) {
+      if (seq !== selectSeqRef.current) return;
       setError(e instanceof Error ? e.message : "Failed to load playbook");
     }
   }
@@ -283,7 +298,9 @@ export default function PlaybooksBrowser({
     const { mode, customizing, fromDraft } = editor;
     void run(async () => {
       const saved = mode === "create" ? await createSkill(input) : await updateSkill(input);
-      if (fromDraft) await discardSkillDraft(fromDraft);
+      // The save already succeeded; if the draft is gone or was replaced by
+      // a newer proposal, leave that alone rather than report an error.
+      if (fromDraft) await discardSkillDraft(fromDraft.name, fromDraft.id).catch(() => undefined);
       setEditor(null);
       setSelectedDraft(null);
       setSelected(saved);
@@ -481,7 +498,7 @@ export default function PlaybooksBrowser({
                   mode: selectedDraft.action === "create" ? "create" : "edit",
                   customizing: false,
                   initial: draftInput(selectedDraft),
-                  fromDraft: selectedDraft.name,
+                  fromDraft: { name: selectedDraft.name, id: selectedDraft.id },
                 })
               }
             />
@@ -724,7 +741,7 @@ function DraftView({
       : draft.action === "update"
         ? "Change to an existing playbook"
         : "Delete a playbook";
-  const followers = draft.current?.used_by ?? [];
+  const followers = draft.followers;
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
