@@ -856,6 +856,22 @@ knowledge:
     non-empty, so a built-in added in a release never reached an existing
     install's index.
 
+    Chat proposes, a person approves (knowledge/skill_drafts.py): the
+    create/update/delete_skill tools never change the library — they save a
+    draft JSON in company/skills/.drafts/<name>.json (one per name, newest
+    wins; not *.md, so never listed, indexed, searched, loaded or followed;
+    carried by client slots and cleared by fixture reset with the rest of
+    company/skills). Every save stamps a new `id`; approve (body {id}) and
+    discard (?id=) act only on that version (409 SkillDraftChangedError
+    otherwise), and approval removes the draft only if it is still that
+    version. Drafts also report `followers` (workflows naming the playbook),
+    creates included. The Playbooks tab's "To review" strip approves
+    (POST /skill-drafts/{name}/approve -> the ordinary repo op; 409 keeps
+    the draft on conflict / vanished target), edits then saves, or discards.
+    Chips read "Drafted playbook / Drafted a change to / Proposed deleting"
+    and link to /jobs?tab=playbooks&draft=<name>. The persona must say it's
+    a draft and never claim a playbook was saved.
+
     Chat tools stay off built-ins: `update_skill` / `delete_skill` in
     orchestrator/skills_tools.py refuse any name a built-in ships under
     (code "builtin"), including the company's customized copy. Workflows
@@ -864,8 +880,7 @@ knowledge:
     crafted message rewrite what board_prep / quarterly_plan follow.
     Customize / revert / hide / restore are HTTP-only (the Playbooks tab).
 
-    Chat chips: create/update/delete_skill chips read "Saved / Updated /
-    Deleted playbook: <name>" and link to the Playbooks tab.
+    Chat chips: see "Chat proposes, a person approves" above.
 
     Workflows follow playbooks (workflows/playbooks.py): `load_playbook`
     returns the body in effect ("" when hidden, missing or malformed — never

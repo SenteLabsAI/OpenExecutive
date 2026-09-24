@@ -370,9 +370,9 @@ def test_no_silent_omission_from_side_effecting_tools() -> None:
 @pytest.mark.parametrize(
     ("tool_name", "result", "summary"),
     [
-        ("create_skill", {"saved": True}, "Saved playbook: p"),
-        ("update_skill", {"updated": True}, "Updated playbook: p"),
-        ("delete_skill", {"deleted": True, "outcome": "deleted"}, "Deleted playbook: p"),
+        ("create_skill", {"drafted": True}, "Drafted playbook: p"),
+        ("update_skill", {"drafted": True}, "Drafted a change to playbook: p"),
+        ("delete_skill", {"drafted": True}, "Proposed deleting playbook: p"),
     ],
 )
 def test_skill_chips_say_playbook_and_link_to_tab(
@@ -385,4 +385,4 @@ def test_skill_chips_say_playbook_and_link_to_tab(
     )
     assert payload is not None
     assert payload["summary"] == summary
-    assert payload["link"] == "/jobs?tab=playbooks"
+    assert payload["link"] == "/jobs?tab=playbooks&draft=p"

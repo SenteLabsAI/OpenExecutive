@@ -174,6 +174,20 @@ def _write_company_skill(
     return Skill(frontmatter=frontmatter, body=body, source="company", path=str(path))
 
 
+def name_taken(name: str) -> bool:
+    """True when `create_skill(name)` would conflict.
+
+    Any company file counts, malformed or not (`_write_company_skill` clears
+    other files with the name, and a create must never delete one), as does
+    any built-in, hidden or not.
+    """
+    validate_skill_name(name)
+    return (
+        _find_in(_company_skills_path(), name) is not None
+        or _find_skill_on_disk(name, include_hidden=True) is not None
+    )
+
+
 def create_skill(
     name: str,
     description: str,
@@ -188,12 +202,7 @@ def create_skill(
     """
     validate_skill_name(name)
     _validate_category(category)
-    # Any company file counts, malformed or not: _write_company_skill clears
-    # other files with this name, and a create must never delete one.
-    if (
-        _find_in(_company_skills_path(), name) is not None
-        or _find_skill_on_disk(name, include_hidden=True) is not None
-    ):
+    if name_taken(name):
         raise SkillConflictError(f"Skill '{name}' already exists")
 
     skill = _write_company_skill(name, description, when_to_use, category, body)

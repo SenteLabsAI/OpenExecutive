@@ -6,14 +6,19 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   SKILL_CATEGORIES,
+  approveSkillDraft,
   createSkill,
   deleteSkill,
+  discardSkillDraft,
   getSkill,
+  getSkillDraft,
+  listSkillDrafts,
   listSkills,
   restoreSkill,
   searchSkills,
   updateSkill,
   type SkillDeleteOutcome,
+  type SkillDraft,
   type SkillDetail,
   type SkillInput,
   type SkillMeta,
@@ -38,6 +43,24 @@ interface EditorState {
   /** Editing a built-in: saving creates this company's customized copy. */
   customizing: boolean;
   initial: SkillInput;
+  /** Editing a chat draft: a successful save also clears that version of it. */
+  fromDraft?: { name: string; id: string };
+}
+
+const DRAFT_ACTION_LABEL: Record<SkillDraft["action"], string> = {
+  create: "new",
+  update: "change",
+  delete: "delete",
+};
+
+function draftInput(d: SkillDraft): SkillInput {
+  return {
+    name: d.name,
+    category: d.category,
+    description: d.description,
+    when_to_use: d.when_to_use,
+    body: d.body,
+  };
 }
 
 const EMPTY_INPUT: SkillInput = {
@@ -81,14 +104,19 @@ function tryInChatHref(name: string): string {
 export default function PlaybooksBrowser({
   onCountChange,
   initialPlaybook,
+  initialDraft,
 }: {
   onCountChange?: (count: number) => void;
   /** Playbook to open on mount (from a `?playbook=` link). */
   initialPlaybook?: string;
+  /** Chat draft to open on mount (from a `?draft=` link). */
+  initialDraft?: string;
 }) {
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [selected, setSelected] = useState<SkillDetail | null>(null);
+  const [drafts, setDrafts] = useState<SkillDraft[]>([]);
+  const [selectedDraft, setSelectedDraft] = useState<SkillDraft | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -110,8 +138,19 @@ export default function PlaybooksBrowser({
 
   const load = useCallback(async () => {
     try {
-      const data = await listSkills(showHidden);
+      const [data, pending] = await Promise.all([
+        listSkills(showHidden),
+        // The review strip is optional; never fail the tab over it.
+        listSkillDrafts().catch(() => null),
+      ]);
       setSkills(data);
+      if (pending) {
+        setDrafts(pending);
+        // Drop an open draft that was approved, discarded or replaced.
+        setSelectedDraft((cur) =>
+          cur && pending.some((d) => d.name === cur.name && d.id === cur.id) ? cur : null
+        );
+      }
       onCountChange?.(data.filter((s) => !s.hidden).length);
     } catch {
       setError("Failed to load playbooks");
@@ -130,13 +169,73 @@ export default function PlaybooksBrowser({
     // select() only reads setters; runs once, for the link's playbook.
   }, [initialPlaybook]);
 
-  async function select(name: string) {
+  const openedDraftRef = useRef(false);
+  useEffect(() => {
+    if (!initialDraft || openedDraftRef.current) return;
+    openedDraftRef.current = true;
+    void selectDraft(initialDraft);
+  }, [initialDraft]);
+
+  // Last selection wins: a slow response for an earlier click is dropped.
+  const selectSeqRef = useRef(0);
+
+  async function selectDraft(name: string) {
+    const seq = ++selectSeqRef.current;
     setError(null);
     setNotice(null);
     setEditor(null);
+    setSelected(null);
     try {
-      setSelected(await getSkill(name));
+      const draft = await getSkillDraft(name);
+      if (seq === selectSeqRef.current) setSelectedDraft(draft);
     } catch (e) {
+      if (seq !== selectSeqRef.current) return;
+      setSelectedDraft(null);
+      setError(
+        e instanceof Error ? `${e.message} — it may already have been reviewed.` : "Failed to load draft"
+      );
+    }
+  }
+
+  function handleApproveDraft(draft: SkillDraft) {
+    if (
+      draft.action === "delete" &&
+      !confirm(`Delete the playbook “${draft.name}” as the Executive proposed? This cannot be undone.`)
+    )
+      return;
+    void run(async () => {
+      const result = await approveSkillDraft(draft.name, draft.id);
+      setSelectedDraft(null);
+      setSelected(result.skill);
+      setNotice(
+        draft.action === "delete"
+          ? `Deleted “${draft.name}”.`
+          : draft.action === "create"
+            ? `Added “${draft.name}” to your playbooks.`
+            : `Applied the change to “${draft.name}”.`
+      );
+    });
+  }
+
+  function handleDiscardDraft(draft: SkillDraft) {
+    void run(async () => {
+      await discardSkillDraft(draft.name, draft.id);
+      setSelectedDraft(null);
+      setNotice(`Discarded the Executive's proposal for “${draft.name}”.`);
+    });
+  }
+
+  async function select(name: string) {
+    const seq = ++selectSeqRef.current;
+    setError(null);
+    setNotice(null);
+    setEditor(null);
+    setSelectedDraft(null);
+    try {
+      const skill = await getSkill(name);
+      if (seq === selectSeqRef.current) setSelected(skill);
+    } catch (e) {
+      if (seq !== selectSeqRef.current) return;
       setError(e instanceof Error ? e.message : "Failed to load playbook");
     }
   }
@@ -196,10 +295,14 @@ export default function PlaybooksBrowser({
 
   function handleSave(input: SkillInput) {
     if (!editor) return;
-    const { mode, customizing } = editor;
+    const { mode, customizing, fromDraft } = editor;
     void run(async () => {
       const saved = mode === "create" ? await createSkill(input) : await updateSkill(input);
+      // The save already succeeded; if the draft is gone or was replaced by
+      // a newer proposal, leave that alone rather than report an error.
+      if (fromDraft) await discardSkillDraft(fromDraft.name, fromDraft.id).catch(() => undefined);
       setEditor(null);
+      setSelectedDraft(null);
       setSelected(saved);
       setNotice(
         customizing
@@ -321,12 +424,32 @@ export default function PlaybooksBrowser({
             </div>
           ) : (
             <>
+              {drafts.length > 0 && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2">
+                  <SectionLabel>To review ({drafts.length})</SectionLabel>
+                  <p className="text-[11px] text-fg-subtle px-1 mb-1">
+                    Proposed by the Executive. Nothing changes until you approve.
+                  </p>
+                  {drafts.map((d) => (
+                    <ListButton
+                      key={d.name}
+                      active={selectedDraft?.name === d.name}
+                      onClick={() => selectDraft(d.name)}
+                    >
+                      <span className="truncate">{d.name}</span>
+                      <span className="text-[10px] text-amber-400 flex-shrink-0">
+                        {DRAFT_ACTION_LABEL[d.action]}
+                      </span>
+                    </ListButton>
+                  ))}
+                </div>
+              )}
               <PlaybookSection
                 title="Yours"
                 items={yours}
                 selectedName={selected?.name}
                 onSelect={select}
-                emptyMessage="Playbooks you create or save from chat appear here."
+                emptyMessage="Playbooks you create, or approve from chat, appear here."
               />
               <PlaybookSection
                 title="Built-in"
@@ -363,6 +486,21 @@ export default function PlaybooksBrowser({
               busy={busy}
               onCancel={() => setEditor(null)}
               onSave={handleSave}
+            />
+          ) : selectedDraft ? (
+            <DraftView
+              draft={selectedDraft}
+              busy={busy}
+              onApprove={() => handleApproveDraft(selectedDraft)}
+              onDiscard={() => handleDiscardDraft(selectedDraft)}
+              onEdit={() =>
+                openEditor({
+                  mode: selectedDraft.action === "create" ? "create" : "edit",
+                  customizing: false,
+                  initial: draftInput(selectedDraft),
+                  fromDraft: { name: selectedDraft.name, id: selectedDraft.id },
+                })
+              }
             />
           ) : selected ? (
             <PlaybookView
@@ -576,6 +714,106 @@ function PlaybookView({
         prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{skill.body}</ReactMarkdown>
       </div>
+    </div>
+  );
+}
+
+const MARKDOWN_BOX =
+  "rounded-xl border border-line-strong bg-surface-elevated px-6 py-5 max-h-[420px] overflow-y-auto prose prose-invert prose-sm max-w-none prose-p:text-fg prose-headings:text-fg prose-strong:text-fg prose-ul:text-fg prose-ol:text-fg prose-li:marker:text-fg-muted prose-code:text-indigo-300 prose-a:text-indigo-400";
+
+function DraftView({
+  draft,
+  busy,
+  onApprove,
+  onDiscard,
+  onEdit,
+}: {
+  draft: SkillDraft;
+  busy: boolean;
+  onApprove: () => void;
+  onDiscard: () => void;
+  onEdit: () => void;
+}) {
+  const btn = "px-3 py-1.5 rounded-lg border text-xs transition-colors disabled:opacity-40";
+  const heading =
+    draft.action === "create"
+      ? "New playbook"
+      : draft.action === "update"
+        ? "Change to an existing playbook"
+        : "Delete a playbook";
+  const followers = draft.followers;
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <span className="text-[10px] uppercase tracking-wider text-amber-400 px-2 py-0.5 border border-amber-500/30 rounded">
+            Proposed by the Executive · {heading}
+          </span>
+          <h2 className="text-base font-semibold text-fg mt-2 break-words">{draft.name}</h2>
+          {draft.action !== "delete" && (
+            <>
+              <p className="text-sm text-fg-muted mt-1">{draft.description}</p>
+              <p className="text-xs text-fg-muted italic mt-1">
+                When to use: {draft.when_to_use} · {draft.category}
+              </p>
+            </>
+          )}
+          <p className="text-[11px] text-fg-subtle mt-1">
+            Proposed {new Date(draft.proposed_at).toLocaleString()}. Nothing changes until you
+            approve it.
+          </p>
+          {followers.length > 0 && (
+            <p className="text-xs text-amber-300 mt-1">
+              Followed by {followers.map((w) => w.title).join(", ")} — approving changes what
+              {followers.length === 1 ? " that workflow" : " those workflows"} follow.
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2 flex-shrink-0">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onApprove}
+            className={`${btn} border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10`}
+          >
+            {draft.action === "delete" ? "Approve delete" : "Approve"}
+          </button>
+          {draft.action !== "delete" && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onEdit}
+              className={`${btn} border-line-strong text-fg hover:bg-surface-overlay`}
+            >
+              Edit, then save
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onDiscard}
+            className={`${btn} border-red-500/20 text-red-400 hover:bg-red-500/10`}
+          >
+            Discard
+          </button>
+        </div>
+      </div>
+
+      {draft.action !== "delete" && (
+        <div className={MARKDOWN_BOX}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.body}</ReactMarkdown>
+        </div>
+      )}
+      {draft.current && (
+        <details open={draft.action === "delete"} className="text-sm">
+          <summary className="cursor-pointer text-xs text-fg-muted">
+            {draft.action === "delete" ? "The playbook it would delete" : "Current version"}
+          </summary>
+          <div className={`${MARKDOWN_BOX} mt-2`}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.current.body}</ReactMarkdown>
+          </div>
+        </details>
+      )}
     </div>
   );
 }
