@@ -37,7 +37,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -174,49 +174,78 @@ def _target_digest(arguments: dict[str, Any]) -> dict[str, str]:
     return digest
 
 
-# Argument keys that name the resource a write lands on: ids, recipients,
-# URLs, paths, channels, and the Google resource kinds. Deliberately not
-# `range` or `sheet` (a new tab or range in an approved spreadsheet is the
-# same spreadsheet), nor names/titles (what a new file is called), nor
-# message/thread/draft/label ids (a reply's real target is its recipients,
-# which the gateway's recipient gates already check).
+# Argument keys that name where a write lands: ids (snake or camel case),
+# recipients, addresses, members, URLs, paths, channels, hosts, buckets,
+# tables, and the Google resource kinds. Deliberately not `range` or `sheet`
+# (a new tab or range in an approved spreadsheet is the same spreadsheet),
+# nor a new item's own name/title, nor message/thread/draft/label ids (a
+# reply's real target is its recipients, which the gateway's recipient gates
+# check), nor `user_google_email` (workspace-mcp's acting account, on every
+# call). A key that matches marks everything beneath it too, so a target
+# can't hide one level down (`recipients: [{address: …}]`); a composite key
+# like `channel_name` or `bucket_name` still counts.
 _RESOURCE_KEY_RE = re.compile(
-    r"(^id$|_id$|^ids$|_ids$|^to$|^cc$|^bcc$|recipient|email|url|uri|path|"
-    r"channel|spreadsheet|document|folder|calendar|^file$)",
+    r"(^id$|_id$|^ids$|_ids$|^to$|^cc$|^bcc$|recipient|email|address|attendee|"
+    r"member|user|group|owner|parent|destination|target|url|uri|path|channel|host|"
+    r"bucket|table|database|repo|spreadsheet|document|folder|calendar|webhook|"
+    r"endpoint|^file$)",
     re.IGNORECASE,
 )
+_CAMEL_ID_RE = re.compile(r"[a-z0-9]Ids?$")  # fileId, parentIds
 _NOT_RESOURCE_KEY_RE = re.compile(
-    r"(name|title|(message|thread|draft|label|request)_?ids?$)", re.IGNORECASE
+    r"^(name|title|subject|file_?name|display_?name|user_google_email|"
+    r"(message|thread|draft|label|request)_?ids?)$",
+    re.IGNORECASE,
 )
-_MAX_TARGET_DEPTH = 6
-_MAX_TARGETS = 50
+# Past these, a call's targets can't all be checked, so it is refused rather
+# than partly checked (fail closed).
+_MAX_TARGET_DEPTH = 8
+_MAX_TARGETS = 100
+_MAX_TARGET_CHARS = 2_000
 
 
-def resource_targets(arguments: Any) -> list[tuple[str, str]]:
+def _is_resource_key(key: str) -> bool:
+    if _NOT_RESOURCE_KEY_RE.search(key):
+        return False
+    return bool(_RESOURCE_KEY_RE.search(key) or _CAMEL_ID_RE.search(key))
+
+
+def resource_targets(arguments: Any) -> tuple[list[tuple[str, str]], bool]:
     """Every ``(key, value)`` in ``arguments`` that names where a call acts.
 
-    Walks nested objects and lists (``to: [...]``, ``message: {to: ...}``), so
-    a target can't slip past by being wrapped. Order-preserving, deduplicated.
+    Walks nested objects and lists; a resource key marks everything beneath
+    it. Returns ``(targets, complete)``: ``complete`` is False when the
+    arguments are too deep, name too many targets, or hold an over-long
+    value — the caller must then refuse the call, since what it didn't check
+    is exactly where an injected target would hide.
     """
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
+    complete = True
 
     def add(key: str, value: Any) -> None:
+        nonlocal complete
         if isinstance(value, bool) or not isinstance(value, str | int):
             return
         text = str(value).strip()
-        if text and text not in seen and len(found) < _MAX_TARGETS:
-            seen.add(text)
-            found.append((key, text[:_MAX_TARGET_VALUE_CHARS * 4]))
+        if not text or text in seen:
+            return
+        if len(text) > _MAX_TARGET_CHARS or len(found) >= _MAX_TARGETS:
+            complete = False
+            return
+        seen.add(text)
+        found.append((key, text))
 
     def walk(node: Any, key: str, depth: int, is_resource: bool) -> None:
+        nonlocal complete
         if depth > _MAX_TARGET_DEPTH:
+            complete = False
             return
         if isinstance(node, dict):
             for k, v in node.items():
                 k = str(k)
-                walk(v, k, depth + 1, _RESOURCE_KEY_RE.search(k) is not None
-                     and _NOT_RESOURCE_KEY_RE.search(k) is None)
+                excluded = _NOT_RESOURCE_KEY_RE.search(k) is not None
+                walk(v, k, depth + 1, not excluded and (is_resource or _is_resource_key(k)))
         elif isinstance(node, list):
             for item in node:
                 walk(item, key, depth + 1, is_resource)
@@ -224,56 +253,69 @@ def resource_targets(arguments: Any) -> list[tuple[str, str]]:
             add(key, node)
 
     walk(arguments, "", 0, False)
-    return found
+    return found, complete
 
 
-# A value must be at least this long to count as "seen" inside a bigger text
-# (the workflow's own definition, or a result the run produced) — so "1" or
-# "me" can't be trusted just by appearing somewhere.
-_MIN_TRUSTED_SUBSTRING = 6
-_MAX_CREATED_RESULTS = 50
-_MAX_CREATED_RESULT_CHARS = 20_000
+_MAX_CREATED_VALUES = 2_000
+# A created id must be at least this long to be trusted (so "1" never is).
+_MIN_CREATED_VALUE = 6
 
 
 class TargetPolicy:
     """Which targets a run may write to without asking. One per run.
 
     Trusted without asking:
-    - values approved for this workflow before (``approved_targets``);
-    - values written verbatim in the workflow's own steps — the user saw
-      them when they approved the workflow;
-    - values the run itself produced: ones that appear in the result of a
-      write this run already made (a doc the workflow just created).
+    - values approved for this workflow before (``approved_targets``) — by the
+      owner answering a held write, never by anything the model or a page can
+      write;
+    - ids a write in this run created: resource-keyed values (``id``,
+      ``spreadsheetId``, ``webViewLink`` …) in the STRUCTURED (JSON) result of
+      a write to a tool that takes no URL. Free text is never parsed — a page,
+      an echoed title or a document body could otherwise plant an id — and a
+      URL-taking tool's result is whatever the URL served. These survive a
+      pause through the resume payload (``created``).
+    Everything else, including values written in the workflow's own text
+    (which anyone who can edit the workflow could change without a review),
+    is asked once and then remembered.
     """
 
-    def __init__(self, *, approved: set[str], definition_text: str) -> None:
+    def __init__(self, *, approved: set[str], created: Iterable[str] = ()) -> None:
         self._approved = {normalize_value(v) for v in approved}
-        self._definition = definition_text
-        self._definition_lower = definition_text.lower()
-        self._created: list[str] = []
+        self._created = {normalize_value(v) for v in created}
 
     @classmethod
-    def for_workflow(cls, defn: DynamicWorkflowDef) -> TargetPolicy:
-        text = defn.description + "\n" + "\n".join(s.model_dump_json() for s in defn.steps)
-        return cls(approved=approved_values(defn.name), definition_text=text)
+    def for_workflow(
+        cls, defn: DynamicWorkflowDef, created: Iterable[str] = ()
+    ) -> TargetPolicy:
+        return cls(approved=approved_values(defn.name), created=created)
 
     def _trusted(self, value: str) -> bool:
         norm = normalize_value(value)
-        if norm in self._approved:
-            return True
-        if len(norm) < _MIN_TRUSTED_SUBSTRING:
-            return False
-        if norm in self._definition or norm in self._definition_lower:
-            return True
-        return any(norm in text or value in text for text in self._created)
+        return norm in self._approved or norm in self._created
 
     def unapproved(self, targets: list[tuple[str, str]]) -> list[tuple[str, str]]:
         return [(k, v) for k, v in targets if not self._trusted(v)]
 
-    def note_written(self, result_text: str) -> None:
-        """Remember a successful write's result, so ids it created are trusted."""
-        self._created.append(str(result_text)[:_MAX_CREATED_RESULT_CHARS])
-        del self._created[:-_MAX_CREATED_RESULTS]
+    def note_written(self, result_text: str, info: tool_catalog.ToolInfo) -> None:
+        """Trust the ids a successful write returned in a structured result."""
+        if tool_catalog.takes_url(info):
+            return
+        try:
+            parsed = json.loads(str(result_text))
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(parsed, dict | list):
+            return
+        values, _complete = resource_targets(parsed)
+        for _key, value in values:
+            if len(self._created) >= _MAX_CREATED_VALUES:
+                break
+            if len(value) >= _MIN_CREATED_VALUE:
+                self._created.add(normalize_value(value))
+
+    def created(self) -> list[str]:
+        """Run-created values, for the resume payload of a pause."""
+        return sorted(self._created)
 
     def approve(self, targets: list[tuple[str, str]]) -> None:
         self._approved.update(normalize_value(v) for _, v in targets)
@@ -418,7 +460,7 @@ async def run_action_step(
     allowed = set(step.tools)
     budget = _Budget(step.max_tool_calls)
     actions: list[tuple[str, str]] = []
-    held = 0
+    holds = _Holds()
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
     for turn in range(max_turns):
@@ -463,27 +505,17 @@ async def run_action_step(
                 ), "refused: budget"
             else:
                 writes = resolved[name].read_only is not True
-                new_targets = (
-                    policy.unapproved(resource_targets(arguments))
-                    if policy is not None and writes
-                    else []
-                )
                 if writes:
                     targets = _target_digest(arguments)
-                if new_targets and (
-                    held >= MAX_HELD_PER_STEP
-                    or len(json.dumps(arguments, default=str)) > _MAX_HELD_ARGS_CHARS
-                ):
-                    (content, is_error), outcome = _refusal(
-                        "this call writes to a new target and can't be held for "
-                        "approval (too many held already, or it is too large); "
-                        "it was not run"
-                    ), "refused: hold limit"
-                elif new_targets:
-                    held += 1
+                decision = holds.decide(name, arguments, policy if writes else None)
+                if isinstance(decision, str):
+                    (content, is_error), outcome = _refusal(decision), "refused: target check"
+                elif decision is not None:
                     # Not run and not counted against the budget: it runs later,
-                    # exactly as given, only if the owner approves.
-                    yield ("held", HeldCall(tool=name, arguments=arguments, targets=new_targets))
+                    # exactly as given, only if the owner approves. A repeat of
+                    # a call already held is answered the same way, not held twice.
+                    if decision is not _ALREADY_HELD:
+                        yield ("held", decision)
                     content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
                 else:
                     budget.used += 1
@@ -491,7 +523,7 @@ async def run_action_step(
                     content, is_error = await _call_tool(name, arguments, resolved[name])
                     outcome = "error" if is_error else "ok"
                     if writes and not is_error and policy is not None:
-                        policy.note_written(content)
+                        policy.note_written(content, resolved[name])
             _audit(workflow_name, step.id, name, outcome, targets)
             actions.append((name, outcome))
             results.append(
@@ -514,9 +546,55 @@ async def run_action_step(
     )
 
 
+# Returned for a repeat of a call already held: answered as held, not held twice.
+_ALREADY_HELD = HeldCall(tool="(already held)")
+
+
+class _Holds:
+    """Per-step bookkeeping for calls held for approval."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._seen: set[str] = set()
+
+    def decide(
+        self, name: str, arguments: dict[str, Any], policy: TargetPolicy | None
+    ) -> HeldCall | str | None:
+        """None: run the call. A HeldCall: hold it (``_ALREADY_HELD`` for a
+        repeat of one already held). A string: refuse it, with that reason."""
+        if policy is None:
+            return None
+        targets, complete = resource_targets(arguments)
+        if not complete:
+            return (
+                "this call names more targets than can be checked (too many, too "
+                "deeply nested, or too long), so it was not run"
+            )
+        new_targets = policy.unapproved(targets)
+        if not new_targets:
+            return None
+        key = json.dumps({"tool": name, "arguments": arguments}, sort_keys=True, default=str)
+        if key in self._seen:
+            return _ALREADY_HELD
+        if self.count >= MAX_HELD_PER_STEP or len(key) > _MAX_HELD_ARGS_CHARS:
+            return (
+                "this call writes to a new target and can't be held for approval "
+                "(too many held already, or it is too large); it was not run"
+            )
+        self._seen.add(key)
+        self.count += 1
+        return HeldCall(tool=name, arguments=arguments, targets=new_targets)
+
+
+# How much of a held target the owner is shown. Longer values show their
+# start and end — the part an injected URL varies is usually the tail.
+_SHOWN_TARGET_CHARS = 400
+
+
 def describe_target(key: str, value: str) -> str:
     """One held target as shown to the owner, e.g. ``spreadsheet_id `1AbC…```."""
-    shown = value if len(value) <= _MAX_TARGET_VALUE_CHARS else value[:_MAX_TARGET_VALUE_CHARS] + "…"
+    half = _SHOWN_TARGET_CHARS // 2
+    shown = value if len(value) <= _SHOWN_TARGET_CHARS else f"{value[:half]}…{value[-half:]}"
     return f"{key} `{shown}`" if key else f"`{shown}`"
 
 
@@ -553,7 +631,7 @@ async def run_held_calls(
             content, is_error = await _call_tool(call.tool, call.arguments, resolved[call.tool])
             outcome = "error" if is_error else "done"
             if not is_error:
-                policy.note_written(content)
+                policy.note_written(content, resolved[call.tool])
         _audit(
             workflow_name, step.id, call.tool, f"held → {outcome}", _target_digest(call.arguments)
         )

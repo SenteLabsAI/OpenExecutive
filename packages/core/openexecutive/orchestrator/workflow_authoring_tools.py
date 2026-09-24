@@ -183,10 +183,10 @@ def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
 
 def _session_caller_id() -> int | None:
     """The person chatting — recorded as a new workflow's owner."""
-    from openexecutive.workflows.gate_delivery import _session_caller_id as caller_of
+    from openexecutive.workflows.gate_delivery import session_caller_id
 
     session = current_session.get()
-    return caller_of(session) if session is not None else None
+    return session_caller_id(session) if session is not None else None
 
 
 def _needs_review(defn: Any) -> bool:

@@ -183,7 +183,9 @@ export default function RunDetailPage() {
           )}
 
           {run.status === "awaiting_human" && (
-            <AwaitingPanel run={run} />
+            // Keyed on the question, so a later sign-off in the same run starts
+            // with fresh buttons rather than the previous answer.
+            <AwaitingPanel key={`${run.awaiting_until ?? ""}:${run.state_json ?? ""}`} run={run} />
           )}
 
           {run.status === "resolved" && (

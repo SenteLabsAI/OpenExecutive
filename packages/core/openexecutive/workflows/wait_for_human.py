@@ -93,6 +93,9 @@ class WorkflowResumeState(BaseModel):
     # Scheduled runs DM their artifact on completion; a run that paused
     # completes in the resumer instead, which delivers it to this person.
     deliver_to_person_id: int | None = None
+    # Values the run itself created before pausing (ids a write returned), so
+    # its target check still trusts them after resuming.
+    run_created: list[str] = Field(default_factory=list)
 
 
 class WaitForHumanEvent(BaseModel):

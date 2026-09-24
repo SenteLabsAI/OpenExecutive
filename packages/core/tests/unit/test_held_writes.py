@@ -84,8 +84,14 @@ def _defn(**overrides: Any) -> DynamicWorkflowDef:
     return DynamicWorkflowDef.model_validate(base)
 
 
-def _policy(approved: set[str] | None = None, text: str = "") -> act.TargetPolicy:
-    return act.TargetPolicy(approved=approved or set(), definition_text=text)
+def _policy(approved: set[str] | None = None) -> act.TargetPolicy:
+    return act.TargetPolicy(approved=approved or set())
+
+
+_WRITE_TOOL = act.tool_catalog.ToolInfo(APPEND, "Append rows.", {"type": "object", "properties": {}})
+_FETCH_TOOL = act.tool_catalog.ToolInfo(
+    "fetch__fetch", "Fetch a URL.", {"type": "object", "properties": {"url": {"type": "string"}}}
+)
 
 
 # --- resource_targets --------------------------------------------------------
@@ -101,7 +107,8 @@ def test_resource_targets_walk_nested_objects_and_lists() -> None:
         "file_name": "bills.csv",
         "thread_id": "t-123456789",
     }
-    targets = act.resource_targets(args)
+    targets, complete = act.resource_targets(args)
+    assert complete
     assert ("spreadsheet_id", SHEET) in targets
     assert ("to", "Ops@Example.com") in targets and ("to", "b@example.com") in targets
     keys = {k for k, _ in targets}
@@ -109,15 +116,60 @@ def test_resource_targets_walk_nested_objects_and_lists() -> None:
     assert not keys & {"range", "sheet", "file_name", "thread_id", "rows", "subject"}
 
 
-def test_policy_trusts_approved_definition_and_run_created_values() -> None:
-    policy = _policy(approved={"ops@example.com"}, text=f'"goal": "append to {SHEET}"')
+def test_resource_keys_carry_down_and_camel_case_ids_count() -> None:
+    graph = {"message": {"toRecipients": [{"emailAddress": {"name": "Eve", "address": "evil@x.com"}}]}}
+    assert act.resource_targets(graph) == ([("address", "evil@x.com")], True)
+    assert act.resource_targets({"recipients": [{"address": "evil@x.com"}]})[0] == [
+        ("address", "evil@x.com")
+    ]
+    ids = act.resource_targets({"fileId": "f-123456", "parentIds": ["p-123456"], "threadId": "t-1"})[0]
+    assert ids == [("fileId", "f-123456"), ("parentIds", "p-123456")]
+
+
+def test_targets_that_cannot_all_be_checked_fail_closed() -> None:
+    deep: dict = {"to": "evil@x.com"}
+    for _ in range(10):
+        deep = {"a": deep}
+    assert act.resource_targets(deep)[1] is False
+    many = {"to": [f"user{i}@example.com" for i in range(act._MAX_TARGETS + 1)]}
+    assert act.resource_targets(many)[1] is False
+    assert act.resource_targets({"url": "https://x.example/" + "a" * 3000})[1] is False
+
+
+def test_policy_trusts_only_approvals_and_structured_ids_a_write_created() -> None:
+    policy = _policy(approved={"ops@example.com"})
     assert policy.unapproved([("to", "OPS@example.com")]) == []  # approved, case-insensitive
-    assert policy.unapproved([("spreadsheet_id", SHEET)]) == []  # named in the definition
     assert policy.unapproved([("spreadsheet_id", OTHER)]) == [("spreadsheet_id", OTHER)]
-    policy.note_written(f'{{"spreadsheetId": "{OTHER}"}}')  # the run created it
+    # A write's structured result: its ids are trusted, its echoed title isn't.
+    policy.note_written(
+        json.dumps({"spreadsheetId": OTHER, "title": "1AttackerSheetXXXX"}), _WRITE_TOOL
+    )
     assert policy.unapproved([("spreadsheet_id", OTHER)]) == []
-    # Short values can't be trusted just by appearing inside a bigger text.
-    assert policy.unapproved([("id", "12")]) == [("id", "12")]
+    assert policy.unapproved([("spreadsheet_id", "1AttackerSheetXXXX")]) != []
+    # Free text is never parsed, and a URL tool's result is what the URL served.
+    policy.note_written("Created doc 'x' (ID: 1FreeTextIdXXXX)", _WRITE_TOOL)
+    policy.note_written(json.dumps({"id": "1PlantedByPageXXXX"}), _FETCH_TOOL)
+    assert policy.unapproved([("id", "1FreeTextIdXXXX"), ("id", "1PlantedByPageXXXX")]) == [
+        ("id", "1FreeTextIdXXXX"), ("id", "1PlantedByPageXXXX"),
+    ]
+    # Ids are compared exactly (only addresses are case-insensitive), and whole.
+    assert policy.unapproved([("spreadsheet_id", OTHER.upper())]) != []
+    good = "https://example.com/" + "a" * 470 + "/good"
+    policy.approve([("url", good)])
+    assert policy.unapproved([("url", good[:-4] + "evil")]) != []
+    # Run-created values survive a pause through the payload.
+    again = act.TargetPolicy(approved=set(), created=policy.created())
+    assert again.unapproved([("spreadsheet_id", OTHER)]) == []
+
+
+def test_name_keys_only_skip_their_own_value() -> None:
+    targets, _ = act.resource_targets({
+        "channel_name": "#payroll", "bucket_name": "exfil-bucket", "name": "Q3 notes",
+        "user_google_email": "exec@example.com", "attendees": ["a@x.com"],
+    })
+    assert targets == [
+        ("channel_name", "#payroll"), ("bucket_name", "exfil-bucket"), ("attendees", "a@x.com"),
+    ]
 
 
 # --- holding in the action step ------------------------------------------------
@@ -200,7 +252,45 @@ async def test_hold_limit_refuses_further_new_targets(
     ):
         out.append(item)
     assert len([k for k, _ in out if k == "held"]) == act.MAX_HELD_PER_STEP
-    assert "refused: hold limit" in out[-1][1] and gateway.calls == []
+    assert "refused: target check" in out[-1][1] and gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_held_call_is_held_once(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    call = {"spreadsheet_id": OTHER, "rows": [["x"]]}
+    _install(monkeypatch, _ScriptedProvider(
+        [_resp(_use(APPEND, call, "tu_1"), _use(APPEND, dict(call), "tu_2")), _resp(_text("ok"))]
+    ))
+    out = []
+    async for item in act.run_action_step(
+        _step(), workflow_name="w", workflow_title="W", goal="g", values={},
+        company_block="", prior_outputs={}, policy=_policy(),
+    ):
+        out.append(item)
+    assert len([k for k, _ in out if k == "held"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_or_uncheckable_calls_are_refused_not_run(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    big = {"spreadsheet_id": OTHER, "rows": [["x" * (act._MAX_HELD_ARGS_CHARS + 1)]]}
+    deep: dict = {"to": "evil@x.com"}
+    for _ in range(10):
+        deep = {"a": deep}
+    _install(monkeypatch, _ScriptedProvider(
+        [_resp(_use(APPEND, big, "tu_1"), _use(APPEND, deep, "tu_2")), _resp(_text("ok"))]
+    ))
+    out = []
+    async for item in act.run_action_step(
+        _step(), workflow_name="w", workflow_title="W", goal="g", values={},
+        company_block="", prior_outputs={}, policy=_policy(),
+    ):
+        out.append(item)
+    assert not [k for k, _ in out if k == "held"] and gateway.calls == []
+    assert out[-1][1].count("refused: target check") == 2
 
 
 # --- engine: pause and resume --------------------------------------------------
@@ -234,6 +324,21 @@ def test_run_pauses_after_the_step_and_asks_the_owner(
     assert state.held[0].arguments["spreadsheet_id"] == OTHER
     assert "file_bills" in state.outputs  # the step itself finished
     assert gateway.calls == []
+
+
+def test_a_step_that_fails_after_holding_says_the_writes_did_not_run(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    monkeypatch.setattr(at, "approver_for", lambda name: 7)
+    _install(monkeypatch, _ScriptedProvider(
+        [_resp(_use(APPEND, {"spreadsheet_id": OTHER}, "tu_1")), RuntimeError("provider down")]
+    ))
+    wf = DynamicWorkflow(_defn())
+    events = asyncio.run(_collect(wf))
+    assert not any(isinstance(e, WaitForHumanEvent) for e in events)
+    assert events[-1].type == "error" and "1 held write(s) were not run" in (events[-1].message or "")
+    assert any("the step failed" in r["details"]["outcome"] for r in audit
+               if r["type"] == "workflow_tool_call")
 
 
 def test_no_one_to_ask_skips_the_held_writes_and_finishes(
@@ -428,8 +533,6 @@ def test_decision_endpoint_authorisation_and_states(
     asker = people_store.upsert_person(full_name="Dana Ops")
     other = people_store.upsert_person(full_name="Sam Else")
     principal = people_store.upsert_person(full_name="Pat Principal", is_principal=True)
-    kicked: list[str] = []
-    monkeypatch.setattr("openexecutive.workflows.resumer._kick_resume", lambda rid: kicked.append(rid))
 
     _awaiting("run-a", asker)
     _caller(monkeypatch, other)
@@ -513,6 +616,13 @@ def test_scheduled_run_pauses_for_held_writes_and_rechains(
     done: list[int] = []
     chained: list[str] = []
     completed: list[str] = []
+    dms: list[Any] = []
+
+    async def _dm(payload: dict[str, Any]) -> str:
+        dms.append(payload)
+        return "{}"
+
+    monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", _dm)
     monkeypatch.setattr("openexecutive.workflows.gate.checkpoint_gate", _checkpoint)
     monkeypatch.setattr(runner, "mark_action_done", lambda aid: done.append(aid))
     monkeypatch.setattr(
@@ -529,6 +639,7 @@ def test_scheduled_run_pauses_for_held_writes_and_rechains(
     state = checkpoints[0].resume_state
     assert state is not None and state.kind == "held_writes" and state.deliver_to_person_id == 11
     assert completed == [] and done == [3] and chained == [defn.name]
+    assert dms == []  # the resumer delivers once the owner answers
 
 
 def test_resumer_delivers_a_scheduled_runs_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -553,3 +664,26 @@ def test_held_call_model_round_trips_through_resume_json() -> None:
     )
     back = WorkflowResumeState.model_validate_json(state.model_dump_json())
     assert back == state
+
+
+def test_owner_column_is_added_to_an_existing_table(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE dynamic_workflows (name TEXT PRIMARY KEY, definition TEXT NOT NULL, "
+            "is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+    assert dynamic_store.get_owner("x", db_path=db) is None  # old DB, no column yet
+    dynamic_store.initialize_dynamic_workflows_db(db)
+    dynamic_store.initialize_dynamic_workflows_db(db)  # idempotent
+    dynamic_store.upsert_definition(_defn(), db_path=db, owner_person_id=4)
+    assert dynamic_store.get_owner("file_bills_wf", db_path=db) == 4
+
+
+def test_a_write_verb_anywhere_in_the_name_is_never_read_only() -> None:
+    label = act.tool_catalog._read_only_label
+    assert label("gw__find_and_replace_doc", {}) is None
+    assert label("gw__get_or_create_folder", {}) is None
+    assert label("gw__read_sheet_values", {}) is True

@@ -3457,20 +3457,30 @@ workflows:
     gates, the audit (workflow_tool_call rows of non-read-only tools carry a
     bounded `targets` digest — keys like *_id/to/url/path/spreadsheet; never
     content) and FIRST-WRITE CONFIRMATION:
-    - action_step.TargetPolicy (one per run) checks every non-read-only call.
-      resource_targets() walks arguments recursively (lists, nested dicts) for
-      ids, to/cc/bcc, recipient, email, url/uri, path, channel, spreadsheet,
-      document, folder, calendar, file — NOT range/sheet (a tab or range in an
-      approved spreadsheet), names/titles, or message/thread/draft/label ids
-      (a reply's real target is its recipients, which the gateway gates).
+    - action_step.TargetPolicy (one per run) checks every call whose tool is
+      not labelled read-only; tool_catalog._read_only_label never labels a
+      name carrying a write verb anywhere (find_and_replace_doc,
+      get_or_create_folder). resource_targets() walks arguments recursively
+      (lists, nested dicts; a resource key marks its whole subtree) for
+      snake/camel ids, to/cc/bcc, recipient, email, address, attendee,
+      member, user, owner, parent, url/uri, path, channel, host, bucket,
+      table, spreadsheet, document, folder, calendar, file — skipping only
+      exact name/title/subject/file_name/display_name keys, range/sheet,
+      message/thread/draft/label ids and user_google_email. Too deep (>8),
+      too many (>100) or over-long (>2000 chars) FAILS CLOSED: refused.
     - Trusted: values in workflow_approved_targets for this workflow (by
-      normalized value — emails lowercased — not by tool); values verbatim in
-      the workflow's own steps (seen at approval); values in the result of a
-      write this run already made (run-created). Substring trust needs >= 6
-      chars.
+      normalized value — emails lowercased — not by tool), and ids a write in
+      this run created: resource-keyed values of the STRUCTURED JSON result of
+      a write to a tool that takes no URL (never free text — a fetched page or
+      an echoed title could plant one). Carried across pauses in
+      WorkflowResumeState.run_created. Values in the workflow's own text are
+      NOT trusted (anyone who can PUT the workflow could change them without
+      review) — asked once, then remembered.
     - Anything else is HELD: not run, no budget spent, the model gets a
       "held for approval, don't retry" result, audited "held for approval";
-      <= 10 per step, <= 16 KB args each, else refused.
+      <= 10 per step, <= 16 KB args each, else refused; an identical repeat
+      is held once. A step that errors after holding audits them as dropped
+      and says so in its error.
     - After the step, the engine yields WaitForHumanEvent to
       approved_targets.approver_for(name): the workflow's owner
       (dynamic_workflows.owner_person_id — set on insert only from the web

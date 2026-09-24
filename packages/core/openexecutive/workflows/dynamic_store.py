@@ -12,6 +12,7 @@ deserialising every row's body.
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -44,7 +45,12 @@ def initialize_dynamic_workflows_db(db_path: Path | None = None) -> None:
         # only, so edits, overwrites and activation keep the original.
         columns = {r[1] for r in conn.execute("PRAGMA table_info(dynamic_workflows)")}
         if "owner_person_id" not in columns:
-            conn.execute("ALTER TABLE dynamic_workflows ADD COLUMN owner_person_id INTEGER")
+            try:
+                conn.execute("ALTER TABLE dynamic_workflows ADD COLUMN owner_person_id INTEGER")
+            except sqlite3.OperationalError as exc:
+                # Another process (API, scheduler, a bot) added it first.
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
 
 def upsert_definition(

@@ -953,3 +953,65 @@ def test_requeue_with_cutoff_spares_a_freshly_heartbeated_run() -> None:
     assert wf_persistence.requeue_run_for_resume(
         "res-1", stale_before=datetime.now(UTC) + timedelta(minutes=1)
     ) is True
+
+
+def _scheduled_resume_state() -> str:
+    state = json.loads(_RESUME_STATE)
+    state["deliver_to_person_id"] = 11
+    return json.dumps(state)
+
+
+def _capture_dms(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    sent: list[dict] = []
+
+    async def _send(payload: dict) -> str:
+        sent.append(payload)
+        return "{}"
+
+    monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", _send)
+    return sent
+
+
+def test_resumed_scheduled_run_dms_its_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scheduled run that paused (held writes) completes in the resumer, which
+    makes the delivery the scheduler would have made."""
+    from openexecutive.workflows.resumer import _process_resumable
+
+    sent = _capture_dms(monkeypatch)
+    _resolved(resume_state=_scheduled_resume_state())
+    _install_stub(monkeypatch, _real_workflow())
+    assert asyncio.run(_process_resumable(datetime.now(UTC))) == 1
+    assert sent == [{"person_id": 11, "text": "# Final artifact"}]
+
+    # A run with no scheduled recipient delivers nothing.
+    sent.clear()
+    _resolved(run_id="res-2")
+    _install_stub(monkeypatch, _real_workflow())
+    asyncio.run(_process_resumable(datetime.now(UTC)))
+    assert sent == []
+
+
+def test_a_later_pause_keeps_the_scheduled_recipient(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.workflows.resumer import _process_resumable
+    from openexecutive.workflows.wait_for_human import WaitForHumanEvent, WorkflowResumeState
+
+    sent = _capture_dms(monkeypatch)
+    later = WaitForHumanEvent(
+        person_id=7, question="Again?",
+        resume_state=WorkflowResumeState(
+            workflow_name="weekly_watch", gate_step_id="gate", gate_step_index=1,
+            steps_fingerprint="x",
+        ),
+    )
+    checkpointed: list[WaitForHumanEvent] = []
+
+    async def _checkpoint(*, event: WaitForHumanEvent, **_kw: object) -> None:
+        checkpointed.append(event)
+
+    monkeypatch.setattr("openexecutive.workflows.gate.checkpoint_gate", _checkpoint)
+    _resolved(resume_state=_scheduled_resume_state())
+    _install_stub(monkeypatch, _real_workflow([later]))
+    asyncio.run(_process_resumable(datetime.now(UTC)))
+    assert checkpointed[0].resume_state is not None
+    assert checkpointed[0].resume_state.deliver_to_person_id == 11
+    assert sent == []
