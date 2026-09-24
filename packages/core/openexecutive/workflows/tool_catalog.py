@@ -50,9 +50,13 @@ _READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv
 # The gateway reports no read-only hints, so this is a LABEL for the human,
 # never a security control — the allowlist and the gateway's own gates are.
 _READ_VERBS = (
-    "get_", "list_", "search_", "read_", "fetch", "query_", "find_",
+    "get_", "list_", "search_", "read_", "query_", "find_",
     "check_", "describe_", "inspect_", "debug_",
 )
+# A tool that takes a URL can carry data OUT (the URL itself, or a request
+# body), whatever its name says — e.g. `fetch__fetch`. Never label one as
+# reads-only: the review card must show the user it can reach the outside.
+_EGRESS_PARAM_HINTS = ("url", "uri", "endpoint", "webhook")
 
 
 @dataclass(frozen=True)
@@ -84,7 +88,12 @@ class ToolCatalogError(RuntimeError):
     """A tool lookup could not be completed (e.g. no gateway). Fixed-string."""
 
 
-def _read_only_label(name: str) -> bool | None:
+def _read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> bool | None:
+    props = (input_schema or {}).get("properties")
+    if isinstance(props, dict) and any(
+        hint in str(key).lower() for key in props for hint in _EGRESS_PARAM_HINTS
+    ):
+        return None
     bare = name.split("__", 1)[-1].lower()
     return True if bare.startswith(_READ_VERBS) else None
 
@@ -104,9 +113,16 @@ def _read_only_label(name: str) -> bool | None:
 #
 # or "No matching tools found…" when nothing matches.
 
-_BLOCK_RE = re.compile(r"^## (?P<name>\S+)\s*$", re.MULTILINE)
-_DESC_RE = re.compile(r"^\*\*Description:\*\*\s?(?P<desc>.*)$", re.MULTILINE)
-_SCHEMA_RE = re.compile(r"```json\s*\n(?P<schema>.*?)\n```", re.DOTALL)
+# A block starts at a "## name" line IMMEDIATELY followed by the
+# "**Description:**" line — a bare "## Heading" inside a multi-line tool
+# description is not a new tool.
+_BLOCK_RE = re.compile(
+    r"^## (?P<name>\S+)[ \t]*\n\*\*Description:\*\*[ \t]?(?P<desc>[^\n]*)", re.MULTILINE
+)
+# The schema is the fenced JSON right after the LAST "**Parameters:**" line of
+# the block, so a ```json example inside a description is never taken for it.
+_PARAMS_MARKER = "\n**Parameters:**\n"
+_SCHEMA_RE = re.compile(r"\A```json[ \t]*\n(?P<schema>.*?)\n```", re.DOTALL)
 
 
 def parse_search_results(text: str) -> list[ToolInfo]:
@@ -119,9 +135,11 @@ def parse_search_results(text: str) -> list[ToolInfo]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         block = text[m.end():end]
         name = m.group("name")
-        desc_match = _DESC_RE.search(block)
         schema: dict[str, Any] = {}
-        schema_match = _SCHEMA_RE.search(block)
+        cut = block.rfind(_PARAMS_MARKER)
+        schema_match = (
+            _SCHEMA_RE.match(block[cut + len(_PARAMS_MARKER):]) if cut >= 0 else None
+        )
         if schema_match:
             try:
                 parsed = json.loads(schema_match.group("schema"))
@@ -132,9 +150,9 @@ def parse_search_results(text: str) -> list[ToolInfo]:
         tools.append(
             ToolInfo(
                 name=name,
-                description=(desc_match.group("desc").strip() if desc_match else ""),
+                description=m.group("desc").strip(),
                 input_schema=schema,
-                read_only=_read_only_label(name),
+                read_only=_read_only_label(name, schema),
                 source="mcp",
             )
         )
@@ -337,6 +355,26 @@ def gateway_available() -> bool:
     return _gateway() is not None
 
 
+async def validate_definition_and_tools(defn: DynamicWorkflowDef) -> list[str]:
+    """Every save-time check: structural rules, then (if those pass) tool
+    availability. The one entry point for every path that stores a
+    definition, so none can forget the async half."""
+    from openexecutive.workflows.dynamic_models import validate_definition
+
+    return validate_definition(defn) or await validate_tools_available(defn)
+
+
+async def unavailable_step_tools(defn: DynamicWorkflowDef) -> list[str]:
+    """Names of action-step tools that do not resolve right now (sorted)."""
+    from openexecutive.workflows.dynamic_models import ActionStepSpec
+
+    wanted = sorted({t for s in defn.steps if isinstance(s, ActionStepSpec) for t in s.tools})
+    if not wanted:
+        return []
+    found = await resolve(wanted)
+    return [t for t in wanted if t not in found]
+
+
 async def validate_tools_available(defn: DynamicWorkflowDef) -> list[str]:
     """Errors for every action-step tool that does not resolve (empty == OK).
 
@@ -344,13 +382,7 @@ async def validate_tools_available(defn: DynamicWorkflowDef) -> list[str]:
     with a tool the system can't reach — a typo, a hallucinated name, or a
     tool the gateway's deny-list filters out.
     """
-    from openexecutive.workflows.dynamic_models import ActionStepSpec
-
-    wanted = sorted({t for s in defn.steps if isinstance(s, ActionStepSpec) for t in s.tools})
-    if not wanted:
-        return []
-    found = await resolve(wanted)
-    missing = [t for t in wanted if t not in found]
+    missing = await unavailable_step_tools(defn)
     if not missing:
         return []
     needs_gateway = [t for t in missing if not t.startswith(BUILTIN_PREFIX)]

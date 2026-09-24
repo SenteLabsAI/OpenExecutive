@@ -832,3 +832,82 @@ def test_a_second_gate_pause_is_not_counted_as_a_completion(
     )
 
     assert asyncio.run(_process_resumable(datetime.now(UTC))) == 0
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat — a long resume (workflow action steps) must never look dead
+# ---------------------------------------------------------------------------
+
+
+def test_touch_resume_claim_only_for_the_live_claim() -> None:
+    _resolved()
+    token = wf_persistence.claim_run_for_resume("res-1")
+    assert token is not None
+    before = wf_persistence.get_run("res-1")["resumed_at"]
+    assert wf_persistence.touch_resume_claim("res-1", token) is True
+    assert wf_persistence.get_run("res-1")["resumed_at"] >= before
+    assert wf_persistence.touch_resume_claim("res-1", "not-the-claim") is False
+
+
+def test_heartbeat_keeps_a_long_resume_off_the_stale_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Events refresh `resumed_at`, so the stale sweep never requeues (and
+    replays the side effects of) a resume that is still working."""
+    from openexecutive.workflows import resumer
+    from openexecutive.workflows.base import WorkflowEvent
+
+    monkeypatch.setattr(resumer, "_RESUME_HEARTBEAT_EVERY", timedelta(0))
+    _resolved()
+    wf = _real_workflow()
+    seen_stale: list[list[str]] = []
+
+    async def _resume(*, inputs, state, resolution, store):  # noqa: ANN001, ANN202
+        # Pretend this worker has been busy for longer than the stale window.
+        with wf_persistence._get_conn(wf_persistence._resolve(None)) as conn:
+            conn.execute(
+                "UPDATE workflow_runs SET resumed_at = ? WHERE run_id = 'res-1'",
+                ((datetime.now(UTC) - timedelta(days=1)).isoformat(),),
+            )
+        yield WorkflowEvent(type="progress", step_id="act", summary="Using a tool…")
+        seen_stale.append(
+            wf_persistence.list_stale_resuming_runs(
+                datetime.now(UTC) - resumer._RESUME_STALE_AFTER, 3
+            )
+        )
+        yield WorkflowEvent(type="artifact", content="# Done")
+
+    wf.resume = _resume  # type: ignore[method-assign]
+    _install_stub(monkeypatch, wf)
+    asyncio.run(resumer._process_resumable(datetime.now(UTC)))
+    assert seen_stale == [[]]
+    assert wf_persistence.get_run("res-1")["status"] == "done"
+
+
+def test_a_superseded_resume_stops_before_acting_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the sweep handed the run to another worker, this one must stop at
+    its next event — not carry on sending/writing a second time."""
+    from openexecutive.workflows import resumer
+    from openexecutive.workflows.base import WorkflowEvent
+
+    monkeypatch.setattr(resumer, "_RESUME_HEARTBEAT_EVERY", timedelta(0))
+    _resolved()
+    wf = _real_workflow()
+    reached: list[str] = []
+
+    async def _resume(*, inputs, state, resolution, store):  # noqa: ANN001, ANN202
+        yield WorkflowEvent(type="progress", step_id="act", summary="Using x…")
+        wf_persistence.requeue_run_for_resume("res-1")  # the sweep gave up on us…
+        wf_persistence.claim_run_for_resume("res-1")  # …and another worker took it
+        yield WorkflowEvent(type="progress", step_id="act", summary="Using y…")
+        reached.append("kept going")
+        yield WorkflowEvent(type="artifact", content="# must not land")
+
+    wf.resume = _resume  # type: ignore[method-assign]
+    _install_stub(monkeypatch, wf)
+    assert asyncio.run(resumer._process_resumable(datetime.now(UTC))) == 0
+    assert reached == []
+    run = wf_persistence.get_run("res-1")
+    assert run["status"] == "running" and run["artifact"] is None

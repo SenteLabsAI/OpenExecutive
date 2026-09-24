@@ -468,6 +468,33 @@ def claim_run_for_resume(run_id: str, db_path: Path | None = None) -> str | None
         return token if cur.rowcount > 0 else None
 
 
+def touch_resume_claim(run_id: str, claim: str, db_path: Path | None = None) -> bool:
+    """Heartbeat a live resume: bump ``resumed_at`` while ``claim`` still holds.
+
+    The stale sweep measures a claim's age from ``resumed_at``. A resume that
+    runs workflow ``action`` steps can legitimately outlast any fixed window
+    (tool calls, several steps), and a requeue while it is still alive would
+    replay its external side effects on a second worker. The resumer calls this
+    as events flow, so a live worker never looks dead. Returns False once the
+    claim has been superseded — the caller must stop acting.
+    """
+    if not _resolve(db_path).exists():
+        return False
+    now = datetime.now(UTC).isoformat()
+    with _get_conn(_resolve(db_path)) as conn:
+        cur = conn.execute(
+            """
+            UPDATE workflow_runs
+               SET resumed_at = ?
+             WHERE run_id = ?
+               AND resume_claim = ?
+               AND status = 'running'
+            """,
+            (now, run_id, claim),
+        )
+        return cur.rowcount > 0
+
+
 def finish_resumed_run(
     run_id: str,
     claim: str,

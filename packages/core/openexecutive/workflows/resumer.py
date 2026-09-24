@@ -70,6 +70,10 @@ _RESUME_STALE_AFTER = timedelta(minutes=90)
 # Bound on those requeues, so a run that reliably kills its worker stops
 # rather than looping forever.
 _MAX_RESUME_ATTEMPTS = 3
+# A live resume refreshes its claim (``touch_resume_claim``) at most this
+# often while events flow — each action-step tool call emits one — so a long
+# but healthy run never ages past _RESUME_STALE_AFTER and is never replayed.
+_RESUME_HEARTBEAT_EVERY = timedelta(minutes=1)
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +412,7 @@ async def _execute_resume(
     store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
     artifact = ""
     last_error = ""
+    last_heartbeat = datetime.now(UTC)
     # No handler here: a crash propagates to the caller, which routes it
     # through `_abandon_resume` — the one failure path both entry points share.
     async for event in workflow.resume(
@@ -447,6 +452,17 @@ async def _execute_resume(
                 },
             )
             return False
+        now = datetime.now(UTC)
+        if now - last_heartbeat >= _RESUME_HEARTBEAT_EVERY:
+            last_heartbeat = now
+            if not _wf_persistence.touch_resume_claim(run_id, claim, db_path=db_path):
+                # Superseded: another worker owns this run now. Stop before the
+                # next step acts again (action steps have external effects).
+                logger.warning(
+                    "resumer: run %s lost its claim mid-resume — stopping this worker",
+                    run_id,
+                )
+                return False
         if event.type == "artifact" and event.content:
             artifact = event.content
         elif event.type == "error" and event.message:

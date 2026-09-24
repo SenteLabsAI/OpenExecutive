@@ -289,9 +289,49 @@ async def test_provider_failure_is_a_fixed_error(
 def test_looks_like_error() -> None:
     assert act.looks_like_error('{"error": "no"}')
     assert act.looks_like_error("Error: Unknown tool 'x'")
+    assert act.looks_like_error("Error calling tool 'x': boom")
     assert act.looks_like_error("Tool error: boom")
     assert not act.looks_like_error("Appended 1 row")
     assert not act.looks_like_error('{"result": "ok"}')
+    # Successful results that merely mention errors are NOT failures — a false
+    # positive invites the model to retry a write that already happened.
+    assert not act.looks_like_error("Errors column: none")
+    assert not act.looks_like_error("Error report Q3 — 4 rows")
+    assert not act.looks_like_error('{"values": [1], "error": null}')
+    assert not act.looks_like_error('{"error": ""}')
+
+
+@pytest.mark.asyncio
+async def test_empty_text_blocks_are_not_sent_back(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    """The API rejects an empty text block in a replayed assistant turn."""
+    provider = _ScriptedProvider(
+        [_resp(_text(""), _use(READ, {}, "tu_1")), _resp(_text("Done."))]
+    )
+    _install(monkeypatch, provider)
+    await _run(_step())
+    assistant = provider.calls[1]["messages"][1]
+    assert assistant["role"] == "assistant"
+    assert all(b["type"] != "text" for b in assistant["content"])
+
+
+@pytest.mark.asyncio
+async def test_running_out_of_turns_is_a_failure_that_lists_what_was_done(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    """A model that never reports (e.g. keeps naming refused tools) must not
+    be recorded as a successful step."""
+    step = _step(max_tool_calls=1)
+    turns = step.max_tool_calls + act._EXTRA_TURNS
+    provider = _ScriptedProvider(
+        [_resp(_use(READ, {}, "tu_0"))]
+        + [_resp(_use("srv__forbidden", {}, f"tu_{i}")) for i in range(1, turns)]
+    )
+    _install(monkeypatch, provider)
+    out = await _run(step)
+    assert out[-1][0] == "error"
+    assert "turn limit" in out[-1][1] and f"{READ} (ok)" in out[-1][1]
 
 
 # --- engine wiring -----------------------------------------------------------
@@ -354,3 +394,33 @@ async def test_engine_surfaces_an_action_step_error(
     events = [e async for e in wf.run(wf.input_model()(), store=None)]  # type: ignore[arg-type]
     assert events[-1].type == "error" and "srv__gone" in (events[-1].message or "")
     assert not any(e.type == "artifact" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_preflight_fails_before_any_step_acts(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    """A missing tool in a LATER step must stop the run before an earlier
+    step sends or writes anything."""
+    monkeypatch.setattr(
+        "openexecutive.workflows.dynamic.load_or_create_profile",
+        lambda: SimpleNamespace(name="Northwind", is_empty=lambda: True),
+    )
+    provider = _ScriptedProvider([])
+    _install(monkeypatch, provider)
+    defn = DynamicWorkflowDef.model_validate(
+        {
+            "name": "two_actions",
+            "title": "Two actions",
+            "steps": [
+                {"kind": "action", "id": "first", "title": "First", "goal": "Append.", "tools": [APPEND]},
+                {"kind": "action", "id": "second", "title": "Second", "goal": "Go.", "tools": ["srv__gone"]},
+                {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+            ],
+        }
+    )
+    wf = DynamicWorkflow(defn)
+    events = [e async for e in wf.run(wf.input_model()(), store=None)]  # type: ignore[arg-type]
+    assert [e.type for e in events] == ["error"]
+    assert "srv__gone" in (events[0].message or "") and "did not start" in (events[0].message or "")
+    assert provider.calls == [] and gateway.calls == []

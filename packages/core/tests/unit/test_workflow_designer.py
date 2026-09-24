@@ -566,3 +566,40 @@ def test_context_block_reports_gateway_and_builtins(monkeypatch: pytest.MonkeyPa
     assert "NOT running" in block and "oe__read_file" in block
     monkeypatch.setattr(wd.tool_catalog, "gateway_available", lambda: True)
     assert "connected" in wd.build_context_block()
+
+
+@pytest.mark.asyncio
+async def test_found_tools_survive_into_a_forced_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forced draft can't search, so the names earlier searches found must
+    be replayed into it — otherwise the model has to guess them."""
+    _fake_catalog(monkeypatch, {"sheets__append_rows"})
+    discovered: dict[str, str] = {}
+    provider = _ScriptedProvider(
+        [
+            _search_response("append rows to a sheet", "s1"),
+            _tool_response(wd.ASK_TOOL_NAME, {"question": "Which sheet?"}),
+            _tool_response(wd.EMIT_TOOL_NAME, _emit(steps=_ACTION_STEPS)),
+        ]
+    )
+    _install(monkeypatch, provider)
+    transcript = _opening("File emailed bills into my sheet.")
+    first = await wd.advance(transcript, discovered_tools=discovered)
+    assert isinstance(first, wd.DesignerQuestion)
+    assert "sheets__append_rows" in discovered
+
+    transcript += [Turn(role="assistant", text=first.question), Turn(role="user", text="Bill tracker")]
+    draft = await wd.advance(transcript, discovered_tools=discovered, force_draft=True)
+    assert isinstance(draft, wd.WorkflowDraft)
+    forced = provider.calls[-1]
+    assert forced["tool_choice"] == {"type": "tool", "name": wd.EMIT_TOOL_NAME}
+    assert "sheets__append_rows" in forced["messages"][-1]["content"]
+
+
+def test_discovered_tools_are_bounded() -> None:
+    discovered: dict[str, str] = {}
+    wd._remember(
+        discovered,
+        [wd.tool_catalog.ToolInfo(name=f"srv__t{i}", description="d") for i in range(wd.MAX_DISCOVERED_TOOLS + 5)],
+    )
+    assert len(discovered) == wd.MAX_DISCOVERED_TOOLS
+    assert "srv__t0" not in discovered and f"srv__t{wd.MAX_DISCOVERED_TOOLS + 4}" in discovered

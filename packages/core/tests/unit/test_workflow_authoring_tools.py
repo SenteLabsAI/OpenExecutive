@@ -131,3 +131,23 @@ def test_save_rejects_builtin_collision() -> None:
     out = _draft(definition)
     # Even drafting fails validation (built-in collision).
     assert "error" in out and "built-in" in out["error"]
+
+
+def _action_definition() -> dict[str, Any]:
+    d = _valid_definition()
+    d["steps"] = [
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "Add {topic} bills to the sheet.", "tools": ["oe__read_file"]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ]
+    return d
+
+
+def test_chat_cannot_create_tool_using_workflows() -> None:
+    """Chat 'confirmation' is a token the model holds itself; tool approval
+    has to happen on the Jobs page review card, so both tools refuse."""
+    drafted = _draft(_action_definition())
+    assert "error" in drafted and "/jobs/new" in drafted["error"]
+    saved = _save(_action_definition(), wat._canonical_token(_action_definition()))
+    assert "error" in saved and "Jobs page" in saved["error"]
+    assert dynamic_store.get_definition("weekly_watch") is None

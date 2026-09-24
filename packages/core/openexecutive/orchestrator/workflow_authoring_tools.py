@@ -64,7 +64,7 @@ DEFINITION_SCHEMA: dict[str, Any] = {
                 "'action' {id,title,goal,tools,max_tool_calls?} (gets something done with "
                 "tools — 'tools' is the exact list of tool names the step may call, e.g. "
                 "'google_workspace__append_table_rows' or 'oe__read_file'; max_tool_calls "
-                "1-50, default 20), "
+                "is optional — omit it for the default budget), "
                 "'approval_gate' {id,title,person_id,question,timeout_hours?,on_timeout?}, "
                 "or 'synthesis' {id,title,instructions?,specialist?}. "
                 "Exactly ONE synthesis step, and it MUST be last. Goals may use "
@@ -101,7 +101,9 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "the SAME definition and the confirm_token. Do NOT invent specialists, "
         "people, or metrics — only use the 8 specialist roles and people the "
         "user has identified. If validation fails, the response lists exactly "
-        "what to fix; re-draft and try again."
+        "what to fix; re-draft and try again. Workflows that must ACT with "
+        "tools (email, spreadsheets, files) cannot be created here: send the "
+        "user to the Jobs page (/jobs/new), where they approve the tools."
     ),
     "input_schema": {
         "type": "object",
@@ -153,11 +155,9 @@ def _canonical_token(definition: dict[str, Any]) -> str:
 
 async def _build_def(definition: Any) -> tuple[Any, str | None]:
     """Validate shape + rules. Returns (DynamicWorkflowDef, None) or (None, error)."""
-    from openexecutive.workflows.dynamic_models import (
-        DynamicWorkflowDef,
-        validate_definition,
-    )
-    from openexecutive.workflows.tool_catalog import validate_tools_available
+    from openexecutive.config import get_settings
+    from openexecutive.workflows.dynamic_models import ActionStepSpec, DynamicWorkflowDef
+    from openexecutive.workflows.tool_catalog import validate_definition_and_tools
 
     if not isinstance(definition, dict):
         return None, "definition must be an object"
@@ -165,7 +165,17 @@ async def _build_def(definition: Any) -> tuple[Any, str | None]:
         defn = DynamicWorkflowDef.model_validate(definition)
     except ValidationError as exc:
         return None, f"definition shape invalid: {exc.errors()}"
-    errors = validate_definition(defn) or await validate_tools_available(defn)
+    if any(isinstance(step, ActionStepSpec) for step in defn.steps):
+        # Tool-using steps act on the user's accounts unattended. Their
+        # approval is the review card on the Jobs page — a chat confirmation
+        # (a token this model holds itself) is not a human seeing the tools.
+        base = get_settings().ui_base_url.rstrip("/")
+        return None, (
+            "workflows with action (tool-using) steps can't be created from "
+            "chat — the user has to review and approve the tools on the Jobs "
+            f"page. Tell them to describe it at {base}/jobs/new"
+        )
+    errors = await validate_definition_and_tools(defn)
     if errors:
         return None, "validation failed: " + "; ".join(errors)
     return defn, None

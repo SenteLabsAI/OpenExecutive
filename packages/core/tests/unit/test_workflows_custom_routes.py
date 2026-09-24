@@ -181,3 +181,22 @@ def test_tool_describe_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPa
         ("oe__message_person", None),
         ("oe__read_file", True),
     ]
+
+
+def test_tool_describe_ignores_malformed_and_duplicate_names(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    searched: list[str] = []
+
+    async def _resolve(names: list[str]) -> dict[str, Any]:
+        searched.extend(names)
+        return {}
+
+    monkeypatch.setattr(
+        "openexecutive.api.routes.workflows.resolve_tools_catalog", _resolve
+    )
+    client.get(
+        "/workflows/tools/describe",
+        params={"names": "srv__a,srv__a,has space,semi;colon," + "x" * 70},
+    )
+    assert searched == ["srv__a"]

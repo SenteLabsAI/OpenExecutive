@@ -60,6 +60,7 @@ from openexecutive.workflows.dynamic_models import (
     SpecialistStepSpec,
     SynthesisStepSpec,
 )
+from openexecutive.workflows.tool_catalog import unavailable_step_tools
 from openexecutive.workflows.wait_for_human import (
     CONTINUE_DECISIONS,
     DECISION_VERBS,
@@ -185,6 +186,13 @@ class DynamicWorkflow(Workflow):
         if stale:
             yield _stale_error(stale)
             return
+        # Same promise for action steps: a tool that vanished (server removed,
+        # deny-listed, gateway down) fails the run BEFORE any step acts, not
+        # after earlier steps already sent or changed something.
+        missing_tools = await unavailable_step_tools(self._defn)
+        if missing_tools:
+            yield _missing_tools_error(missing_tools)
+            return
 
         # --- context ---
         yield WorkflowEvent(
@@ -231,6 +239,10 @@ class DynamicWorkflow(Workflow):
         stale = _stale_specialist_steps(self._defn)
         if stale:
             yield _stale_error(stale)
+            return
+        missing_tools = await unavailable_step_tools(self._defn)
+        if missing_tools:
+            yield _missing_tools_error(missing_tools)
             return
 
         gate = self._gate_for_resume(state)
@@ -591,6 +603,16 @@ def _format_resolution(
 
     body = "\n".join(part for part in lines if part).strip()
     return f"## {step.title}\n\n{body}\n"
+
+
+def _missing_tools_error(missing: list[str]) -> WorkflowEvent:
+    return WorkflowEvent(
+        type="error",
+        message=(
+            "these tools are not available right now, so the workflow did not "
+            f"start: {', '.join(missing)}"
+        ),
+    )
 
 
 def _stale_specialist_steps(defn: DynamicWorkflowDef) -> list[tuple[str, str]]:

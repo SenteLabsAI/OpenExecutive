@@ -261,3 +261,29 @@ def test_default_download_dir_is_workspace_mcps(monkeypatch: pytest.MonkeyPatch)
     ]
     monkeypatch.setenv("WORKSPACE_ATTACHMENT_DIR", "/srv/att")
     assert tc._allowed_file_dirs() == [Path("/srv/att").resolve()]
+
+
+def test_parser_ignores_headings_and_json_inside_descriptions() -> None:
+    """extensible-mcp writes descriptions verbatim; a '## Returns' line or a
+    ```json example in one must not fork a fake tool or replace the schema."""
+    real_schema = {"type": "object", "properties": {"range": {"type": "string"}}}
+    description = (
+        "Reads a sheet.\n## Returns\nvalues\nExample:\n```json\n{\"type\": \"string\"}\n```"
+    )
+    text = _search_text(_block("sheets__read_values", description, real_schema))
+    [tool] = tc.parse_search_results(text)
+    assert tool.name == "sheets__read_values"
+    assert tool.input_schema == real_schema
+
+
+def test_url_taking_tools_are_never_labelled_read_only() -> None:
+    """`fetch` can carry data out in its URL — the review card must not say
+    it only reads."""
+    fetch_schema = {"type": "object", "properties": {"url": {"type": "string"}}}
+    text = _search_text(
+        _block("fetch__fetch", "Fetch a URL.", fetch_schema),
+        _block("web__get_page", "Get a page.", {"type": "object", "properties": {"page_uri": {}}}),
+        _block("sheets__get_values", "Read.", {"type": "object", "properties": {"range": {}}}),
+    )
+    labels = {t.name: t.read_only for t in tc.parse_search_results(text)}
+    assert labels == {"fetch__fetch": None, "web__get_page": None, "sheets__get_values": True}

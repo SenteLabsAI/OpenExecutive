@@ -48,7 +48,7 @@ function newStep(kind: StepKind, idx: number): DynamicStep {
       on_timeout: "escalate",
     };
   if (kind === "action")
-    return { kind, id, title: "", goal: "", tools: [], max_tool_calls: 20 };
+    return { kind, id, title: "", goal: "", tools: [] };
   return { kind, id, title: "Assemble", instructions: "", specialist: "cso" };
 }
 
@@ -803,8 +803,15 @@ function StepEditor({
               min={1}
               max={50}
               className={inputCls}
-              value={step.max_tool_calls ?? 20}
-              onChange={(e) => onChange({ max_tool_calls: Number(e.target.value) })}
+              placeholder="20 (default)"
+              value={step.max_tool_calls ?? ""}
+              onChange={(e) =>
+                // Empty means "use the server default" — undefined is dropped
+                // from the saved JSON, where 0 would fail validation.
+                onChange({
+                  max_tool_calls: e.target.value === "" ? undefined : Number(e.target.value),
+                })
+              }
             />
           </div>
         </>

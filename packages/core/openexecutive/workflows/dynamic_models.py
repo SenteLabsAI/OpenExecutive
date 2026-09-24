@@ -53,9 +53,10 @@ _MAX_GOAL_CHARS = 4000
 # Action steps: the tool allowlist IS the user's approval, so it is kept short
 # enough to read on the review card. Names are the exact tool names the engine
 # will call — MCP tools are ``server__tool``; built-ins are ``oe__*``.
-_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MAX_STEP_TOOLS = 16
 MAX_TOOL_CALLS_CAP = 50
+DEFAULT_MAX_TOOL_CALLS = 20
 # The gateway's own meta-tools. A step naming one of these could reach every
 # downstream tool (call_tool) or attach a new server (load_mcp_server), which
 # would make the per-step allowlist meaningless.
@@ -165,7 +166,7 @@ class ActionStepSpec(BaseModel):
     description: str = ""
     goal: str
     tools: list[str] = Field(default_factory=list)
-    max_tool_calls: int = 20
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
 
 
 StepSpec = Annotated[
@@ -242,7 +243,7 @@ def _check_action_tools(step: ActionStepSpec) -> list[str]:
     if len(set(step.tools)) != len(step.tools):
         errors.append(f"action step {step.id!r} lists a tool more than once")
     for tool in step.tools:
-        if not _TOOL_NAME_RE.match(tool):
+        if not TOOL_NAME_RE.match(tool):
             errors.append(f"action step {step.id!r} has an invalid tool name {tool!r}")
         elif tool in FORBIDDEN_STEP_TOOLS:
             errors.append(

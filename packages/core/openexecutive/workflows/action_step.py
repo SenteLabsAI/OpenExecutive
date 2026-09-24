@@ -56,20 +56,27 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "\n…[truncated]"
 
 
+# The exact prefixes extensible-mcp (pinned in mcp_gateway.py) puts on a
+# failed call. Anything else — including a successful result that merely
+# starts with the word "Error" — is not a failure.
+_GATEWAY_ERROR_PREFIXES = ("Error: ", "Error calling tool ", "Tool error:")
+
+
 def looks_like_error(text: str) -> bool:
     """Whether a tool result reports failure.
 
-    Built-ins return ``{"error": …}``; the gateway returns ``Error: …`` /
-    ``Tool error: …`` text; ``MCPGateway``'s own gates return ``{"error": …}``.
+    Built-ins and ``MCPGateway``'s own gates return ``{"error": "…"}`` (a
+    null or empty ``error`` is not a failure); the gateway itself returns
+    text with one of ``_GATEWAY_ERROR_PREFIXES``.
     """
     stripped = text.lstrip()
-    if stripped.startswith(("Error", "Tool error:")):
+    if stripped.startswith(_GATEWAY_ERROR_PREFIXES):
         return True
     try:
         parsed = json.loads(stripped)
     except (ValueError, TypeError):
         return False
-    return isinstance(parsed, dict) and "error" in parsed
+    return isinstance(parsed, dict) and bool(parsed.get("error"))
 
 
 def _user_turn(
@@ -107,7 +114,9 @@ def _user_turn(
 def _block_to_dict(block: Any) -> dict[str, Any] | None:
     kind = getattr(block, "type", None)
     if kind == "text":
-        return {"type": "text", "text": getattr(block, "text", "")}
+        text = getattr(block, "text", "") or ""
+        # The API rejects an empty text block when it is sent back.
+        return {"type": "text", "text": text} if text.strip() else None
     if kind == "tool_use":
         return {
             "type": "tool_use",
@@ -129,7 +138,7 @@ def _audit(workflow_name: str, step_id: str, tool: str, outcome: str) -> None:
     )
 
 
-async def _execute(name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo) -> str:
+async def _dispatch(name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo) -> str:
     if info.source == "builtin":
         handler = tool_catalog.builtin_handler(name)
         if handler is None:  # resolve() only returns names with handlers
@@ -143,6 +152,57 @@ async def _execute(name: str, arguments: dict[str, Any], info: tool_catalog.Tool
     return await gateway.call_tool({"name": name, "arguments": arguments})
 
 
+async def _call_tool(
+    name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo
+) -> tuple[str, bool]:
+    """Run one approved tool call. Returns (result text, is_error); never raises."""
+    try:
+        content = await asyncio.wait_for(
+            _dispatch(name, arguments, info), timeout=_TOOL_CALL_TIMEOUT_S
+        )
+    except TimeoutError:
+        return json.dumps({"error": "the tool timed out"}), True
+    except Exception as exc:
+        logger.warning("action step: %s raised %s", name, type(exc).__name__)
+        return json.dumps({"error": "the tool failed"}), True
+    return content, looks_like_error(content)
+
+
+def _refusal(reason: str) -> tuple[str, bool]:
+    return json.dumps({"error": reason}), True
+
+
+class _Budget:
+    """Tool calls left for this step. Only calls that actually run count."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+
+    @property
+    def spent(self) -> bool:
+        return self.used >= self.limit
+
+
+async def _model_turn(
+    provider: Any, kwargs: dict[str, Any], *, step_id: str, model: str, turn: int
+) -> tuple[Any | None, str | None]:
+    """One model call. Returns (response, None) or (None, fixed error message)."""
+    from openexecutive.audit.usage import log_model_usage
+
+    try:
+        response = await asyncio.wait_for(
+            provider.messages_create(**kwargs), timeout=get_settings().interview_timeout_s
+        )
+    except TimeoutError:
+        return None, f"step {step_id!r}: the action agent took too long to respond"
+    except Exception as exc:
+        logger.error("action step: provider call failed (%s)", type(exc).__name__)
+        return None, f"step {step_id!r}: the action agent is unavailable right now"
+    log_model_usage(response, model=model, actor=WORKFLOW_ACTOR_AGENT_ID, iteration=turn)
+    return response, None
+
+
 async def run_action_step(
     step: ActionStepSpec,
     *,
@@ -154,14 +214,13 @@ async def run_action_step(
     prior_outputs: dict[str, tuple[str, str]],
     model: str | None = None,
 ) -> AsyncIterator[StepYield]:
-    from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers.registry import get_provider
 
     resolved = await tool_catalog.resolve(list(step.tools))
     missing = [t for t in step.tools if t not in resolved]
     if missing:
-        # Names come from the stored definition (validated snake/tool-name
-        # charset), never from tool output, so they are safe to show.
+        # Names come from the stored definition (validated tool-name charset),
+        # never from tool output, so they are safe to show.
         yield (
             "error",
             f"step {step.id!r} cannot run: these tools are not available right "
@@ -193,10 +252,8 @@ async def run_action_step(
         }
     ]
     allowed = set(step.tools)
-    calls_made = 0
+    budget = _Budget(step.max_tool_calls)
     actions: list[tuple[str, str]] = []
-    report = ""
-    budget_spent = False
 
     for turn in range(step.max_tool_calls + _EXTRA_TURNS):
         kwargs: dict[str, Any] = {
@@ -206,27 +263,21 @@ async def run_action_step(
             "tools": tools,
             "messages": messages,
         }
-        if budget_spent:
+        if budget.spent:
             kwargs["tool_choice"] = {"type": "none"}
-        try:
-            response = await asyncio.wait_for(
-                provider.messages_create(**kwargs), timeout=settings.interview_timeout_s
-            )
-        except TimeoutError:
-            yield ("error", f"step {step.id!r}: the action agent took too long to respond")
+        response, failure = await _model_turn(
+            provider, kwargs, step_id=step.id, model=resolved_model, turn=turn
+        )
+        if failure is not None:
+            yield ("error", failure)
             return
-        except Exception as exc:
-            logger.error("action step: provider call failed (%s)", type(exc).__name__)
-            yield ("error", f"step {step.id!r}: the action agent is unavailable right now")
-            return
-        log_model_usage(response, model=resolved_model, actor=WORKFLOW_ACTOR_AGENT_ID, iteration=turn)
 
         blocks = [b for b in (_block_to_dict(b) for b in getattr(response, "content", []) or []) if b]
         tool_uses = [b for b in blocks if b["type"] == "tool_use"]
-        text = "\n".join(b["text"] for b in blocks if b["type"] == "text").strip()
         if not tool_uses:
-            report = text
-            break
+            report = "\n".join(b["text"] for b in blocks if b["type"] == "text").strip()
+            yield ("output", _format_output(report, actions))
+            return
 
         messages.append({"role": "assistant", "content": blocks})
         results: list[dict[str, Any]] = []
@@ -234,30 +285,17 @@ async def run_action_step(
             name = str(use["name"])
             arguments = use["input"] if isinstance(use["input"], dict) else {}
             if name not in allowed:
-                content, is_error, outcome = (
-                    json.dumps({"error": f"{name} is not one of this step's tools"}),
-                    True,
-                    "refused: not allowed",
-                )
-            elif calls_made >= step.max_tool_calls:
-                content, is_error, outcome = (
-                    json.dumps({"error": "this step's tool-call budget is used up"}),
-                    True,
-                    "refused: budget",
-                )
+                (content, is_error), outcome = _refusal(
+                    f"{name} is not one of this step's tools"
+                ), "refused: not allowed"
+            elif budget.spent:
+                (content, is_error), outcome = _refusal(
+                    "this step's tool-call budget is used up"
+                ), "refused: budget"
             else:
-                calls_made += 1
+                budget.used += 1
                 yield ("progress", f"Using {name}…")
-                try:
-                    content = await asyncio.wait_for(
-                        _execute(name, arguments, resolved[name]), timeout=_TOOL_CALL_TIMEOUT_S
-                    )
-                except TimeoutError:
-                    content = json.dumps({"error": "the tool timed out"})
-                except Exception as exc:
-                    logger.warning("action step: %s raised %s", name, type(exc).__name__)
-                    content = json.dumps({"error": "the tool failed"})
-                is_error = looks_like_error(content)
+                content, is_error = await _call_tool(name, arguments, resolved[name])
                 outcome = "error" if is_error else "ok"
             _audit(workflow_name, step.id, name, outcome)
             actions.append((name, outcome))
@@ -270,12 +308,15 @@ async def run_action_step(
                 }
             )
         messages.append({"role": "user", "content": results})
-        if calls_made >= step.max_tool_calls:
-            budget_spent = True
-    else:
-        report = report or "Stopped before finishing: the step ran out of turns."
 
-    yield ("output", _format_output(report, actions))
+    # Out of turns without a final report: the goal may be half done, so this
+    # is a failure — but say exactly what was already done.
+    done = ", ".join(f"{name} ({outcome})" for name, outcome in actions) or "nothing"
+    yield (
+        "error",
+        f"step {step.id!r} did not finish within its turn limit; tools already "
+        f"used: {done}",
+    )
 
 
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:

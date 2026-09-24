@@ -3411,8 +3411,19 @@ workflows:
     symlinks/`..` first. Action steps are allowed in cadence workflows. The
     designer gained a third constant tool, `search_available_tools`, answered
     inside the same `advance` call (≤4 per turn; tool_use/tool_result pairs are
-    never stored in the transcript). Endpoints: GET /workflows/tools/search?q=
-    and GET /workflows/tools/describe?names=.
+    never stored in the transcript; found names are kept on the session as
+    `discovered_tools` and replayed into later turns so forced drafts and
+    repair turns can use them). Endpoints: GET /workflows/tools/search?q= and
+    GET /workflows/tools/describe?names= (names regex-checked and deduped).
+    Hardening from review: tools taking a url/uri/endpoint/webhook param are
+    never labelled read-only (egress); chat draft_workflow/save_workflow refuse
+    action steps (the review card is the approval, not a model-held token);
+    run()/resume() pre-flight all action tools; running out of turns fails the
+    step; resumes heartbeat their claim (persistence.touch_resume_claim, <=1/min)
+    and stop when superseded, so a live run is never requeued and replayed.
+    Known residual risk: an approved write tool's TARGET (spreadsheet/doc id) is
+    chosen by the model, so injected content could redirect a write — only the
+    prompt rule, the allowlist and the audit bound it today.
 
     Catalog: `Workflow.background` / `WorkflowMeta.background` is True for
     the system-run built-ins (morning_brief, end_of_day_digest,
