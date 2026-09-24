@@ -2131,8 +2131,8 @@ chat:
     round-trip with a ~10s budget) is skipped on the stop path, so persisting
     first does not make the button feel dead.
 
-    `_active_stops` is single-process, exactly like `_sessions` and
-    `_last_turn_*` in the same module and `_active_cancellations` in
+    `_active_stops` is single-process, exactly like `_sessions` in the
+    same module and `_active_cancellations` in
     api/routes/evals.py (the pattern this copies). A second uvicorn worker
     would break in-flight session continuity before it broke stop. It is
     bounded (`_STOP_REGISTRY_MAX`) so a leaked entry cannot grow without limit.

@@ -63,8 +63,6 @@ def _events(body: str) -> list[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
     chat_route._active_stops.clear()
 
 
