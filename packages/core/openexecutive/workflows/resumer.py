@@ -134,8 +134,12 @@ async def apply_resolution(
     # someone is sitting in Slack having just approved it. The kick shares the
     # atomic claim with the poll loop, so this is a latency optimisation, not
     # a second execution path: if it never runs, `_tick` picks the run up.
+    # Under an operator pause the decision is recorded but the run does not
+    # move; the poll loop resumes it after the executive is resumed.
+    from openexecutive.scheduler.pause import is_paused
+
     run = _wf_persistence.get_run(run_id, db_path=db_path)
-    if run and run.get("resume_state_json"):
+    if run and run.get("resume_state_json") and not is_paused():
         _kick_resume(run_id, db_path=db_path)
 
     return True
@@ -705,8 +709,46 @@ async def run_resumer(poll_interval_seconds: int = 60) -> None:
 
     An async startup sweep runs first to apply the full on_timeout policy for
     any runs that expired while the server was down, before the first tick.
+    While the executive is paused (scheduler/pause.py) nothing runs — not the
+    startup sweep, not timeouts, not resumes — until the first unpaused
+    iteration, which then catches up on everything held.
     """
+    from openexecutive.scheduler.pause import is_paused
+
     logger.info("resumer started (poll_interval=%ds)", poll_interval_seconds)
+    # The startup sweeps act (timeout policies, resumed runs), so under an
+    # operator pause they wait for the first unpaused iteration.
+    startup_done = False
+    holding_for_pause = False
+    while True:
+        try:
+            if is_paused():
+                if not holding_for_pause:
+                    logger.warning(
+                        "resumer: executive paused — holding workflow timeouts and resumes"
+                    )
+                    holding_for_pause = True
+            else:
+                if holding_for_pause:
+                    logger.info("resumer: executive resumed")
+                    holding_for_pause = False
+                if not startup_done:
+                    startup_done = True
+                    await _startup_sweep()
+                await _tick(datetime.now(UTC))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("resumer tick failed")
+        try:
+            await asyncio.sleep(poll_interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("resumer cancelled — exiting")
+            raise
+
+
+async def _startup_sweep() -> None:
+    """Catch up on what happened while the server was down (or paused)."""
     swept = await sweep_stale_awaiting()
     if swept:
         logger.info("resumer: startup sweep processed %d stale run(s)", swept)
@@ -718,19 +760,6 @@ async def run_resumer(poll_interval_seconds: int = 60) -> None:
             logger.info("resumer: startup resumed %d run(s)", resumed)
     except Exception:
         logger.exception("resumer: startup resume sweep failed")
-    while True:
-        try:
-            now = datetime.now(UTC)
-            await _tick(now)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("resumer tick failed")
-        try:
-            await asyncio.sleep(poll_interval_seconds)
-        except asyncio.CancelledError:
-            logger.info("resumer cancelled — exiting")
-            raise
 
 
 async def _tick(now: datetime) -> None:

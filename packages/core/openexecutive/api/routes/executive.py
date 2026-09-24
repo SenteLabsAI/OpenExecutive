@@ -1,0 +1,93 @@
+"""Pause / resume the Executive's autonomous work (scheduler/pause.py).
+
+Behind the global shared-secret middleware like every other route, and
+deliberately NOT behind ``SCHEDULED_ADMIN_TOKEN``: the web UI's proxy cannot
+send that header, and the whole point of the switch is that the principal can
+flip it from any page. ``paused_by`` comes from the ``x-caller-email`` the UI
+proxy stamps from the signed-in session; direct API callers fall back to
+``"api"``.
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
+
+from openexecutive.scheduler import pause as pause_store
+
+router = APIRouter()
+
+_MAX_ACTOR_LEN = 200
+
+
+class ExecutiveStatus(BaseModel):
+    paused: bool
+    paused_at: str | None = None
+    paused_by: str | None = None
+    reason: str | None = None
+    # Pending scheduled actions already due — what fires on resume.
+    held_actions: int = 0
+
+
+class PauseBody(BaseModel):
+    reason: str | None = Field(default=None, max_length=200)
+
+
+def _caller(request: Request) -> str:
+    email = (request.headers.get("x-caller-email") or "").strip()
+    return email[:_MAX_ACTOR_LEN] or "api"
+
+
+def _status() -> ExecutiveStatus:
+    state = pause_store.get_pause_state()
+    return ExecutiveStatus(
+        **state.model_dump(), held_actions=pause_store.count_held_actions()
+    )
+
+
+@router.get("/executive/status", response_model=ExecutiveStatus)
+def get_executive_status() -> ExecutiveStatus:
+    return _status()
+
+
+@router.post("/executive/pause", response_model=ExecutiveStatus)
+def pause_executive(request: Request, body: PauseBody | None = None) -> ExecutiveStatus:
+    """Hold all autonomous work. Idempotent — re-pausing keeps the original
+    start time and reason."""
+    reason = ((body.reason if body else None) or "").strip() or None
+    was_paused = pause_store.get_pause_state().paused
+    actor = _caller(request)
+    pause_store.pause(actor, reason)
+    if not was_paused:
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "executive_paused",
+            "Executive paused — autonomous work on hold"
+            + (f": {reason}" if reason else ""),
+            actor=actor,
+            details={"reason": reason},
+        )
+    return _status()
+
+
+@router.post("/executive/resume", response_model=ExecutiveStatus)
+def resume_executive(request: Request) -> ExecutiveStatus:
+    """Release held work. Due actions fire on the next scheduler tick."""
+    prior = pause_store.get_pause_state()
+    actor = _caller(request)
+    held = pause_store.count_held_actions()
+    pause_store.resume(actor)
+    if prior.paused:
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "executive_resumed",
+            f"Executive resumed — {held} held action(s) released",
+            actor=actor,
+            details={
+                "paused_at": prior.paused_at,
+                "paused_by": prior.paused_by,
+                "held_actions": held,
+            },
+        )
+    return _status()

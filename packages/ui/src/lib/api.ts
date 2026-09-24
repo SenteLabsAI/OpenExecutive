@@ -1076,6 +1076,42 @@ export async function cancelScheduledAction(id: number): Promise<ScheduledAction
 }
 
 // ----------------------------------------------------------------------------
+// Executive pause switch — holds all autonomous work (scheduler, inbox,
+// workflow timers); chat and direct messages keep working.
+// ----------------------------------------------------------------------------
+
+export interface ExecutiveStatus {
+  paused: boolean;
+  paused_at: string | null;
+  paused_by: string | null;
+  reason: string | null;
+  // Pending scheduled actions already due — they fire on resume.
+  held_actions: number;
+}
+
+export async function getExecutiveStatus(signal?: AbortSignal): Promise<ExecutiveStatus> {
+  const res = await fetch(`${API_BASE}/executive/status`, { signal });
+  if (!res.ok) throw new Error("Failed to load executive status");
+  return res.json();
+}
+
+export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> {
+  const res = await fetch(`${API_BASE}/executive/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason?.trim() || null }),
+  });
+  if (!res.ok) throw new Error("Failed to pause the Executive");
+  return res.json();
+}
+
+export async function resumeExecutive(): Promise<ExecutiveStatus> {
+  const res = await fetch(`${API_BASE}/executive/resume`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to resume the Executive");
+  return res.json();
+}
+
+// ----------------------------------------------------------------------------
 // Workflows
 // ----------------------------------------------------------------------------
 

@@ -29,6 +29,7 @@ from openexecutive.api.routes import (
     documents,
     episodic,
     evals,
+    executive,
     fixtures,
     guide,
     health,
@@ -503,6 +504,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     initialize_runs_db()
     initialize_dynamic_workflows_db()
+    from openexecutive.scheduler.pause import initialize_pause_db, is_paused
+
+    initialize_pause_db()
+    if is_paused():
+        logging.getLogger("openexecutive").warning(
+            "Executive is PAUSED — scheduler, email poller and workflow "
+            "resumer are holding all autonomous work until resumed"
+        )
     initialize_eval_runs_db()
     initialize_user_scenarios_db()
 
@@ -832,6 +841,7 @@ def create_app() -> FastAPI:
     app.include_router(people.router, tags=["people"])
     app.include_router(today.router, tags=["today"])
     app.include_router(scheduled.router, tags=["scheduled"])
+    app.include_router(executive.router, tags=["executive"])
     app.include_router(watchlist.router, tags=["watchlist"])
     app.include_router(google_chat_router, tags=["google-chat"])
     app.include_router(telegram_router, tags=["telegram"])

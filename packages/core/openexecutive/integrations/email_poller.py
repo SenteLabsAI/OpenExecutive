@@ -652,9 +652,23 @@ async def _discover_gmail_tools(gateway: MCPGateway) -> None:
 
 async def run_email_poller(gateway: MCPGateway) -> None:
     """Async polling loop. Run as a background task; cancelled on shutdown."""
+    from openexecutive.scheduler.pause import is_paused
+
     logger.info("started (interval=%ds)", POLL_INTERVAL_SECONDS)
+    holding_for_pause = False
     while True:
         try:
+            # Operator pause: leave the inbox untouched. Unread mail stays
+            # unread and is processed on the first poll after resume.
+            if is_paused():
+                if not holding_for_pause:
+                    logger.warning("executive paused — not polling Gmail")
+                    holding_for_pause = True
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                continue
+            if holding_for_pause:
+                logger.info("executive resumed — polling Gmail again")
+                holding_for_pause = False
             await _discover_gmail_tools(gateway)
             await poll_once(gateway)
         except asyncio.CancelledError:

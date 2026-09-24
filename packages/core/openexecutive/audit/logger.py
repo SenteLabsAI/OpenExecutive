@@ -61,6 +61,8 @@ EVENT_TYPES: tuple[str, ...] = (
     "peer_memory",          # Honcho per-person memory — prefetch + sync_turn outcomes
     "memory_extraction",    # episodic extractor — proposed / stored / dropped per pass
     "attunement",           # open loops opened / closed / expired, 👍/👎 on replies
+    "executive_paused",     # operator paused autonomous work (scheduler/pause.py)
+    "executive_resumed",    # operator resumed it; held work released
 )
 
 

@@ -58,8 +58,10 @@ logger = logging.getLogger(__name__)
 CLIENT_WORKSPACE_PREFIX = "openexec-client-"
 
 # Tables preserved verbatim across slot restores — operator-level state that
-# does not belong to any one client company.
-_GLOBAL_TABLES = ("generated_fixtures",)
+# does not belong to any one client company. `executive_control` is the
+# global pause switch (scheduler/pause.py): activating a client must never
+# silently un-pause (or re-pause) the Executive.
+_GLOBAL_TABLES = ("generated_fixtures", "executive_control")
 
 # Engagement metadata lives in meta.json — deliberately OUTSIDE the swapped
 # client state, so the practice layer (cockpit, renewal awareness) can see
@@ -562,6 +564,7 @@ def _ensure_schemas() -> None:
     from openexecutive.memory.episodic import initialize_db as init_episodic
     from openexecutive.monitoring.store import initialize_db as init_monitoring
     from openexecutive.people.store import initialize_db as init_people
+    from openexecutive.scheduler.pause import initialize_pause_db
 
     # Pass the path explicitly everywhere: some initializers bind their
     # DB_PATH default at import time, which would ignore a runtime override.
@@ -582,6 +585,9 @@ def _ensure_schemas() -> None:
     init_people(db_path)
     init_departments(db_path)
     init_monitoring(db_path)
+    # Before _restore_global_tables: a slot saved before the pause switch
+    # existed lacks the table, and the restore skips tables it can't find.
+    initialize_pause_db(db_path)
     ReviewStore.initialize_db(db_path)
     # Register shipped knowledge as trusted defaults too — without this a
     # freshly activated slot has an empty review_items table until the next

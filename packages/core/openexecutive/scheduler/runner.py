@@ -21,6 +21,7 @@ from openexecutive.memory.episodic import (
     reschedule_action,
 )
 from openexecutive.orchestrator.mcp_gateway import MCPGateway
+from openexecutive.scheduler.pause import is_paused
 from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
@@ -151,11 +152,27 @@ async def run_scheduler(
     logger.info(
         "scheduler started (poll_interval=%ds)", poll_interval_seconds
     )
-    # Throttle the "no profile" log so it fires once per gap, not every poll.
+    # Throttle the "no profile" / "paused" logs so each fires once per gap,
+    # not every poll.
     holding_for_profile = False
+    holding_for_pause = False
     while True:
         try:
             now = datetime.now(UTC)
+            # Operator pause (scheduler/pause.py) comes first: paused means
+            # idle — no sweeps, no claims. Due rows stay 'pending' and fire
+            # on the first tick after resume; in-flight actions finish.
+            if is_paused():
+                if not holding_for_pause:
+                    logger.warning(
+                        "scheduler: executive paused — holding all scheduled work"
+                    )
+                    holding_for_pause = True
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+            if holding_for_pause:
+                logger.info("scheduler: executive resumed — releasing held work")
+                holding_for_pause = False
             # Alert expiry is pure DB hygiene and must not wait for
             # onboarding or a client rotation — it runs before both gates.
             _maybe_sweep_alerts(now)

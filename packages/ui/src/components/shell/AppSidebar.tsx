@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import BrandMark from "@/components/BrandMark";
+import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import Icon, { IconName } from "@/components/Icon";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import UserBadge from "@/components/UserBadge";
@@ -161,10 +162,13 @@ export default function AppSidebar({
         />
       </nav>
 
-      {/* Footer — User Guide (always-visible help) and Settings (the hub
-          for admin/power tools), kept out of the primary groups above so
+      {/* Footer — the Executive's pause switch (here, in the shared sidebar,
+          so it is one click away on every route, the chat home included),
+          User Guide (always-visible help) and Settings (the hub for
+          admin/power tools), kept out of the primary groups above so
           day-to-day nav stays focused. */}
       <div className="px-2 pb-1 border-t border-line pt-2 space-y-0.5 flex-shrink-0">
+        <ExecutiveRunSwitch variant="sidebar" />
         {[GUIDE_NAV_ITEM, SETTINGS_NAV_ITEM].map((item) => (
           <NavRow
             key={item.href}
