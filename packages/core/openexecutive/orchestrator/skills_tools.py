@@ -16,7 +16,6 @@ from openexecutive.knowledge.skills_index import search_skills as _search_skills
 from openexecutive.knowledge.skills_repo import (
     SkillConflictError,
     SkillNotFoundError,
-    SkillReadOnlyError,
 )
 from openexecutive.knowledge.store import ChromaDBStore
 
@@ -111,8 +110,9 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "update_skill",
         "description": (
-            "Refine an existing user-created skill. Built-in skills cannot be modified. "
-            "All fields are required — this is a full replace."
+            "Refine an existing user-created skill. All fields are required — this is a "
+            "full replace. Built-in skills (and the company's customized copies of them) "
+            "cannot be changed from chat: the user customizes them on the Playbooks tab."
         ),
         "input_schema": {
             "type": "object",
@@ -129,7 +129,8 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "delete_skill",
         "description": (
-            "Delete a user-created skill. Built-in skills cannot be deleted. "
+            "Delete a user-created skill. Built-in skills (and customized copies of them) "
+            "cannot be deleted or hidden from chat: the user does that on the Playbooks tab. "
             "Use sparingly — only when the user explicitly asks or the skill is clearly obsolete."
         ),
         "input_schema": {
@@ -198,7 +199,34 @@ async def handle_create_skill(input: dict[str, Any]) -> str:
     })
 
 
+# Built-in playbooks feed automated workflows by fixed name (board_prep,
+# quarterly_plan), and this tool loop also runs on inbound email and chat
+# channels. So customizing or hiding one — which changes what those
+# workflows follow — is left to a person on the Playbooks tab, never to a
+# model that a crafted message could steer.
+_BUILTIN_UI_ONLY = (
+    "'{name}' is a built-in playbook. Built-ins and customized copies of them can "
+    "only be customized, reverted or hidden by the user on the Playbooks tab "
+    "(Workflows → Playbooks). Point the user there, or save a new playbook under "
+    "a different name."
+)
+
+
+def _builtin_refusal(name: str) -> str | None:
+    try:
+        if skills_repo.is_builtin_name(name):
+            return json.dumps({"error": _BUILTIN_UI_ONLY.format(name=name), "code": "builtin"})
+    except SkillParseError as e:
+        return json.dumps({"error": str(e), "code": "invalid"})
+    return None
+
+
 async def handle_update_skill(input: dict[str, Any]) -> str:
+    if not input.get("name"):
+        return json.dumps({"error": "missing required field: name"})
+    refusal = _builtin_refusal(str(input["name"]))
+    if refusal:
+        return refusal
     try:
         skill = skills_repo.update_skill(
             name=input["name"],
@@ -212,8 +240,6 @@ async def handle_update_skill(input: dict[str, Any]) -> str:
         return json.dumps({"error": f"missing required field: {e.args[0]}"})
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
-    except SkillReadOnlyError as e:
-        return json.dumps({"error": str(e), "code": "read_only"})
     except SkillParseError as e:
         return json.dumps({"error": str(e), "code": "invalid"})
     return json.dumps({"updated": True, "name": skill.frontmatter.name})
@@ -223,13 +249,16 @@ async def handle_delete_skill(input: dict[str, Any]) -> str:
     name = input.get("name", "")
     if not name:
         return json.dumps({"error": "missing required field: name"})
+    refusal = _builtin_refusal(name)
+    if refusal:
+        return refusal
     try:
-        skills_repo.delete_skill(name, store=_get_store())
+        outcome = skills_repo.delete_skill(name, store=_get_store())
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
-    except SkillReadOnlyError as e:
-        return json.dumps({"error": str(e), "code": "read_only"})
-    return json.dumps({"deleted": True, "name": name})
+    except SkillParseError as e:
+        return json.dumps({"error": str(e), "code": "invalid"})
+    return json.dumps({"deleted": True, "name": name, "outcome": outcome})
 
 
 SKILL_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {

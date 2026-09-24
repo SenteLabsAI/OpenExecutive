@@ -713,7 +713,10 @@ async def reset_all_state(
         # the company-source rows from the shared `skills` ChromaDB
         # collection. Built-in skills (source='builtin') are preserved so
         # the box still has its default skill library after a reset.
-        from openexecutive.knowledge.skills_index import SKILLS_COLLECTION
+        from openexecutive.knowledge.skills_index import (
+            SKILLS_COLLECTION,
+            sync_builtin_skill_index,
+        )
         company_skills_dir: Path = settings.company_profile_path.parent / "skills"
         if company_skills_dir.exists():
             shutil.rmtree(company_skills_dir)
@@ -721,6 +724,9 @@ async def reset_all_state(
             collection=SKILLS_COLLECTION,
             where={"source": "company"},
         )
+        # The wiped dir held the hidden list and any customizations, so every
+        # built-in is back in effect.
+        sync_builtin_skill_index(store)
 
         # 3. Episodic rows — includes chat history, voice personas, alerts
         # state (alerts, mutes, preferences), AND the run/audit

@@ -712,6 +712,19 @@ export async function peekExternalSource(
   return res.json();
 }
 
+// Mirrors SKILL_CATEGORIES in packages/core/openexecutive/knowledge/skills.py.
+export const SKILL_CATEGORIES = [
+  "strategy",
+  "finance",
+  "hr",
+  "legal",
+  "operations",
+  "marketing",
+  "product",
+  "board",
+  "general",
+] as const;
+
 export interface SkillMeta {
   name: string;
   category: string;
@@ -719,11 +732,26 @@ export interface SkillMeta {
   when_to_use: string;
   source: "builtin" | "company";
   filename: string;
+  /** A company skill that replaces a built-in of the same name. */
+  customized: boolean;
+  /** A built-in hidden for this company (only listed with includeHidden). */
+  hidden: boolean;
 }
 
 export interface SkillDetail extends SkillMeta {
   body: string;
 }
+
+export interface SkillInput {
+  name: string;
+  category: string;
+  description: string;
+  when_to_use: string;
+  body: string;
+}
+
+/** What DELETE did: removed, reverted a customization, or hid a built-in. */
+export type SkillDeleteOutcome = "deleted" | "reverted" | "hidden";
 
 export interface SkillSearchHit {
   name: string;
@@ -734,16 +762,23 @@ export interface SkillSearchHit {
   score: number;
 }
 
-export async function listSkills(): Promise<SkillMeta[]> {
-  const res = await fetch(`${API_BASE}/skills`);
-  if (!res.ok) throw new Error("Failed to list skills");
+async function skillError(res: Response, fallback: string): Promise<Error> {
+  const err = await res.json().catch(() => ({}));
+  const detail = (err as { detail?: unknown }).detail;
+  return new Error(typeof detail === "string" ? detail : fallback);
+}
+
+export async function listSkills(includeHidden = false): Promise<SkillMeta[]> {
+  const qs = includeHidden ? "?include_hidden=true" : "";
+  const res = await fetch(`${API_BASE}/skills${qs}`);
+  if (!res.ok) throw new Error("Failed to list playbooks");
   const data = await res.json();
   return data.skills;
 }
 
 export async function getSkill(name: string): Promise<SkillDetail> {
   const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error("Failed to load skill");
+  if (!res.ok) throw await skillError(res, "Failed to load playbook");
   return res.json();
 }
 
@@ -753,19 +788,48 @@ export async function searchSkills(
 ): Promise<SkillSearchHit[]> {
   const params = new URLSearchParams({ q, n: String(n) });
   const res = await fetch(`${API_BASE}/skills/search?${params.toString()}`);
-  if (!res.ok) throw new Error("Failed to search skills");
+  if (!res.ok) throw new Error("Failed to search playbooks");
   const data = await res.json();
   return data.results;
 }
 
-export async function deleteSkill(name: string): Promise<void> {
+export async function createSkill(input: SkillInput): Promise<SkillDetail> {
+  const res = await fetch(`${API_BASE}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await skillError(res, "Failed to create playbook");
+  return res.json();
+}
+
+/** Full replace. On a built-in this saves a customized copy. */
+export async function updateSkill(input: SkillInput): Promise<SkillDetail> {
+  const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(input.name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await skillError(res, "Failed to save playbook");
+  return res.json();
+}
+
+export async function deleteSkill(name: string): Promise<SkillDeleteOutcome> {
   const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail ?? "Failed to delete skill");
-  }
+  if (!res.ok) throw await skillError(res, "Failed to delete playbook");
+  const data = (await res.json()) as { outcome: SkillDeleteOutcome };
+  return data.outcome;
+}
+
+export async function restoreSkill(name: string): Promise<SkillDetail> {
+  const res = await fetch(
+    `${API_BASE}/skills/${encodeURIComponent(name)}/restore`,
+    { method: "POST" }
+  );
+  if (!res.ok) throw await skillError(res, "Failed to restore playbook");
+  return res.json();
 }
 
 export interface SessionSummary {

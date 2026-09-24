@@ -86,21 +86,43 @@ def test_get_missing_returns_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_update_builtin_returns_403(client: TestClient) -> None:
+def test_update_builtin_saves_customization_and_delete_reverts(client: TestClient) -> None:
     payload = {
         "name": "competitive-teardown",
         "category": "strategy",
-        "description": "changed",
+        "description": "our teardown",
         "when_to_use": "changed",
-        "body": "changed",
+        "body": "ours",
     }
     resp = client.put("/skills/competitive-teardown", json=payload)
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["source"], resp.json()["customized"]) == ("company", True)
 
+    listed = [s for s in client.get("/skills").json()["skills"] if s["name"] == payload["name"]]
+    assert len(listed) == 1 and listed[0]["customized"] is True
 
-def test_delete_builtin_returns_403(client: TestClient) -> None:
     resp = client.delete("/skills/competitive-teardown")
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert resp.json() == {"name": "competitive-teardown", "outcome": "reverted"}
+    assert client.get("/skills/competitive-teardown").json()["source"] == "builtin"
+
+
+def test_delete_builtin_hides_and_restore_unhides(client: TestClient) -> None:
+    resp = client.delete("/skills/competitive-teardown")
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "hidden"
+
+    names = {s["name"] for s in client.get("/skills").json()["skills"]}
+    assert "competitive-teardown" not in names
+    with_hidden = client.get("/skills", params={"include_hidden": True}).json()["skills"]
+    assert any(s["name"] == "competitive-teardown" and s["hidden"] for s in with_hidden)
+    detail = client.get("/skills/competitive-teardown")
+    assert detail.status_code == 200 and detail.json()["hidden"] is True
+
+    resp = client.post("/skills/competitive-teardown/restore")
+    assert resp.status_code == 200
+    assert resp.json()["hidden"] is False
+    assert client.post("/skills/competitive-teardown/restore").status_code == 404
 
 
 def test_update_company_skill(client: TestClient) -> None:
@@ -129,7 +151,7 @@ def test_delete_company_skill(client: TestClient) -> None:
     }
     assert client.post("/skills", json=payload).status_code == 201
     resp = client.delete("/skills/throwaway")
-    assert resp.status_code == 204
+    assert resp.status_code == 200
     assert client.get("/skills/throwaway").status_code == 404
 
 

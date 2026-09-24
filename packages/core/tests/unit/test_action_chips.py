@@ -362,3 +362,24 @@ def test_no_silent_omission_from_side_effecting_tools() -> None:
         f"(to emit a chip) or _KNOWN_READ_ONLY_TOOLS (to deliberately skip): "
         f"{sorted(unclassified)}"
     )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "result", "summary"),
+    [
+        ("create_skill", {"saved": True}, "Saved playbook: p"),
+        ("update_skill", {"updated": True}, "Updated playbook: p"),
+        ("delete_skill", {"deleted": True, "outcome": "deleted"}, "Deleted playbook: p"),
+    ],
+)
+def test_skill_chips_say_playbook_and_link_to_tab(
+    tool_name: str, result: dict[str, object], summary: str
+) -> None:
+    payload = summarize_action(
+        tool_name=tool_name,
+        tool_input={"name": "p"},
+        tool_result=json.dumps(result),
+    )
+    assert payload is not None
+    assert payload["summary"] == summary
+    assert payload["link"] == "/jobs?tab=playbooks"

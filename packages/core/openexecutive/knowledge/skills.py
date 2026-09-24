@@ -41,6 +41,10 @@ class SkillFrontmatter(BaseModel):
     description: str
     when_to_use: str
     category: str
+    # Set on a company skill saved by customizing a built-in, so a company
+    # skill that merely shares a name with a later-shipped built-in is not
+    # mistaken for (and "reverted" as) a customization.
+    customizes_builtin: bool = False
 
 
 class Skill(BaseModel):
@@ -48,6 +52,10 @@ class Skill(BaseModel):
     body: str
     source: SkillSource
     path: str = Field(..., description="Absolute filesystem path to the skill file")
+    # A company skill that shadows a built-in of the same name.
+    customized: bool = False
+    # A built-in this company hid; only surfaced when explicitly asked for.
+    hidden: bool = False
 
 
 def validate_skill_name(name: str) -> None:
@@ -60,43 +68,46 @@ def validate_skill_name(name: str) -> None:
 
 
 def parse_skill_text(text: str, path: Path, source: SkillSource) -> Skill:
-    """Parse a raw skill file body. Path is used only for error context and metadata."""
+    """Parse a raw skill file body. Path is used for metadata; errors name only the file."""
     match = _FRONTMATTER_RE.match(text)
     if not match:
         raise SkillParseError(
-            f"Skill {path} is missing YAML frontmatter (expected leading '---' fence)."
+            f"Skill {path.name} is missing YAML frontmatter (expected leading '---' fence)."
         )
     raw_yaml, body = match.group(1), match.group(2)
     try:
         data = yaml.safe_load(raw_yaml) or {}
     except yaml.YAMLError as e:
-        raise SkillParseError(f"Skill {path} has malformed YAML frontmatter: {e}") from e
+        raise SkillParseError(f"Skill {path.name} has malformed YAML frontmatter: {e}") from e
     if not isinstance(data, dict):
-        raise SkillParseError(f"Skill {path} frontmatter must be a YAML mapping.")
+        raise SkillParseError(f"Skill {path.name} frontmatter must be a YAML mapping.")
 
     required = ("name", "description", "when_to_use", "category")
     missing = [k for k in required if not data.get(k)]
     if missing:
         raise SkillParseError(
-            f"Skill {path} is missing required frontmatter field(s): {', '.join(missing)}"
+            f"Skill {path.name} is missing required frontmatter field(s): {', '.join(missing)}"
         )
 
     validate_skill_name(data["name"])
     if data["category"] not in SKILL_CATEGORIES:
         raise SkillParseError(
-            f"Skill {path}: unknown category '{data['category']}'. "
+            f"Skill {path.name}: unknown category '{data['category']}'. "
             f"Valid categories: {', '.join(SKILL_CATEGORIES)}"
         )
 
     # Filename stem must match the frontmatter name — keeps lookup by name unambiguous.
     if path.stem != data["name"]:
         raise SkillParseError(
-            f"Skill {path}: frontmatter name '{data['name']}' "
+            f"Skill {path.name}: frontmatter name '{data['name']}' "
             f"does not match filename stem '{path.stem}'."
         )
 
     return Skill(
-        frontmatter=SkillFrontmatter(**{k: data[k] for k in required}),
+        frontmatter=SkillFrontmatter(
+            **{k: data[k] for k in required},
+            customizes_builtin=data.get("customizes_builtin") is True,
+        ),
         body=body.lstrip("\n"),
         source=source,
         path=str(path),
@@ -111,7 +122,7 @@ def parse_skill_file(path: Path, source: SkillSource) -> Skill:
 def serialize_skill(frontmatter: SkillFrontmatter, body: str) -> str:
     """Render a skill back to a Markdown file with YAML frontmatter."""
     fm = yaml.safe_dump(
-        frontmatter.model_dump(),
+        frontmatter.model_dump(exclude_defaults=True),
         sort_keys=False,
         default_flow_style=False,
     ).strip()

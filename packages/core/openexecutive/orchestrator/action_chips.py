@@ -65,6 +65,9 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
 })
 
 
+_PLAYBOOKS_LINK = "/jobs?tab=playbooks"
+
+
 def _parse_result(tool_result: str) -> dict[str, Any] | None:
     """Best-effort JSON parse of a tool handler's string result.
 
@@ -253,16 +256,19 @@ def summarize_action(
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Saved skill: {name}" if name else "Saved a skill"
+        payload["summary"] = f"Saved playbook: {name}" if name else "Saved a playbook"
         payload["target"] = name or None
+        payload["link"] = _PLAYBOOKS_LINK
     elif tool_name == "update_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Updated skill: {name}" if name else "Updated a skill"
+        payload["summary"] = f"Updated playbook: {name}" if name else "Updated a playbook"
         payload["target"] = name or None
+        payload["link"] = _PLAYBOOKS_LINK
     elif tool_name == "delete_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Deleted skill: {name}" if name else "Deleted a skill"
+        payload["summary"] = f"Deleted playbook: {name}" if name else "Deleted a playbook"
         payload["target"] = name or None
+        payload["link"] = _PLAYBOOKS_LINK
     elif tool_name == "create_alert":
         headline = (tool_input.get("headline") or "")[:60]
         payload["summary"] = f"Flagged alert: {headline}" if headline else "Flagged alert"
