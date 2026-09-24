@@ -677,9 +677,9 @@ class DynamicWorkflow(Workflow):
                             yield WorkflowEvent(
                                 type="step_done", step_id=step.id, summary=_first_line(payload)
                             )
-                except Exception:
+                except BaseException:  # cancellation too: they will never run
                     if held:
-                        drop_held_calls(self.name, step.id, held, "the step crashed")
+                        drop_held_calls(self.name, step.id, held, "the step stopped")
                     raise
                 if held:
                     pause = await self._held_writes_pause(step, index, held, outputs, policy)

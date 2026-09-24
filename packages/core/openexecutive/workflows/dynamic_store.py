@@ -210,7 +210,10 @@ def save_if_unchanged(
     definition, or None when the row changed. ``owner_person_id`` only
     applies to a new row.
     """
+    from openexecutive.workflows.approved_targets import initialize_approved_targets_db
+
     initialize_dynamic_workflows_db(db_path)
+    initialize_approved_targets_db(db_path)
     now = datetime.now(UTC).isoformat()
     created_at = expected.created_at if expected and expected.created_at else now
     stored = defn.model_copy(update={"created_at": created_at, "updated_at": now})
@@ -237,8 +240,12 @@ def save_if_unchanged(
                 (body, active, now, stored.name, expected.updated_at),
             )
         changed = cur.rowcount == 1
-    if changed:
-        _reset_approvals_if_tools_changed(expected, stored, db_path)
+        if changed and expected is not None and _tools_of(expected) != _tools_of(stored):
+            # Same connection and commit as the write: a crash can't leave the
+            # old approvals standing under the new tool set.
+            conn.execute(
+                "DELETE FROM workflow_approved_targets WHERE workflow_name = ?", (stored.name,)
+            )
     return stored if changed else None
 
 

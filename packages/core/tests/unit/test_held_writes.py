@@ -866,3 +866,31 @@ def test_changing_the_tool_set_resets_approved_targets() -> None:
         {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
     ]))
     assert at.approved_values("file_bills_wf") == set()
+
+
+def test_creates_needs_a_whole_create_word_and_no_read_verb() -> None:
+    creates = act.tool_catalog.creates
+    schema = {"type": "object", "properties": {}}
+    for name in ("x__get_copyright_info", "x__list_uploads", "x__get_add_ons", "x__get_makefile"):
+        assert not creates(act.tool_catalog.ToolInfo(name, "", schema)), name
+    for name in ("docs__create_document", "drive__upload_file", "x__copy_file"):
+        assert creates(act.tool_catalog.ToolInfo(name, "", schema)), name
+
+
+def test_invisible_characters_in_a_target_are_escaped() -> None:
+    shown = act.describe_target("to", "a b‮c@x.example")
+    assert " " not in shown and "‮" not in shown and "\\u2028" in shown
+
+
+def test_a_conditional_save_that_changes_tools_clears_approvals_in_the_same_write() -> None:
+    first = dynamic_store.save_if_unchanged(_defn(), None)
+    assert first is not None
+    at.remember("file_bills_wf", [("spreadsheet_id", SHEET)])
+    retooled = _defn(steps=[
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "File them.", "tools": [APPEND]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ])
+    current = dynamic_store.get_definition("file_bills_wf")
+    assert dynamic_store.save_if_unchanged(retooled, current) is not None
+    assert at.approved_values("file_bills_wf") == set()

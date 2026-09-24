@@ -189,7 +189,8 @@ _RESOURCE_KEY_RE = re.compile(
     r"reply_?to|^from$|sender|assignee|reviewer|issue_?key|project_?key|"
     r"member|user|group|owner|parent|destination|target|url|uri|path|channel|host|"
     r"bucket|table|database|repo|spreadsheet|document|folder|calendar|webhook|"
-    r"endpoint|phone|space|room|href|link|^file$)",
+    r"endpoint|phone|space|room|href|link|org|team|tenant|account|topic|queue|"
+    r"collection|dataset|^file$)",
     re.IGNORECASE,
 )
 # fileId, parentIds, docID, idList (Trello)
@@ -636,6 +637,17 @@ class _Holds:
 _SHOWN_TARGET_CHARS = 400
 
 
+def _escape_invisible(text: str) -> str:
+    """Escape line/paragraph separators, bidi and other format/control
+    characters, so a quoted target renders as one faithful line."""
+    import unicodedata
+
+    return "".join(
+        f"\\u{ord(ch):04x}" if unicodedata.category(ch) in {"Zl", "Zp", "Cf", "Cc"} else ch
+        for ch in text
+    )
+
+
 def describe_target(key: str, value: str) -> str:
     """One held target as shown to the owner, e.g. ``spreadsheet_id "1AbC…"``.
 
@@ -658,7 +670,7 @@ def describe_target(key: str, value: str) -> str:
         half = _SHOWN_TARGET_CHARS // 2
         hidden = len(rest) - 2 * half
         rest = f"{rest[:half]}…({hidden} characters not shown)…{rest[-half:]}"
-    shown = json.dumps(head + rest, ensure_ascii=False)
+    shown = _escape_invisible(json.dumps(head + rest, ensure_ascii=False))
     safe_key = re.sub(r"[^A-Za-z0-9_.\-]", "_", key)
     return f"{safe_key} {shown}" if safe_key else shown
 
@@ -724,8 +736,9 @@ def held_question(workflow_title: str, held: list[HeldCall]) -> str:
         where = ", ".join(describe_target(k, v) for k, v in call.targets) or "a new target"
         lines.append(f"- {where} (via {call.tool})")
     lines.append(
-        "Reply yes to allow it — it runs now, and future runs can write there "
-        "with any of this workflow's tools without asking — or no to skip it."
+        "Reply yes to allow all of the above — they run now, and future runs "
+        "can write to these with any of this workflow's tools without asking — "
+        "or no to skip them."
     )
     return "\n".join(lines)
 

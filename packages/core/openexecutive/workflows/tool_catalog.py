@@ -79,7 +79,7 @@ def _name_words(name: str) -> set[str]:
 def _has_word(words: set[str], vocabulary: frozenset[str]) -> bool:
     """A word from ``vocabulary``, alone or glued to the front of a longer
     token (`createfolder`). Short words only match alone, so `settings` is not
-    `set` — though a false match only means a stricter check."""
+    `set`. For write words a false match only means a stricter check."""
     return any(
         w in vocabulary or any(len(v) >= 4 and w.startswith(v) for v in vocabulary)
         for w in words
@@ -87,8 +87,16 @@ def _has_word(words: set[str], vocabulary: frozenset[str]) -> bool:
 
 
 def creates(info: ToolInfo) -> bool:
-    """Whether a tool's name says it creates something (create/insert/upload…)."""
-    return _has_word(_name_words(info.name), _CREATE_WORDS)
+    """Whether a tool's name says it creates something (create/insert/upload…).
+
+    Stricter than the write check, since here a false match would TRUST a
+    result: whole words only (`list_uploads` is not `upload`), and never a
+    name that starts with a read verb (`get_copyright_info`).
+    """
+    bare = info.name.split("__", 1)[-1].lower()
+    if bare.startswith(_READ_VERBS):
+        return False
+    return bool(_name_words(info.name) & _CREATE_WORDS)
 # A tool that takes a URL can carry data OUT (the URL itself, or a request
 # body), whatever its name says — e.g. `fetch__fetch`. Never label one as
 # reads-only: the review card must show the user it can reach the outside.
