@@ -1,0 +1,26 @@
+id: artifacts_004
+domain: artifacts
+description: "Principal refers to their Documents page; Executive treats it as its artifact library and calls the deliverable a document, never an \"artifact\"."
+company_context:
+  stage: "Series A"
+  industry: "B2B SaaS"
+  headcount: 45
+  arr: 3500000
+# The UI shows artifacts as "Documents" (sidebar, page title, Briefing badge),
+# and the persona tells the Executive to use that name with the user. This
+# checks both directions: the principal's "Documents" maps to list_artifacts /
+# get_artifact, and the reply says "document", not "artifact".
+# `expected_tool_calls` is documentation for now (matches
+# mcp_tool_call_001.yaml convention).
+query: "There's a pricing comparison somewhere in my Documents — can you pull it up and tell me which tier has the best support?"
+expected_tool_calls:
+  - list_artifacts
+  - get_artifact
+expected_topics:
+  - finds_pricing_comparison
+  - names_tier_with_best_support
+quality_criteria:
+  treats_documents_page_as_artifact_library: true
+  never_says_artifact_to_user: true
+  does_not_ask_which_page: true
+  brief: true
