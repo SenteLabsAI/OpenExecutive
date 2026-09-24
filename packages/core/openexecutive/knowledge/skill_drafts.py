@@ -16,6 +16,7 @@ skills.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,7 +75,10 @@ def save_draft(draft: SkillDraft) -> SkillDraft:
     )
     path = _draft_path(stamped.name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(stamped.model_dump_json(indent=2), encoding="utf-8")
+    # Write aside, then swap in atomically: a reader never sees half a file.
+    tmp = path.with_name(f".{stamped.name}.{stamped.id}.tmp")
+    tmp.write_text(stamped.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return stamped
 
 
@@ -120,17 +124,32 @@ def _reviewed(name: str, draft_id: str) -> SkillDraft:
 
 
 def _remove_if_current(name: str, draft_id: str) -> None:
-    """Remove the draft only if it is still `draft_id` — never a newer one."""
+    """Remove the draft only if it is still `draft_id` — never a newer one.
+
+    The file is first moved aside atomically, so a proposal saved between
+    the check and the removal can't be the one removed: if what was moved
+    aside isn't `draft_id`, it goes back (unless an even newer one has
+    already taken its place, which supersedes it).
+    """
+    path = _draft_path(name)
+    held = path.with_name(f".{name}.{uuid.uuid4().hex}.removing")
     try:
-        if get_draft(name).id == draft_id:
-            _draft_path(name).unlink(missing_ok=True)
-    except (SkillDraftNotFoundError, SkillParseError):
+        os.replace(path, held)
+    except FileNotFoundError:
         return
+    try:
+        current = SkillDraft.model_validate_json(held.read_text(encoding="utf-8")).id == draft_id
+    except (OSError, UnicodeDecodeError, ValidationError):
+        current = False
+    if current or path.exists():
+        held.unlink(missing_ok=True)
+    else:
+        os.replace(held, path)
 
 
 def discard_draft(name: str, draft_id: str) -> None:
     _reviewed(name, draft_id)
-    _draft_path(name).unlink(missing_ok=True)
+    _remove_if_current(name, draft_id)
 
 
 def approve_draft(name: str, draft_id: str, store: ChromaDBStore) -> dict[str, Any]:

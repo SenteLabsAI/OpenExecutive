@@ -191,3 +191,18 @@ def test_create_draft_reports_workflows_that_follow_the_name(
     skill_drafts.save_draft(_draft("create"))
     draft = client.get("/skill-drafts/weekly").json()
     assert draft["followers"] == [{"name": "w", "title": "Weekly flow", "is_custom": True}]
+
+
+def test_removal_restores_a_draft_that_replaced_the_reviewed_one(
+    store: ChromaDBStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A newer proposal landing inside approve/discard's check-then-remove is kept."""
+    reviewed = skill_drafts.save_draft(_draft("create", body="reviewed"))
+    newer = skill_drafts.save_draft(_draft("create", body="newer"))  # replaces it on disk
+    skill_drafts._remove_if_current("weekly", reviewed.id)
+    assert skill_drafts.get_draft("weekly").id == newer.id
+
+    skill_drafts._remove_if_current("weekly", newer.id)
+    assert skill_drafts.list_drafts() == []
+    leftovers = list((skills_repo._company_skills_path() / ".drafts").iterdir())
+    assert leftovers == []
