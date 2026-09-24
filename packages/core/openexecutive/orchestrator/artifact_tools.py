@@ -89,7 +89,12 @@ DRAFT_ARTIFACT_TOOL: dict[str, Any] = {
         "instead).\n\n"
         "To revise an earlier artifact, read it with get_artifact, then "
         "publish the new version with `supersedes` set to its id; the old "
-        "version is archived."
+        "version is archived.\n\n"
+        "To deliver it: message_person(person_id, text, artifact_id) sends "
+        "its title and link; to email the file itself, call the Gmail send "
+        "or draft tool with attachments=[{\"artifact_id\": \"<id>\"}] (add "
+        "\"as\": \"docx\" to send a Markdown artifact as Word) and it is "
+        "rendered and attached for you."
     ),
     "input_schema": {
         "type": "object",

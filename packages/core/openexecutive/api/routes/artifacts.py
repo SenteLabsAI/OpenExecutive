@@ -35,24 +35,20 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from openexecutive.orchestrator.artifact_formats import (
-    ARTIFACT_FORMATS,
-    EXPORT_TARGETS,
-    get_format,
-)
+from openexecutive.orchestrator.artifact_formats import get_format
 from openexecutive.orchestrator.artifact_records import (
     ArtifactNotFound,
     ArtifactRecord,
     MalformedArtifactId,
+    artifact_downloads,
     load_artifact,
-    parse_artifact_id,
+    render_artifact_file,
 )
 from openexecutive.orchestrator.artifact_records import (
     delete_artifact as delete_artifact_record,
@@ -72,8 +68,6 @@ _DEFAULT_LIMIT = 200
 # Chars of body shown as a card preview. Unrelated to _DEFAULT_LIMIT despite
 # the shared value — keep them as separate named knobs.
 _PREVIEW_CHARS = 200
-_FILENAME_MAX = 60
-_FILENAME_BAD = re.compile(r"[^a-z0-9]+")
 
 
 class ArtifactSummary(BaseModel):
@@ -133,26 +127,18 @@ async def download_artifact(
 ) -> Response:
     """The artifact as a file. `?as=docx` exports a Markdown artifact to Word."""
     rec = _load(composite_id)
-    targets = _downloads(rec)
-    target = (as_ or (targets[0] if targets else "")).strip().lower()
-    if not targets or target not in targets:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Artifact {composite_id!r} has no {target or 'file'} download",
-        )
-    fmt = ARTIFACT_FORMATS[target]
-    assert fmt.render_file is not None and fmt.extension is not None
     try:
-        content = fmt.render_file(rec.stored or "")
+        file = render_artifact_file(rec, as_)
+    except ArtifactNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("artifact download render failed for %s as %s", composite_id, target)
+        logger.exception("artifact download render failed for %s as %s", composite_id, as_)
         raise HTTPException(status_code=500, detail="Could not render the file") from exc
-    filename = f"{_filename_stem(rec)}.{fmt.extension}"
     return Response(
-        content=content,
-        media_type=fmt.mime,
+        content=file.content,
+        media_type=file.mime,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f'attachment; filename="{file.filename}"',
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox",
             "Cache-Control": "no-store",
@@ -218,12 +204,6 @@ def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _downloads(rec: ArtifactRecord) -> list[str]:
-    own = get_format(rec.format)
-    if own.render_file is None:
-        return []
-    return [own.name, *EXPORT_TARGETS.get(own.name, ())]
-
 
 def _summary(rec: ArtifactRecord) -> ArtifactSummary:
     fmt = get_format(rec.format)
@@ -240,16 +220,8 @@ def _summary(rec: ArtifactRecord) -> ArtifactSummary:
         archived_at=rec.archived_at,
         format=fmt.name,
         format_label=rec.link_label if fmt.name == "link" and rec.link_label else fmt.label,
-        downloads=_downloads(rec),
+        downloads=artifact_downloads(rec),
         external_url=rec.url,
         link_label=rec.link_label,
         supersedes_id=rec.supersedes_id,
     )
-
-
-def _filename_stem(rec: ArtifactRecord) -> str:
-    stem = _FILENAME_BAD.sub("-", rec.title.lower()).strip("-")[:_FILENAME_MAX].strip("-")
-    if stem:
-        return stem
-    kind, native_id = parse_artifact_id(rec.id)
-    return f"{kind}-{native_id[:12]}"

@@ -1119,7 +1119,10 @@ MESSAGE_PERSON_TOOL: dict[str, Any] = {
         "and you do NOT pass any channel id, handle, or snowflake. This is the "
         "preferred way to DM a single person: pass person_id and text, nothing "
         "else. If you only know a name or role, call lookup_person first to get "
-        "the person_id."
+        "the person_id. To share one of your artifacts, also pass its "
+        "artifact_id: the message gets the artifact's title and a link to it "
+        "(the link opens in Open Executive, so it only works for people with "
+        "access — to hand a file to anyone else, email it as an attachment)."
     ),
     "input_schema": {
         "type": "object",
@@ -1134,6 +1137,14 @@ MESSAGE_PERSON_TOOL: dict[str, Any] = {
             "text": {
                 "type": "string",
                 "description": "Message body.",
+            },
+            "artifact_id": {
+                "type": "string",
+                "description": (
+                    "Optional artifact to share, e.g. 'alert:12' or "
+                    "'run:ab12…' (from draft_artifact / list_artifacts). Its "
+                    "title and link are appended to the message."
+                ),
             },
         },
         "required": ["person_id", "text"],
@@ -1168,6 +1179,14 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
 
     if not text.strip():
         return json.dumps({"error": "text must not be empty"})
+
+    artifact_id = str(tool_input.get("artifact_id") or "").strip()
+    if artifact_id:
+        try:
+            link_line = _artifact_link_line(artifact_id, get_settings().ui_base_url)
+        except LookupError as exc:
+            return json.dumps({"error": f"artifact_id: {exc}"})
+        text = f"{text.rstrip()}\n\n{link_line}"
 
     person = get_person(person_id)
     if person is None or person.archived:
@@ -1233,6 +1252,30 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
     # the finding — surface it as a briefing alert routed to that person so it
     # still reaches their / the principal's "Needs you" queue.
     return await _alert_undeliverable_person(person, person_id, text, last_error)
+
+
+def _artifact_link_line(artifact_id: str, ui_base_url: str) -> str:
+    """`📄 <title> — <UI_BASE_URL>/artifacts/<id>` for a real artifact.
+
+    Resolved through `artifact_records`, so only artifact rows (never an
+    arbitrary alert) can be shared this way. Raises `LookupError` for a
+    malformed or unknown id.
+    """
+    from urllib.parse import quote
+
+    from openexecutive.orchestrator.artifact_records import (
+        ArtifactNotFound,
+        MalformedArtifactId,
+        load_artifact,
+    )
+
+    try:
+        rec = load_artifact(artifact_id)
+    except (MalformedArtifactId, ArtifactNotFound) as exc:
+        raise LookupError(str(exc)) from exc
+    title = " ".join(rec.title.split())
+    base = ui_base_url.rstrip("/")
+    return f"📄 {title} — {base}/artifacts/{quote(rec.id, safe=':')}"
 
 
 async def _alert_undeliverable_person(

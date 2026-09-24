@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
@@ -258,6 +259,84 @@ def _roster_allow_set() -> set[str]:
     allow = {p.email.lower() for p in list_people() if p.email}
     allow.add(settings.exec_email_address.lower())
     return allow
+
+
+# Largest rendered artifact attached to an email. Gmail caps a message at
+# 25 MB and base64 inflates the payload by a third, so stay well under.
+_MAX_ARTIFACT_ATTACHMENT_BYTES = 15 * 1024 * 1024
+_ARTIFACT_ATTACHMENT_KEYS = frozenset({"artifact_id", "as"})
+
+
+def _expand_artifact_attachments(
+    tool: str, arguments: dict[str, Any]
+) -> dict[str, Any] | str:
+    """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` attachment entries
+    with the rendered file (`content` base64 + `filename` + `mime_type`, the
+    shape workspace-mcp's Gmail tools accept).
+
+    Lets the Executive email one of its artifacts without ever holding the
+    bytes: the file is rendered server-side exactly as `/artifacts/{id}/
+    download` serves it, and only artifact rows can resolve (see
+    `artifact_records`). Returns the (copied) arguments, or a JSON error
+    string when an entry is malformed, unknown, has no file, or is too big.
+    Other attachment entries pass through untouched.
+    """
+    attachments = arguments.get("attachments")
+    if not isinstance(attachments, list) or not any(
+        isinstance(a, dict) and "artifact_id" in a for a in attachments
+    ):
+        return arguments
+
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.orchestrator.artifact_records import (
+        ArtifactNotFound,
+        MalformedArtifactId,
+        load_artifact,
+        render_artifact_file,
+    )
+
+    expanded: list[Any] = []
+    attached: list[str] = []
+    for entry in attachments:
+        if not (isinstance(entry, dict) and "artifact_id" in entry):
+            expanded.append(entry)
+            continue
+        extra = set(entry) - _ARTIFACT_ATTACHMENT_KEYS
+        if extra:
+            return json.dumps({"error": (
+                "an artifact attachment takes only 'artifact_id' and an "
+                f"optional 'as' format; got {sorted(extra)}"
+            )})
+        artifact_id = str(entry.get("artifact_id") or "")
+        as_raw = entry.get("as")
+        try:
+            rec = load_artifact(artifact_id)
+            file = render_artifact_file(rec, str(as_raw) if as_raw else None)
+        except (MalformedArtifactId, ArtifactNotFound) as exc:
+            return json.dumps({"error": f"attachment: {exc}"})
+        except Exception:
+            logger.exception("artifact attachment render failed: %s", artifact_id)
+            return json.dumps({"error": f"attachment: could not render {artifact_id!r}"})
+        if len(file.content) > _MAX_ARTIFACT_ATTACHMENT_BYTES:
+            return json.dumps({"error": (
+                f"attachment: {rec.id!r} is {len(file.content)} bytes, over the "
+                f"{_MAX_ARTIFACT_ATTACHMENT_BYTES}-byte email limit — send its "
+                "link instead"
+            )})
+        expanded.append({
+            "content": base64.b64encode(file.content).decode("ascii"),
+            "filename": file.filename,
+            "mime_type": file.mime,
+        })
+        attached.append(rec.id)
+
+    audit_log(
+        "artifact_attached",
+        f"Attached {', '.join(attached)} to {tool}",
+        actor="mcp_gateway",
+        details={"tool": tool, "artifact_ids": attached},
+    )
+    return {**arguments, "attachments": expanded}
 
 
 def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -754,6 +833,12 @@ class MCPGateway:
             blocked = _check_gmail_recipients(tool_name, arguments)
             if blocked is not None:
                 return blocked
+            # Only after the recipients pass: render any artifact the model
+            # asked to attach, so a blocked send never renders anything.
+            expanded = _expand_artifact_attachments(tool_name, arguments)
+            if isinstance(expanded, str):
+                return expanded
+            arguments = expanded
         if tool_name in _GATED_CALENDAR_TOOLS:
             blocked = _check_calendar_attendees(tool_name, arguments)
             if blocked is not None:

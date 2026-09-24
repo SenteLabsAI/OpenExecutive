@@ -584,6 +584,20 @@ routing:
     neutral because an artifact can quote injected email/web text and must
     not come back with the Executive's own authority. Company switches / fixture resets clear
     `type=artifact` chunks alongside `type=recent_research`.
+    Delivery (vendor-neutral core, provider adapters optional):
+    - `message_person(person_id, text, artifact_id?)`
+      (`schedule_tools._artifact_link_line`) appends `📄 <title> —
+      <UI_BASE_URL>/artifacts/<id>` after resolving the id through
+      `artifact_records` (unknown / non-artifact ids error, nothing sent).
+      The link rides the normal DM path, outbound guard included; it only
+      opens for people with Open Executive access.
+    - Gmail send / draft through the MCP gateway may attach
+      `{"artifact_id", "as"?}`; `mcp_gateway._expand_artifact_attachments`
+      renders it with `artifact_records.render_artifact_file` (shared with
+      `/download`) into workspace-mcp's `{content, filename, mime_type}`
+      shape, AFTER the recipient gate passes. Refuses unknown / non-artifact
+      ids, links, extra keys, and files over 15 MB; audits
+      `artifact_attached`. Other attachment entries are untouched.
     Side-effecting (`draft_artifact` only): a `tool_invocation` audit row
     (actor="executive", details carry `format`, `supersedes`) and an
     `action_taken` chip ("Drafted artifact for review: {title}") linking to

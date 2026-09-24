@@ -13,6 +13,7 @@ route maps them to 400 / 404.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -26,7 +27,11 @@ from openexecutive.alerts.store import (
 from openexecutive.alerts.store import (
     initialize_db as initialize_alerts_db,
 )
-from openexecutive.orchestrator.artifact_formats import get_format
+from openexecutive.orchestrator.artifact_formats import (
+    ARTIFACT_FORMATS,
+    EXPORT_TARGETS,
+    get_format,
+)
 from openexecutive.workflows.persistence import (
     delete_run,
     get_run,
@@ -64,6 +69,58 @@ class ArtifactRecord:
     url: str | None = None
     link_label: str | None = None
     supersedes_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ArtifactFile:
+    """A rendered download: what `/download` serves and email attaches."""
+
+    content: bytes
+    filename: str
+    mime: str
+
+
+_FILENAME_MAX = 60
+_FILENAME_BAD = re.compile(r"[^a-z0-9]+")
+
+
+def artifact_downloads(rec: ArtifactRecord) -> list[str]:
+    """Download targets for an artifact; the first is its own format.
+
+    Empty for formats with no file (links)."""
+    own = get_format(rec.format)
+    if own.render_file is None:
+        return []
+    return [own.name, *EXPORT_TARGETS.get(own.name, ())]
+
+
+def render_artifact_file(rec: ArtifactRecord, as_: str | None = None) -> ArtifactFile:
+    """Render `rec` as a file in its own format, or as export target `as_`.
+
+    Raises `ArtifactNotFound` when the artifact has no such download (a link,
+    or a target outside `artifact_downloads`). Rendering errors propagate.
+    """
+    targets = artifact_downloads(rec)
+    target = (as_ or (targets[0] if targets else "")).strip().lower()
+    if not targets or target not in targets:
+        raise ArtifactNotFound(
+            f"Artifact {rec.id!r} has no {target or 'file'} download"
+        )
+    fmt = ARTIFACT_FORMATS[target]
+    assert fmt.render_file is not None and fmt.extension is not None
+    return ArtifactFile(
+        content=fmt.render_file(rec.stored or ""),
+        filename=f"{_filename_stem(rec)}.{fmt.extension}",
+        mime=fmt.mime,
+    )
+
+
+def _filename_stem(rec: ArtifactRecord) -> str:
+    stem = _FILENAME_BAD.sub("-", rec.title.lower()).strip("-")[:_FILENAME_MAX].strip("-")
+    if stem:
+        return stem
+    kind, native_id = parse_artifact_id(rec.id)
+    return f"{kind}-{native_id[:12]}"
 
 
 def parse_artifact_id(composite_id: str) -> tuple[str, str]:
@@ -172,12 +229,15 @@ def delete_artifact(composite_id: str) -> ArtifactRecord:
 
 __all__ = [
     "DRAFT_SOURCE_LABEL",
+    "ArtifactFile",
     "ArtifactNotFound",
     "ArtifactRecord",
     "MalformedArtifactId",
+    "artifact_downloads",
     "delete_artifact",
     "list_artifacts",
     "load_artifact",
     "parse_artifact_id",
+    "render_artifact_file",
     "set_archived",
 ]
