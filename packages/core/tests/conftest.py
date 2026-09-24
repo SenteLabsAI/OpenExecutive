@@ -21,13 +21,6 @@ os.environ.pop("OE_PUBLIC_DEPLOYMENT", None)
 # whole suite and fail those tests for a reason nothing in them mentions.
 os.environ.pop("KNOWLEDGE_DISTANCE_THRESHOLD", None)
 os.environ.pop("KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD", None)
-# Under pytest-xdist (CI runs `-n auto`), give each worker its own default DB so
-# a test that leaks rows into it can't race another worker's test. The path
-# stays relative on purpose: tests that `monkeypatch.chdir(tmp_path)` rely on the
-# import-time default resolving against cwd.
-_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER")
-if _xdist_worker and "EPISODIC_DB_PATH" not in os.environ:
-    os.environ["EPISODIC_DB_PATH"] = f"./episodic_memory.{_xdist_worker}.db"
 
 
 @pytest.fixture(autouse=True)
