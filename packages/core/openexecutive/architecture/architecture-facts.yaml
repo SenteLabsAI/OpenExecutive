@@ -1521,12 +1521,18 @@ attunement:
     a NULL-owner legacy row is the principal's alone). Session ids are guessable
     (`slack:dm:<user id>`, `telegram:<chat id>`), so the id alone is no proof.
     `chat._session_access` also admits whoever started the chat in this process
-    (`_session_starters`, keyed by `_stop_owner_key`), which is how an unresolved
-    caller (fresh install, allowlisted but unrostered) continues their own
-    ownerless chat; it is in-memory and lost on restart. POST /chat refuses a
-    forbidden id with 403 before arming the stop switch, and ignores an unknown
-    namespaced id (contains ':') rather than letting a web caller squat an id a
-    channel adapter will later create (INSERT OR IGNORE keeps the first owner).
+    (`_session_starters` holds the starter's `_caller_keys`: Person id and/or
+    verified email, else "local"), which is how an unresolved caller (fresh
+    install, allowlisted but unrostered) continues their own ownerless chat.
+    Matching on email too means the starter keeps access once they resolve to a
+    Person, and that turn late-binds the row to them. Only the starter binds an
+    ownerless row: the principal continuing it does not take it over. The record
+    is in-memory; after a restart an ownerless row nobody here started is
+    "orphaned": reads get 403 and POST /chat continues in a fresh chat instead
+    of failing. POST /chat refuses a forbidden id with 403 before arming the
+    stop switch, and ignores an unknown namespaced id (contains ':') rather
+    than letting a web caller squat an id a channel adapter will later create
+    (INSERT OR IGNORE keeps the first owner).
     DELETE also evicts the in-memory Session so the id cannot resume its history.
     Known gap, not covered: GET /audit/sessions/{id} is not owner-scoped.
   feedback: |

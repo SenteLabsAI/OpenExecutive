@@ -63,9 +63,15 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from openexecutive.knowledge import retriever
     from openexecutive.onboarding import profile_builder
     from openexecutive.orchestrator import executive as exec_mod
+    from openexecutive.utils import session_title
 
     monkeypatch.setattr(profile_builder, "load_or_create_profile", lambda: CompanyProfile())
     monkeypatch.setattr(retriever, "retrieve", lambda *_a, **_k: "")
+
+    async def _no_title(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(session_title, "generate_session_title", _no_title)
 
     class _StubExecutive:
         _THINKING = exec_mod.Executive._THINKING
@@ -98,6 +104,14 @@ def _chat(client: TestClient, headers: dict[str, str], session_id: str | None = 
 def _session_ids(db_path: Path) -> list[str]:
     with sqlite3.connect(db_path) as conn:
         return [r[0] for r in conn.execute("SELECT session_id FROM sessions ORDER BY rowid")]
+
+
+def _owner(db_path: Path, session_id: str) -> int | None:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT caller_person_id FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return row[0]
 
 
 def _seed(session_id: str, owner: int | None) -> None:
@@ -232,3 +246,62 @@ def test_web_client_may_still_name_a_new_plain_id(
 ) -> None:
     assert _chat(client, SABIN, "my-own-id") == 200
     assert _session_ids(db) == ["my-own-id"]
+
+
+def test_starter_keeps_their_chat_after_joining_the_roster(
+    client: TestClient, db: Path, people: dict[str, int]
+) -> None:
+    """Started while unrostered, then added to the roster: the same verified
+    email still matches, and the row is bound to their new Person."""
+    newhire = {"x-caller-email": "newhire@example.com"}
+    assert _chat(client, newhire) == 200
+    (sid,) = _session_ids(db)
+    assert _owner(db, sid) is None
+
+    newhire_id = people_store.upsert_person(full_name="New", email="newhire@example.com")
+
+    assert _chat(client, newhire, sid) == 200
+    assert _owner(db, sid) == newhire_id
+
+
+def test_principal_continuing_a_chat_does_not_take_it_over(
+    client: TestClient, db: Path, people: dict[str, int]
+) -> None:
+    assert _chat(client, STRANGER) == 200
+    (sid,) = _session_ids(db)
+
+    assert _chat(client, ALEX, sid) == 200
+    assert _owner(db, sid) is None
+    assert _chat(client, STRANGER, sid) == 200
+
+
+def test_orphaned_chat_after_restart_continues_in_a_fresh_one(
+    client: TestClient, db: Path, people: dict[str, int]
+) -> None:
+    """The starter record is in-memory. After a restart an unresolved caller's
+    ownerless chat can't be vouched for: reads are refused, and /chat starts a
+    new chat instead of failing every send."""
+    assert _chat(client, STRANGER) == 200
+    (sid,) = _session_ids(db)
+    chat_route._sessions.clear()
+    chat_route._session_starters.clear()  # simulate a restart
+
+    assert client.get(f"/sessions/{sid}/messages", headers=STRANGER).status_code == 403
+    assert _chat(client, STRANGER, sid) == 200
+    ids = _session_ids(db)
+    assert len(ids) == 2 and ids[0] == sid
+
+
+def test_delete_of_a_never_persisted_chat_reports_success(
+    client: TestClient, people: dict[str, int]
+) -> None:
+    """A chat whose row failed to persist lives only in memory; deleting it
+    drops that state and is a success, not a 404."""
+    chat_route._session_starters["live-only"] = frozenset(
+        {f"person:{people['sabin']}", "email:sabin@example.com"}
+    )
+    chat_route._sessions["live-only"] = object()
+
+    assert client.delete("/sessions/live-only", headers=SABIN).status_code == 204
+    assert "live-only" not in chat_route._sessions
+

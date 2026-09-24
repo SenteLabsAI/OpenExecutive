@@ -46,7 +46,7 @@ def _require_session_access(request: Request, session_id: str) -> None:
     access = _session_access(request, session_id, _resolve_caller_person_id(request))
     if access == "missing":
         raise HTTPException(status_code=404, detail="Session not found")
-    if access == "forbidden":
+    if access != "allowed":
         raise HTTPException(status_code=403, detail="Not your session")
 
 
@@ -72,8 +72,9 @@ def get_session_messages(session_id: str, request: Request) -> list[dict]:
 def delete_session_route(session_id: str, request: Request) -> Response:
     _require_session_access(request, session_id)
     deleted = delete_session(session_id)
-    forget_session(session_id)
-    if not deleted:
+    # A chat whose row never persisted still counts: dropping its live state
+    # is the delete the caller asked for.
+    if not forget_session(session_id) and not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
