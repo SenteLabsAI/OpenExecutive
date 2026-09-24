@@ -181,6 +181,14 @@ def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
     )
 
 
+def _session_caller_id() -> int | None:
+    """The person chatting — recorded as a new workflow's owner."""
+    from openexecutive.workflows.gate_delivery import _session_caller_id as caller_of
+
+    session = current_session.get()
+    return caller_of(session) if session is not None else None
+
+
 def _needs_review(defn: Any) -> bool:
     """True when the workflow has tool-using steps, which a person must approve.
 
@@ -317,7 +325,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         # Conditional on the row read above, so an activation (from any
         # process) landing after the approved-workflow check can't be
         # overwritten by this save.
-        saved = save_if_unchanged(defn, existing)
+        saved = save_if_unchanged(defn, existing, owner_person_id=_session_caller_id())
     except Exception as exc:
         logger.exception("save_workflow: persist failed")
         return json.dumps({"error": f"failed to save: {exc}"})

@@ -20,9 +20,16 @@ Prompt caching: the system block is a constant with ``cache_control``; the
 per-run goal, inputs, and earlier results go in the user turn. The tool array
 varies per step but not within one, so the prefix is reused across the loop.
 
+Targets: approving a workflow approves its tools, not which sheet, doc,
+recipient or URL each call hits — that is chosen at run time, by design. With
+a ``TargetPolicy``, a write whose resource arguments name a target this
+workflow has never been approved for is **held** instead of run: the model is
+told it is waiting for the owner, the rest of the step carries on, and the
+engine pauses the run after the step to ask (see ``dynamic``).
+
 Yields ``(kind, payload)`` tuples the engine turns into workflow events:
-``("progress", text)``, then exactly one of ``("output", report)`` or
-``("error", fixed_message)``.
+``("progress", text)`` and ``("held", HeldCall)`` as they happen, then
+exactly one of ``("output", report)`` or ``("error", fixed_message)``.
 """
 from __future__ import annotations
 
@@ -37,7 +44,9 @@ from typing import Any
 from openexecutive.agents.workflow_actor import WORKFLOW_ACTOR_AGENT_ID, WorkflowActorAgent
 from openexecutive.config import get_settings
 from openexecutive.workflows import tool_catalog
-from openexecutive.workflows.dynamic_models import ActionStepSpec
+from openexecutive.workflows.approved_targets import approved_values, normalize_value
+from openexecutive.workflows.dynamic_models import ActionStepSpec, DynamicWorkflowDef
+from openexecutive.workflows.wait_for_human import HeldCall
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +59,21 @@ _MAX_INPUT_CHARS = 2_000
 _MAX_PRIOR_OUTPUT_CHARS = 6_000
 _MAX_COMPANY_CHARS = 6_000
 
-StepYield = tuple[str, str]
+StepYield = tuple[str, Any]
+
+# Held writes per step, and the size of one held call's arguments (they are
+# stored in the run's resume payload until the owner answers).
+MAX_HELD_PER_STEP = 10
+_MAX_HELD_ARGS_CHARS = 16_000
+HELD_TOOL_RESULT = json.dumps({
+    "status": "held",
+    "message": (
+        "This call writes somewhere this workflow has not written before, so "
+        "it is held for the workflow owner's approval and will run exactly as "
+        "given if they approve. Do not retry it. Carry on with anything that "
+        "does not depend on it, and mention it in your report."
+    ),
+})
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -151,6 +174,111 @@ def _target_digest(arguments: dict[str, Any]) -> dict[str, str]:
     return digest
 
 
+# Argument keys that name the resource a write lands on: ids, recipients,
+# URLs, paths, channels, and the Google resource kinds. Deliberately not
+# `range` or `sheet` (a new tab or range in an approved spreadsheet is the
+# same spreadsheet), nor names/titles (what a new file is called), nor
+# message/thread/draft/label ids (a reply's real target is its recipients,
+# which the gateway's recipient gates already check).
+_RESOURCE_KEY_RE = re.compile(
+    r"(^id$|_id$|^ids$|_ids$|^to$|^cc$|^bcc$|recipient|email|url|uri|path|"
+    r"channel|spreadsheet|document|folder|calendar|^file$)",
+    re.IGNORECASE,
+)
+_NOT_RESOURCE_KEY_RE = re.compile(
+    r"(name|title|(message|thread|draft|label|request)_?ids?$)", re.IGNORECASE
+)
+_MAX_TARGET_DEPTH = 6
+_MAX_TARGETS = 50
+
+
+def resource_targets(arguments: Any) -> list[tuple[str, str]]:
+    """Every ``(key, value)`` in ``arguments`` that names where a call acts.
+
+    Walks nested objects and lists (``to: [...]``, ``message: {to: ...}``), so
+    a target can't slip past by being wrapped. Order-preserving, deduplicated.
+    """
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(key: str, value: Any) -> None:
+        if isinstance(value, bool) or not isinstance(value, str | int):
+            return
+        text = str(value).strip()
+        if text and text not in seen and len(found) < _MAX_TARGETS:
+            seen.add(text)
+            found.append((key, text[:_MAX_TARGET_VALUE_CHARS * 4]))
+
+    def walk(node: Any, key: str, depth: int, is_resource: bool) -> None:
+        if depth > _MAX_TARGET_DEPTH:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                k = str(k)
+                walk(v, k, depth + 1, _RESOURCE_KEY_RE.search(k) is not None
+                     and _NOT_RESOURCE_KEY_RE.search(k) is None)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, key, depth + 1, is_resource)
+        elif is_resource:
+            add(key, node)
+
+    walk(arguments, "", 0, False)
+    return found
+
+
+# A value must be at least this long to count as "seen" inside a bigger text
+# (the workflow's own definition, or a result the run produced) — so "1" or
+# "me" can't be trusted just by appearing somewhere.
+_MIN_TRUSTED_SUBSTRING = 6
+_MAX_CREATED_RESULTS = 50
+_MAX_CREATED_RESULT_CHARS = 20_000
+
+
+class TargetPolicy:
+    """Which targets a run may write to without asking. One per run.
+
+    Trusted without asking:
+    - values approved for this workflow before (``approved_targets``);
+    - values written verbatim in the workflow's own steps — the user saw
+      them when they approved the workflow;
+    - values the run itself produced: ones that appear in the result of a
+      write this run already made (a doc the workflow just created).
+    """
+
+    def __init__(self, *, approved: set[str], definition_text: str) -> None:
+        self._approved = {normalize_value(v) for v in approved}
+        self._definition = definition_text
+        self._definition_lower = definition_text.lower()
+        self._created: list[str] = []
+
+    @classmethod
+    def for_workflow(cls, defn: DynamicWorkflowDef) -> TargetPolicy:
+        text = defn.description + "\n" + "\n".join(s.model_dump_json() for s in defn.steps)
+        return cls(approved=approved_values(defn.name), definition_text=text)
+
+    def _trusted(self, value: str) -> bool:
+        norm = normalize_value(value)
+        if norm in self._approved:
+            return True
+        if len(norm) < _MIN_TRUSTED_SUBSTRING:
+            return False
+        if norm in self._definition or norm in self._definition_lower:
+            return True
+        return any(norm in text or value in text for text in self._created)
+
+    def unapproved(self, targets: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        return [(k, v) for k, v in targets if not self._trusted(v)]
+
+    def note_written(self, result_text: str) -> None:
+        """Remember a successful write's result, so ids it created are trusted."""
+        self._created.append(str(result_text)[:_MAX_CREATED_RESULT_CHARS])
+        del self._created[:-_MAX_CREATED_RESULTS]
+
+    def approve(self, targets: list[tuple[str, str]]) -> None:
+        self._approved.update(normalize_value(v) for _, v in targets)
+
+
 def _audit(
     workflow_name: str,
     step_id: str,
@@ -248,6 +376,7 @@ async def run_action_step(
     company_block: str,
     prior_outputs: dict[str, tuple[str, str]],
     model: str | None = None,
+    policy: TargetPolicy | None = None,
 ) -> AsyncIterator[StepYield]:
     from openexecutive.providers.registry import get_provider
 
@@ -289,6 +418,7 @@ async def run_action_step(
     allowed = set(step.tools)
     budget = _Budget(step.max_tool_calls)
     actions: list[tuple[str, str]] = []
+    held = 0
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
     for turn in range(max_turns):
@@ -332,12 +462,36 @@ async def run_action_step(
                     "this step's tool-call budget is used up"
                 ), "refused: budget"
             else:
-                budget.used += 1
-                if resolved[name].read_only is not True:
+                writes = resolved[name].read_only is not True
+                new_targets = (
+                    policy.unapproved(resource_targets(arguments))
+                    if policy is not None and writes
+                    else []
+                )
+                if writes:
                     targets = _target_digest(arguments)
-                yield ("progress", f"Using {name}…")
-                content, is_error = await _call_tool(name, arguments, resolved[name])
-                outcome = "error" if is_error else "ok"
+                if new_targets and (
+                    held >= MAX_HELD_PER_STEP
+                    or len(json.dumps(arguments, default=str)) > _MAX_HELD_ARGS_CHARS
+                ):
+                    (content, is_error), outcome = _refusal(
+                        "this call writes to a new target and can't be held for "
+                        "approval (too many held already, or it is too large); "
+                        "it was not run"
+                    ), "refused: hold limit"
+                elif new_targets:
+                    held += 1
+                    # Not run and not counted against the budget: it runs later,
+                    # exactly as given, only if the owner approves.
+                    yield ("held", HeldCall(tool=name, arguments=arguments, targets=new_targets))
+                    content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
+                else:
+                    budget.used += 1
+                    yield ("progress", f"Using {name}…")
+                    content, is_error = await _call_tool(name, arguments, resolved[name])
+                    outcome = "error" if is_error else "ok"
+                    if writes and not is_error and policy is not None:
+                        policy.note_written(content)
             _audit(workflow_name, step.id, name, outcome, targets)
             actions.append((name, outcome))
             results.append(
@@ -358,6 +512,69 @@ async def run_action_step(
         f"step {step.id!r} did not finish within its turn limit; tools already "
         f"used: {done}",
     )
+
+
+def describe_target(key: str, value: str) -> str:
+    """One held target as shown to the owner, e.g. ``spreadsheet_id `1AbC…```."""
+    shown = value if len(value) <= _MAX_TARGET_VALUE_CHARS else value[:_MAX_TARGET_VALUE_CHARS] + "…"
+    return f"{key} `{shown}`" if key else f"`{shown}`"
+
+
+async def run_held_calls(
+    step: ActionStepSpec,
+    held: list[HeldCall],
+    *,
+    workflow_name: str,
+    run_id: str,
+    approved: bool,
+    skip_reason: str,
+    policy: TargetPolicy,
+) -> str:
+    """Settle the calls ``step`` held for approval; return a report section.
+
+    Approved: each call's targets are remembered for this workflow, then the
+    call runs exactly as the model gave it — but only if its tool is still in
+    the (live) step's allowlist and still resolves. Not approved: nothing runs.
+    Every call is audited either way.
+    """
+    from openexecutive.workflows.approved_targets import remember
+
+    resolved = await tool_catalog.resolve(list(step.tools)) if approved else {}
+    lines = ["**Held for approval**", ""]
+    for call in held:
+        where = ", ".join(describe_target(k, v) for k, v in call.targets) or "a new target"
+        if not approved:
+            outcome = f"skipped ({skip_reason})"
+        elif call.tool not in step.tools or call.tool not in resolved:
+            outcome = "skipped (the tool is no longer available to this step)"
+        else:
+            remember(workflow_name, call.targets, run_id=run_id)
+            policy.approve(call.targets)
+            content, is_error = await _call_tool(call.tool, call.arguments, resolved[call.tool])
+            outcome = "error" if is_error else "done"
+            if not is_error:
+                policy.note_written(content)
+        _audit(
+            workflow_name, step.id, call.tool, f"held → {outcome}", _target_digest(call.arguments)
+        )
+        lines.append(f"- `{call.tool}` → {where} — {outcome}")
+    return "\n".join(lines)
+
+
+def held_question(workflow_title: str, held: list[HeldCall]) -> str:
+    """What the owner is asked about the writes a step held."""
+    lines = [
+        f"The workflow \u201c{workflow_title}\u201d wants to write somewhere it "
+        "hasn't written before:",
+    ]
+    for call in held:
+        where = ", ".join(describe_target(k, v) for k, v in call.targets) or "a new target"
+        lines.append(f"- {where} (via {call.tool})")
+    lines.append(
+        "Reply yes to allow it — it runs now, and future runs can write there "
+        "without asking — or no to skip it."
+    )
+    return "\n".join(lines)
 
 
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:

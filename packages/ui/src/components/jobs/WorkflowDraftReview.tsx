@@ -145,6 +145,11 @@ export default function WorkflowDraftReview({
           {pending ? "Waiting for your approval · off" : "Draft workflow"}
         </p>
         <h3 className="text-base font-semibold text-fg">{def.title}</h3>
+        {def.owner_person_id != null && (
+          <p className="text-xs text-fg-subtle mt-0.5">
+            Created by {personName(people, def.owner_person_id)}
+          </p>
+        )}
         {def.description && (
           <p className="text-sm text-fg-muted mt-0.5">{def.description}</p>
         )}

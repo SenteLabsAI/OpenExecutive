@@ -1116,7 +1116,9 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         schedule_dynamic_workflow_cadence,
     )
     from openexecutive.workflows.dynamic_store import get_definition
+    from openexecutive.workflows.gate import checkpoint_gate
     from openexecutive.workflows.persistence import complete_run, create_run, fail_run
+    from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
     assert action.id is not None
     name = action.channel_ref
@@ -1137,7 +1139,21 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         )
         store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
         artifact = ""
+        paused = False
         async for event in workflow.run(inputs=wf_inputs, store=store):
+            # The one pause a scheduled run CAN take: an action step held
+            # writes to new targets. Nothing waits in-process — the run is
+            # checkpointed, its owner is asked, and the resumer finishes it
+            # (and DMs the artifact to this cadence's recipient) later.
+            if (
+                isinstance(event, WaitForHumanEvent)
+                and event.resume_state is not None
+                and event.resume_state.kind == "held_writes"
+            ):
+                event.resume_state.deliver_to_person_id = action.assigned_to_person_id
+                await checkpoint_gate(run_id=run_id, event=event, workflow_title=workflow.title)
+                paused = True
+                break
             # The only scheduler branch that can receive a DYNAMIC workflow, so
             # the only one that can be handed an approval gate. A cadence fire
             # has no human in the loop, and `validate_definition` forbids gates
@@ -1152,7 +1168,10 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
                 artifact = event.content
             elif event.type == "error" and event.message:
                 raise RuntimeError(event.message)
-        complete_run(run_id, artifact or "(no artifact)")
+        if paused:
+            artifact = ""  # the resumer delivers it once the owner answers
+        else:
+            complete_run(run_id, artifact or "(no artifact)")
     except Exception as exc:
         logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
         with contextlib.suppress(Exception):

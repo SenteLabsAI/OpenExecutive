@@ -426,6 +426,9 @@ async def _execute_resume(
             # other runners use: that flips running -> awaiting_human,
             # stores the fresh payload, and clears gate 1's resolution so
             # this run is not immediately re-claimed on its old answer.
+            # A scheduled run still owes its artifact to its recipient.
+            if event.resume_state is not None and state.deliver_to_person_id is not None:
+                event.resume_state.deliver_to_person_id = state.deliver_to_person_id
             try:
                 await checkpoint_gate(
                     run_id=run_id,
@@ -514,7 +517,21 @@ async def _execute_resume(
         },
     )
     logger.info("resumer: run %s resumed -> %s", run_id, outcome)
+    if artifact and state.deliver_to_person_id is not None:
+        await _deliver_artifact(run_id, state.deliver_to_person_id, artifact)
     return True
+
+
+async def _deliver_artifact(run_id: str, person_id: int, artifact: str) -> None:
+    """DM a resumed scheduled run's artifact — the delivery the scheduler
+    would have made had the run not paused. Best effort: the run is already
+    stored as done, and a failed send must not change that."""
+    try:
+        from openexecutive.orchestrator.schedule_tools import handle_message_person
+
+        await handle_message_person({"person_id": person_id, "text": artifact})
+    except Exception:
+        logger.exception("resumer: run %s artifact delivery failed (run still done)", run_id)
 
 
 def _resolution_from_row(row: dict, run_id: str) -> WaitForHumanResolution:

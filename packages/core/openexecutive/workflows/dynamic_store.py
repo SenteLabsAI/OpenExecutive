@@ -38,15 +38,26 @@ def initialize_dynamic_workflows_db(db_path: Path | None = None) -> None:
             )
             """
         )
+        # Who created the workflow — asked to approve its first write to a
+        # new target. A column, not a definition field, so neither a client
+        # body nor a chat-drafted definition can set it; written on insert
+        # only, so edits, overwrites and activation keep the original.
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(dynamic_workflows)")}
+        if "owner_person_id" not in columns:
+            conn.execute("ALTER TABLE dynamic_workflows ADD COLUMN owner_person_id INTEGER")
 
 
 def upsert_definition(
-    defn: DynamicWorkflowDef, db_path: Path | None = None
+    defn: DynamicWorkflowDef,
+    db_path: Path | None = None,
+    *,
+    owner_person_id: int | None = None,
 ) -> DynamicWorkflowDef:
     """Insert or replace a definition by name. Stamps created_at/updated_at.
 
     Returns the stored definition (with timestamps applied). On update, the
-    original created_at is preserved.
+    original created_at and owner are preserved; ``owner_person_id`` only
+    applies when the row is new.
     """
     initialize_dynamic_workflows_db(db_path)
     now = datetime.now(UTC).isoformat()
@@ -56,8 +67,9 @@ def upsert_definition(
     with _get_conn(_resolve(db_path)) as conn:
         conn.execute(
             """
-            INSERT INTO dynamic_workflows (name, definition, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO dynamic_workflows
+                (name, definition, is_active, created_at, updated_at, owner_person_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 definition = excluded.definition,
                 is_active  = excluded.is_active,
@@ -69,6 +81,7 @@ def upsert_definition(
                 1 if defn.is_active else 0,
                 created_at,
                 now,
+                owner_person_id,
             ),
         )
     return defn
@@ -116,7 +129,13 @@ def delete_definition(name: str, db_path: Path | None = None) -> bool:
         if not _table_exists(conn):
             return False
         cur = conn.execute("DELETE FROM dynamic_workflows WHERE name = ?", (name,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        # A new workflow saved under this name must earn its own approvals.
+        from openexecutive.workflows.approved_targets import forget_all
+
+        forget_all(name, db_path=db_path)
+    return deleted
 
 
 def set_active(name: str, active: bool, db_path: Path | None = None) -> bool:
@@ -173,13 +192,16 @@ def save_if_unchanged(
     defn: DynamicWorkflowDef,
     expected: DynamicWorkflowDef | None,
     db_path: Path | None = None,
+    *,
+    owner_person_id: int | None = None,
 ) -> DynamicWorkflowDef | None:
     """Write ``defn`` only if the row is still ``expected`` (None: still absent).
 
     For callers that decide from a read whether a write is allowed (chat's
     save refuses to replace an approved tool workflow): a write from any
     process landing after that read makes this a no-op. Returns the stored
-    definition, or None when the row changed.
+    definition, or None when the row changed. ``owner_person_id`` only
+    applies to a new row.
     """
     initialize_dynamic_workflows_db(db_path)
     now = datetime.now(UTC).isoformat()
@@ -191,11 +213,12 @@ def save_if_unchanged(
         if expected is None:
             cur = conn.execute(
                 """
-                INSERT INTO dynamic_workflows (name, definition, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO dynamic_workflows
+                    (name, definition, is_active, created_at, updated_at, owner_person_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(name) DO NOTHING
                 """,
-                (stored.name, body, active, created_at, now),
+                (stored.name, body, active, created_at, now, owner_person_id),
             )
         else:
             cur = conn.execute(
@@ -208,3 +231,19 @@ def save_if_unchanged(
             )
         changed = cur.rowcount == 1
     return stored if changed else None
+
+
+def get_owner(name: str, db_path: Path | None = None) -> int | None:
+    """The person who created ``name``, or None (unknown, or saved before owners)."""
+    if not _resolve(db_path).exists():
+        return None
+    with _get_conn(_resolve(db_path)) as conn:
+        if not _table_exists(conn):
+            return None
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(dynamic_workflows)")}
+        if "owner_person_id" not in columns:
+            return None
+        row = conn.execute(
+            "SELECT owner_person_id FROM dynamic_workflows WHERE name = ?", (name,)
+        ).fetchone()
+    return int(row[0]) if row is not None and row[0] is not None else None

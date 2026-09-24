@@ -1164,6 +1164,9 @@ export interface DynamicWorkflowDef {
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;
+  // Who created it (server-managed; echoing it back in a body has no effect).
+  // Asked to approve the workflow's first write to a new target.
+  owner_person_id?: number | null;
 }
 
 // The 8 specialists a dynamic step may consult (matches SPECIALIST_REGISTRY,
@@ -1255,6 +1258,28 @@ export async function activateCustomWorkflow(
   );
   if (!res.ok) throw await _customError(res);
   return res.json();
+}
+
+/** A target a workflow's tool steps may write to without asking again. */
+export interface ApprovedTarget {
+  value: string;
+  key: string;
+  approved_at: string;
+  run_id: string;
+}
+
+export async function listApprovedTargets(name: string): Promise<ApprovedTarget[]> {
+  const res = await fetch(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}/targets`);
+  if (!res.ok) throw await _customError(res);
+  return (await res.json()).targets;
+}
+
+export async function forgetApprovedTarget(name: string, value: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/targets?value=${encodeURIComponent(value)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw await _customError(res);
 }
 
 export async function deleteCustomWorkflow(name: string): Promise<void> {
@@ -1491,6 +1516,19 @@ export async function listWorkflowRuns(
   if (!res.ok) throw new Error("Failed to list workflow runs");
   const data = await res.json();
   return data.runs;
+}
+
+/** Answer a run waiting on a yes/no sign-off (the person asked, or the principal). */
+export async function decideWorkflowRun(
+  runId: string,
+  decision: "approve" | "reject"
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
+  if (!res.ok) throw await _customError(res);
 }
 
 export async function getWorkflowRun(runId: string): Promise<WorkflowRunDetail> {

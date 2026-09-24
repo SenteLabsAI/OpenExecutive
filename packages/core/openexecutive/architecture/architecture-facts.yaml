@@ -3451,11 +3451,55 @@ workflows:
     run()/resume() pre-flight all action tools; running out of turns fails the
     step; resumes heartbeat their claim (persistence.touch_resume_claim, <=1/min)
     and stop when superseded, so a live run is never requeued and replayed.
-    Known residual risk: an approved write tool's TARGET (spreadsheet/doc id) is
-    chosen by the model, so injected content could redirect a write — only the
-    prompt rule, the allowlist and the audit bound it today. For detection,
-    workflow_tool_call audit rows of non-read-only tools carry a bounded
-    `targets` digest (keys like *_id/to/url/path/spreadsheet; never content).
+    Targets are chosen at run time BY DESIGN: approval covers the tools, not
+    which spreadsheet/doc/recipient/URL each call hits (tab per month, reply to
+    the sender, doc per client). Bounds: the allowlist, the gateway recipient
+    gates, the audit (workflow_tool_call rows of non-read-only tools carry a
+    bounded `targets` digest — keys like *_id/to/url/path/spreadsheet; never
+    content) and FIRST-WRITE CONFIRMATION:
+    - action_step.TargetPolicy (one per run) checks every non-read-only call.
+      resource_targets() walks arguments recursively (lists, nested dicts) for
+      ids, to/cc/bcc, recipient, email, url/uri, path, channel, spreadsheet,
+      document, folder, calendar, file — NOT range/sheet (a tab or range in an
+      approved spreadsheet), names/titles, or message/thread/draft/label ids
+      (a reply's real target is its recipients, which the gateway gates).
+    - Trusted: values in workflow_approved_targets for this workflow (by
+      normalized value — emails lowercased — not by tool); values verbatim in
+      the workflow's own steps (seen at approval); values in the result of a
+      write this run already made (run-created). Substring trust needs >= 6
+      chars.
+    - Anything else is HELD: not run, no budget spent, the model gets a
+      "held for approval, don't retry" result, audited "held for approval";
+      <= 10 per step, <= 16 KB args each, else refused.
+    - After the step, the engine yields WaitForHumanEvent to
+      approved_targets.approver_for(name): the workflow's owner
+      (dynamic_workflows.owner_person_id — set on insert only from the web
+      caller on POST /workflows/custom or the chat session caller on
+      save_workflow; never from a body/definition; kept by PUT, overwrite,
+      activate), else the principal if the owner is unknown/archived.
+      on_timeout=auto_proceed, 48 h. WorkflowResumeState gains
+      kind="held_writes", held=[HeldCall(tool, arguments, targets)] and
+      deliver_to_person_id; old payloads parse as kind="gate".
+    - DynamicWorkflow._resume_held_writes (fingerprint + ActionStepSpec id
+      checked like a gate): only decision "approve" runs the held calls, each
+      re-checked against the LIVE step allowlist and resolve(); targets are
+      remembered first. reject/auto_proceed/defer/unknown skip. Either way a
+      "Held for approval" section is appended to the step output and the run
+      continues at idx+1. No approver at all: held writes skipped and noted.
+    - The principal can override from the web: POST
+      /workflows/runs/{id}/decision (is_principal_or_self on
+      awaiting_person_id; approve_reject gates only) -> apply_resolution. A
+      chat reply only matches the person asked (inbound_resolver filters on
+      awaiting_person_id).
+    - Scheduler: _run_dynamic_workflow checkpoints a held_writes pause
+      (checkpoint_gate) instead of raising, stamps deliver_to_person_id with
+      the cadence recipient, marks the row done and re-chains; the resumer
+      DMs the artifact after finish_resumed_run (and carries
+      deliver_to_person_id onto any later pause). Every other gate still
+      raises in the scheduler.
+    - Known limit: a daily cadence can raise a second question about the
+      same target while the first is unanswered; answering either remembers
+      the target for later runs.
     Egress labelling walks the whole schema (nested/items/anyOf/$defs) and an
     unparsed schema is never "reads only". requeue_run_for_resume takes
     stale_before so a heartbeat between the sweep's SELECT and UPDATE wins.

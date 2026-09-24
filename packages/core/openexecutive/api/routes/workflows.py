@@ -33,7 +33,9 @@ from openexecutive.workflows.dynamic_store import (
     activate_if_unchanged,
     delete_definition,
     get_definition,
+    get_owner,
     list_definitions,
+    save_if_unchanged,
     set_active,
     upsert_definition,
 )
@@ -93,6 +95,62 @@ async def delete_workflow_run(run_id: str) -> dict[str, str]:
     return {"status": "deleted", "run_id": run_id}
 
 
+_WEB_DECISIONS = {"approve", "reject"}
+
+
+@router.post("/workflows/runs/{run_id}/decision")
+async def decide_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Answer a run waiting for a yes/no sign-off from the web app.
+
+    The same resolution a chat reply produces, so the run resumes exactly as
+    it would have. Only the person the run is waiting on — or the principal —
+    may answer; free-text / numeric / document requests still need a reply in
+    chat, since there is nothing here to parse.
+    """
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.people.store import is_principal_or_self
+    from openexecutive.workflows.resumer import apply_resolution
+    from openexecutive.workflows.wait_for_human import WaitForHumanResolution
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        body = {}
+    decision = body.get("decision") if isinstance(body, dict) else None
+    if decision not in _WEB_DECISIONS:
+        raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'")
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if run.get("status") != "awaiting_human":
+        raise HTTPException(status_code=409, detail="This run isn't waiting for an answer.")
+    try:
+        gate = json.loads(run.get("state_json") or "{}")
+    except json.JSONDecodeError:
+        gate = {}
+    if not isinstance(gate, dict) or gate.get("expected_reply_shape", "approve_reject") != "approve_reject":
+        raise HTTPException(
+            status_code=409, detail="This request needs a written reply — answer it in chat."
+        )
+    awaiting = run.get("awaiting_person_id")
+    caller = _resolve_caller_person_id(request)
+    if not is_principal_or_self(caller, awaiting):
+        raise HTTPException(
+            status_code=403, detail="Only the person this is waiting on, or the principal, can answer."
+        )
+    assert caller is not None  # is_principal_or_self refuses an unresolved caller
+    resolution = WaitForHumanResolution(
+        run_id=run_id,
+        reply_text=f"[{decision} from the web app]",
+        source_channel="web",
+        parsed_decision={"decision": decision, "note": "answered in the web app"},
+        person_id=caller,
+    )
+    if not await apply_resolution(run_id, resolution):
+        raise HTTPException(status_code=409, detail="This run was answered already.")
+    return {"status": "resolved", "run_id": run_id, "decision": decision}
+
+
 # -----------------------------------------------------------------------------
 # Dynamic (user-created) workflow CRUD. Declared BEFORE "/workflows/{name}" so
 # the literal "custom" segment isn't captured by the {name} path parameter.
@@ -137,26 +195,46 @@ async def describe_workflow_tools(names: str = "") -> dict[str, Any]:
     return {"tools": [found[n].as_dict() for n in wanted if n in found]}
 
 
+def _with_owner(defn: DynamicWorkflowDef) -> dict[str, Any]:
+    """A definition as the UI sees it: its fields plus who created it.
+
+    ``owner_person_id`` is server-managed (a column, not a definition field),
+    so a client echoing it back in a body has no effect.
+    """
+    return {**defn.model_dump(), "owner_person_id": get_owner(defn.name)}
+
+
 @router.get("/workflows/custom")
 async def list_custom_workflows() -> dict[str, Any]:
     """All dynamic definitions (active and inactive) for the builder UI."""
-    return {"definitions": [d.model_dump() for d in list_definitions(active_only=False)]}
+    return {"definitions": [_with_owner(d) for d in list_definitions(active_only=False)]}
 
 
 @router.post("/workflows/custom", status_code=201)
 async def create_custom_workflow(request: Request) -> dict[str, Any]:
-    """Create a new dynamic workflow definition from a builder-UI submission."""
+    """Create a new dynamic workflow definition from a builder-UI submission.
+
+    The signed-in caller becomes its owner — the person asked to approve its
+    first write to a new target.
+    """
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
     defn = await _parse_definition(request)
+    exists = f"A custom workflow named {defn.name!r} already exists"
     if get_definition(defn.name) is not None:
-        raise HTTPException(
-            status_code=409, detail=f"A custom workflow named {defn.name!r} already exists"
-        )
+        raise HTTPException(status_code=409, detail=exists)
     errors = await validate_definition_and_tools(defn)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
-    stored = upsert_definition(defn)
+    # Insert-only: a create racing another save of the same name is a 409,
+    # never a silent overwrite of someone else's workflow (or its owner).
+    stored = save_if_unchanged(
+        defn, None, owner_person_id=_resolve_caller_person_id(request)
+    )
+    if stored is None:
+        raise HTTPException(status_code=409, detail=exists)
     _sync_cadence(stored)
-    return stored.model_dump()
+    return _with_owner(stored)
 
 
 @router.get("/workflows/custom/{name}")
@@ -164,7 +242,7 @@ async def get_custom_workflow(name: str) -> dict[str, Any]:
     defn = get_definition(name)
     if defn is None:
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
-    return defn.model_dump()
+    return _with_owner(defn)
 
 
 @router.put("/workflows/custom/{name}")
@@ -192,6 +270,26 @@ async def delete_custom_workflow(name: str) -> dict[str, str]:
     if not delete_definition(name):
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
     return {"status": "deleted", "name": name}
+
+
+@router.get("/workflows/custom/{name}/targets")
+async def list_approved_targets(name: str) -> dict[str, Any]:
+    """Where this workflow's tool steps may write without asking again."""
+    from openexecutive.workflows.approved_targets import list_targets
+
+    if get_definition(name) is None:
+        raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+    return {"targets": list_targets(name)}
+
+
+@router.delete("/workflows/custom/{name}/targets")
+async def forget_approved_target(name: str, value: str) -> dict[str, str]:
+    """Forget one approved target; the next write there asks again."""
+    from openexecutive.workflows.approved_targets import forget
+
+    if not forget(name, value):
+        raise HTTPException(status_code=404, detail="That target isn't approved for this workflow")
+    return {"status": "forgotten", "name": name}
 
 
 # Fields a reviewer can't see or that the server manages; the rest is what the

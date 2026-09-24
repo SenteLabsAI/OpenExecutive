@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import WorkflowRunner from "@/components/WorkflowRunner";
+import ApprovedTargets from "@/components/jobs/ApprovedTargets";
 import PendingWorkflowReview from "@/components/jobs/PendingWorkflowReview";
 import {
   DynamicWorkflowDef,
@@ -364,6 +365,8 @@ export default function JobDetailPage() {
               </div>
             </form>
           )}
+
+          {!running && workflow.is_custom && <ApprovedTargets name={workflow.name} />}
 
           {running && (
             <WorkflowRunner
