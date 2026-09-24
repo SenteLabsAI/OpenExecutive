@@ -57,9 +57,17 @@ export default function KnowledgeWorkspace() {
   );
   const [reviewCount, setReviewCount] = useState(0);
   const [fileReview, setFileReview] = useState<ReviewItem | null>(null);
-  // The file whose review status we want; a slower response for a file the
-  // user has already left must not overwrite it.
-  const wantedReviewId = useRef<string | null>(null);
+  // Bumped on every review-status request; only the latest may write, so a
+  // slow response (another file, or a refetch racing an Approve) can't
+  // overwrite a newer one.
+  const reviewSeq = useRef(0);
+
+  // Also follow `?view=review` on in-app navigation, where the page is not
+  // remounted and the initializer above doesn't run again.
+  const view = searchParams.get("view");
+  useEffect(() => {
+    if (view === "review") setSelection({ kind: "review" });
+  }, [view]);
   const [selectedContent, setSelectedContent] = useState<BuiltinFileContent | null>(null);
   const [editContent, setEditContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
@@ -90,16 +98,15 @@ export default function KnowledgeWorkspace() {
   }, [selection]);
 
   const loadFileReview = useCallback(async (sel: Selection) => {
-    const id = sel?.kind === "file" ? reviewItemId(sel.fileKind, sel.domain, sel.filename) : null;
-    wantedReviewId.current = id;
-    if (id === null) return;
+    const seq = ++reviewSeq.current;
+    if (sel?.kind !== "file") return;
     try {
-      const detail = await getReviewItem(id);
-      if (wantedReviewId.current === id) setFileReview(detail.item);
+      const detail = await getReviewItem(reviewItemId(sel.fileKind, sel.domain, sel.filename));
+      if (reviewSeq.current === seq) setFileReview(detail.item);
     } catch {
       // No review record (e.g. a file added outside the app before
       // registration) — show no status rather than an error.
-      if (wantedReviewId.current === id) setFileReview(null);
+      if (reviewSeq.current === seq) setFileReview(null);
     }
   }, []);
 
@@ -110,9 +117,10 @@ export default function KnowledgeWorkspace() {
 
   async function handleSetReviewStatus(status: ReviewStatus) {
     if (!fileReview) return;
+    const seq = ++reviewSeq.current;
     try {
       const updated = await patchReviewItem(fileReview.item_id, { status });
-      if (wantedReviewId.current === updated.item_id) setFileReview(updated);
+      if (reviewSeq.current === seq) setFileReview(updated);
       const stats = await getReviewStats();
       setReviewCount(stats.pending + stats.needs_revision);
     } catch {
