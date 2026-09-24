@@ -291,7 +291,9 @@ async def _process_resumable(now: datetime, db_path: Path | None = None) -> int:
     for stale_id in _wf_persistence.list_stale_resuming_runs(
         cutoff, _MAX_RESUME_ATTEMPTS, db_path=db_path
     ):
-        if _wf_persistence.requeue_run_for_resume(stale_id, db_path=db_path):
+        if _wf_persistence.requeue_run_for_resume(
+            stale_id, db_path=db_path, stale_before=cutoff
+        ):
             logger.warning(
                 "resumer: run %s was claimed for resume but never finished — requeued",
                 stale_id,
@@ -460,7 +462,8 @@ async def _execute_resume(
                 still_ours = _wf_persistence.touch_resume_claim(run_id, claim, db_path=db_path)
             except sqlite3.OperationalError:
                 # A busy shared DB is not a lost claim — keep working; the next
-                # event retries. Only a definite False means superseded.
+                # heartbeat (one interval later) retries. Only a definite
+                # False means superseded.
                 logger.warning("resumer: database busy on heartbeat for run %s", run_id)
                 still_ours = True
             if not still_ours:

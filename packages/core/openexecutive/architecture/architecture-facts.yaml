@@ -3423,7 +3423,12 @@ workflows:
     and stop when superseded, so a live run is never requeued and replayed.
     Known residual risk: an approved write tool's TARGET (spreadsheet/doc id) is
     chosen by the model, so injected content could redirect a write — only the
-    prompt rule, the allowlist and the audit bound it today.
+    prompt rule, the allowlist and the audit bound it today. For detection,
+    workflow_tool_call audit rows of non-read-only tools carry a bounded
+    `targets` digest (keys like *_id/to/url/path/spreadsheet; never content).
+    Egress labelling walks the whole schema (nested/items/anyOf/$defs) and an
+    unparsed schema is never "reads only". requeue_run_for_resume takes
+    stale_before so a heartbeat between the sweep's SELECT and UPDATE wins.
 
     Catalog: `Workflow.background` / `WorkflowMeta.background` is True for
     the system-run built-ins (morning_brief, end_of_day_digest,

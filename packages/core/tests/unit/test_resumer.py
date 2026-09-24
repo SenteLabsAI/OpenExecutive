@@ -937,3 +937,19 @@ def test_a_busy_database_on_heartbeat_does_not_kill_the_resume(
     _install_stub(monkeypatch, wf)
     assert asyncio.run(resumer._process_resumable(datetime.now(UTC))) == 1
     assert wf_persistence.get_run("res-1")["status"] == "done"
+
+
+def test_requeue_with_cutoff_spares_a_freshly_heartbeated_run() -> None:
+    """The sweep reads stale ids, then requeues; a heartbeat landing in
+    between must win, or a live worker's run is handed to a second one."""
+    _resolved()
+    token = wf_persistence.claim_run_for_resume("res-1")
+    assert token is not None
+    cutoff = datetime.now(UTC) - timedelta(minutes=90)
+    wf_persistence.touch_resume_claim("res-1", token)  # fresh heartbeat
+    assert wf_persistence.requeue_run_for_resume("res-1", stale_before=cutoff) is False
+    assert wf_persistence.get_run("res-1")["resume_claim"] == token
+    # A genuinely stale claim is still requeued.
+    assert wf_persistence.requeue_run_for_resume(
+        "res-1", stale_before=datetime.now(UTC) + timedelta(minutes=1)
+    ) is True

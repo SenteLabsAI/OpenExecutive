@@ -619,8 +619,18 @@ def list_exhausted_resuming_runs(
     return [r[0] for r in rows]
 
 
-def requeue_run_for_resume(run_id: str, db_path: Path | None = None) -> bool:
+def requeue_run_for_resume(
+    run_id: str,
+    db_path: Path | None = None,
+    *,
+    stale_before: datetime | None = None,
+) -> bool:
     """running -> resolved, so the next tick re-claims it. Guarded, idempotent.
+
+    ``stale_before`` re-checks staleness in the same UPDATE: the sweep reads
+    stale ids and then requeues them, and a live worker's heartbeat
+    (``touch_resume_claim``) can land in between. With the cutoff in the
+    WHERE clause, a fresh heartbeat wins and the run is left alone.
 
     `resume_attempts` is NOT reset here — it is the bound that stops a run
     which reliably kills its worker from being retried forever. It IS reset by
@@ -630,17 +640,21 @@ def requeue_run_for_resume(run_id: str, db_path: Path | None = None) -> bool:
     if not _resolve(db_path).exists():
         return False
     now = datetime.now(UTC).isoformat()
+    sql = (
+        "UPDATE workflow_runs SET status = 'resolved', resumed_at = NULL, "
+        # Breaking the claim is the point: the worker we just declared
+        # dead may in fact be alive, and this is what stops its late
+        # write from landing on the replacement's work.
+        "resume_claim = NULL, updated_at = ? "
+        "WHERE run_id = ? AND status = 'running' "
+        "AND resume_state_json IS NOT NULL"
+    )
+    params: list[str] = [now, run_id]
+    if stale_before is not None:
+        sql += " AND resumed_at IS NOT NULL AND resumed_at < ?"
+        params.append(stale_before.isoformat())
     with _get_conn(_resolve(db_path)) as conn:
-        cur = conn.execute(
-            "UPDATE workflow_runs SET status = 'resolved', resumed_at = NULL, "
-            # Breaking the claim is the point: the worker we just declared
-            # dead may in fact be alive, and this is what stops its late
-            # write from landing on the replacement's work.
-            "resume_claim = NULL, updated_at = ? "
-            "WHERE run_id = ? AND status = 'running' "
-            "AND resume_state_json IS NOT NULL",
-            (now, run_id),
-        )
+        cur = conn.execute(sql, params)
         return cur.rowcount > 0
 
 

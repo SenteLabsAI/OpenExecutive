@@ -287,3 +287,20 @@ def test_url_taking_tools_are_never_labelled_read_only() -> None:
     )
     labels = {t.name: t.read_only for t in tc.parse_search_results(text)}
     assert labels == {"fetch__fetch": None, "web__get_page": None, "sheets__get_values": True}
+
+
+def test_nested_or_unparsed_schemas_are_never_labelled_read_only() -> None:
+    nested = {"type": "object", "properties": {"request": {"type": "object", "properties": {"url": {}}}}}
+    in_items = {"type": "object", "properties": {"pages": {"type": "array", "items": {"properties": {"page_url": {}}}}}}
+    in_anyof = {"type": "object", "anyOf": [{"properties": {"webhook": {}}}]}
+    text = _search_text(
+        _block("x__get_page", "d", nested),
+        _block("x__read_many", "d", in_items),
+        _block("x__get_thing", "d", in_anyof),
+    )
+    assert {t.name: t.read_only for t in tc.parse_search_results(text)} == {
+        "x__get_page": None, "x__read_many": None, "x__get_thing": None,
+    }
+    broken = "## x__get_values\n**Description:** d\n**Parameters:**\n```json\n{oops\n```\n"
+    [tool] = tc.parse_search_results(broken)
+    assert tool.read_only is None and tool.input_schema == {}

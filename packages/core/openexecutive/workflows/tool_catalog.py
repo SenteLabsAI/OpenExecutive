@@ -88,10 +88,38 @@ class ToolCatalogError(RuntimeError):
     """A tool lookup could not be completed (e.g. no gateway). Fixed-string."""
 
 
+_SCHEMA_WALK_DEPTH = 6
+
+
+def _schema_property_names(schema: Any, depth: int = 0) -> set[str]:
+    """Every property name anywhere in a JSON schema (nested objects, array
+    items, anyOf/oneOf/allOf, $defs) — a URL can hide one level down."""
+    if depth > _SCHEMA_WALK_DEPTH or not isinstance(schema, dict):
+        return set()
+    names: set[str] = set()
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        for key, sub in props.items():
+            names.add(str(key).lower())
+            names |= _schema_property_names(sub, depth + 1)
+    for key in ("items", "additionalProperties"):
+        names |= _schema_property_names(schema.get(key), depth + 1)
+    for key in ("anyOf", "oneOf", "allOf"):
+        for sub in schema.get(key) or []:
+            names |= _schema_property_names(sub, depth + 1)
+    for key in ("$defs", "definitions"):
+        defs = schema.get(key)
+        if isinstance(defs, dict):
+            for sub in defs.values():
+                names |= _schema_property_names(sub, depth + 1)
+    return names
+
+
 def _read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> bool | None:
-    props = (input_schema or {}).get("properties")
-    if isinstance(props, dict) and any(
-        hint in str(key).lower() for key in props for hint in _EGRESS_PARAM_HINTS
+    if input_schema is None:
+        return None  # schema unknown: can't rule out egress, so never "reads only"
+    if any(
+        hint in key for key in _schema_property_names(input_schema) for hint in _EGRESS_PARAM_HINTS
     ):
         return None
     bare = name.split("__", 1)[-1].lower()
@@ -135,7 +163,7 @@ def parse_search_results(text: str) -> list[ToolInfo]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         block = text[m.end():end]
         name = m.group("name")
-        schema: dict[str, Any] = {}
+        schema: dict[str, Any] | None = None
         cut = block.rfind(_PARAMS_MARKER)
         schema_match = (
             _SCHEMA_RE.match(block[cut + len(_PARAMS_MARKER):]) if cut >= 0 else None
@@ -151,7 +179,7 @@ def parse_search_results(text: str) -> list[ToolInfo]:
             ToolInfo(
                 name=name,
                 description=m.group("desc").strip(),
-                input_schema=schema,
+                input_schema=schema or {},
                 read_only=_read_only_label(name, schema),
                 source="mcp",
             )

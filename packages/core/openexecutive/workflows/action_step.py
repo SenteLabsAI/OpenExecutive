@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -127,14 +128,48 @@ def _block_to_dict(block: Any) -> dict[str, Any] | None:
     return None
 
 
-def _audit(workflow_name: str, step_id: str, tool: str, outcome: str) -> None:
+# Argument keys that say WHERE a call acts (which sheet, which recipient,
+# which URL). Logged for tools that may change things, so a write redirected
+# by injected content is visible in the audit trail. Content arguments (rows,
+# bodies, text) are never logged.
+_TARGET_KEY_RE = re.compile(
+    r"(^id$|_id$|^to$|^cc$|^bcc$|recipient|channel|url|uri|path|email|"
+    r"spreadsheet|document|folder|file|calendar|range|sheet)",
+    re.IGNORECASE,
+)
+_MAX_TARGET_KEYS = 8
+_MAX_TARGET_VALUE_CHARS = 120
+
+
+def _target_digest(arguments: dict[str, Any]) -> dict[str, str]:
+    digest: dict[str, str] = {}
+    for key, value in arguments.items():
+        if len(digest) >= _MAX_TARGET_KEYS:
+            break
+        if _TARGET_KEY_RE.search(str(key)) and not isinstance(value, dict | list):
+            digest[str(key)] = str(value)[:_MAX_TARGET_VALUE_CHARS]
+    return digest
+
+
+def _audit(
+    workflow_name: str,
+    step_id: str,
+    tool: str,
+    outcome: str,
+    targets: dict[str, str] | None = None,
+) -> None:
     from openexecutive.audit import log_event
 
+    details: dict[str, Any] = {
+        "workflow": workflow_name, "step_id": step_id, "tool": tool, "outcome": outcome,
+    }
+    if targets:
+        details["targets"] = targets
     log_event(
         "workflow_tool_call",
         f"{workflow_name}/{step_id}: {tool} ({outcome})",
         actor=WORKFLOW_ACTOR_AGENT_ID,
-        details={"workflow": workflow_name, "step_id": step_id, "tool": tool, "outcome": outcome},
+        details=details,
     )
 
 
@@ -287,6 +322,7 @@ async def run_action_step(
         for use in tool_uses:
             name = str(use["name"])
             arguments = use["input"] if isinstance(use["input"], dict) else {}
+            targets: dict[str, str] | None = None
             if name not in allowed:
                 (content, is_error), outcome = _refusal(
                     f"{name} is not one of this step's tools"
@@ -297,10 +333,12 @@ async def run_action_step(
                 ), "refused: budget"
             else:
                 budget.used += 1
+                if resolved[name].read_only is not True:
+                    targets = _target_digest(arguments)
                 yield ("progress", f"Using {name}…")
                 content, is_error = await _call_tool(name, arguments, resolved[name])
                 outcome = "error" if is_error else "ok"
-            _audit(workflow_name, step.id, name, outcome)
+            _audit(workflow_name, step.id, name, outcome, targets)
             actions.append((name, outcome))
             results.append(
                 {

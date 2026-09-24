@@ -523,3 +523,23 @@ async def test_last_turn_always_switches_tools_off(
     assert provider.calls[-1]["tool_choice"] == {"type": "none"}
     assert all("tool_choice" not in c for c in provider.calls[:-1])
     assert out[-1][0] == "output"
+
+
+@pytest.mark.asyncio
+async def test_write_calls_audit_their_targets_but_never_content(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    """A write redirected by injected content must be visible in the audit."""
+    provider = _ScriptedProvider(
+        [
+            _resp(_use(READ, {"spreadsheet_id": "sheet-READ"}, "tu_1")),
+            _resp(_use(APPEND, {"spreadsheet_id": "sheet-XYZ", "rows": [["Acme", "10"]]}, "tu_2")),
+            _resp(_text("Done.")),
+        ]
+    )
+    _install(monkeypatch, provider)
+    await _run(_step())
+    read_row, write_row = audit
+    assert "targets" not in read_row["details"]  # read-only tool: nothing logged
+    assert write_row["details"]["targets"] == {"spreadsheet_id": "sheet-XYZ"}
+    assert "Acme" not in json.dumps(write_row)
