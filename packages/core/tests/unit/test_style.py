@@ -472,7 +472,7 @@ def test_thumbs_down_records_the_rater_and_triggers_a_pass(
     from openexecutive.api.routes import sessions as route
 
     _, aid = _turn(team.sara, "what's the runway")
-    monkeypatch.setattr(route, "get_session_owner", lambda sid: (True, team.sara))
+    monkeypatch.setattr(route, "_session_access", lambda req, sid, caller: "allowed")
     monkeypatch.setattr(route, "_resolve_caller_person_id", lambda req: team.sara)
     real_set = session_store.set_message_feedback
     monkeypatch.setattr(route, "set_message_feedback",
