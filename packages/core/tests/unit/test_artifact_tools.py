@@ -223,6 +223,10 @@ async def test_supersedes_archives_prior_and_links_it(
     assert new is not None and new.supersedes_id == first["artifact_id"]
     assert new.archived_at is None
     assert unindexed == [first["artifact_id"]]
+    # The old version leaves the /today queue (live = unread); the new one
+    # takes its place.
+    assert old.status == "read"
+    assert new.status == "unread"
 
 
 async def test_supersedes_can_revise_a_workflow_run(
@@ -352,3 +356,10 @@ async def test_indexing_failure_does_not_fail_draft(
     result = await _draft()
     assert result["ok"] is True
     assert alerts_store.get_alert(result["alert_id"], db_path=db) is not None
+
+
+async def test_blank_format_is_stored_as_markdown(db: Path, audit_calls: list[dict]) -> None:
+    result = await _draft(format="  ")
+    assert result["format"] == "markdown"
+    alert = alerts_store.get_alert(result["alert_id"], db_path=db)
+    assert alert is not None and alert.artifact_format == "markdown"

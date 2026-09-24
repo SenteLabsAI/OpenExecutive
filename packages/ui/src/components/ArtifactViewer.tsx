@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { ArtifactFormat } from "@/lib/api";
+import { hostOf } from "@/lib/url";
 
 // Blocks every network fetch and all script from inside an HTML artifact.
 // The iframe sandbox (no allow-scripts, no allow-same-origin) is the real
@@ -14,14 +15,6 @@ const HTML_CSP =
 
 function withCsp(html: string): string {
   return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">${html}`;
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
 }
 
 export function MarkdownArticle({ markdown }: { markdown: string }) {

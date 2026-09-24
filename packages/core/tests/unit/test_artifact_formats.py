@@ -186,3 +186,62 @@ def test_get_format_falls_back_to_markdown() -> None:
     assert af.get_format(None).name == "markdown"
     assert af.get_format("legacy-thing").name == "markdown"
     assert af.get_format(" HTML ").name == "html"
+
+
+def test_docx_keeps_intraword_underscores() -> None:
+    doc = Document(io.BytesIO(af.markdown_to_docx("Use snake_case_name and john_doe_x@example.com, _emphasis_ too.")))
+    text = doc.paragraphs[0].text
+    assert "snake_case_name" in text and "john_doe_x@example.com" in text
+    assert "emphasis too." in text
+    assert any(r.italic and r.text == "emphasis" for r in doc.paragraphs[0].runs)
+
+
+def test_docx_table_keeps_extra_cells_and_ignores_bare_rule() -> None:
+    doc = Document(io.BytesIO(af.markdown_to_docx("| a | b |\n|---|---|\n| 1 | 2 | 3 |")))
+    table = doc.tables[0]
+    assert [c.text for c in table.rows[1].cells] == ["1", "2", "3"]
+    # A rule under a line with a pipe is not a table (delimiter width differs).
+    doc2 = Document(io.BytesIO(af.markdown_to_docx("Revenue | margin notes\n---\nnext para")))
+    assert doc2.tables == []
+    assert "Revenue | margin notes" in "\n".join(p.text for p in doc2.paragraphs)
+
+
+def test_control_characters_never_break_rendering() -> None:
+    af.markdown_to_docx("a\x01b\x00c\x0b")  # would raise inside python-docx
+    built = af.build_artifact("xlsx", {"sheets": [
+        {"name": "S\x01", "columns": ["c\x02"], "rows": [["x\x0by", 1]]},
+    ]})
+    wb = load_workbook(io.BytesIO(af.sheets_to_xlsx(built.stored)))
+    ws = wb[wb.sheetnames[0]]
+    assert ws["A1"].value == "c" and ws["A2"].value == "xy"
+    # Legacy stored JSON that still holds control characters renders too.
+    legacy = json.dumps({"summary": "", "sheets": [{"name": "L", "columns": ["a"], "rows": [["\x01z"]]}]})
+    assert load_workbook(io.BytesIO(af.sheets_to_xlsx(legacy)))["L"]["A2"].value == "z"
+
+
+def test_xlsx_accepts_rows_as_objects() -> None:
+    built = af.build_artifact("xlsx", {"sheets": [
+        {"name": "Deals", "rows": [{"Name": "Acme", "ARR": 10}, {"ARR": 5, "Name": "Beta"}]},
+    ]})
+    sheet = json.loads(built.stored)["sheets"][0]
+    assert sheet["columns"] == ["Name", "ARR"]
+    assert sheet["rows"] == [["Acme", 10], ["Beta", 5]]
+
+
+def test_link_rejects_unparseable_url() -> None:
+    with pytest.raises(af.ArtifactInputError, match="not valid"):
+        af.build_artifact("link", {"url": "https://[abc/x"})
+
+
+def test_heading_only_markdown_keeps_preview() -> None:
+    assert af.preview_text("markdown", "# Title only", 200) == "# Title only"
+
+
+def test_html_sanitizer_keeps_body_text_and_catches_slash_handlers() -> None:
+    out = af.sanitize_html(
+        '<p>Set online = true today</p><img/onerror=alert(1) src=x>'
+        '<a href="javascript:alert(1)">x</a>'
+    )
+    assert "Set online = true today" in out
+    assert "onerror" not in out.lower()
+    assert "javascript:" not in out.lower()

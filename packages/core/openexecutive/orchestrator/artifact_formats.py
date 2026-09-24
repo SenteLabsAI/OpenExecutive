@@ -116,12 +116,24 @@ def _collapse(text: str) -> str:
     return " ".join(text.split())
 
 
+# C0 control characters (bar tab / newline / carriage return) are illegal in
+# the XML inside .docx / .xlsx; text scraped from web pages or PDFs often
+# carries them. Stripped before rendering so a download never 500s.
+_XML_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def xml_safe(text: str) -> str:
+    return _XML_ILLEGAL_RE.sub("", text)
+
+
 def _markdown_text(markdown: str) -> str:
     """Markdown minus a single leading heading line, whitespace-collapsed."""
     text = (markdown or "").lstrip()
+    # A lone heading line (no body yet) is kept, so the preview isn't empty.
     if text.startswith("#"):
         first_break = text.find("\n")
-        text = text[first_break + 1 :] if first_break != -1 else ""
+        if first_break != -1:
+            text = text[first_break + 1 :]
     return _collapse(text)
 
 
@@ -139,14 +151,24 @@ def _build_markdown(tool_input: dict[str, Any]) -> BuiltArtifact:
 # html
 # --------------------------------------------------------------------------- #
 
-# Removed from stored HTML. The viewer's sandbox already blocks all of these;
-# stripping them also covers the downloaded file opened outside the sandbox.
-# Regexes are defence in depth, not the security boundary.
+# Removed from stored HTML. This is best-effort hygiene for the stored copy,
+# NOT the security boundary: the viewer renders in a script-less sandboxed
+# iframe with a no-network CSP, and downloads are attachments with a sandbox
+# CSP header. A downloaded .html opened locally is only as safe as this
+# regex pass, so treat it like any file from the web.
 _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]*>", re.IGNORECASE)
 _META_REFRESH_RE = re.compile(r"<meta\b[^>]*http-equiv\s*=\s*[\"']?refresh[^>]*>", re.IGNORECASE)
 _BASE_RE = re.compile(r"<base\b[^>]*>", re.IGNORECASE)
-_EVENT_ATTR_RE = re.compile(r"\son[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[a-zA-Z][^>]*>")
+# Only applied INSIDE a tag, so body text like "online = true" is untouched.
+_EVENT_ATTR_RE = re.compile(r"[\s/]on[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+_JS_URL_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
+
+
+def _clean_tag(match: re.Match[str]) -> str:
+    tag = _EVENT_ATTR_RE.sub(" ", match.group(0))
+    return _JS_URL_RE.sub("blocked:", tag)
 
 
 def sanitize_html(html: str) -> str:
@@ -154,7 +176,7 @@ def sanitize_html(html: str) -> str:
     out = _SCRIPT_OPEN_RE.sub("", out)
     out = _META_REFRESH_RE.sub("", out)
     out = _BASE_RE.sub("", out)
-    return _EVENT_ATTR_RE.sub("", out)
+    return _TAG_RE.sub(_clean_tag, out)
 
 
 class _TextExtractor(HTMLParser):
@@ -215,8 +237,11 @@ _NUMBERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 _HR_RE = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$")
 # **bold**, __bold__, *italic*, _italic_, `code`, [text](url)
+# Underscore emphasis must not touch intraword underscores (snake_case,
+# john_doe@example.com), matching CommonMark.
 _INLINE_RE = re.compile(
-    r"(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\([^)]+\)|\*[^*\s][^*]*\*|_[^_\s][^_]*_)"
+    r"(\*\*[^*]+\*\*|(?<!\w)__[^_]+__(?!\w)|`[^`]+`|\[[^\]]+\]\([^)]+\)"
+    r"|\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))"
 )
 
 
@@ -246,18 +271,69 @@ def _table_cells(line: str) -> list[str]:
     return [c.strip() for c in row.split("|")]
 
 
+def _is_table_start(lines: list[str], i: int) -> bool:
+    """GFM: a header row containing '|' and a delimiter row of equal width."""
+    if "|" not in lines[i] or i + 1 >= len(lines):
+        return False
+    sep = lines[i + 1]
+    if "|" not in sep or not _TABLE_SEP_RE.match(sep):
+        return False
+    return len(_table_cells(sep)) == len(_table_cells(lines[i]))
+
+
+def _emit_code_block(doc: Any, lines: list[str], i: int) -> int:
+    i += 1
+    code: list[str] = []
+    while i < len(lines) and not lines[i].strip().startswith("```"):
+        code.append(lines[i])
+        i += 1
+    doc.add_paragraph().add_run("\n".join(code)).font.name = "Courier New"
+    return i + 1
+
+
+def _emit_table(doc: Any, lines: list[str], i: int) -> int:
+    header = _table_cells(lines[i])
+    i += 2
+    body: list[list[str]] = []
+    while i < len(lines) and "|" in lines[i] and lines[i].strip():
+        body.append(_table_cells(lines[i]))
+        i += 1
+    # A body row wider than the header widens the table rather than losing cells.
+    width = max(len(header), *(len(r) for r in body)) if body else len(header)
+    table = doc.add_table(rows=1 + len(body), cols=width)
+    table.style = "Table Grid"
+    for c in range(width):
+        cell_text = header[c] if c < len(header) else ""
+        table.rows[0].cells[c].paragraphs[0].add_run(cell_text).bold = True
+    for r, row in enumerate(body, start=1):
+        for c in range(width):
+            _add_inline(table.rows[r].cells[c].paragraphs[0], row[c] if c < len(row) else "")
+    return i
+
+
+def _emit_list_item(doc: Any, line: str) -> bool:
+    bullet = _BULLET_RE.match(line)
+    match = bullet or _NUMBERED_RE.match(line)
+    if match is None:
+        return False
+    nested = len(match.group(1).expandtabs(4)) >= 2
+    style = "List Bullet" if bullet else "List Number"
+    _add_inline(doc.add_paragraph(style=f"{style} 2" if nested else style), match.group(2).strip())
+    return True
+
+
 def markdown_to_docx(markdown: str) -> bytes:
     """Render the Markdown subset artifacts use into a Word document.
 
     Covers headings, paragraphs, bullet / numbered lists (one nesting level),
     GFM tables, block quotes, fenced code, rules and inline bold / italic /
     code / links. Anything else is kept as literal paragraph text, so no
-    content is ever dropped.
+    content is dropped (control characters Word can't store aside).
     """
     from docx import Document
 
     doc = Document()
-    lines = (markdown or "").splitlines()
+    lines = xml_safe(markdown or "").splitlines()
     i = 0
     paragraph_buf: list[str] = []
 
@@ -269,81 +345,32 @@ def markdown_to_docx(markdown: str) -> bytes:
     while i < len(lines):
         line = lines[i]
         stripped = line.strip()
-
-        if stripped.startswith("```"):
-            flush_paragraph()
-            i += 1
-            code: list[str] = []
-            while i < len(lines) and not lines[i].strip().startswith("```"):
-                code.append(lines[i])
-                i += 1
-            para = doc.add_paragraph()
-            para.add_run("\n".join(code)).font.name = "Courier New"
-            i += 1
-            continue
-
-        if not stripped:
-            flush_paragraph()
-            i += 1
-            continue
-
         heading = _HEADING_RE.match(stripped)
-        if heading:
-            flush_paragraph()
-            level = min(len(heading.group(1)), 4)
-            _add_inline(doc.add_heading(level=level), heading.group(2).strip())
+        if stripped and not (stripped.startswith(("```", ">")) or heading
+                             or _is_table_start(lines, i) or _HR_RE.match(stripped)
+                             or _BULLET_RE.match(line) or _NUMBERED_RE.match(line)):
+            paragraph_buf.append(line)
             i += 1
             continue
-
-        if "|" in stripped and i + 1 < len(lines) and _TABLE_SEP_RE.match(lines[i + 1]):
-            flush_paragraph()
-            header = _table_cells(stripped)
-            i += 2
-            body: list[list[str]] = []
-            while i < len(lines) and "|" in lines[i] and lines[i].strip():
-                body.append(_table_cells(lines[i]))
-                i += 1
-            table = doc.add_table(rows=1 + len(body), cols=len(header))
-            table.style = "Table Grid"
-            for c, cell_text in enumerate(header):
-                cell_par = table.rows[0].cells[c].paragraphs[0]
-                cell_par.add_run(cell_text).bold = True
-            for r, row in enumerate(body, start=1):
-                for c in range(len(header)):
-                    _add_inline(
-                        table.rows[r].cells[c].paragraphs[0],
-                        row[c] if c < len(row) else "",
-                    )
-            continue
-
-        if _HR_RE.match(stripped):
-            flush_paragraph()
+        flush_paragraph()
+        if not stripped:
+            i += 1
+        elif stripped.startswith("```"):
+            i = _emit_code_block(doc, lines, i)
+        elif heading:
+            _add_inline(doc.add_heading(level=min(len(heading.group(1)), 4)),
+                        heading.group(2).strip())
+            i += 1
+        elif _is_table_start(lines, i):
+            i = _emit_table(doc, lines, i)
+        elif _HR_RE.match(stripped):
             doc.add_paragraph("―" * 20)
             i += 1
-            continue
-
-        bullet = _BULLET_RE.match(line)
-        numbered = _NUMBERED_RE.match(line)
-        if bullet or numbered:
-            flush_paragraph()
-            match = bullet or numbered
-            assert match is not None
-            nested = len(match.group(1).expandtabs(4)) >= 2
-            style = "List Bullet" if bullet else "List Number"
-            _add_inline(doc.add_paragraph(style=f"{style} 2" if nested else style),
-                        match.group(2).strip())
+        elif _emit_list_item(doc, line):
             i += 1
-            continue
-
-        if stripped.startswith(">"):
-            flush_paragraph()
-            quote = doc.add_paragraph(style="Intense Quote")
-            _add_inline(quote, stripped.lstrip("> ").strip())
+        else:  # block quote
+            _add_inline(doc.add_paragraph(style="Intense Quote"), stripped.lstrip("> ").strip())
             i += 1
-            continue
-
-        paragraph_buf.append(line)
-        i += 1
 
     flush_paragraph()
     buf = io.BytesIO()
@@ -359,13 +386,15 @@ Cell = str | int | float | bool | None
 
 
 def _cell(value: Any) -> Cell:
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if isinstance(value, str):
+        return xml_safe(value)
+    if value is None or isinstance(value, (int, float, bool)):
         return value
-    return json.dumps(value, ensure_ascii=False)
+    return xml_safe(json.dumps(value, ensure_ascii=False))
 
 
 def _sheet_name(raw: Any, index: int, seen: set[str]) -> str:
-    name = _SHEET_NAME_BAD.sub(" ", str(raw or "").strip())[:_SHEET_NAME_MAX].strip()
+    name = _SHEET_NAME_BAD.sub(" ", xml_safe(str(raw or "")).strip())[:_SHEET_NAME_MAX].strip()
     name = name or f"Sheet{index + 1}"
     base, n = name, 2
     while name.lower() in seen:
@@ -401,9 +430,16 @@ def _normalize_sheets(raw: Any) -> list[dict[str, Any]]:
             raise ArtifactInputError(
                 f"sheet {idx + 1}: at most {MAX_ROWS_PER_SHEET} rows"
             )
+        # Models often send rows as {column: value} objects; map them onto
+        # the columns (declaring columns from the first row if none given).
+        if not columns and rows and isinstance(rows[0], dict):
+            columns = list(rows[0].keys())
         norm_rows: list[list[Cell]] = []
         for row in rows:
-            cells = row if isinstance(row, list) else [row]
+            if isinstance(row, dict):
+                cells = [row.get(c) for c in columns]
+            else:
+                cells = row if isinstance(row, list) else [row]
             if len(cells) > MAX_COLUMNS:
                 raise ArtifactInputError(f"sheet {idx + 1}: at most {MAX_COLUMNS} columns")
             norm_rows.append([_cell(v) for v in cells])
@@ -412,7 +448,7 @@ def _normalize_sheets(raw: Any) -> list[dict[str, Any]]:
             raise ArtifactInputError(f"at most {MAX_TOTAL_CELLS} cells in total")
         sheets.append({
             "name": _sheet_name(sheet.get("name"), idx, seen),
-            "columns": [str(c) for c in columns],
+            "columns": [xml_safe(str(c)) for c in columns],
             "rows": norm_rows,
         })
     return sheets
@@ -493,15 +529,16 @@ def sheets_to_xlsx(stored: str) -> bytes:
     sheets = data.get("sheets") or []
     if default is not None and sheets:
         wb.remove(default)
+    seen: set[str] = set()
     for sheet in sheets:
-        ws = wb.create_sheet(title=str(sheet.get("name") or "Sheet")[:_SHEET_NAME_MAX])
+        ws = wb.create_sheet(title=_sheet_name(sheet.get("name"), len(seen), seen))
         columns = sheet.get("columns") or []
         rows = sheet.get("rows") or []
         widths: dict[int, int] = {}
         start = 1
         if columns:
             for c, name in enumerate(columns, start=1):
-                cell = ws.cell(row=1, column=c, value=str(name))
+                cell = ws.cell(row=1, column=c, value=xml_safe(str(name)))
                 cell.data_type = "s"
                 cell.font = Font(bold=True)
                 widths[c] = max(widths.get(c, 0), len(str(name)))
@@ -509,6 +546,7 @@ def sheets_to_xlsx(stored: str) -> bytes:
             start = 2
         for r, row in enumerate(rows, start=start):
             for c, value in enumerate(row, start=1):
+                value = _cell(value)
                 cell = ws.cell(row=r, column=c, value=value)
                 if isinstance(value, str):
                     cell.data_type = "s"
@@ -531,8 +569,12 @@ def validate_link_url(url: str) -> str:
         raise ArtifactInputError("url is required for a link artifact")
     if len(url) > MAX_URL_CHARS:
         raise ArtifactInputError("url is too long")
-    parts = urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname:
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError as exc:
+        raise ArtifactInputError(f"url is not valid: {exc}") from exc
+    if parts.scheme != "https" or not host:
         raise ArtifactInputError("url must be an https:// link")
     if parts.username or parts.password:
         raise ArtifactInputError("url must not embed credentials")
@@ -632,4 +674,5 @@ __all__ = [
     "sheets_to_xlsx",
     "validate_link_url",
     "with_sources_footer",
+    "xml_safe",
 ]

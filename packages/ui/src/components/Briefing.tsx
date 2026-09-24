@@ -34,6 +34,7 @@ import {
   type HandledRow,
 } from "@/lib/handled";
 import InfoTip from "./InfoTip";
+import { hostOf } from "@/lib/url";
 import { SectionHeading } from "./memories/shared";
 
 // Future-relative label for a pending run time ("in 8h"). Past/blank →
@@ -51,14 +52,6 @@ function artifactBadge(format: ProposalItem["artifact_format"]): string {
       return "Link";
     default:
       return "Artifact";
-  }
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
   }
 }
 

@@ -162,25 +162,36 @@ async def download_artifact(
 
 @router.post("/artifacts/{composite_id}/archive")
 async def archive_artifact(composite_id: str) -> dict[str, str]:
-    """Soft-hide an artifact (reversible). Drops it from the default list."""
-    _mutate(lambda: set_artifact_archived(composite_id, archived=True))
+    """Soft-hide an artifact (reversible). Drops it from the default list and
+    from the Executive's recall (knowledge index)."""
+    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=True))
+    from openexecutive.orchestrator.artifact_tools import unindex_artifact
+
+    await unindex_artifact(rec.id)
     return {"status": "archived", "id": composite_id}
 
 
 @router.post("/artifacts/{composite_id}/restore")
 async def restore_artifact(composite_id: str) -> dict[str, str]:
-    """Un-archive an artifact, returning it to the active list."""
-    _mutate(lambda: set_artifact_archived(composite_id, archived=False))
+    """Un-archive an artifact, returning it to the active list and, for a
+    drafted artifact, to the knowledge index."""
+    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=False))
+    if rec.kind == "draft" and rec.stored:
+        from openexecutive.orchestrator.artifact_tools import index_artifact
+
+        await index_artifact(rec.id, rec.title, rec.format, rec.stored)
     return {"status": "restored", "id": composite_id}
 
 
 @router.delete("/artifacts/{composite_id}")
 async def delete_artifact(composite_id: str) -> dict[str, str]:
     """Permanently delete the underlying alert / workflow-run row."""
-    _mutate(lambda: delete_artifact_record(composite_id))
+    rec = _mutate(lambda: delete_artifact_record(composite_id))
     from openexecutive.orchestrator.artifact_tools import unindex_artifact
 
-    await unindex_artifact(composite_id)
+    # The canonical id (`alert:5`, not whatever spelling the path used) is
+    # what indexing keyed the chunks on.
+    await unindex_artifact(rec.id)
     return {"status": "deleted", "id": composite_id}
 
 
@@ -198,9 +209,9 @@ def _load(composite_id: str) -> ArtifactRecord:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _mutate(action: Callable[[], object]) -> None:
+def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
     try:
-        action()
+        return action()
     except MalformedArtifactId as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ArtifactNotFound as exc:

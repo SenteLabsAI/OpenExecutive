@@ -430,8 +430,31 @@ async def test_delete_unindexes(db: Path, monkeypatch: pytest.MonkeyPatch) -> No
         "openexecutive.orchestrator.artifact_tools.unindex_artifact", _fake
     )
     aid = _seed_draft(db, "d-del", "Gone")
-    await artifacts_route.delete_artifact(f"alert:{aid}")
+    # A zero-padded spelling still unindexes the canonical id.
+    await artifacts_route.delete_artifact(f"alert:0{aid}")
     assert removed == [f"alert:{aid}"]
+
+
+async def test_archive_unindexes_and_restore_reindexes(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple] = []
+
+    async def _unindex(artifact_id: str) -> None:
+        calls.append(("unindex", artifact_id))
+
+    async def _index(artifact_id: str, title: str, fmt: str, stored: str) -> None:
+        calls.append(("index", artifact_id, title, fmt))
+
+    monkeypatch.setattr("openexecutive.orchestrator.artifact_tools.unindex_artifact", _unindex)
+    monkeypatch.setattr("openexecutive.orchestrator.artifact_tools.index_artifact", _index)
+    aid = _seed_draft(db, "d-arch", "Memo")
+    await artifacts_route.archive_artifact(f"alert:{aid}")
+    await artifacts_route.restore_artifact(f"alert:{aid}")
+    assert calls == [
+        ("unindex", f"alert:{aid}"),
+        ("index", f"alert:{aid}", "Memo", "markdown"),
+    ]
 
 
 async def test_filename_falls_back_to_id(db: Path) -> None:

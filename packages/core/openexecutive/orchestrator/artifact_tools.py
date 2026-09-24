@@ -244,7 +244,7 @@ async def handle_draft_artifact(tool_input: dict[str, Any]) -> str:
     if not title or not why_interesting:
         return _err("title and why_interesting are required")
 
-    fmt_name = str(tool_input.get("format") or DEFAULT_FORMAT).strip().lower()
+    fmt_name = str(tool_input.get("format") or "").strip().lower() or DEFAULT_FORMAT
     try:
         built = build_artifact(fmt_name, tool_input)
     except ArtifactInputError as exc:
@@ -294,10 +294,7 @@ async def handle_draft_artifact(tool_input: dict[str, Any]) -> str:
 
     artifact_id = f"alert:{alert_id}"
     if prior_id:
-        try:
-            set_archived(prior_id, archived=True)
-        except Exception:
-            logger.exception("draft_artifact: archiving superseded %s failed", prior_id)
+        _retire_superseded(prior_id)
         await unindex_artifact(prior_id)
     await index_artifact(artifact_id, title, fmt_name, built.stored)
 
@@ -453,6 +450,26 @@ async def unindex_artifact(artifact_id: str) -> None:
 # --------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------- #
+
+
+def _retire_superseded(prior_id: str) -> None:
+    """Archive the version a revision replaced and take it off `/today`.
+
+    Archiving hides it from the gallery's default view; a draft still unread
+    would otherwise keep its review card next to the new version, because
+    the live queue keys on status, not `archived_at`.
+    """
+    from openexecutive.alerts.store import get_alert, set_status
+
+    try:
+        set_archived(prior_id, archived=True)
+        kind, _, native_id = prior_id.partition(":")
+        if kind == "alert":
+            prior = get_alert(int(native_id))
+            if prior is not None and prior.status == "unread":
+                set_status(prior.id or 0, "read")
+    except Exception:
+        logger.exception("draft_artifact: retiring superseded %s failed", prior_id)
 
 
 def _clamp_int(raw: Any, default: int, lo: int, hi: int) -> int:
