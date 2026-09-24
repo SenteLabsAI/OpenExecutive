@@ -57,7 +57,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="artifacts",
-        title="Artifacts",
+        title="Documents",
         sub="Your library of finished documents — drafts and workflow outputs in one place.",
     ),
     GuideSection(

@@ -51,7 +51,7 @@ function artifactBadge(format: ProposalItem["artifact_format"]): string {
     case "link":
       return "Link";
     default:
-      return "Artifact";
+      return "Document";
   }
 }
 
@@ -1000,7 +1000,7 @@ function ProposalCard({
             href={`/artifacts/${encodeURIComponent(`alert:${proposal.alert_id}`)}`}
             className="text-indigo-400 hover:underline"
           >
-            Open artifact →
+            Open document →
           </Link>
           {proposal.artifact_format === "link" && proposal.artifact_url && (
             <a

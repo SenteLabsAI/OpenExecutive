@@ -331,8 +331,8 @@ export default function ArtifactsPage() {
 
   const emptyMessage =
     view === "archived"
-      ? "Nothing archived. Artifacts you archive will collect here, ready to restore."
-      : "No artifacts yet. Reports and memos the Executive produces will collect here.";
+      ? "Nothing archived. Documents you archive will collect here, ready to restore."
+      : "No documents yet. Reports and memos the Executive produces will collect here.";
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
@@ -340,7 +340,7 @@ export default function ArtifactsPage() {
         <div className="max-w-5xl mx-auto">
           <div className="mb-6">
             <h1 className="text-2xl font-semibold text-fg mb-1">
-              Executive Artifacts
+              Executive Documents
             </h1>
             <p className="text-sm text-fg-muted">
               Every deliverable the Executive has produced — memos, web

@@ -275,7 +275,7 @@ function BuilderInner() {
       },
       {
         name: "cadence_person_id",
-        label: "Deliver artifact to (person id)",
+        label: "Deliver document to (person id)",
         type: "number",
         value: cadencePersonId,
         description:
@@ -636,7 +636,7 @@ function BuilderInner() {
               />
             </div>
             <div>
-              <label className={labelCls}>Deliver artifact to</label>
+              <label className={labelCls}>Deliver document to</label>
               <select
                 className={`${inputCls} ${suggestedCls("cadence_person_id")}`}
                 value={cadencePersonId}

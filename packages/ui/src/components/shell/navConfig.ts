@@ -62,7 +62,7 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
         },
         {
           href: "/artifacts",
-          label: "Artifacts",
+          label: "Documents",
           icon: "book",
           description: "Your library of finished documents — drafts and workflow outputs.",
         },
