@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import AuthProvider from "@/components/AuthProvider";
+import { SessionsProvider } from "@/components/sessions/SessionsContext";
 import AppShell from "@/components/shell/AppShell";
 import "./globals.css";
 
@@ -17,7 +18,9 @@ export default function RootLayout({
     <html lang="en" className="h-full">
       <body className="h-full antialiased bg-surface text-fg">
         <AuthProvider>
-          <AppShell>{children}</AppShell>
+          <SessionsProvider>
+            <AppShell>{children}</AppShell>
+          </SessionsProvider>
         </AuthProvider>
       </body>
     </html>

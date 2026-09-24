@@ -17,8 +17,6 @@ from openexecutive.memory.company_profile import CompanyProfile
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
 
 
 @pytest.fixture()
