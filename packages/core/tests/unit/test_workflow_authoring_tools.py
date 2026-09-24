@@ -234,3 +234,62 @@ def test_analysis_workflow_drafted_off_reports_pending(scheduled: list[str]) -> 
     assert out["status"] == "saved_pending_review"
     stored = dynamic_store.get_definition("weekly_watch")
     assert stored is not None and stored.is_active is False
+
+
+def test_save_is_conditional_on_the_row_it_checked(
+    scheduled: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The approved-workflow refusal is decided from a read; an activation
+    from another process landing after it makes the save a no-op instead of
+    replacing the revision the user just approved."""
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    pending = DynamicWorkflowDef.model_validate({**_action_definition(), "is_active": False})
+    dynamic_store.upsert_definition(pending)
+    read = dynamic_store.get_definition("weekly_watch")
+    real_get = dynamic_store.get_definition
+
+    def _get_then_user_activates(name: str, db_path: Any = None) -> Any:
+        row = real_get(name, db_path=db_path)
+        if row is not None and not row.is_active:
+            assert dynamic_store.activate_if_unchanged(row) is True
+        return row  # the save decides from this (now stale) read
+
+    monkeypatch.setattr(dynamic_store, "get_definition", _get_then_user_activates)
+    d = {**_action_definition(), "title": "Swapped"}
+    out = _save(d, wat._canonical_token(d), overwrite=True)
+    assert "error" in out and "changed while saving" in out["error"]
+    monkeypatch.setattr(dynamic_store, "get_definition", real_get)
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True and stored.title == "Weekly Watch"
+    assert read is not None
+
+
+def test_save_if_unchanged_insert_only_when_absent() -> None:
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    defn = DynamicWorkflowDef.model_validate(_valid_definition())
+    assert dynamic_store.save_if_unchanged(defn, None) is not None
+    # A second "create" that expected no row finds one.
+    assert dynamic_store.save_if_unchanged(defn, None) is None
+
+
+def test_updated_at_comes_from_the_column(isolated_db: Path) -> None:
+    """A body edited out of band can't make the row unmatchable for the
+    compare-and-set writes: get_definition reports the column's updated_at."""
+    import sqlite3
+
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    dynamic_store.upsert_definition(
+        DynamicWorkflowDef.model_validate({**_action_definition(), "is_active": False})
+    )
+    with sqlite3.connect(isolated_db) as conn:
+        body = conn.execute("SELECT definition FROM dynamic_workflows").fetchone()[0]
+        conn.execute(
+            "UPDATE dynamic_workflows SET definition = ?",
+            (body.replace('"updated_at":"', '"updated_at":"stale-'),),
+        )
+    row = dynamic_store.get_definition("weekly_watch")
+    assert row is not None and not row.updated_at.startswith("stale-")
+    assert dynamic_store.activate_if_unchanged(row) is True

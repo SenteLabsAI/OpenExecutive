@@ -162,17 +162,15 @@ def _canonical_token(definition: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
-def _approved_tool_workflow_error(name: str) -> str | None:
-    """Refuse chat overwrites of a switched-on tool workflow.
+def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
+    """Refuse chat overwrites of a switched-on tool workflow (``existing``).
 
     A person approved its tools. Chat (including a turn steered by an inbound
     email) replacing it would switch it off and stage different tools under
     the same familiar name, so edits to it happen on the Jobs page instead.
     """
     from openexecutive.config import get_settings
-    from openexecutive.workflows.dynamic_store import get_definition
 
-    existing = get_definition(name)
     if existing is None or not existing.is_active or not _needs_review(existing):
         return None
     base = get_settings().ui_base_url.rstrip("/")
@@ -239,7 +237,7 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
 
     defn, error = await _build_def(tool_input.get("definition"))
     if error is None:
-        error = _approved_tool_workflow_error(defn.name)
+        error = _approved_tool_workflow_error(defn.name, get_definition(defn.name))
     if error is not None:
         return json.dumps({"error": error})
     token = _canonical_token(tool_input["definition"])
@@ -276,7 +274,7 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
 async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
-    from openexecutive.workflows.dynamic_store import get_definition, upsert_definition
+    from openexecutive.workflows.dynamic_store import get_definition, save_if_unchanged
 
     definition = tool_input.get("definition")
     provided_token = str(tool_input.get("confirm_token", ""))
@@ -295,12 +293,13 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
             )
         })
 
-    approved_error = _approved_tool_workflow_error(defn.name)
+    existing = get_definition(defn.name)
+    approved_error = _approved_tool_workflow_error(defn.name, existing)
     if approved_error is not None:
         return json.dumps({"error": approved_error})
 
     overwrite = bool(tool_input.get("overwrite", False))
-    if get_definition(defn.name) is not None and not overwrite:
+    if existing is not None and not overwrite:
         return json.dumps({
             "error": (
                 f"a custom workflow named {defn.name!r} already exists; pass "
@@ -315,10 +314,22 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         defn = defn.model_copy(update={"is_active": False})
 
     try:
-        stored = upsert_definition(defn)
+        # Conditional on the row read above, so an activation (from any
+        # process) landing after the approved-workflow check can't be
+        # overwritten by this save.
+        saved = save_if_unchanged(defn, existing)
     except Exception as exc:
         logger.exception("save_workflow: persist failed")
         return json.dumps({"error": f"failed to save: {exc}"})
+    if saved is None:
+        return json.dumps({
+            "error": (
+                f"{defn.name!r} changed while saving (e.g. the user just turned "
+                "it on). Nothing was saved; check its current state before "
+                "drafting again."
+            )
+        })
+    stored = saved
 
     # Reconcile any cadence into the scheduler.
     try:

@@ -83,11 +83,15 @@ def get_definition(
         if not _table_exists(conn):
             return None
         row = conn.execute(
-            "SELECT definition FROM dynamic_workflows WHERE name = ?", (name,)
+            "SELECT definition, updated_at FROM dynamic_workflows WHERE name = ?", (name,)
         ).fetchone()
     if row is None:
         return None
-    return DynamicWorkflowDef.model_validate_json(row[0])
+    # updated_at comes from the column, the key the compare-and-set writes
+    # match on, so a body edited out of band can't make a row unmatchable.
+    return DynamicWorkflowDef.model_validate_json(row[0]).model_copy(
+        update={"updated_at": row[1]}
+    )
 
 
 def list_definitions(
@@ -163,3 +167,44 @@ def activate_if_unchanged(
             "SELECT 1 FROM dynamic_workflows WHERE name = ?", (expected.name,)
         ).fetchone()
     return False if exists else None
+
+
+def save_if_unchanged(
+    defn: DynamicWorkflowDef,
+    expected: DynamicWorkflowDef | None,
+    db_path: Path | None = None,
+) -> DynamicWorkflowDef | None:
+    """Write ``defn`` only if the row is still ``expected`` (None: still absent).
+
+    For callers that decide from a read whether a write is allowed (chat's
+    save refuses to replace an approved tool workflow): a write from any
+    process landing after that read makes this a no-op. Returns the stored
+    definition, or None when the row changed.
+    """
+    initialize_dynamic_workflows_db(db_path)
+    now = datetime.now(UTC).isoformat()
+    created_at = expected.created_at if expected and expected.created_at else now
+    stored = defn.model_copy(update={"created_at": created_at, "updated_at": now})
+    body = stored.model_dump_json()
+    active = 1 if stored.is_active else 0
+    with _get_conn(_resolve(db_path)) as conn:
+        if expected is None:
+            cur = conn.execute(
+                """
+                INSERT INTO dynamic_workflows (name, definition, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO NOTHING
+                """,
+                (stored.name, body, active, created_at, now),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE dynamic_workflows
+                   SET definition = ?, is_active = ?, updated_at = ?
+                 WHERE name = ? AND updated_at = ?
+                """,
+                (body, active, now, stored.name, expected.updated_at),
+            )
+        changed = cur.rowcount == 1
+    return stored if changed else None

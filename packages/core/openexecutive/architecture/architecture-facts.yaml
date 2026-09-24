@@ -3369,7 +3369,13 @@ workflows:
     replace a switched-on workflow with action steps (any replacement, even
     analysis-only): an inbound email steering the Executive could otherwise
     switch off an approved job and stage new tools under its familiar name.
-    Those edits go through /jobs/new?edit=<name>.
+    Those edits go through /jobs/new?edit=<name>. The refusal is decided from
+    a read, so the save itself is conditional on that row
+    (dynamic_store.save_if_unchanged: INSERT only if still absent, else
+    UPDATE ... WHERE updated_at = the read one) — an activation landing in
+    between, from any process, makes the save a no-op with an error.
+    get_definition reports updated_at from the column (not the JSON body),
+    which is the key both conditional writes match on.
     Activation is bound to what was reviewed: for a definition with action
     steps the body must carry the reviewed `definition`; it must equal the
     stored one (model_dump minus is_active/created_at/updated_at) or 409, and

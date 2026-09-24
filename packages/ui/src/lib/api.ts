@@ -1192,15 +1192,23 @@ export async function getCustomWorkflow(name: string): Promise<DynamicWorkflowDe
   return res.json();
 }
 
+/** An error from the custom-workflow endpoints, carrying the HTTP status. */
+export class CustomWorkflowError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 /** The server's error detail; a 422's validation-error array is joined. */
-async function _customError(res: Response): Promise<string> {
+async function _customError(res: Response): Promise<CustomWorkflowError> {
   let detail: unknown = res.statusText;
   try {
     detail = (await res.json()).detail;
   } catch {
     /* keep statusText */
   }
-  return Array.isArray(detail) ? detail.join("; ") : String(detail);
+  const msg = Array.isArray(detail) ? detail.join("; ") : String(detail);
+  return new CustomWorkflowError(msg, res.status);
 }
 
 /** Returns the server's validation errors (array) when the response is 422. */
@@ -1214,7 +1222,7 @@ async function _writeCustom(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(def),
   });
-  if (!res.ok) throw new Error(await _customError(res));
+  if (!res.ok) throw await _customError(res);
   return res.json();
 }
 
@@ -1245,7 +1253,7 @@ export async function activateCustomWorkflow(
       body: JSON.stringify({ is_active: true, definition: reviewed }),
     }
   );
-  if (!res.ok) throw new Error(await _customError(res));
+  if (!res.ok) throw await _customError(res);
   return res.json();
 }
 
