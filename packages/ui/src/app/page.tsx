@@ -19,6 +19,9 @@ interface HealthData {
   status: string;
 }
 
+// Upper bound on a `?draft=` seed — a deep link pre-fills a prompt, not a document.
+const MAX_DRAFT_PARAM_CHARS = 2000;
+
 export default function HomePage() {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
@@ -42,6 +45,9 @@ export default function HomePage() {
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>(undefined);
   // Companion to pendingPrompt: what peer memory records for the handoff turn.
   const [pendingMemoryText, setPendingMemoryText] = useState<string | undefined>(undefined);
+  // Briefing handoffs auto-send pendingPrompt; a `?draft=` deep link only
+  // pre-fills it, since the text comes from a URL the user didn't type.
+  const [autoSubmitPending, setAutoSubmitPending] = useState(true);
 
   useEffect(() => {
     fetch("/api/backend/health")
@@ -98,6 +104,7 @@ export default function HomePage() {
     setMode("chat");
     setPendingPrompt(prompt);
     setPendingMemoryText(memoryText);
+    setAutoSubmitPending(true);
   }, []);
 
   // Reset to the briefing view from anywhere. Used by the sidebar
@@ -126,7 +133,8 @@ export default function HomePage() {
 
   // Cross-route entries: from every inner route the sidebar and mobile
   // bottom nav link to `/?new=1` (New chat) and `/?session=<id>` (a
-  // Recent chat, or a row on /chats). When either param is present on
+  // Recent chat, or a row on /chats). `/?new=1&draft=<text>` also seeds
+  // the new chat's input without sending it (Playbooks "Try in chat"). When either param is present on
   // mount, apply it and strip the query so a refresh doesn't reapply it.
   // A `session` id is held until the caller's own (owner-scoped) session
   // list has loaded, and opened only if that list contains it: the id comes
@@ -144,8 +152,13 @@ export default function HomePage() {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const sessionParam = params.get("session");
+    const draftParam = params.get("draft");
     if (params.get("new") === "1") {
       handleNewChat();
+      if (draftParam) {
+        setPendingPrompt(draftParam.slice(0, MAX_DRAFT_PARAM_CHARS));
+        setAutoSubmitPending(false);
+      }
       router.replace("/");
     } else if (sessionParam) {
       deepLinkRef.current = { sessionId: sessionParam, gen: selectGenRef.current };
@@ -285,7 +298,7 @@ export default function HomePage() {
               // are the only path that sets pendingPrompt; those are commit-
               // ments, not drafts, so auto-fire the first turn instead of
               // making the user hit Send again.
-              autoSubmitInitialInput={Boolean(pendingPrompt)}
+              autoSubmitInitialInput={Boolean(pendingPrompt) && autoSubmitPending}
               initialMemoryText={pendingMemoryText}
               onTurnComplete={handleTurnComplete}
               onTurnStart={() => setIsTurnInFlight(true)}

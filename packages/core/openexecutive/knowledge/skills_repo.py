@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openexecutive.knowledge.skills import (
     SKILL_CATEGORIES,
@@ -19,7 +19,9 @@ from openexecutive.knowledge.skills_index import (
     BUILTIN_SKILLS_PATH,
     _company_skills_path,
     delete_skill_index,
+    hidden_builtin_names,
     index_skill,
+    write_hidden_builtin_names,
 )
 from openexecutive.knowledge.store import ChromaDBStore
 
@@ -34,8 +36,9 @@ class SkillConflictError(ValueError):
     pass
 
 
-class SkillReadOnlyError(PermissionError):
-    """Raised when a mutating operation targets a built-in skill."""
+# What `delete_skill` did: removed a company skill, removed a company
+# override (the built-in is back in effect), or hid a built-in.
+DeleteOutcome = Literal["deleted", "reverted", "hidden"]
 
 
 def _skill_path(source: SkillSource, category: str, name: str) -> Path:
@@ -43,41 +46,91 @@ def _skill_path(source: SkillSource, category: str, name: str) -> Path:
     return base / category / f"{name}.md"
 
 
-def _find_skill_on_disk(name: str) -> tuple[Path, SkillSource] | None:
-    """Return the (path, source) of a skill by name, searching both trees.
+def _find_in(root: Path, name: str) -> Path | None:
+    if not root.exists():
+        return None
+    return next(iter(root.rglob(f"{name}.md")), None)
 
-    Built-in wins on collision (though uniqueness is enforced at create time).
+
+def _find_skill_on_disk(name: str, include_hidden: bool = False) -> tuple[Path, SkillSource] | None:
+    """Return the (path, source) of the skill in effect for `name`.
+
+    A company skill wins over a built-in of the same name (a customization).
+    A hidden built-in is only found with `include_hidden`.
     """
-    for source, root in (("builtin", BUILTIN_SKILLS_PATH), ("company", _company_skills_path())):
-        if not root.exists():
-            continue
-        for path in root.rglob(f"{name}.md"):
-            return path, source  # type: ignore[return-value]
+    company = _find_in(_company_skills_path(), name)
+    if company is not None:
+        return company, "company"
+    builtin = _find_in(BUILTIN_SKILLS_PATH, name)
+    if builtin is not None and (include_hidden or name not in hidden_builtin_names()):
+        return builtin, "builtin"
     return None
 
 
-def list_skills() -> list[Skill]:
-    """Walk both trees, parse all skills, return them sorted by name. Malformed skills are skipped."""
-    out: list[Skill] = []
-    for source, root in (("builtin", BUILTIN_SKILLS_PATH), ("company", _company_skills_path())):
+def _parse(path: Path, source: SkillSource, hidden: set[str]) -> Skill:
+    skill = parse_skill_file(path, source=source)
+    name = skill.frontmatter.name
+    if source == "company":
+        skill.customized = _find_in(BUILTIN_SKILLS_PATH, name) is not None
+    else:
+        skill.hidden = name in hidden
+    return skill
+
+
+def list_skills(include_hidden: bool = False) -> list[Skill]:
+    """Every skill in effect, sorted by (category, name). Malformed files are skipped.
+
+    Company skills shadow built-ins of the same name; hidden built-ins are
+    left out unless `include_hidden`.
+    """
+    hidden = hidden_builtin_names()
+    by_name: dict[str, Skill] = {}
+    for source, root in (("company", _company_skills_path()), ("builtin", BUILTIN_SKILLS_PATH)):
         if not root.exists():
             continue
         for path in sorted(root.rglob("*.md")):
+            if path.stem in by_name:
+                continue
             try:
-                out.append(parse_skill_file(path, source=source))  # type: ignore[arg-type]
+                skill = _parse(path, source, hidden)  # type: ignore[arg-type]
             except SkillParseError as e:
                 logger.warning("Skipping malformed skill %s: %s", path, e)
-    out.sort(key=lambda s: (s.frontmatter.category, s.frontmatter.name))
-    return out
+                continue
+            if skill.hidden and not include_hidden:
+                continue
+            by_name[skill.frontmatter.name] = skill
+    return sorted(by_name.values(), key=lambda s: (s.frontmatter.category, s.frontmatter.name))
 
 
-def get_skill(name: str) -> Skill:
+def get_skill(name: str, include_hidden: bool = False) -> Skill:
     validate_skill_name(name)
-    found = _find_skill_on_disk(name)
+    found = _find_skill_on_disk(name, include_hidden=include_hidden)
     if found is None:
         raise SkillNotFoundError(f"Skill '{name}' not found")
     path, source = found
-    return parse_skill_file(path, source=source)
+    return _parse(path, source, hidden_builtin_names())
+
+
+def _validate_category(category: str) -> None:
+    if category not in SKILL_CATEGORIES:
+        raise SkillParseError(
+            f"Unknown category '{category}'. Valid: {', '.join(SKILL_CATEGORIES)}"
+        )
+
+
+def _write_company_skill(
+    name: str, description: str, when_to_use: str, category: str, body: str
+) -> Skill:
+    frontmatter = SkillFrontmatter(
+        name=name,
+        description=description,
+        when_to_use=when_to_use,
+        category=category,
+    )
+    path = _skill_path("company", category, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(serialize_skill(frontmatter, body), encoding="utf-8")
+    return Skill(frontmatter=frontmatter, body=body, source="company", path=str(path))
 
 
 def create_skill(
@@ -88,26 +141,16 @@ def create_skill(
     body: str,
     store: ChromaDBStore,
 ) -> Skill:
-    """Create a new company skill. 409 if name already exists in either tree."""
+    """Create a new company skill. Conflicts with any existing name, hidden built-ins included.
+
+    Customizing a built-in goes through `update_skill`, not here.
+    """
     validate_skill_name(name)
-    if category not in SKILL_CATEGORIES:
-        raise SkillParseError(
-            f"Unknown category '{category}'. Valid: {', '.join(SKILL_CATEGORIES)}"
-        )
-    if _find_skill_on_disk(name) is not None:
+    _validate_category(category)
+    if _find_skill_on_disk(name, include_hidden=True) is not None:
         raise SkillConflictError(f"Skill '{name}' already exists")
 
-    frontmatter = SkillFrontmatter(
-        name=name,
-        description=description,
-        when_to_use=when_to_use,
-        category=category,
-    )
-    path = _skill_path("company", category, name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(serialize_skill(frontmatter, body), encoding="utf-8")
-
-    skill = Skill(frontmatter=frontmatter, body=body, source="company", path=str(path))
+    skill = _write_company_skill(name, description, when_to_use, category, body)
     index_skill(skill, store)
     return skill
 
@@ -120,50 +163,73 @@ def update_skill(
     body: str,
     store: ChromaDBStore,
 ) -> Skill:
-    """Update an existing company skill. Built-in skills are read-only."""
+    """Full replace of a skill.
+
+    Updating a built-in customizes it: the edit is saved as a company skill of
+    the same name that shadows the built-in (whose file is never touched).
+    Deleting that company skill later reverts to the built-in.
+    """
     validate_skill_name(name)
     found = _find_skill_on_disk(name)
     if found is None:
         raise SkillNotFoundError(f"Skill '{name}' not found")
-    _, source = found
-    if source == "builtin":
-        raise SkillReadOnlyError(f"Skill '{name}' is built-in and cannot be modified")
-    if category not in SKILL_CATEGORIES:
-        raise SkillParseError(
-            f"Unknown category '{category}'. Valid: {', '.join(SKILL_CATEGORIES)}"
-        )
+    _validate_category(category)
 
-    old_path, _ = found
-    new_path = _skill_path("company", category, name)
-
-    frontmatter = SkillFrontmatter(
-        name=name,
-        description=description,
-        when_to_use=when_to_use,
-        category=category,
-    )
-    new_path.parent.mkdir(parents=True, exist_ok=True)
-    new_path.write_text(serialize_skill(frontmatter, body), encoding="utf-8")
-    if new_path != old_path and old_path.exists():
+    old_path, source = found
+    skill = _write_company_skill(name, description, when_to_use, category, body)
+    new_path = Path(skill.path)
+    if source == "company" and new_path != old_path and old_path.exists():
         old_path.unlink()
+    skill.customized = _find_in(BUILTIN_SKILLS_PATH, name) is not None
 
-    skill = Skill(frontmatter=frontmatter, body=body, source="company", path=str(new_path))
     index_skill(skill, store)
+    if source == "builtin":
+        delete_skill_index(name, "builtin", store)
     return skill
 
 
-def delete_skill(name: str, store: ChromaDBStore) -> None:
-    """Delete a company skill. Built-in skills are read-only."""
+def delete_skill(name: str, store: ChromaDBStore) -> DeleteOutcome:
+    """Remove a skill from effect.
+
+    - company skill: file deleted ("deleted"); if it customized a built-in,
+      the built-in is back in effect and re-indexed ("reverted").
+    - built-in: its file lives in git, so it is hidden for this company
+      instead ("hidden"); `restore_skill` brings it back.
+    """
     validate_skill_name(name)
     found = _find_skill_on_disk(name)
     if found is None:
         raise SkillNotFoundError(f"Skill '{name}' not found")
     path, source = found
+
     if source == "builtin":
-        raise SkillReadOnlyError(f"Skill '{name}' is built-in and cannot be deleted")
+        write_hidden_builtin_names(hidden_builtin_names() | {name})
+        delete_skill_index(name, "builtin", store)
+        return "hidden"
 
     path.unlink()
-    delete_skill_index(name, source, store)
+    delete_skill_index(name, "company", store)
+    builtin = _find_in(BUILTIN_SKILLS_PATH, name)
+    if builtin is None or name in hidden_builtin_names():
+        return "deleted"
+    try:
+        index_skill(parse_skill_file(builtin, source="builtin"), store)
+    except SkillParseError as e:
+        logger.warning("Reverted to malformed built-in skill %s: %s", builtin, e)
+    return "reverted"
+
+
+def restore_skill(name: str, store: ChromaDBStore) -> Skill:
+    """Un-hide a built-in skill and put it back in the index."""
+    validate_skill_name(name)
+    hidden = hidden_builtin_names()
+    if name not in hidden:
+        raise SkillNotFoundError(f"Skill '{name}' is not hidden")
+    write_hidden_builtin_names(hidden - {name})
+    skill = get_skill(name)
+    if skill.source == "builtin":
+        index_skill(skill, store)
+    return skill
 
 
 def skill_to_dict(skill: Skill, include_body: bool = True) -> dict[str, Any]:
@@ -175,6 +241,8 @@ def skill_to_dict(skill: Skill, include_body: bool = True) -> dict[str, Any]:
         "when_to_use": fm.when_to_use,
         "source": skill.source,
         "filename": Path(skill.path).name,
+        "customized": skill.customized,
+        "hidden": skill.hidden,
     }
     if include_body:
         out["body"] = skill.body

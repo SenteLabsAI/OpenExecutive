@@ -674,7 +674,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     can stub the vector layer without touching the file/DB round-trip logic.
     """
     from openexecutive.knowledge.loader import ingest_file
-    from openexecutive.knowledge.skills_index import SKILLS_COLLECTION, index_skill
+    from openexecutive.knowledge.skills_index import (
+        SKILLS_COLLECTION,
+        index_skill,
+        sync_builtin_skill_index,
+    )
     from openexecutive.knowledge.skills_repo import list_skills
     from openexecutive.knowledge.store import ChromaDBStore
 
@@ -719,6 +723,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
                 index_skill(skill, store)
             except Exception:
                 logger.exception("client-slots: reindex skill failed")
+    # The restored client may hide or customize different built-ins.
+    try:
+        sync_builtin_skill_index(store)
+    except Exception:
+        logger.exception("client-slots: reconcile built-in skills failed")
 
     if app_state is not None and hasattr(app_state, "store"):
         app_state.store = ChromaDBStore(persist_directory=settings.vector_store_path)

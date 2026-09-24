@@ -87,8 +87,8 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="skills",
-        title="Skills",
-        sub="Reusable how-to procedures the Executive can pull up — checklists, playbooks, templates.",
+        title="Playbooks",
+        sub="How the Executive does a piece of work — methods, templates, checklists. A tab on Workflows.",
     ),
     GuideSection(
         id="council",

@@ -48,6 +48,10 @@ class Skill(BaseModel):
     body: str
     source: SkillSource
     path: str = Field(..., description="Absolute filesystem path to the skill file")
+    # A company skill that shadows a built-in of the same name.
+    customized: bool = False
+    # A built-in this company hid; only surfaced when explicitly asked for.
+    hidden: bool = False
 
 
 def validate_skill_name(name: str) -> None:

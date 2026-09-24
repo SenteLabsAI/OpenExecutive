@@ -19,8 +19,10 @@ import {
   deleteWorkflowRun,
   listCustomWorkflows,
   listWorkflowRuns,
+  listSkills,
   listWorkflows,
 } from "@/lib/api";
+import PlaybooksBrowser from "@/components/jobs/PlaybooksBrowser";
 import {
   RunBucket,
   runStatusBadgeColor,
@@ -73,11 +75,11 @@ function inSectionFilter(w: WorkflowMeta, f: SectionFilter): boolean {
 // Runs shown per workflow group before "Show more".
 const RUNS_PER_GROUP = 5;
 
-type Tab = "catalog" | "runs";
+type Tab = "catalog" | "runs" | "playbooks";
 type RunStatus = RunBucket;
 
 function isTab(v: string | null): v is Tab {
-  return v === "catalog" || v === "runs";
+  return v === "catalog" || v === "runs" || v === "playbooks";
 }
 function isStatus(v: string | null): v is RunStatus {
   return (
@@ -143,6 +145,7 @@ function JobsPageInner() {
   // steps): not runnable, so absent from `workflows` until someone turns them on.
   const [offWorkflows, setOffWorkflows] = useState<DynamicWorkflowDef[]>([]);
   const [runs, setRuns] = useState<WorkflowRunSummary[]>([]);
+  const [playbookCount, setPlaybookCount] = useState<number | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -153,13 +156,16 @@ function JobsPageInner() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [wfs, rs, custom] = await Promise.all([
+      const [wfs, rs, custom, playbooks] = await Promise.all([
         listWorkflows(),
         listWorkflowRuns(),
         // Optional strip — never fail the whole page over it.
         listCustomWorkflows().catch(() => [] as DynamicWorkflowDef[]),
+        // Tab count only; the Playbooks tab loads its own list.
+        listSkills().catch(() => undefined),
       ]);
       setWorkflows(wfs);
+      setPlaybookCount(playbooks?.length);
       setRuns(rs);
       setOffWorkflows(custom.filter((d) => !d.is_active));
     } catch (e) {
@@ -248,9 +254,15 @@ function JobsPageInner() {
               label="Runs"
               count={runs.length}
             />
+            <TabButton
+              active={tab === "playbooks"}
+              onClick={() => setParam({ tab: "playbooks", status: null, section: null })}
+              label="Playbooks"
+              count={playbookCount}
+            />
           </div>
 
-          {loading && (
+          {loading && tab !== "playbooks" && (
             <div className="text-sm text-fg-muted">Loading workflows…</div>
           )}
           {error && (
@@ -271,6 +283,8 @@ function JobsPageInner() {
               onDeleteCustom={handleDeleteCustom}
             />
           )}
+
+          {tab === "playbooks" && <PlaybooksBrowser onCountChange={setPlaybookCount} />}
 
           {!loading && tab === "runs" && (
             <RunsView
@@ -303,7 +317,7 @@ function TabButton({
   active: boolean;
   onClick: () => void;
   label: string;
-  count: number;
+  count?: number;
 }) {
   return (
     <button
@@ -316,7 +330,7 @@ function TabButton({
       }`}
     >
       {label}
-      <span className="ml-2 text-xs text-fg-muted">{count}</span>
+      {count !== undefined && <span className="ml-2 text-xs text-fg-muted">{count}</span>}
     </button>
   );
 }
@@ -741,7 +755,8 @@ export default function JobsPage() {
             <div className="min-w-0">
               <h1 className="text-xl font-semibold text-fg">Workflows</h1>
               <p className="text-sm text-fg-muted">
-                Multi-step workflows that produce a finished deliverable.
+                Workflows are the jobs that run and produce a deliverable;
+                playbooks are the methods the Executive follows.
               </p>
             </div>
             <Link

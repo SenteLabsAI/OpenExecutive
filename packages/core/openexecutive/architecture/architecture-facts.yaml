@@ -756,6 +756,49 @@ knowledge:
     unrelated reason must not silently revoke an operator's deployment-level
     guardrail. A caller that genuinely wants one gate for both collections
     says so with `builtin_distance_threshold`.
+  skills: |
+    Skills are Markdown procedures with YAML frontmatter (name, description,
+    when_to_use, category). The UI calls them PLAYBOOKS and shows them as a
+    tab on Workflows (`/jobs?tab=playbooks`; `/skills` redirects there). The
+    mental model the UI and persona teach: a playbook is HOW the Executive
+    does a piece of work (method, template, checklist; no inputs, schedule or
+    side effects); a workflow is the runnable job that produces an artifact.
+    Backend names (`/skills`, the five `*_skill` tools, the `skills`
+    collection) are unchanged.
+
+    Storage: built-ins ship in git under knowledge/builtin/skills/<category>/;
+    company skills in company/skills/<category>/ (gitignored, copied with
+    client slots, wiped by fixture reset). One Chroma doc per skill in the
+    `skills` collection, id `skill::{source}::{name}`, text = name +
+    description + when_to_use; the body is only returned by load_skill.
+
+    Customize / hide / restore (knowledge/skills_repo.py):
+      - A company skill with a built-in's name CUSTOMIZES it — the company
+        file wins in get/list/load and in workflows that read a skill body
+        (board_prep, quarterly_plan via get_skill). `update_skill` on a
+        built-in writes that company copy; the built-in file is never
+        touched. The built-in's index row is dropped while shadowed.
+      - `delete_skill` never raises for built-ins any more. It returns an
+        outcome: "deleted" (plain company skill), "reverted" (company
+        customization removed, built-in re-indexed) or "hidden" (built-in
+        added to company/skills/.hidden.yaml and dropped from the index).
+      - Hidden built-ins are invisible to search_skills/load_skill and to
+        list_skills unless include_hidden; `GET /skills/{name}` still reads
+        them so the UI can show one before `POST /skills/{name}/restore`.
+      - create_skill conflicts with every existing name, hidden built-ins
+        included (customizing goes through update).
+
+    Index reconciliation: `sync_builtin_skill_index` makes the built-in rows
+    match "built-ins in effect" (on disk, not hidden, not customized) —
+    dropping extra rows and (re)indexing missing or changed ones. It runs at
+    startup (seed_builtin_skills), after a client-slot restore, and after a
+    fixture reset. Before this, seeding skipped whenever the collection was
+    non-empty, so a built-in added in a release never reached an existing
+    install's index.
+
+    Chat chips: create/update/delete_skill chips read "Saved / Updated /
+    Customized / Deleted / Reverted / Hid playbook: <name>" and link to the
+    Playbooks tab.
   collections:
     - name: BUILTIN
       what: Curated MBA-style domain knowledge shipped with the repo.
@@ -2028,7 +2071,7 @@ today:
     explicit ids to `POST /alerts/bulk-ack` (never a server-side age sweep),
     and "Re-check relevance" (`POST /alerts/review`); Monitoring gets the
     same footer at 3 days; the ack body may carry `mute_topic`.
-  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge` and Skills), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
+  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. `/?new=1&draft=<text>` (Playbooks "Try in chat") also seeds the new chat's input, capped at 2000 chars, WITHOUT auto-sending — unlike briefing handoffs, the text comes from a URL the user didn't type. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge`; Skills moved to the Playbooks tab of Workflows, `/jobs?tab=playbooks`), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
   briefing_first_landing: |
     The root page (`packages/ui/src/app/page.tsx`) defaults to `mode="briefing"`
     and renders `<Briefing>` (`packages/ui/src/components/Briefing.tsx`) in the

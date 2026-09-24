@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -142,6 +142,8 @@ class SkillMeta(BaseModel):
     when_to_use: str
     source: str
     filename: str
+    customized: bool = False
+    hidden: bool = False
 
 
 class SkillDetail(SkillMeta):
@@ -158,6 +160,13 @@ class SkillCreate(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: list[SkillMeta]
+
+
+class SkillDeleteResponse(BaseModel):
+    name: str
+    # "deleted" (company skill removed), "reverted" (customization removed,
+    # the built-in is back) or "hidden" (built-in hidden for this company).
+    outcome: Literal["deleted", "reverted", "hidden"]
 
 
 class SkillSearchHit(BaseModel):

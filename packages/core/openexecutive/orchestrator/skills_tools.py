@@ -16,7 +16,6 @@ from openexecutive.knowledge.skills_index import search_skills as _search_skills
 from openexecutive.knowledge.skills_repo import (
     SkillConflictError,
     SkillNotFoundError,
-    SkillReadOnlyError,
 )
 from openexecutive.knowledge.store import ChromaDBStore
 
@@ -111,8 +110,10 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "update_skill",
         "description": (
-            "Refine an existing user-created skill. Built-in skills cannot be modified. "
-            "All fields are required — this is a full replace."
+            "Refine an existing skill. All fields are required — this is a full replace. "
+            "Updating a built-in skill saves a customized copy for this company that "
+            "replaces the built-in; the original is untouched and comes back if the "
+            "customized copy is deleted."
         ),
         "input_schema": {
             "type": "object",
@@ -129,8 +130,10 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "delete_skill",
         "description": (
-            "Delete a user-created skill. Built-in skills cannot be deleted. "
-            "Use sparingly — only when the user explicitly asks or the skill is clearly obsolete."
+            "Delete a skill. A user-created skill is removed; a customized built-in reverts "
+            "to the original; a built-in is hidden for this company (the user can restore "
+            "it from the Playbooks tab). Use sparingly — only when the user explicitly asks "
+            "or the skill is clearly obsolete."
         ),
         "input_schema": {
             "type": "object",
@@ -212,11 +215,13 @@ async def handle_update_skill(input: dict[str, Any]) -> str:
         return json.dumps({"error": f"missing required field: {e.args[0]}"})
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
-    except SkillReadOnlyError as e:
-        return json.dumps({"error": str(e), "code": "read_only"})
     except SkillParseError as e:
         return json.dumps({"error": str(e), "code": "invalid"})
-    return json.dumps({"updated": True, "name": skill.frontmatter.name})
+    return json.dumps({
+        "updated": True,
+        "name": skill.frontmatter.name,
+        "customized": skill.customized,
+    })
 
 
 async def handle_delete_skill(input: dict[str, Any]) -> str:
@@ -224,12 +229,12 @@ async def handle_delete_skill(input: dict[str, Any]) -> str:
     if not name:
         return json.dumps({"error": "missing required field: name"})
     try:
-        skills_repo.delete_skill(name, store=_get_store())
+        outcome = skills_repo.delete_skill(name, store=_get_store())
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
-    except SkillReadOnlyError as e:
-        return json.dumps({"error": str(e), "code": "read_only"})
-    return json.dumps({"deleted": True, "name": name})
+    except SkillParseError as e:
+        return json.dumps({"error": str(e), "code": "invalid"})
+    return json.dumps({"deleted": True, "name": name, "outcome": outcome})
 
 
 SKILL_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {

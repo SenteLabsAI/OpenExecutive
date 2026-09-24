@@ -58,7 +58,7 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
           label: "Workflows",
           icon: "doc",
           description:
-            "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",
+            "Workflows that produce a deliverable, plus the playbooks the Executive follows.",
         },
         {
           href: "/artifacts",
@@ -109,12 +109,6 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
           icon: "book",
           description:
             "Upload company documents so the Executive can ground its answers in your context.",
-        },
-        {
-          href: "/skills",
-          label: "Skills",
-          icon: "bolt",
-          description: "Reusable how-to procedures — checklists, playbooks, templates.",
         },
       ],
     },

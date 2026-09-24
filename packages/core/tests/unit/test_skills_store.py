@@ -15,11 +15,11 @@ from openexecutive.knowledge.skills_index import (
 from openexecutive.knowledge.skills_repo import (
     SkillConflictError,
     SkillNotFoundError,
-    SkillReadOnlyError,
     create_skill,
     delete_skill,
     get_skill,
     list_skills,
+    restore_skill,
     update_skill,
 )
 from openexecutive.knowledge.store import ChromaDBStore
@@ -100,31 +100,85 @@ def test_duplicate_create_raises_conflict(isolated: ChromaDBStore) -> None:
         )
 
 
-def test_builtin_skills_are_readonly(
-    isolated: ChromaDBStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "builtin-thing")
-    # Index it via the same path the lifespan would use.
+def _hit_sources(store: ChromaDBStore, name: str) -> set[str]:
+    return {
+        h["source"]
+        for h in search_skills(name, store, n_results=10)
+        if h["name"] == name
+    }
+
+
+def test_updating_builtin_customizes_and_delete_reverts(isolated: ChromaDBStore) -> None:
     import asyncio
 
+    builtin_file = _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "builtin-thing")
     asyncio.run(seed_builtin_skills(store=isolated, force=True))
+    assert get_skill("builtin-thing").source == "builtin"
+
+    custom = update_skill(
+        name="builtin-thing",
+        description="our version",
+        when_to_use="y",
+        category="finance",
+        body="# ours",
+        store=isolated,
+    )
+    assert custom.source == "company"
+    assert custom.customized is True
+    assert "built-in builtin-thing" in builtin_file.read_text(), "built-in file untouched"
 
     fetched = get_skill("builtin-thing")
-    assert fetched.source == "builtin"
+    assert (fetched.source, fetched.body.strip()) == ("company", "# ours")
+    listed = [s for s in list_skills() if s.frontmatter.name == "builtin-thing"]
+    assert len(listed) == 1 and listed[0].customized
+    assert _hit_sources(isolated, "builtin-thing") == {"company"}
 
-    with pytest.raises(SkillReadOnlyError):
-        update_skill(
+    assert delete_skill("builtin-thing", store=isolated) == "reverted"
+    assert get_skill("builtin-thing").source == "builtin"
+    assert _hit_sources(isolated, "builtin-thing") == {"builtin"}
+
+
+def test_deleting_builtin_hides_it_and_restore_brings_it_back(
+    isolated: ChromaDBStore,
+) -> None:
+    import asyncio
+
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "builtin-thing")
+    asyncio.run(seed_builtin_skills(store=isolated, force=True))
+
+    assert delete_skill("builtin-thing", store=isolated) == "hidden"
+    with pytest.raises(SkillNotFoundError):
+        get_skill("builtin-thing")
+    assert get_skill("builtin-thing", include_hidden=True).hidden is True
+    assert "builtin-thing" not in {s.frontmatter.name for s in list_skills()}
+    hidden = [s for s in list_skills(include_hidden=True) if s.hidden]
+    assert [s.frontmatter.name for s in hidden] == ["builtin-thing"]
+    assert _hit_sources(isolated, "builtin-thing") == set()
+    # Startup reconciliation must not resurrect a hidden built-in.
+    asyncio.run(seed_builtin_skills(store=isolated))
+    assert _hit_sources(isolated, "builtin-thing") == set()
+    # A hidden name is still taken.
+    with pytest.raises(SkillConflictError):
+        create_skill(
             name="builtin-thing",
-            description="x",
-            when_to_use="y",
-            category="finance",
-            body="z",
+            description="d",
+            when_to_use="w",
+            category="general",
+            body="b",
             store=isolated,
         )
-    with pytest.raises(SkillReadOnlyError):
-        delete_skill("builtin-thing", store=isolated)
 
-    # Duplicate name across builtin tree also blocks company create.
+    restored = restore_skill("builtin-thing", store=isolated)
+    assert (restored.source, restored.hidden) == ("builtin", False)
+    assert get_skill("builtin-thing").source == "builtin"
+    assert _hit_sources(isolated, "builtin-thing") == {"builtin"}
+    assert not (skills_repo._company_skills_path() / ".hidden.yaml").exists()
+    with pytest.raises(SkillNotFoundError):
+        restore_skill("builtin-thing", store=isolated)
+
+
+def test_create_conflicts_with_builtin_name(isolated: ChromaDBStore) -> None:
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "builtin-thing")
     with pytest.raises(SkillConflictError):
         create_skill(
             name="builtin-thing",
@@ -171,6 +225,22 @@ def test_seed_is_idempotent(isolated: ChromaDBStore) -> None:
     assert first == 2
     assert second == 0
     assert count_skills(isolated, source="builtin") == 2
+
+
+def test_seed_indexes_new_builtin_on_populated_collection(isolated: ChromaDBStore) -> None:
+    """A built-in shipped in a later release must reach an already-seeded index."""
+    import asyncio
+
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "strategy", "alpha")
+    assert asyncio.run(seed_builtin_skills(store=isolated)) == 1
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "beta")
+    assert asyncio.run(seed_builtin_skills(store=isolated)) == 1
+    assert count_skills(isolated, source="builtin") == 2
+
+    # Removed from the release -> dropped from the index.
+    (skills_index.BUILTIN_SKILLS_PATH / "strategy" / "alpha.md").unlink()
+    assert asyncio.run(seed_builtin_skills(store=isolated)) == 0
+    assert count_skills(isolated, source="builtin") == 1
 
 
 def test_list_includes_both_sources(isolated: ChromaDBStore) -> None:

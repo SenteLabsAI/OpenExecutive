@@ -122,11 +122,27 @@ def test_update_and_delete(isolated: None) -> None:
 
     deleted = json.loads(_run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": "edit-me"})))
     assert deleted["deleted"] is True
+    assert deleted["outcome"] == "deleted"
 
     deleted_again = json.loads(
         _run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": "edit-me"}))
     )
     assert deleted_again["code"] == "not_found"
+
+
+def test_deleting_builtin_hides_it_from_load(isolated: None) -> None:
+    target = skills_index.BUILTIN_SKILLS_PATH / "board" / "stock.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "---\nname: stock\ndescription: d\nwhen_to_use: w\ncategory: board\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert "body" in _run(SKILL_TOOL_HANDLERS["load_skill"]({"name": "stock"}))
+
+    deleted = json.loads(_run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": "stock"})))
+    assert deleted["outcome"] == "hidden"
+    loaded = json.loads(_run(SKILL_TOOL_HANDLERS["load_skill"]({"name": "stock"})))
+    assert "not found" in loaded["error"]
 
 
 def test_missing_required_fields(isolated: None) -> None:
