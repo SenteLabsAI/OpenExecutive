@@ -38,6 +38,30 @@ import { SectionHeading } from "./memories/shared";
 
 // Future-relative label for a pending run time ("in 8h"). Past/blank →
 // "soon" (the caller renders "overdue" separately via the backend flag).
+// Badge text for an artifact card: the format when it isn't plain Markdown.
+function artifactBadge(format: ProposalItem["artifact_format"]): string {
+  switch (format) {
+    case "html":
+      return "Web page";
+    case "docx":
+      return "Word doc";
+    case "xlsx":
+      return "Spreadsheet";
+    case "link":
+      return "Link";
+    default:
+      return "Artifact";
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
 function formatFuture(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "soon";
@@ -715,7 +739,9 @@ function ProposalCard({
       return (
         `Let's discuss this artifact you flagged for my review:\n\n` +
         `# ${proposal.headline}\n\n${proposal.body || ""}${rationale}\n\n` +
-        `[Discuss mode — alert_id=${proposal.alert_id}] This is a document ` +
+        `[Discuss mode — alert_id=${proposal.alert_id}, artifact id ` +
+        `alert:${proposal.alert_id}; to revise it, publish a new version with ` +
+        `draft_artifact(supersedes="alert:${proposal.alert_id}")] This is a document ` +
         `for review, not an action to approve. Answer my questions about it ` +
         `conversationally. When I say I'm done ("got it", "reviewed", "thanks"), ` +
         `call ack_alert(alert_id=${proposal.alert_id}, status="ack") to clear ` +
@@ -912,7 +938,7 @@ function ProposalCard({
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="flex items-center gap-2 min-w-0">
           <span className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-300 border-amber-500/30">
-            Artifact
+            {artifactBadge(proposal.artifact_format)}
           </span>
           <div className="text-sm font-medium text-fg break-words">{proposal.headline}</div>
         </div>
@@ -973,6 +999,28 @@ function ProposalCard({
   return (
     <div id={`alert-${proposal.alert_id}`} className={`group py-3 hover:bg-surface-overlay/30 transition-colors${rowAccent}`}>
       {contentArea}
+      {/* Artifact links sit outside the Discuss click target (a <button>),
+          which can't legally contain links. */}
+      {isArtifact && (
+        <div className="pb-1 flex flex-wrap gap-3 text-xs">
+          <Link
+            href={`/artifacts/${encodeURIComponent(`alert:${proposal.alert_id}`)}`}
+            className="text-indigo-400 hover:underline"
+          >
+            Open artifact →
+          </Link>
+          {proposal.artifact_format === "link" && proposal.artifact_url && (
+            <a
+              href={proposal.artifact_url}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              className="text-indigo-400 hover:underline"
+            >
+              Open in app ({hostOf(proposal.artifact_url)}) ↗
+            </a>
+          )}
+        </div>
+      )}
       {/* Body expander — a sibling of the content area (never nested inside the
           Discuss click target, which HTML disallows) so a clamped long body can
           still be read in full without leaving the briefing. */}

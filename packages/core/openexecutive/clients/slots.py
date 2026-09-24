@@ -695,6 +695,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         where={"type": "recent_research"},
     )
+    # Indexed artifacts (orchestrator/artifact_tools.py) share that collection.
+    store.delete_documents(
+        collection=ChromaDBStore.RESEARCH_COLLECTION,
+        where={"type": "artifact"},
+    )
     store.delete_notion_docs()
     # Inbound attachments are per-company too, and no longer swept by
     # delete_company_docs above now that they live in their own collection.

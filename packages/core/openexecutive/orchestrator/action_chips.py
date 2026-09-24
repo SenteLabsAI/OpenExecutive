@@ -277,6 +277,8 @@ def summarize_action(
         title = (tool_input.get("title") or "")[:60]
         payload["summary"] = f"Drafted artifact for review: {title}" if title else "Drafted artifact for review"
         payload["target"] = title or None
+        artifact_id = (parsed or {}).get("artifact_id") if parsed else None
+        payload["link"] = f"/artifacts/{artifact_id}" if isinstance(artifact_id, str) else "/artifacts"
     elif tool_name == "ack_alert":
         alert_id = tool_input.get("alert_id")
         status = tool_input.get("status", "ack")

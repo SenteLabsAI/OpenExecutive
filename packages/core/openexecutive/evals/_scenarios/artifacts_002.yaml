@@ -1,0 +1,29 @@
+id: artifacts_002
+domain: artifacts
+description: "Principal asks to revise a memo the Executive wrote earlier; Executive finds it, rereads it and publishes a superseding version."
+company_context:
+  stage: "Series B"
+  industry: "Fintech"
+  headcount: 120
+  arr: 14000000
+# Exercises the revise loop: the Executive locates its earlier artifact with
+# list_artifacts, rereads it with get_artifact, and publishes the new version
+# with draft_artifact(supersedes=<id>) so the old one is archived, instead of
+# asking the principal to paste the memo back or writing it from scratch.
+# `expected_tool_calls` is documentation for now (matches
+# mcp_tool_call_001.yaml convention).
+query: "That churn memo you wrote me last week — make it half as long and turn it into a Word doc I can send to the leadership team."
+expected_tool_calls:
+  - list_artifacts
+  - get_artifact
+  - draft_artifact
+expected_topics:
+  - finds_existing_memo
+  - shorter_revision
+  - word_document
+  - link_to_artifact
+quality_criteria:
+  does_not_ask_user_to_paste_memo: true
+  revises_rather_than_rewrites_from_scratch: true
+  replies_with_artifact_link: true
+  brief: true

@@ -403,9 +403,18 @@ def retrieve(
             "company documents):"
         )
         for r in research_results:
-            created = r["metadata"].get("created_at", "")
+            meta = r["metadata"]
+            created = meta.get("created_at", "")
             when = f" — {created}" if created else ""
-            parts.append(f"[recent research{when}] {r['text']}")
+            # Deliverables the Executive published (draft_artifact) share
+            # this collection; label them by id so the model can reread one
+            # with get_artifact instead of guessing from a chunk.
+            if meta.get("type") == "artifact" and meta.get("artifact_id"):
+                parts.append(
+                    f"[your earlier artifact {meta['artifact_id']}{when}] {r['text']}"
+                )
+            else:
+                parts.append(f"[recent research{when}] {r['text']}")
 
     if builtin_results:
         parts.append("### From executive knowledge base:")

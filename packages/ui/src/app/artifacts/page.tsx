@@ -103,6 +103,11 @@ function ArtifactRow({
         className="flex items-center gap-3 min-w-0 flex-1 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
       >
         <span className="text-sm font-medium text-fg truncate">{item.title}</span>
+        {item.format !== "markdown" && (
+          <span className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-line text-fg-muted">
+            {item.format_label}
+          </span>
+        )}
       </Link>
 
       <span className="hidden sm:block text-xs text-fg-muted whitespace-nowrap tabular-nums">
@@ -338,8 +343,9 @@ export default function ArtifactsPage() {
               Executive Artifacts
             </h1>
             <p className="text-sm text-fg-muted">
-              Every Markdown deliverable the Executive has produced — drafted
-              memos and market research alongside completed workflow outputs.
+              Every deliverable the Executive has produced — memos, web
+              pages, Word documents, spreadsheets and links into your connected
+              apps, alongside completed workflow outputs.
               Archive what you&apos;re done with; delete clears it for good.
             </p>
           </div>

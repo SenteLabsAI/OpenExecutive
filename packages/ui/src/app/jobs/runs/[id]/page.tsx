@@ -11,6 +11,7 @@ import {
   WorkflowRunDetail,
   decideWorkflowRun,
   getWorkflowRun,
+  artifactDownloadUrl,
 } from "@/lib/api";
 import { runStatusLabel, runStatusTextColor } from "@/lib/runStatus";
 
@@ -166,6 +167,13 @@ export default function RunDetailPage() {
                 >
                   Download .md
                 </button>
+                <a
+                  href={artifactDownloadUrl(`run:${run.run_id}`, "docx")}
+                  download
+                  className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
+                >
+                  Download .docx
+                </a>
               </div>
             )}
           </div>

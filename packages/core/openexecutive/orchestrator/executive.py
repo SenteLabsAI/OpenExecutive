@@ -31,8 +31,8 @@ from openexecutive.orchestrator.alert_tools import (
     handle_create_alert,
 )
 from openexecutive.orchestrator.artifact_tools import (
-    DRAFT_ARTIFACT_TOOL,
-    handle_draft_artifact,
+    DRAFT_ARTIFACT_TOOL_HANDLERS,
+    DRAFT_ARTIFACT_TOOLS,
 )
 from openexecutive.orchestrator.broadcast_tools import (
     BROADCAST_TOOL_HANDLERS,
@@ -316,7 +316,7 @@ def _build_current_speaker_block(person_id: int | None) -> str | None:
 _ALL_SKILL_TOOLS = [
     *SKILL_TOOLS,
     CREATE_ALERT_TOOL,
-    DRAFT_ARTIFACT_TOOL,
+    *DRAFT_ARTIFACT_TOOLS,
     *SCHEDULE_TOOLS,
     *CALENDAR_TOOLS,
     *PEOPLE_TOOLS,
@@ -332,7 +332,7 @@ _ALL_SKILL_TOOLS = [
 _ALL_SKILL_HANDLERS = {
     **SKILL_TOOL_HANDLERS,
     "create_alert": handle_create_alert,
-    "draft_artifact": handle_draft_artifact,
+    **DRAFT_ARTIFACT_TOOL_HANDLERS,
     **SCHEDULE_TOOL_HANDLERS,
     **CALENDAR_TOOL_HANDLERS,
     **PEOPLE_TOOL_HANDLERS,

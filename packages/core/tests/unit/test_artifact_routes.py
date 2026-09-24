@@ -8,10 +8,14 @@ and seed it through the real store APIs.
 """
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 
 import pytest
+from docx import Document
 from fastapi import HTTPException
+from openpyxl import load_workbook
 
 from openexecutive.alerts import store as alerts_store
 from openexecutive.api.routes import artifacts as artifacts_route
@@ -302,3 +306,136 @@ def test_store_set_run_archived_round_trip(db: Path) -> None:
     assert wf_persistence.set_run_archived("run-store", False, db_path=db) is True
     assert [r["run_id"] for r in wf_persistence.list_artifact_runs(db_path=db)] == ["run-store"]
     assert wf_persistence.set_run_archived("nope", True, db_path=db) is False
+
+
+# --------------------------------------------------------------------------- #
+# Formats and downloads
+# --------------------------------------------------------------------------- #
+
+
+
+
+def _seed_format(db: Path, external_id: str, fmt: str, body: str, **extra: object) -> str:
+    aid = alerts_store.insert_alert(
+        source="artifact", external_id=external_id, severity="medium",
+        headline=f"{fmt} artifact", body=body, suggested_action="why",
+        topic_tags=["artifact"], artifact_format=fmt, db_path=db, **extra,  # type: ignore[arg-type]
+    )
+    assert aid is not None
+    return f"alert:{aid}"
+
+
+async def test_list_carries_format_fields(db: Path) -> None:
+    md = _seed_format(db, "m", "markdown", "# T\n\nHello")
+    link = _seed_format(db, "l", "link", "Summary", artifact_url="https://x.example/s",
+                        artifact_link_label="Notion page")
+    _seed_run(db, "run-f", "Deck")
+
+    by_id = {a.id: a for a in (await artifacts_route.list_artifacts())["artifacts"]}
+    assert by_id[md].format == "markdown"
+    assert by_id[md].downloads == ["markdown", "docx"]
+    assert by_id[link].format == "link"
+    assert by_id[link].format_label == "Notion page"
+    assert by_id[link].downloads == []
+    assert by_id[link].external_url == "https://x.example/s"
+    # Workflow output is Markdown and can be exported to Word.
+    assert by_id["run:run-f"].format == "markdown"
+    assert by_id["run:run-f"].downloads == ["markdown", "docx"]
+
+
+async def test_detail_body_per_format(db: Path) -> None:
+    html = _seed_format(db, "h", "html", "<h1>Hi</h1><p>Text</p>")
+    sheet = _seed_format(db, "x", "xlsx", json.dumps({
+        "summary": "S", "sheets": [{"name": "A", "columns": ["c"], "rows": [[1]]}],
+    }))
+    html_detail = await artifacts_route.get_artifact(html)
+    assert html_detail.body == "<h1>Hi</h1><p>Text</p>"  # raw, for the sandboxed iframe
+    assert html_detail.preview == "Hi Text"
+    sheet_detail = await artifacts_route.get_artifact(sheet)
+    assert "| c |" in sheet_detail.body
+
+
+async def _download_headers(resp) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    return {k.lower(): v for k, v in resp.headers.items()}
+
+
+async def test_download_markdown_and_docx_export(db: Path) -> None:
+    aid = _seed_draft(db, "d-1", "Board Memo: Q3!")
+    resp = await artifacts_route.download_artifact(f"alert:{aid}")
+    headers = await _download_headers(resp)
+    assert resp.body.startswith(b"## Board Memo")
+    assert headers["content-type"].startswith("text/markdown")
+    assert headers["content-disposition"] == 'attachment; filename="board-memo-q3.md"'
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["content-security-policy"] == "sandbox"
+
+    word = await artifacts_route.download_artifact(f"alert:{aid}", as_="docx")
+    assert (await _download_headers(word))["content-disposition"].endswith('.docx"')
+    doc = Document(io.BytesIO(word.body))
+    assert any(p.text == "Board Memo: Q3!" for p in doc.paragraphs)
+
+
+async def test_download_workflow_run_as_docx(db: Path) -> None:
+    _seed_run(db, "run-d", "Q2 Board Deck")
+    resp = await artifacts_route.download_artifact("run:run-d", as_="docx")
+    doc = Document(io.BytesIO(resp.body))
+    assert any(p.text == "Deck body." for p in doc.paragraphs)
+
+
+async def test_download_xlsx_renders_workbook(db: Path) -> None:
+    cid = _seed_format(db, "x2", "xlsx", json.dumps({
+        "summary": "", "sheets": [{"name": "Data", "columns": ["a", "b"], "rows": [[1, "two"]]}],
+    }))
+    resp = await artifacts_route.download_artifact(cid)
+    wb = load_workbook(io.BytesIO(resp.body))
+    assert wb["Data"]["B2"].value == "two"
+
+
+async def test_download_html_is_attachment(db: Path) -> None:
+    cid = _seed_format(db, "h2", "html", "<p>x</p>")
+    headers = await _download_headers(await artifacts_route.download_artifact(cid))
+    assert headers["content-disposition"].startswith("attachment;")
+    assert headers["content-disposition"].endswith('.html"')
+    assert headers["x-content-type-options"] == "nosniff"
+
+
+async def test_download_404_for_link_and_unsupported_target(db: Path) -> None:
+    link = _seed_format(db, "l2", "link", "S", artifact_url="https://x.example")
+    with pytest.raises(HTTPException) as exc:
+        await artifacts_route.download_artifact(link)
+    assert exc.value.status_code == 404
+    html = _seed_format(db, "h3", "html", "<p>x</p>")
+    with pytest.raises(HTTPException) as exc:
+        await artifacts_route.download_artifact(html, as_="xlsx")
+    assert exc.value.status_code == 404
+
+
+async def test_download_404_for_non_artifact_alert(db: Path) -> None:
+    other = alerts_store.insert_alert(
+        source="email", external_id="e-dl", severity="high",
+        headline="Inbound", body="secret", db_path=db,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await artifacts_route.download_artifact(f"alert:{other}")
+    assert exc.value.status_code == 404
+
+
+async def test_delete_unindexes(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    removed: list[str] = []
+
+    async def _fake(artifact_id: str) -> None:
+        removed.append(artifact_id)
+
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.artifact_tools.unindex_artifact", _fake
+    )
+    aid = _seed_draft(db, "d-del", "Gone")
+    await artifacts_route.delete_artifact(f"alert:{aid}")
+    assert removed == [f"alert:{aid}"]
+
+
+async def test_filename_falls_back_to_id(db: Path) -> None:
+    aid = _seed_draft(db, "d-sym", "!!!")
+    resp = await artifacts_route.download_artifact(f"alert:{aid}")
+    headers = await _download_headers(resp)
+    assert headers["content-disposition"] == f'attachment; filename="alert-{aid}.md"'

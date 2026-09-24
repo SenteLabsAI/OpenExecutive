@@ -1688,11 +1688,36 @@ export interface ArtifactSummary {
   status: string;
   severity: string | null;
   archived_at: string | null; // ISO ts when archived; null = active
+  // Registered format — see packages/core/openexecutive/orchestrator/artifact_formats.py.
+  format: ArtifactFormat;
+  format_label: string;
+  // Download targets; the first is the artifact's own file. Empty for links.
+  downloads: ArtifactFormat[];
+  external_url: string | null;
+  link_label: string | null;
+  supersedes_id: string | null; // id of the earlier version this revised
 }
 
+export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";
+
+export const ARTIFACT_EXTENSIONS: Record<ArtifactFormat, string | null> = {
+  docx: "docx",
+  html: "html",
+  link: null,
+  markdown: "md",
+  xlsx: "xlsx",
+};
+
 export interface ArtifactDetail extends ArtifactSummary {
+  // Sanitized HTML for "html"; Markdown for every other format.
   body: string;
   rationale: string | null;
+}
+
+// Same-origin proxy URL, so a plain <a href> download carries the session.
+export function artifactDownloadUrl(id: string, as?: ArtifactFormat): string {
+  const qs = as ? `?as=${encodeURIComponent(as)}` : "";
+  return `${API_BASE}/artifacts/${encodeURIComponent(id)}/download${qs}`;
 }
 
 export async function listArtifacts(
@@ -3016,6 +3041,10 @@ export interface ProposalItem {
   superseded_count?: number;
   // Registry workflow the review suggested as the next step ('' = none).
   suggested_workflow?: string;
+  // Drafted artifacts only: the format (body is already Markdown for every
+  // format) and, for "link" artifacts, the URL in the connected app.
+  artifact_format?: ArtifactFormat | null;
+  artifact_url?: string | null;
 }
 
 // One autonomous alert-review move since the last delivered morning brief

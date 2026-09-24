@@ -84,6 +84,15 @@ def initialize_db(db_path: Path | None = None) -> None:
             ("superseded_by_alert_id", "INTEGER"),
             ("snoozed_until", "TEXT"),
             ("suggested_workflow", "TEXT NOT NULL DEFAULT ''"),
+            # Artifact formats (orchestrator/artifact_formats.py). Only
+            # meaningful for source='artifact' rows; `body` holds the stored
+            # text for the format, the link url/label live beside it, and
+            # `supersedes_id` is the composite id of the version this row
+            # revised ('alert:<n>' / 'run:<hex>').
+            ("artifact_format", "TEXT NOT NULL DEFAULT 'markdown'"),
+            ("artifact_url", "TEXT"),
+            ("artifact_link_label", "TEXT"),
+            ("supersedes_id", "TEXT"),
         ):
             if col not in existing:
                 try:
@@ -135,6 +144,10 @@ def insert_alert(
     topic_tags: list[str] | None = None,
     dedup_key: str = "",
     routed_to_person_id: int | None = None,
+    artifact_format: str = "markdown",
+    artifact_url: str | None = None,
+    artifact_link_label: str | None = None,
+    supersedes_id: str | None = None,
     db_path: Path | None = None,
 ) -> int | None:
     """Insert a new alert. Returns alert id, or None if a duplicate was skipped."""
@@ -144,8 +157,9 @@ def insert_alert(
             """
             INSERT OR IGNORE INTO alerts
                 (external_id, source, severity, headline, body, suggested_action,
-                 topic_tags, dedup_key, status, created_at, routed_to_person_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?)
+                 topic_tags, dedup_key, status, created_at, routed_to_person_id,
+                 artifact_format, artifact_url, artifact_link_label, supersedes_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?)
             """,
             (
                 external_id,
@@ -158,6 +172,10 @@ def insert_alert(
                 dedup_key,
                 _now(),
                 routed_to_person_id,
+                artifact_format,
+                artifact_url,
+                artifact_link_label,
+                supersedes_id,
             ),
         )
         if cursor.rowcount == 0:
