@@ -190,7 +190,7 @@ export default function JobDetailPage() {
       <div className="flex flex-col h-full bg-surface text-fg items-center justify-center">
         <div className="text-sm text-red-400 mb-4">Error: {loadError}</div>
         <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          ← Back to jobs
+          ← Back to workflows
         </Link>
       </div>
     );

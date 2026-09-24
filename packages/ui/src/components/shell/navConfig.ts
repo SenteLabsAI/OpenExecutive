@@ -56,7 +56,7 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
         },
         {
           href: "/jobs",
-          label: "Jobs",
+          label: "Workflows",
           icon: "doc",
           description:
             "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",
@@ -226,7 +226,7 @@ export const MOBILE_PRIMARY: NavItem[] = [
   },
   {
     href: "/jobs",
-    label: "Jobs",
+    label: "Workflows",
     icon: "doc",
     description:
       "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",

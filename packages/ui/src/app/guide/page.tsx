@@ -13,7 +13,7 @@ const SECTIONS = [
   { id: 'today', label: 'Today / Morning Brief', sub: 'What needs you right now: proposals, department health, and people with open items.' },
   { id: 'pulse', label: 'Pulse (Memory)', sub: "The Executive's running memory — decisions made, initiatives in flight, advice gathered." },
   { id: 'review', label: 'Review Queue', sub: 'Built-in knowledge is trusted by default. Review what you upload or edit, or send a domain for review yourself.' },
-  { id: 'jobs', label: 'Jobs (Workflows)', sub: 'Multi-step workflows that produce a deliverable — board prep, GTM plan, perf review.' },
+  { id: 'jobs', label: 'Workflows', sub: 'Multi-step workflows that produce a deliverable — board prep, GTM plan, perf review.' },
   { id: 'artifacts', label: 'Artifacts', sub: 'Your library of finished documents — drafts and workflow outputs in one place.' },
   { id: 'watchlist', label: 'Watch List', sub: 'External monitors — stock tickers, RSS feeds, status pages, web queries — that raise alerts.' },
   { id: 'departments', label: 'Departments', sub: 'Org units, each with goals, an authority level, and a specialist behind it.' },

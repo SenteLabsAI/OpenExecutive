@@ -157,7 +157,7 @@ def ensure_workflow_event(event: object, *, site: str) -> WorkflowEvent:
         raise UnsupportedGateError(
             f"{site}: workflow yielded an approval gate, but this runner "
             "cannot pause for a human — every step after the gate would be "
-            "dropped. Run this workflow from the /jobs page or the chat tool."
+            "dropped. Run this workflow from the Workflows page (/jobs) or the chat tool."
         )
     return cast(WorkflowEvent, event)
 
