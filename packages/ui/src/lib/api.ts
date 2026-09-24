@@ -736,8 +736,8 @@ export interface SkillMeta {
   customized: boolean;
   /** A built-in hidden for this company (only listed with includeHidden). */
   hidden: boolean;
-  /** Runnable workflows whose steps follow this playbook. */
-  used_by: { name: string; title: string }[];
+  /** Workflows whose steps follow this playbook (switched-off custom ones too). */
+  used_by: { name: string; title: string; is_custom: boolean }[];
 }
 
 export interface SkillDetail extends SkillMeta {

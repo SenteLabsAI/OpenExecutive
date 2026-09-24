@@ -184,12 +184,125 @@ async def test_dynamic_step_appends_playbook_after_rendering(
 def test_playbook_users_maps_builtins_and_survives_store_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import openexecutive.workflows as wfs
+    from openexecutive.workflows import dynamic_store
 
-    def boom() -> list[Any]:
+    def boom(**kwargs: Any) -> list[Any]:
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(wfs, "list_workflows", boom)
+    monkeypatch.setattr(dynamic_store, "list_definitions", boom)
     users = pb.playbook_users()
     assert [u.name for u in users["monthly-business-review"]] == ["mbr"]
     assert [u.name for u in users["quarterly-forecast"]] == ["quarterly_plan"]
+
+
+def test_playbook_users_include_switched_off_custom_workflows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.workflows import dynamic_store
+
+    off = _dyn_def("deck").model_copy(update={"is_active": False})
+    seen: dict[str, Any] = {}
+
+    def fake_list(**kwargs: Any) -> list[DynamicWorkflowDef]:
+        seen.update(kwargs)
+        return [off]
+
+    monkeypatch.setattr(dynamic_store, "list_definitions", fake_list)
+    users = pb.playbook_users()
+    assert seen == {"active_only": False}
+    assert [(u.name, u.is_custom) for u in users["deck"]] == [("weekly_watch", True)]
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "name: bad\ndescription: 2024\nwhen_to_use: w\ncategory: general\n",
+        "name: bad\ndescription: yes\nwhen_to_use: w\ncategory: general\n",
+        "name: [bad]\ndescription: d\nwhen_to_use: w\ncategory: general\n",
+    ],
+)
+def test_non_text_frontmatter_is_a_parse_error(
+    skills_dirs: ChromaDBStore, frontmatter: str
+) -> None:
+    from openexecutive.knowledge.skills import SkillParseError, parse_skill_file
+
+    path = skills_index.BUILTIN_SKILLS_PATH / "general" / "bad.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}---\n\nbody\n", encoding="utf-8")
+    with pytest.raises(SkillParseError):
+        parse_skill_file(path, source="builtin")
+    assert pb.load_playbook("bad") == ""
+
+
+def test_undecodable_skill_file_is_a_parse_error(skills_dirs: ChromaDBStore) -> None:
+    from openexecutive.knowledge.skills import SkillParseError, parse_skill_file
+
+    path = skills_index.BUILTIN_SKILLS_PATH / "general" / "binary.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe\x00garbage")
+    with pytest.raises(SkillParseError):
+        parse_skill_file(path, source="builtin")
+    assert pb.load_playbook("binary") == ""
+
+
+def test_load_playbook_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(name: str) -> Any:
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(pb, "get_skill", boom)
+    assert pb.load_playbook("anything") == ""
+
+
+def test_malformed_company_copy_falls_back_to_builtin(skills_dirs: ChromaDBStore) -> None:
+    _write_builtin("deck")
+    company = skills_repo._company_skills_path() / "general" / "deck.md"
+    company.parent.mkdir(parents=True)
+    company.write_text(
+        "---\nname: deck\ndescription: 2024\nwhen_to_use: w\ncategory: general\n---\n\nx\n",
+        encoding="utf-8",
+    )
+    assert pb.load_playbook("deck").strip() == "builtin steps"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_step_reports_an_unavailable_playbook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_route(**kwargs: Any) -> str:
+        calls.append(kwargs)
+        return "section"
+
+    profile = MagicMock()
+    profile.is_empty.return_value = True
+    monkeypatch.setattr(dyn, "load_or_create_profile", lambda: profile)
+    monkeypatch.setattr(dyn, "route_to_specialist", fake_route)
+    monkeypatch.setattr(dyn, "load_playbook", lambda name: "")
+
+    wf = DynamicWorkflow(_dyn_def("gone"))
+    events = [e async for e in wf.run(inputs=wf.input_model()(topic="pricing"), store=MagicMock())]
+
+    notices = [e for e in events if e.type == "progress" and e.step_id == "research"]
+    assert notices and "gone" in (notices[0].summary or "")
+    assert calls[0]["query"] == "Analyze pricing."
+    assert [e for e in events if e.type == "artifact"]
+
+
+def test_playbook_users_strict_raises_on_store_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.workflows import dynamic_store
+
+    def boom(**kwargs: Any) -> list[Any]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(dynamic_store, "list_definitions", boom)
+    with pytest.raises(RuntimeError):
+        pb.playbook_users(strict=True)
+
+
+def test_authoring_summary_names_the_playbook() -> None:
+    from openexecutive.orchestrator.workflow_authoring_tools import _summarize
+
+    summary = _summarize(_dyn_def("deck"))
+    assert "[cso · follows playbook deck] Research" in summary
+    assert "follows playbook" not in _summarize(_dyn_def(""))

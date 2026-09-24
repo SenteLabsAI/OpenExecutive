@@ -40,7 +40,7 @@ def _get_store(request: Request) -> ChromaDBStore:
 
 
 def _refs(users: list[PlaybookUser]) -> list[SkillWorkflowRef]:
-    return [SkillWorkflowRef(name=u.name, title=u.title) for u in users]
+    return [SkillWorkflowRef(name=u.name, title=u.title, is_custom=u.is_custom) for u in users]
 
 
 @router.get("", response_model=SkillListResponse)

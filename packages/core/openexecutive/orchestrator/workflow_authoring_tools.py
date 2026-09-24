@@ -229,7 +229,8 @@ def _summarize(defn: Any) -> str:
     for i, step in enumerate(defn.steps, 1):
         kind = getattr(step, "kind", "?")
         if kind == "specialist":
-            lines.append(f"{i}. [{step.specialist}] {step.title}")
+            follows = f" · follows playbook {step.playbook}" if step.playbook else ""
+            lines.append(f"{i}. [{step.specialist}{follows}] {step.title}")
         elif kind == "approval_gate":
             lines.append(f"{i}. [approval gate → person {step.person_id}] {step.title}")
         elif kind == "action":

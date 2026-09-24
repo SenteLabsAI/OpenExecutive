@@ -25,6 +25,11 @@ def load_playbook(name: str) -> str:
     except (SkillNotFoundError, SkillParseError) as e:
         logger.info("Workflow playbook %r unavailable, step runs without it: %s", name, e)
         return ""
+    except Exception:
+        # A playbook is guidance, never a dependency: whatever goes wrong
+        # reading one, the step still runs on its own prompt.
+        logger.exception("Workflow playbook %r failed to load; step runs without it", name)
+        return ""
 
 
 def playbook_clause(body: str, instruction: str) -> str:
@@ -40,23 +45,40 @@ class PlaybookUser:
 
     name: str
     title: str
+    # Custom workflows re-validate their playbook on every save.
+    is_custom: bool = False
 
 
-def playbook_users() -> dict[str, list[PlaybookUser]]:
-    """Playbook name -> the runnable workflows (built-in and active custom) following it.
+def playbook_users(strict: bool = False) -> dict[str, list[PlaybookUser]]:
+    """Playbook name -> the workflows following it: built-ins and every custom one.
 
-    Best-effort: if the custom-workflow store can't be read, built-ins are
-    still reported rather than failing the caller.
+    Switched-off custom workflows count too: turning one on is approval of
+    its definition, and what it follows must not have been changed from chat
+    in the meantime. By default best-effort: if the custom-workflow store
+    can't be read, built-ins are still reported rather than failing the
+    caller. `strict=True` raises instead — for security checks, which must
+    not read "no custom workflow follows it" out of a store error.
     """
-    from openexecutive.workflows import WORKFLOW_REGISTRY, list_workflows
+    from openexecutive.workflows import WORKFLOW_REGISTRY
+    from openexecutive.workflows.base import Workflow
+    from openexecutive.workflows.dynamic import DynamicWorkflow
+    from openexecutive.workflows.dynamic_store import list_definitions
 
+    workflows: list[Workflow] = list(WORKFLOW_REGISTRY.values())
     try:
-        workflows = list_workflows()
+        workflows += [DynamicWorkflow(d) for d in list_definitions(active_only=False)]
     except Exception:
+        if strict:
+            raise
         logger.exception("Could not list custom workflows; reporting built-ins only")
-        workflows = list(WORKFLOW_REGISTRY.values())
     users: dict[str, list[PlaybookUser]] = {}
     for wf in workflows:
         for name in wf.followed_playbooks():
-            users.setdefault(name, []).append(PlaybookUser(name=wf.name, title=wf.title))
+            users.setdefault(name, []).append(
+                PlaybookUser(
+                    name=wf.name,
+                    title=wf.title,
+                    is_custom=isinstance(wf, DynamicWorkflow),
+                )
+            )
     return users

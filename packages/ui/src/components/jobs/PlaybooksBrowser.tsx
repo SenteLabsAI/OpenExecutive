@@ -163,14 +163,20 @@ export default function PlaybooksBrowser({
 
   function handleDelete(skill: SkillDetail) {
     const workflows = workflowList(skill);
+    // A custom workflow re-checks its playbook on every save.
+    const resave = skill.used_by.some((w) => w.is_custom)
+      ? " A custom workflow that follows it will need a different playbook (or none) before you can save it again."
+      : "";
     const prompt = skill.customized
       ? `Revert “${skill.name}” to the built-in version? Your changes will be lost.` +
         (workflows ? ` ${workflows} will follow the built-in again.` : "")
       : skill.source === "builtin"
         ? `Hide “${skill.name}”? The Executive will stop using it. You can restore it from “Show hidden”.` +
-          (workflows ? ` ${workflows} will run without it until you do.` : "")
+          (workflows ? ` ${workflows} will run without it until you do.` : "") +
+          resave
         : `Delete the playbook “${skill.name}”? This cannot be undone.` +
-          (workflows ? ` ${workflows} will run without it.` : "");
+          (workflows ? ` ${workflows} will run without it.` : "") +
+          resave;
     if (!confirm(prompt)) return;
     void run(async () => {
       const outcome = await deleteSkill(skill.name);

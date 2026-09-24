@@ -574,10 +574,8 @@ class DynamicWorkflow(Workflow):
                 )
                 try:
                     goal = _render(step.goal, values)
-                    if step.playbook:
-                        goal += playbook_clause(
-                            load_playbook(step.playbook), "Follow this playbook"
-                        )
+                    playbook_body = load_playbook(step.playbook) if step.playbook else ""
+                    goal += playbook_clause(playbook_body, "Follow this playbook")
                     rag = ""
                     if step.rag_query:
                         rag = retrieve(
@@ -593,6 +591,17 @@ class DynamicWorkflow(Workflow):
                         message=f"step {step.id!r} placeholder error: {exc}",
                     )
                     return
+                if step.playbook and not playbook_body.strip():
+                    # Say so in the run rather than silently changing what an
+                    # approved workflow follows.
+                    yield WorkflowEvent(
+                        type="progress",
+                        step_id=step.id,
+                        summary=(
+                            f"Playbook '{step.playbook}' is unavailable or empty (hidden, "
+                            "deleted or unreadable); this step runs on its own goal."
+                        ),
+                    )
                 result = await route_to_specialist(
                     specialist_name=step.specialist,
                     query=goal,

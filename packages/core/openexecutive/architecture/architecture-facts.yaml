@@ -829,7 +829,19 @@ knowledge:
     dead load is gone.) Custom workflows: SpecialistStepSpec.playbook,
     validated at save, appended AFTER {field} rendering. playbook_users()
     feeds SkillMeta.used_by, search_skills hits' `workflows`, and the UI's
-    hide/revert/delete warnings. Persona routing: a hit with `workflows` +
+    hide/revert/delete warnings, and the chat-tool guard: update_skill /
+    delete_skill also refuse (code "followed_by_workflow") any company
+    playbook any workflow follows (switched-off custom ones too, via
+    list_definitions(active_only=False)) — an approved scheduled custom
+    workflow reads it at each run and later action steps write to
+    already-approved targets unattended, so a crafted inbound message must
+    not be able to rewrite it. create_skill runs the same follower check
+    (a deleted playbook's name a workflow still follows can't be refilled
+    from chat), and the check uses playbook_users(strict=True): a store
+    error refuses with code "unverifiable" instead of failing open.
+    load_playbook catches every exception; a
+    custom step whose playbook is unavailable emits a `progress` event.
+    Persona routing: a hit with `workflows` +
     a request for the finished deliverable -> run/offer the workflow;
     otherwise follow the playbook inline.
   collections:

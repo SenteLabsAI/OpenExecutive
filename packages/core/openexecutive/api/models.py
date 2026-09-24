@@ -138,6 +138,7 @@ class HealthResponse(BaseModel):
 class SkillWorkflowRef(BaseModel):
     name: str
     title: str
+    is_custom: bool = False
 
 
 class SkillMeta(BaseModel):
@@ -149,7 +150,7 @@ class SkillMeta(BaseModel):
     filename: str
     customized: bool = False
     hidden: bool = False
-    # Runnable workflows whose steps follow this playbook.
+    # Workflows whose steps follow this playbook (switched-off custom ones too).
     used_by: list[SkillWorkflowRef] = []
 
 

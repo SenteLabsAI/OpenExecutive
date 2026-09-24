@@ -194,7 +194,9 @@ def test_list_and_detail_report_workflows_that_follow_a_playbook(
             ]
         },
     )
-    expected = [{"name": "competitive_teardown", "title": "Competitive teardown"}]
+    expected = [
+        {"name": "competitive_teardown", "title": "Competitive teardown", "is_custom": False}
+    ]
     listed = {s["name"]: s for s in client.get("/skills").json()["skills"]}
     assert listed["competitive-teardown"]["used_by"] == expected
     detail = client.get("/skills/competitive-teardown").json()
