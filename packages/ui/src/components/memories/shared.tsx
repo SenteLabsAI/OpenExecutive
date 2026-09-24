@@ -146,9 +146,9 @@ export function groupByRhythm(
 // they render correctly in both light and dark mode.
 // ---------------------------------------------------------------------------
 
-type StatTone = "default" | "accent" | "emerald" | "amber";
+export type StatTone = "default" | "accent" | "emerald" | "amber";
 
-const STAT_VALUE_TONE: Record<StatTone, string> = {
+export const STAT_VALUE_TONE: Record<StatTone, string> = {
   default: "text-fg",
   accent: "text-indigo-300",
   emerald: "text-emerald-300",
