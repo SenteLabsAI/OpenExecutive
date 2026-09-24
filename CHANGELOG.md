@@ -9,6 +9,42 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.4.0](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.2...v0.4.0) (2026-09-24)
+
+
+### Added
+
+* **artifacts:** deliver artifacts by message link or email attachment ([#209](https://github.com/SenteLabsAI/OpenExecutive/issues/209)) ([212cfaf](https://github.com/SenteLabsAI/OpenExecutive/commit/212cfafc2c2e7a6cc9cf734581d7dc65b05e59f8))
+* **artifacts:** publish, reread and revise artifacts in html, docx, xlsx or links ([#207](https://github.com/SenteLabsAI/OpenExecutive/issues/207)) ([066abd3](https://github.com/SenteLabsAI/OpenExecutive/commit/066abd320928397cf1044ce7a5704de1fd5c4514))
+* **knowledge:** make chat-proposed playbooks drafts a person approves ([#208](https://github.com/SenteLabsAI/OpenExecutive/issues/208)) ([b775dea](https://github.com/SenteLabsAI/OpenExecutive/commit/b775deac7231b779830d1939499edaead3caf689))
+* **scheduler:** add a global pause for the executive's autonomous work ([812a39e](https://github.com/SenteLabsAI/OpenExecutive/commit/812a39ee220d639c33d7006c1be2c9e461cfa903))
+* **ui:** add a vitals panel to the Pulse heartbeat card ([#203](https://github.com/SenteLabsAI/OpenExecutive/issues/203)) ([4101207](https://github.com/SenteLabsAI/OpenExecutive/commit/4101207b487cc5718ef451b0e330998cd9e0772f))
+* **ui:** manage skills as playbooks on the Workflows page ([#202](https://github.com/SenteLabsAI/OpenExecutive/issues/202)) ([4691e48](https://github.com/SenteLabsAI/OpenExecutive/commit/4691e489c520323acd18a43a2c2722a0dff6d11d))
+* **ui:** rename Artifacts to Documents for users and the Executive ([#214](https://github.com/SenteLabsAI/OpenExecutive/issues/214)) ([67ee80d](https://github.com/SenteLabsAI/OpenExecutive/commit/67ee80d6bdbecf8d36be1498b595317d8a2e83c6))
+* **ui:** share one sidebar with a short recent-chats list on every page ([#195](https://github.com/SenteLabsAI/OpenExecutive/issues/195)) ([59b7d35](https://github.com/SenteLabsAI/OpenExecutive/commit/59b7d35813e26ac123f72be4fc1c72318a6f1d94))
+* **ui:** show every peer-memory note in a scrollable People tab ([#201](https://github.com/SenteLabsAI/OpenExecutive/issues/201)) ([daabb99](https://github.com/SenteLabsAI/OpenExecutive/commit/daabb99c5ea92fefd9dfe5e9eda813f12b657d77))
+* **workflows:** confirm a workflow's first write to a new target ([#199](https://github.com/SenteLabsAI/OpenExecutive/issues/199)) ([d63d11d](https://github.com/SenteLabsAI/OpenExecutive/commit/d63d11dcb570750ee43f50628324c8579597f197))
+* **workflows:** have workflows follow playbooks ([#206](https://github.com/SenteLabsAI/OpenExecutive/issues/206)) ([1c61e18](https://github.com/SenteLabsAI/OpenExecutive/commit/1c61e187005c9dc5d43bf0160e9334de88b00e64))
+* **workflows:** let workflow steps use tools ([#193](https://github.com/SenteLabsAI/OpenExecutive/issues/193)) ([429aeda](https://github.com/SenteLabsAI/OpenExecutive/commit/429aeda507373e3536313c25f2793f7983740900))
+
+
+### Fixed
+
+* **api:** check session ownership on every per-session route ([#197](https://github.com/SenteLabsAI/OpenExecutive/issues/197)) ([cf61609](https://github.com/SenteLabsAI/OpenExecutive/commit/cf61609ff8a3bb44879e365c232f24ab3a254b83))
+* **api:** remove the unauthenticated /debug/last-turn endpoint ([#200](https://github.com/SenteLabsAI/OpenExecutive/issues/200)) ([112486d](https://github.com/SenteLabsAI/OpenExecutive/commit/112486dfc6d560e3695d575df6f1a50ad1c894fa))
+* **ui:** call the Jobs page "Workflows" ([#194](https://github.com/SenteLabsAI/OpenExecutive/issues/194)) ([d3e48cb](https://github.com/SenteLabsAI/OpenExecutive/commit/d3e48cbc9558f6eab97d07cc1145ff317918adec))
+* **ui:** compare complete days only in the heartbeat trend ([#204](https://github.com/SenteLabsAI/OpenExecutive/issues/204)) ([f4a68b6](https://github.com/SenteLabsAI/OpenExecutive/commit/f4a68b60092e08365ad267c11d2fdf135ebd6b34))
+
+
+### Changed
+
+* **core:** parallelize unit tests with pytest-xdist ([#213](https://github.com/SenteLabsAI/OpenExecutive/issues/213)) ([8b9a822](https://github.com/SenteLabsAI/OpenExecutive/commit/8b9a82289ccba4feadf9b09b62597e3be15b0e1f))
+
+
+### Documentation
+
+* **release:** document forcing a version with Release-As ([e71a025](https://github.com/SenteLabsAI/OpenExecutive/commit/e71a025af7bc8ea4848a8c428da4b4570f4498e1))
+
 ## [0.3.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.1...v0.3.2) (2026-09-23)
 
 
