@@ -14,6 +14,11 @@ Both tool schemas are fixed (no per-definition tools), so the cached tool list
 stays stable. No new outbound capability is granted: approval-gate and cadence
 recipients must be rostered people (enforced by ``validate_definition``), and
 cadence delivery reuses the scheduler's existing guarded send.
+
+A workflow with action (tool-using) steps is saved **inactive**. The chat
+confirmation is a token this model holds itself, so it cannot stand in for a
+person seeing the tools; the workflow runs (or schedules) only after someone
+turns it on from its review card at ``/jobs/{name}``.
 """
 from __future__ import annotations
 
@@ -101,9 +106,9 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "the SAME definition and the confirm_token. Do NOT invent specialists, "
         "people, or metrics — only use the 8 specialist roles and people the "
         "user has identified. If validation fails, the response lists exactly "
-        "what to fix; re-draft and try again. Workflows that must ACT with "
-        "tools (email, spreadsheets, files) cannot be created here: send the "
-        "user to the Jobs page (/jobs/new), where they approve the tools."
+        "what to fix; re-draft and try again. A workflow with action (tool) "
+        "steps is saved switched OFF: after saving, give the user the link so "
+        "they can review its tools and turn it on."
     ),
     "input_schema": {
         "type": "object",
@@ -121,7 +126,9 @@ SAVE_WORKFLOW_TOOL: dict[str, Any] = {
         "definition object and the confirm_token from the draft. The save is "
         "rejected if the definition was changed after drafting (token "
         "mismatch) — re-draft if you need to change anything. On success the "
-        "workflow appears in /jobs and is immediately runnable."
+        "workflow appears in /jobs and is immediately runnable — except one "
+        "with action (tool) steps, which stays off until the user reviews its "
+        "tools and turns it on at the returned deep_link."
     ),
     "input_schema": {
         "type": "object",
@@ -153,10 +160,21 @@ def _canonical_token(definition: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
+def _needs_review(defn: Any) -> bool:
+    """True when the workflow has tool-using steps, which a person must approve.
+
+    Their approval is turning the workflow on from its review card on the Jobs
+    page — a chat confirmation (a token this model holds itself) is not a
+    human seeing the tools.
+    """
+    from openexecutive.workflows.dynamic_models import ActionStepSpec
+
+    return any(isinstance(step, ActionStepSpec) for step in defn.steps)
+
+
 async def _build_def(definition: Any) -> tuple[Any, str | None]:
     """Validate shape + rules. Returns (DynamicWorkflowDef, None) or (None, error)."""
-    from openexecutive.config import get_settings
-    from openexecutive.workflows.dynamic_models import ActionStepSpec, DynamicWorkflowDef
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
     from openexecutive.workflows.tool_catalog import validate_definition_and_tools
 
     if not isinstance(definition, dict):
@@ -165,16 +183,6 @@ async def _build_def(definition: Any) -> tuple[Any, str | None]:
         defn = DynamicWorkflowDef.model_validate(definition)
     except ValidationError as exc:
         return None, f"definition shape invalid: {exc.errors()}"
-    if any(isinstance(step, ActionStepSpec) for step in defn.steps):
-        # Tool-using steps act on the user's accounts unattended. Their
-        # approval is the review card on the Jobs page — a chat confirmation
-        # (a token this model holds itself) is not a human seeing the tools.
-        base = get_settings().ui_base_url.rstrip("/")
-        return None, (
-            "workflows with action (tool-using) steps can't be created from "
-            "chat — the user has to review and approve the tools on the Jobs "
-            f"page. Tell them to describe it at {base}/jobs/new"
-        )
     errors = await validate_definition_and_tools(defn)
     if errors:
         return None, "validation failed: " + "; ".join(errors)
@@ -214,12 +222,20 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
         "Show this summary to the user. After they confirm, call "
         "save_workflow with the same definition and this confirm_token."
     )
+    if _needs_review(defn):
+        note += (
+            " It uses tools, so it will be saved switched OFF: tell the user "
+            "that after saving they review its tools and turn it on from the "
+            "link save_workflow returns."
+        )
     result: dict[str, Any] = {
         "status": "drafted",
         "confirm_token": token,
         "summary": _summarize(defn),
         "note": note,
     }
+    if _needs_review(defn):
+        result["requires_review"] = True
     # Surface an existing-name clash now (not only at save time) so the
     # Executive can warn the user before they approve a plan that would
     # otherwise need overwrite=true to save.
@@ -263,6 +279,13 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
             )
         })
 
+    # A tool-using workflow waits for a person to turn it on from its review
+    # card. Applied after the token check so the token still covers exactly
+    # what was drafted; an overwrite of an approved one switches it off too.
+    pending_review = _needs_review(defn)
+    if pending_review:
+        defn = defn.model_copy(update={"is_active": False})
+
     try:
         stored = upsert_definition(defn)
     except Exception as exc:
@@ -277,7 +300,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         )
 
         cancel_cadence_rows(stored.name)
-        if stored.cadence:
+        if stored.is_active and stored.cadence:
             schedule_dynamic_workflow_cadence(stored)
     except Exception:
         logger.exception("save_workflow: cadence scheduling failed (non-fatal)")
@@ -289,15 +312,28 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         f"Saved custom workflow {stored.name!r} ({len(stored.steps)} steps)",
         session_id=session_id,
         actor="executive",
-        details={"name": stored.name, "title": stored.title, "cadence": stored.cadence},
+        details={
+            "name": stored.name,
+            "title": stored.title,
+            "cadence": stored.cadence,
+            "pending_review": pending_review,
+        },
     )
 
     base = get_settings().ui_base_url.rstrip("/")
-    return json.dumps({
-        "status": "saved",
-        "name": stored.name,
-        "deep_link": f"{base}/jobs/{stored.name}",
-    })
+    deep_link = f"{base}/jobs/{stored.name}"
+    if pending_review:
+        return json.dumps({
+            "status": "saved_pending_review",
+            "name": stored.name,
+            "deep_link": deep_link,
+            "note": (
+                "Saved switched OFF. It won't run or follow its schedule until "
+                "the user reviews its tools and turns it on at deep_link — "
+                "give them the link."
+            ),
+        })
+    return json.dumps({"status": "saved", "name": stored.name, "deep_link": deep_link})
 
 
 WORKFLOW_AUTHORING_TOOLS: list[dict[str, Any]] = [

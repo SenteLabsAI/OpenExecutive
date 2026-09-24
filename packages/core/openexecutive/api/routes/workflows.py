@@ -198,7 +198,19 @@ async def activate_custom_workflow(name: str, request: Request) -> dict[str, Any
         body = await request.json()
     except json.JSONDecodeError:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
     is_active = bool(body.get("is_active", True))
+    current = get_definition(name)
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+    if is_active:
+        # Turning a workflow on is the approval point for one chat saved
+        # switched off, so its tools must still resolve — same check as
+        # create/update.
+        errors = await validate_definition_and_tools(current)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
     if not set_active(name, is_active):
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
     defn = get_definition(name)

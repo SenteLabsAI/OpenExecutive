@@ -143,11 +143,71 @@ def _action_definition() -> dict[str, Any]:
     return d
 
 
-def test_chat_cannot_create_tool_using_workflows() -> None:
-    """Chat 'confirmation' is a token the model holds itself; tool approval
-    has to happen on the Jobs page review card, so both tools refuse."""
-    drafted = _draft(_action_definition())
-    assert "error" in drafted and "/jobs/new" in drafted["error"]
-    saved = _save(_action_definition(), wat._canonical_token(_action_definition()))
-    assert "error" in saved and "Jobs page" in saved["error"]
-    assert dynamic_store.get_definition("weekly_watch") is None
+@pytest.fixture
+def scheduled(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record cadence scheduling instead of touching the scheduler DB."""
+    from openexecutive.workflows import dynamic_cadence, dynamic_models
+
+    calls: list[str] = []
+    monkeypatch.setattr(dynamic_models, "_person_exists", lambda _pid: True)
+    monkeypatch.setattr(dynamic_cadence, "cancel_cadence_rows", lambda _name: 0)
+    monkeypatch.setattr(
+        dynamic_cadence,
+        "schedule_dynamic_workflow_cadence",
+        lambda defn: calls.append(defn.name) or 1,
+    )
+    return calls
+
+
+def _with_cadence(d: dict[str, Any]) -> dict[str, Any]:
+    return {**d, "input_fields": [], "cadence": "daily@09:00", "cadence_person_id": 1,
+            "steps": [{**s, "goal": s["goal"].replace("{topic}", "the")} if "goal" in s else s
+                      for s in d["steps"]]}
+
+
+def test_tool_workflow_drafts_with_requires_review() -> None:
+    out = _draft(_action_definition())
+    assert out["status"] == "drafted"
+    assert out["requires_review"] is True
+    assert "switched OFF" in out["note"]
+    assert "action · tools: oe__read_file" in out["summary"]
+    # Analysis-only drafts carry no review flag.
+    assert "requires_review" not in _draft(_valid_definition())
+
+
+def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
+    """Chat 'confirmation' is a token the model holds itself, so a tool
+    workflow is saved inactive — a person turns it on from its review card."""
+    d = _with_cadence(_action_definition())
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved_pending_review"
+    assert out["deep_link"].endswith("/jobs/weekly_watch")
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is False
+    # Inactive, so its cadence is not scheduled.
+    assert scheduled == []
+
+
+def test_chat_overwrite_switches_approved_tool_workflow_off(scheduled: list[str]) -> None:
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    # An already-approved (active) tool workflow...
+    dynamic_store.upsert_definition(DynamicWorkflowDef.model_validate(_action_definition()))
+    assert dynamic_store.get_definition("weekly_watch").is_active is True  # type: ignore[union-attr]
+    # ...edited from chat needs approving again.
+    d = _action_definition()
+    d["title"] = "Weekly Watch v2"
+    out = _save(d, wat._canonical_token(d), overwrite=True)
+    assert out["status"] == "saved_pending_review"
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is False
+    assert stored.title == "Weekly Watch v2"
+
+
+def test_analysis_workflow_still_saves_active_and_schedules(scheduled: list[str]) -> None:
+    d = _with_cadence(_valid_definition())
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved"
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True
+    assert scheduled == ["weekly_watch"]

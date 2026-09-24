@@ -7,6 +7,7 @@ import {
   DynamicStep,
   Person,
   WorkflowDesignerDraft,
+  activateCustomWorkflow,
   createCustomWorkflow,
 } from "@/lib/api";
 import ToolChips, { mayWrite, toolLabel, useToolInfo } from "./ToolChips";
@@ -79,18 +80,26 @@ function stepLine(step: DynamicStep, people: Person[]): { who: string; what: str
   };
 }
 
+/**
+ * The human check on a workflow before it can act. Two modes:
+ * - wizard draft (sessionId + onRefine): "Create workflow" saves it;
+ * - `pending`: a workflow chat saved switched off — "Turn on workflow"
+ *   activates it, and that click is the approval of its tools.
+ */
 export default function WorkflowDraftReview({
   draft,
-  sessionId,
   people,
+  busy = false,
+  sessionId,
   onRefine,
-  busy,
+  pending,
 }: {
   draft: WorkflowDesignerDraft;
-  sessionId: string;
   people: Person[];
-  onRefine: () => void;
-  busy: boolean;
+  busy?: boolean;
+  sessionId?: string;
+  onRefine?: () => void;
+  pending?: { onActivated: () => void };
 }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -100,23 +109,34 @@ export default function WorkflowDraftReview({
   const toolInfo = useToolInfo(stepTools);
   const writeTools = Array.from(new Set(stepTools)).filter((t) => mayWrite(t, toolInfo));
 
-  async function create() {
+  async function confirm() {
     setError(null);
     setSaving(true);
     try {
-      const saved = await createCustomWorkflow(def);
-      router.push(`/jobs/${encodeURIComponent(saved.name)}`);
+      if (pending) {
+        await activateCustomWorkflow(def.name);
+        pending.onActivated();
+      } else {
+        const saved = await createCustomWorkflow(def);
+        router.push(`/jobs/${encodeURIComponent(saved.name)}`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setSaving(false);
     }
   }
 
+  const editHref = pending
+    ? `/jobs/new?edit=${encodeURIComponent(def.name)}`
+    : sessionId
+      ? `/jobs/new?designer=${encodeURIComponent(sessionId)}`
+      : null;
+
   return (
     <div className="rounded-xl border border-indigo-500/30 bg-surface-elevated/60 p-4 space-y-4">
       <div>
         <p className="text-[10px] uppercase tracking-wide text-indigo-300 mb-1">
-          Draft workflow
+          {pending ? "Waiting for your approval · off" : "Draft workflow"}
         </p>
         <h3 className="text-base font-semibold text-fg">{def.title}</h3>
         {def.description && (
@@ -198,8 +218,8 @@ export default function WorkflowDraftReview({
       {writeTools.length > 0 && (
         <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 text-xs">
           <p className="text-fg">
-            Creating this workflow lets it use these tools on every run without
-            asking again:
+            {pending ? "Turning this workflow on" : "Creating this workflow"} lets
+            it use these tools on every run without asking again:
           </p>
           <p className="mt-1 text-fg-muted">
             {writeTools.map((t) => toolLabel(t).label).join(" · ")}
@@ -209,37 +229,46 @@ export default function WorkflowDraftReview({
 
       {error && (
         <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          {error} — adjust it in the details editor, or tell me what to change.
+          {error} — adjust it in the details editor
+          {pending ? "." : ", or tell me what to change."}
         </p>
       )}
 
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={() => void create()}
+          onClick={() => void confirm()}
           disabled={saving || busy}
           className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition"
         >
-          {saving ? "Creating…" : "Create workflow"}
+          {pending
+            ? saving
+              ? "Turning on…"
+              : "Turn on workflow"
+            : saving
+              ? "Creating…"
+              : "Create workflow"}
         </button>
-        <button
-          type="button"
-          onClick={onRefine}
-          disabled={saving || busy}
-          className="text-sm text-fg-muted hover:text-fg disabled:opacity-50 transition"
-        >
-          Keep refining
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            router.push(`/jobs/new?designer=${encodeURIComponent(sessionId)}`)
-          }
-          disabled={saving || busy}
-          className="text-sm text-indigo-400 hover:text-indigo-300 disabled:opacity-50 transition"
-        >
-          Edit details
-        </button>
+        {onRefine && (
+          <button
+            type="button"
+            onClick={onRefine}
+            disabled={saving || busy}
+            className="text-sm text-fg-muted hover:text-fg disabled:opacity-50 transition"
+          >
+            Keep refining
+          </button>
+        )}
+        {editHref && (
+          <button
+            type="button"
+            onClick={() => router.push(editHref)}
+            disabled={saving || busy}
+            className="text-sm text-indigo-400 hover:text-indigo-300 disabled:opacity-50 transition"
+          >
+            Edit details
+          </button>
+        )}
       </div>
     </div>
   );

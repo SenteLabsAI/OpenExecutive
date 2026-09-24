@@ -1141,7 +1141,7 @@ export type DynamicStep =
     }
   | {
       // Gets something done with tools. `tools` is the exact allowlist the
-      // user approves when they create the workflow.
+      // user approves when they create the workflow (or turn it on).
       kind: "action";
       id: string;
       title: string;
@@ -1192,6 +1192,17 @@ export async function getCustomWorkflow(name: string): Promise<DynamicWorkflowDe
   return res.json();
 }
 
+/** The server's error detail; a 422's validation-error array is joined. */
+async function _customError(res: Response): Promise<string> {
+  let detail: unknown = res.statusText;
+  try {
+    detail = (await res.json()).detail;
+  } catch {
+    /* keep statusText */
+  }
+  return Array.isArray(detail) ? detail.join("; ") : String(detail);
+}
+
 /** Returns the server's validation errors (array) when the response is 422. */
 async function _writeCustom(
   url: string,
@@ -1203,16 +1214,7 @@ async function _writeCustom(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(def),
   });
-  if (!res.ok) {
-    let detail: unknown = res.statusText;
-    try {
-      detail = (await res.json()).detail;
-    } catch {
-      /* keep statusText */
-    }
-    const msg = Array.isArray(detail) ? detail.join("; ") : String(detail);
-    throw new Error(msg);
-  }
+  if (!res.ok) throw new Error(await _customError(res));
   return res.json();
 }
 
@@ -1225,6 +1227,23 @@ export function updateCustomWorkflow(
   def: DynamicWorkflowDef
 ): Promise<DynamicWorkflowDef> {
   return _writeCustom(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}`, "PUT", def);
+}
+
+/** Turn a custom workflow on (the approval for one chat saved switched off) or off. */
+export async function activateCustomWorkflow(
+  name: string,
+  isActive = true
+): Promise<DynamicWorkflowDef> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/activate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: isActive }),
+    }
+  );
+  if (!res.ok) throw new Error(await _customError(res));
+  return res.json();
 }
 
 export async function deleteCustomWorkflow(name: string): Promise<void> {

@@ -162,6 +162,9 @@ function BuilderInner() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!editName || !!designerId);
+  // Saving edits keeps a switched-off workflow off: turning it on from its
+  // review card is the approval step, not "Save changes".
+  const [isActive, setIsActive] = useState(true);
 
   useEffect(() => {
     listPeople()
@@ -188,6 +191,7 @@ function BuilderInner() {
         setEstimatedMinutes(d.estimated_minutes);
         setFields(d.input_fields);
         setSteps(d.steps);
+        if (editName) setIsActive(d.is_active !== false);
         if (d.cadence) {
           setCadenceEnabled(true);
           setCadence(d.cadence);
@@ -394,6 +398,7 @@ function BuilderInner() {
       steps,
       cadence: cadenceEnabled ? cadence.trim() : null,
       cadence_person_id: cadenceEnabled ? cadencePersonId : null,
+      is_active: isActive,
     };
     try {
       if (editName) await updateCustomWorkflow(editName, def);

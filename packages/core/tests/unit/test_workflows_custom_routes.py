@@ -155,6 +155,39 @@ def test_update_rejects_unknown_tools(client: TestClient, monkeypatch: pytest.Mo
     assert r.status_code == 422
 
 
+def test_activate_revalidates_tools(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turning a workflow on is the approval point for one chat saved off, so
+    a tool that has gone away blocks activation; turning off never does."""
+    from openexecutive.api.routes import workflows as routes
+
+    real = routes.validate_definition_and_tools
+    assert client.post("/workflows/custom", json=_action_definition(["oe__read_file"])).status_code == 201
+    assert client.post("/workflows/custom/file_bills/activate", json={"is_active": False}).status_code == 200
+
+    async def _missing(_defn: Any) -> list[str]:
+        return ["step 'file': tool 'oe__read_file' is not available"]
+
+    monkeypatch.setattr(routes, "validate_definition_and_tools", _missing)
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True})
+    assert r.status_code == 422
+    assert "not available" in " ".join(r.json()["detail"])
+    assert dynamic_store.get_definition("file_bills").is_active is False  # type: ignore[union-attr]
+    # Turning off skips the check.
+    assert client.post("/workflows/custom/file_bills/activate", json={"is_active": False}).status_code == 200
+
+    monkeypatch.setattr(routes, "validate_definition_and_tools", real)
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["is_active"] is True
+
+
+def test_activate_ignores_non_object_body(client: TestClient) -> None:
+    client.post("/workflows/custom", json=_definition())
+    r = client.post("/workflows/custom/weekly_watch/activate", json=[1, 2])
+    assert r.status_code == 200
+    assert r.json()["is_active"] is True
+
+
 def test_tool_search_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "openexecutive.orchestrator.mcp_gateway.get_active_gateway", lambda: None
