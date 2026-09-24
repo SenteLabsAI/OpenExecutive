@@ -256,3 +256,111 @@ def test_gmail_without_artifact_attachments_is_untouched() -> None:
             "attachments": [{"path": "/tmp/x.pdf"}]}
     _, session_call = _send(dict(args))
     assert session_call.await_args.args[1]["arguments"] == args
+
+
+# --------------------------------------------------------------------------- #
+# Review follow-ups: shapes, caps, dedupe, audit, fallback
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def audit(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event, summary, **kw: events.append((event, kw.get("details", {}))),
+    )
+    return events
+
+
+@pytest.mark.parametrize("shape", ["json-string", "single-object"])
+def test_gmail_expands_stringified_or_single_attachment(shape: str) -> None:
+    cid = _artifact()
+    entry = {"artifact_id": cid}
+    attachments: Any = json.dumps([entry]) if shape == "json-string" else entry
+    _, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
+                             "attachments": attachments})
+    (att,) = _forwarded_attachments(session_call)
+    assert att["filename"] == "q3-plan.md" and "artifact_id" not in att
+
+
+def test_gmail_refuses_unparseable_artifact_attachment_string() -> None:
+    result, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
+                                  "attachments": '[{"artifact_id": "alert:1"'})
+    assert "not valid JSON" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_gmail_normalises_as_and_dedupes_repeats() -> None:
+    cid = _artifact()
+    _, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
+                             "attachments": [{"artifact_id": cid, "as": " DOCX "},
+                                             {"artifact_id": cid, "as": "docx"}]})
+    (att,) = _forwarded_attachments(session_call)
+    assert att["filename"] == "q3-plan.docx"
+
+
+def test_gmail_caps_distinct_artifact_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gw_module, "_MAX_ARTIFACT_ATTACHMENTS", 2)
+    ids = [_artifact(title=f"Doc {i}") for i in range(3)]
+    result, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
+                                  "attachments": [{"artifact_id": i} for i in ids]})
+    assert "at most 2 artifacts" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_gmail_total_size_cap_spans_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    one = len(b"# Q3 plan\n\nHire two engineers.")
+    monkeypatch.setattr(gw_module, "_MAX_ARTIFACT_ATTACHMENT_BYTES", one + 5)
+    a, b = _artifact(title="A"), _artifact(title="B")
+    result, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
+                                  "attachments": [{"artifact_id": a}, {"artifact_id": b}]})
+    assert "email limit" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_gmail_audits_attachment_after_successful_send(audit: list) -> None:
+    cid = _artifact()
+    _send({"to": "Alice <alice@example.com>", "subject": "s", "body": "b",
+           "attachments": [{"artifact_id": cid}]})
+    attached = [d for e, d in audit if e == "artifact_attached"]
+    assert attached == [{"tool": "google_workspace__send_gmail_message",
+                         "artifact_ids": [cid], "recipients": ["alice@example.com"]}]
+
+
+def test_gmail_does_not_audit_attachment_when_send_fails(audit: list) -> None:
+    people_store.upsert_person(full_name="Alice", email="alice@example.com")
+    gateway, session_call = _gateway()
+    session_call.return_value.content = [MagicMock(text='{"error": "quota"}')]
+    settings = SimpleNamespace(exec_email_address=EXEC_ADDR, email_poll_interval_seconds=60)
+    with patch.object(gw_module, "get_settings", return_value=settings):
+        asyncio.run(gateway.call_tool({"name": "google_workspace__send_gmail_message",
+                                       "arguments": {"to": "alice@example.com", "subject": "s",
+                                                     "body": "b", "attachments": [
+                                                         {"artifact_id": _artifact()}]}}))
+    assert not [e for e, _ in audit if e == "artifact_attached"]
+
+
+def test_gmail_refusal_is_audited_with_recipients(audit: list) -> None:
+    _send({"to": "alice@example.com", "subject": "s", "body": "b",
+           "attachments": [{"artifact_id": "alert:4242"}]})
+    refused = [d for e, d in audit if e == "artifact_attachment_refused"]
+    assert len(refused) == 1 and refused[0]["recipients"] == ["alice@example.com"]
+
+
+def test_undeliverable_person_alert_carries_the_link() -> None:
+    cid = _artifact()
+    pid = people_store.upsert_person(full_name="No Channel")  # no DM ids at all
+    created: list[dict] = []
+
+    async def _fake_alert(payload: dict) -> str:
+        created.append(payload)
+        return json.dumps({"ok": True})
+
+    with (
+        patch("openexecutive.config.get_settings", return_value=_dm_settings()),
+        patch("openexecutive.orchestrator.alert_tools.handle_create_alert", _fake_alert),
+    ):
+        asyncio.run(handle_message_person({"person_id": pid, "text": "FYI",
+                                           "artifact_id": cid}))
+    assert created and f"https://oe.example.com/artifacts/{cid}" in created[0]["body"]

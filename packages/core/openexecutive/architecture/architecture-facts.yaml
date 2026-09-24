@@ -595,9 +595,14 @@ routing:
       `{"artifact_id", "as"?}`; `mcp_gateway._expand_artifact_attachments`
       renders it with `artifact_records.render_artifact_file` (shared with
       `/download`) into workspace-mcp's `{content, filename, mime_type}`
-      shape, AFTER the recipient gate passes. Refuses unknown / non-artifact
-      ids, links, extra keys, and files over 15 MB; audits
-      `artifact_attached`. Other attachment entries are untouched.
+      shape, AFTER the recipient gate passes. Normalises a stringified or
+      single-object `attachments` first (an unexpanded artifact entry would be
+      silently skipped by workspace-mcp). Refuses unknown / non-artifact ids,
+      links, extra keys, more than 5 distinct artifacts (repeats dropped) and
+      over 15 MB rendered in total; renders via `asyncio.to_thread`. Audits
+      `artifact_attachment_refused` on refusal and `artifact_attached` only
+      after a non-error send, both with recipients. Other attachment entries
+      are untouched.
     Side-effecting (`draft_artifact` only): a `tool_invocation` audit row
     (actor="executive", details carry `format`, `supersedes`) and an
     `action_taken` chip ("Drafted artifact for review: {title}") linking to

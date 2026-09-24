@@ -132,7 +132,9 @@ async def download_artifact(
     except ArtifactNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("artifact download render failed for %s as %s", composite_id, as_)
+        logger.exception(
+            "artifact download render failed for %s as %s", composite_id, as_ or rec.format
+        )
         raise HTTPException(status_code=500, detail="Could not render the file") from exc
     return Response(
         content=file.content,

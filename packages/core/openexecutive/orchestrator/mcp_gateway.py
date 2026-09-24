@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -261,15 +262,41 @@ def _roster_allow_set() -> set[str]:
     return allow
 
 
-# Largest rendered artifact attached to an email. Gmail caps a message at
-# 25 MB and base64 inflates the payload by a third, so stay well under.
+# Artifact attachments on one email. Gmail caps a message at 25 MB and base64
+# inflates the payload by a third, so the rendered artifacts together stay
+# well under it; the count cap bounds how much one tool call can make the
+# server render (each entry is a full docx / xlsx build).
+_MAX_ARTIFACT_ATTACHMENTS = 5
 _MAX_ARTIFACT_ATTACHMENT_BYTES = 15 * 1024 * 1024
 _ARTIFACT_ATTACHMENT_KEYS = frozenset({"artifact_id", "as"})
 
 
-def _expand_artifact_attachments(
+def _recipients(arguments: dict[str, Any]) -> list[str]:
+    """Every to/cc/bcc address on a Gmail call, for audit rows."""
+    raw = [arguments.get(f) for f in _GMAIL_RECIPIENT_FIELDS]
+    values = [
+        str(v) for item in raw
+        for v in (item if isinstance(item, list) else [item]) if v
+    ]
+    return [addr for _, addr in getaddresses(values) if addr]
+
+
+def _refuse_attachment(tool: str, arguments: dict[str, Any], reason: str) -> str:
+    from openexecutive.audit import log_event as audit_log
+
+    logger.warning("refused artifact attachment on %s: %s", tool, reason)
+    audit_log(
+        "artifact_attachment_refused",
+        f"Refused an artifact attachment on {tool}: {reason[:160]}",
+        actor="mcp_gateway",
+        details={"tool": tool, "reason": reason, "recipients": _recipients(arguments)},
+    )
+    return json.dumps({"error": f"attachment: {reason}"})
+
+
+async def _expand_artifact_attachments(
     tool: str, arguments: dict[str, Any]
-) -> dict[str, Any] | str:
+) -> tuple[dict[str, Any], list[str]] | str:
     """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` attachment entries
     with the rendered file (`content` base64 + `filename` + `mime_type`, the
     shape workspace-mcp's Gmail tools accept).
@@ -277,17 +304,28 @@ def _expand_artifact_attachments(
     Lets the Executive email one of its artifacts without ever holding the
     bytes: the file is rendered server-side exactly as `/artifacts/{id}/
     download` serves it, and only artifact rows can resolve (see
-    `artifact_records`). Returns the (copied) arguments, or a JSON error
-    string when an entry is malformed, unknown, has no file, or is too big.
-    Other attachment entries pass through untouched.
+    `artifact_records`). At most `_MAX_ARTIFACT_ATTACHMENTS` distinct entries
+    (repeats are dropped) and `_MAX_ARTIFACT_ATTACHMENT_BYTES` in total;
+    rendering runs off the event loop. Returns the (copied) arguments plus
+    the attached artifact ids, or an audited JSON error string. Other
+    attachment entries pass through untouched.
     """
     attachments = arguments.get("attachments")
+    # Models sometimes stringify nested arguments, or send one object instead
+    # of a list. Normalise both, so an artifact entry can never reach the MCP
+    # unexpanded (workspace-mcp would skip it and send the mail without it).
+    if isinstance(attachments, str) and "artifact_id" in attachments:
+        try:
+            attachments = json.loads(attachments)
+        except json.JSONDecodeError:
+            return _refuse_attachment(tool, arguments, "attachments is not valid JSON")
+    if isinstance(attachments, dict):
+        attachments = [attachments]
     if not isinstance(attachments, list) or not any(
         isinstance(a, dict) and "artifact_id" in a for a in attachments
     ):
-        return arguments
+        return arguments, []
 
-    from openexecutive.audit import log_event as audit_log
     from openexecutive.orchestrator.artifact_records import (
         ArtifactNotFound,
         MalformedArtifactId,
@@ -295,48 +333,65 @@ def _expand_artifact_attachments(
         render_artifact_file,
     )
 
-    expanded: list[Any] = []
+    wanted: list[tuple[str, str | None]] = []
+    for entry in attachments:
+        if not (isinstance(entry, dict) and "artifact_id" in entry):
+            continue
+        extra = set(entry) - _ARTIFACT_ATTACHMENT_KEYS
+        if extra:
+            return _refuse_attachment(tool, arguments, (
+                "an artifact attachment takes only 'artifact_id' and an "
+                f"optional 'as' format; got {sorted(extra)}"
+            ))
+        as_raw = entry.get("as")
+        key = (str(entry.get("artifact_id") or "").strip(),
+               str(as_raw).strip().lower() if as_raw else None)
+        if key not in wanted:
+            wanted.append(key)
+    if len(wanted) > _MAX_ARTIFACT_ATTACHMENTS:
+        return _refuse_attachment(tool, arguments, (
+            f"at most {_MAX_ARTIFACT_ATTACHMENTS} artifacts per email; got {len(wanted)}"
+        ))
+
+    rendered: dict[tuple[str, str | None], dict[str, str]] = {}
     attached: list[str] = []
+    total = 0
+    for artifact_id, as_ in wanted:
+        try:
+            rec = await asyncio.to_thread(load_artifact, artifact_id)
+            file = await asyncio.to_thread(render_artifact_file, rec, as_)
+        except (MalformedArtifactId, ArtifactNotFound) as exc:
+            return _refuse_attachment(tool, arguments, str(exc))
+        except Exception:
+            logger.exception("artifact attachment render failed: %s", artifact_id)
+            return _refuse_attachment(tool, arguments, f"could not render {artifact_id!r}")
+        total += len(file.content)
+        if total > _MAX_ARTIFACT_ATTACHMENT_BYTES:
+            return _refuse_attachment(tool, arguments, (
+                f"artifacts total {total} bytes, over the "
+                f"{_MAX_ARTIFACT_ATTACHMENT_BYTES}-byte email limit — send "
+                "a link instead"
+            ))
+        rendered[(artifact_id, as_)] = {
+            "content": base64.b64encode(file.content).decode("ascii"),
+            "filename": file.filename,
+            "mime_type": file.mime,
+        }
+        attached.append(rec.id)
+
+    expanded: list[Any] = []
+    emitted: set[tuple[str, str | None]] = set()
     for entry in attachments:
         if not (isinstance(entry, dict) and "artifact_id" in entry):
             expanded.append(entry)
             continue
-        extra = set(entry) - _ARTIFACT_ATTACHMENT_KEYS
-        if extra:
-            return json.dumps({"error": (
-                "an artifact attachment takes only 'artifact_id' and an "
-                f"optional 'as' format; got {sorted(extra)}"
-            )})
-        artifact_id = str(entry.get("artifact_id") or "")
         as_raw = entry.get("as")
-        try:
-            rec = load_artifact(artifact_id)
-            file = render_artifact_file(rec, str(as_raw) if as_raw else None)
-        except (MalformedArtifactId, ArtifactNotFound) as exc:
-            return json.dumps({"error": f"attachment: {exc}"})
-        except Exception:
-            logger.exception("artifact attachment render failed: %s", artifact_id)
-            return json.dumps({"error": f"attachment: could not render {artifact_id!r}"})
-        if len(file.content) > _MAX_ARTIFACT_ATTACHMENT_BYTES:
-            return json.dumps({"error": (
-                f"attachment: {rec.id!r} is {len(file.content)} bytes, over the "
-                f"{_MAX_ARTIFACT_ATTACHMENT_BYTES}-byte email limit — send its "
-                "link instead"
-            )})
-        expanded.append({
-            "content": base64.b64encode(file.content).decode("ascii"),
-            "filename": file.filename,
-            "mime_type": file.mime,
-        })
-        attached.append(rec.id)
-
-    audit_log(
-        "artifact_attached",
-        f"Attached {', '.join(attached)} to {tool}",
-        actor="mcp_gateway",
-        details={"tool": tool, "artifact_ids": attached},
-    )
-    return {**arguments, "attachments": expanded}
+        key = (str(entry.get("artifact_id") or "").strip(),
+               str(as_raw).strip().lower() if as_raw else None)
+        if key not in emitted:
+            emitted.add(key)
+            expanded.append(rendered[key])
+    return {**arguments, "attachments": expanded}, attached
 
 
 def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -829,16 +884,17 @@ class MCPGateway:
                 logger.warning("call_tool: arguments was a string but not valid JSON — using empty dict")
                 arguments = {}
         tool_name = tool_input.get("name", "")
+        attached_artifacts: list[str] = []
         if tool_name in _GATED_GMAIL_TOOLS:
             blocked = _check_gmail_recipients(tool_name, arguments)
             if blocked is not None:
                 return blocked
             # Only after the recipients pass: render any artifact the model
             # asked to attach, so a blocked send never renders anything.
-            expanded = _expand_artifact_attachments(tool_name, arguments)
+            expanded = await _expand_artifact_attachments(tool_name, arguments)
             if isinstance(expanded, str):
                 return expanded
-            arguments = expanded
+            arguments, attached_artifacts = expanded
         if tool_name in _GATED_CALENDAR_TOOLS:
             blocked = _check_calendar_attendees(tool_name, arguments)
             if blocked is not None:
@@ -858,6 +914,19 @@ class MCPGateway:
         # phantom linkage that would hydrate a reply that can never come.
         if tool_name == "google_workspace__send_gmail_message" and not _is_error_payload(result_text):
             _record_email_outbound_context(arguments)
+        if attached_artifacts and not _is_error_payload(result_text):
+            from openexecutive.audit import log_event as audit_log
+
+            audit_log(
+                "artifact_attached",
+                f"Attached {', '.join(attached_artifacts)} via {tool_name}",
+                actor="mcp_gateway",
+                details={
+                    "tool": tool_name,
+                    "artifact_ids": attached_artifacts,
+                    "recipients": _recipients(arguments),
+                },
+            )
         return result_text
 
     async def load_mcp_server(self, tool_input: dict[str, Any]) -> str:
