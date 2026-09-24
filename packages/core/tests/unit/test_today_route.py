@@ -312,6 +312,40 @@ def test_artifact_alert_surfaces_as_action_proposal(
     assert artifact["category"] == "action"
     assert artifact["body"] == "## Summary\n\nFull document body."
     assert artifact["routed_to_person_id"] == 7
+    assert artifact["artifact_format"] == "markdown"
+
+
+def test_non_markdown_artifact_body_is_rendered_for_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An HTML / spreadsheet / link artifact stores format-specific text; the
+    /today card and chat handoff get a Markdown rendering, plus the format."""
+    import json as _json
+
+    db = tmp_path / "artifact_fmt.db"
+    _setup_isolated_db(db, monkeypatch)
+    for ext_id, fmt, body, url in (
+        ("h", "html", "<h1>Pricing</h1><p>Three tiers.</p>", None),
+        ("x", "xlsx", _json.dumps({"summary": "Model", "sheets": [
+            {"name": "S", "columns": ["tier"], "rows": [["pro"]]}]}), None),
+        ("l", "link", "Board deck draft", "https://slides.example/d/1"),
+    ):
+        alert_store.insert_alert(
+            source="artifact", external_id=ext_id, severity="medium",
+            headline=f"{fmt} doc", body=body, topic_tags=["artifact"],
+            artifact_format=fmt, artifact_url=url, db_path=db,
+        )
+
+    by_headline = {
+        p["headline"]: p for p in _make_client().get("/today").json()["proposals"]
+    }
+    html = by_headline["html doc"]
+    assert html["artifact_format"] == "html"
+    assert "<" not in html["body"] and "Three tiers." in html["body"]
+    assert "| tier |" in by_headline["xlsx doc"]["body"]
+    link = by_headline["link doc"]
+    assert link["artifact_url"] == "https://slides.example/d/1"
+    assert link["body"] == "Board deck draft"
 
 
 def test_proposals_include_unrouted_alerts_for_principal_inbox(

@@ -86,3 +86,18 @@ def install_source_feed(monkeypatch: pytest.MonkeyPatch):
         return captured
 
     return _install
+
+
+@pytest.fixture(autouse=True)
+def _no_artifact_indexing(monkeypatch: pytest.MonkeyPatch):
+    """Keep draft_artifact from indexing into a real ChromaDB store.
+
+    `draft_artifact` (and the alert review's draft move, which calls it)
+    indexes every artifact into the knowledge store. Left live, any test
+    that drafts one would create ./chroma_db and load an embedding model.
+    Tests that exercise indexing patch `_knowledge_store` to a fake.
+    """
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.artifact_tools._knowledge_store", lambda: None
+    )
+    yield

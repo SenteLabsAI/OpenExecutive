@@ -133,6 +133,13 @@ class Alert(BaseModel):
     snoozed_until: str | None = None
     # Registry workflow the review suggested as the next step ('' = none).
     suggested_workflow: str = ""
+    # Artifact format + link metadata (source='artifact' rows only; see
+    # orchestrator/artifact_formats.py). Legacy rows read back as Markdown.
+    artifact_format: str = "markdown"
+    artifact_url: str | None = None
+    artifact_link_label: str | None = None
+    # Composite id ('alert:<n>' / 'run:<hex>') of the version this revised.
+    supersedes_id: str | None = None
 
 
 class UserPreferences(BaseModel):

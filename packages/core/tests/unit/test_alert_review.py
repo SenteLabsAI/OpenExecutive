@@ -417,7 +417,7 @@ def test_draft_calls_draft_artifact_and_marks_source(db: Path, audit_events, mon
 
     async def fake_draft(tool_input: dict) -> str:
         drafted.append(tool_input)
-        return '{"status": "drafted"}'
+        return '{"ok": true, "artifact_id": "alert:999"}'
 
     import openexecutive.orchestrator.artifact_tools as artifact_tools
 
@@ -434,6 +434,22 @@ def test_draft_calls_draft_artifact_and_marks_source(db: Path, audit_events, mon
     assert row is not None and row.review_verdict == "drafted" and row.status == "unread"
     assert summary.drafted == 1 and summary.moves_used == 1
     assert any(e[0] == review.EVENT_DRAFTED for e in audit_events)
+
+
+def test_rejected_draft_is_not_labelled_drafted(db: Path, audit_events, monkeypatch) -> None:
+    async def fake_draft(tool_input: dict) -> str:
+        return '{"error": "document is 60001 chars; the limit is 60000"}'
+
+    import openexecutive.orchestrator.artifact_tools as artifact_tools
+
+    monkeypatch.setattr(artifact_tools, "handle_draft_artifact", fake_draft)
+    aid = _insert(db, "Write the Q3 pricing memo")
+    summary = review.ReviewSummary()
+    label = _apply(db, aid, _verdict(aid, recommended_move="draft", draft_title="Memo",
+                                     draft_document="x"), summary=summary)
+    assert label != "drafted"
+    assert summary.drafted == 0
+    assert not any(e[0] == review.EVENT_DRAFTED for e in audit_events)
 
 
 def test_suggest_workflow_only_from_offered_list_and_never_runs(db: Path, audit_events) -> None:
@@ -827,7 +843,7 @@ def test_draft_is_idempotent_across_passes(db: Path, monkeypatch) -> None:
 
     async def fake_draft(tool_input: dict) -> str:
         drafted.append(tool_input)
-        return '{"status": "drafted"}'
+        return '{"ok": true, "artifact_id": "alert:999"}'
 
     import openexecutive.orchestrator.artifact_tools as artifact_tools
 

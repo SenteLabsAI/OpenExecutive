@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from openexecutive.clients.cockpit import ClientCockpitCard, format_practice_for_today
 
 if TYPE_CHECKING:
+    from openexecutive.alerts.models import Alert
     from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,24 @@ class ProposalItem(BaseModel):
     superseded_count: int = 0
     # Registry workflow the review suggested as the next step ('' = none).
     suggested_workflow: str = ""
+    # Drafted artifacts only (source='artifact'): the format, so the card can
+    # badge it and link to /artifacts, and the link target for 'link' ones.
+    # `body` already carries a Markdown rendering for every format.
+    artifact_format: str | None = None
+    artifact_url: str | None = None
+
+
+def _proposal_body(alert: Alert) -> str:
+    """Markdown the card and the chat handoff can show, for any alert.
+
+    Artifact bodies are stored per format (HTML, sheet JSON…); everything
+    else is already the text to show.
+    """
+    if alert.source != "artifact":
+        return alert.body or alert.headline
+    from openexecutive.orchestrator.artifact_formats import get_format
+
+    return get_format(alert.artifact_format).display(alert.body or "") or alert.headline
 
 
 def _as_int(raw: Any) -> int | None:
@@ -712,7 +731,7 @@ def _build_today(
         proposal_items.append(ProposalItem(
             alert_id=alert.id or 0,
             headline=alert.headline,
-            body=alert.body or alert.headline,
+            body=_proposal_body(alert),
             routed_to_person_id=alert.routed_to_person_id,
             suggested_action=alert.suggested_action,
             created_at=alert.created_at,
@@ -731,6 +750,8 @@ def _build_today(
             due_at=alert.due_at,
             superseded_count=superseded_counts.get(alert.id or -1, 0),
             suggested_workflow=alert.suggested_workflow,
+            artifact_format=alert.artifact_format if alert.source == "artifact" else None,
+            artifact_url=alert.artifact_url if alert.source == "artifact" else None,
         ))
 
     # Action items first (sharpest by score), monitoring noise after; ties

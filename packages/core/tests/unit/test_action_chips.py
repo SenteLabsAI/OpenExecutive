@@ -293,6 +293,9 @@ _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "ask_about_person",
     # open_loop_tools
     "list_open_loops",
+    # artifact_tools
+    "list_artifacts",
+    "get_artifact",
     # department_tools
     "list_department_goals",
     # skills_tools

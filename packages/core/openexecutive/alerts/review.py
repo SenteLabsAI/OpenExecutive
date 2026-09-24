@@ -24,6 +24,7 @@ Heartbeat plumbing (``alert_review_scan`` rows) mirrors ``scheduler/nudge_engine
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -825,14 +826,20 @@ async def _apply_draft(ctx: _MoveContext) -> None:
     try:
         from openexecutive.orchestrator.artifact_tools import handle_draft_artifact
 
-        await handle_draft_artifact({
+        result = json.loads(await handle_draft_artifact({
             "title": v.draft_title,
             "document": v.draft_document,
             "why_interesting": (ctx.note or f"Drafted from alert: {alert.headline[:100]}")[:300],
             "severity": alert.severity,
-        })
+        }))
     except Exception:
         logger.exception("alert_review: draft failed for alert %d", ctx.alert_id)
+        return
+    if not result.get("ok"):
+        # A rejected draft (e.g. over the document cap) must not be labelled
+        # "drafted", or the review would never try again.
+        logger.warning("alert_review: draft rejected for alert %d: %s",
+                       ctx.alert_id, result.get("error"))
         return
     ctx.summary.moves_used += 1
     ctx.summary.drafted += 1
