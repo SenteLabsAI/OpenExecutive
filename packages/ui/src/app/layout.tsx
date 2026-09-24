@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import AuthProvider from "@/components/AuthProvider";
+import { ExecutiveStatusProvider } from "@/components/executive/ExecutiveStatusContext";
 import { SessionsProvider } from "@/components/sessions/SessionsContext";
 import AppShell from "@/components/shell/AppShell";
 import "./globals.css";
@@ -19,7 +20,9 @@ export default function RootLayout({
       <body className="h-full antialiased bg-surface text-fg">
         <AuthProvider>
           <SessionsProvider>
-            <AppShell>{children}</AppShell>
+            <ExecutiveStatusProvider>
+              <AppShell>{children}</AppShell>
+            </ExecutiveStatusProvider>
           </SessionsProvider>
         </AuthProvider>
       </body>

@@ -9,6 +9,7 @@ import Icon from "@/components/Icon";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import { MobileBottomNav } from "@/components/shell/AppShell";
 import AppSidebar from "@/components/shell/AppSidebar";
+import PausedBanner from "@/components/executive/PausedBanner";
 import { ChatMessage, DebugEvent, getSessionMessages } from "@/lib/api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -263,6 +264,8 @@ export default function HomePage() {
             </button>
           </div>
         </div>
+
+        <PausedBanner />
 
         {!isOnboarded && health && (
           <div className="border-b border-line bg-indigo-500/5 px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">

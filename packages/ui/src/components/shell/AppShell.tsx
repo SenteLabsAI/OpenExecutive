@@ -7,6 +7,7 @@ import { useState } from "react";
 import { AskOEProvider, useAskOE } from "@/components/askoe/AskOEContext";
 import AskOEPanel from "@/components/askoe/AskOEPanel";
 import Icon from "@/components/Icon";
+import PausedBanner from "@/components/executive/PausedBanner";
 import AppSidebar from "@/components/shell/AppSidebar";
 import { isNavActive, MOBILE_PRIMARY } from "@/components/shell/navConfig";
 
@@ -93,6 +94,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             segments={segments}
             onOpenDrawer={() => setDrawerOpen(true)}
           />
+          <PausedBanner />
           {/* The shell slot has overflow-y-auto as a safety net for pages
               that don't manage their own scroll. Pages that DO own a
               scroll region (h-full + inner overflow-y-auto on <main>)

@@ -75,6 +75,7 @@ system:
     - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only.
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
+    - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it.
     - Each specialist gets its own RAG fetch filtered by its declared domain alias.
     - System-prompt blocks marked with cache_control must remain byte-identical across turns — any dynamic content in them breaks Anthropic prompt caching and roughly 10× the cost.
     - Total cache_control blocks must stay ≤ 4 (the Anthropic API hard limit). The current layout uses 2 of those slots for the system prompt (see `caching.block_order`), leaving headroom for the rolling-history ephemeral marker on the penultimate assistant turn.
@@ -2018,6 +2019,35 @@ scheduler:
     client is restored, then chains the next nightly occurrence via
     seed_client_rotation (idempotent).
   module: openexecutive.scheduler
+  pause: |
+    Operator pause switch — openexecutive.scheduler.pause. One row
+    (id=1) in `executive_control` (episodic_memory.db): paused,
+    paused_at, paused_by, reason, updated_at. Set from the UI (sidebar
+    switch, paused banner, Settings card) or POST /executive/pause |
+    /executive/resume (api/routes/executive.py; shared-secret only, not
+    SCHEDULED_ADMIN_TOKEN, so the UI proxy can call it; paused_by from
+    x-caller-email, else "api"; audit executive_paused /
+    executive_resumed). Pause is open to any signed-in caller (it only
+    holds work); resume is principal-only via
+    people.store.is_principal_or_self (403 otherwise; open while no
+    principal is rostered so a pause can always be lifted; status
+    carries can_resume for the viewer). `is_paused()` is the FIRST check of each
+    run_scheduler tick — before the alert/watchlist sweep and the
+    company-profile / rotation gates — so a paused tick does nothing;
+    due rows stay pending and fire on the first tick after resume.
+    Already-claimed actions finish. The same check gates
+    integrations.email_poller (skips the poll; mail stays unread) and
+    workflows.resumer (no startup sweep, timeouts or resumes;
+    apply_resolution records the reply but skips _kick_resume).
+    is_paused() is read-only (never creates the DB file or table). A
+    missing file/table reads as running; a read ERROR reads as paused
+    (fails closed — a brake must not silently release while the UI
+    shows paused; the UI shows "status unknown" on a failed read). Pause re-apply is idempotent
+    (keeps the original paused_at/by/reason). Persists across restarts
+    (boot logs a WARNING) and across client-slot switches (listed in
+    clients.slots._GLOBAL_TABLES; _ensure_schemas creates the table
+    before the restore). GET /executive/status adds `held_actions` —
+    due pending rows that fire on resume.
   runner: openexecutive.scheduler.runner — asyncio task started in the FastAPI lifespan. Polls every 30s; `claim_due_actions` uses an UPDATE…RETURNING claim so a row is fired at most once per process. Single-worker assumption (do not run two scheduler processes against the same DB). Each poll is gated on an active company profile via `_company_profile_active()` (true when `load_or_create_profile().is_empty()` is false) — when no profile is configured the poll loop claims and dispatches no scheduled actions, so every due row (including the recurring principal-brief rows seeded once in the startup prologue) stays `pending` and fires only once a company profile is saved (the Executive has no company context to act on before then). The hold is logged once per gap and once on resume, not every poll.
   table: |
     scheduled_actions (in episodic_memory.db). Schema (see
@@ -2397,6 +2427,7 @@ audit:
     - watchlist_suggestion_approved / watchlist_suggestion_declined / watchlist_suggestion_expired — the principal's verdict on a research suggestion (`POST /watchlist/{slug}/approve|decline`, reason on decline) or the sweep removing one unreviewed after WATCHLIST_PROPOSAL_TTL_DAYS. Each also writes a `watchlist_policy_outcomes` row so the policy calibrates.
     - watchlist_auto_disabled — the sweep disabled a research-origin watch (`reason`: dismissed N of M alerts with low trust; no signals in 30 days; 3 consecutive poll failures). Renders in the HANDLED block as `stopped_watching`; re-enable from /watchlist.
     - auth_login / auth_logout — admin auth events
+    - executive_paused / executive_resumed — the operator pause switch flipped (scheduler.pause). actor is the caller's email (else "api"); details carry the reason on pause, and paused_at / paused_by / held_actions on resume. Re-pausing or re-resuming writes nothing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
@@ -3938,7 +3969,9 @@ integrations:
     Gmail poll loop in openexecutive.integrations.email_poller — reads
     and marks mail through the Google Workspace MCP's Gmail tools (no
     IMAP/SMTP), and runs as an asyncio task in the FastAPI lifespan,
-    started only once the MCP gateway is up. Strips Reply-To
+    started only once the MCP gateway is up. While the Executive is
+    paused (scheduler.pause) each poll is skipped and the inbox left
+    unread, so held mail is processed after resume. Strips Reply-To
     headers to defend against redirect attacks; filters auto-replies
     (mailer-daemon, noreply senders) and self-sent messages. INBOUND
     is NOT roster-gated — see ``channel_access`` for the split. When
@@ -4866,6 +4899,9 @@ clients:
       refuse (409) while a fixture is loaded.
     - generated_fixtures is operator-level (the demo library), not client
       data — preserved verbatim across slot restores.
+    - executive_control (the operator pause switch, scheduler.pause) is
+      operator-level too and preserved the same way — activating a client
+      never un-pauses (or re-pauses) the Executive.
     - First activation with no active client auto-snapshots the user's
       original company to _user_backup (same restore point the fixture
       switcher uses; POST /fixtures/unload brings it back).
