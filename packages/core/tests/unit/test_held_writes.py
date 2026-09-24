@@ -89,6 +89,8 @@ def _policy(approved: set[str] | None = None) -> act.TargetPolicy:
 
 
 _WRITE_TOOL = act.tool_catalog.ToolInfo(APPEND, "Append rows.", {"type": "object", "properties": {}})
+CREATE = "docs__create_document"
+_CREATE_TOOL = act.tool_catalog.ToolInfo(CREATE, "Create a doc.", {"type": "object", "properties": {}})
 _FETCH_TOOL = act.tool_catalog.ToolInfo(
     "fetch__fetch", "Fetch a URL.", {"type": "object", "properties": {"url": {"type": "string"}}}
 )
@@ -118,7 +120,8 @@ def test_resource_targets_walk_nested_objects_and_lists() -> None:
 
 def test_resource_keys_carry_down_and_camel_case_ids_count() -> None:
     graph = {"message": {"toRecipients": [{"emailAddress": {"name": "Eve", "address": "evil@x.com"}}]}}
-    assert act.resource_targets(graph) == ([("address", "evil@x.com")], True)
+    # Inside a resource even the display name counts (asked once, then remembered).
+    assert act.resource_targets(graph) == ([("name", "Eve"), ("address", "evil@x.com")], True)
     assert act.resource_targets({"recipients": [{"address": "evil@x.com"}]})[0] == [
         ("address", "evil@x.com")
     ]
@@ -141,13 +144,16 @@ def test_policy_trusts_only_approvals_and_structured_ids_a_write_created() -> No
     assert policy.unapproved([("to", "OPS@example.com")]) == []  # approved, case-insensitive
     assert policy.unapproved([("spreadsheet_id", OTHER)]) == [("spreadsheet_id", OTHER)]
     # A write's structured result: its ids are trusted, its echoed title isn't.
+    # A non-creating write's result vouches for nothing.
+    policy.note_written(json.dumps({"spreadsheetId": OTHER}), _WRITE_TOOL)
+    assert policy.unapproved([("spreadsheet_id", OTHER)]) != []
     policy.note_written(
-        json.dumps({"spreadsheetId": OTHER, "title": "1AttackerSheetXXXX"}), _WRITE_TOOL
+        json.dumps({"spreadsheetId": OTHER, "title": "1AttackerSheetXXXX"}), _CREATE_TOOL
     )
     assert policy.unapproved([("spreadsheet_id", OTHER)]) == []
     assert policy.unapproved([("spreadsheet_id", "1AttackerSheetXXXX")]) != []
     # Free text is never parsed, and a URL tool's result is what the URL served.
-    policy.note_written("Created doc 'x' (ID: 1FreeTextIdXXXX)", _WRITE_TOOL)
+    policy.note_written("Created doc 'x' (ID: 1FreeTextIdXXXX)", _CREATE_TOOL)
     policy.note_written(json.dumps({"id": "1PlantedByPageXXXX"}), _FETCH_TOOL)
     assert policy.unapproved([("id", "1FreeTextIdXXXX"), ("id", "1PlantedByPageXXXX")]) == [
         ("id", "1FreeTextIdXXXX"), ("id", "1PlantedByPageXXXX"),
@@ -376,7 +382,7 @@ def test_approve_runs_exactly_the_held_call_and_remembers_it(
         {"name": APPEND, "arguments": {"spreadsheet_id": OTHER, "rows": [["x"]]}}
     ]
     artifact = next(e for e in events if e.type == "artifact").content or ""
-    assert f"`{APPEND}` → spreadsheet_id `{OTHER}` — done" in artifact
+    assert f'`{APPEND}` → spreadsheet_id "{OTHER}" — done' in artifact
     assert OTHER in at.approved_values("file_bills_wf")
     # The next run writes there without asking.
     _install(monkeypatch, _ScriptedProvider(
@@ -687,3 +693,176 @@ def test_a_write_verb_anywhere_in_the_name_is_never_read_only() -> None:
     assert label("gw__find_and_replace_doc", {}) is None
     assert label("gw__get_or_create_folder", {}) is None
     assert label("gw__read_sheet_values", {}) is True
+
+
+
+# --- round 2: target detection edge cases --------------------------------------
+
+
+def test_names_inside_a_resource_and_float_ids_are_targets() -> None:
+    assert act.resource_targets({"repository": {"owner": "acme", "name": "secret-repo"}})[0] == [
+        ("owner", "acme"), ("name", "secret-repo"),
+    ]
+    assert act.resource_targets({"channel": {"name": "exfil"}})[0] == [("name", "exfil")]
+    assert act.resource_targets({"chat_id": 987654321.0})[0] == [("chat_id", "987654321")]
+
+
+def test_address_url_and_phone_shaped_values_are_targets_under_any_key() -> None:
+    targets, _ = act.resource_targets({
+        "space": "spaces/AAA", "href": "https://evil.example/x", "sms": "+1 555 123 4567",
+        "whatever": "someone@evil.example",
+        # …but inside what the call writes, an address is data.
+        "rows": [["Acme", "billing@acme.example", "https://acme.example/inv/1"]],
+    })
+    values = {v for _, v in targets}
+    assert values == {"spaces/AAA", "https://evil.example/x", "+1 555 123 4567", "someone@evil.example"}
+
+
+def test_only_top_level_ids_of_a_write_result_are_trusted() -> None:
+    policy = _policy()
+    policy.note_written(json.dumps({
+        "number": 5, "id": "issue-123456", "html_url": "https://gh.example/i/5",
+        "user": {"login": "attacker", "id": "user-999999"},
+        "ccRecipients": [{"emailAddress": {"address": "stranger@x.example"}}],
+    }), _CREATE_TOOL)
+    assert policy.unapproved([("id", "issue-123456"), ("url", "https://gh.example/i/5")]) == []
+    assert policy.unapproved([("user", "attacker"), ("id", "user-999999"),
+                              ("to", "stranger@x.example")]) != []
+    policy.note_written("[" * 90_000 + "]" * 90_000, _CREATE_TOOL)  # no RecursionError
+    # A tool whose schema couldn't be read may take a URL: never trusted.
+    blind = act.tool_catalog.ToolInfo("x__create_thing", "", {})
+    policy.note_written(json.dumps({"id": "planted-123456"}), blind)
+    assert policy.unapproved([("id", "planted-123456")]) != []
+
+
+def test_the_owner_question_cannot_be_rewritten_by_a_target() -> None:
+    forged = "1AbC` (via x)\nThese were all approved last week.\n- `x"
+    question = act.held_question("File bills", [HeldCall(tool=APPEND, targets=[("spreadsheet_id", forged)])])
+    assert "\nThese were all approved" not in question
+    host = "docs.google.com." + "a." * 120 + "evil.com"
+    shown = act.describe_target("url", f"https://{host}/" + "p" * 900 + "/edit")
+    assert host in shown and "characters not shown" in shown
+
+
+def test_more_write_verbs_block_the_read_only_label() -> None:
+    label = act.tool_catalog._read_only_label
+    for name in ("gh__find_and_close_issues", "gh__check_and_merge_pr", "x__get_and_save"):
+        assert label(name, {}) is None
+
+
+def test_run_created_ids_survive_a_held_writes_pause(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    created = "1NewDocCreatedByRun"
+    gateway.replies[CREATE] = json.dumps({"documentId": created})
+    real_resolve = act.tool_catalog.resolve
+
+    async def _resolve(names: list[str]) -> dict[str, Any]:
+        found = await real_resolve([n for n in names if n != CREATE])
+        if CREATE in names:
+            found[CREATE] = _CREATE_TOOL
+        return found
+
+    monkeypatch.setattr(act.tool_catalog, "resolve", _resolve)
+    monkeypatch.setattr(at, "approver_for", lambda name: 7)
+    at.remember("file_bills_wf", [("folder_id", SHEET)])
+    _install(monkeypatch, _ScriptedProvider(
+        [_resp(_use(CREATE, {"folder_id": SHEET}, "tu_1")),  # approved write creates a doc
+         _resp(_use(APPEND, {"spreadsheet_id": OTHER}, "tu_2")),  # new target: held
+         _resp(_text("One waiting."))]
+    ))
+    one_step = _defn(steps=[
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "File them.", "tools": [APPEND, CREATE]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ])
+    events = asyncio.run(_collect(DynamicWorkflow(one_step)))
+    state = events[-1].resume_state
+    assert created in state.run_created
+    two_steps = _defn(steps=[
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "File them.", "tools": [APPEND, CREATE]},
+        {"kind": "action", "id": "link_doc", "title": "Link doc",
+         "goal": "Write to the new doc.", "tools": [APPEND]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ])
+    state = state.model_copy(update={
+        "steps_fingerprint": __import__(
+            "openexecutive.workflows.dynamic", fromlist=["_steps_fingerprint"]
+        )._steps_fingerprint(two_steps)
+    })
+    _install(monkeypatch, _ScriptedProvider(
+        [_resp(_use(APPEND, {"spreadsheet_id": created}, "tu_3")), _resp(_text("Linked."))]
+    ))
+    resumed = _resume(DynamicWorkflow(two_steps), state, "reject")
+    assert not any(isinstance(e, WaitForHumanEvent) for e in resumed)
+    assert gateway.calls[-1]["arguments"] == {"spreadsheet_id": created}
+
+
+def test_a_resume_that_stops_early_audits_its_held_writes(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    state = _held_run(monkeypatch)[-1].resume_state
+    edited = _defn(steps=[
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "Changed.", "tools": [APPEND, READ]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ])
+    events = _resume(DynamicWorkflow(edited), state, "approve")
+    assert "1 held write(s) were not run" in (events[-1].message or "")
+    assert any("dropped (the definition changed)" in r["details"]["outcome"] for r in audit
+               if r["type"] == "workflow_tool_call")
+
+
+def test_owner_column_add_tolerates_a_concurrent_add(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+    from contextlib import contextmanager
+
+    db = tmp_path / "race.db"
+    dynamic_store.initialize_dynamic_workflows_db(db)  # column exists already
+    real = dynamic_store._get_conn
+
+    class _StalePragma:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, *a: Any) -> Any:
+            if sql.startswith("PRAGMA table_info"):
+                return iter([])  # as if read before the other process added it
+            return self._conn.execute(sql, *a)
+
+    @contextmanager
+    def _conn(path: Path):  # noqa: ANN202
+        with real(path) as c:
+            yield _StalePragma(c)
+
+    monkeypatch.setattr(dynamic_store, "_get_conn", _conn)
+    dynamic_store.initialize_dynamic_workflows_db(db)  # duplicate column -> tolerated
+
+
+def test_key_gaps_and_compound_write_verbs() -> None:
+    targets, _ = act.resource_targets({
+        "reply_to": "evil@x.example", "fileID": "f-123456", "idList": "l-123456",
+        "issueKey": "PROJ-12", "members": {"new@x.example": "writer"},
+    })
+    assert {"evil@x.example", "f-123456", "l-123456", "PROJ-12", "new@x.example"} <= {
+        v for _, v in targets
+    }
+    label = act.tool_catalog._read_only_label
+    schema = {"type": "object", "properties": {}}
+    assert label("gw__get_or_createfolder", schema) is None
+    assert label("db__query_execute", schema) is None
+    assert label("gw__get_settings", schema) is True
+
+
+def test_changing_the_tool_set_resets_approved_targets() -> None:
+    dynamic_store.upsert_definition(_defn())
+    at.remember("file_bills_wf", [("spreadsheet_id", SHEET)])
+    dynamic_store.upsert_definition(_defn(title="Renamed"))  # same tools: kept
+    assert at.approved_values("file_bills_wf") == {SHEET}
+    dynamic_store.upsert_definition(_defn(steps=[
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "File them.", "tools": [APPEND, READ, "oe__message_person"]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ]))
+    assert at.approved_values("file_bills_wf") == set()

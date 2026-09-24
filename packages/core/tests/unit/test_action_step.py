@@ -122,6 +122,7 @@ async def _run(step: ActionStepSpec, **kw: Any) -> list[tuple[str, str]]:
         values=kw.get("values", {"sheet": "Bill tracker"}),
         company_block=kw.get("company_block", "Company: Northwind"),
         prior_outputs=kw.get("prior_outputs", {}),
+        policy=kw.get("policy"),
     ):
         out.append(item)
     return out

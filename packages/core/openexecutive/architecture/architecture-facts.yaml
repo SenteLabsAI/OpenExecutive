@@ -3460,27 +3460,43 @@ workflows:
     - action_step.TargetPolicy (one per run) checks every call whose tool is
       not labelled read-only; tool_catalog._read_only_label never labels a
       name carrying a write verb anywhere (find_and_replace_doc,
-      get_or_create_folder). resource_targets() walks arguments recursively
-      (lists, nested dicts; a resource key marks its whole subtree) for
-      snake/camel ids, to/cc/bcc, recipient, email, address, attendee,
-      member, user, owner, parent, url/uri, path, channel, host, bucket,
-      table, spreadsheet, document, folder, calendar, file — skipping only
-      exact name/title/subject/file_name/display_name keys, range/sheet,
-      message/thread/draft/label ids and user_google_email. Too deep (>8),
-      too many (>100) or over-long (>2000 chars) FAILS CLOSED: refused.
+      check_and_merge_pr, get_or_create_folder …). resource_targets() walks
+      arguments recursively; a resource key (snake/camel ids, to/cc/bcc,
+      recipient, email, address, attendee, member, user, owner, parent,
+      url/uri/href/link, path, channel, space, room, phone, host, bucket,
+      table, spreadsheet, document, folder, calendar, file) marks its whole
+      subtree, names included. Outside one, exact name/title/subject/
+      file_name/display_name keys, message/thread/draft/label ids, range/sheet
+      and user_google_email are skipped; any bare email/URL/+phone-shaped
+      value is a target whatever its key, except under content keys (rows,
+      values, data, body, content, text, html, markdown, description, notes,
+      comment, summary, headline). Floats that are integers compare as ints.
+      Too deep (>8), too many (>100) or over-long (>2000 chars) FAILS CLOSED.
+      Key names are a heuristic: this is best-effort, layered on the tool
+      allowlist, gateway recipient gates and the audit.
     - Trusted: values in workflow_approved_targets for this workflow (by
       normalized value — emails lowercased — not by tool), and ids a write in
-      this run created: resource-keyed values of the STRUCTURED JSON result of
-      a write to a tool that takes no URL (never free text — a fetched page or
-      an echoed title could plant one). Carried across pauses in
-      WorkflowResumeState.run_created. Values in the workflow's own text are
-      NOT trusted (anyone who can PUT the workflow could change them without
-      review) — asked once, then remembered.
+      this run created: TOP-LEVEL id/link keys (id, *_id, *Id, *link, *url)
+      of the JSON-object result of a tool whose name says it creates
+      (tool_catalog.creates: create/insert/upload/add/copy/new/make/duplicate)
+      and that takes no URL (tool_catalog.takes_url; an unknown schema counts
+      as taking one) — never free text, nested records, or a reader's or
+      updater's result (a page, an echoed title, a shared doc's links or a
+      stranger in ccRecipients could plant one). Approvals are cleared when
+      the workflow's action-tool set changes (dynamic_store upsert /
+      save_if_unchanged), so a newly added tool never inherits them. Carried across pauses in
+      WorkflowResumeState.run_created (both gate and held-writes pauses).
+      Values in the workflow's own text are NOT trusted (anyone who can PUT
+      the workflow could change them without review) — asked once.
+    - The owner's question JSON-quotes each target (no injected lines) and
+      always shows a URL's scheme+host in full, saying how much is hidden.
     - Anything else is HELD: not run, no budget spent, the model gets a
       "held for approval, don't retry" result, audited "held for approval";
       <= 10 per step, <= 16 KB args each, else refused; an identical repeat
-      is held once. A step that errors after holding audits them as dropped
-      and says so in its error.
+      is held once. Every exit that won't settle them (step error or crash,
+      resume refused for a changed definition / stale specialist / missing
+      later tool) audits them as "dropped (reason)" and says in the error
+      that N held writes did not run.
     - After the step, the engine yields WaitForHumanEvent to
       approved_targets.approver_for(name): the workflow's owner
       (dynamic_workflows.owner_person_id — set on insert only from the web

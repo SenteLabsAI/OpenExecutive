@@ -186,15 +186,30 @@ def _target_digest(arguments: dict[str, Any]) -> dict[str, str]:
 # like `channel_name` or `bucket_name` still counts.
 _RESOURCE_KEY_RE = re.compile(
     r"(^id$|_id$|^ids$|_ids$|^to$|^cc$|^bcc$|recipient|email|address|attendee|"
+    r"reply_?to|^from$|sender|assignee|reviewer|issue_?key|project_?key|"
     r"member|user|group|owner|parent|destination|target|url|uri|path|channel|host|"
     r"bucket|table|database|repo|spreadsheet|document|folder|calendar|webhook|"
-    r"endpoint|^file$)",
+    r"endpoint|phone|space|room|href|link|^file$)",
     re.IGNORECASE,
 )
-_CAMEL_ID_RE = re.compile(r"[a-z0-9]Ids?$")  # fileId, parentIds
+# fileId, parentIds, docID, idList (Trello)
+_CAMEL_ID_RE = re.compile(r"([a-z0-9](Ids?|IDs?)$|^id[A-Z])")
 _NOT_RESOURCE_KEY_RE = re.compile(
     r"^(name|title|subject|file_?name|display_?name|user_google_email|"
     r"(message|thread|draft|label|request)_?ids?)$",
+    re.IGNORECASE,
+)
+# Whatever its key is called, a bare value shaped like an address, a URL or
+# an international phone number is a target: key names are only a heuristic,
+# and these are the shapes an exfiltrating write needs. Except inside what a
+# call writes (rows, body, text …), where an address is data, not a target.
+_TARGET_VALUE_RE = re.compile(
+    r"^(?:[^\s@]+@[^\s@]+\.[^\s@]+|[a-z][a-z0-9+.\-]*://\S+|\+[0-9][0-9 ()\-]{6,}[0-9])$",
+    re.IGNORECASE,
+)
+_CONTENT_KEY_RE = re.compile(
+    r"^(rows|values|data|body|content|text|html|markdown|description|notes?|"
+    r"comment|summary|headline)$",
     re.IGNORECASE,
 )
 # Past these, a call's targets can't all be checked, so it is refused rather
@@ -225,8 +240,10 @@ def resource_targets(arguments: Any) -> tuple[list[tuple[str, str]], bool]:
 
     def add(key: str, value: Any) -> None:
         nonlocal complete
-        if isinstance(value, bool) or not isinstance(value, str | int):
+        if isinstance(value, bool) or not isinstance(value, str | int | float):
             return
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)  # 987654321.0 is the same chat as 987654321
         text = str(value).strip()
         if not text or text in seen:
             return
@@ -236,7 +253,7 @@ def resource_targets(arguments: Any) -> tuple[list[tuple[str, str]], bool]:
         seen.add(text)
         found.append((key, text))
 
-    def walk(node: Any, key: str, depth: int, is_resource: bool) -> None:
+    def walk(node: Any, key: str, depth: int, is_resource: bool, in_content: bool) -> None:
         nonlocal complete
         if depth > _MAX_TARGET_DEPTH:
             complete = False
@@ -244,19 +261,32 @@ def resource_targets(arguments: Any) -> tuple[list[tuple[str, str]], bool]:
         if isinstance(node, dict):
             for k, v in node.items():
                 k = str(k)
-                excluded = _NOT_RESOURCE_KEY_RE.search(k) is not None
-                walk(v, k, depth + 1, not excluded and (is_resource or _is_resource_key(k)))
+                # A target can be a key: `members: {"a@x.com": "writer"}`.
+                if _TARGET_VALUE_RE.match(k.strip()):
+                    add(key, k)
+                # Inside a resource (`channel: {name: …}`, `repository:
+                # {owner, name}`) even a name is part of the target.
+                walk(v, k, depth + 1, is_resource or _is_resource_key(k),
+                     in_content or _CONTENT_KEY_RE.match(k) is not None)
         elif isinstance(node, list):
             for item in node:
-                walk(item, key, depth + 1, is_resource)
-        elif is_resource:
+                walk(item, key, depth + 1, is_resource, in_content)
+        elif is_resource or (
+            not in_content
+            and not _NOT_RESOURCE_KEY_RE.search(key)  # e.g. the acting user_google_email
+            and isinstance(node, str)
+            and _TARGET_VALUE_RE.match(node.strip())
+        ):
             add(key, node)
 
-    walk(arguments, "", 0, False)
+    walk(arguments, "", 0, False, False)
     return found, complete
 
 
 _MAX_CREATED_VALUES = 2_000
+_MAX_CREATED_RESULT_CHARS = 200_000
+# Keys of a write's result that name the thing it created.
+_CREATED_KEY_RE = re.compile(r"(^id$|_id$|[a-z0-9]Id$|link$|Link$|url$|Url$)")
 # A created id must be at least this long to be trusted (so "1" never is).
 _MIN_CREATED_VALUE = 6
 
@@ -268,12 +298,15 @@ class TargetPolicy:
     - values approved for this workflow before (``approved_targets``) — by the
       owner answering a held write, never by anything the model or a page can
       write;
-    - ids a write in this run created: resource-keyed values (``id``,
-      ``spreadsheetId``, ``webViewLink`` …) in the STRUCTURED (JSON) result of
-      a write to a tool that takes no URL. Free text is never parsed — a page,
-      an echoed title or a document body could otherwise plant an id — and a
-      URL-taking tool's result is whatever the URL served. These survive a
-      pause through the resume payload (``created``).
+    - ids a write in this run created: the top-level id / link fields
+      (``id``, ``spreadsheetId``, ``webViewLink`` …) of the STRUCTURED (JSON
+      object) result of a tool whose name says it creates (create / insert /
+      upload …) and that takes no URL — a reader's or updater's result
+      describes things someone else may have written. Free text is
+      never parsed — a page, an echoed title or a document body could
+      otherwise plant an id — and a URL-taking tool's result is whatever the
+      URL served. These survive a pause through the resume payload
+      (``created``).
     Everything else, including values written in the workflow's own text
     (which anyone who can edit the workflow could change without a review),
     is asked once and then remembered.
@@ -297,21 +330,33 @@ class TargetPolicy:
         return [(k, v) for k, v in targets if not self._trusted(v)]
 
     def note_written(self, result_text: str, info: tool_catalog.ToolInfo) -> None:
-        """Trust the ids a successful write returned in a structured result."""
-        if tool_catalog.takes_url(info):
+        """Trust the id a successful write returned for what it created.
+
+        Only the TOP-LEVEL id / link fields of a structured (JSON object)
+        result count — e.g. ``{"spreadsheetId": …, "spreadsheetUrl": …}``.
+        Nested records (``user``, ``ccRecipients``, ``owners``) describe
+        other things, often chosen by someone else, so they never do.
+        """
+        text = str(result_text)
+        if (
+            not tool_catalog.creates(info)
+            or tool_catalog.takes_url(info)
+            or len(text) > _MAX_CREATED_RESULT_CHARS
+        ):
             return
         try:
-            parsed = json.loads(str(result_text))
-        except (json.JSONDecodeError, ValueError):
+            parsed = json.loads(text)
+        except (ValueError, RecursionError):
             return
-        if not isinstance(parsed, dict | list):
+        if not isinstance(parsed, dict):
             return
-        values, _complete = resource_targets(parsed)
-        for _key, value in values:
+        for key, value in parsed.items():
             if len(self._created) >= _MAX_CREATED_VALUES:
                 break
-            if len(value) >= _MIN_CREATED_VALUE:
-                self._created.add(normalize_value(value))
+            if not isinstance(value, str | int) or isinstance(value, bool):
+                continue
+            if _CREATED_KEY_RE.search(str(key)) and len(str(value)) >= _MIN_CREATED_VALUE:
+                self._created.add(normalize_value(str(value)))
 
     def created(self) -> list[str]:
         """Run-created values, for the resume payload of a pause."""
@@ -417,8 +462,8 @@ async def run_action_step(
     values: dict[str, Any],
     company_block: str,
     prior_outputs: dict[str, tuple[str, str]],
+    policy: TargetPolicy | None,
     model: str | None = None,
-    policy: TargetPolicy | None = None,
 ) -> AsyncIterator[StepYield]:
     from openexecutive.providers.registry import get_provider
 
@@ -592,10 +637,30 @@ _SHOWN_TARGET_CHARS = 400
 
 
 def describe_target(key: str, value: str) -> str:
-    """One held target as shown to the owner, e.g. ``spreadsheet_id `1AbC…```."""
-    half = _SHOWN_TARGET_CHARS // 2
-    shown = value if len(value) <= _SHOWN_TARGET_CHARS else f"{value[:half]}…{value[-half:]}"
-    return f"{key} `{shown}`" if key else f"`{shown}`"
+    """One held target as shown to the owner, e.g. ``spreadsheet_id "1AbC…"``.
+
+    Quoted with JSON escaping, so a value can't break the line and add its
+    own text to the question. A URL always shows its full scheme and host —
+    that is where it goes — and anything shortened says how much is hidden.
+    """
+    from urllib.parse import urlsplit
+
+    head = ""
+    rest = value
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        parts = None
+    if parts is not None and parts.scheme and parts.netloc:
+        head = f"{parts.scheme}://{parts.netloc}"
+        rest = value[len(head):]
+    if len(rest) > _SHOWN_TARGET_CHARS:
+        half = _SHOWN_TARGET_CHARS // 2
+        hidden = len(rest) - 2 * half
+        rest = f"{rest[:half]}…({hidden} characters not shown)…{rest[-half:]}"
+    shown = json.dumps(head + rest, ensure_ascii=False)
+    safe_key = re.sub(r"[^A-Za-z0-9_.\-]", "_", key)
+    return f"{safe_key} {shown}" if safe_key else shown
 
 
 async def run_held_calls(
@@ -606,7 +671,7 @@ async def run_held_calls(
     run_id: str,
     approved: bool,
     skip_reason: str,
-    policy: TargetPolicy,
+    policy: TargetPolicy | None,
 ) -> str:
     """Settle the calls ``step`` held for approval; return a report section.
 
@@ -627,16 +692,26 @@ async def run_held_calls(
             outcome = "skipped (the tool is no longer available to this step)"
         else:
             remember(workflow_name, call.targets, run_id=run_id)
-            policy.approve(call.targets)
             content, is_error = await _call_tool(call.tool, call.arguments, resolved[call.tool])
             outcome = "error" if is_error else "done"
-            if not is_error:
-                policy.note_written(content, resolved[call.tool])
+            if policy is not None:
+                policy.approve(call.targets)
+                if not is_error:
+                    policy.note_written(content, resolved[call.tool])
         _audit(
             workflow_name, step.id, call.tool, f"held → {outcome}", _target_digest(call.arguments)
         )
         lines.append(f"- `{call.tool}` → {where} — {outcome}")
     return "\n".join(lines)
+
+
+def drop_held_calls(workflow_name: str, step_id: str, held: list[HeldCall], reason: str) -> str:
+    """Audit held calls that will never be asked about or run; return a note
+    for the run's error ("N held write(s) were not run")."""
+    for call in held:
+        _audit(workflow_name, step_id, call.tool, f"held → dropped ({reason})",
+               _target_digest(call.arguments))
+    return f"{len(held)} held write(s) were not run"
 
 
 def held_question(workflow_title: str, held: list[HeldCall]) -> str:
@@ -650,7 +725,7 @@ def held_question(workflow_title: str, held: list[HeldCall]) -> str:
         lines.append(f"- {where} (via {call.tool})")
     lines.append(
         "Reply yes to allow it — it runs now, and future runs can write there "
-        "without asking — or no to skip it."
+        "with any of this workflow's tools without asking — or no to skip it."
     )
     return "\n".join(lines)
 

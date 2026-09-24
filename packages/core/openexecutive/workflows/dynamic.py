@@ -38,7 +38,7 @@ from __future__ import annotations
 import hashlib
 import string
 from collections.abc import AsyncIterator
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, Field, create_model
 
@@ -71,6 +71,9 @@ from openexecutive.workflows.wait_for_human import (
     WorkflowResumeState,
 )
 
+if TYPE_CHECKING:  # imported lazily at runtime (workflows -> orchestrator cycle)
+    from openexecutive.workflows.action_step import TargetPolicy
+
 # How long the owner has to answer about new write targets. No answer means
 # the held writes are skipped and the run finishes without them.
 HELD_WRITES_TIMEOUT_HOURS = 48
@@ -84,6 +87,19 @@ def _context_start() -> WorkflowEvent:
     return WorkflowEvent(type="step_start", step_id=_CONTEXT_STEP_ID, step_title="Load context")
 
 _StepT = TypeVar("_StepT", ApprovalGateStepSpec, ActionStepSpec)
+
+
+def _with_dropped(
+    error: WorkflowEvent, workflow_name: str, state: WorkflowResumeState, reason: str
+) -> WorkflowEvent:
+    """A resume that stops before settling its held writes: audit them as
+    dropped and say so in the error."""
+    if state.kind != "held_writes" or not state.held:
+        return error
+    from openexecutive.workflows.action_step import drop_held_calls
+
+    note = drop_held_calls(workflow_name, state.gate_step_id, state.held, reason)
+    return error.model_copy(update={"message": f"{error.message} ({note})"})
 
 
 def _load_context(verb: str) -> tuple[str, WorkflowEvent]:
@@ -257,7 +273,7 @@ class DynamicWorkflow(Workflow):
         # it with "Unknown specialist: …" as a section is worse than failing.
         stale = _stale_specialist_steps(self._defn)
         if stale:
-            yield _stale_error(stale)
+            yield _with_dropped(_stale_error(stale), self.name, state, "the run could not resume")
             return
 
         if state.kind == "held_writes":
@@ -365,14 +381,17 @@ class DynamicWorkflow(Workflow):
 
         step = self._step_for_resume(state, ActionStepSpec)
         if step is None:
-            yield WorkflowEvent(
-                type="error",
-                message=(
-                    "the workflow definition changed while this run was waiting "
-                    "for approval of new write targets, so it can no longer be "
-                    f"resumed safely (expected action step {state.gate_step_id!r}) "
-                    "— re-run the workflow"
+            yield _with_dropped(
+                WorkflowEvent(
+                    type="error",
+                    message=(
+                        "the workflow definition changed while this run was waiting "
+                        "for approval of new write targets, so it can no longer be "
+                        f"resumed safely (expected action step {state.gate_step_id!r}) "
+                        "— re-run the workflow"
+                    ),
                 ),
+                self.name, state, "the definition changed",
             )
             return
 
@@ -386,7 +405,10 @@ class DynamicWorkflow(Workflow):
             self._defn, start_index=state.gate_step_index + 1
         )
         if missing_tools:
-            yield _missing_tools_error(missing_tools, resuming=True)
+            yield _with_dropped(
+                _missing_tools_error(missing_tools, resuming=True),
+                self.name, state, "a later step's tools are unavailable",
+            )
             return
 
         decision = str(resolution.parsed_decision.get("decision") or "")
@@ -428,7 +450,7 @@ class DynamicWorkflow(Workflow):
         index: int,
         held: list[HeldCall],
         outputs: dict[str, tuple[str, str]],
-        policy: Any,
+        policy: TargetPolicy | None,
     ) -> WaitForHumanEvent | None:
         """The pause that asks the owner about ``step``'s held writes.
 
@@ -470,24 +492,11 @@ class DynamicWorkflow(Workflow):
                 outputs=dict(outputs),
                 kind="held_writes",
                 held=list(held),
-                run_created=policy.created(),
+                run_created=policy.created() if policy is not None else [],
             ),
         )
 
-    async def _drop_held(
-        self, step: ActionStepSpec, held: list[HeldCall], error: str, policy: Any
-    ) -> str:
-        """A step that failed after holding writes: nobody is asked about them.
-        They are audited as dropped and the error says they did not run."""
-        from openexecutive.workflows.action_step import run_held_calls
-
-        await run_held_calls(
-            step, held, workflow_name=self.name, run_id="", approved=False,
-            skip_reason="the step failed", policy=policy,
-        )
-        return f"{error} ({len(held)} held write(s) were not run)"
-
-    def _target_policy(self, created: list[str] | None = None) -> Any:
+    def _target_policy(self, created: list[str] | None = None) -> TargetPolicy:
         from openexecutive.workflows.action_step import TargetPolicy
 
         return TargetPolicy.for_workflow(self._defn, created=created or ())
@@ -539,7 +548,7 @@ class DynamicWorkflow(Workflow):
         company_block: str,
         outputs: dict[str, tuple[str, str]],
         store: ChromaDBStore,
-        policy: Any = None,
+        policy: TargetPolicy | None,
     ) -> AsyncIterator[WorkflowEvent]:
         """Interpret steps from ``start_index`` on.
 
@@ -623,7 +632,10 @@ class DynamicWorkflow(Workflow):
                 return
 
             elif isinstance(step, ActionStepSpec):
-                from openexecutive.workflows.action_step import run_action_step
+                from openexecutive.workflows.action_step import (
+                    drop_held_calls,
+                    run_action_step,
+                )
 
                 yield WorkflowEvent(
                     type="step_start", step_id=step.id, step_title=step.title
@@ -637,32 +649,38 @@ class DynamicWorkflow(Workflow):
                     )
                     return
                 held: list[HeldCall] = []
-                async for kind, payload in run_action_step(
-                    step,
-                    workflow_name=self.name,
-                    workflow_title=self.title,
-                    goal=goal,
-                    values=values,
-                    company_block=company_block,
-                    prior_outputs=dict(outputs),
-                    policy=policy,
-                ):
-                    if kind == "progress":
-                        yield WorkflowEvent(
-                            type="progress", step_id=step.id, summary=payload
-                        )
-                    elif kind == "held":
-                        held.append(payload)
-                    elif kind == "error":
-                        if held:
-                            payload = await self._drop_held(step, held, payload, policy)
-                        yield WorkflowEvent(type="error", message=payload)
-                        return
-                    else:
-                        outputs[step.id] = (step.title, payload)
-                        yield WorkflowEvent(
-                            type="step_done", step_id=step.id, summary=_first_line(payload)
-                        )
+                try:
+                    async for kind, payload in run_action_step(
+                        step,
+                        workflow_name=self.name,
+                        workflow_title=self.title,
+                        goal=goal,
+                        values=values,
+                        company_block=company_block,
+                        prior_outputs=dict(outputs),
+                        policy=policy,
+                    ):
+                        if kind == "progress":
+                            yield WorkflowEvent(
+                                type="progress", step_id=step.id, summary=payload
+                            )
+                        elif kind == "held":
+                            held.append(payload)
+                        elif kind == "error":
+                            if held:
+                                note = drop_held_calls(self.name, step.id, held, "the step failed")
+                                payload = f"{payload} ({note})"
+                            yield WorkflowEvent(type="error", message=payload)
+                            return
+                        else:
+                            outputs[step.id] = (step.title, payload)
+                            yield WorkflowEvent(
+                                type="step_done", step_id=step.id, summary=_first_line(payload)
+                            )
+                except Exception:
+                    if held:
+                        drop_held_calls(self.name, step.id, held, "the step crashed")
+                    raise
                 if held:
                     pause = await self._held_writes_pause(step, index, held, outputs, policy)
                     if pause is not None:

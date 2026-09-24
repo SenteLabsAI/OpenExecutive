@@ -68,6 +68,7 @@ def upsert_definition(
     initialize_dynamic_workflows_db(db_path)
     now = datetime.now(UTC).isoformat()
     existing = get_definition(defn.name, db_path=db_path)
+    _reset_approvals_if_tools_changed(existing, defn, db_path)
     created_at = existing.created_at if existing and existing.created_at else now
     defn = defn.model_copy(update={"created_at": created_at, "updated_at": now})
     with _get_conn(_resolve(db_path)) as conn:
@@ -236,7 +237,29 @@ def save_if_unchanged(
                 (body, active, now, stored.name, expected.updated_at),
             )
         changed = cur.rowcount == 1
+    if changed:
+        _reset_approvals_if_tools_changed(expected, stored, db_path)
     return stored if changed else None
+
+
+def _tools_of(defn: DynamicWorkflowDef | None) -> set[str]:
+    from openexecutive.workflows.dynamic_models import ActionStepSpec
+
+    if defn is None:
+        return set()
+    return {t for s in defn.steps if isinstance(s, ActionStepSpec) for t in s.tools}
+
+
+def _reset_approvals_if_tools_changed(
+    old: DynamicWorkflowDef | None, new: DynamicWorkflowDef, db_path: Path | None
+) -> None:
+    """Approved targets were approved for the tools the workflow had. A tool
+    set that changes (e.g. a send tool added to a sheet workflow) must earn
+    its approvals again, rather than inherit them unseen."""
+    if old is not None and _tools_of(old) != _tools_of(new):
+        from openexecutive.workflows.approved_targets import forget_all
+
+        forget_all(new.name, db_path=db_path)
 
 
 def get_owner(name: str, db_path: Path | None = None) -> int | None:

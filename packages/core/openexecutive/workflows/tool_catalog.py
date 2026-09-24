@@ -56,17 +56,46 @@ _READ_VERBS = (
     "check_", "describe_", "inspect_", "debug_",
 )
 _WRITE_WORDS = frozenset({
-    "add", "append", "archive", "clear", "copy", "create", "delete", "draft",
-    "edit", "forward", "import", "insert", "invite", "label", "mark", "modify",
-    "move", "patch", "post", "publish", "put", "remove", "rename", "replace",
-    "reply", "restore", "send", "set", "share", "trash", "update", "upload",
-    "upsert", "write",
+    "add", "append", "apply", "approve", "archive", "assign", "book", "cancel",
+    "clear", "close", "comment", "commit", "copy", "create", "delete", "deploy",
+    "draft", "edit", "execute", "forward", "grant", "import", "insert", "invite",
+    "join", "label", "leave", "mark", "merge", "modify", "move", "notify",
+    "patch", "pay", "post", "publish", "push", "put", "remove", "rename",
+    "reopen", "replace", "reply", "restore", "revoke", "run", "save", "schedule",
+    "send", "set", "share", "submit", "subscribe", "sync", "transfer", "trash",
+    "update", "upload", "upsert", "write",
 })
 _NAME_WORD_RE = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+# Tools whose result can name something the run itself made. Only their
+# structured results can vouch for a new target (see action_step.TargetPolicy).
+_CREATE_WORDS = frozenset({"create", "insert", "upload", "add", "copy", "new", "make", "duplicate"})
+
+
+def _name_words(name: str) -> set[str]:
+    bare = name.split("__", 1)[-1]
+    return {w.lower() for part in re.split(r"[_\-\s]+", bare) for w in _NAME_WORD_RE.findall(part)}
+
+
+def _has_word(words: set[str], vocabulary: frozenset[str]) -> bool:
+    """A word from ``vocabulary``, alone or glued to the front of a longer
+    token (`createfolder`). Short words only match alone, so `settings` is not
+    `set` — though a false match only means a stricter check."""
+    return any(
+        w in vocabulary or any(len(v) >= 4 and w.startswith(v) for v in vocabulary)
+        for w in words
+    )
+
+
+def creates(info: ToolInfo) -> bool:
+    """Whether a tool's name says it creates something (create/insert/upload…)."""
+    return _has_word(_name_words(info.name), _CREATE_WORDS)
 # A tool that takes a URL can carry data OUT (the URL itself, or a request
 # body), whatever its name says — e.g. `fetch__fetch`. Never label one as
 # reads-only: the review card must show the user it can reach the outside.
-_EGRESS_PARAM_HINTS = ("url", "uri", "endpoint", "webhook")
+_EGRESS_PARAM_HINTS = (
+    "url", "uri", "endpoint", "webhook", "host", "link", "href", "domain", "site",
+    "server", "remote",
+)
 
 
 @dataclass(frozen=True)
@@ -127,7 +156,10 @@ def _schema_property_names(schema: Any, depth: int = 0) -> set[str]:
 
 def takes_url(info: ToolInfo) -> bool:
     """Whether a tool has a URL-shaped parameter anywhere (it can reach out,
-    and what comes back is whatever that URL served)."""
+    and what comes back is whatever that URL served). An unknown schema is
+    assumed to — the same fail-safe as the read-only label."""
+    if not info.input_schema:
+        return True
     return any(
         hint in key
         for key in _schema_property_names(info.input_schema or {})
@@ -142,11 +174,9 @@ def _read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> b
         hint in key for key in _schema_property_names(input_schema) for hint in _EGRESS_PARAM_HINTS
     ):
         return None
-    bare = name.split("__", 1)[-1]
-    words = {w.lower() for part in re.split(r"[_\-\s]+", bare) for w in _NAME_WORD_RE.findall(part)}
-    if words & _WRITE_WORDS:
+    if _has_word(_name_words(name), _WRITE_WORDS):
         return None
-    return True if bare.lower().startswith(_READ_VERBS) else None
+    return True if name.split("__", 1)[-1].lower().startswith(_READ_VERBS) else None
 
 
 # ── MCP: parse the gateway's search_tools output ────────────────────────────
