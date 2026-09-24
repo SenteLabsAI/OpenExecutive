@@ -8,6 +8,7 @@ If `Executive.stream_chat` hangs, the route must:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -36,8 +37,6 @@ def _all_sessions(db_path: Path) -> list[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
     chat_route._active_stops.clear()
 
 
@@ -107,9 +106,11 @@ def test_chat_endpoint_handles_hanging_executive(
     assert rows[0]["title"] == "trigger hang"
 
 
-def test_last_turn_debug_endpoint_returns_events(
+def test_debug_events_reach_only_the_callers_own_stream(
     temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A turn's debug events go to the caller over their own SSE stream. There
+    is no process-wide "last turn" snapshot any other caller could read (#198)."""
     from openexecutive.orchestrator import executive as exec_mod
 
     class _MiniExecutive:
@@ -129,14 +130,16 @@ def test_last_turn_debug_endpoint_returns_events(
 
     chat_resp = client.post("/chat", json={"message": "hello"})
     assert chat_resp.status_code == 200
-    _ = chat_resp.text
-
-    last = client.get("/debug/last-turn").json()
-    assert last["meta"]["chunks"] == 1
-    kinds = [e["kind"] for e in last["events"]]
+    events = [
+        json.loads(line[len("data: "):])
+        for line in chat_resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    debug = [e for e in events if e.get("type") == "debug_event"]
+    kinds = [e["kind"] for e in debug]
     assert "knowledge_retrieved" in kinds
     assert "turn_complete" in kinds
     # All events carry the same turn_id.
-    turn_ids = {e.get("turn_id") for e in last["events"]}
-    assert len(turn_ids) == 1
-    assert next(iter(turn_ids)) == last["meta"]["turn_id"]
+    assert len({e.get("turn_id") for e in debug}) == 1
+
+    assert client.get("/debug/last-turn").status_code == 404

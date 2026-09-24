@@ -20,7 +20,13 @@ from openexecutive.memory.episodic import (
     update_decision,
     update_initiative,
 )
-from openexecutive.memory.honcho_client import PeopleMemory, people_overview
+from openexecutive.memory.honcho_client import (
+    PERSON_CONCLUSIONS_MAX_PAGE,
+    PeopleMemory,
+    PersonConclusionsPage,
+    people_overview,
+    person_conclusions,
+)
 
 router = APIRouter()
 
@@ -129,3 +135,18 @@ async def list_people_memory(recent: int = Query(5, ge=1, le=50)) -> PeopleMemor
     count, last-learned time and the ``recent`` newest conclusions. Read-only
     and LLM-free; ``status`` is ``disabled`` when peer memory is off."""
     return await people_overview(recent=recent)
+
+
+@router.get("/memories/people/{person_id}/conclusions", response_model=PersonConclusionsPage)
+async def list_person_conclusions(
+    person_id: int,
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=PERSON_CONCLUSIONS_MAX_PAGE),
+) -> PersonConclusionsPage:
+    """One page of every conclusion peer memory holds about one person,
+    newest first. Read-only and LLM-free; 404 when the person is not on the
+    roster or peer memory has no peer for them yet."""
+    result = await person_conclusions(person_id, page=page, size=size)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found in peer memory")
+    return result
