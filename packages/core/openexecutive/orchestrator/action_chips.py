@@ -18,6 +18,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,11 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
 
 
 _PLAYBOOKS_LINK = "/jobs?tab=playbooks"
+
+
+def _draft_link(name: str) -> str:
+    """Chat's playbook changes are drafts; the chip opens the one to review."""
+    return f"{_PLAYBOOKS_LINK}&draft={quote(name)}" if name else _PLAYBOOKS_LINK
 
 
 def _parse_result(tool_result: str) -> dict[str, Any] | None:
@@ -256,19 +262,23 @@ def summarize_action(
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Saved playbook: {name}" if name else "Saved a playbook"
+        payload["summary"] = f"Drafted playbook: {name}" if name else "Drafted a playbook"
         payload["target"] = name or None
-        payload["link"] = _PLAYBOOKS_LINK
+        payload["link"] = _draft_link(name)
     elif tool_name == "update_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Updated playbook: {name}" if name else "Updated a playbook"
+        payload["summary"] = (
+            f"Drafted a change to playbook: {name}" if name else "Drafted a playbook change"
+        )
         payload["target"] = name or None
-        payload["link"] = _PLAYBOOKS_LINK
+        payload["link"] = _draft_link(name)
     elif tool_name == "delete_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Deleted playbook: {name}" if name else "Deleted a playbook"
+        payload["summary"] = (
+            f"Proposed deleting playbook: {name}" if name else "Proposed deleting a playbook"
+        )
         payload["target"] = name or None
-        payload["link"] = _PLAYBOOKS_LINK
+        payload["link"] = _draft_link(name)
     elif tool_name == "create_alert":
         headline = (tool_input.get("headline") or "")[:60]
         payload["summary"] = f"Flagged alert: {headline}" if headline else "Flagged alert"

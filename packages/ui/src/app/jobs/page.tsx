@@ -289,6 +289,7 @@ function JobsPageInner() {
             <PlaybooksBrowser
               onCountChange={setPlaybookCount}
               initialPlaybook={searchParams.get("playbook") ?? undefined}
+              initialDraft={searchParams.get("draft") ?? undefined}
             />
           )}
 

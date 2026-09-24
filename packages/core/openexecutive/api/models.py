@@ -177,6 +177,34 @@ class SkillDeleteResponse(BaseModel):
     outcome: Literal["deleted", "reverted", "hidden"]
 
 
+class SkillDraftOut(BaseModel):
+    """A playbook change the Executive proposed from chat, awaiting review."""
+
+    action: Literal["create", "update", "delete"]
+    name: str
+    category: str
+    description: str
+    when_to_use: str
+    body: str
+    proposed_at: str
+    # The playbook in effect now (None for a create) — what an update or
+    # delete would change.
+    current: SkillDetail | None = None
+
+
+class SkillDraftListResponse(BaseModel):
+    drafts: list[SkillDraftOut]
+
+
+class SkillDraftApproval(BaseModel):
+    action: Literal["create", "update", "delete"]
+    name: str
+    # Set for an approved delete: deleted / reverted / hidden.
+    outcome: Literal["deleted", "reverted", "hidden"] | None = None
+    # Set for an approved create or update.
+    skill: SkillDetail | None = None
+
+
 class SkillSearchHit(BaseModel):
     name: str
     category: str

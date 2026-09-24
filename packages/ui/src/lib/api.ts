@@ -834,6 +834,51 @@ export async function restoreSkill(name: string): Promise<SkillDetail> {
   return res.json();
 }
 
+/** A playbook change the Executive proposed from chat, awaiting review. */
+export interface SkillDraft {
+  action: "create" | "update" | "delete";
+  name: string;
+  category: string;
+  description: string;
+  when_to_use: string;
+  body: string;
+  proposed_at: string;
+  /** The playbook in effect now (null for a create). */
+  current: SkillDetail | null;
+}
+
+export async function listSkillDrafts(): Promise<SkillDraft[]> {
+  const res = await fetch(`${API_BASE}/skill-drafts`);
+  if (!res.ok) throw new Error("Failed to list playbook drafts");
+  const data = await res.json();
+  return data.drafts;
+}
+
+export async function getSkillDraft(name: string): Promise<SkillDraft> {
+  const res = await fetch(`${API_BASE}/skill-drafts/${encodeURIComponent(name)}`);
+  if (!res.ok) throw await skillError(res, "Failed to load draft");
+  return res.json();
+}
+
+export async function approveSkillDraft(
+  name: string
+): Promise<{ action: SkillDraft["action"]; skill: SkillDetail | null }> {
+  const res = await fetch(
+    `${API_BASE}/skill-drafts/${encodeURIComponent(name)}/approve`,
+    { method: "POST" }
+  );
+  if (!res.ok) throw await skillError(res, "Failed to approve draft");
+  return res.json();
+}
+
+/** Resolves quietly if the draft is already gone. */
+export async function discardSkillDraft(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/skill-drafts/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) throw await skillError(res, "Failed to discard draft");
+}
+
 export interface SessionSummary {
   session_id: string;
   title: string;

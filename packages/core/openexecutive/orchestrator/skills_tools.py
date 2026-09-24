@@ -11,7 +11,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from openexecutive.knowledge import skills_repo
-from openexecutive.knowledge.skills import SKILL_CATEGORIES, SkillParseError
+from openexecutive.knowledge.skill_drafts import DraftAction, SkillDraft, save_draft
+from openexecutive.knowledge.skills import (
+    SKILL_CATEGORIES,
+    SkillParseError,
+    validate_skill_name,
+)
 from openexecutive.knowledge.skills_index import search_skills as _search_skills
 from openexecutive.knowledge.skills_repo import (
     SkillConflictError,
@@ -77,10 +82,11 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "create_skill",
         "description": (
-            "Save a new reusable skill to the user's skills library. Use this when you've just "
-            "completed a task that is worth doing the same way next time — a recurring report, "
-            "a templated memo, a structured analysis. Pick a stable kebab-case name. Mention "
-            "in your reply that you saved it."
+            "Propose a new reusable skill (a playbook) for the user's library. Use this when "
+            "you've just completed a task that is worth doing the same way next time — a "
+            "recurring report, a templated memo, a structured analysis. Pick a stable "
+            "kebab-case name. It is saved as a DRAFT: nothing changes until the user approves "
+            "it on the Playbooks tab, so tell them and include the returned review_link."
         ),
         "input_schema": {
             "type": "object",
@@ -113,10 +119,11 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "update_skill",
         "description": (
-            "Refine an existing user-created skill. All fields are required — this is a "
-            "full replace. Built-in skills, customized copies of them, and any skill a "
-            "workflow follows cannot be changed from chat: the user edits those on the "
-            "Playbooks tab."
+            "Propose a refinement to an existing user-created skill. All fields are required — "
+            "this is a full replace. Saved as a DRAFT the user approves on the Playbooks tab "
+            "(tell them, with the review_link); the current version stays in effect until "
+            "then. Built-in skills, customized copies of them, and any skill a workflow "
+            "follows cannot be changed from chat: the user edits those on the Playbooks tab."
         ),
         "input_schema": {
             "type": "object",
@@ -133,9 +140,10 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "delete_skill",
         "description": (
-            "Delete a user-created skill. Built-in skills, customized copies of them, and any "
-            "skill a workflow follows cannot be deleted or hidden from chat: the user does "
-            "that on the Playbooks tab. "
+            "Propose deleting a user-created skill. Saved as a DRAFT the user approves on the "
+            "Playbooks tab (tell them, with the review_link). Built-in skills, customized "
+            "copies of them, and any skill a workflow follows cannot be deleted or hidden "
+            "from chat: the user does that on the Playbooks tab. "
             "Use sparingly — only when the user explicitly asks or the skill is clearly obsolete."
         ),
         "input_schema": {
@@ -182,6 +190,40 @@ async def handle_load_skill(input: dict[str, Any]) -> str:
     )
 
 
+def _review_link(name: str) -> str:
+    return f"/jobs?tab=playbooks&draft={name}"
+
+
+def _drafted(draft: SkillDraft) -> str:
+    return json.dumps({
+        "drafted": True,
+        "action": draft.action,
+        "name": draft.name,
+        "review_link": _review_link(draft.name),
+        "note": (
+            "Saved as a draft for the user to review. Nothing changes until they "
+            "approve it on the Playbooks tab — tell them, with the link."
+        ),
+    })
+
+
+def _draft_fields(input: dict[str, Any], action: DraftAction) -> SkillDraft:
+    """Build a create/update draft; KeyError on a missing field, SkillParseError if invalid."""
+    category = input["category"]
+    if category not in SKILL_CATEGORIES:
+        raise SkillParseError(
+            f"Unknown category '{category}'. Valid: {', '.join(SKILL_CATEGORIES)}"
+        )
+    return SkillDraft(
+        action=action,
+        name=input["name"],
+        category=category,
+        description=input["description"],
+        when_to_use=input["when_to_use"],
+        body=input["body"],
+    )
+
+
 async def handle_create_skill(input: dict[str, Any]) -> str:
     # A workflow may still name a playbook that was deleted (it runs without
     # it); chat must not be able to fill that name with new instructions.
@@ -189,27 +231,17 @@ async def handle_create_skill(input: dict[str, Any]) -> str:
     if refusal:
         return refusal
     try:
-        skill = skills_repo.create_skill(
-            name=input["name"],
-            description=input["description"],
-            when_to_use=input["when_to_use"],
-            category=input["category"],
-            body=input["body"],
-            store=_get_store(),
-        )
+        draft = _draft_fields(input, "create")
+        validate_skill_name(draft.name)
+        if skills_repo.name_taken(draft.name):
+            raise SkillConflictError(f"Skill '{draft.name}' already exists")
+        return _drafted(save_draft(draft))
     except KeyError as e:
         return json.dumps({"error": f"missing required field: {e.args[0]}"})
     except SkillConflictError as e:
         return json.dumps({"error": str(e), "code": "conflict"})
     except SkillParseError as e:
         return json.dumps({"error": str(e), "code": "invalid"})
-    fm = skill.frontmatter
-    return json.dumps({
-        "saved": True,
-        "name": fm.name,
-        "category": fm.category,
-        "path": f"company/skills/{fm.category}/{fm.name}.md",
-    })
 
 
 # Playbooks that workflows follow are read at run time — including by
@@ -272,21 +304,15 @@ async def handle_update_skill(input: dict[str, Any]) -> str:
     if refusal:
         return refusal
     try:
-        skill = skills_repo.update_skill(
-            name=input["name"],
-            description=input["description"],
-            when_to_use=input["when_to_use"],
-            category=input["category"],
-            body=input["body"],
-            store=_get_store(),
-        )
+        draft = _draft_fields(input, "update")
+        skills_repo.get_skill(draft.name)  # must exist (and not be hidden)
+        return _drafted(save_draft(draft))
     except KeyError as e:
         return json.dumps({"error": f"missing required field: {e.args[0]}"})
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
     except SkillParseError as e:
         return json.dumps({"error": str(e), "code": "invalid"})
-    return json.dumps({"updated": True, "name": skill.frontmatter.name})
 
 
 async def handle_delete_skill(input: dict[str, Any]) -> str:
@@ -297,12 +323,12 @@ async def handle_delete_skill(input: dict[str, Any]) -> str:
     if refusal:
         return refusal
     try:
-        outcome = skills_repo.delete_skill(name, store=_get_store())
+        skills_repo.get_skill(name)
+        return _drafted(save_draft(SkillDraft(action="delete", name=name)))
     except SkillNotFoundError as e:
         return json.dumps({"error": str(e), "code": "not_found"})
     except SkillParseError as e:
         return json.dumps({"error": str(e), "code": "invalid"})
-    return json.dumps({"deleted": True, "name": name, "outcome": outcome})
 
 
 SKILL_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {

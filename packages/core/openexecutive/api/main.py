@@ -40,6 +40,7 @@ from openexecutive.api.routes import (
     review,
     scheduled,
     sessions,
+    skill_drafts,
     skills,
     today,
     watchlist,
@@ -826,6 +827,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, tags=["documents"])
     app.include_router(knowledge.router, tags=["knowledge"])
     app.include_router(skills.router, tags=["skills"])
+    app.include_router(skill_drafts.router, tags=["skills"])
     # Ahead of workflows.router so no /workflows/{name}/... pattern can shadow
     # the literal /workflows/designer/* paths.
     app.include_router(workflow_designer.router, tags=["workflows"])
