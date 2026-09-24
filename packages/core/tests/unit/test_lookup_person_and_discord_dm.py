@@ -316,7 +316,16 @@ def test_send_discord_dm_happy_path_audits_and_returns_sent() -> None:
             {"discord_user_id": "123456789012345678", "text": "standup at 10"},
         )
 
-    assert result == {"status": "sent", "discord_user_id": "123456789012345678"}
+    # The payload also names the channel, address and provider message id, so
+    # a caller that must correlate a later inbound reply (the wait-for-human
+    # gate) can do so without re-deriving them.
+    assert result == {
+        "status": "sent",
+        "discord_user_id": "123456789012345678",
+        "channel": "discord",
+        "channel_ref": "123456789012345678",
+        "message_id": "",
+    }
     fake_send.assert_awaited_once_with("123456789012345678", "standup at 10")
     # Audit log records the outbound send with ok=True.
     assert mock_audit.called

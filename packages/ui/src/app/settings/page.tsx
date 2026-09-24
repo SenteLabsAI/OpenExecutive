@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import Icon from "@/components/Icon";
 import { ADVANCED_ITEMS } from "@/components/shell/navConfig";
 
@@ -17,6 +18,10 @@ export default function SettingsPage() {
           Configuration, diagnostics, and power-user tools. These sit outside the
           day-to-day workspace nav.
         </p>
+
+        <div className="mt-6">
+          <ExecutiveRunSwitch variant="card" />
+        </div>
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
           {ADVANCED_ITEMS.map((item) => (

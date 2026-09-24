@@ -44,7 +44,8 @@ def test_save_and_load_messages(db: Path) -> None:
     msgs = load_messages("s1", db_path=db)
     assert len(msgs) == 2
     assert msgs[0] == {"role": "user", "content": "Hello there"}
-    assert msgs[1] == {"role": "assistant", "content": "Hi! How can I help?"}
+    assert msgs[1]["role"] == "assistant" and msgs[1]["content"] == "Hi! How can I help?"
+    assert isinstance(msgs[1]["id"], int)
 
 
 def test_message_count_in_list(db: Path) -> None:
@@ -177,3 +178,72 @@ def test_save_message_with_list_content(db: Path) -> None:
     assert len(msgs) == 1
     assert msgs[0]["role"] == "assistant"
     assert isinstance(msgs[0]["content"], str)
+
+
+def test_save_message_round_trips_the_stopped_flag(db: Path) -> None:
+    """A stopped assistant turn is flagged, so a truncated reply is not read
+    back as a complete one after a reload."""
+    create_session("s11", "Test", "2024-01-01T00:00:00", db_path=db)
+    save_message("s11", "user", "explain our burn rate", db_path=db)
+    save_message("s11", "assistant", "partial ans", db_path=db, stopped=True)
+
+    msgs = load_messages("s11", db_path=db)
+    assert msgs[1]["stopped"] is True
+    # Attached only when true, like `actions` — an ordinary message keeps the
+    # exact dict shape every existing consumer expects.
+    assert "stopped" not in msgs[0]
+
+
+def test_unstopped_message_omits_the_key(db: Path) -> None:
+    create_session("s12", "Test", "2024-01-01T00:00:00", db_path=db)
+    save_message("s12", "assistant", "complete answer", db_path=db)
+
+    msgs = load_messages("s12", db_path=db)
+    assert "stopped" not in msgs[0]
+
+
+def test_legacy_rows_without_the_column_still_load(tmp_path: Path) -> None:
+    """The additive migration must leave a pre-existing DB readable, with old
+    assistant messages defaulting to not-stopped."""
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    # Build the pre-migration shape by hand, then let initialize_db migrate it.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, title TEXT, "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, "
+            "created_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO sessions VALUES ('old', 'Old', '2024-01-01', '2024-01-01')"
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (session_id, role, content, created_at) "
+            "VALUES ('old', 'assistant', 'legacy reply', '2024-01-01')"
+        )
+
+    initialize_db(db_path)
+
+    cols = _columns(db_path, "chat_messages")
+    assert "stopped" in cols
+    assert "action_chips" in cols
+
+    msgs = load_messages("old", db_path=db_path)
+    assert msgs[0]["content"] == "legacy reply"
+    assert "stopped" not in msgs[0]
+
+    # And the migrated table still accepts new writes.
+    save_message("old", "assistant", "new reply", db_path=db_path, stopped=True)
+    assert load_messages("old", db_path=db_path)[1]["stopped"] is True
+
+
+def _columns(db_path: Path, table: str) -> set[str]:
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}

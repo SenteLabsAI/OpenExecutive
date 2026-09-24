@@ -59,6 +59,10 @@ EVENT_TYPES: tuple[str, ...] = (
     "memory_snapshot",      # episodic context + company profile at turn entry
     "committee_review",     # committee-reviewed draft + critiques (pre-existing emit, now declared)
     "peer_memory",          # Honcho per-person memory — prefetch + sync_turn outcomes
+    "memory_extraction",    # episodic extractor — proposed / stored / dropped per pass
+    "attunement",           # open loops opened / closed / expired, 👍/👎 on replies
+    "executive_paused",     # operator paused autonomous work (scheduler/pause.py)
+    "executive_resumed",    # operator resumed it; held work released
 )
 
 
@@ -85,7 +89,7 @@ class AuditEvent:
 @contextmanager
 def _get_conn(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     # 5s busy_timeout + WAL so concurrent writers (FastAPI worker, scheduler
-    # task, IMAP poller thread, Slack/Telegram webhook threads) don't hit
+    # task, email poller task, Slack/Telegram webhook threads) don't hit
     # "database is locked". Audit writes swallow exceptions, so silent loss
     # under contention would be undetectable.
     conn = sqlite3.connect(str(db_path), timeout=5.0)

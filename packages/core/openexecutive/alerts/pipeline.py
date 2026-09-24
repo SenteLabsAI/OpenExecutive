@@ -238,15 +238,51 @@ async def evaluate_and_dispatch(
 def schedule_evaluation(event: AlertEvent) -> None:
     """Fire-and-forget evaluation. Safe to call from sync or async context.
 
-    Mirrors memory.episodic.schedule_extraction's GC-safe pattern.
+    Mirrors memory.episodic.schedule_extraction's GC-safe pattern, including
+    its audit-context snapshot: the triage model call happens in a task that
+    starts after the caller's ``with set_turn(...)`` has exited, so without
+    carrying the ids explicitly every triage row records with
+    ``session_id=NULL``. The thread branch needs it even more — a new thread
+    starts from an empty context and inherits nothing.
+
+    A caller with no turn bound (the scheduler, an external-monitor sweep)
+    snapshots ``(None, None)`` and is unchanged: those really are
+    out-of-turn calls.
     """
+    from openexecutive.audit.context import get_active_ids
+
+    audit_sid, audit_tid = get_active_ids()
     try:
         loop = asyncio.get_running_loop()
-        task = loop.create_task(evaluate_and_dispatch(event))
+        task = loop.create_task(_evaluate_in_turn(event, audit_sid, audit_tid))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
     except RuntimeError:
         threading.Thread(
-            target=lambda: asyncio.run(evaluate_and_dispatch(event)),
+            target=lambda: asyncio.run(
+                _evaluate_in_turn(event, audit_sid, audit_tid)
+            ),
             daemon=True,
         ).start()
+
+
+async def _evaluate_in_turn(
+    event: AlertEvent,
+    audit_session_id: str | None,
+    audit_turn_id: str | None,
+) -> None:
+    """Re-bind the scheduling caller's audit ids, then evaluate."""
+    from openexecutive.audit.context import get_active_ids, set_turn
+
+    # Per-field fallback — see memory.episodic.extract_and_store for why a
+    # half-empty snapshot must not erase the ambient counterpart.
+    ambient_session, ambient_turn = get_active_ids()
+    effective_session = audit_session_id if audit_session_id is not None else ambient_session
+    effective_turn = audit_turn_id if audit_turn_id is not None else ambient_turn
+
+    if (effective_session, effective_turn) == (ambient_session, ambient_turn):
+        await evaluate_and_dispatch(event)
+        return
+
+    with set_turn(session_id=effective_session, turn_id=effective_turn):
+        await evaluate_and_dispatch(event)

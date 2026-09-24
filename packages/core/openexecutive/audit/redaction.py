@@ -14,6 +14,15 @@ from typing import Any
 _INPUT_LEN = 140
 _RESULT_LEN = 300
 
+# How much of an exception we keep when recording a failure in an audit
+# `details.error`. Long enough to name the failure, short enough to keep an
+# audit row scannable. Shared so the orchestrator, the chat tools and the
+# inbound adapters cannot drift to three different lengths (they had).
+# Note this is the AUDIT cap: what the model is handed for a crashed tool is
+# the exception's type only, never its message — see
+# `orchestrator.executive._tool_error_result`.
+ERROR_DETAIL_LEN = 300
+
 # Tool names whose input AND output are never logged verbatim. Their result
 # preview is replaced with "<redacted>". Match is substring, case-insensitive,
 # so both `authenticate` and `mcp_plugin_productivity_slack__authenticate`

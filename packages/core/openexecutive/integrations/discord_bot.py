@@ -4,7 +4,9 @@ Mirrors the structure of slack_bot.py. In production the bot is embedded in
 the FastAPI lifespan (api/main.py) so it shares the same /data volume as the
 API. `run_discord_bot()` / `python -m openexecutive.integrations.discord_bot`
 is a standalone dev entry point — useful for iterating on bot-only changes
-without restarting the API. Both rely on `create_discord_bot()` returning a
+without restarting the API. Run it only while the API is stopped or has no
+DISCORD_BOT_TOKEN: the lifespan starts its own bot whenever the token is set,
+and two gateway connections on one token reply to every message twice. Both rely on `create_discord_bot()` returning a
 `commands.Bot` whose `.start()` / `.close()` work in any event loop.
 
 Supported interactions:
@@ -143,6 +145,36 @@ def _compute_session_id(
             return f"discord:msg:{fallback_message_id}"
         return f"discord:thread:{channel_id}"
     return f"discord:user:{discord_user_id}"
+
+
+def _session_id_aliases(
+    *,
+    mode: str,
+    session_id: str,
+    parent_channel_id: str,
+    discord_user_id: str,
+) -> list[str]:
+    """Every session id this inbound message legitimately belongs to.
+
+    Normally just its own. The exception mirrors Slack's: the auto-thread
+    router answers a plain-channel @mention by promoting the reply into a
+    BOT-OWNED thread, and the turn is double-written to that thread's session
+    (see the promoted-thread block in `_handle_message`). A follow-up inside
+    that thread therefore arrives under `discord:thread:{thread}` while an
+    approval gate raised on the mention recorded
+    `discord:channel:{parent}:{user}` — so without the parent id here the gate
+    can never be answered in the thread it was asked in, which is exactly the
+    #136 failure.
+
+    Only CLASSIFY_THREAD_CONTINUATION qualifies: that mode already means the
+    thread is bot-owned and unarchived (`_classify_inbound`), and the router
+    only ever promotes for the person who sent the mention. A thread a human
+    opened classifies as CLASSIFY_MENTION instead and gets no alias.
+    """
+    aliases = [session_id]
+    if mode == CLASSIFY_THREAD_CONTINUATION and parent_channel_id and discord_user_id:
+        aliases.append(f"discord:channel:{parent_channel_id}:{discord_user_id}")
+    return aliases
 
 
 # Routing modes returned by _classify_inbound() — strings, not an enum, to
@@ -555,6 +587,7 @@ async def _handle_message(
     is_dm: bool,
     session_id: str,
     session_title: str,
+    session_id_aliases: list[str] | None = None,
     on_first_turn_complete: Callable[[str, str], Awaitable[None]] | None = None,
     author_display_name: str | None = None,
     gate_eligible: bool = False,
@@ -631,28 +664,21 @@ async def _handle_message(
 
     # WaitForHuman inbound resolver — check before alert triage.
     if discord_user_id:
-        try:
-            from openexecutive.people.store import find_person_by_discord_id
-            from openexecutive.workflows.inbound_resolver import resolve_inbound_message
-            from openexecutive.workflows.resumer import apply_resolution
+        from openexecutive.people.store import find_person_by_discord_id
+        from openexecutive.workflows.inbound_resolver import resolve_and_acknowledge
 
-            person = find_person_by_discord_id(discord_user_id)
-            if person is not None and person.id is not None:
-                resolution = await resolve_inbound_message(
-                    channel="discord",
-                    channel_ref=discord_user_id,
-                    from_person_id=person.id,
-                    text=text,
-                    message_id=message_id,
-                    in_reply_to=thread_id or "",
-                )
-                if resolution is not None and resolution.run_id:
-                    success = await apply_resolution(resolution.run_id, resolution)
-                    if success:
-                        await send_fn("Got it — your response has been recorded.")
-                        return
-        except Exception:
-            logger.exception("Discord: inbound resolver check failed")
+        person = find_person_by_discord_id(discord_user_id)
+        if person is not None and person.id is not None and await resolve_and_acknowledge(
+            channel="discord",
+            channel_ref=discord_user_id,
+            person_id=person.id,
+            text=text,
+            send=send_fn,
+            message_id=message_id,
+            in_reply_to=thread_id or "",
+            session_ids=session_id_aliases or [session_id],
+        ):
+            return
 
     # Fork into alerts triage pipeline.
     try:
@@ -671,6 +697,15 @@ async def _handle_message(
     except Exception:
         logger.exception("Failed to schedule alert evaluation for Discord message")
 
+    # Bound here, not in the `gate_eligible` branch above: that branch's own
+    # `from openexecutive.config import get_settings` makes the name local to
+    # this whole function, so referencing it later when the branch did not run
+    # raises UnboundLocalError.
+    from openexecutive.config import get_settings
+    from openexecutive.integrations.channel_context import (
+        attach_briefing_context,
+        build_channel_context_block,
+    )
     from openexecutive.knowledge.retriever import retrieve
     from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import (
@@ -746,9 +781,13 @@ async def _handle_message(
     async with _session_lock(session_id):
         try:
             profile = load_or_create_profile()
+            # See the note in slack_bot: lets an approval gate raised in
+            # this turn be answered by a reply in this same conversation.
             session = Session(
                 session_id=session_id,
                 company_profile=profile if not profile.is_empty() else None,
+                origin_channel="discord",
+                origin_channel_ref=str(discord_user_id or ""),
             )
             history = load_messages(session_id)
             if history:
@@ -764,6 +803,9 @@ async def _handle_message(
             # Sender was already resolved at the roster gate above; reuse it
             # so we don't hit the DB twice in the hot path.
             person_id = sender_person.id
+            # Bound here rather than at construction because the id is only
+            # resolved now; an approval gate raised later in this turn reads it.
+            session.caller_person_id = person_id
 
             # Multi-peer co-presence: resolve every other thread
             # participant's Person.id so Honcho can add them as peers
@@ -798,6 +840,13 @@ async def _handle_message(
                     user_message=formatted_user_text,
                 )
 
+            briefing_context = await asyncio.to_thread(
+                attach_briefing_context,
+                session,
+                is_dm=is_dm,
+                person=sender_person,
+            )
+
             executive = Executive(mcp_gateway=get_active_gateway())
             response = await executive.chat(
                 user_message=chat_user_message,
@@ -805,6 +854,8 @@ async def _handle_message(
                 retrieved_context=retrieved_context,
                 episodic_context=episodic_context,
                 attachment_blocks=attachment_blocks or None,
+                briefing_context=briefing_context,
+                channel_context_block=build_channel_context_block("discord"),
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,
             )
@@ -868,7 +919,9 @@ async def _handle_message(
                 session.created_at.isoformat(),
                 caller_person_id=session_owner_id,
             )
-            save_message(session_id, "user", formatted_user_text)
+            save_message(
+                session_id, "user", formatted_user_text, sender_person_id=person_id
+            )
             save_message(session_id, "assistant", response)
             update_session_timestamp(session_id)
         except Exception:
@@ -894,7 +947,12 @@ async def _handle_message(
                     session.created_at.isoformat(),
                     caller_person_id=session_owner_id,
                 )
-                save_message(promoted_session_id, "user", formatted_user_text)
+                save_message(
+                    promoted_session_id,
+                    "user",
+                    formatted_user_text,
+                    sender_person_id=person_id,
+                )
                 save_message(promoted_session_id, "assistant", response)
                 update_session_timestamp(promoted_session_id)
             except Exception:
@@ -1359,6 +1417,19 @@ def create_discord_bot():
             is_dm=is_dm,
             session_id=session_id,
             session_title=session_title,
+            # In a bot-owned thread the parent channel is where the mention
+            # that created it lives — the session an approval gate raised on
+            # that mention recorded.
+            session_id_aliases=_session_id_aliases(
+                mode=mode,
+                session_id=session_id,
+                parent_channel_id=(
+                    str(getattr(message.channel, "parent_id", "") or "")
+                    if isinstance(message.channel, discord.Thread)
+                    else ""
+                ),
+                discord_user_id=discord_user_id,
+            ),
             on_first_turn_complete=on_first_turn,
             author_display_name=getattr(message.author, "display_name", None),
             gate_eligible=gate_eligible,

@@ -46,8 +46,7 @@ def _all_sessions(db_path: Path) -> list[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
+    chat_route._active_stops.clear()
 
 
 @pytest.fixture()
@@ -237,6 +236,18 @@ def test_chat_endpoint_persists_partial_turn_on_disconnect(
     assert [m["role"] for m in saved] == ["user", "assistant"]
     assert saved[0]["content"] == "explain our burn rate"
     assert saved[1]["content"] == "partial answer"
+
+    # The live in-memory Session must agree with what was persisted. The
+    # Executive's own post-turn block is skipped when its generator is closed
+    # early, and `_get_or_create_session` never re-reads history for a session
+    # it already holds — so without the route mirroring the turn here, the NEXT
+    # turn in this process would prompt as though this one never happened while
+    # a page reload showed it.
+    session = chat_route._sessions[rows[0]["session_id"]]
+    assert session.conversation_history == [
+        {"role": "user", "content": "explain our burn rate"},
+        {"role": "assistant", "content": "partial answer"},
+    ]
 
 
 def test_chat_endpoint_renames_session_after_first_turn(

@@ -49,7 +49,7 @@ async def _ask(question: str) -> None:
         retrieved_context=retrieved,
         episodic_context=episodic,
     ):
-        if isinstance(chunk, str):
+        if isinstance(chunk, str) and chunk != Executive._THINKING:
             response += chunk
             console.print(chunk, end="", highlight=False)
 
@@ -106,7 +106,8 @@ async def _chat() -> None:
             retrieved_context=retrieved,
             episodic_context=episodic,
         ):
-            console.print(chunk, end="", highlight=False)
+            if isinstance(chunk, str) and chunk != Executive._THINKING:
+                console.print(chunk, end="", highlight=False)
 
         console.print("\n")
 

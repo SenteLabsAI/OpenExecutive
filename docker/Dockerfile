@@ -20,41 +20,58 @@ WORKDIR /app
 # `uvx --from git+...`, which clones the repo. Without git, MCP startup
 # fails with "Git executable not found" and uvicorn exits before the
 # health check passes.
+# curl is required by the health check in docker/docker-compose.yml
+# (`curl -f http://localhost:8000/health`). python:3.11-slim does not ship it,
+# so that check failed on every run and compose marked a working API
+# unhealthy. git already pulls in libcurl, so this adds only the binary.
 # libstdc++6 is what the copied-in Node binary (ms365 stage below) links
 # against; python:*-slim does not ship it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git libstdc++6 \
+    && apt-get install -y --no-install-recommends git curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install uv
 
 # Pre-warm the extensible-mcp gateway so the API does not have to clone
 # from GitHub on every cold start. We use the EXACT invocation the
-# gateway uses at runtime (`uvx --from git+...`) — `uv tool install`
-# populates a different cache and does not help here. `|| true` keeps
-# the build green if GitHub is briefly unreachable; uvx will retry at
-# runtime.
-RUN uvx --from git+https://github.com/SenteLabsAI/extensible-mcp extensible-mcp --help \
+# gateway uses at runtime (`uvx --from git+...@<commit>`) — `uv tool install`
+# populates a different cache and does not help here. The arguments must match
+# _EXTENSIBLE_MCP_LAUNCH_ARGS in orchestrator/mcp_gateway.py (a unit test
+# enforces it): the commit pins extensible-mcp's code and --exclude-newer pins
+# the resolution of its dependencies, so the cache holds exactly what the
+# runtime launches and the gateway can start with no network. That holds only
+# if this step succeeded: `|| true` keeps the build green if GitHub is briefly
+# unreachable, and such an image fetches the commit — and needs network — on
+# its first gateway start. `uv` itself (installed above) is not pinned.
+RUN uvx --exclude-newer 2026-09-22T00:00:00Z \
+        --from git+https://github.com/SenteLabsAI/extensible-mcp@ac2001a09646a8044210042e12e62974f4c9687c extensible-mcp --help \
     || true
 
 COPY packages/core/pyproject.toml packages/core/uv.lock ./
-# Install exactly what uv.lock pins. `uv pip install -r pyproject.toml` never
-# reads the lockfile — it re-resolves the loose ranges in pyproject.toml
-# against PyPI at build time, so the image drifted from the versions CI
-# tests (#87). `--locked` (NOT `--frozen`, which skips the check) fails the
-# build if uv.lock is stale relative to pyproject.toml — run `uv lock` and
-# commit. The exported `--hash` lines are verified by `uv pip install`; `-q`
-# stops uv echoing the whole export into the build log. Stay on `--system`:
-# the model bakes below and the runtime CMD rely on system site-packages.
-# (The fastembed install further down is a separate, unpinned resolution
-# into the same env; today it moves nothing because the locked versions
-# already satisfy its constraints.)
-# No fallback and no README.md in this layer: a silent fallback previously
-# masked failures while also needing README.md copied here — which busts the
-# cache (full dep install + baked embedding models below) on every README
-# edit (#81). Let a real break fail loudly.
-RUN uv export --locked --no-dev --no-emit-project -q -o requirements.txt \
-    && uv pip install --system -r requirements.txt
+# Install exactly what uv.lock pins, straight from the lock. `uv sync` honours
+# the lock's per-package index (torch comes from PyTorch's CPU-only index,
+# everything else from PyPI — see [tool.uv.sources] in pyproject.toml) and
+# verifies the lock's hashes, so no index or strategy flags are needed here.
+# The previous `uv export` + `uv pip install -r` shape could not do this:
+# the export carries no index URLs, and adding the CPU index at install time
+# made uv fetch every package that mirror also hosts (numpy, sympy, jinja2,
+# requests, ...) from download.pytorch.org instead of PyPI.
+# `--locked` (NOT `--frozen`, which skips the check) fails the build if
+# uv.lock is stale relative to pyproject.toml — run `uv lock` and commit.
+# `--no-install-project`: the source is not in this layer yet (and this keeps
+# README.md out of it — copying it here busts the cache for the full dep
+# install and the baked models below on every README edit, #81); the project
+# itself is registered further down. `--inexact` stops uv removing packages
+# the lock does not know about — at this point that is `uv` itself (pip-
+# installed above) plus pip and setuptools. UV_PROJECT_ENVIRONMENT=/usr/local targets
+# the system interpreter's prefix, so the packages land in system
+# site-packages exactly as before: the model bakes below and the runtime CMD
+# rely on that.
+# (The fastembed install further down is a separate, unpinned resolution into
+# the same env; today it moves nothing because the locked versions already
+# satisfy its constraints.)
+RUN UV_PROJECT_ENVIRONMENT=/usr/local \
+    uv sync --locked --no-dev --no-install-project --inexact
 
 # Bake the embedding model the MCP gateway loads at startup
 # (sentence-transformers/all-MiniLM-L6-v2). Without this the ~90 MB model is

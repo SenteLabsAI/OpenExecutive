@@ -29,6 +29,7 @@ def test_sections_have_unique_stable_ids() -> None:
         "review",
         "memory",
         "peer_memory",
+        "attunement",
         "org",
         "audit",
         "schemas",

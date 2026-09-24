@@ -57,7 +57,12 @@ export default function InfoTip({
       if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        // Mark it consumed so a page-level Escape handler (e.g. Chat's
+        // stop-the-turn shortcut) doesn't also fire on the same keypress.
+        e.preventDefault();
+        setOpen(false);
+      }
     }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);

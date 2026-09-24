@@ -86,3 +86,40 @@ def test_standalone_dm_prompt_carries_older_items_as_one_line() -> None:
     assert "Handled overnight" in STANDALONE_BRIEF_SYSTEM
     assert "Top call" in STANDALONE_BRIEF_SYSTEM
     assert "delta" in lowered
+
+
+def test_quiet_lines_are_single_sourced_into_the_prompts() -> None:
+    """The quiet-day text exists once and the prompts carry it verbatim.
+
+    `today._regen_briefing_narrative` writes these strings directly when it
+    short-circuits an empty board, and `morning_brief` uses one as its empty
+    fallback — both skip the model, so their text must be exactly what the
+    model is told to emit. They were five hand-copied literals across three
+    files; this is the guard that keeps a prompt reword from silently
+    desyncing them.
+    """
+    import inspect
+
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.briefing.narrative import (
+        BRIEFING_NARRATIVE_SYSTEM,
+        QUIET_PRINCIPAL,
+        QUIET_VIEWER,
+        STANDALONE_BRIEF_SYSTEM,
+        _viewer_system_prompt,
+    )
+    from openexecutive.workflows import morning_brief
+
+    assert QUIET_PRINCIPAL in BRIEFING_NARRATIVE_SYSTEM
+    assert QUIET_PRINCIPAL in STANDALONE_BRIEF_SYSTEM
+    assert QUIET_VIEWER in _viewer_system_prompt("Dan", "CFO")
+
+    # The consumers must import the constants, never re-declare the phrase.
+    # Checked against source because both import them function-locally (this
+    # module's convention), so there is no attribute to compare identities on.
+    phrase = "Quiet right now"
+    for module in (today_route, morning_brief):
+        assert phrase not in inspect.getsource(module), (
+            f"{module.__name__} hardcodes a quiet-day line; import "
+            "QUIET_PRINCIPAL / QUIET_VIEWER from briefing.narrative instead"
+        )

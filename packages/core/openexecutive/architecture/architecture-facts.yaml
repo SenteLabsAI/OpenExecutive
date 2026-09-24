@@ -75,6 +75,7 @@ system:
     - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only.
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
+    - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it.
     - Each specialist gets its own RAG fetch filtered by its declared domain alias.
     - System-prompt blocks marked with cache_control must remain byte-identical across turns — any dynamic content in them breaks Anthropic prompt caching and roughly 10× the cost.
     - Total cache_control blocks must stay ≤ 4 (the Anthropic API hard limit). The current layout uses 2 of those slots for the system prompt (see `caching.block_order`), leaving headroom for the rolling-history ephemeral marker on the penultimate assistant turn.
@@ -96,6 +97,17 @@ caching:
     Two cache_control blocks (down from four, consolidated in commit c27dcec
     to stay within the Anthropic 4-block API limit alongside any other
     ephemeral markers the request uses).
+  breakpoint_budget: |
+    The full 4-block budget, and why none of it is spare:
+      1. persona + knowledge (1h)      — system block 0
+      2. company + org (5m, optional)  — system block 1
+      3. last client tool (1h)         — executive tool list
+      4. newest tool_result (5m)       — the agent loop's intra-turn marker
+    History turns deliberately carry NO marker. A rolling marker on the
+    penultimate assistant turn used to claim a latent fifth breakpoint,
+    which Anthropic rejects outright on the direct (non-OpenRouter) path.
+    It never earned its slot: history turns are flat strings, and the
+    system + tool blocks already cover the expensive stable prefix.
   block_order:
     - id: persona_and_knowledge
       ttl: 1h
@@ -119,11 +131,46 @@ caching:
         Shorter TTL so org edits propagate quickly. Only emitted when
         non-empty.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
-  rolling_history_cache: The penultimate assistant turn is marked ephemeral, building a rolling cache for long conversations.
+  intra_turn_cache: |
+    executive._apply_loop_cache_marker moves a single ephemeral marker onto
+    the newest non-empty tool_result after each iteration of the tool-use
+    loop. Without it the loop caches only the static tools+system prefix and
+    re-sends its whole accumulated transcript at full input price on every
+    iteration; the runtime signature of that bug is cache_read_input_tokens
+    pinned flat while the prompt grows iteration over iteration.
+    The marker MOVES rather than accumulates — each pass sweeps every
+    tool_result clean before re-marking the newest. Left in place per
+    iteration it would reach max_iterations breakpoints and blow the 4-block
+    limit. Sweeping first also makes the helper idempotent and self-healing:
+    there is no bookkeeping index to drift out of sync.
+    The marker must stay at the tool_result block's own top level —
+    providers.feature_gate._strip_cache_control walks one level deep only, so
+    a marker nested inside tool_result["content"] would survive the gate and
+    reach a backend that rejects the field.
+  tool_result_bound: |
+    TOOL_RESULT_MAX_CHARS (default 50,000) caps one tool result before it
+    enters the prompt. Applied at the single point every result reaches the
+    model (the tool_results comprehension in _stream_agent_loop), not at each
+    producer: that also covers specialist output, tool errors and the
+    unknown-tool fallback, and leaves non-model consumers — the
+    propose_form_values json.loads, the audit trail — reading the full text.
+    Capping upstream of that parse would feed it truncated JSON and silently
+    drop the form_patch SSE event.
+    A circuit breaker, not a routine clipper: the default is set so ordinary
+    tool output never reaches it. A cut result carries an explicit marker
+    naming the tool and stating the result is incomplete — silent truncation
+    is worse than none, because the model reads the cut text as the whole
+    answer and confabulates the rest.
   openrouter_passthrough: |
     When OPENROUTER_ENABLED=true and the selected model is in the Claude
     family, cache_control markers pass through the OpenRouter translator
-    unchanged. OpenRouter forwards them to Anthropic, so prompt-cache hit
+    unchanged — on system content, user-turn content, tool entries, and
+    tool-result content. The tool-result case is the agent loop's intra-turn
+    marker and needs the translator to carry it onto the emitted `tool`
+    message as a typed array: a marker text block appended to the user
+    message would be re-ordered ahead of the tool messages (they are
+    appended last) and land before the very bytes it must cover.
+    OpenRouter forwards these markers to Anthropic, so prompt-cache hit
     rates stay roughly equivalent to direct routing. For non-Claude
     models the feature gate strips cache_control before translation —
     those backends have no equivalent feature and would reject the
@@ -255,13 +302,23 @@ providers:
     - Non-Claude model + OPENROUTER_ENABLED=false → HTTP 400 at the API boundary. No silent fallback.
   council_ui_dropdown_source: |
     openexecutive.providers.allowed_models_for(agent_id) — returns
-    ANTHROPIC_DIRECT_MODELS (claude-opus-5, claude-sonnet-5, claude-haiku-4-5)
-    plus registry.openrouter_models() (live catalog, else the OPENROUTER_MODELS
-    fallback snapshot) when the toggle is on.
+    ANTHROPIC_DIRECT_MODELS (claude-fable-5-1, claude-opus-5-5, claude-opus-5,
+    claude-sonnet-5, claude-haiku-4-5) plus registry.openrouter_models() (live
+    catalog, else the OPENROUTER_MODELS fallback snapshot) when the toggle is
+    on; catalog slugs that duplicate a direct id are dropped.
     Every agent (including utility_fast) gets the same list; the
-    utility_fast-only free/cheap OpenRouter matrix was removed. The Council
-    UI dropdown (GET /agents/models?agent_id=) and the PATCH /agents/{id}
-    validator share this function.
+    utility_fast-only free/cheap OpenRouter matrix was removed. The PATCH
+    /agents/{id} validator and GET /agents/models share this function.
+    The Council UI reads GET /agents/models/options?agent_id= instead —
+    registry.model_options_for(), the same ids in the same order, each
+    annotated with provider (anthropic for claude-* ids and anthropic/*
+    slugs, the vendor prefix otherwise, local for LOCAL_MODELS — local
+    checked first), provider_label, route (mirrors get_provider: local /
+    direct / openrouter — Claude ids route via OpenRouter whenever
+    OPENROUTER_ENABLED is on) and a display label ("Claude Opus 5.5"). The
+    UI renders it as a Provider dropdown plus a Model dropdown filtered to
+    that provider; a stored model missing from the list (a stale override)
+    is kept selectable and marked "not in the current allowlist".
   scope_caveat: |
     Non-specialist fast classifiers (workflows.wait_for_human.parse_decision,
     workflows.inbound_resolver._llm_disambiguate, the Discord response
@@ -360,6 +417,7 @@ routing:
     side-effecting tool so a chip surfaces in the live stream
     ("Approved proposal #N" / "Dismissed proposal #N"). The button-driven
     Approve / Dismiss path on the briefing page still acks via the HTTP
+    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — additive only, so an address dropped from the roster stays scheduleable for the life of the in-memory session. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because origin_channel names an inbound chat adapter and the email poller, alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave it empty while legitimately recording linkage. scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set.
     route — the tool exists for the chat-driven path that the model
     self-detects from natural-language approval. The same feedback loop as
     the HTTP ack applies: a `dismissed` on a watch-sourced alert lowers
@@ -480,28 +538,78 @@ routing:
     (`_MoveContext.person_label`, `target_person_name` in details); merged
     details carry `superseded_by_headline`.
   artifact_tools: |
-    `draft_artifact(title, document, why_interesting, source_urls?,
-    severity?)` (openexecutive.orchestrator.artifact_tools) lets the
-    Executive author a standalone Markdown deliverable — a memo, brief,
-    or competitor teardown it judged worth the principal's review — and
-    surface it for reading. Distinct from `create_alert`: the document is
-    written DIRECTLY to the alerts table via `alerts.store.insert_alert`
-    (source=`artifact`, topic_tags=`["artifact"]`, routed to the
-    principal via `people.store.find_principal_person`), BYPASSING the
-    triage pipeline so the authored text is never suppressed or
-    rewritten. It does not page/DM anyone — it only lands in the `/today`
-    "Needs you" queue, where the UI renders it as a document card
-    (Markdown body + a "why this is worth your time" rationale) with a
-    review-not-approve action ("Mark reviewed"). Registered in
-    `_ALL_SKILL_TOOLS` / `_ALL_SKILL_HANDLERS`, so it is available in
+    Three tools (openexecutive.orchestrator.artifact_tools), registered via
+    `DRAFT_ARTIFACT_TOOLS` / `DRAFT_ARTIFACT_TOOL_HANDLERS` in
+    `_ALL_SKILL_TOOLS` / `_ALL_SKILL_HANDLERS`, so they are available in
     BOTH the chat tool loop and the executive_research synthesis loop.
-    Side-effecting: emits a `tool_invocation` audit row (actor=
-    "executive") and an `action_taken` chip ("Drafted artifact for
-    review: {title}"). Beyond the `/today` queue, every drafted artifact
-    is ALSO browsable in the dedicated read-only Artifacts section
-    (`/artifacts`, see the `artifacts:` key) and stays visible there after
-    it is acked/dismissed — the alert row persists, so the artifact is
-    never lost once it leaves the "Needs you" queue.
+    - `draft_artifact(title, why_interesting, format?, document?, sheets?,
+      url?, link_label?, source_urls?, supersedes?, severity?)` publishes a
+      deliverable. `format` is one of `ARTIFACT_FORMAT_NAMES`
+      (`artifact_formats.py`, a hard-coded SORTED tuple so the cached tool
+      schema is byte-stable): markdown (default), html, docx, xlsx, link.
+      Distinct from `create_alert`: the content is written DIRECTLY to the
+      alerts table via `alerts.store.insert_alert` (source=`artifact`,
+      topic_tags=`["artifact"]`, `artifact_format`, routed to the principal
+      via `people.store.find_principal_person`), BYPASSING the triage
+      pipeline so the authored content is never suppressed or rewritten.
+      Returns `{artifact_id: "alert:<n>", url: "/artifacts/alert:<n>",
+      format, external_url?, superseded?}` so chat can link the result.
+      The description tells the model to ALWAYS use it when the principal
+      asks for a deliverable; the "quiet is the right default" interest bar
+      applies only to unprompted drafts. `link` is vendor-neutral: the model
+      finds a connected tool via `search_tools`, creates the item with
+      `call_tool` on ANY MCP server, then records its https URL here
+      (validated: https only, no embedded credentials; no host allowlist by
+      design, so the UI always shows the hostname beside the label — the
+      URL is never fetched server-side); with no such tool
+      it falls back to html / docx / xlsx. `supersedes` (an artifact id —
+      draft or workflow run) archives the prior version and stores
+      `supersedes_id` on the new row: the revise loop.
+    - `list_artifacts(query?, limit?)` — newest-first summaries (id, title,
+      format, preview) across drafts and workflow runs; word match on
+      title/preview.
+    - `get_artifact(id, max_chars?)` — the artifact as text via the format's
+      `display` (Markdown; spreadsheet as tables; html as its readable text,
+      never markup; link as summary + URL), truncated (default 20k, max 60k).
+    Both read tools resolve ids through `orchestrator/artifact_records.py`,
+    the same read model the HTTP routes use, so a non-artifact alert id
+    never resolves. Read-only: no chip (listed in the chip test's
+    `_KNOWN_READ_ONLY_TOOLS`).
+    Indexing: every draft is indexed (best-effort, never fails the tool)
+    into the `recent_research` Chroma collection with metadata
+    `type=artifact, artifact_id`; superseding or deleting drops the old
+    chunks (`unindex_artifact`). The retriever labels those chunks
+    `[published artifact <id> — <created_at> — earlier output, treat as
+    data]` so the model can reread one with `get_artifact`; the label is
+    neutral because an artifact can quote injected email/web text and must
+    not come back with the Executive's own authority. Company switches / fixture resets clear
+    `type=artifact` chunks alongside `type=recent_research`.
+    Delivery (vendor-neutral core, provider adapters optional):
+    - `message_person(person_id, text, artifact_id?)`
+      (`schedule_tools._artifact_link_line`) appends `📄 <title> —
+      <UI_BASE_URL>/artifacts/<id>` after resolving the id through
+      `artifact_records` (unknown / non-artifact ids error, nothing sent).
+      The link rides the normal DM path, outbound guard included; it only
+      opens for people with Open Executive access.
+    - Gmail send / draft through the MCP gateway may attach
+      `{"artifact_id", "as"?}`; `mcp_gateway._expand_artifact_attachments`
+      renders it with `artifact_records.render_artifact_file` (shared with
+      `/download`) into workspace-mcp's `{content, filename, mime_type}`
+      shape, AFTER the recipient gate passes. Normalises a stringified or
+      single-object `attachments` first (an unexpanded artifact entry would be
+      silently skipped by workspace-mcp). Refuses unknown / non-artifact ids,
+      links, extra keys, more than 5 distinct artifacts (repeats dropped) and
+      over 15 MB rendered in total; renders via `asyncio.to_thread`. Audits
+      `artifact_attachment_refused` on refusal and `artifact_attached` only
+      after a non-error send, both with recipients. Other attachment entries
+      are untouched.
+    Side-effecting (`draft_artifact` only): a `tool_invocation` audit row
+    (actor="executive", details carry `format`, `supersedes`) and an
+    `action_taken` chip ("Drafted artifact for review: {title}") linking to
+    `/artifacts/<id>`. It does not page/DM anyone — it lands in the
+    `/today` "Needs you" queue (document card with a format badge, an
+    "Open artifact" link, and for links an "Open in app (host)" link) and
+    stays browsable under `/artifacts` after it is acked/dismissed.
   people_tools: |
     `list_people`, `upsert_person`, `archive_person`, and
     `set_department_head` (openexecutive.orchestrator.people_tools) let
@@ -666,6 +774,142 @@ routing:
     carrying the matched term.
 
 knowledge:
+  distance_gates: |
+    Two gates. KNOWLEDGE_DISTANCE_THRESHOLD (default 0.55) is the shared one,
+    applied to COMPANY, NOTION_WIKI and RECENT_RESEARCH.
+    KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD optionally tightens BUILTIN and the
+    FAILURES collection queried by retrieve_failures() — both ship with the
+    repo and are generic by construction, so they move together. Unset (the
+    default) every collection keeps the shared value, which is the historical
+    behaviour.
+
+    The builtin gate can only ever TIGHTEN: _resolve_builtin_threshold takes
+    min() against the shared value. Without that clamp an operator who
+    transposed the two variables would invert the whole point — BUILTIN looser
+    than COMPANY, admitting handbook prose at a distance where a company doc is
+    still dropped. The field is also range-checked to [0, 2]; a negative value
+    would disable builtin retrieval and present as "the knowledge base stopped
+    helping" rather than as a config error.
+
+    Why the split exists: BUILTIN is generic material and an order of magnitude
+    larger than a typical company corpus, so a threshold loose enough to admit
+    the right company doc admits a lot of unrelated handbook prose with it.
+    Raising the shared gate to fix company-doc recall therefore costs precision
+    everywhere; the per-collection gate buys the recall without the noise.
+
+    Precedence inside retrieve(): an explicit `builtin_distance_threshold`
+    argument, then KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD, then the shared
+    threshold — each clamped by min() against the shared value.
+
+    A caller-pinned `distance_threshold` deliberately does NOT suppress the
+    builtin setting. No caller in the repo pins one, so such a tier would be
+    dead code today; and a future caller loosening the shared gate for an
+    unrelated reason must not silently revoke an operator's deployment-level
+    guardrail. A caller that genuinely wants one gate for both collections
+    says so with `builtin_distance_threshold`.
+  skills: |
+    Skills are Markdown procedures with YAML frontmatter (name, description,
+    when_to_use, category). The UI calls them PLAYBOOKS and shows them as a
+    tab on Workflows (`/jobs?tab=playbooks`; `/skills` redirects there). The
+    mental model the UI and persona teach: a playbook is HOW the Executive
+    does a piece of work (method, template, checklist; no inputs, schedule or
+    side effects); a workflow is the runnable job that produces an artifact.
+    Backend names (`/skills`, the five `*_skill` tools, the `skills`
+    collection) are unchanged.
+
+    Storage: built-ins ship in git under knowledge/builtin/skills/<category>/;
+    company skills in company/skills/<category>/ (gitignored, copied with
+    client slots, wiped by fixture reset). One Chroma doc per skill in the
+    `skills` collection, id `skill::{source}::{name}`, text = name +
+    description + when_to_use; the body is only returned by load_skill.
+
+    Customize / hide / restore (knowledge/skills_repo.py):
+      - A company skill with a built-in's name CUSTOMIZES it — the company
+        file wins in get/list/load and in workflows that read a skill body
+        (board_prep, quarterly_plan via get_skill). `update_skill` on a
+        built-in writes that company copy with frontmatter
+        `customizes_builtin: true`; the built-in file is never touched. The
+        built-in's index row is dropped while shadowed. Only a flagged copy
+        of a built-in that is not hidden counts as `customized` — a company
+        skill that merely shares a name with a built-in shipped later is the
+        user's own, so deleting it reports "deleted", not "reverted".
+      - A malformed company file shadows nothing: lookups, listing and
+        index reconciliation all skip it, and the next write for that name
+        replaces it (one company file per name).
+      - `delete_skill` never raises for built-ins any more. It returns an
+        outcome: "deleted" (plain company skill), "reverted" (company
+        customization removed, built-in re-indexed) or "hidden" (built-in
+        added to company/skills/.hidden.yaml and dropped from the index).
+        `restore_skill` validates the built-in before editing the hidden
+        list, so a failed restore changes nothing.
+      - Hidden built-ins are invisible to search_skills/load_skill and to
+        list_skills unless include_hidden; `GET /skills/{name}` still reads
+        them so the UI can show one before `POST /skills/{name}/restore`.
+      - create_skill conflicts with every existing name, hidden built-ins
+        included (customizing goes through update).
+
+    Index reconciliation: `sync_builtin_skill_index` makes the built-in rows
+    match "built-ins in effect" (on disk, not hidden, not customized) —
+    dropping extra rows and (re)indexing missing or changed ones. It runs at
+    startup (seed_builtin_skills), after a client-slot restore, and after a
+    fixture reset. Before this, seeding skipped whenever the collection was
+    non-empty, so a built-in added in a release never reached an existing
+    install's index.
+
+    Chat proposes, a person approves (knowledge/skill_drafts.py): the
+    create/update/delete_skill tools never change the library — they save a
+    draft JSON in company/skills/.drafts/<name>.json (one per name, newest
+    wins; not *.md, so never listed, indexed, searched, loaded or followed;
+    carried by client slots and cleared by fixture reset with the rest of
+    company/skills). Every save stamps a new `id`; approve (body {id}) and
+    discard (?id=) act only on that version (409 SkillDraftChangedError
+    otherwise), and approval removes the draft only if it is still that
+    version. Drafts also report `followers` (workflows naming the playbook),
+    creates included. The Playbooks tab's "To review" strip approves
+    (POST /skill-drafts/{name}/approve -> the ordinary repo op; 409 keeps
+    the draft on conflict / vanished target), edits then saves, or discards.
+    Chips read "Drafted playbook / Drafted a change to / Proposed deleting"
+    and link to /jobs?tab=playbooks&draft=<name>. The persona must say it's
+    a draft and never claim a playbook was saved.
+
+    Chat tools stay off built-ins: `update_skill` / `delete_skill` in
+    orchestrator/skills_tools.py refuse any name a built-in ships under
+    (code "builtin"), including the company's customized copy. Workflows
+    read built-ins by fixed name and the tool loop also runs on inbound
+    email/Slack/etc., so letting the model customize or hide one would let a
+    crafted message rewrite what board_prep / quarterly_plan follow.
+    Customize / revert / hide / restore are HTTP-only (the Playbooks tab).
+
+    Chat chips: see "Chat proposes, a person approves" above.
+
+    Workflows follow playbooks (workflows/playbooks.py): `load_playbook`
+    returns the body in effect ("" when hidden, missing or malformed — never
+    raises) and `playbook_clause` appends it to a step prompt. Built-ins
+    declare `Workflow.playbooks`; test_workflow_playbooks.py asserts the
+    declaration equals the module's load_playbook("…") calls, so the "used
+    by" reporting can't drift. Pairs: board_prep→board-prep-deck,
+    quarterly_plan→quarterly-okr-set + quarterly-forecast,
+    mbr→monthly-business-review, competitive_teardown→competitive-teardown,
+    fundraising_prep→fundraise-narrative, exec_search_brief→role-scorecard.
+    (board_prep used to also load board-update-memo and never use it; that
+    dead load is gone.) Custom workflows: SpecialistStepSpec.playbook,
+    validated at save, appended AFTER {field} rendering. playbook_users()
+    feeds SkillMeta.used_by, search_skills hits' `workflows`, and the UI's
+    hide/revert/delete warnings, and the chat-tool guard: update_skill /
+    delete_skill also refuse (code "followed_by_workflow") any company
+    playbook any workflow follows (switched-off custom ones too, via
+    list_definitions(active_only=False)) — an approved scheduled custom
+    workflow reads it at each run and later action steps write to
+    already-approved targets unattended, so a crafted inbound message must
+    not be able to rewrite it. create_skill runs the same follower check
+    (a deleted playbook's name a workflow still follows can't be refilled
+    from chat), and the check uses playbook_users(strict=True): a store
+    error refuses with code "unverifiable" instead of failing open.
+    load_playbook catches every exception; a
+    custom step whose playbook is unavailable emits a `progress` event.
+    Persona routing: a hit with `workflows` +
+    a request for the finished deliverable -> run/offer the workflow;
+    otherwise follow the playbook inline.
   collections:
     - name: BUILTIN
       what: Curated MBA-style domain knowledge shipped with the repo.
@@ -869,6 +1113,68 @@ memory:
     populates `domain` but not `department`, so today the mirror only
     fires for explicit dept-scoped writers; falling back to `domain`
     is a deliberate follow-up decision, not silent drift.
+    Extraction is gated by `should_extract(user_message)`, which has NO
+    length floor — it admits any non-blank user message. There used to be a
+    combined user+assistant floor of 1500 chars, which on a live tenant
+    blocked 9 of 16 turns — every instruction the principal gave — while
+    admitting the 7 long analytical exchanges that contained no commitment;
+    the extractor ran 13 times and stored nothing. Moving that floor to the
+    user's side relocates the bug rather than fixing it: the canonical
+    executive decision is a long analysis answered with "Approve option B."
+    (17 chars) or "Do B." (5), and any floor high enough to skip "Done" (4)
+    also skips those. "Do B." and "Done" differ by one character and mean
+    opposite things, so length cannot separate a decision from an
+    acknowledgement. `_is_valid_user_commitment` — the verbatim-quote check
+    against the user's own words — is the gate that can, and it is the one
+    that runs. The cost of admitting acknowledgements is one utility-fast
+    call per turn that proposes nothing.
+    The "user's own words" are the turn's speaker text
+    (`executive._speaker_text`: `memory_text` when the entry point passes
+    one, else the prompt). An inbound email's prompt carries the quoted
+    chain and a briefing handoff's carries the Executive's card body, either
+    of which let the Executive's own recommendation pass the quote check as
+    the principal's decision.
+    That quote check presumes `user_message` holds the PRINCIPAL's words, and
+    on a chat channel it does not: `Executive.chat()` is reached from Slack,
+    Discord, Telegram, Google Chat and the email poller, so a teammate's line
+    would be stored in `decisions` with no speaker attached, and an inbound
+    email body is text the sender chose (a self-quote is free). Removing the
+    length floor is what makes this bite — short channel traffic used to fall
+    under it incidentally — so `should_extract` also takes `origin_channel`
+    and `person_id`. Empty channel = web / CLI / API, the principal's own
+    authenticated surfaces, where person_id is legitimately None in a
+    single-user install. A named channel must resolve to `is_principal`;
+    an unresolvable speaker fails closed.
+    Every pass writes a `memory_extraction` audit row (proposed / stored /
+    dropped-with-reason / malformed, plus a `failure` reason when the pass
+    raises — the handler catches BaseException too, so a CancelledError at
+    shutdown is not logged as a clean empty pass). Before it, an extractor
+    storing nothing looked identical to one with nothing to store. A
+    `proposed>0, stored=0` streak is the signal to watch; `malformed` keeps a
+    pass that got only garbage from reading as one that found nothing.
+    `stored` is incremented AFTER the write, so a locked database reports
+    `stored=0` rather than a healthy-looking pass that wrote no rows.
+    A `bad_quote` drop earns exactly one corrective call: the model is shown
+    the rejected items and the quotes it gave, told to copy the span
+    character-for-character (typos included) or return empty arrays, with the
+    tool forced where the provider supports tool choice. Every retry item is
+    validated first (a still-invalid one adds no second drop; counted
+    `still_invalid`), then classified: label matches a pending bad-quote drop
+    record → recovery, stored and record released; else its quote (terminal
+    punctuation ignored) already supports a stored item of that kind →
+    re-send, ignored and counted `repeated`; else a new proposal, stored and
+    counted — a reworded label cannot be told from a different item, so its
+    original drop stands. Recovery is checked before re-send because two
+    items can rest on one sentence. Malformed shapes at any level (a kind
+    that is not a list, an item or payload that is not a dict, a response
+    with no tool call) are counted `malformed`. The row's `retry` block
+    (`rejected`, `recovered`, `repeated`, `still_invalid`, `malformed`,
+    `failure`) is always present; `rejected` is set from the complete drop
+    list when the row is written, so neither a store failure before the
+    retry nor a cancellation during it can zero it. `proposed == stored +
+    item drops` still holds after the retry. A retry exception is the
+    retry's own `failure`; the first pass's results stand. `memory_extraction`
+    is a declared `EVENT_TYPES` member so the audit UI filter can select it.
 
 peer_memory:
   what: |
@@ -911,26 +1217,194 @@ peer_memory:
     prefetch: |
       ``prefetch(query, *, person_id, session_id=None, reasoning_level="low")``
       — once per turn at the start of ``Executive.stream_chat`` /
-      ``stream_chat_with_committee``. Calls Honcho's dialectic endpoint
-      (``peer.aio.chat(query)``) and returns a short ``<peer_memory>``
-      block injected into the USER turn (never a cached system block,
-      so it doesn't poison prompt caching). Bounded by
-      ``HONCHO_PREFETCH_TIMEOUT_S`` (10s in prod) — on timeout the turn
-      proceeds with an empty block. ``reasoning_level`` trades latency
-      for synthesis depth: ``"low"`` for the per-turn path,
-      ``"medium"`` for committee-reviewed turns that already pay
-      deep-review latency.
+      ``stream_chat_with_committee`` (the chat route runs it in parallel
+      with RAG and episodic retrieval and hands the result in). Returns a
+      short ``<peer_memory>`` block injected into the USER turn (never a
+      cached system block, so it doesn't poison prompt caching); on
+      timeout or error the turn proceeds with an empty block.
+      ``HONCHO_PREFETCH_MODE`` picks how the block is produced:
+
+      ``representation`` (default) reads the peer's card and the derived
+      conclusions most relevant to the inbound message —
+      ``peer.aio.context(search_query=message, search_top_k=K,
+      max_conclusions=K)``, ``K = HONCHO_PREFETCH_MAX_CONCLUSIONS``
+      (default 20) — a GET with no LLM behind it, ~100 ms on a
+      self-hosted instance. The block is the card lines (``IDENTITY:
+      Name: ...``, which binds the bare peer id the conclusions name the
+      person by) then Honcho's representation text, whole lines only up
+      to ``_REPRESENTATION_MAX_CHARS`` (4000): a line that does not fit is
+      dropped, never cut, control characters are stripped and a literal
+      ``</peer_memory>`` is defanged, since conclusions derive from text
+      anyone who can email the Executive wrote. A person Honcho has
+      nothing on yet yields no block and ``outcome=empty``.
+      It runs on ``HONCHO_PREFETCH_TIMEOUT_S`` unscaled and ignores
+      ``reasoning_level``. Honcho's own guidance is the same split:
+      ``context()`` for per-turn grounding, ``chat()`` when a reasoned
+      answer is worth the latency.
+
+      ``dialectic`` asks Honcho's chat endpoint (``peer.aio.chat(query)``)
+      with the inbound message as the question, so the answer is
+      synthesized prose from an LLM call (seconds). There
+      ``reasoning_level`` trades latency for synthesis depth:
+      ``"minimal"`` on ``stream_chat``, which awaits the prefetch inline
+      before the first streamed byte (``"low"`` was measured hitting the
+      ~5s tail for peers with large representations); ``"low"`` from the
+      chat route, which runs the prefetch inside the same gather as RAG
+      and episodic retrieval so the extra depth adds no dead air of its
+      own; ``"medium"`` for committee-reviewed turns that already pay
+      deep-review latency. The mode applies to every per-person
+      ``prefetch`` call, committee turns included; only
+      ``prefetch_department`` and ``directional_chat`` (the
+      ``ask_about_person`` tool) always use the chat endpoint, because
+      they are deliberate questions off the inline path. Set ``dialectic``
+      for a Honcho server without the
+      peer-context route; an error there is one audit row with
+      ``error_type`` and a memory-less turn, never a fallback that spends
+      the budget twice.
+
+      In dialectic mode, ``HONCHO_PREFETCH_TIMEOUT_S`` is the knob for the FAST per-turn
+      path and is used unscaled there (``minimal``/``low`` sit at 1.0).
+      Only the deliberate levels scale off it — ``medium`` 4x, ``high``
+      5x, ``max`` 6x — capped at ``_PREFETCH_CEILING_S`` and never below
+      the configured base, via ``prefetch_timeout_s()``. At the default 3s
+      base that is 12s for ``medium`` with ``high``/``max`` at the 15s
+      ceiling; at a 10s base every deliberate level IS the ceiling — the
+      multipliers only differentiate below it, by design. Honcho's
+      dialectic latency scales steeply with the level (measured on
+      hosted Honcho: ``low`` ~2s, ``medium`` ~8s), so a single flat
+      budget made the deeper levels unreachable — every ``medium`` call
+      timed out and the turn silently ran with no peer memory, strictly
+      worse than having asked for ``low``. ``medium`` carries more
+      headroom than its measurement alone implies because the budget
+      spans ``peer()`` + ``chat()`` and a budget at the mean still times
+      out half the time.
+
+      The fast levels stay unscaled deliberately: ``prefetch`` is awaited
+      inline before the first streamed byte, so multiplying the base
+      there adds dead air to every ordinary turn; and any multiplier
+      above 1.0 flattens every level onto the ceiling once the base
+      approaches it, which would stop the operator's knob distinguishing
+      the two paths at all. A non-positive base falls back to
+      ``_DEFAULT_PREFETCH_TIMEOUT_S`` — ``wait_for`` with timeout <= 0
+      fires before the request is made. Each prefetch audit row carries
+      the ``timeout_s`` it ran under.
+
+      ``_client_timeout_s`` is an OUTER bound over every PER-CALL budget
+      in the module, kept strictly greater than all of them; the aggregate
+      ceilings on whole passes are deliberately excluded, since it applies
+      per request. Because it is no longer tight, the
+      fire-and-forget bodies (person sync, department sync, department
+      note) — none of whose individual calls is separately budgeted —
+      carry their own ``_SYNC_TOTAL_TIMEOUT_S`` ceiling and emit
+      ``outcome=timeout`` when it fires; the workspace purge's session
+      listing is bounded by ``_SESSION_PURGE_BUDGET_S`` for the same reason.
     sync_turn: |
       ``sync_turn(user, assistant, *, person_id, session_id, co_present_person_ids)``
       — fire-and-forget background task scheduled on the current event
       loop; never blocks the user-facing response. Persists the
-      completed exchange to a Honcho session. ``co_present_person_ids``
+      completed exchange to a Honcho session: the person's message under
+      their peer and the Executive's reply under the ``executive`` peer,
+      which is resolved through ``_executive_peer`` with
+      ``PeerConfig(observe_me=False)``. Recording the reply lets the
+      person's representation see both sides of the exchange; without
+      the flag Honcho's deriver also built a representation OF the
+      Executive from those replies — pure cost, nothing reads it, and the
+      place where a person's words were misattributed to the Executive.
+      The async ``peer()`` is a get-or-create POST that applies a changed
+      configuration to an existing peer, so the flag is re-asserted on
+      every sync for free.
+
+      The "person's message" is ``memory_text`` when the entry point
+      passes one (``Executive.chat`` / ``stream_chat`` /
+      ``stream_chat_with_committee``), else the LLM-facing
+      ``user_message``. Honcho derives facts about a person from every
+      message posted under their peer, and several prompts carry text the
+      person did not write. Observed in production: an inbound email's
+      framing, headers (the Executive's own address in ``To:``) and quoted
+      chain produced "<person> is associated with <exec address>" and
+      "<person> received an email from <person>"; a briefing Discuss seed
+      quoting the Executive's artifact produced "<person> assigned a
+      colleague to …". So the email poller passes ``_email_memory_text`` (subject, the
+      sender's new text, attachment filenames), ``/chat/upload`` passes
+      the typed text plus filenames, and the briefing handoffs send a short
+      ``memory_text`` line through ``POST /chat``, phrased as the user
+      speaking and ended with "." before the headline on its own line
+      ("I approve this proposal." / "<headline>"): an "Asked to …" line
+      was derived as "<person> was asked to …", and a "?" in a headline
+      inside the sentence voided the extraction quote gate. An email's
+      subject is dropped when it is a reply's or forward's (Re:/Fwd:) —
+      the earlier message's subject, often the Executive's own. ``co_present_person_ids``
       enumerates other humans in the conversation context (Discord
       thread members, Slack thread participants, email To+Cc) so
       Honcho can store them as session peers — the data shape that
-      makes peer-of-peer reasoning possible. Sanitizes session ids
-      through ``_safe_honcho_id`` (Honcho rejects ``[^a-zA-Z0-9_-]``)
-      so channel-shaped ids like ``discord:thread:N`` get rewritten to
+      makes peer-of-peer reasoning possible. Also seeds each person
+      peer's Honcho card with the roster's name (``_seed_identities`` /
+      ``_seed_peer_identity``, applied on the department sync path too):
+      peers are keyed by ``Person.id``, so without this the only identity
+      signal Honcho receives is a bare integer, and its dreaming agent
+      concludes the number IS the person's name — observed in production
+      as a card reading ``IDENTITY: Name: 1``. Cards are injected into
+      the dialectic system prompt on every ``peer.aio.chat()``, so that
+      error then propagates into every later answer about that person.
+
+      The card carries the NAME ONLY: email and role would export roster
+      PII to a third-party memory service, for cc'd people included, and
+      neither is needed to fix the defect. ``set_card`` replaces the
+      whole card, so only ``IDENTITY:`` lines are swapped (matched case-
+      and whitespace-insensitively) and the deriver's ``ATTRIBUTE:`` /
+      ``RELATIONSHIP:`` lines are preserved; the existing card is split
+      on PHYSICAL lines first, because one list element may itself span
+      lines and hide an identity claim on its second, and the carried-over
+      lines are capped.
+
+      Roster values are attacker-reachable (``upsert_person`` is a chat
+      tool an inbound email sender can reach), so ``_card_value``
+      NFKC-normalises, flattens whitespace, strips Cc/Cf characters,
+      length-caps, and then holds the value to an ALLOW-LIST of letters,
+      combining marks, digits and a small punctuation set, with the
+      colon lookalikes the category allow-list would otherwise admit
+      STRIPPED out — taken from Unicode's confusables data (everything
+      mapped to U+003A) rather than from character names; U+A4FD is a
+      Lisu tone LETTER whose name never says colon. Stripped rather than
+      refused, because the visarga is the nominative ending in formal
+      Devanagari/Gujarati names: refusing would leave those people never
+      seeded, stripping keeps the stem form and still lets no colon shape
+      reach the card. Modifier letters as a class stay allowed (々, ー, ʻ). A deny-list of structure
+      tokens is not sufficient: the consumer is an LLM system prompt
+      rather than a parser, so ``ATTRIBUTE :``, a fullwidth colon, a
+      zero-width space and a Cyrillic homoglyph all read the same to the
+      model while defeating a literal match. The allow-list refuses every
+      colon variant, checked by an exhaustive test over every Unicode
+      codepoint whose name contains COLON plus an explicit test of the
+      confusables that names miss. It does NOT stop merely persuasive prose
+      — OE already embeds ``full_name`` in its own system prompt, so that
+      exposure is pre-existing, not introduced here.
+
+      Seeding runs AFTER the message write (that write is the point of
+      the sync and must not queue behind two card round trips per peer),
+      is bounded per peer by ``_IDENTITY_SEED_TIMEOUT_S`` AND per pass by
+      ``_SEED_TOTAL_TIMEOUT_S`` (the pass is serial, so the per-peer bound
+      alone costs peers x budget on a wide thread), and is best-effort. It runs OUTSIDE the
+      sync ceiling and is audited as its own ``seed_identity`` row (``ok`` only when no
+      peer failed; ``error`` when any did, with the ``failed`` count on
+      the row; ``timeout``; ``empty``), so the
+      sync row is a pure record of the persist, emitted the instant the
+      write lands — a slow card round trip can neither delay nor replace
+      it. Memoized per ``(workspace, person)`` on the facts
+      sent with an ``_IDENTITY_RECHECK_S`` interval: a rename re-seeds at
+      once, and because the deriver keeps re-deriving identity from the
+      peer id a one-shot memo would let ``IDENTITY: Name: 1`` return
+      unnoticed. A failure is memoized separately for
+      ``_IDENTITY_RETRY_AFTER_S`` — including every peer a pass-ceiling
+      cut-off left in flight or unreached — so a degraded card endpoint is
+      probed once per interval, not once per peer per turn.
+
+      Known limitation: the card replace is read-modify-write with no
+      ETag in the SDK, so a deriver write landing in between is lost
+      (self-correcting, since the deriver re-derives). Sanitizes session
+      ids through ``_safe_honcho_id`` (Honcho rejects
+      ``[^a-zA-Z0-9_-]``) so channel-shaped ids like
+      ``discord:thread:N`` get rewritten to
       ``discord_thread_N``.
     directional_chat: |
       ``directional_chat(*, person_id, question, target_person_id=None)``
@@ -1021,7 +1495,12 @@ peer_memory:
     ``prefetch_department``, ``sync_department_turn``, or
     ``append_department_note``. ``outcome`` is one of
     ``ok | timeout | error | disabled | no_person | no_department |
-    no_loop | empty``. Rows carry ``person_id``, optional
+    no_loop | empty`` (``empty`` on a prefetch means no block was
+    produced: nothing to ask — ``reason: no_query`` — or nothing known
+    about the person yet). Prefetch rows carry
+    ``mode``, ``timeout_s`` and, per mode, ``reasoning_level`` or
+    ``max_conclusions`` / ``card_lines`` / ``representation_chars``;
+    error rows add ``error_type``. Rows carry ``person_id``, optional
     ``department_slug`` (the new field joins person_id at the top of
     the audit details for dept-keyed ops; person-only ops leave it
     None), ``duration_ms``, and op-specific ``details`` (query
@@ -1070,6 +1549,56 @@ peer_memory:
       ``disabled | ok | error`` with ``latency_ms``. Intentionally does
       NOT exercise the dialectic endpoint (that would cost an LLM call
       per probe).
+    people_overview: |
+      ``GET /memories/people?recent=N`` (``honcho_client.people_overview``)
+      — what peer memory knows about each rostered person, for the Pulse
+      page's People tab. Read-only, no LLM call: one ``peers()`` listing
+      (every page, under one 15 s clock — the SDK walk is otherwise bounded
+      only per request), then per matched person (at most 8 in flight, each
+      under the unscaled prefetch budget, because the reads share the
+      per-loop client with the live chat prefetch) one self-conclusions
+      page (``peer.conclusions``,
+      newest first, ``recent`` of them, plus the page total) and one
+      ``get_card()`` with OE's own ``IDENTITY:`` lines removed. Peers are
+      matched to the roster by id and never created — ``peer(id)`` is a
+      get-or-create POST and a read must not mint peers for people who
+      have never talked; the ``executive`` and ``department_*`` peers and
+      archived people are skipped. Every line, timestamps included, passes
+      ``_block_safe_line``. The UI shares one in-flight request between the
+      header and the tab.
+      Response ``{status: ok|disabled|error, people: [{person_id,
+      full_name, is_principal, card, conclusion_count, last_observed_at,
+      recent: [{content, created_at}], error}], conclusion_total}``; one
+      person's failure or timeout sets that entry's ``error`` and leaves
+      the rest intact. One ``peer_memory`` row per call, ``op=overview``,
+      ``person_id`` null, ``details.people / conclusions / errors``. The
+      Pulse header adds ``conclusion_total`` to its Memories tile (hint
+      names the peer-note share; fetched apart from the gating batch so
+      the strip never waits on Honcho); the UI hides the tab when
+      ``status`` is ``disabled``. Peers match only an id spelled exactly
+      as OE writes it, once per person; within the newest page the
+      conclusions are ordered by instant (never by the rendered string,
+      which is not chronological across offsets); card elements and
+      conclusions are split on physical lines and scrubbed before the
+      identity-line filter, so a claim on an element's second line is
+      caught too. The UI is
+      read-only here: peer memory is Honcho's derived view, not the
+      Executive's own record the way decisions and advice are.
+    person_conclusions: |
+      ``GET /memories/people/{person_id}/conclusions?page=&size=``
+      (``honcho_client.person_conclusions``) — every self-conclusion about
+      one person, newest first, one page at a time (``size`` 1–100, default
+      50). The People tab renders each person as a card whose notes pane is
+      seeded from the overview's ``recent`` and, on "Show all", reads this
+      page by page as the pane scrolls. The peer is found through the same
+      ``peers()`` listing as the overview (shared ``_matched_peers``), never
+      ``peer(id)``: an unknown, archived or never-talked person is a 404,
+      not a new peer. Items are ordered by instant and scrubbed by the same
+      ``_to_conclusion`` as the overview. Response ``{status, person_id,
+      items, page, size, total, has_more}``; ``has_more`` falls back to "the
+      page was full" when the server sends no total. Listing under the 15 s
+      clock, the page read under the unscaled prefetch budget; one
+      ``peer_memory`` row per page, ``op=conclusions``.
     audit_filter: |
       ``/audit?event_type=peer_memory`` for the flat list;
       ``/audit/session/{id}`` for per-turn context with peer_memory
@@ -1130,6 +1659,278 @@ peer_memory:
     - "Session ids passed to the provider must match ^[a-zA-Z0-9_-]+$; the wrapper sanitizes channel-shaped ids before send."
     - "Fire-and-forget background tasks (sync_turn, sync_department_turn, append_department_note) snapshot the audit ContextVars (session_id, turn_id) at scheduling time and re-bind inside the coroutine — without this, the audit rows land with session_id=NULL and are invisible in the per-session view."
 
+attunement:
+  what: |
+    The Executive adapting to each person it works with
+    (`openexecutive.attunement`). First piece: open loops — commitments and
+    asks from ANYONE on the roster, tracked until done and chased when they
+    slip. Complements Honcho (facts / stated preferences) rather than
+    duplicating it; works with HONCHO_ENABLED=false (the default).
+  why: |
+    Commitments used to be captured only from the principal's words
+    (`episodic.should_extract` requires is_principal) because stored messages
+    didn't record who said them, and nothing in production set
+    `scheduled_actions.awaiting_response_since`, so the nudge engine's
+    commitment source never fired on a real install.
+  attribution: |
+    `chat_messages.sender_person_id` = the RESOLVED rostered sender of a user
+    message, never the session owner (Discord/Telegram sessions from
+    unrostered senders are owned by the principal for sidebar visibility;
+    attribution keeps outsiders' words from being read as the principal's).
+    Web passes `_resolve_caller_person_id` (header-less = principal's CLI/API
+    surface; unrostered email header = None); Slack/Discord/Telegram pass the
+    sender they resolved. `Executive.stream_chat` / committee set
+    `Session.caller_person_id = person_id` every turn for tool handlers.
+    Email / Google Chat don't persist chat_messages (known gap) but the
+    open-loop hook lives in the Executive, so they still open/close loops.
+  session_access: |
+    Every per-session HTTP route (GET /sessions/{id}, GET /sessions/{id}/messages,
+    DELETE /sessions/{id}, POST /chat with a session_id, and feedback/followup)
+    is limited to the session's owner or the principal (`is_principal_or_self`;
+    a NULL-owner legacy row is the principal's alone). The sessions routes answer
+    404 for anyone else, identical to an unknown id, so they are no oracle for
+    which chats exist; POST /chat instead runs the turn in a fresh chat. Session ids are guessable
+    (`slack:dm:<user id>`, `telegram:<chat id>`), so the id alone is no proof.
+    `chat._session_access` also admits whoever started the chat in this process
+    (`_session_starters` holds the starter's `_caller_keys`: Person id and/or
+    verified email, else "local"), which is how an unresolved caller (fresh
+    install, allowlisted but unrostered) continues their own ownerless chat.
+    Matching on email too means the starter keeps access once they resolve to a
+    Person, and that turn late-binds the row to them. Only the starter binds an
+    ownerless row: the principal continuing it does not take it over. The record
+    is in-memory; after a restart an ownerless row nobody here started is
+    "orphaned": reads get 404 and POST /chat continues in a fresh chat instead
+    of failing. POST /chat also ignores an unknown namespaced id (contains ':')
+    rather than letting a web caller squat an id a channel adapter will later
+    create (INSERT OR IGNORE keeps the first owner). A "missing" id evicts any
+    cached Session under it: fixture reset and client-slot switching remove
+    rows without clearing `_sessions`, and the stale transcript must not be
+    handed to the next claimant. A turn whose Session was deleted mid-stream
+    (no longer the cached object) skips persisting, so no orphan messages are
+    left under the deleted id. Claiming an unused bare id also deletes any
+    messages already stored under it (orphans from a delete/reset race or from
+    before this check), so they are never loaded as the claimant's history.
+    DELETE also evicts the in-memory Session so the id cannot resume its history.
+    Known gap, not covered: GET /audit/sessions/{id} is not owner-scoped.
+    (GET /debug/last-turn, which leaked the last turn to any caller, was
+    removed in #200.)
+  feedback: |
+    `chat_messages.feedback` up|down (+ `feedback_note`) via
+    POST /sessions/{id}/messages/{message_id}/feedback — session's own caller
+    or the principal only (403 otherwise). SSE `done` carries `message_id`;
+    AskOEPanel renders 👍/👎. `load_messages` adds `id` (+ `feedback`) to
+    assistant rows only. Audited as event_type `attunement`, op=feedback.
+    Stored for later per-person learning; nothing consumes it yet.
+  followup_suggestion: |
+    GET /sessions/{id}/followup → {"suggestion": str|null}. Chat composer's
+    greyed placeholder after each reply (Tab / → / inline chip fills it,
+    never sends). Utility-fast call (`chat._fast_json_call`, shared with
+    /chat/suggested-prompts) over the last 6 messages, each capped at 1500
+    chars; transcript in the user turn, no cached system blocks. Null when
+    the session doesn't end on a persisted assistant reply, or on model
+    failure (not cached). Owner-or-principal only (403). In-process cache
+    keyed (session_id, last assistant message id), 1h TTL.
+  open_loops:
+    module: openexecutive.attunement.open_loops
+    pass: |
+      `schedule_open_loop_pass` after every turn with a resolved rostered,
+      non-archived speaker (both Executive paths, beside
+      schedule_extraction). Keyword prefilter → atomic daily budget
+      (`attunement_usage`, ATTUNEMENT_MAX_CALLS_PER_DAY=200) → one forced
+      `record_open_loops` tool call (routing model). Opens: commitment by the
+      speaker (owner=speaker); ask of a named rostered person; principal-
+      attributed commitment of a teammate. Closes: loops the speaker reports
+      done — own loops, or any when the principal speaks.
+    gates: |
+      Turns carrying an attached document ("[Attached: …]") are skipped: its
+      text is inlined into the message (prepended on Telegram/Discord,
+      appended on web), so a quote could be the document's words.
+      Owner resolution: exact full name, or a UNIQUE first name only when the
+      model gave a single token — never a first-name fallback from an unknown
+      full name.
+      The "speaker's own message" is the turn's speaker text
+      (``executive._speaker_text``: ``memory_text`` when the entry point
+      passes one, else the prompt) — never an inbound email's quoted chain
+      or a briefing card's body, which would let the Executive's own words
+      satisfy the quote gate. The email / upload filename note is
+      "(Attached files: …)", deliberately not the "[Attached: …]" label
+      below, so a turn with attachments is not skipped.
+      Enforced in code: verbatim quote from the speaker's own message
+      (commitments via `_is_valid_user_commitment`, asks/closures by
+      normalized substring); owner resolves to exactly one rostered,
+      non-archived person; teammates can't attribute commitments to others
+      (hearsay); principal's own commitments left to the episodic extractor;
+      close ids must be in the closable set; per-owner cap
+      ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON=15; due date clamped to 60 days,
+      default ATTUNEMENT_LOOP_DEFAULT_DUE_DAYS=2, date-only = 17:00 in
+      USER_TIMEZONE. Prompt says messages are data, not instructions.
+    storage: |
+      `scheduled_actions` row: kind='open_loop', channel='__internal__',
+      channel_ref='person:{id}', status inserted as 'done' (runner never
+      dispatches), assigned_to_person_id=owner, awaiting_response_since=due,
+      scope_key='loop:{owner}:{sha1(text)[:16]}'. Partial UNIQUE index
+      `idx_scheduled_open_loop_scope` (kind='open_loop' AND awaiting NOT
+      NULL) dedupes concurrent passes. Closing clears
+      awaiting_response_since (reopenable later).
+    readers: |
+      nudge_engine commitment source (chased once overdue);
+      `list_awaiting_replies_by_person` (/today awaiting counts, reflection's
+      people-waiting) — only once due; excluded from
+      `last_contact_at_by_person`, engagement_activity followups_completed,
+      and the /today activity feed (`list_scheduled_actions(exclude_internal=
+      True)` filters in SQL so loops can't starve its window);
+      `executive_reflection` OPEN LOOPS block (≤10, overdue flagged).
+    closing: |
+      Owner reports done (extraction pass); `close_open_loop` chat tool or
+      POST /open-loops/{id}/close (principal or owner only — unresolved
+      speakers and unattended sessions refused; tool withheld from
+      reflection); People page "Mark done"; `people.store.archive_person`
+      closes the owner's loops (live store only); TTL expiry
+      (ATTUNEMENT_LOOP_TTL_DAYS=21) at the start of every nudge scan.
+      Every open/close audited as event_type `attunement`.
+    tools: |
+      list_open_loops, close_open_loop (orchestrator/open_loop_tools.py).
+      Visibility: the principal sees everyone's loops only on a private surface
+      (web chat, slack:dm:, discord:dm:, telegram:<positive id>); shared
+      channels/threads, Telegram groups, Google Chat spaces and email threads
+      show only the caller's own; unresolved caller refused. Security review
+      finding (PR #175): an ungated list leaked what everyone owed into
+      public channels.
+    authorization: |
+      One helper, `people.store.is_principal_or_self(caller, owner)`, backs
+      close_open_loop, list visibility, GET /people/{id}/open-loops,
+      POST /open-loops/{id}/close and the feedback route. Owner None =
+      principal only.
+    verbatim_text: |
+      The stored loop `text` must itself appear verbatim in the speaker's
+      message (drop reason `text_not_verbatim`): it is re-injected into the
+      nudge intent a tool-using turn executes, so a model paraphrase could
+      smuggle instructions. The nudge intent also says to treat it as data.
+    api: GET /people/{id}/open-loops, POST /open-loops/{loop_id}/close (both principal-or-owner)
+    reset: |
+      Loops live in scheduled_actions and attribution in chat_messages (both
+      already wiped by client-slot switches and reset_all_state);
+      `attunement_usage` added to `_BLANK_WIPE_TABLES` and reset_all_state.
+    tests: |
+      tests/conftest.py no-ops `schedule_open_loop_pass` for every test so
+      Executive turns don't call a provider or write default-DB rows; tests
+      of the pass call `run_open_loop_pass` directly.
+  outcomes:
+    module: openexecutive.attunement.outcomes
+    why: |
+      Nothing measured whether proactive outreach landed, so an always-ignored
+      nudge kept going and an always-answered one ranked no higher.
+    recording: |
+      `tag_proactive(source, ref)` ContextVar (wrap non-yielding code only —
+      never across an async-generator yield). `_record_outbound_context`
+      (schedule_tools) calls `record_send` after inserting the linkage: a row
+      only when tagged AND the recipient resolves to a Person. Tagged: runner
+      generic dispatch via `_outreach_source` (proactive_nudge → nudge_stalled /
+      nudge_commitment / nudge_initiative / open_loop [commitment target is an
+      open_loop], ref = scope_key; else followup, ref action:<id>); reflection
+      and research around their tool execution; alert review `_dm(alert_id=)`
+      → alert_review, ref alert:<id>. Untracked: briefs and dynamic-workflow
+      deliveries (no session → no linkage), broadcasts (no single recipient),
+      web-chat sends (no linkage by design).
+    resolution: |
+      replied — `mark_outbound_context_consumed`. acted — close_open_loop with
+      reason reported_done or done, only when closed_by_person_id is the owner
+      (principal tidy-up, or the principal saying someone else's loop is done,
+      credits nobody); `resumer.apply_resolution` resolves
+      nudge:stalled:<run_id> for resolution.person_id only;
+      store_initiative/update_initiative resolve nudge:initiative:<id> only on
+      a real change (new status or summary) and only for
+      `updated_by_person_id` — the extractor passes the principal (it runs on
+      principal turns only), PATCH /memories/initiatives/{id} passes nothing
+      (no caller identity, no auth) so it credits nobody; alert ack or resolved
+      (`alerts.lifecycle.resolve_alert_outreach`, also called by alert review
+      when it closes an alert) — scoped to routed_to_person_id + principal.
+      void — alert dismissed / stale / expired (expiry sweep): excluded from
+      every rate, so a dismissal (POST /alerts/{id}/ack has no per-caller
+      authz, pre-existing) can never push someone toward demotion. acted and
+      void override an earlier ignored (done after the sweep is the truer
+      verdict); replied does not. ignored — `sweep_ignored` at the start of
+      each nudge scan AND lazily in acceptance()/muted_pairs() (rates stay
+      honest with NUDGE_SCAN_ENABLED=false). Recording skips email cc's (only
+      the first rostered `to` address) and principal self follow-ups.
+    use: |
+      `acceptance()` per (person, source), 30 days, voids excluded.
+      nudge_engine `_apply_outcome_feedback` uses `muted_pairs(min_sends)`:
+      demoted when the person's LAST ATTUNEMENT_MUTE_MIN_SENDS (5) resolved
+      sends of that source (ordered by created_at) were all unanswered → cooldown x
+      MUTE_COOLDOWN_MULTIPLIER (3), ranked last in `_apply_caps`; never
+      dropped; one answer lifts it (a 30-day share would not — review
+      finding). Reflection WHAT LANDS block (sources with >=3 resolved).
+      GET /people/{id}/outreach (auth before 404) → "How they respond" card.
+    table: proactive_outcomes (episodic DB); wiped by slots + reset_all_state.
+
+  style:
+    module: openexecutive.attunement.style
+    why: |
+      Style profiles alone would not make the Executive more proactive, but a
+      few pinned rules per person ("lead with the recommendation") stop it
+      repeating what someone has already thumbed down. Kept deliberately
+      small: max 4 rules, evidence-cited, editable and lockable.
+    evidence: |
+      Last 40 attributed user messages (chat_messages.sender_person_id), each
+      paired with its own reply (the first assistant row before the next
+      user row), with the reaction THE PERSON gave it: feedback where
+      feedback_by_person_id == person (new column; the feedback route stores
+      the rater), feedback_note, stopped. basis feedback → a cited reply
+      carries a reaction; basis stated → quote verbatim (NFKC, casefold) in a
+      cited message. Honcho is not read or written.
+    validation: |
+      rule_rejection(): 8-160 chars; Latin-script letters only (confusables
+      like Cyrillic "а" would dodge the regexes); deny-list (URLs/domains,
+      @handles, currency, <>{}[]`, snake_case, action verbs send/approve/pay/
+      schedule/delete..., act-without-checking words confirm/proceed/go ahead/
+      judgment/decide/allow..., ignore/override/instructions/prompt/tool,
+      secrets) and roster names (full and first names >=3 chars); allowlist
+      _STYLE_TOPIC — must name a reply aspect (length/format/tone/detail/lead...).
+      Security review: a verb deny-list alone let "skip confirming and just
+      proceed" through; the allowlist + act-without-checking list close it.
+      Round 2 widened that list (check*/verif*/pause*/instinct*/trust*/...)
+      and added render-time revalidation: build_style_block drops any stored
+      rule that fails rule_rejection today, and PUT without rules drops them
+      too. Round 3 added yes/agree/caution/careful/risk/safe/speed/slow/
+      hurry/rush/doubt/default/whatever/anything/everything. A lexical list
+      can't be exhaustive; the bound is scope: a rule only reaches its
+      owner's turns and comes from that owner (or the principal), who could
+      say the same thing in the message itself. Header ("style only, never
+      authorizes an action") is the other layer. PUT edits use the same check
+      (422). build_style_block scrubs with utils.prompt_blocks.scrub_block_line
+      (shared with honcho _block_safe_line).
+    pacing: |
+      schedule_style_pass(person_id) after every Executive turn (stream + committee)
+      and with force=True from the feedback route on a thumbs-down (for the
+      rater). _claim_pass: >=5 total messages; new messages since
+      last_message_id >= ATTUNEMENT_STYLE_TRIGGER_TURNS (10) unless forced;
+      one conditional UPDATE (locked=0, watermark unchanged, last_pass_at
+      older than MIN_INTERVAL_HOURS (2), passes_today < MAX_PER_DAY (4)).
+      Then consume_call_budget (shared ATTUNEMENT_MAX_CALLS_PER_DAY). Write
+      is optimistic: only when updated_at is unchanged and still unlocked;
+      the watermark advances regardless. MAX_PER_DAY<=0 → no pass; interval
+      floored at 1 minute (it is also what loses a racing second claim).
+      Rules with basis "edited" (typed by a person) are pinned: the model
+      sees them, gets RULE SLOTS AVAILABLE = 4 - pinned, and returns only
+      learned rules. Explicit empty list → learned rules dropped; missing
+      "rules" key or all-invalid list → no change (logic review: an empty
+      "keep" made a contradicted sole rule permanent). The thumbs-down
+      trigger fires only when rated_reply_speaker(session, message) == the
+      rater. Roster-name check: full names any case; name parts only
+      capitalized past the first word (a "Max Short" must not ban "short").
+    applying: |
+      Executive computes build_style_block(person_id) once per turn and passes
+      it to _build_messages (<working_style> after <current_speaker>, user
+      turn, never cached) and _emit_memory_snapshot (working_style_chars +
+      full text). person_id is the resolved speaker; archived / unrostered →
+      no block.
+    api: |
+      GET/PUT/DELETE /people/{id}/attunement — principal or that person; 404
+      for archived. PUT without `rules` only sets the lock (keeps provenance).
+      UI "How I work with them" card.
+    tables: attunement_profiles, attunement_profile_history (episodic DB); wiped by slots + reset_all_state; dropped on archive.
+
 departments:
   module: openexecutive.departments
   store: openexecutive.departments.store (SQLite, shares episodic_memory.db)
@@ -1138,8 +1939,12 @@ departments:
   api: /departments — CRUD for departments, goals, and checklist items
   authority_gate: |
     openexecutive.departments.authority — each department declares a mode.
-    `propose_only` departments route scheduled actions through an
-    approval workflow (wait_for_human) instead of executing immediately.
+    `propose_only` departments route scheduled actions to an approver as a
+    briefing alert (`propose_via_alert`) instead of executing immediately;
+    the scheduled_actions row is then marked done and the pending-ness lives
+    on the alert. This is NOT the `wait_for_human` workflow gate — that is a
+    separate primitive with its own table (`workflow_runs.status`), delivery
+    path and resolver; an earlier version of this note conflated the two.
     Autonomous departments fire actions directly. The approver is
     selected by AuthorityScope: each scheduled_actions row may carry
     a `required_scope` column (e.g. `vendor_onboarding`, `spend_lt_10k`,
@@ -1152,6 +1957,9 @@ departments:
     openexecutive.departments.cadence — supports `daily@HH:MM`,
     `weekly@DOW@HH:MM` or `weekly@DOW-HH:MM` (DOW is a 3-letter day,
     e.g. `weekly@thu@09:00`), and `quarterly@DD-HH:MM`. Times are UTC.
+    `PATCH /departments/{slug}` rejects a spec that does not parse (bad
+    format, unknown DOW, out-of-range time) with a 422 naming the valid
+    formats (`is_valid_cadence_spec`); an empty spec means no cadence.
     The scheduler runner enqueues a `department_check_in` workflow
     when a cadence is due, then `enqueue_next()` chains the following
     occurrence. Lifecycle cleanup: deleting a department cancels its
@@ -1276,6 +2084,35 @@ scheduler:
     client is restored, then chains the next nightly occurrence via
     seed_client_rotation (idempotent).
   module: openexecutive.scheduler
+  pause: |
+    Operator pause switch — openexecutive.scheduler.pause. One row
+    (id=1) in `executive_control` (episodic_memory.db): paused,
+    paused_at, paused_by, reason, updated_at. Set from the UI (sidebar
+    switch, paused banner, Settings card) or POST /executive/pause |
+    /executive/resume (api/routes/executive.py; shared-secret only, not
+    SCHEDULED_ADMIN_TOKEN, so the UI proxy can call it; paused_by from
+    x-caller-email, else "api"; audit executive_paused /
+    executive_resumed). Pause is open to any signed-in caller (it only
+    holds work); resume is principal-only via
+    people.store.is_principal_or_self (403 otherwise; open while no
+    principal is rostered so a pause can always be lifted; status
+    carries can_resume for the viewer). `is_paused()` is the FIRST check of each
+    run_scheduler tick — before the alert/watchlist sweep and the
+    company-profile / rotation gates — so a paused tick does nothing;
+    due rows stay pending and fire on the first tick after resume.
+    Already-claimed actions finish. The same check gates
+    integrations.email_poller (skips the poll; mail stays unread) and
+    workflows.resumer (no startup sweep, timeouts or resumes;
+    apply_resolution records the reply but skips _kick_resume).
+    is_paused() is read-only (never creates the DB file or table). A
+    missing file/table reads as running; a read ERROR reads as paused
+    (fails closed — a brake must not silently release while the UI
+    shows paused; the UI shows "status unknown" on a failed read). Pause re-apply is idempotent
+    (keeps the original paused_at/by/reason). Persists across restarts
+    (boot logs a WARNING) and across client-slot switches (listed in
+    clients.slots._GLOBAL_TABLES; _ensure_schemas creates the table
+    before the restore). GET /executive/status adds `held_actions` —
+    due pending rows that fire on resume.
   runner: openexecutive.scheduler.runner — asyncio task started in the FastAPI lifespan. Polls every 30s; `claim_due_actions` uses an UPDATE…RETURNING claim so a row is fired at most once per process. Single-worker assumption (do not run two scheduler processes against the same DB). Each poll is gated on an active company profile via `_company_profile_active()` (true when `load_or_create_profile().is_empty()` is false) — when no profile is configured the poll loop claims and dispatches no scheduled actions, so every due row (including the recurring principal-brief rows seeded once in the startup prologue) stays `pending` and fires only once a company profile is saved (the Executive has no company context to act on before then). The hold is logged once per gap and once on resume, not every poll.
   table: |
     scheduled_actions (in episodic_memory.db). Schema (see
@@ -1332,6 +2169,11 @@ scheduler:
          `updated_at` is older than NUDGE_STALLED_MIN_QUIET_HOURS.
       b) Stale commitments — `scheduled_actions` rows whose
          `awaiting_response_since` is older than NUDGE_COMMITMENT_STALE_DAYS.
+         `kind='open_loop'` rows (see `attunement:`) use it as a DUE time
+         and are chased as soon as it passes, with a check-in intent to
+         the loop's owner. Each scan first expires loops older than
+         ATTUNEMENT_LOOP_TTL_DAYS. Before open loops, nothing in
+         production set `awaiting_response_since`, so this source was idle.
       c) Idle initiatives — active initiatives untouched for
          NUDGE_INITIATIVE_IDLE_DAYS, owner resolved via the department's
          `head_person_id`. Skipped when the owning department's
@@ -1359,8 +2201,8 @@ scheduler:
 today:
   module: openexecutive.api.routes.today
   endpoints:
-    - "GET /today — JSON aggregation. Returns TodayResponse(departments, people, proposals, narrative, in_flight, awaiting, caller_person_id). `departments` rolls up each department's goal counts (total, at_risk, off_track) and awaiting workflow count, PLUS `attention_goals` — the actual off_track/at_risk Goal rows themselves (worst first, capped at 3), each carrying `key_result`, `current`, `target`, and `status`, so the briefing's Department card is insightful at rest (shows which goal is off and how far) instead of a count you must click into; empty for healthy/inactive departments and additive (older clients ignore it). `people` is an attention-ranked roster: each person carries the original preferred channel, awaiting-action count and soonest SLA PLUS enrichment signals — `status` (on_leave | needs_reply | awaiting | clear), `awaiting_reply_count`/`oldest_awaiting_reply_at` (open scheduled_action commitments we're waiting on THEM to answer, mirroring the nudge engine's awaiting_response_since set), `on_leave_until`, `reachable_now`/`next_window_at` (from people.channel availability windows), `authority_scope`, `department_slugs`, `last_contact_at` (most recent done outbound assigned to them), `overdue` (any SLA or awaited reply past deadline), `priority` (server sort key — overdue replies/work float to top, on-leave sinks), and `insight` (a one-line utility-fast note, see people.insights — null until the background cache warms). Rows are returned sorted by (-priority, full_name). `proposals` is the org-wide set of ALL unread alerts (workflow approvals, triage-classified inbound, Executive-created operational signals, and research artifacts the Executive flagged for review via `draft_artifact` — source=`artifact`, tagged `artifact`, which the UI renders as a Markdown document card rather than a terse proposal — and which also persist into the dedicated Artifacts section (`/artifacts`) so they remain browsable after they leave this unread queue — anything in the alerts table with status='unread'); the UI splits it into 'mine' vs 'across the team' using `caller_person_id` plus a 'principal owns unrouted' rule (alerts with `routed_to_person_id == null` fall to the principal's queue by default). Each proposal also carries presentation signals from `openexecutive.briefing.ranking`: `score` (attention sort key — severity-weighted, with a bonus for routed alerts) and `category` ('action' = a human should look, vs 'monitoring' = passive watchlist/external signals that are unrouted and not high/urgent), plus `surfaced_reason` (a short human note, null for most items) — set only when an external/watchlist signal was pulled into the 'action' lane *by its severity* (the high/urgent escape hatch in `categorize`, e.g. a ≥5% stock move), so the UI can render a per-item explanation of why a normally-Monitoring signal is in 'Needs you'. A proposal also carries `decision_instance_id` (parsed from a `decision_instance:{id}` topic tag), non-null only for gated calendar bookings surfaced from the decision ledger (source=`decision_scheduling`); the UI routes those cards' Approve/Reject to the /decisions endpoints (which book or cancel server-side and clear this alert) instead of the ack-and-hand-off-to-chat flow, so meeting bookings are reviewed in the briefing itself (the standalone proposals page was removed). `_build_today` sorts action items first (by score), monitoring last; the UI collapses the 'monitoring' tail into a separate section so it stops crowding the 'Needs you' queue. `narrative` is a PER-VIEWER Executive-voice 'what's going on' header (see `openexecutive.briefing.narrative` + `today._attach_narrative`). It is a SYNTHESIS, not a re-list: the actionable items render as cards below it, so the narrative gives the connective tissue a list can't (how items relate, what's most urgent and why, the single recommended focus) and deliberately does NOT enumerate a 'Needs you' section that would duplicate the cards. The principal and any unrostered/unresolved caller get the whole-company synthesis (cache scope `principal`) over ALL action-category proposals (mine + across the team; monitoring/watchlist noise is excluded) plus company-wide at-risk depts + activity; each non-principal teammate gets a role-scoped synthesis (cache scope `person:<id>`) over ONLY the action items routed to them + their departments' goal health + their department activity, written in their perspective. Synthesized by `synthesize_briefing_narrative`, which also produces the standalone morning_brief DM but via a DIFFERENT prompt (`standalone=True` → an enumerated brief with a 'Needs you' section, since the DM has no cards beside it to carry the list; the EoD digest still has its own prompt); the /today header path uses the synthesis prompt and never re-lists. Served from the per-scope `briefing_narrative` cache (`openexecutive.briefing.narrative_cache`, keyed by a hash of the viewer's scoped state + scope + UTC date + `NARRATIVE_PROMPT_VERSION`, the last so a prompt rewrite invalidates every cached narrative on the next view). Served from cache on the hot path and regenerated per-viewer in a FastAPI BackgroundTask when that viewer's hash moves; null on a cold cache. `in_flight` is the Executive's upcoming user-facing commitments — pending scheduled_actions (follow-ups, nudges) from `episodic.list_pending_scheduled_actions` (excludes the `__internal__` channel and `nudge_scan` heartbeat, the same set the activity feed hides), each with the resolved recipient `target` (person name via the shared channel→name lookup, or department/raw ref), `kind`, `run_at`, and `overdue` (run_at already passed). `awaiting` is the people we're waiting on a reply from, derived from the same open-commitment set behind each person's `awaiting_reply_count` (name, role, count, oldest_at, overdue), sorted most-overdue/oldest first. Together they power the briefing's 'In flight' section so cross-team work in progress is visible without opening the Scheduled Actions page. Both are additive and default to empty. `caller_person_id` is the signed-in caller resolved from `x-caller-email` via chat._resolve_caller_person_id; null when no caller could be resolved (unrostered signed-in user, or a CLI hit without the header). The route is async: it serves insight notes from the person_insights cache and, after resolving the caller, attaches the viewer-scoped narrative via `_attach_narrative`, scheduling regeneration of stale entries as FastAPI BackgroundTasks so the request never blocks on an LLM call. `_build_today()` stays synchronous and caller-agnostic — no insight regen and NO narrative (that is attached per-viewer by the endpoints) — for the morning_brief workflow and the deprecated /morning-brief alias that call it directly; the alias resolves the caller and serves the cached narrative but cannot schedule a regen."
-    - "GET /today/activity?limit=N — Returns ActivityResponse(items). Each item is one recent self-initiated Executive action — a fired scheduled_action (DM dispatched, follow-up fired, cadence run, paused workflow resumed) or an extracted decision/advice row. Items carry `kind` (coarse classifier the UI maps to verb + icon — dm_sent, email_sent, nudge_sent, cadence_sent, workflow_resumed, proposal_routed, decision_logged, advice_given, workflow_done, initiative_started, decision_resolved, alert_raised, or action for unclassified), `summary`, `actor` (always Executive for now), `target` (channel ref / person, or null), `department`, and `at` (ISO timestamp). Sources merged — `scheduled_actions` with status=done (excluding `nudge_scan` heartbeat and `__internal__` channel), `decisions`, `advice_given`, completed `workflow_runs` (status=done — briefings/check-ins/research, bucketed at `updated_at`), `initiatives` (kicked-off projects, at `created_at`), resolved `decision_instances` (terminal gated-decision outcomes — approved/rejected/reversed, at `resolved_at`; pending ones stay in `proposals`, not the rail), and `alerts` raised (excluding source=`decision_scheduling`, which is the companion alert for a gated booking already represented by its `decision_resolved` row). This broadens the feed beyond the original messaging-heavy three sources so it reflects all self-initiated Executive activity, not just dispatched messages. Actions on `propose_only` departments are reclassified to `proposal_routed` because the runner marks them done without dispatching (the proposal is surfaced via /today's `proposals` field; the activity rail shows it as 'proposed to <approver>' rather than implying a DM was sent). Sorted by `at DESC`, then capped at `limit` (default 20, clamped to 1..100 via FastAPI Query validation — 422 on out-of-range). The Pulse page polls this endpoint (limit=100) every ~20s so new activity streams into the 'Recent activity' card without a reload; the card scrolls internally at a fixed max-height rather than growing the page."
+    - "GET /today — JSON aggregation. Returns TodayResponse(departments, people, proposals, narrative, in_flight, awaiting, caller_person_id). `departments` rolls up each department's goal counts (total, at_risk, off_track) and awaiting workflow count, PLUS `attention_goals` — the actual off_track/at_risk Goal rows themselves (worst first, capped at 3), each carrying `key_result`, `current`, `target`, and `status`, so the briefing's Department card is insightful at rest (shows which goal is off and how far) instead of a count you must click into; empty for healthy/inactive departments and additive (older clients ignore it). `people` is an attention-ranked roster: each person carries the original preferred channel, awaiting-action count and soonest SLA PLUS enrichment signals — `status` (on_leave | needs_reply | awaiting | clear), `awaiting_reply_count`/`oldest_awaiting_reply_at` (open scheduled_action commitments we're waiting on THEM to answer, mirroring the nudge engine's awaiting_response_since set), `on_leave_until`, `reachable_now`/`next_window_at` (from people.channel availability windows), `authority_scope`, `department_slugs`, `last_contact_at` (most recent done outbound assigned to them), `overdue` (any SLA or awaited reply past deadline), `priority` (server sort key — overdue replies/work float to top, on-leave sinks), and `insight` (a one-line utility-fast note, see people.insights — null until the background cache warms). Rows are returned sorted by (-priority, full_name). `proposals` is the org-wide set of ALL unread alerts (workflow approvals, triage-classified inbound, Executive-created operational signals, and research artifacts the Executive flagged for review via `draft_artifact` — source=`artifact`, tagged `artifact`, which the UI renders as a Markdown document card rather than a terse proposal — and which also persist into the dedicated Artifacts section (`/artifacts`) so they remain browsable after they leave this unread queue — anything in the alerts table with status='unread'); the UI splits it into 'mine' vs 'across the team' using `caller_person_id` plus a 'principal owns unrouted' rule (alerts with `routed_to_person_id == null` fall to the principal's queue by default). Each proposal also carries presentation signals from `openexecutive.briefing.ranking`: `score` (attention sort key — severity-weighted, with a bonus for routed alerts) and `category` ('action' = a human should look, vs 'monitoring' = passive watchlist/external signals that are unrouted and not high/urgent), plus `surfaced_reason` (a short human note, null for most items) — set only when an external/watchlist signal was pulled into the 'action' lane *by its severity* (the high/urgent escape hatch in `categorize`, e.g. a ≥5% stock move), so the UI can render a per-item explanation of why a normally-Monitoring signal is in 'Needs you'. A proposal also carries `decision_instance_id` (parsed from a `decision_instance:{id}` topic tag), non-null only for gated calendar bookings surfaced from the decision ledger (source=`decision_scheduling`); the UI routes those cards' Approve/Reject to the /decisions endpoints (which book or cancel server-side and clear this alert) instead of the ack-and-hand-off-to-chat flow, so meeting bookings are reviewed in the briefing itself (the standalone proposals page was removed). `_build_today` sorts action items first (by score), monitoring last; the UI collapses the 'monitoring' tail into a separate section so it stops crowding the 'Needs you' queue. `narrative` is a PER-VIEWER Executive-voice 'what's going on' header (see `openexecutive.briefing.narrative` + `today._attach_narrative`). It is a SYNTHESIS, not a re-list: the actionable items render as cards below it, so the narrative gives the connective tissue a list can't (how items relate, what's most urgent and why, the single recommended focus) and deliberately does NOT enumerate a 'Needs you' section that would duplicate the cards. The principal and any unrostered/unresolved caller get the whole-company synthesis (cache scope `principal`) over ALL action-category proposals (mine + across the team; monitoring/watchlist noise is excluded) plus company-wide at-risk depts + activity; each non-principal teammate gets a role-scoped synthesis (cache scope `person:<id>`) over ONLY the action items routed to them + their departments' goal health + their department activity, written in their perspective. Synthesized by `synthesize_briefing_narrative`, which also produces the standalone morning_brief DM but via a DIFFERENT prompt (`standalone=True` → an enumerated brief with a 'Needs you' section, since the DM has no cards beside it to carry the list; the EoD digest still has its own prompt); the /today header path uses the synthesis prompt and never re-lists. Served from the per-scope `briefing_narrative` cache (`openexecutive.briefing.narrative_cache`, keyed by a hash of the viewer's scoped state + the activity rows the narrative reasons over + scope + UTC date + `NARRATIVE_PROMPT_VERSION`, the last so a prompt rewrite invalidates every cached narrative on the next view). The key is a hash of the RENDERED context string itself (`today._narrative_context` builds it once; the hot path hashes it, the background task hands that same string to the model as `rendered_context`). So the key is a function of the model's input: everything the prompt renders is covered, nothing it omits can cause a regeneration, and both properties survive edits to `render_briefing_context` with no field list to maintain. Hand-picked field lists broke one half or the other each time — proposal headlines alone left the rendered activity block uncovered (the header then described a rail that had moved on), while the proposals' review fields (review_verdict / review_note / why_now / recommended_move / due_at) are NEVER rendered by this header (the `since is None` branch prints headline[:160] and nothing else) yet `alerts.review` rewrites them with fresh LLM prose on every pass INCLUDING its 'still relevant, nothing changed' path, so keying on them regenerated every viewer's narrative several times a day to re-synthesize byte-identical input. A quiet board keys off the fixed `narrative_cache.QUIET_CONTEXT` sentinel and builds no activity at all, so a moving rail cannot re-key an entry whose text is a constant. The narrative's activity is built with `include_alert_raised=False`, dropping that source entirely: closed alerts read as settled work, and live ones are already the proposal cards (`is_live` IS the `list_live_alerts` predicate) that the header prompt forbids re-listing — the `/today/activity` rail keeps them. It is a source opt-out rather than a post-pull filter so `recent_alerts` cannot burn its pool on closed rows. `render_briefing_context` only labels that block 'SINCE LAST BRIEF' when the caller bounded it with `since`; an unbounded rail is labelled 'RECENT OE ACTIVITY' and explicitly marked as not a delta. When the viewer's slice has no action proposal, no at-risk/off-track department and nobody awaiting, the regen writes a fixed quiet line and spends NO model call — that, not the hash, is what keeps a frozen header from recurring. Together these stop a fully-dismissed board from yielding a confident header synthesized entirely out of closed items. Served from cache on the hot path and regenerated per-viewer in a FastAPI BackgroundTask when that viewer's hash moves; null on a cold cache. `in_flight` is the Executive's upcoming user-facing commitments — pending scheduled_actions (follow-ups, nudges) from `episodic.list_pending_scheduled_actions` (excludes the `__internal__` channel and `nudge_scan` heartbeat, the same set the activity feed hides), each with the resolved recipient `target` (person name via the shared channel→name lookup, or department/raw ref), `kind`, `run_at`, and `overdue` (run_at already passed). `awaiting` is the people we're waiting on a reply from, derived from the same open-commitment set behind each person's `awaiting_reply_count` (name, role, count, oldest_at, overdue), sorted most-overdue/oldest first. Together they power the briefing's 'In flight' section so cross-team work in progress is visible without opening the Scheduled Actions page. Both are additive and default to empty. `caller_person_id` is the signed-in caller resolved from `x-caller-email` via chat._resolve_caller_person_id; null when no caller could be resolved (unrostered signed-in user, or a CLI hit without the header). The route is async: it serves insight notes from the person_insights cache and, after resolving the caller, attaches the viewer-scoped narrative via `_attach_narrative`, scheduling regeneration of stale entries as FastAPI BackgroundTasks so the request never blocks on an LLM call. `_build_today()` stays synchronous and caller-agnostic — no insight regen and NO narrative (that is attached per-viewer by the endpoints) — for the morning_brief workflow and the deprecated /morning-brief alias that call it directly; the alias resolves the caller and serves the cached narrative but cannot schedule a regen."
+    - "GET /today/activity?limit=N — Returns ActivityResponse(items). Each item is one recent self-initiated Executive action — a fired scheduled_action (DM dispatched, follow-up fired, cadence run, paused workflow resumed) or an extracted decision/advice row. Items carry `kind` (coarse classifier the UI maps to verb + icon — dm_sent, email_sent, nudge_sent, cadence_sent, workflow_resumed, proposal_routed, decision_logged, advice_given, workflow_done, initiative_started, decision_resolved, alert_raised, or action for unclassified), `summary`, `actor` (always Executive for now), `target` (channel ref / person, or null), `department`, and `at` (ISO timestamp). Sources merged — `scheduled_actions` with status=done (excluding `nudge_scan` heartbeat and `__internal__` channel), `decisions`, `advice_given`, completed `workflow_runs` (status=done — briefings/check-ins/research, bucketed at `updated_at`), `initiatives` (kicked-off projects, at `created_at`), resolved `decision_instances` (terminal gated-decision outcomes — approved/rejected/reversed, at `resolved_at`; pending ones stay in `proposals`, not the rail), and `alerts` raised (excluding source=`decision_scheduling`, which is the companion alert for a gated booking already represented by its `decision_resolved` row). `_build_activity(..., include_alert_raised=False)` omits this source entirely. The rail keeps it (history is the point there); only the briefing narrative opts out. This broadens the feed beyond the original messaging-heavy three sources so it reflects all self-initiated Executive activity, not just dispatched messages. Actions on `propose_only` departments are reclassified to `proposal_routed` because the runner marks them done without dispatching (the proposal is surfaced via /today's `proposals` field; the activity rail shows it as 'proposed to <approver>' rather than implying a DM was sent). Sorted by `at DESC`, then capped at `limit` (default 20, clamped to 1..100 via FastAPI Query validation — 422 on out-of-range). The Pulse page polls this endpoint (limit=100) every ~20s so new activity streams into the 'Recent activity' card without a reload; the card scrolls internally at a fixed max-height rather than growing the page."
     - "GET /today/activity/daily?days=N — Returns DailyActivityResponse(days), the per-day counts behind the Pulse page's 'heartbeat' heatmap (the GitHub-contributions-style grid at `/memories`). Same source set and exclusions as /today/activity — the union of `decisions`, `advice_given`, status=done `scheduled_actions` (excluding the `nudge_scan` heartbeat and `__internal__` channel), completed `workflow_runs`, `initiatives`, resolved `decision_instances`, and `alerts` — but bucketed by calendar day (UTC) in `episodic.count_activity_by_day` rather than returned as individual items — decisions/advice by their `timestamp`, fired actions by `run_at` (fire time, not `created_at` queue time, so a cadence queued the night before counts on the day it fires), workflow runs by `updated_at` (completion), initiatives by `created_at`, resolved decisions by `resolved_at`, alerts by `created_at`. The `workflow_runs` and `alerts` tables are owned by other stores (not `episodic.initialize_db`), so each UNION arm is included only when its table exists — `count_activity_by_day` checks `sqlite_master` and still counts the sources episodic owns on a DB initialised by episodic alone. The response is DENSE: every calendar day in the window is present (count 0 when nothing fired), oldest→newest, so the UI renders a gap-free grid without client-side fill. `days` defaults to 90, clamped to 1..365 via FastAPI Query validation (422 on out-of-range). Read-only, unauthenticated (matches /today/activity and /memories/*), uncached."
     - GET /morning-brief — deprecated alias for GET /today, kept for one release for older UI builds and bookmarks. Sends a Deprecation header with a Sunset date.
   lifecycle: |
@@ -1400,7 +2242,7 @@ today:
     explicit ids to `POST /alerts/bulk-ack` (never a server-side age sweep),
     and "Re-check relevance" (`POST /alerts/review`); Monitoring gets the
     same footer at 3 days; the ack body may carry `mute_topic`.
-  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the rail, the chat-home sidebar, and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge` and Skills). Both navs render it from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
+  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. `/?new=1&draft=<text>` (Playbooks "Try in chat") also seeds the new chat's input, capped at 2000 chars, WITHOUT auto-sending — unlike briefing handoffs, the text comes from a URL the user didn't type. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge`; Skills moved to the Playbooks tab of Workflows, `/jobs?tab=playbooks`), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
   briefing_first_landing: |
     The root page (`packages/ui/src/app/page.tsx`) defaults to `mode="briefing"`
     and renders `<Briefing>` (`packages/ui/src/components/Briefing.tsx`) in the
@@ -1436,17 +2278,126 @@ today:
 
 chat:
   module: openexecutive.api.routes.chat
-  endpoint: POST /chat — server-sent events stream of the live turn.
+  endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight.
   sse_event_types:
     - "chunk — one text delta from the assistant response stream. Fields: type, content, session_id."
-    - "thinking — keepalive emitted between specialist rounds so the UI can show a Consulting specialists indicator. Fields: type, session_id."
+    - "thinking — keepalive emitted at the start of EVERY tool-use round, not just specialist ones. Fields: type, session_id. It carries no tool information, so the UI uses it purely as an in-flight boolean and takes the wording from the `activity` event that immediately precedes it. It used to be the sole driver of a hardcoded 'Consulting specialists…' string, which is why an MCP or calendar round looked like a specialist fan-out."
+    - "activity — names the tool round that is in flight. Fields: type, label, tool, iteration. Emitted once per tool-use iteration, always immediately before `thinking`, so an ordered consumer has the label before it turns its indicator on. `label` is present-progressive, already ends in an ellipsis, and is capped at 60 chars for the one-line indicator — render it verbatim. `tool` is the canonical tool behind the label; for MCP `call_tool` it is the UNDERLYING tool name (matching the `action_taken` convention), sanitized and truncated to 48 chars because it is model-authored text bound for the DOM. Labels come from `openexecutive.orchestrator.activity_labels._LABELS`; an unmapped tool falls back to 'Working…' rather than going silent. A mixed round collapses to ONE label by priority rank (`_PRIORITY`), never by joining clauses — the indicator is a single muted line. Rank 0 is `consult_specialist`, so a round containing a real fan-out always renders the generic 'Consulting specialists…' and NEVER names an individual specialist (the one-voice invariant). Ephemeral: unlike `action_taken` it is progress only and is never persisted with the assistant message."
     - "phase — committee phase transition (drafting | reviewing | finalizing) when committee_review=true. Fields: type, phase, session_id."
     - "committee_critique — severity preview from a committee reviewer. Fields: type, reviewer, severity."
     - "action_taken — emitted whenever the Executive's tool-use loop completes a side-effecting tool call. Fields: type, tool, summary (≤80 chars, human-readable), target (person / channel ref / resource), link (optional in-app path the UI drills into), iteration. See `openexecutive.orchestrator.action_chips.SIDE_EFFECTING_TOOLS` for the canonical instrumented set; read-only tools (consult_specialist, lookup_person, list_people, search_skills, load_skill, search_tools, web_search, ask_about_person, list_workflows) never emit this event. The chip is suppressed when the handler returned an error payload — no green ✓ over a red outcome."
     - "debug_event — internal observability for the Agent Activity panel (knowledge_retrieved, routing_decision, specialist_start/done, synthesis_start, skill_invocation, mcp_invocation, web_search_invocation, committee_*). Not part of the user-visible conversation."
     - "form_patch — emitted when the Executive calls `propose_form_values` (Ask OE panel form-fill tier). Fields: type, form_id, fields (name → proposed value map), rationale, iteration. The panel applies the values into the registered on-screen form as highlighted suggestions; nothing is saved server-side and the user submits through the form's normal Save. NOT persisted with the assistant message (same deferred-persistence bucket as the action-chip note below predating chip persistence) — reopening a panel session loses the proposal cards, though values already applied to a form are unaffected."
+    - "stopped — the user halted the turn via POST /chat/stop. Carries type + session_id. ALWAYS followed by `done` over the same still-open stream: the server winds the turn down and reports, rather than the connection simply dying, so a consumer's state machine reaches its normal terminal state and there is no abort path to special-case. Deliberately NOT an `error` — a stop is a user decision, not a failure — so a consumer that ignores the event degrades to 'the turn ended normally', which is the safe reading. Whatever the Executive produced before the stop is persisted and flagged (chat_messages.stopped)."
     - "done — final marker carrying the resolved session_id; UI uses this to commit the streamed assistant message and clear the pending-prompt state."
     - "error — terminal error before/after streaming. Always followed by `done` so the stream consumer's state-machine reaches a clean end."
+  stop_control: |
+    The Stop button. The CLIENT mints a `client_turn_id` (uuid4) and sends it
+    with the turn; `POST /chat/stop` takes that id and sets an asyncio.Event
+    the SSE driver loop races against `stream.__anext__()`.
+
+    Why a client-minted id rather than the server's `turn_id`: `_run_chat_turn`
+    runs its context fan-out (RAG + episodic + Honcho prefetch + briefing)
+    BEFORE constructing the StreamingResponse, so no header and no SSE byte —
+    and therefore no server-issued id — reaches the client for several seconds.
+    That is exactly the window where stopping is free, because the Executive
+    has not been asked for a first step and no model call has been made. A
+    client id is live from the moment Send is pressed and closes it.
+
+    The client id is NOT reused as the audit `turn_id`: that keeps its
+    server-minted `t-` + 12-hex shape, which audit queries filter on, and
+    letting a client choose an audit key is the thing `_clean_session_id`
+    exists to prevent. `_CLIENT_TURN_ID_RE` is deliberately narrower than
+    `_SESSION_ID_RE` (the value reaches log lines). A malformed id is DROPPED,
+    not rejected — it only means that turn is not stoppable, which is never a
+    reason to fail the turn.
+
+    Authorization: the registry stores an OWNER KEY, not the raw
+    `caller_person_id`. That id is None for a signed-in user not yet on the
+    People roster, for a fresh install with no principal, and on any transient
+    DB error during lookup — so comparing person ids directly would make every
+    such caller the owner of every other such caller's turn. `_stop_owner_key`
+    falls back person id -> verified email -> "local" (no caller header at all,
+    i.e. CLI/curl against a local API). The UI proxy strips client-sent
+    `x-caller-*` and re-stamps from the verified NextAuth session, so the email
+    cannot be spoofed. Unknown id and "not yours" both return 404, on purpose —
+    distinguishing them would make the endpoint an oracle for which turn ids
+    are live.
+
+    Registration is refused rather than forced on two conditions, and a refused
+    turn simply isn't stoppable (it always still runs): an id already held by a
+    live turn (overwriting would make the first turn unstoppable and point Stop
+    at the wrong one), and a full registry. At the cap the NEW turn is refused
+    rather than the oldest evicted — entries are popped when their turn ends,
+    so the oldest is typically a long-running live turn whose owner is the most
+    likely person to reach for Stop.
+
+    A malformed `client_turn_id` on /chat is DROPPED, never rejected: failing a
+    whole chat turn over an unstoppable id would be the wrong trade. On
+    /chat/stop the id *is* the payload, so a bad one is a 422.
+
+    How the work actually stops: the route cancels the pending `__anext__`
+    task and AWAITS it before touching the generator again (cancel() only
+    requests cancellation, and `aclose()` on a generator whose step is still
+    running raises RuntimeError). The CancelledError propagates into whatever
+    the Executive is awaiting — the Anthropic stream, a tool call, a specialist
+    gather — which is why executive.py re-raises CancelledError out of its
+    `gather(return_exceptions=True)` calls rather than treating it as a tool
+    failure.
+
+    `asyncio.wait` carries a duty `wait_for` used to discharge: it does NOT
+    cancel its futures when the task awaiting it is cancelled, and Starlette
+    cancels the SSE body on `http.disconnect`. `_next_stream_step` therefore
+    cancels the pending step in a `finally`, so a closed tab cannot leave
+    `__anext__` running a full specialist or tool round with no deadline, no
+    registry entry and no persistence. That `finally` is the load-bearing part
+    of the function; tests/unit/test_chat_stream_step.py pins it.
+
+    The route persists BEFORE emitting the terminal frames on every path,
+    including the stop: closing the tab in the gap between a `stopped` frame
+    and the write would lose the partial reply, which is the one thing the
+    feature exists to preserve. The first-turn session-title call (a Haiku
+    round-trip with a ~10s budget) is skipped on the stop path, so persisting
+    first does not make the button feel dead.
+
+    `_active_stops` is single-process, exactly like `_sessions` in the
+    same module and `_active_cancellations` in
+    api/routes/evals.py (the pattern this copies). A second uvicorn worker
+    would break in-flight session continuity before it broke stop. It is
+    bounded (`_STOP_REGISTRY_MAX`) so a leaked entry cannot grow without limit.
+
+    Two accepted consequences, by design rather than oversight:
+      - A stopped turn writes the inbound `chat_turn` audit row plus an
+        explicit outbound one marked `stopped`. The Executive's own outbound
+        row never happens, because it is cancelled before its post-turn block.
+      - A side-effecting tool cancelled mid-flight may already have fired (the
+        DM sent, the event booked) without emitting its `action_taken` chip.
+        Identical to the pre-existing whole-turn timeout behaviour.
+      - A stop landing before the Executive produces anything saves nothing —
+        not even the user message, since storing it alone would break the
+        user/assistant alternation the stored history relies on. The UI matches
+        that by taking the message back and returning its text to the composer
+        (unless files were attached, where silently dropping the selection
+        would be worse), so the live view and a reload agree.
+      - A stopped FIRST turn is renamed detached rather than inline. The rename
+        only ever runs on a first turn, and the stopped turn is part of the
+        history, so simply skipping it would leave the placeholder title
+        forever; awaiting it would add a ~10s Haiku round-trip to a stop.
+      - Stopping a COMMITTEE turn during its silent draft phase saves nothing.
+        `stream_chat_with_committee` accumulates the draft into a local and
+        never yields it (only the revised stream reaches the client), so
+        `full_response` is empty and `_persist_turn` returns on its empty
+        guard. The turn simply ends with no assistant message. The UI matches
+        this by not appending an empty bubble, so the live view and a reload
+        agree. Changing it means restructuring the draft phase.
+
+    The route also mirrors a broken-out turn into the live in-memory Session.
+    The Executive's post-turn block is skipped whenever its generator closes
+    early, and `_get_or_create_session` never re-reads history for a session it
+    already holds — so without this the NEXT turn would prompt as though the
+    stopped turn never happened while a page reload showed it. This applies to
+    the disconnect and timeout paths too, where it was a latent bug.
+
   ask_oe_page_context: |
     The Ask OE side panel (packages/ui/src/components/askoe/*, available on
     every AppShell route — not `/`, which IS the chat) sends an optional
@@ -1462,6 +2413,44 @@ chat:
     prefix, so conditional inclusion would invalidate the cache whenever
     panel and non-panel turns alternate. Guarded by
     tests/unit/test_executive_form_patch.py::test_tool_list_is_cache_stable_and_includes_form_tool.
+  persisted_message_fields: |
+    Two per-message fields survive a reload alongside the prose, both attached
+    by `load_messages` only when set so an untouched row keeps the exact dict
+    shape every consumer expects:
+      - `chat_messages.action_chips` — JSON list of the turn's action chips.
+      - `chat_messages.stopped` — 1 when the user halted the reply mid-stream,
+        so a truncated answer is not read back as a complete one. Additive
+        migration guarded by a PRAGMA check, same shape as action_chips.
+    Safe to ride along into `Session.conversation_history`: the Executive
+    rebuilds each history turn as {"role", "content"}, so neither key ever
+    reaches the Anthropic payload.
+
+  activity_labels: |
+    The in-flight progress line. `orchestrator/activity_labels.py` is the
+    sibling of `action_chips.py`: same tool -> phrase mapping, but
+    present-progressive, covering every tool including read-only ones,
+    because it describes work that has not finished yet.
+
+    Emission is one place — the agent loop, immediately before it yields the
+    `_THINKING` sentinel. The call is wrapped in try/except: a labelling bug
+    costs the label, never the turn (the UI then falls back to "Working…").
+    The sentinel itself is deliberately unchanged; it is also the
+    "don't accumulate this into full_response" marker read by
+    `stream_chat`, the committee draft pass, and the non-streaming `.chat()`
+    wrapper that every channel adapter uses.
+
+    Rendered in `packages/ui/src/components/Chat.tsx` with precedence
+    committeePhase > activity label > nothing, and in
+    `components/askoe/AskOEPanel.tsx`, where it fills the streaming
+    placeholder that used to be a bare ellipsis. The label clears on the
+    first text chunk, on a committee phase change, at turn start, and in the
+    turn's finally — but deliberately NOT on `action_taken`, since a chip can
+    land while the same round is still running.
+
+    Known limitation: `Chat.tsx` gates the whole indicator row on
+    `!streamingContent`, so a tool round that happens AFTER prose has started
+    streaming shows nothing. Pre-existing, and unchanged by the label work.
+
   action_taken_chips: |
     Rendered as inline pills under each assistant message in
     `packages/ui/src/components/Message.tsx`. Each chip shows a ✓
@@ -1486,12 +2475,12 @@ audit:
     - tool_invocation — generic skill/MCP/alert/schedule tool calls; full payload includes `active_prompt_blocks`
     - scheduled_action — proactive nudge fired by the scheduler
     - alert — alert created by the triage pipeline
-    - integration_inbound — Slack / Discord / email / Telegram / Google Chat message received
+    - integration_inbound — Slack / Discord / email / Telegram / Google Chat message received. `details.outcome` distinguishes the non-reply paths — `rejected_unknown_sender` (not on the People roster), `skipped_gate` (response gate said no), and `handler_error` (the turn raised; the user got the generic apology). The error row carries the same `session_id` as the inbound row, so /audit can join a failed turn to the message that caused it.
     - knowledge_retrieval — one row per `knowledge.retriever.retrieve()` call; details carry chunk counts + domains, full payload carries each chunk's source, distance, and text preview so the session view shows "which RAG chunks influenced this response"
     - cache_event — one row per model call, from every call site (`audit.usage.log_model_usage`): Executive iterations and the committee revision pass (`actor` executive / committee_revision), `BaseAgent.analyze` callers — chat-turn consults via `route_parallel` (`actor` specialist), workflow steps and other direct `route_to_specialist` callers (specialist_workflow), the MCP `consult_specialist` tool (specialist_mcp), and both Council test boxes (agent_test) — `BaseAgent.analyze_with_tools` callers (specialist_research, query_watch, signal_enrichment), the research synthesis and watchlist passes (research_synthesis / research_watchlist), triage, and the chat memory extractor (memory_extractor). Captures `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `cost_usd`, `web_search_requests` (from `usage.server_tool_use`), `stop_reason`, and — inside a research run — the run's `run_id`, so prompt-cache hits are visible per turn, plus `cost_usd` — the actual USD OpenRouter charged for the call (read from `usage.cost`; null on the Anthropic-direct path or for rows logged before cost capture shipped). This is the token-usage + cost source of truth aggregated by both `/audit/sessions/{id}` (per session) and `/audit/usage` (cross-session).
     - memory_snapshot — one row at Executive turn entry; captures the system-block layout, conversation history length, episodic context (full text in `full_json`), and a company-profile hash so the session view can render "what the agent saw" before any API call
     - committee_review — one row per committee-reviewed turn; carries draft length, final length, per-reviewer critiques and timings (previously emitted but newly declared as a recognised event_type)
-    - peer_memory — one row per `openexecutive.memory.honcho_client` call (prefetch / sync_turn / directional_chat / prefetch_department / sync_department_turn / append_department_note); carries `op`, `person_id`, optional `department_slug`, `outcome` (ok / timeout / error / disabled / no_person / no_department / no_loop / empty), `duration_ms`, plus op-specific details (query preview, reasoning_level, peer count, co_present_person_ids, co_present_department_slugs, originating_person_id, target_person_id, session_id, kind) so the flow-chart view renders the peer_memory path alongside `<retrieved_context>` and `<past_decisions>`. Disabled / no-Person / no-Department turns still emit (outcome marker) so audit absence equals "code path never ran" instead of "the provider was down."
+    - peer_memory — one row per `openexecutive.memory.honcho_client` call (prefetch / sync_turn / seed_identity / directional_chat / prefetch_department / sync_department_turn / append_department_note); carries `op`, `person_id`, optional `department_slug`, `outcome` (ok / timeout / error / disabled / no_person / no_department / no_loop / empty), `duration_ms`, plus op-specific details (query preview, reasoning_level, peer count, co_present_person_ids, co_present_department_slugs, originating_person_id, target_person_id, session_id, kind) so the flow-chart view renders the peer_memory path alongside `<retrieved_context>` and `<past_decisions>`. Disabled / no-Person / no-Department turns still emit (outcome marker) so audit absence equals "code path never ran" instead of "the provider was down."
     - external_signal_received — one row per signal an external-monitor adapter wrote to `external_signals`. Carries `signal_id`, `watchlist_id`, `watchlist_slug`, `source_kind`, `severity_hint`, `dedup_key`. The audit trail of what the monitor noticed, separate from what it surfaced.
     - external_signal_deferred — one row per poll that skipped entries whose published_at is more than the row's future-skew tolerance ahead (aggregated — `count`, `future_skew_hours`, `race_tick`, and up to 10 `entries` each with `dedup_key`, `published_at`, `summary` and `provenance_url`, so an operator can tell WHAT was held back). Emitted from the scan loop's finally, so it survives a poll that raises later in the same row. A deferred entry is by design NOT written to external_signals (that would burn its dedup key and mute it for good), so this row is its only trace until its date passes and it is judged normally.
     - external_signal_promoted — one row per signal promoted into the alerts pipeline (post-suppression cascade). Carries `signal_id`, `watchlist_id`, `watchlist_slug`, `source_kind`, `severity_hint`, `dedup_key`, `provenance_url`. Pair with `external_signal_received` to compute promotion rate per watchlist row.
@@ -1503,6 +2492,7 @@ audit:
     - watchlist_suggestion_approved / watchlist_suggestion_declined / watchlist_suggestion_expired — the principal's verdict on a research suggestion (`POST /watchlist/{slug}/approve|decline`, reason on decline) or the sweep removing one unreviewed after WATCHLIST_PROPOSAL_TTL_DAYS. Each also writes a `watchlist_policy_outcomes` row so the policy calibrates.
     - watchlist_auto_disabled — the sweep disabled a research-origin watch (`reason`: dismissed N of M alerts with low trust; no signals in 30 days; 3 consecutive poll failures). Renders in the HANDLED block as `stopped_watching`; re-enable from /watchlist.
     - auth_login / auth_logout — admin auth events
+    - executive_paused / executive_resumed — the operator pause switch flipped (scheduler.pause). actor is the caller's email (else "api"); details carry the reason on pause, and paused_at / paused_by / held_actions on resume. Re-pausing or re-resuming writes nothing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
@@ -2402,37 +3392,175 @@ workflows:
   streaming: SSE — every step emits a WorkflowEvent (start/progress/complete) consumed by /workflows/{name}/runs.
   human_in_the_loop: |
     `wait_for_human` (openexecutive/workflows/wait_for_human.py) is a
-    first-class step primitive that pauses a run, writes an
-    `awaiting_human` row into scheduled_actions, and returns control to
-    the user. When the human replies on any channel, the
-    `inbound_resolver` workflow matches the response back to the paused
-    run via its resume token and `resumer.apply_resolution` records the
-    decision, marks the run `resolved`, and writes an audit row. A
-    timeout instead applies the step's `on_timeout` policy (escalate /
+    first-class step primitive that pauses a run: `save_checkpoint` moves
+    the `workflow_runs` row to `status='awaiting_human'` and stores the
+    serialized `WaitForHumanEvent` in `state_json`. (It does NOT write to
+    scheduled_actions, and it is NOT the department authority gate — see
+    the correction under `departments.authority_gate`.)
+
+    DELIVERY — `workflows.gate_delivery.deliver_gate_question`, called by
+    both checkpoint sites (api/routes/workflows.py and
+    orchestrator/workflow_run_tools.py) BEFORE `save_checkpoint`, so
+    state_json carries the routing fields. Two modes. Self-approval: the
+    chat session's `origin_channel` is set and its `caller_person_id` is
+    the gate's person — nothing is sent (the question rides in the
+    Executive's own reply) and the gate records `origin_session_id` plus
+    the session's channel/ref. Out-of-band: delegate to
+    `schedule_tools.handle_message_person` (preferred-channel selection,
+    per-channel id validation, fall-through, alert fallback), and record
+    the `channel` / `channel_ref` / `message_id` its success payload now
+    returns. Delivery may not happen — the outbound guard can suppress it
+    and an unreachable person falls back to an alert — in which case the
+    routing fields stay EMPTY and the caller reports `delivery` as
+    `suppressed` / `alerted`, never "waiting on them".
+
+    MATCHING — each adapter calls `inbound_resolver.resolve_inbound_message`
+    with every `session_id` the message belongs to (a Slack thread reply also
+    offers its parent `slack:channel:{c}:{u}`, mirroring the history
+    double-write — a gate raised on a mention records the channel session
+    while the answer arrives under the thread's, and a single-id comparison
+    made that gate permanently unanswerable). Tier 1 (explicit `in_reply_to`
+    vs a stored `outbound_message_id`) rules out only the candidates that
+    carry an outbound id — the ones it could have matched — and lets the rest
+    continue; Slack passes `thread_ts` on every threaded message, so an
+    unconditional refusal made tiers 2-3 unreachable there, and a global test
+    let one delivered gate's id block an unrelated self-approval gate. Tier 2
+    normalizes channel names (`slack_dm` ≡ `slack`) and treats an empty
+    stored channel as a wildcard ONLY when `state_json` has no `delivery` key
+    at all — that marks a checkpoint written before gate delivery existed. A
+    row whose delivery was suppressed / alerted / failed also has no channel
+    but DOES carry the key, and is not matchable: nobody was asked on any
+    channel, so matching it would record an answer to a question that was
+    never put. Tier 3 is one utility-fast disambiguation call at 0.85
+    confidence. Two guards stop an open gate swallowing unrelated traffic: a
+    gate with an `origin_session_id` matches only the conversations the
+    adapter names, and the parser can answer `unrelated`, which declines to
+    resolve so the message reaches the normal chat path. The parser receives
+    the gate's own question (without it a bare "yes" can never be judged
+    unrelated), and its fallback is flagged with `PARSE_FAILED_KEY` — a key
+    the model has no reason to emit — rather than the old `note ==
+    "parse_error"` string, which a human could produce and thereby have a
+    genuine rejection discarded. The fallback guard applies to EVERY reply
+    shape, not just approve_reject, and every shape can answer `unrelated` —
+    without it an open free_text gate turned the person's next message into
+    its answer verbatim, and a numeric gate swallowed any message containing
+    a number. `ack_alert` is withheld from the unattended passes
+    (`executive_reflection` and the `executive_research` synthesis): both
+    render open alerts into their context, those headlines come from inbound
+    mail and chat, and the server-side ack trust check keys on a session's
+    `origin_channel`, which those passes do not set.
+    `resumer.apply_resolution` then records the
+    decision, marks the run `resolved`, and writes an audit row. A timeout
+    instead applies the step's `on_timeout` policy (escalate /
     auto_proceed / fail). Either way the captured outcome surfaces in the
     Today dashboard for the founder to see.
 
-    NOT YET SHIPPED — full generator resume: re-entering the paused async
-    generator to run the *next* workflow step automatically is deferred
-    to "Phase 7" (see the note in `resumer.py`). Today a paused multi-step
-    workflow captures the human's decision and stops there; it does not
-    continue its remaining steps on its own. Single-step approval gates
-    (the common case) are fully served by the capture-and-surface path
-    above; multi-step auto-continuation is the gap.
+    Every adapter replies with the one shared wording from
+    `resumer.resolution_acknowledgement`, which names the decision (via the
+    shared `DECISION_VERBS` map in wait_for_human.py) and then says what
+    actually happens next, keyed on whether the run carries a
+    `resume_state_json`: resuming now, stopping here because the answer was
+    a reject/defer, or — for a pause-only gate — closed out with nothing
+    further. The original "Got it — your response has been recorded."
+    implied work was in flight when none was; saying "the workflow does not
+    continue on its own" for a resumable gate would now be the same error
+    in the other direction.
 
-    NO BUILT-IN workflow currently yields the gate — `offer_approval` did,
-    and it was removed with the talent vertical. (`exec_search_brief` survived
-    that removal — it is an advisory CHRO brief with no gate and no pipeline
-    dependency.) Only user-created dynamic
-    workflows pause today. A dynamic workflow that pauses must be designed
-    AROUND the resume gap: yield `result` + `artifact` BEFORE the gate (the
-    runner never reaches `complete_run` on a paused run) and persist anything
-    downstream code needs, so the gate's only job is to RECORD the decision and
-    an explicit follow-up action performs the real state transition.
+    RESUME — a paused run continues on its own. Nothing serializes a
+    generator frame; that assumption is what deferred this for so long. The
+    only state alive across a dynamic workflow's steps is its inputs
+    (already in `workflow_runs.inputs`), a recomputable company-profile
+    block, the completed steps' string outputs, and the loop cursor — so the
+    engine hands the checkpoint a small JSON `WorkflowResumeState`
+    (workflow_name, gate_step_id, gate_step_index, next_step_index,
+    outputs), stored in the new `workflow_runs.resume_state_json` column,
+    and `DynamicWorkflow.resume` replays its step loop from
+    `next_step_index`. `run()` and `resume()` share one loop (`_run_steps`),
+    so a gate reached on a resumed run raises an identical pause and a
+    second gate needs no special handling.
+
+    The payload rides on `WaitForHumanEvent.resume_state`, a field declared
+    `exclude=True` so it can never leak into `state_json` — the resolver
+    branches on which keys are PRESENT there, so shape stability is a
+    property of the type rather than a rule each call site must remember. A
+    gate with no payload is pause-only: the decision is recorded and the run
+    stops, which is what every caller got before resume existed.
+
+    EXECUTION — `resumer._process_resumable` claims a `resolved` run
+    carrying a payload with one guarded UPDATE (`claim_run_for_resume`:
+    resolved -> running, stamping `resumed_at`, incrementing
+    `resume_attempts` and minting a `resume_claim` token), then drives
+    `workflow.resume(...)` to a terminal row. It is reached two ways:
+    immediately, via a task `apply_resolution` kicks off so a Slack approval
+    starts in seconds, and from `_tick` every 60s as the durable backstop.
+    Both share the claim, so a run executes exactly once even with two
+    resumers against one database. `_tick` runs the executor AFTER the
+    timeout loop, which is what finally makes `on_timeout='auto_proceed'` do
+    what its name says: `_handle_timeout` resolves the run and the same tick
+    executes it.
+
+    FENCING — the claim is not a lease. The stale sweep decides a worker is
+    dead from a wall-clock guess (`_RESUME_STALE_AFTER`, 90 minutes, set
+    beyond 12 specialist consults at the specialist timeout), so a slow but
+    ALIVE worker can be declared dead and replaced. Every write the executor
+    makes therefore carries the claim token — `finish_resumed_run` and a
+    fenced `save_checkpoint` — and is refused once superseded. Without that,
+    the replaced worker's late `complete_run` lands on top of its
+    replacement's result, or its `save_checkpoint` at a later gate
+    RESURRECTS an already-`done` run to `awaiting_human` and asks the
+    approver a second time. `requeue_run_for_resume` clears the token, which
+    is what breaks the old worker's write.
+
+    RETRY BUDGET — `resume_attempts` bounds the requeue. It is reset by
+    `save_checkpoint`, because reaching a new gate is new work rather than
+    another attempt at the last one; counting gates against it would leave a
+    three-gate workflow with no crash-recovery budget by its final gate,
+    without a single failure. Exceeding the bound is TERMINAL, not a
+    disappearance: an exhausted run is `running` with a payload, so it is in
+    neither queue, and `list_exhausted_resuming_runs` exists so the resumer
+    can end it instead of leaving it showing as in-progress forever.
+
+    THE GATE FAILS CLOSED — continuing is an allowlist
+    (`CONTINUE_DECISIONS` = approve, auto_proceed), not "anything that is not
+    a stop word". `decision` is whatever a fast model extracted from
+    free-form chat, and it drifts: under a denylist, "rejected", "Reject",
+    "decline" and "no" all CONTINUE the run, so the approver declines and the
+    deliverable is produced anyway. Reply shapes that ask a question rather
+    than seek permission (`NON_APPROVAL_SHAPES`) always continue — the answer
+    is the value, there is nothing to fail closed on. A stop ends the run at
+    `error` with the human's note. Either way the decision becomes the gate
+    step's own output via `dynamic._format_resolution`, so it appears as a
+    section IN the artifact; that text is capped and blockquoted because it
+    reaches the synthesis specialist as prompt context.
+
+    A DEFINITION EDITED DURING THE PAUSE — `resume` re-validates the
+    payload's version/engine/workflow name, that `steps[gate_step_index]` is
+    still the same gate, AND a `steps_fingerprint` over the whole step list;
+    the index to continue at is DERIVED (`gate_step_index + 1`), never read
+    from the payload. Pinning only the gate is not enough: `upsert_definition`
+    overwrites by name and any rostered chat user can call `save_workflow`,
+    so someone could keep the gate identical and replace every step after it,
+    and the approver's sign-off would be recorded against work they never
+    saw — defeating the one thing an approval gate is for.
+
+    THE TIMEOUT/REPLY RACE — `_tick` lists expired rows and then acts on
+    them, so a reply can land in the gap. Both terminal branches of
+    `_handle_timeout` check `mark_timed_out`'s guarded result first and bail
+    if it returns False; the writes that follow have no status guard of their
+    own, and continuing would strip the payload off (or overwrite) a run a
+    human had just answered.
+
+    NO BUILT-IN workflow yields the gate — `offer_approval` did, and it was
+    removed with the talent vertical. (`exec_search_brief` survived that
+    removal — it is an advisory CHRO brief with no gate and no pipeline
+    dependency.) Only user-created dynamic workflows pause. Gates remain
+    banned in cadence-enabled dynamic workflows (`validate_definition`): a
+    cron fire has no interactive human to ask.
 
   dynamic_user_created: |
-    Users create reusable workflows on the fly — from the executive chat or a
-    builder UI on /jobs — without shipping a Workflow subclass. A dynamic
+    Users create reusable workflows on the fly — from the executive chat, the
+    conversational wizard at /jobs/new, or the step-by-step advanced editor —
+    without shipping a Workflow subclass. A dynamic
     workflow is a stored JSON definition (the `dynamic_workflows` table;
     `openexecutive.workflows.dynamic_store`) interpreted at runtime by ONE
     generic engine, `openexecutive.workflows.dynamic.DynamicWorkflow`, which
@@ -2457,16 +3585,196 @@ workflows:
     (no persistence); after the user approves, `save_workflow` re-validates
     and persists only if the token still matches the definition (a mismatch is
     rejected, so the saved workflow is exactly what the user saw). Both tool
-    schemas are fixed, so the cached tool list stays stable. The builder UI
-    drives the `/workflows/custom` CRUD endpoints directly.
+    schemas are fixed, so the cached tool list stays stable. The step-by-step
+    advanced editor drives the `/workflows/custom` CRUD endpoints directly.
+    A definition with action (tool) steps saved from chat is stored
+    is_active=False (applied after the token check), its cadence is not
+    scheduled, and
+    save_workflow returns status `saved_pending_review` + the /jobs/{name}
+    link. The chat token is model-held, so it is not a human seeing the tools:
+    the approval is **Turn on workflow** on the review card that /jobs/{name}
+    shows for an inactive custom workflow (POST /workflows/custom/{name}/
+    activate, which re-runs validate_definition_and_tools when turning on).
+    Chat may keep revising a switched-off one, but draft/save REFUSE to
+    replace a switched-on workflow with action steps (any replacement, even
+    analysis-only): an inbound email steering the Executive could otherwise
+    switch off an approved job and stage new tools under its familiar name.
+    Those edits go through /jobs/new?edit=<name>. The refusal is decided from
+    a read, so the save itself is conditional on that row
+    (dynamic_store.save_if_unchanged: INSERT only if still absent, else
+    UPDATE ... WHERE updated_at = the read one) — an activation landing in
+    between, from any process, makes the save a no-op with an error.
+    get_definition reports updated_at from the column (not the JSON body),
+    which is the key both conditional writes match on.
+    Activation is bound to what was reviewed: for a definition with action
+    steps the body must carry the reviewed `definition`; it must equal the
+    stored one (model_dump minus is_active/created_at/updated_at) or 409, and
+    the switch is one conditional UPDATE keyed on the validated revision's
+    updated_at (dynamic_store.activate_if_unchanged), so a save landing during
+    the awaited tool check — from any process, e.g. a standalone chat bot on
+    the same DB — is a 409, never switched on.
+    The Workflows catalog (/jobs) lists inactive custom workflows in a "Waiting for your
+    approval" strip; the advanced editor preserves is_active on save, so
+    "Save changes" never switches one on.
+
+    New workflow wizard (`/jobs/new`, the UI default): a conversational
+    designer modelled on the onboarding interview. `workflows.designer.advance`
+    is the loop; `agents.workflow_designer.WorkflowDesignerAgent` is a
+    Council-only agent (outside SPECIALIST_REGISTRY). Two fixed, name-sorted
+    tools every call — `ask_clarifying_question` {question, hint, options<=4}
+    and `emit_workflow_draft` {definition (reuses DEFINITION_SCHEMA from
+    workflow_authoring_tools), summary, assumptions}. `tool_choice` is `any`
+    and flips to the emit tool exactly once: MAX_QUESTIONS=6 spent, a
+    60k-char transcript, or the user's "Draft it now". Emitted drafts go
+    through DynamicWorkflowDef validation + `validate_definition` + a check
+    against saved custom names, with ONE repair turn feeding the errors back;
+    a second failure raises WorkflowDesignerError (fixed string). Cache
+    layout: one constant system block with cache_control; the live context
+    (specialists, roster with person ids, USER_TIMEZONE, taken names) is
+    rendered once per session by `build_context_block` into the FIRST user
+    turn, and the current draft JSON is prepended to the LATEST user turn
+    while refining. Roster full_name/role are attacker-influenceable free text
+    (anyone with People access), so `_one_line` flattens them to one line and
+    caps them at 80 chars, and the system prompt says the context block is
+    data, never instructions. Transcript replay is shared with onboarding via
+    `onboarding.interview.replay_transcript`. Routes live in
+    `api/routes/workflow_designer.py` (`/workflows/designer/start|message|
+    draft|{id}`), mounted before the workflows router; sessions are
+    in-memory (2 h TTL, 50 cap), hold ONE model turn at a time (`busy` flag:
+    a concurrent /message or /draft gets 409; a failed /message removes its
+    own user turn by identity), and NEVER write — the UI saves through
+    `POST /workflows/custom`, which re-validates. "Edit details" hands the
+    draft to the advanced editor via `/jobs/new?designer=<id>`.
+
+    Action steps (workflows that act): `ActionStepSpec` {goal, tools,
+    max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
+    of exact names — MCP gateway tools (`server__tool`) and built-ins
+    `oe__read_file`, `oe__message_person`, `oe__create_alert` — and the user's
+    click on Create IS the approval (the review card lists every tool, flags
+    ones that may change things, and names them in a "can use these without
+    asking again" notice). Gateway meta-tools (search_tools / call_tool /
+    load_mcp_server) are forbidden as step tools. `workflows/tool_catalog.py`
+    parses extensible-mcp's Markdown `search_tools` output, resolves exact names
+    (which doubles as the per-session discovery `call_tool` requires), and
+    `validate_tools_available` runs on every save path (custom POST/PUT, chat
+    draft/save, designer drafts). `workflows/action_step.py` runs the
+    `workflow_actor` Council agent: constant cached system block, only the
+    allowlisted tools (sorted), per-run goal/inputs/earlier results in the user
+    turn; every tool_use re-checked against the allowlist; MCP calls go through
+    `MCPGateway.call_tool` (deny-list + Gmail/Calendar/Drive recipient gates);
+    budget enforced, then a tools-off (`tool_choice: none`) final turn; tool
+    errors return as is_error; each call emits a `progress` WorkflowEvent and a
+    `workflow_tool_call` audit row (tool + outcome, never arguments). Output =
+    the agent's report + an "Actions taken" list. `oe__read_file` reads only
+    under WORKFLOW_FILE_DIRS (default workspace-mcp's attachment dir), resolving
+    symlinks/`..` first. Action steps are allowed in cadence workflows. The
+    designer gained a third constant tool, `search_available_tools`, answered
+    inside the same `advance` call (≤4 per turn; tool_use/tool_result pairs are
+    never stored in the transcript; found names are kept on the session as
+    `discovered_tools` and replayed into later turns so forced drafts and
+    repair turns can use them). Endpoints: GET /workflows/tools/search?q= and
+    GET /workflows/tools/describe?names= (names regex-checked and deduped).
+    Hardening from review: tools taking a url/uri/endpoint/webhook param are
+    never labelled read-only (egress); chat draft_workflow/save_workflow save
+    action-step workflows switched OFF until turned on from the review card
+    (the review card is the approval, not a model-held token);
+    run()/resume() pre-flight all action tools; running out of turns fails the
+    step; resumes heartbeat their claim (persistence.touch_resume_claim, <=1/min)
+    and stop when superseded, so a live run is never requeued and replayed.
+    Targets are chosen at run time BY DESIGN: approval covers the tools, not
+    which spreadsheet/doc/recipient/URL each call hits (tab per month, reply to
+    the sender, doc per client). Bounds: the allowlist, the gateway recipient
+    gates, the audit (workflow_tool_call rows of non-read-only tools carry a
+    bounded `targets` digest — keys like *_id/to/url/path/spreadsheet; never
+    content) and FIRST-WRITE CONFIRMATION:
+    - action_step.TargetPolicy (one per run) checks every call whose tool is
+      not labelled read-only; tool_catalog._read_only_label never labels a
+      name carrying a write verb anywhere (find_and_replace_doc,
+      check_and_merge_pr, get_or_create_folder …). resource_targets() walks
+      arguments recursively; a resource key (snake/camel ids, to/cc/bcc,
+      recipient, email, address, attendee, member, user, owner, parent,
+      url/uri/href/link, path, channel, space, room, phone, host, bucket,
+      table, spreadsheet, document, folder, calendar, file) marks its whole
+      subtree, names included. Outside one, exact name/title/subject/
+      file_name/display_name keys, message/thread/draft/label ids, range/sheet
+      and user_google_email are skipped; any bare email/URL/+phone-shaped
+      value is a target whatever its key, except under content keys (rows,
+      values, data, body, content, text, html, markdown, description, notes,
+      comment, summary, headline). Floats that are integers compare as ints.
+      Too deep (>8), too many (>100) or over-long (>2000 chars) FAILS CLOSED.
+      Key names are a heuristic: this is best-effort, layered on the tool
+      allowlist, gateway recipient gates and the audit.
+    - Trusted: values in workflow_approved_targets for this workflow (by
+      normalized value — emails lowercased — not by tool), and ids a write in
+      this run created: TOP-LEVEL id/link keys (id, *_id, *Id, *link, *url)
+      of the JSON-object result of a tool whose name says it creates
+      (tool_catalog.creates: create/insert/upload/add/copy/new/make/duplicate)
+      and that takes no URL (tool_catalog.takes_url; an unknown schema counts
+      as taking one) — never free text, nested records, or a reader's or
+      updater's result (a page, an echoed title, a shared doc's links or a
+      stranger in ccRecipients could plant one). Approvals are cleared when
+      the workflow's action-tool set changes (dynamic_store upsert /
+      save_if_unchanged), so a newly added tool never inherits them. Carried across pauses in
+      WorkflowResumeState.run_created (both gate and held-writes pauses).
+      Values in the workflow's own text are NOT trusted (anyone who can PUT
+      the workflow could change them without review) — asked once.
+    - The owner's question JSON-quotes each target (no injected lines) and
+      always shows a URL's scheme+host in full, saying how much is hidden.
+    - Anything else is HELD: not run, no budget spent, the model gets a
+      "held for approval, don't retry" result, audited "held for approval";
+      <= 10 per step, <= 16 KB args each, else refused; an identical repeat
+      is held once. Every exit that won't settle them (step error or crash,
+      resume refused for a changed definition / stale specialist / missing
+      later tool) audits them as "dropped (reason)" and says in the error
+      that N held writes did not run.
+    - After the step, the engine yields WaitForHumanEvent to
+      approved_targets.approver_for(name): the workflow's owner
+      (dynamic_workflows.owner_person_id — set on insert only from the web
+      caller on POST /workflows/custom or the chat session caller on
+      save_workflow; never from a body/definition; kept by PUT, overwrite,
+      activate), else the principal if the owner is unknown/archived.
+      on_timeout=auto_proceed, 48 h. WorkflowResumeState gains
+      kind="held_writes", held=[HeldCall(tool, arguments, targets)] and
+      deliver_to_person_id; old payloads parse as kind="gate".
+    - DynamicWorkflow._resume_held_writes (fingerprint + ActionStepSpec id
+      checked like a gate): only decision "approve" runs the held calls, each
+      re-checked against the LIVE step allowlist and resolve(); targets are
+      remembered first. reject/auto_proceed/defer/unknown skip. Either way a
+      "Held for approval" section is appended to the step output and the run
+      continues at idx+1. No approver at all: held writes skipped and noted.
+    - The principal can override from the web: POST
+      /workflows/runs/{id}/decision (is_principal_or_self on
+      awaiting_person_id; approve_reject gates only) -> apply_resolution. A
+      chat reply only matches the person asked (inbound_resolver filters on
+      awaiting_person_id).
+    - Scheduler: _run_dynamic_workflow checkpoints a held_writes pause
+      (checkpoint_gate) instead of raising, stamps deliver_to_person_id with
+      the cadence recipient, marks the row done and re-chains; the resumer
+      DMs the artifact after finish_resumed_run (and carries
+      deliver_to_person_id onto any later pause). Every other gate still
+      raises in the scheduler.
+    - Known limit: a daily cadence can raise a second question about the
+      same target while the first is unanswered; answering either remembers
+      the target for later runs.
+    Egress labelling walks the whole schema (nested/items/anyOf/$defs) and an
+    unparsed schema is never "reads only". requeue_run_for_resume takes
+    stale_before so a heartbeat between the sweep's SELECT and UPDATE wins.
+
+    Catalog: `Workflow.background` / `WorkflowMeta.background` is True for
+    the system-run built-ins (morning_brief, end_of_day_digest,
+    executive_reflection, executive_research); /jobs files them under a
+    "System" chip instead of the default view.
 
     Optional cadence: a definition may carry the cadence DSL +
     `cadence_person_id`. `workflows.dynamic_cadence` enqueues a
     `dynamic_workflow` scheduled action; the scheduler runs the workflow and
     DMs the artifact to that person, then re-chains. See the `scheduler:` key.
-    Limitation: same wait_for_human resume gap as above — a gate followed by
-    more steps pauses at awaiting_human and does not auto-continue, so gates
-    belong immediately before synthesis (validation/UI steer toward this).
+    A gate followed by more steps now resumes: the run pauses at
+    awaiting_human and, once answered, the resumer executes the remaining
+    steps and produces the artifact (see `human_in_the_loop` -> RESUME).
+    Gates no longer have to sit immediately before synthesis. They remain
+    forbidden in CADENCE-enabled definitions, though — a cron fire has no
+    interactive human, so `validate_definition` rejects them there.
   chat_launch: |
     Any workflow — built-in or custom — is launchable from a chat turn, not
     only the /jobs UI. `openexecutive.orchestrator.workflow_run_tools` wires two
@@ -2478,13 +3786,29 @@ workflows:
         via `get_workflow`, validates `inputs` against the workflow's
         input_model, persists the run (`create_run` → `complete_run`/`fail_run`),
         and streams `workflow.run(...)` to completion. It mirrors the HTTP
-        route's WaitForHumanEvent handling: an approval-gate step is checkpointed
-        via `save_checkpoint` and returned as `status='awaiting_human'` rather
-        than hanging — so the same resumer/inbound_resolver path applies.
+        route's WaitForHumanEvent handling — literally, now: both go through
+        `workflows.gate.checkpoint_gate`, which delivers the question and
+        checkpoints the run in one place so the two copies cannot drift.
+        It returns a `GatePause`, reported as `status='awaiting_human'`
+        with a `delivery` field (self / sent / suppressed / alerted /
+        failed) and a `resumable` flag, rather than hanging. `_awaiting_hint`
+        combines the two: an undelivered question is never reported as
+        "waiting on them", and a pause-only gate is never described as
+        continuing by itself. The nine runners that CANNOT pause
+        (schedulers, evals, client rotation, onboarding, research tools)
+        call `gate.ensure_workflow_event`, which raises on a gate instead
+        of letting it be swallowed — the scheduler's dynamic-workflow
+        branch used to ignore one and store `complete_run(run_id, "(no
+        artifact)")`, a phantom success every cadence period.
     Guardrail: `_CHAT_LAUNCH_BLOCKLIST` excludes `executive_research` (it has the
-    dedicated `run_executive_research` tool). The principal-targeting recurring
-    workflows (`morning_brief`, `end_of_day_digest`, `executive_reflection`) stay
-    launchable but the tool description warns they dispatch real messages. A successful
+    dedicated `run_executive_research` tool). Running a workflow from chat
+    DELIVERS NOTHING — it renders the artifact into the conversation; the
+    recurring principal briefs reach anyone only through the scheduler's
+    `_deliver_to_principal`. The tool description previously claimed
+    `morning_brief` and `end_of_day_digest` DM the principal when run and told
+    the model to confirm first, which had it soliciting a confirmation on a
+    false premise (#136); it now names `executive_reflection` as the one
+    workflow that really does execute tool calls of its own. A successful
     `run_workflow` emits an `action_taken` chip (in `action_chips`) linking to
     `/jobs/runs/{run_id}`.
   notable_recent:
@@ -2515,7 +3839,8 @@ workflows:
 artifacts:
   summary: |
     The Executive Artifacts section (`/artifacts`) is a unified view over
-    every Markdown deliverable the Executive produces. It does NOT
+    every deliverable the Executive produces, in any registered format
+    (see `formats:`). It does NOT
     introduce a new table — it aggregates the two places artifacts already
     live, so the underlying rows stay canonical:
       1. `draft_artifact` documents — alerts with `source='artifact'`
@@ -2525,22 +3850,67 @@ artifacts:
          `status='done'` (see `workflows:`).
     Reads are unified; writes are limited to two reversible/irreversible
     lifecycle actions (archive/restore + delete) — see `lifecycle:`.
+  formats: |
+    `orchestrator/artifact_formats.py` — `ARTIFACT_FORMATS` registry, one
+    `ArtifactFormat` per format (label, mime, extension, `build`, `display`,
+    `text`, `render_file`). Everything is stored as TEXT in the owning row;
+    no file is ever written to disk, so there is no file volume and
+    archive / delete have nothing extra to clean up:
+      - markdown — the Markdown (+ Sources footer); download .md.
+      - html — rebuilt through an ALLOWLIST (`sanitize_html`, stdlib
+        html.parser, so attribute entities are decoded before checking):
+        document/table/list/media tags + inline SVG; no script/iframe/
+        object/embed bodies; no meta/base/link/form controls; no on*
+        handlers; <a href> only http(s)/mailto/#, non-fragment links forced
+        to target=_blank; <img src> only data:image/*. A regex pass was
+        bypassable (`re&#102;resh`) and let the frame self-navigate to an
+        attacker URL. Download .html.
+      - docx — the Markdown source; `markdown_to_docx` (python-docx) renders
+        headings, lists, GFM tables, quotes, code and inline emphasis at
+        download time.
+      - xlsx — JSON `{"summary", "sheets": [{name, columns, rows}]}`;
+        `sheets_to_xlsx` (openpyxl) renders at download time and writes
+        every string cell as a literal string, NEVER a formula (cells can
+        quote web/email text). Caps: 20 sheets, 5k rows/sheet, 200 cols,
+        200k cells. Display = Markdown tables, 50 rows/sheet.
+      - link — Markdown summary in `body`; URL + label in
+        `alerts.artifact_url` / `artifact_link_label`; no download.
+    Columns on `alerts` (additive migration): `artifact_format` (NOT NULL
+    DEFAULT 'markdown', so legacy rows read as Markdown), `artifact_url`,
+    `artifact_link_label`, `supersedes_id`. Workflow runs stay Markdown
+    (the scheduler DMs and other readers consume that text) and gain
+    formats only on the way out: `EXPORT_TARGETS` lets any Markdown
+    artifact download as .docx. Document cap: 60k chars.
+    `/today` `ProposalItem` carries `artifact_format` / `artifact_url`, and
+    its `body` is the format's Markdown `display`, so the card and chat
+    handoff never show raw HTML or sheet JSON.
   serving: |
-    `openexecutive.api.routes.artifacts` (registered in api/main.py).
+    `openexecutive.api.routes.artifacts` (registered in api/main.py), a
+    thin HTTP layer over `orchestrator/artifact_records.py` (shared with
+    the `list_artifacts` / `get_artifact` tools).
     - GET /artifacts?archived=false — merges
       `alerts.store.list_artifact_alerts` +
       `workflows.persistence.list_artifact_runs`, sorts newest-first,
       returns summaries (no bodies; run previews are null since the list
-      query omits the heavy artifact column). `archived` (default false)
-      selects which slice: active-only or archived-only — a clean swap,
-      never a superset.
-    - GET /artifacts/{composite_id} — full Markdown body via the existing
-      `get_alert` / `get_run` (resolves archived artifacts too, so the
-      gallery can still open one).
+      query omits the heavy artifact column). Each summary carries
+      `format`, `format_label`, `downloads` (first = own file, then export
+      targets; empty for links), `external_url`, `link_label`,
+      `supersedes_id`. `archived` (default false) selects which slice:
+      active-only or archived-only — a clean swap, never a superset.
+    - GET /artifacts/{composite_id} — `body` is the sanitized HTML for
+      html, the format's Markdown `display` otherwise, plus `rationale`
+      (resolves archived artifacts too, so the gallery can still open one).
+    - GET /artifacts/{composite_id}/download?as=<format> — the file, always
+      `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`,
+      `Content-Security-Policy: sandbox`, `Cache-Control: no-store` (the UI
+      proxy keeps an upstream no-store instead of its default no-cache), so
+      an HTML artifact never renders on the app origin. 404 for links or a
+      target not in `downloads`.
     - POST /artifacts/{composite_id}/archive — reversible soft-hide.
     - POST /artifacts/{composite_id}/restore — un-archive.
     - DELETE /artifacts/{composite_id} — permanent hard-delete of the
-      underlying alert / workflow-run row (`delete_alert` / `delete_run`).
+      underlying alert / workflow-run row (`delete_alert` / `delete_run`),
+      then drops its knowledge chunks (`unindex_artifact`).
   lifecycle: |
     Archive is a reversible soft-hide backed by a nullable `archived_at`
     column added to BOTH backing tables (`alerts.archived_at` and
@@ -2558,22 +3928,32 @@ artifacts:
     the scheme is unambiguous and reversible (`_parse_composite_id`).
     Every per-artifact route 404s a non-artifact alert id (it must not
     become a general alert reader/mutator) or an incomplete run, and 400s
-    a malformed id — enforced by the shared `_require_artifact_alert` /
-    `_require_artifact_run` guards.
+    a malformed id — enforced by the shared `artifact_records` guards
+    (`MalformedArtifactId` → 400, `ArtifactNotFound` → 404).
   ui: |
     `/artifacts` gallery — a compact, sectioned (Drafts / Workflows) row
     list with an Active / Archived toggle and a kind filter
     (All / Drafts / Workflows). Each row has per-item actions: Archive
     (Active view) or Restore (Archived view) plus Delete; delete prompts a
-    confirm, archive shows an Undo toast. `/artifacts/[id]` detail reuses
-    the run-detail Markdown rendering (ReactMarkdown + remarkGfm) with
-    Copy / Download .md and the same Archive/Restore + Delete actions, and
-    shows a "Why this is worth your time" rationale callout for drafts.
+    confirm, archive shows an Undo toast; non-Markdown rows show a format
+    badge. `/artifacts/[id]` detail renders through
+    `components/ArtifactViewer.tsx`: Markdown (ReactMarkdown + remarkGfm)
+    for markdown / docx / xlsx previews; html in an `<iframe sandbox="allow-popups
+    allow-popups-to-escape-sandbox">` (no scripts, no same-origin; popups
+    only so a click on a sanitised target=_blank link opens a tab) whose srcDoc is prefixed with a CSP meta
+    (`default-src 'none'`, inline styles and data: images only) so it can't
+    fetch anything; link as an "Open {label} (host)" button + summary. It
+    offers Copy, one Download per `downloads` entry (plain same-origin
+    links to the proxy), "Revise in chat" (opens `/?new=1&draft=Revise
+    artifact <id> …`), a "Replaces an earlier version" link when
+    `supersedes_id` is set, and the same Archive/Restore + Delete actions
+    plus the "Why this is worth your time" rationale. The workflow-run page
+    adds "Download .docx" beside "Download .md".
 
 user_guide:
   summary: |
     `/guide` is a plain-language overview of every user-facing feature —
-    "what it is, what it does" — for non-engineers. It is deliberately
+    "what it is, what it does, how to use it" — for non-engineers. It is deliberately
     SEPARATE from the `/architecture` technical reference: Architecture
     explains how the system is built; the User Guide explains what each
     feature does for the user. Reached from a tile on the Settings hub
@@ -2606,8 +3986,12 @@ user_guide:
     When a user-facing feature is added or materially changed, add/update
     the matching `guide/prebuilt/<id>.json` plus its registry entry in
     `guide/sections.py` and the mirror list in `app/guide/page.tsx` (IDs
-    must match). The `user_guide` architecture section documents this
-    surface for engineers.
+    must match). Every section carries a `**How to use:**` walkthrough
+    (where to click, which fields matter, what to say in chat) and, where
+    it helps, an `**Example:**` — enforced by
+    `tests/unit/test_guide_prebuilt.py`. Ask OE injects the page's section
+    into the user turn, so the how-to steps also ground its answers. The
+    `user_guide` architecture section documents this surface for engineers.
 
 auth:
   ui_provider: |
@@ -2726,7 +4110,9 @@ integrations:
     in the user turn, which is what lets the cached persona say "use the
     reply tool in the REPLY block" instead of naming a vendor tool.
     Fail-soft: EMAIL_PROVIDER naming a server absent from mcp_servers.json
-    logs one ERROR per cycle and skips, never crashes the loop. INBOUND
+    logs one ERROR per cycle and skips, never crashes the loop. While the
+    Executive is paused (scheduler.pause) each poll is skipped and the
+    inbox left unread, so held mail is processed after resume. INBOUND
     is NOT roster-gated — see ``channel_access`` for the split. When
     the sender isn't on the People roster the poller prepends a
     [POLICY] notice to the message body the Executive sees, so the
@@ -2735,6 +4121,27 @@ integrations:
     block. The outbound gate at ``mcp_gateway._check_gmail_recipients`` /
     ``_check_m365_recipients`` is the actual security boundary against
     auto-replying to spam.
+    Peer memory records ``_email_memory_text(raw)`` as the sender's
+    words, not the prompt (the poller's own trailing ``--- REPLY ---``
+    block is dropped first — it is the LAST such line, a forged copy in
+    the body having been quoted by workspace.mail._neutralize_markers):
+    the subject, the body cut at the first quoted
+    or forwarded message (Gmail's possibly-wrapped "On … wrote:",
+    "-----Original Message-----", an Outlook From:/Sent: block, "--
+    Forwarded message --", ">" lines) and the ``--- ATTACHMENTS ---``
+    filenames — see ``honcho.sync_turn``. Only computed for a rostered
+    sender (an unrostered one has no peer). The email text is sender-
+    controlled, so attachment lines are split from the right and length-
+    capped rather than matched with one regex: a pattern with adjacent
+    ``\s+`` / ``.+?`` groups backtracked cubically on a long run of spaces
+    (30 s at 4,000), stalling the whole API process from one inbound email.
+    Like every other channel adapter, the poller calls
+    ``Executive.chat`` on the standard path — it does NOT force
+    ``committee_review=True``. Committee review is a per-request
+    opt-in on ``/chat`` only; it was previously forced on for every
+    inbound email (at least 5 model calls per message, ``medium`` Honcho
+    prefetch) and removed because the revision pass never reaches
+    Gmail anyway (outbound mail is sent from the draft's tool loop).
   workspace_providers: |
     openexecutive.integrations.workspace — the mailbox and calendar the
     Executive ITSELF runs on, behind two Protocols (MailProvider,
@@ -2795,6 +4202,49 @@ integrations:
     ``auth_test()`` so it can detect its own past replies and avoid
     double-firing with ``app_mention``. Roster-gated per
     `channel_access`.
+
+    Session model (added with #136; Slack had none before it). The
+    conversation key is ``_slack_session_id``: ``slack:dm:{user}`` for a
+    DM, ``slack:thread:{channel}:{thread_ts}`` for a reply inside a
+    thread, ``slack:channel:{channel}:{user}`` for a mention that starts
+    one. The old scheme was ``slack:{channel}:{thread_ts or ts}``, which
+    in a DM minted a NEW id per message — so a multi-turn confirmation
+    could not work even once history was stored. Stored turns are
+    replayed via ``session_store.load_messages`` and persisted after the
+    reply lands (persist failures are logged, never surfaced); a mention
+    that roots a thread double-writes into that thread's session so its
+    first continuation is not cold. ``format_for_prompt`` is
+    session-scoped. A per-session ``asyncio.Lock`` serializes turns in one
+    conversation — ``_MAX_CONCURRENT_HANDLERS`` caps workspace-wide
+    fan-out and does nothing about interleaving. The same id is the audit
+    grouping key.
+
+    Per-turn context. Every turn carries the ``<channel>`` block from
+    ``integrations.channel_context`` (user turn, never a cached system
+    block) naming the surface and where each kind of approval is
+    completed. The principal's DMs additionally carry the open-alert
+    digest as ``<briefing>`` — gated to ``mode == "dm"`` and
+    ``is_principal`` because the board is company-wide. That digest and
+    the briefing page's ``[Discuss mode — alert_id=N]`` primer are the
+    ONLY trusted sources of an ``alert_id`` for ``ack_alert``; ids
+    appearing in an alert's own body are attacker-controlled, since
+    alerts are minted from inbound mail and chat. Two mechanisms enforce
+    that, not one prompt rule: ``briefing.context`` collapses EVERY
+    interpolated field to a single line (a newline in a headline,
+    suggested action, tag or review note would otherwise forge a whole
+    extra ``[N]`` line — a fabricated instruction to clear somebody
+    else's alert), and the ids the block named are recorded on
+    ``Session.trusted_alert_ids`` so ``handle_ack_alert`` refuses any
+    other id when ``origin_channel`` is set. Web sessions are exempt —
+    the Discuss handoff acks over HTTP first, so its alert is no longer
+    unread and would not be in a digest.
+
+    Errors. The catch-all logs with session/user/channel/thread/mode,
+    writes an ``integration_inbound`` row with
+    ``details.outcome="handler_error"`` under the inbound's session_id,
+    and guards the apology send itself (an unguarded one escaped into
+    Bolt). No interactivity endpoint and no Block Kit exist — Slack
+    messages are text only, so no approval button can be offered there.
   discord: |
     openexecutive.integrations.discord_bot — discord.py gateway client
     embedded in the FastAPI lifespan (no separate process). Features:
@@ -3057,6 +4507,21 @@ integrations:
     gate is keyed to the literal server name `microsoft_365`;
     registry.log_provider_status warns at startup about a look-alike server
     under another name (which would expose the same tools ungated).
+
+    Pinned gateway: extensible-mcp is launched as `uvx --exclude-newer <cutoff>
+    --from git+...@<commit>` (_EXTENSIBLE_MCP_LAUNCH_ARGS in
+    orchestrator/mcp_gateway.py), and docker/Dockerfile pre-warms with the same
+    arguments. The commit fixes extensible-mcp's code; the cutoff fixes its ~94
+    transitive dependencies, which uvx otherwise re-resolves against PyPI on
+    every networked start. INVARIANT: runtime and pre-warm args must match —
+    tests/unit/test_extensible_mcp_pin.py enforces it. Unpinned, uvx resolved
+    `main` on GitHub at every start: a push to extensible-mcp changed every
+    running deployment on restart, an image rollback did not roll the gateway
+    back, and a start without network failed. The no-network start holds only
+    when the build-time pre-warm succeeded: it is `|| true`, so an image built
+    during a GitHub outage fetches the commit at first start. uv itself is
+    unpinned (`pip install uv`). The repo has no tags; bump the commit and
+    cutoff together. Dependabot does not track git URLs.
 
     Cold-start embedding cache: extensible-mcp runs as a uvx subprocess and
     builds a tool-search vector index with fastembed, which loads
@@ -3366,6 +4831,12 @@ integrations:
     DM, and then Alex's reply lands in a fresh per-person session
     (`discord:dm:{alex_id}`) with empty history, so OE has no idea what
     Alex is replying about.
+
+    The block is context for the LLM turn, never the person's words:
+    ``memory.honcho_client`` strips it (``inbound_hydration.strip_outbound_reply_context``)
+    before ``sync_turn`` and ``sync_department_turn`` post the message and
+    before the prefetch query is sent, otherwise Honcho's deriver attributes
+    the Executive's own DM to the person who replied to it.
 
     Write side — when a direct-send tool (`send_discord_dm`,
     `send_telegram_message`, `send_slack_dm`, and therefore
@@ -3730,6 +5201,9 @@ clients:
       refuse (409) while a fixture is loaded.
     - generated_fixtures is operator-level (the demo library), not client
       data — preserved verbatim across slot restores.
+    - executive_control (the operator pause switch, scheduler.pause) is
+      operator-level too and preserved the same way — activating a client
+      never un-pauses (or re-pauses) the Executive.
     - First activation with no active client auto-snapshots the user's
       original company to _user_backup (same restore point the fixture
       switcher uses; POST /fixtures/unload brings it back).

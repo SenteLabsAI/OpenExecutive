@@ -4,9 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import WorkflowRunner from "@/components/WorkflowRunner";
+import ApprovedTargets from "@/components/jobs/ApprovedTargets";
+import PendingWorkflowReview from "@/components/jobs/PendingWorkflowReview";
 import {
+  DynamicWorkflowDef,
   WorkflowInputFieldSchema,
   WorkflowMeta,
+  getCustomWorkflow,
   getWorkflow,
   getWorkflowSample,
 } from "@/lib/api";
@@ -69,6 +73,10 @@ export default function JobDetailPage() {
   const name = params?.name;
   const [workflow, setWorkflow] = useState<WorkflowMeta | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // A custom workflow that is switched off isn't runnable (so getWorkflow
+  // 404s); it gets its review card instead, where turning it on approves it.
+  const [pendingDef, setPendingDef] = useState<DynamicWorkflowDef | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [form, setForm] = useState<FormState>({});
   const [running, setRunning] = useState(false);
   const [prefillBanner, setPrefillBanner] = useState<
@@ -114,18 +122,21 @@ export default function JobDetailPage() {
         setForm(initial);
         initializedForWorkflowRef.current = name;
       })
-      .catch((e) => {
-        if (!cancelled) {
-          setLoadError(e instanceof Error ? e.message : String(e));
-        }
+      .catch(async (e) => {
+        const message = e instanceof Error ? e.message : String(e);
+        const custom = await getCustomWorkflow(name).catch(() => null);
+        if (cancelled) return;
+        if (custom && !custom.is_active) setPendingDef(custom);
+        else setLoadError(message);
       });
     return () => {
       cancelled = true;
     };
     // prefillRaw is intentionally captured at first init only — re-running
     // when it changes would clobber user edits. See ref guard above.
+    // reloadKey re-runs the load once a pending workflow is turned on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name]);
+  }, [name, reloadKey]);
 
   const handleLoadSample = useCallback(async () => {
     if (!name) return;
@@ -185,12 +196,24 @@ export default function JobDetailPage() {
     setRunning(false);
   }, []);
 
+  if (pendingDef) {
+    return (
+      <PendingWorkflowReview
+        definition={pendingDef}
+        onActivated={() => {
+          setPendingDef(null);
+          setReloadKey((k) => k + 1);
+        }}
+      />
+    );
+  }
+
   if (loadError) {
     return (
       <div className="flex flex-col h-full bg-surface text-fg items-center justify-center">
         <div className="text-sm text-red-400 mb-4">Error: {loadError}</div>
         <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          ← Back to jobs
+          ← Back to workflows
         </Link>
       </div>
     );
@@ -217,6 +240,24 @@ export default function JobDetailPage() {
             <p className="text-sm text-fg-muted leading-relaxed">
               {workflow.description}
             </p>
+            {(workflow.playbooks?.length ?? 0) > 0 && (
+              <p className="mt-2 text-xs text-fg-muted">
+                Follows{" "}
+                {workflow.playbooks!.length === 1 ? "playbook" : "playbooks"}:{" "}
+                {workflow.playbooks!.map((p, i) => (
+                  <span key={p}>
+                    {i > 0 && ", "}
+                    <Link
+                      href={`/jobs?tab=playbooks&playbook=${encodeURIComponent(p)}`}
+                      className="text-indigo-400 hover:underline"
+                    >
+                      {p}
+                    </Link>
+                  </span>
+                ))}
+                {" "}— customize it to change how this workflow writes.
+              </p>
+            )}
           </div>
 
           {!running && (
@@ -342,6 +383,8 @@ export default function JobDetailPage() {
               </div>
             </form>
           )}
+
+          {!running && workflow.is_custom && <ApprovedTargets name={workflow.name} />}
 
           {running && (
             <WorkflowRunner

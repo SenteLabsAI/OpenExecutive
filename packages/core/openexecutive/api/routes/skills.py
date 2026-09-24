@@ -4,26 +4,29 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from openexecutive.api.models import (
     SkillCreate,
+    SkillDeleteResponse,
     SkillDetail,
     SkillListResponse,
     SkillMeta,
     SkillSearchHit,
     SkillSearchResponse,
+    SkillWorkflowRef,
 )
-from openexecutive.knowledge.skills import SkillParseError
+from openexecutive.knowledge.skills import Skill, SkillParseError
 from openexecutive.knowledge.skills_index import search_skills as _search_skills
 from openexecutive.knowledge.skills_repo import (
     SkillConflictError,
     SkillNotFoundError,
-    SkillReadOnlyError,
     create_skill,
     delete_skill,
     get_skill,
     list_skills,
+    restore_skill,
     skill_to_dict,
     update_skill,
 )
 from openexecutive.knowledge.store import ChromaDBStore
+from openexecutive.workflows.playbooks import PlaybookUser, playbook_users
 
 router = APIRouter(prefix="/skills")
 
@@ -36,12 +39,28 @@ def _get_store(request: Request) -> ChromaDBStore:
     return ChromaDBStore(persist_directory=get_settings().vector_store_path)
 
 
+def _refs(users: list[PlaybookUser]) -> list[SkillWorkflowRef]:
+    return [SkillWorkflowRef(name=u.name, title=u.title, is_custom=u.is_custom) for u in users]
+
+
 @router.get("", response_model=SkillListResponse)
-async def list_all_skills() -> SkillListResponse:
-    skills = list_skills()
+async def list_all_skills(include_hidden: bool = False) -> SkillListResponse:
+    skills = list_skills(include_hidden=include_hidden)
+    users = playbook_users()
     return SkillListResponse(
-        skills=[SkillMeta(**skill_to_dict(s, include_body=False)) for s in skills]
+        skills=[
+            SkillMeta(
+                **skill_to_dict(s, include_body=False),
+                used_by=_refs(users.get(s.frontmatter.name, [])),
+            )
+            for s in skills
+        ]
     )
+
+
+def _detail(skill: Skill) -> SkillDetail:
+    users = playbook_users().get(skill.frontmatter.name, [])
+    return SkillDetail(**skill_to_dict(skill, include_body=True), used_by=_refs(users))
 
 
 @router.get("/search", response_model=SkillSearchResponse)
@@ -56,13 +75,15 @@ async def search_skills_endpoint(
 
 @router.get("/{name}", response_model=SkillDetail)
 async def get_skill_endpoint(name: str) -> SkillDetail:
+    # Hidden built-ins stay readable here so the UI can show one before
+    # restoring it; the Executive's `load_skill` does not see them.
     try:
-        skill = get_skill(name)
+        skill = get_skill(name, include_hidden=True)
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except SkillParseError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return SkillDetail(**skill_to_dict(skill, include_body=True))
+    return _detail(skill)
 
 
 @router.post("", response_model=SkillDetail, status_code=201)
@@ -80,7 +101,7 @@ async def create_skill_endpoint(body: SkillCreate, request: Request) -> SkillDet
         raise HTTPException(status_code=409, detail=str(e)) from e
     except SkillParseError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return SkillDetail(**skill_to_dict(skill, include_body=True))
+    return _detail(skill)
 
 
 @router.put("/{name}", response_model=SkillDetail)
@@ -102,18 +123,30 @@ async def update_skill_endpoint(
         )
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    except SkillReadOnlyError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
     except SkillParseError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return SkillDetail(**skill_to_dict(skill, include_body=True))
+    return _detail(skill)
 
 
-@router.delete("/{name}", status_code=204)
-async def delete_skill_endpoint(name: str, request: Request) -> None:
+@router.delete("/{name}", response_model=SkillDeleteResponse)
+async def delete_skill_endpoint(name: str, request: Request) -> SkillDeleteResponse:
+    """Delete a company skill, revert a customization, or hide a built-in."""
     try:
-        delete_skill(name, store=_get_store(request))
+        outcome = delete_skill(name, store=_get_store(request))
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    except SkillReadOnlyError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+    except SkillParseError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return SkillDeleteResponse(name=name, outcome=outcome)
+
+
+@router.post("/{name}/restore", response_model=SkillDetail)
+async def restore_skill_endpoint(name: str, request: Request) -> SkillDetail:
+    """Un-hide a built-in skill."""
+    try:
+        skill = restore_skill(name, store=_get_store(request))
+    except SkillNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except SkillParseError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return _detail(skill)

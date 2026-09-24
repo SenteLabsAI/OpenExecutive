@@ -6,8 +6,9 @@ disk will host it: `docker compose` on a single box, a container platform, or a
 Kubernetes deployment.
 
 [docker/docker-compose.yml](../docker/docker-compose.yml) is the reference
-topology. It is also what `make docker` runs locally, so the local and deployed
-shapes are the same.
+topology. It is also what `make docker` runs locally, with one difference: the
+compose UI is a `next dev` server on a bind mount, not the production image
+from `Dockerfile.ui`.
 
 ---
 
@@ -26,10 +27,10 @@ containers. The UI is stateless and scales freely.
 
 ## Topology
 
-| Component | Image | State |
-|---|---|---|
-| API | [docker/Dockerfile](../docker/Dockerfile) | One persistent volume at `/data` |
-| UI | [docker/Dockerfile.ui](../docker/Dockerfile.ui) | Stateless |
+| Component | Dockerfile | Published image | State |
+|---|---|---|---|
+| API | [docker/Dockerfile](../docker/Dockerfile) | `ghcr.io/sentelabsai/openexecutive-api` | One persistent volume at `/data` |
+| UI | [docker/Dockerfile.ui](../docker/Dockerfile.ui) | `ghcr.io/sentelabsai/openexecutive-ui` | Stateless |
 
 The UI never talks to the API directly from the browser. It proxies through its
 own server (`/api/backend/*`), stamping the shared secret on each upstream call,
@@ -41,6 +42,70 @@ so the UI origin is the only one that *needs* to be public. See [auth.md](auth.m
 > internet-reachable — set `BACKEND_SHARED_SECRET` **and** `OE_PUBLIC_DEPLOYMENT=1`
 > before you do. Neither is set by default, and without them the API serves every
 > route unauthenticated with only a log line to say so.
+
+## Images
+
+[.github/workflows/release-images.yml](../.github/workflows/release-images.yml)
+builds both images from the Dockerfiles above, with the repo root as build
+context, and pushes them to GitHub Container Registry. Nothing is added or
+configured in CI. Note that `make docker` builds only the API image — the
+compose file runs the UI as a `next dev` server — so this workflow is the only
+thing that builds `Dockerfile.ui`.
+
+| Tag | Set by | Meaning |
+|---|---|---|
+| `X.Y.Z`, `X.Y` | pushing git tag `vX.Y.Z` | A release. Pin deployments to one of these. |
+| `latest` | pushing git tag `vX.Y.Z` | The most recently published release, by push order, not the highest version. Pushing a `v0.2.1` patch after `v0.3.0` moves `latest` back to `0.2.1`. |
+| `main` | every push to `main` | Current head of `main`; not a release. |
+| `sha-<short>` | every push | The commit the image was built from. |
+| `buildcache` | every push | BuildKit layer cache. Not an image; ignore it. |
+
+**Cutting a release** is merging the release PR.
+[.github/workflows/release-please.yml](../.github/workflows/release-please.yml)
+runs release-please on every push to `main` and keeps one open PR,
+"chore(main): release X.Y.Z", up to date. PRs are squash-merged, so each one
+lands as a single commit whose subject is the PR title, and the version comes
+from those titles' conventional-commit types since the last release. Before 1.0,
+`feat` and `fix` both bump the patch version and a breaking change (`!` or a
+`BREAKING CHANGE:` footer) bumps the minor; minor versions are kept for
+milestones. From 1.0 the usual rule applies: `feat` → minor, `fix` → patch,
+breaking → major. The PR bumps
+every place the version is written (listed in `release-please-config.json`)
+and adds the `CHANGELOG.md` entry, which can be edited in the PR before
+merging. Merges that are only `chore`/`docs`/`test`/`refactor` wait for the
+next `feat` or `fix`. Merging the release PR tags the merge commit `vX.Y.Z`
+and creates the GitHub Release; the tag push then runs the image workflow.
+It needs the `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained token
+for this repository with Contents and Pull requests read/write), because
+events made with the default `GITHUB_TOKEN` start no workflows: without it
+the release PR would get no CI and the tag would publish no images.
+
+Pushing a `vX.Y.Z` tag by hand still works (`git tag v0.3.0 && git push
+origin v0.3.0`) but bypasses the version bump and changelog, so the release
+PR is the normal path.
+
+The image workflow runs on the tag push and publishes the versioned tags. It
+does not check CI: it publishes whatever commit the tag points at, and the
+`main` tag is published in parallel with CI on every push, so the release PR
+should only be merged once its CI is green. The two images are separate jobs,
+so a release is not atomic — if one fails, check the package pages and re-run
+the failed job from the Actions UI.
+
+Once both images are published, the same run creates the GitHub Release for
+the tag if it does not exist yet (release-please normally already made it),
+with that version's `CHANGELOG.md` section as the notes. A hand-pushed tag
+with no `## [X.Y.Z]` section fails that job instead of publishing an empty
+release. If the images fail, no release is
+created; re-running the failed job from the Actions UI creates it once the
+images succeed. A release that already exists for the tag is left alone.
+
+The images are `linux/amd64` only. The API image bakes the embedding models at
+build time (see the Dockerfile), which makes an emulated arm64 build
+impractically slow.
+
+> **First publish:** GitHub creates each package as private. An org admin makes
+> `openexecutive-api` and `openexecutive-ui` public once under the org's
+> Packages settings; until then `docker pull` needs a token with `read:packages`.
 
 ---
 
@@ -270,7 +335,8 @@ docker compose exec api sqlite3 /data/episodic_memory.db \
   "SELECT id, kind, status, run_at FROM scheduled_actions WHERE status='pending' LIMIT 10;"
 ```
 
-**Rollback** is an image-tag rollback: redeploy the previous tag. The volume is
+**Rollback** is an image-tag rollback: redeploy the previous release tag
+(see [Images](#images)). The volume is
 not versioned with the image, so a release that migrates schema forward is not
 undone by rolling the image back — check what changed under `*/store.py` before
 relying on it. Additive column migrations (the common case — every column has a

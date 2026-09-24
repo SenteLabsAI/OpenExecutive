@@ -1,19 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   AgentDetail,
   AgentHistoryEntry,
   AgentMeta,
   Persona,
+  ModelOption,
   PersonaMeta,
   createPersona,
   deletePersona,
   getAgentDetail,
   getPersona,
   listAgentHistory,
-  listAgentModels,
+  listAgentModelOptions,
   listAgents,
   listPersonas,
   patchAgent,
@@ -45,6 +46,36 @@ const HAIKU_MODEL_RE = /^(anthropic\/)?claude-.*haiku/i;
 function modelSupportsDeepReasoning(model: string): boolean {
   return !HAIKU_MODEL_RE.test(model);
 }
+
+// A model in the picker that the backend allowlist doesn't carry: a stale
+// override (claude-opus-4-7) or a default whose family isn't reachable in
+// this deployment. It stays selectable so the current value is never hidden.
+type PickerOption = ModelOption & { unlisted?: boolean };
+
+function unlistedOption(id: string, known: ModelOption[]): PickerOption {
+  const slash = id.indexOf("/");
+  const provider = /^(anthropic\/)?claude-/i.test(id)
+    ? "anthropic"
+    : slash > 0
+      ? id.slice(0, slash)
+      : "other";
+  const sibling = known.find((o) => o.provider === provider);
+  const fallbackLabel = provider === "anthropic" ? "Anthropic" : provider === "other" ? "Other" : provider;
+  return {
+    id,
+    provider,
+    provider_label: sibling?.provider_label ?? fallbackLabel,
+    route: sibling?.route ?? "openrouter",
+    label: id,
+    unlisted: true,
+  };
+}
+
+const ROUTE_TEXT: Record<ModelOption["route"], string> = {
+  direct: "Anthropic API",
+  openrouter: "via OpenRouter",
+  local: "local backend",
+};
 
 function detailToDraft(d: AgentDetail): DraftState {
   return {
@@ -78,7 +109,7 @@ export default function CouncilPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
-  const [models, setModels] = useState<string[]>([]);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [history, setHistory] = useState<AgentHistoryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
 
@@ -135,7 +166,7 @@ export default function CouncilPage() {
     if (selected) loadDetail(selected);
     // Refetch the model allowlist when the agent changes (every agent
     // currently gets the same list).
-    listAgentModels(selected ?? undefined).then(setModels).catch(() => {});
+    listAgentModelOptions(selected ?? undefined).then(setModelOptions).catch(() => {});
   }, [selected, loadDetail]);
 
   useEffect(() => {
@@ -156,6 +187,44 @@ export default function CouncilPage() {
       })
       .catch(() => setPersonaError("Failed to load persona"));
   }, [selected, draft?.voice_persona_slug]);
+
+  const pickerOptions = useMemo<PickerOption[]>(() => {
+    const known = new Set(modelOptions.map((o) => o.id));
+    const extra = Array.from(
+      new Set([detail?.model_default, draft?.model].filter((m): m is string => !!m))
+    )
+      .filter((m) => !known.has(m))
+      .map((m) => unlistedOption(m, modelOptions));
+    return [...modelOptions, ...extra];
+  }, [modelOptions, detail?.model_default, draft?.model]);
+
+  // Provider groups in first-seen order (backend order: Anthropic first).
+  const providerGroups = useMemo(() => {
+    const groups = new Map<string, string>();
+    for (const o of pickerOptions) {
+      if (!groups.has(o.provider)) groups.set(o.provider, o.provider_label);
+    }
+    return Array.from(groups, ([provider, label]) => ({ provider, label }));
+  }, [pickerOptions]);
+
+  const currentModel = pickerOptions.find((o) => o.id === draft?.model);
+
+  const selectModel = (model: string) => {
+    if (!draft) return;
+    setDraft({
+      ...draft,
+      model,
+      deep_reasoning: modelSupportsDeepReasoning(model) ? draft.deep_reasoning : false,
+    });
+  };
+
+  // Switching provider picks the agent's default if it lives there, else the
+  // provider's first (newest) model.
+  const selectProvider = (provider: string) => {
+    const inGroup = pickerOptions.filter((o) => o.provider === provider);
+    const next = inGroup.find((o) => o.id === detail?.model_default) ?? inGroup[0];
+    if (next) selectModel(next.id);
+  };
 
   const dirty = draftIsDirty(detail, draft);
 
@@ -366,34 +435,48 @@ export default function CouncilPage() {
                     )}
                   </label>
 
-                  <label className="block text-xs">
+                  <div className="block text-xs">
                     <span className="text-fg-muted uppercase tracking-widest text-[10px] font-semibold">
                       Model
                     </span>
-                    <select
-                      value={draft.model}
-                      onChange={(e) => {
-                        const model = e.target.value;
-                        setDraft({
-                          ...draft,
-                          model,
-                          deep_reasoning: modelSupportsDeepReasoning(model)
-                            ? draft.deep_reasoning
-                            : false,
-                        });
-                      }}
-                      className="mt-1 w-full px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none text-sm"
-                    >
-                      {Array.from(new Set([detail.model_default, draft.model, ...models])).map(
-                        (m) => (
-                          <option key={m} value={m}>
-                            {m}
-                            {m === detail.model_default ? " (default)" : ""}
+                    <div className="mt-1 flex gap-2">
+                      <select
+                        aria-label="Model provider"
+                        value={currentModel?.provider ?? ""}
+                        onChange={(e) => selectProvider(e.target.value)}
+                        className="w-2/5 min-w-0 px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none text-sm"
+                      >
+                        {providerGroups.map((g) => (
+                          <option key={g.provider} value={g.provider}>
+                            {g.label}
                           </option>
-                        )
-                      )}
-                    </select>
-                  </label>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Model"
+                        value={draft.model}
+                        onChange={(e) => selectModel(e.target.value)}
+                        className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none text-sm"
+                      >
+                        {pickerOptions
+                          .filter((o) => o.provider === currentModel?.provider)
+                          .map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.label}
+                              {o.id === detail.model_default ? " (default)" : ""}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    {currentModel && (
+                      <span className="text-[10px] text-fg-subtle mt-1 block font-mono">
+                        {currentModel.id} ·{" "}
+                        {currentModel.unlisted
+                          ? "not in the current allowlist"
+                          : ROUTE_TEXT[currentModel.route]}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {detail.name !== "utility_fast" && (

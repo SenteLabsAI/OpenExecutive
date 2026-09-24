@@ -1,0 +1,71 @@
+# Keep a standing release PR, and cut the release when it merges.
+#
+# Every push to main runs release-please. PRs are squash-merged with the PR
+# title as the commit subject, so it reads the PR titles merged since the
+# last release (before 1.0: `feat` and `fix` → patch, a breaking change →
+# minor; from 1.0: `feat` → minor, `fix` → patch, breaking → major) and opens
+# or updates one PR titled
+# "chore(main): release X.Y.Z". That PR bumps every place the version is
+# written (see release-please-config.json) and adds the CHANGELOG.md entry.
+# Merges that are only chore/docs/test/refactor do not start a release on
+# their own; they ride along with the next feat or fix.
+#
+# To pick a bigger version without calling anything breaking, end one PR's
+# description with a BEGIN_COMMIT_OVERRIDE / END_COMMIT_OVERRIDE block holding
+# the PR title, a blank line, and `Release-As: X.Y.Z`; release-please reads it
+# in place of the squash message and applies it to the next release only. A
+# bare `Release-As:` line in the description is not enough: footers count only
+# in the commit's final paragraph, and text appended on merge pushes it out.
+# The same block with a corrected message fixes a merged PR (e.g. drops a
+# wrong `!`). Either is read on the next push to main. Write the begin marker
+# only once in a description and never in prose: release-please takes the
+# text after its first occurrence, so an earlier mention wins and fails to
+# parse.
+#
+# Merging the release PR makes this workflow tag the merge commit `vX.Y.Z`
+# and create the GitHub Release from the changelog entry. The tag push then
+# runs release-images.yml, which publishes the images (its own release job
+# sees the release already exists and leaves it alone).
+#
+# Token: this uses the RELEASE_PLEASE_TOKEN secret, not GITHUB_TOKEN. GitHub
+# does not start workflows from events made with GITHUB_TOKEN, so with it the
+# release PR would get no CI runs (and could not satisfy required checks) and
+# the release tag would publish no images. Use a fine-grained token scoped to
+# this repository with Contents and Pull requests read/write.
+#
+# Guarded to this repository for the same reason as release-images.yml: the
+# saas fork merges upstream/main and must not open release PRs of its own.
+name: Release please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run at a time, in order, so two quick merges cannot race on the
+# release PR branch.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.repository == 'SenteLabsAI/OpenExecutive'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the release token
+        env:
+          HAS_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::Set the RELEASE_PLEASE_TOKEN repository secret (see the header of .github/workflows/release-please.yml)."
+            exit 1
+          fi
+
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

@@ -2,7 +2,7 @@
 #
 # Mirrors plastic-labs/honcho's official Dockerfile (Python 3.13-slim,
 # uv 0.9.24) but pins the Honcho source to a specific release tag, bakes
-# in OE's config.toml (OpenRouter routes every LLM call, dreaming on,
+# in OE's config.toml (Anthropic direct for every LLM slot, dreaming on,
 # AUTH_USE_AUTH=true), and bundles an embeddings sidecar
 # (`docker/honcho/embed_server.py`) that runs as the `embed` process
 # serving `BAAI/bge-small-en-v1.5` locally via fastembed/ONNX so
@@ -12,16 +12,15 @@
 # docker/honcho/config.toml + embed_server.py from cwd). See
 # README.md for the three process roles and which command
 # each one runs.
-# Honcho's uv.lock pins Python 3.11 even though their own Dockerfile says
-# 3.13 — they bake the missing interpreter from uv's managed-Python cache.
-# We can't do that cleanly under our non-root `app` user (uv's cache lands
-# under /root/), so we just use the base image that matches the lockfile.
-FROM python:3.11-slim-bookworm
+# Honcho requires Python >= 3.13 since v3.1.1 (`requires-python` in its
+# pyproject), and its own image is python:3.13-slim. Match it so the
+# system interpreter satisfies the lockfile (see UV_PYTHON_PREFERENCE below).
+FROM python:3.13-slim-bookworm
 
 # Bump deliberately — Honcho ships database migrations between minors and
 # the SDK's wire format can shift. The runbook (README.md)
 # covers the upgrade procedure.
-ARG HONCHO_VERSION=v3.0.7
+ARG HONCHO_VERSION=v3.2.0
 
 # Pinned to the same uv release Honcho's own Dockerfile uses, so the
 # uv.lock resolves byte-identically.
@@ -45,9 +44,9 @@ RUN git clone --depth 1 --branch "${HONCHO_VERSION}" \
 # and the venv's python symlink dead-ends after we USER-switch to `app`
 # because /root is mode 700. Pinning to the system interpreter keeps the
 # whole venv self-contained under /app, which `chown -R app:app /app`
-# below can then hand off cleanly. This is why the base image above is
-# 3.11 (matching Honcho's uv.lock pin) and not 3.13: with `only-system`,
-# the base image's Python *must* satisfy the lockfile.
+# below can then hand off cleanly. With `only-system`, the base image's
+# Python *must* satisfy Honcho's `requires-python`, so the base image
+# above moves in lockstep with the pinned Honcho release.
 ENV UV_PYTHON_PREFERENCE=only-system \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 

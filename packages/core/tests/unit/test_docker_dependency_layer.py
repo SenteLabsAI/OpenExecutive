@@ -4,15 +4,24 @@ That layer COPYs only ``pyproject.toml`` and ``uv.lock`` into the image and
 must install exactly the versions the lockfile pins (#87) without needing
 ``README.md`` (#81 — any extra file COPYed before the install re-runs the
 full dependency install and the model bakes whenever it changes). CI never
-builds the image (it is built at deploy time), so this file guards the
-layer's shape and behaviour. Lock *freshness* is guarded separately by the
-``uv lock --check`` step in ``.github/workflows/ci.yml``: ``uv sync`` would
-refresh a stale lock in the checkout before these tests ever ran.
+builds the image (it is built by the publish workflow after merge), so this
+file guards the layer's shape and behaviour. Lock *freshness* is guarded
+separately by the ``uv lock --check`` step in ``.github/workflows/ci.yml``:
+``uv sync`` would refresh a stale lock in the checkout before these tests
+ever ran.
+
+The layer installs straight from the lock with ``uv sync`` so that each
+package comes from the index the lock names — torch from PyTorch's CPU-only
+index, everything else from PyPI (see ``[tool.uv.sources]``). The earlier
+``uv export`` + ``uv pip install -r`` shape could not express that: the
+export carries no index URLs, and adding the CPU index at install time made
+uv fetch every package that mirror also hosts from it instead of PyPI.
 
 Rather than pattern-matching the Dockerfile, the tests parse the stage's
-``COPY`` lines and the export ``RUN``, run the export command *taken from*
-the Dockerfile inside a directory holding only the COPYed files, and check
-that the install half consumes that export.
+``COPY`` lines and the sync ``RUN``, then run the sync command *taken from*
+the Dockerfile — with ``--dry-run`` and the environment redirected to a temp
+dir — inside a directory holding only the COPYed files, and check the
+install plan it prints.
 """
 
 from __future__ import annotations
@@ -34,15 +43,19 @@ CORE_DIR = REPO_ROOT / "packages" / "core"
 # written in the Dockerfile; the build context is the repo root). README.md is
 # deliberately absent (#81).
 DEPENDENCY_LAYER_SOURCES = frozenset({"packages/core/pyproject.toml", "packages/core/uv.lock"})
-EXPORT_OUTPUT_FLAGS = ("-o", "--output-file")
-# `name==version` with an optional environment marker (`; sys_platform == 'linux'`).
-PIN_LINE = re.compile(r"^([A-Za-z0-9_.-]+)==(\S+)(?:\s*;.*)?$")
+# Where the image's interpreter lives; the sync must land in its site-packages
+# because the model bakes and the runtime CMD rely on system site-packages.
+SYSTEM_PREFIX = "/usr/local"
+ENV_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(\S*)$")
+# `name==version` as `uv sync --dry-run` plans it (`torch==2.14.0+cpu`).
+CPU_TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
+PLAN_LINE = re.compile(r"^\s*\+\s+([A-Za-z0-9_.-]+)==(\S+)$")
 
 
 class DependencyLayer(NamedTuple):
-    copied: frozenset[str]  # COPY/ADD sources before the export, as written
-    export: list[str]  # the `uv export ...` argv
-    install: list[str]  # the `uv pip install ...` argv
+    copied: frozenset[str]  # COPY/ADD sources before the sync, as written
+    env: dict[str, str]  # KEY=value assignments prefixed to the sync command
+    sync: list[str]  # the `uv sync ...` argv
 
 
 def _read(path: Path) -> str:
@@ -72,14 +85,16 @@ def _positional_args(instruction: str) -> list[str]:
 
 def _dependency_layer() -> DependencyLayer:
     instructions = _dockerfile_instructions()
-    exports = [
+    syncs = [
         (index, match)
         for index, instruction in enumerate(instructions)
-        if (match := re.fullmatch(r"RUN(?: --\S+)* (uv export .*)", instruction))
+        if (match := re.fullmatch(r"RUN(?: --\S+)*\s+((?:\S+=\S*\s+)*uv sync\b.*)", instruction))
     ]
-    if not exports:
-        pytest.fail("docker/Dockerfile no longer exports uv.lock before installing (#87)")
-    index, match = exports[0]
+    if not syncs:
+        pytest.fail(
+            "docker/Dockerfile no longer installs the dependency layer with `uv sync` (#87)"
+        )
+    index, match = syncs[0]
     stage_start = max(
         (
             i
@@ -92,17 +107,13 @@ def _dependency_layer() -> DependencyLayer:
     for instruction in instructions[stage_start:index]:
         if instruction.startswith(("COPY ", "ADD ")):
             copied.update(_positional_args(instruction)[:-1])  # last argument is the destination
-    clauses = [clause.split() for clause in match.group(1).split("&&")]
-    installs = [clause for clause in clauses if clause[:3] == ["uv", "pip", "install"]]
-    assert installs, f"no `uv pip install` follows the export: {match.group(1)}"
-    return DependencyLayer(frozenset(copied), clauses[0], installs[0])
-
-
-def _export_output(export: list[str]) -> str:
-    for flag in EXPORT_OUTPUT_FLAGS:
-        if flag in export and export.index(flag) + 1 < len(export):
-            return export[export.index(flag) + 1]
-    pytest.fail(f"export command has no output file ({'/'.join(EXPORT_OUTPUT_FLAGS)}): {export}")
+    first_clause = match.group(1).split("&&")[0].split()
+    env: dict[str, str] = {}
+    while first_clause and (assignment := ENV_ASSIGNMENT.match(first_clause[0])):
+        env[assignment.group(1)] = assignment.group(2)
+        first_clause.pop(0)
+    assert first_clause[:2] == ["uv", "sync"], first_clause
+    return DependencyLayer(frozenset(copied), env, first_clause)
 
 
 def _require_uv() -> None:
@@ -119,51 +130,43 @@ def _materialize_layer(layer: DependencyLayer, directory: Path) -> None:
         shutil.copy(REPO_ROOT / source, directory / Path(source).name)
 
 
+def _dry_run(layer: DependencyLayer, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run the Dockerfile's sync as a dry run, with its environment redirected away from /usr/local."""
+    env = {**os.environ, **layer.env, "UV_PROJECT_ENVIRONMENT": str(cwd / "planned-env")}
+    return subprocess.run(
+        [*layer.sync, "--dry-run"], cwd=cwd, env=env, capture_output=True, text=True, timeout=120
+    )
+
+
 @pytest.fixture(scope="module")
-def exported(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """Run the Dockerfile's export in a layer holding only the COPYed files."""
+def planned(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """name -> version the Dockerfile's sync would install, from a layer holding only the COPYed files."""
     _require_uv()
     layer = _dependency_layer()
     directory = tmp_path_factory.mktemp("dependency-layer")
     _materialize_layer(layer, directory)
-    result = subprocess.run(
-        layer.export, cwd=directory, capture_output=True, text=True, timeout=120
-    )
+    result = _dry_run(layer, directory)
     assert result.returncode == 0, (
-        f"{' '.join(layer.export)} failed in a layer containing only "
+        f"{' '.join(layer.sync)} failed in a layer containing only "
         f"{sorted(layer.copied)}:\n{result.stderr}"
     )
-    return _read(directory / _export_output(layer.export))
+    plan = {
+        _normalize(match.group(1)): match.group(2)
+        for line in result.stderr.splitlines()
+        if (match := PLAN_LINE.match(line))
+    }
+    assert plan, f"dry run planned no installs:\n{result.stderr}"
+    return plan
 
 
-def _requirement_blocks(exported: str) -> list[tuple[str, list[str]]]:
-    """Each top-level requirement line with its indented continuation lines (hashes)."""
-    blocks: list[tuple[str, list[str]]] = []
-    for line in exported.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if line[0].isspace():
-            if blocks:
-                blocks[-1][1].append(line.strip().rstrip("\\").strip())
-        else:
-            blocks.append((line.rstrip().rstrip("\\").strip(), []))
-    return blocks
-
-
-def _pins(exported: str) -> dict[str, set[str]]:
-    """name -> versions pinned with ``==`` (one name can pin per-marker versions)."""
-    pins: dict[str, set[str]] = {}
-    for head, _continuation in _requirement_blocks(exported):
-        if match := PIN_LINE.match(head):
-            pins.setdefault(_normalize(match.group(1)), set()).add(match.group(2))
-    return pins
+def _lock() -> dict:
+    return tomllib.loads(_read(CORE_DIR / "uv.lock"))
 
 
 def _runtime_closure() -> set[str]:
     """Names reachable from the project's runtime dependencies in uv.lock."""
-    lock = tomllib.loads(_read(CORE_DIR / "uv.lock"))
     edges: dict[str, set[str]] = {}
-    for package in lock["package"]:
+    for package in _lock()["package"]:
         edges.setdefault(_normalize(package["name"]), set()).update(
             _normalize(dep["name"]) for dep in package.get("dependencies", [])
         )
@@ -186,25 +189,33 @@ def test_stage_copies_only_the_lock_inputs_before_installing() -> None:
     )
 
 
-def test_export_is_locked_not_frozen() -> None:
+def test_sync_is_locked_not_frozen() -> None:
     """``--locked`` fails on a stale lock; ``--frozen`` silently uses it as-is."""
-    export = _dependency_layer().export
-    assert "--locked" in export, f"export must assert uv.lock is current: {export}"
-    assert "--frozen" not in export, "--frozen skips the staleness check --locked provides"
+    sync = _dependency_layer().sync
+    assert "--locked" in sync, f"sync must assert uv.lock is current: {sync}"
+    assert "--frozen" not in sync, "--frozen skips the staleness check --locked provides"
 
 
-def test_install_consumes_the_export_not_pyproject() -> None:
+def test_sync_targets_system_site_packages_and_only_the_runtime_deps() -> None:
     layer = _dependency_layer()
-    requirements = _export_output(layer.export)
-    assert "--system" in layer.install, "later layers and the CMD rely on system site-packages"
-    assert "pyproject.toml" not in layer.install, (
-        "installing from pyproject re-resolves floating versions (#87)"
+    assert layer.env.get("UV_PROJECT_ENVIRONMENT") == SYSTEM_PREFIX, (
+        f"later layers and the CMD rely on system site-packages under {SYSTEM_PREFIX}: {layer.env}"
     )
-    assert requirements in layer.install, f"install must read the exported {requirements!r}"
-    assert layer.install[layer.install.index(requirements) - 1] == "-r", layer.install
+    assert "--no-dev" in layer.sync, "dev tooling must not ship in the image"
+    assert "--no-install-project" in layer.sync, (
+        "the project is installed in a later layer (--no-deps .); building it here needs README.md (#81)"
+    )
+    assert "--inexact" in layer.sync, (
+        "an exact sync removes packages the lock does not know about — uv itself and the fastembed warm-up"
+    )
+    index_flags = [arg for arg in layer.sync if "index" in arg]
+    assert not index_flags, (
+        f"index flags on the install override the lock's per-package index; an extra index outranks "
+        f"PyPI and pulls every package it mirrors from there instead: {index_flags}"
+    )
 
 
-def test_stale_lock_fails_the_export(tmp_path: Path) -> None:
+def test_stale_lock_fails_the_sync(tmp_path: Path) -> None:
     """A pyproject edit without ``uv lock`` must break the build, not ship silently."""
     _require_uv()
     layer = _dependency_layer()
@@ -214,47 +225,73 @@ def test_stale_lock_fails_the_export(tmp_path: Path) -> None:
         "dependencies = [", 'dependencies = [\n    "stripe>=10.0.0",', 1
     )
     pyproject.write_text(stale, encoding="utf-8")
-    result = subprocess.run(layer.export, cwd=tmp_path, capture_output=True, text=True, timeout=120)
-    assert result.returncode != 0, (
-        "export accepted a lockfile that no longer matches pyproject.toml"
-    )
+    result = _dry_run(layer, tmp_path)
+    assert result.returncode != 0, "sync accepted a lockfile that no longer matches pyproject.toml"
     assert "needs to be updated" in result.stderr, result.stderr
 
 
-def test_every_requirement_is_an_exact_pin_with_hashes(exported: str) -> None:
-    blocks = _requirement_blocks(exported)
-    assert blocks, "export produced no requirements"
-    not_pinned = [head for head, _ in blocks if not PIN_LINE.match(head)]
-    assert not not_pinned, f"requirements that are not exact `name==version` pins: {not_pinned}"
-    unhashed = [
-        head
-        for head, continuation in blocks
-        if not any(part.startswith("--hash=sha256:") for part in continuation)
-    ]
-    assert not unhashed, (
-        f"requirements without hashes (uv pip install can't verify them): {unhashed}"
-    )
-    pins = _pins(exported)
+def test_plan_pins_every_runtime_dependency_with_a_hashed_lock_entry(
+    planned: dict[str, str],
+) -> None:
     runtime = tomllib.loads(_read(CORE_DIR / "pyproject.toml"))["project"]["dependencies"]
-    missing = [name for name in map(_requirement_name, runtime) if name not in pins]
+    missing = [name for name in map(_requirement_name, runtime) if name not in planned]
     assert not missing, f"runtime dependencies missing from the image install: {missing}"
+    # `uv sync --locked` verifies downloads against the lock's hashes, so every
+    # planned package must carry at least one hashed artifact in uv.lock.
+    hashed = {
+        _normalize(package["name"])
+        for package in _lock()["package"]
+        if any("hash" in artifact for artifact in package.get("wheels", []))
+        or "hash" in package.get("sdist", {})
+    }
+    unhashed = sorted(name for name in planned if name not in hashed)
+    assert not unhashed, (
+        f"planned packages with no hash in uv.lock (install cannot verify them): {unhashed}"
+    )
 
 
-def test_layer_excludes_dev_tooling_and_the_project_itself(exported: str) -> None:
+def test_plan_installs_the_cpu_only_torch_build(planned: dict[str, str]) -> None:
+    """The container runs on CPU hosts; the CUDA build is ~2.2 GB of wheels it never uses.
+
+    The dry run resolves for the machine running the test, so the planned torch
+    version differs by host: ``2.14.0+cpu`` on Linux (CI, the image), plain
+    ``2.14.0`` on macOS, where PyTorch's CPU index publishes no ``+cpu`` tag.
+    Asserting ``+cpu`` on the plan failed every Mac run. What must hold on every
+    host is that torch resolves from the CPU-only index, and that the Linux
+    entry — the one the image installs — is the ``+cpu`` build.
+    """
+    assert "torch" in planned, sorted(planned)
+    torch_entries = [p for p in _lock()["package"] if _normalize(p["name"]) == "torch"]
+    assert torch_entries, "torch is missing from uv.lock"
+    not_cpu_index = sorted(
+        entry["version"]
+        for entry in torch_entries
+        if entry.get("source", {}).get("registry") != CPU_TORCH_INDEX
+    )
+    assert not not_cpu_index, (
+        f"torch {not_cpu_index} resolves from outside {CPU_TORCH_INDEX}; check [tool.uv.sources] in "
+        "pyproject.toml and that torch is still a direct dependency (uv ignores sources for "
+        "transitive packages)"
+    )
+    assert any(entry["version"].endswith("+cpu") for entry in torch_entries), (
+        f"no +cpu torch build in uv.lock for Linux: {[e['version'] for e in torch_entries]}"
+    )
+    assert planned["torch"] in {entry["version"] for entry in torch_entries}, planned["torch"]
+    gpu_only = sorted(name for name in planned if name.startswith("nvidia-") or name in {"triton"})
+    assert not gpu_only, f"GPU-only packages would ship in the image: {gpu_only}"
+
+
+def test_plan_excludes_dev_tooling_and_the_project_itself(planned: dict[str, str]) -> None:
     pyproject = tomllib.loads(_read(CORE_DIR / "pyproject.toml"))
     dev_specs = pyproject.get("dependency-groups", {}).get("dev", []) + pyproject["project"].get(
         "optional-dependencies", {}
     ).get("dev", [])
     assert dev_specs, "no dev dependency list found; update this test if dev tooling moved"
     dev_only = {_requirement_name(spec) for spec in dev_specs} - _runtime_closure()
-    leaked = sorted(dev_only & _pins(exported).keys())
+    leaked = sorted(dev_only & planned.keys())
     assert not leaked, f"dev-only packages would ship in the image: {leaked}"
-    project_lines = [
-        head
-        for head, _ in _requirement_blocks(exported)
-        if re.match(r"^(-e\b|\.|openexecutive\b)", head)
-    ]
-    assert not project_lines, (
-        f"the project itself leaked into the dependency layer {project_lines}; it is installed "
-        "in a later layer (--no-deps .) and building it here would need README.md (#81)"
+    project = _normalize(pyproject["project"]["name"])
+    assert project not in planned, (
+        "the project itself leaked into the dependency layer; it is installed in a later layer "
+        "(--no-deps .) and building it here would need README.md (#81)"
     )

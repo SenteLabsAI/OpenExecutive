@@ -144,7 +144,7 @@ and deploy configuration for a specific environment are kept outside this repo.
 
 ## Environment Variables
 
-See `.env.example`. Required: `ANTHROPIC_API_KEY`. Optional integrations: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_IMAP_HOST`, `EMAIL_SMTP_HOST`.
+See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no default). Optional integrations: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET` (`docs/telegram_setup.md`), `DISCORD_BOT_TOKEN` + `DISCORD_APP_ID`, `GOOGLE_CHAT_PROJECT_NUMBER` + one of `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` / `_EMAIL` (`docs/google_chat_setup.md`). Email has no IMAP/SMTP settings: the poller (`integrations/email_poller.py`) reads and sends through the configured workspace backend (`integrations/workspace/`, chosen by `EMAIL_PROVIDER` / `CALENDAR_PROVIDER`, default `google`) — the Gmail tools of the Google Workspace MCP (`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`) or the Outlook tools of the Microsoft 365 MCP (`MS365_MCP_CLIENT_ID` + a one-time `ms365-mcp-launch.sh --login`) — signed in as `EXEC_EMAIL_ADDRESS`.
 
 ## Testing
 
@@ -210,7 +210,39 @@ cd evals && python run_evals.py --scenarios scenarios/ --output results/
 - Eval scenarios for new agents or prompt changes
 - `ruff check` and `mypy` must pass
 - Architecture docs updated per `## Architecture Docs` above (when integrations, scheduler, departments/people, caching, invariants, routing patterns, or top-level modules change)
-- Descriptive PR description explaining the change and rationale
+- PR title is `type(scope): what changed`, in the imperative — e.g.
+  `fix(chat): bind the session for the whole SSE turn`. Types: `fix`, `feat`,
+  `docs`, `chore`, `refactor`, `test`, `perf`. Scope is the subsystem
+  (`chat`, `memory`, `alerts`, `briefing`, `orchestrator`, `integrations`,
+  `ui`, `deps`, …), not a file path; drop it only when the change genuinely
+  spans the repo. Say what changed rather than what it is about, lowercase
+  after the colon, no trailing period. See `.github/PULL_REQUEST_TEMPLATE.md`.
+  The type sets the next version (release-please, before 1.0: `feat` and `fix`
+  → patch, a breaking change (`!` / `BREAKING CHANGE:`) → minor;
+  `chore`/`docs`/`test`/`refactor` release nothing on their own), and
+  `feat`/`fix` titles become the changelog lines, so pick the type by what the
+  change is, not by how big it is. PRs are squash-merged with the PR title as
+  the commit subject, which is what release-please reads — branch commit
+  messages do not reach `main`.
+- `!` / `BREAKING CHANGE:` only for a real break (a removed or reshaped
+  endpoint, a new required env var, a migration an operator must run) — never
+  to get a bigger bump. To release a larger version for any other reason, put
+  a `BEGIN_COMMIT_OVERRIDE` / `END_COMMIT_OVERRIDE` block at the end of one
+  PR's description holding that PR's title, a blank line, then
+  `Release-As: X.Y.Z`. release-please reads the block in place of the squash
+  message. A bare `Release-As:` line in the description does not work:
+  release-please only reads footers in the commit's final paragraph, and
+  GitHub or the Claude footer appends text after it (#210). It applies to the
+  next release only. The same block with a corrected message un-marks a
+  merged PR (e.g. drops a wrong `!`). Either takes effect on the next push to
+  `main`. Write the begin marker only once in a PR description, and never in
+  prose: release-please takes the text after its first occurrence, so a
+  backticked mention earlier in the body becomes the "message", fails to
+  parse, and drops that commit from the release (#210, #211).
+- PR description is three sections and nothing else: **Problem**, **Approach**,
+  **Checklist** (see `.github/PULL_REQUEST_TEMPLATE.md`). Rationale, review
+  findings and alternatives go in the commit message; open questions go in the
+  review thread. Keep the body short enough to read in one screen.
 
 ## Workflow
 

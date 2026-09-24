@@ -21,6 +21,7 @@ import {
   type ProposalItem,
   type Today,
 } from "@/lib/api";
+import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
 import {
   HANDLED_REOPENABLE,
@@ -33,10 +34,27 @@ import {
   type HandledRow,
 } from "@/lib/handled";
 import InfoTip from "./InfoTip";
+import { hostOf } from "@/lib/url";
 import { SectionHeading } from "./memories/shared";
 
 // Future-relative label for a pending run time ("in 8h"). Past/blank →
 // "soon" (the caller renders "overdue" separately via the backend flag).
+// Badge text for an artifact card: the format when it isn't plain Markdown.
+function artifactBadge(format: ProposalItem["artifact_format"]): string {
+  switch (format) {
+    case "html":
+      return "Web page";
+    case "docx":
+      return "Word doc";
+    case "xlsx":
+      return "Spreadsheet";
+    case "link":
+      return "Link";
+    default:
+      return "Artifact";
+  }
+}
+
 function formatFuture(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "soon";
@@ -108,7 +126,7 @@ interface BriefingProps {
   // its main view from briefing → chat and seed the input with `prompt`.
   // When omitted, items render as plain navigation links so the standalone
   // /today page still works.
-  onContinue?: (prompt: string) => void;
+  onContinue?: ContinueHandler;
   // Set to true when this Briefing is the root landing surface — adds a
   // "Here's where we are" header. The standalone /today page already
   // gets the global AppShell breadcrumb, so it omits this prop.
@@ -131,7 +149,7 @@ function formatRelTime(iso: string): string {
 }
 
 interface ClickableProps {
-  onContinue?: (prompt: string) => void;
+  onContinue?: ContinueHandler;
   prompt: string;
   href: string;
   className: string;
@@ -171,6 +189,11 @@ function nodeToPlainText(node: unknown): string {
   return "";
 }
 
+// Hands a briefing item to chat. `memoryText` is what peer memory records as
+// the user's words for that turn; omit it when `prompt` is already just the
+// user's own ask.
+type ContinueHandler = (prompt: string, memoryText?: string) => void;
+
 // Seed prompt for a clicked narrative bullet. The Executive receives the
 // open-alert digest as a <briefing> block on every chat turn, so the seed only
 // needs to name the item — the exec matches it by headline. No alert_id is
@@ -199,7 +222,7 @@ function buildMonitoringSeed(proposal: ProposalItem): string {
   );
 }
 
-function DeptCard({ dept, onContinue, dimmed = false }: { dept: DepartmentBriefItem; onContinue?: (p: string) => void; dimmed?: boolean }) {
+function DeptCard({ dept, onContinue, dimmed = false }: { dept: DepartmentBriefItem; onContinue?: ContinueHandler; dimmed?: boolean }) {
   const hasIssues = dept.at_risk_count > 0 || dept.off_track_count > 0;
   const prompt = `Tell me about ${dept.title} — what's the current status?`;
   // Problem goals beyond the inline cap fall to the department page.
@@ -510,7 +533,7 @@ function buildProposalLifecycle({
 }: {
   proposal: ProposalItem;
   assignee: PersonBriefItem | null | undefined;
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   busy: boolean;
 }): {
   reviewLine: React.ReactNode;
@@ -585,6 +608,7 @@ const moveButton = (() => {
         onClick={() => onContinue(
           `Nudge ${who} about this item — it has gone quiet: ${proposal.headline}\n\n` +
           `Send a short, friendly check-in via message_person and tell me what you sent.`,
+          briefingMemoryLine(nudgeAction(who), proposal.headline),
         )}
         disabled={busy}
         className="text-xs font-medium text-indigo-300 hover:text-indigo-200 px-2 py-1 rounded border border-indigo-500/30 transition-colors disabled:opacity-50"
@@ -622,7 +646,7 @@ function ProposalCard({
 }: {
   proposal: ProposalItem;
   people: PersonBriefItem[];
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   onApprove?: (p: ProposalItem) => void;
   onDismiss?: (p: ProposalItem) => void;
   onApproveWithEdits?: (p: ProposalItem, editedBody: string) => void;
@@ -708,7 +732,9 @@ function ProposalCard({
       return (
         `Let's discuss this artifact you flagged for my review:\n\n` +
         `# ${proposal.headline}\n\n${proposal.body || ""}${rationale}\n\n` +
-        `[Discuss mode — alert_id=${proposal.alert_id}] This is a document ` +
+        `[Discuss mode — alert_id=${proposal.alert_id}, artifact id ` +
+        `alert:${proposal.alert_id}; to revise it, publish a new version with ` +
+        `draft_artifact(supersedes="alert:${proposal.alert_id}")] This is a document ` +
         `for review, not an action to approve. Answer my questions about it ` +
         `conversationally. When I say I'm done ("got it", "reviewed", "thanks"), ` +
         `call ack_alert(alert_id=${proposal.alert_id}, status="ack") to clear ` +
@@ -755,6 +781,16 @@ function ProposalCard({
     );
     return `Tell me about this proposal:\n\n${text}${suggested}${primer}`;
   })();
+  const handoffMemory = briefingMemoryLine(
+    isArtifact
+      ? MEMORY_ACTIONS.artifact
+      : isMonitoring
+        ? MEMORY_ACTIONS.monitoring
+        : isDecision
+          ? MEMORY_ACTIONS.meeting
+          : MEMORY_ACTIONS.proposal,
+    proposal.headline,
+  );
   // Suggested-action block: visually promoted so the user reads it as a
   // commitment ("if I approve, the exec will do THIS") rather than a
   // footnote. Renders only when suggested_action is non-empty — and never
@@ -895,7 +931,7 @@ function ProposalCard({
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="flex items-center gap-2 min-w-0">
           <span className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-300 border-amber-500/30">
-            Artifact
+            {artifactBadge(proposal.artifact_format)}
           </span>
           <div className="text-sm font-medium text-fg break-words">{proposal.headline}</div>
         </div>
@@ -945,7 +981,7 @@ function ProposalCard({
   const contentArea = onContinue ? (
     <button
       type="button"
-      onClick={() => onContinue(handoffPrompt)}
+      onClick={() => onContinue(handoffPrompt, handoffMemory)}
       className="block w-full text-left cursor-pointer transition-colors"
     >
       {content}
@@ -956,6 +992,28 @@ function ProposalCard({
   return (
     <div id={`alert-${proposal.alert_id}`} className={`group py-3 hover:bg-surface-overlay/30 transition-colors${rowAccent}`}>
       {contentArea}
+      {/* Artifact links sit outside the Discuss click target (a <button>),
+          which can't legally contain links. */}
+      {isArtifact && (
+        <div className="pb-1 flex flex-wrap gap-3 text-xs">
+          <Link
+            href={`/artifacts/${encodeURIComponent(`alert:${proposal.alert_id}`)}`}
+            className="text-indigo-400 hover:underline"
+          >
+            Open artifact →
+          </Link>
+          {proposal.artifact_format === "link" && proposal.artifact_url && (
+            <a
+              href={proposal.artifact_url}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              className="text-indigo-400 hover:underline"
+            >
+              Open in app ({hostOf(proposal.artifact_url)}) ↗
+            </a>
+          )}
+        </div>
+      )}
       {/* Body expander — a sibling of the content area (never nested inside the
           Discuss click target, which HTML disallows) so a clamped long body can
           still be read in full without leaving the briefing. */}
@@ -979,7 +1037,7 @@ function ProposalCard({
             {onContinue && (
               <button
                 type="button"
-                onClick={() => onContinue(handoffPrompt)}
+                onClick={() => onContinue(handoffPrompt, handoffMemory)}
                 disabled={busy}
                 className="text-xs text-fg-muted hover:text-indigo-300 px-2 py-1 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -1162,7 +1220,7 @@ function MonitoringRow({
   onDismiss,
 }: {
   proposal: ProposalItem;
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   onDismiss?: (p: ProposalItem) => void;
 }) {
   const seed = buildMonitoringSeed(proposal);
@@ -1183,7 +1241,7 @@ function MonitoringRow({
       {onContinue ? (
         <button
           type="button"
-          onClick={() => onContinue(seed)}
+          onClick={() => onContinue(seed, briefingMemoryLine(MEMORY_ACTIONS.monitoring, proposal.headline))}
           className="block w-full text-left pr-8 cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
         >
           {inner}
@@ -1218,7 +1276,7 @@ function MonitoringPanel({
   id,
 }: {
   proposals: ProposalItem[];
-  onContinue?: (p: string) => void;
+  onContinue?: ContinueHandler;
   onDismiss?: (p: ProposalItem) => void;
   onBulkDismiss?: (ids: number[]) => void;
   id?: string;
@@ -1483,6 +1541,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
             `call schedule_followup so I get a fresh check at the right time. Do NOT just ` +
             `summarize what you would do, file it for later, or assign it to someone — ` +
             `the assignment IS to you.\n\nProposal:\n${text}${action}`,
+          briefingMemoryLine(MEMORY_ACTIONS.approve, proposal.headline),
         );
       }
     } catch (e) {
@@ -1589,6 +1648,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
             `call ack_alert. Use the text below VERBATIM when you deliver the message: do not ` +
             `rephrase, summarize, or restructure it. Then go execute (send the DM/email, ` +
             `schedule any follow-up via schedule_followup) and tell me what you did.\n\n${editedBody}`,
+          briefingMemoryLine(MEMORY_ACTIONS.approveWithEdits, proposal.headline),
         );
       }
     } catch (e) {
@@ -1814,7 +1874,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                                     <li className="list-none">
                                       <button
                                         type="button"
-                                        onClick={() => onContinue(buildNarrativeSeed(text))}
+                                        onClick={() => onContinue(buildNarrativeSeed(text), briefingMemoryLine(MEMORY_ACTIONS.narrative, text))}
                                         aria-label={`Discuss: ${text}`}
                                         className="group flex w-full items-start gap-2 text-left cursor-pointer rounded -mx-1.5 px-1.5 py-0.5 transition hover:bg-indigo-500/10 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
                                       >

@@ -177,6 +177,9 @@ def test_event_types_constant_includes_known_types() -> None:
     assert "scheduled_action" in EVENT_TYPES
     assert "alert" in EVENT_TYPES
     assert "integration_inbound" in EVENT_TYPES
+    assert "memory_extraction" in EVENT_TYPES, (
+        "every extraction pass writes this row; it must be selectable in the audit UI filter"
+    )
 
 
 def test_q_escapes_like_wildcards(audit: AuditLogger) -> None:

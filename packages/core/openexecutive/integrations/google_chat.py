@@ -166,6 +166,9 @@ async def _process_and_reply(
         logger.exception("Google Chat: failed to schedule alert evaluation")
 
     try:
+        from openexecutive.integrations.channel_context import (
+            build_channel_context_block,
+        )
         from openexecutive.knowledge.retriever import retrieve
         from openexecutive.memory.episodic import format_for_prompt
         from openexecutive.onboarding.profile_builder import load_or_create_profile
@@ -177,6 +180,12 @@ async def _process_and_reply(
         session = Session(
             session_id=session_id,
             company_profile=profile if not profile.is_empty() else None,
+            # Names the surface for logging and the `<channel>` block. This
+            # adapter has no roster gate (the webhook authenticates Google,
+            # not the sender) and never populates trusted_alert_ids, so
+            # `ack_alert` refuses here — matching what the channel block
+            # already tells the model about this surface.
+            origin_channel="google_chat",
         )
         retrieved_context = retrieve(query=message_text)
         episodic_context = format_for_prompt()
@@ -186,6 +195,7 @@ async def _process_and_reply(
             session=session,
             retrieved_context=retrieved_context,
             episodic_context=episodic_context,
+            channel_context_block=build_channel_context_block("google_chat"),
         )
         await asyncio.to_thread(
             send_reply, space_name, thread_name, response, service_account_file, service_account_email

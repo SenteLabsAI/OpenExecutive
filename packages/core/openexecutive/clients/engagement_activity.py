@@ -192,7 +192,10 @@ def gather_engagement_activity(
             activity.followups_completed = _count(
                 conn,
                 "SELECT COUNT(*) FROM scheduled_actions "
-                "WHERE status = 'done' AND run_at >= ? AND run_at <= ?",
+                # An open loop is recorded 'done' but is a promise someone
+                # made, not a follow-up the Executive completed.
+                "WHERE status = 'done' AND kind != 'open_loop' "
+                "AND run_at >= ? AND run_at <= ?",
                 rng,
             )
             activity.followups_pending = _count(

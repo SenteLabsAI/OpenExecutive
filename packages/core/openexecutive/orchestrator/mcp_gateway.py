@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -15,8 +17,35 @@ from openexecutive.config import get_settings, mcp_config_file_present
 logger = logging.getLogger(__name__)
 
 _UVX_CMD = "uvx"
-_EXTENSIBLE_MCP_GIT = "git+https://github.com/SenteLabsAI/extensible-mcp"
+# Pinned to a commit, not the default branch. Unpinned, uvx resolved `main` on
+# GitHub at every container start, so a published image ran whatever the
+# gateway repo held that day: a push there changed every deployment on its next
+# restart, rolling back an image tag did not roll the gateway back, and a start
+# with no network failed outright because only GitHub can say what `main` is.
+# The repo has no release tags, so a commit is the only stable ref.
+#
+# The commit alone fixes extensible-mcp's own code, not its dependencies: uvx
+# re-resolves its ~94 transitive packages against PyPI's version ranges on
+# every networked start, so a new release of any of them would still reach
+# running deployments on restart. `--exclude-newer` freezes that resolution to
+# packages published before the cutoff, which also makes the Dockerfile's
+# pre-warm cache exactly what the runtime resolves — so a start needs no
+# network when that best-effort pre-warm succeeded. Bump the commit and the
+# cutoff together, deliberately; tests/unit/
+# test_extensible_mcp_pin.py fails if docker/Dockerfile's pre-warm drifts from
+# _EXTENSIBLE_MCP_LAUNCH_ARGS.
+_EXTENSIBLE_MCP_REV = "ac2001a09646a8044210042e12e62974f4c9687c"
+_EXTENSIBLE_MCP_EXCLUDE_NEWER = "2026-09-22T00:00:00Z"
+_EXTENSIBLE_MCP_GIT = f"git+https://github.com/SenteLabsAI/extensible-mcp@{_EXTENSIBLE_MCP_REV}"
 _EXTENSIBLE_MCP_CMD = "extensible-mcp"
+# Everything after `uvx` up to the command, shared with docker/Dockerfile's pre-warm.
+_EXTENSIBLE_MCP_LAUNCH_ARGS = (
+    "--exclude-newer",
+    _EXTENSIBLE_MCP_EXCLUDE_NEWER,
+    "--from",
+    _EXTENSIBLE_MCP_GIT,
+    _EXTENSIBLE_MCP_CMD,
+)
 
 # Env vars forwarded into the extensible-mcp subprocess. The MCP stdio client
 # (mcp.client.stdio) does NOT pass our environment through: when
@@ -371,6 +400,138 @@ def _roster_allow_set() -> set[str]:
     allow = {p.email.lower() for p in list_people() if p.email}
     allow.add(settings.exec_email_address.lower())
     return allow
+
+
+# Artifact attachments on one email. Gmail caps a message at 25 MB and base64
+# inflates the payload by a third, so the rendered artifacts together stay
+# well under it; the count cap bounds how much one tool call can make the
+# server render (each entry is a full docx / xlsx build).
+_MAX_ARTIFACT_ATTACHMENTS = 5
+_MAX_ARTIFACT_ATTACHMENT_BYTES = 15 * 1024 * 1024
+_ARTIFACT_ATTACHMENT_KEYS = frozenset({"artifact_id", "as"})
+
+
+def _recipients(arguments: dict[str, Any]) -> list[str]:
+    """Every to/cc/bcc address on a Gmail call, for audit rows."""
+    raw = [arguments.get(f) for f in _GMAIL_RECIPIENT_FIELDS]
+    values = [
+        str(v) for item in raw
+        for v in (item if isinstance(item, list) else [item]) if v
+    ]
+    return [addr for _, addr in getaddresses(values) if addr]
+
+
+def _refuse_attachment(tool: str, arguments: dict[str, Any], reason: str) -> str:
+    from openexecutive.audit import log_event as audit_log
+
+    logger.warning("refused artifact attachment on %s: %s", tool, reason)
+    audit_log(
+        "artifact_attachment_refused",
+        f"Refused an artifact attachment on {tool}: {reason[:160]}",
+        actor="mcp_gateway",
+        details={"tool": tool, "reason": reason, "recipients": _recipients(arguments)},
+    )
+    return json.dumps({"error": f"attachment: {reason}"})
+
+
+async def _expand_artifact_attachments(
+    tool: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]] | str:
+    """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` attachment entries
+    with the rendered file (`content` base64 + `filename` + `mime_type`, the
+    shape workspace-mcp's Gmail tools accept).
+
+    Lets the Executive email one of its artifacts without ever holding the
+    bytes: the file is rendered server-side exactly as `/artifacts/{id}/
+    download` serves it, and only artifact rows can resolve (see
+    `artifact_records`). At most `_MAX_ARTIFACT_ATTACHMENTS` distinct entries
+    (repeats are dropped) and `_MAX_ARTIFACT_ATTACHMENT_BYTES` in total;
+    rendering runs off the event loop. Returns the (copied) arguments plus
+    the attached artifact ids, or an audited JSON error string. Other
+    attachment entries pass through untouched.
+    """
+    attachments = arguments.get("attachments")
+    # Models sometimes stringify nested arguments, or send one object instead
+    # of a list. Normalise both, so an artifact entry can never reach the MCP
+    # unexpanded (workspace-mcp would skip it and send the mail without it).
+    if isinstance(attachments, str) and "artifact_id" in attachments:
+        try:
+            attachments = json.loads(attachments)
+        except json.JSONDecodeError:
+            return _refuse_attachment(tool, arguments, "attachments is not valid JSON")
+    if isinstance(attachments, dict):
+        attachments = [attachments]
+    if not isinstance(attachments, list) or not any(
+        isinstance(a, dict) and "artifact_id" in a for a in attachments
+    ):
+        return arguments, []
+
+    from openexecutive.orchestrator.artifact_records import (
+        ArtifactNotFound,
+        MalformedArtifactId,
+        load_artifact,
+        render_artifact_file,
+    )
+
+    wanted: list[tuple[str, str | None]] = []
+    for entry in attachments:
+        if not (isinstance(entry, dict) and "artifact_id" in entry):
+            continue
+        extra = set(entry) - _ARTIFACT_ATTACHMENT_KEYS
+        if extra:
+            return _refuse_attachment(tool, arguments, (
+                "an artifact attachment takes only 'artifact_id' and an "
+                f"optional 'as' format; got {sorted(extra)}"
+            ))
+        as_raw = entry.get("as")
+        key = (str(entry.get("artifact_id") or "").strip(),
+               str(as_raw).strip().lower() if as_raw else None)
+        if key not in wanted:
+            wanted.append(key)
+    if len(wanted) > _MAX_ARTIFACT_ATTACHMENTS:
+        return _refuse_attachment(tool, arguments, (
+            f"at most {_MAX_ARTIFACT_ATTACHMENTS} artifacts per email; got {len(wanted)}"
+        ))
+
+    rendered: dict[tuple[str, str | None], dict[str, str]] = {}
+    attached: list[str] = []
+    total = 0
+    for artifact_id, as_ in wanted:
+        try:
+            rec = await asyncio.to_thread(load_artifact, artifact_id)
+            file = await asyncio.to_thread(render_artifact_file, rec, as_)
+        except (MalformedArtifactId, ArtifactNotFound) as exc:
+            return _refuse_attachment(tool, arguments, str(exc))
+        except Exception:
+            logger.exception("artifact attachment render failed: %s", artifact_id)
+            return _refuse_attachment(tool, arguments, f"could not render {artifact_id!r}")
+        total += len(file.content)
+        if total > _MAX_ARTIFACT_ATTACHMENT_BYTES:
+            return _refuse_attachment(tool, arguments, (
+                f"artifacts total {total} bytes, over the "
+                f"{_MAX_ARTIFACT_ATTACHMENT_BYTES}-byte email limit — send "
+                "a link instead"
+            ))
+        rendered[(artifact_id, as_)] = {
+            "content": base64.b64encode(file.content).decode("ascii"),
+            "filename": file.filename,
+            "mime_type": file.mime,
+        }
+        attached.append(rec.id)
+
+    expanded: list[Any] = []
+    emitted: set[tuple[str, str | None]] = set()
+    for entry in attachments:
+        if not (isinstance(entry, dict) and "artifact_id" in entry):
+            expanded.append(entry)
+            continue
+        as_raw = entry.get("as")
+        key = (str(entry.get("artifact_id") or "").strip(),
+               str(as_raw).strip().lower() if as_raw else None)
+        if key not in emitted:
+            emitted.add(key)
+            expanded.append(rendered[key])
+    return {**arguments, "attachments": expanded}, attached
 
 
 def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -927,14 +1088,15 @@ def _record_email_outbound_context(arguments: dict[str, Any]) -> None:
         if not (isinstance(body, str) and body.strip()):
             return
 
-        addresses: list[str] = []
+        addresses: list[tuple[str, bool]] = []
         for field in _OUTBOUND_CONTEXT_RECIPIENT_FIELDS:
             value = arguments.get(field)
             if not value:
                 continue
             items = value if isinstance(value, list) else [value]
             addresses.extend(
-                addr for _name, addr in getaddresses([s for s in items if isinstance(s, str)])
+                (addr, field == "to")
+                for _name, addr in getaddresses([s for s in items if isinstance(s, str)])
             )
         _record_outbound_context_for(addresses, body)
     except Exception:
@@ -943,28 +1105,43 @@ def _record_email_outbound_context(arguments: dict[str, Any]) -> None:
         )
 
 
-def _record_outbound_context_for(addresses: Iterable[str], body: str) -> None:
+def _record_outbound_context_for(
+    addresses: Iterable[tuple[str, bool]], body: str
+) -> None:
     """Record one open ``email`` linkage per distinct recipient address.
 
-    Shared by the Gmail and Microsoft 365 recorders: normalizes to the bare
-    lowercased address, skips the Executive's own mailbox and duplicates, and
-    defers to `_record_outbound_context` (which itself only writes when a live
-    session is active).
+    Shared by the Gmail and Microsoft 365 recorders: ``addresses`` pairs each
+    address with whether it came from the primary (``to``) field. Normalizes to
+    the bare lowercased address, skips the Executive's own mailbox and
+    duplicates, and defers to `_record_outbound_context` (which itself only
+    writes when a live session is active). Only the first rostered "to"
+    address is who the email was addressed to (``record_outcome``); every
+    recipient still gets reply linkage.
     """
-    from openexecutive.orchestrator.schedule_tools import _record_outbound_context
+    from openexecutive.orchestrator.schedule_tools import (
+        _record_outbound_context,
+        _resolve_recipient_person_id,
+    )
 
     self_addr = get_settings().exec_email_address.lower()
     seen: set[str] = set()
-    for addr in addresses:
+    primary_taken = False
+    for addr, is_to in addresses:
         norm = addr.strip().lower()
         if not norm or norm == self_addr or norm in seen:
             continue
+        primary = (
+            is_to and not primary_taken
+            and _resolve_recipient_person_id("email", norm) is not None
+        )
+        primary_taken = primary_taken or primary
         seen.add(norm)
         _record_outbound_context(
             channel="email",
             channel_ref=norm,
             text=body,
             outbound_message_id=None,
+            record_outcome=primary,
         )
 
 
@@ -1008,8 +1185,11 @@ def _record_m365_outbound_context(arguments: dict[str, Any]) -> None:
         content = _ci_get(_ci_get(message, "body"), "content")
         if not (isinstance(content, str) and content.strip()):
             return
-        addresses = _m365_recipient_addresses(_ci_get(message, "toRecipients"))
-        addresses += _m365_recipient_addresses(_ci_get(message, "ccRecipients"))
+        addresses = [
+            (addr, True) for addr in _m365_recipient_addresses(_ci_get(message, "toRecipients"))
+        ] + [
+            (addr, False) for addr in _m365_recipient_addresses(_ci_get(message, "ccRecipients"))
+        ]
         _record_outbound_context_for(addresses, content)
     except Exception:
         logger.exception(
@@ -1105,7 +1285,7 @@ class MCPGateway:
         forwarded_env = {k: os.environ[k] for k in _FORWARDED_ENV_VARS if k in os.environ}
         params = StdioServerParameters(
             command=_UVX_CMD,
-            args=["--from", _EXTENSIBLE_MCP_GIT, _EXTENSIBLE_MCP_CMD, "--config", str(config_path)],
+            args=[*_EXTENSIBLE_MCP_LAUNCH_ARGS, "--config", str(config_path)],
             env=forwarded_env or None,
         )
         self._stdio_cm = stdio_client(params)
@@ -1132,7 +1312,12 @@ class MCPGateway:
 
     async def search_tools(self, tool_input: dict[str, Any]) -> str:
         session = self._require_session()
-        result = await session.call_tool("search_tools", {"query": tool_input["query"]})
+        args: dict[str, Any] = {"query": tool_input["query"]}
+        # Optional: callers resolving an exact tool name widen the net
+        # (extensible-mcp defaults to 5 results).
+        if isinstance(tool_input.get("top_k"), int):
+            args["top_k"] = tool_input["top_k"]
+        result = await session.call_tool("search_tools", args)
         return result.content[0].text if result.content else json.dumps({"tools": []})
 
     async def call_tool(self, tool_input: dict[str, Any]) -> str:
@@ -1146,10 +1331,17 @@ class MCPGateway:
                 arguments = {}
         tool_name = tool_input.get("name", "")
         normalized = _normalize_tool_name(tool_name)
+        attached_artifacts: list[str] = []
         if tool_name in _GATED_GMAIL_TOOLS:
             blocked = _check_gmail_recipients(tool_name, arguments)
             if blocked is not None:
                 return blocked
+            # Only after the recipients pass: render any artifact the model
+            # asked to attach, so a blocked send never renders anything.
+            expanded = await _expand_artifact_attachments(tool_name, arguments)
+            if isinstance(expanded, str):
+                return expanded
+            arguments, attached_artifacts = expanded
         if tool_name in _GATED_CALENDAR_TOOLS:
             blocked = _check_calendar_attendees(tool_name, arguments)
             if blocked is not None:
@@ -1187,6 +1379,19 @@ class MCPGateway:
             _record_email_outbound_context(arguments)
         elif normalized == _M365_RECORD_SEND_TOOL and not _is_error_payload(result_text):
             _record_m365_outbound_context(arguments)
+        if attached_artifacts and not _is_error_payload(result_text):
+            from openexecutive.audit import log_event as audit_log
+
+            audit_log(
+                "artifact_attached",
+                f"Attached {', '.join(attached_artifacts)} via {tool_name}",
+                actor="mcp_gateway",
+                details={
+                    "tool": tool_name,
+                    "artifact_ids": attached_artifacts,
+                    "recipients": _recipients(arguments),
+                },
+            )
         return result_text
 
     async def load_mcp_server(self, tool_input: dict[str, Any]) -> str:

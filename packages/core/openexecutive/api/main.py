@@ -29,6 +29,7 @@ from openexecutive.api.routes import (
     documents,
     episodic,
     evals,
+    executive,
     fixtures,
     guide,
     health,
@@ -39,9 +40,11 @@ from openexecutive.api.routes import (
     review,
     scheduled,
     sessions,
+    skill_drafts,
     skills,
     today,
     watchlist,
+    workflow_designer,
     workflows,
 )
 from openexecutive.api.routes import (
@@ -507,6 +510,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     initialize_runs_db()
     initialize_dynamic_workflows_db()
+    from openexecutive.scheduler.pause import initialize_pause_db, is_paused
+
+    initialize_pause_db()
+    if is_paused():
+        logging.getLogger("openexecutive").warning(
+            "Executive is PAUSED — scheduler, email poller and workflow "
+            "resumer are holding all autonomous work until resumed"
+        )
     initialize_eval_runs_db()
     initialize_user_scenarios_db()
 
@@ -762,7 +773,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Open Executive API",
         description="AI-powered virtual executive team",
-        version="0.1.0",
+        version="0.3.2",  # x-release-please-version
         lifespan=lifespan,
     )
 
@@ -821,6 +832,10 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, tags=["documents"])
     app.include_router(knowledge.router, tags=["knowledge"])
     app.include_router(skills.router, tags=["skills"])
+    app.include_router(skill_drafts.router, tags=["skills"])
+    # Ahead of workflows.router so no /workflows/{name}/... pattern can shadow
+    # the literal /workflows/designer/* paths.
+    app.include_router(workflow_designer.router, tags=["workflows"])
     app.include_router(workflows.router, tags=["workflows"])
     app.include_router(evals.router, tags=["evals"])
     app.include_router(episodic.router, tags=["memories"])
@@ -833,6 +848,7 @@ def create_app() -> FastAPI:
     app.include_router(people.router, tags=["people"])
     app.include_router(today.router, tags=["today"])
     app.include_router(scheduled.router, tags=["scheduled"])
+    app.include_router(executive.router, tags=["executive"])
     app.include_router(watchlist.router, tags=["watchlist"])
     app.include_router(google_chat_router, tags=["google-chat"])
     app.include_router(telegram_router, tags=["telegram"])

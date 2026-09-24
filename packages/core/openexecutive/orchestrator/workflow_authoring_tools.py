@@ -14,6 +14,11 @@ Both tool schemas are fixed (no per-definition tools), so the cached tool list
 stays stable. No new outbound capability is granted: approval-gate and cadence
 recipients must be rostered people (enforced by ``validate_definition``), and
 cadence delivery reuses the scheduler's existing guarded send.
+
+A workflow with action (tool-using) steps is saved **inactive**. The chat
+confirmation is a token this model holds itself, so it cannot stand in for a
+person seeing the tools; the workflow runs (or schedules) only after someone
+turns it on from its review card at ``/jobs/{name}``.
 """
 from __future__ import annotations
 
@@ -32,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Shared JSON-schema fragment describing a definition. Kept permissive on the
 # step union (additionalProperties) — validate_definition does the real work
 # and returns precise, model-readable errors.
-_DEFINITION_SCHEMA: dict[str, Any] = {
+DEFINITION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": "The full workflow definition.",
     "properties": {
@@ -60,7 +65,12 @@ _DEFINITION_SCHEMA: dict[str, Any] = {
             "type": "array",
             "description": (
                 "Ordered steps. Each has a 'kind': "
-                "'specialist' {id,title,specialist,goal,rag_query?}, "
+                "'specialist' {id,title,specialist,goal,rag_query?,playbook?} (analysis by an "
+                "advisor; playbook = name of an existing playbook the step follows), "
+                "'action' {id,title,goal,tools,max_tool_calls?} (gets something done with "
+                "tools — 'tools' is the exact list of tool names the step may call, e.g. "
+                "'google_workspace__append_table_rows' or 'oe__read_file'; max_tool_calls "
+                "is optional — omit it for the default budget), "
                 "'approval_gate' {id,title,person_id,question,timeout_hours?,on_timeout?}, "
                 "or 'synthesis' {id,title,instructions?,specialist?}. "
                 "Exactly ONE synthesis step, and it MUST be last. Goals may use "
@@ -97,11 +107,13 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "the SAME definition and the confirm_token. Do NOT invent specialists, "
         "people, or metrics — only use the 8 specialist roles and people the "
         "user has identified. If validation fails, the response lists exactly "
-        "what to fix; re-draft and try again."
+        "what to fix; re-draft and try again. A workflow with action (tool) "
+        "steps is saved switched OFF: after saving, give the user the link so "
+        "they can review its tools and turn it on."
     ),
     "input_schema": {
         "type": "object",
-        "properties": {"definition": _DEFINITION_SCHEMA},
+        "properties": {"definition": DEFINITION_SCHEMA},
         "required": ["definition"],
     },
 }
@@ -115,12 +127,14 @@ SAVE_WORKFLOW_TOOL: dict[str, Any] = {
         "definition object and the confirm_token from the draft. The save is "
         "rejected if the definition was changed after drafting (token "
         "mismatch) — re-draft if you need to change anything. On success the "
-        "workflow appears in /jobs and is immediately runnable."
+        "workflow appears in /jobs and is immediately runnable — except one "
+        "with action (tool) steps, which stays off until the user reviews its "
+        "tools and turns it on at the returned deep_link."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "definition": _DEFINITION_SCHEMA,
+            "definition": DEFINITION_SCHEMA,
             "confirm_token": {
                 "type": "string",
                 "description": "The token returned by draft_workflow for this exact definition.",
@@ -138,21 +152,60 @@ SAVE_WORKFLOW_TOOL: dict[str, Any] = {
 def _canonical_token(definition: dict[str, Any]) -> str:
     """Stable hash over the user-meaningful parts of a definition.
 
-    Excludes only the server-managed timestamps. Everything the user can set —
+    Excludes only the server-managed timestamps. Everything the model drafted —
     including ``is_active`` — is covered, so a save can't silently differ from
-    the drafted definition the user approved (e.g. flip the workflow inactive).
+    the definition shown in chat. (The one deliberate difference is the
+    server's own: ``handle_save_workflow`` stores a tool workflow switched
+    off, after this check.)
     """
     payload = {k: v for k, v in definition.items() if k not in {"created_at", "updated_at"}}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
-def _build_def(definition: Any) -> tuple[Any, str | None]:
-    """Validate shape + rules. Returns (DynamicWorkflowDef, None) or (None, error)."""
-    from openexecutive.workflows.dynamic_models import (
-        DynamicWorkflowDef,
-        validate_definition,
+def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
+    """Refuse chat overwrites of a switched-on tool workflow (``existing``).
+
+    A person approved its tools. Chat (including a turn steered by an inbound
+    email) replacing it would switch it off and stage different tools under
+    the same familiar name, so edits to it happen on the Workflows page instead.
+    """
+    from openexecutive.config import get_settings
+
+    if existing is None or not existing.is_active or not _needs_review(existing):
+        return None
+    base = get_settings().ui_base_url.rstrip("/")
+    return (
+        f"{name!r} is a switched-on workflow whose tools the user approved; it "
+        "can't be replaced from chat. Pick a different name for a new "
+        f"workflow, or tell the user to edit it at {base}/jobs/new?edit={name}"
     )
+
+
+def _session_caller_id() -> int | None:
+    """The person chatting — recorded as a new workflow's owner."""
+    from openexecutive.workflows.gate_delivery import session_caller_id
+
+    session = current_session.get()
+    return session_caller_id(session) if session is not None else None
+
+
+def _needs_review(defn: Any) -> bool:
+    """True when the workflow has tool-using steps, which a person must approve.
+
+    Their approval is turning the workflow on from its review card on the Workflows
+    page — a chat confirmation (a token this model holds itself) is not a
+    human seeing the tools.
+    """
+    from openexecutive.workflows.dynamic_models import ActionStepSpec
+
+    return any(isinstance(step, ActionStepSpec) for step in defn.steps)
+
+
+async def _build_def(definition: Any) -> tuple[Any, str | None]:
+    """Validate shape + rules. Returns (DynamicWorkflowDef, None) or (None, error)."""
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+    from openexecutive.workflows.tool_catalog import validate_definition_and_tools
 
     if not isinstance(definition, dict):
         return None, "definition must be an object"
@@ -160,7 +213,7 @@ def _build_def(definition: Any) -> tuple[Any, str | None]:
         defn = DynamicWorkflowDef.model_validate(definition)
     except ValidationError as exc:
         return None, f"definition shape invalid: {exc.errors()}"
-    errors = validate_definition(defn)
+    errors = await validate_definition_and_tools(defn)
     if errors:
         return None, "validation failed: " + "; ".join(errors)
     return defn, None
@@ -176,9 +229,12 @@ def _summarize(defn: Any) -> str:
     for i, step in enumerate(defn.steps, 1):
         kind = getattr(step, "kind", "?")
         if kind == "specialist":
-            lines.append(f"{i}. [{step.specialist}] {step.title}")
+            follows = f" · follows playbook {step.playbook}" if step.playbook else ""
+            lines.append(f"{i}. [{step.specialist}{follows}] {step.title}")
         elif kind == "approval_gate":
             lines.append(f"{i}. [approval gate → person {step.person_id}] {step.title}")
+        elif kind == "action":
+            lines.append(f"{i}. [action · tools: {', '.join(step.tools)}] {step.title}")
         else:
             lines.append(f"{i}. [synthesis] {step.title}")
     if defn.cadence:
@@ -189,7 +245,9 @@ def _summarize(defn: Any) -> str:
 async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.workflows.dynamic_store import get_definition
 
-    defn, error = _build_def(tool_input.get("definition"))
+    defn, error = await _build_def(tool_input.get("definition"))
+    if error is None:
+        error = _approved_tool_workflow_error(defn.name, get_definition(defn.name))
     if error is not None:
         return json.dumps({"error": error})
     token = _canonical_token(tool_input["definition"])
@@ -197,12 +255,20 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
         "Show this summary to the user. After they confirm, call "
         "save_workflow with the same definition and this confirm_token."
     )
+    if _needs_review(defn):
+        note += (
+            " It uses tools, so it will be saved switched OFF: tell the user "
+            "that after saving they review its tools and turn it on from the "
+            "link save_workflow returns."
+        )
     result: dict[str, Any] = {
         "status": "drafted",
         "confirm_token": token,
         "summary": _summarize(defn),
         "note": note,
     }
+    if _needs_review(defn):
+        result["requires_review"] = True
     # Surface an existing-name clash now (not only at save time) so the
     # Executive can warn the user before they approve a plan that would
     # otherwise need overwrite=true to save.
@@ -218,12 +284,12 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
 async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
-    from openexecutive.workflows.dynamic_store import get_definition, upsert_definition
+    from openexecutive.workflows.dynamic_store import get_definition, save_if_unchanged
 
     definition = tool_input.get("definition")
     provided_token = str(tool_input.get("confirm_token", ""))
 
-    defn, error = _build_def(definition)
+    defn, error = await _build_def(definition)
     if error is not None:
         return json.dumps({"error": error})
 
@@ -237,8 +303,13 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
             )
         })
 
+    existing = get_definition(defn.name)
+    approved_error = _approved_tool_workflow_error(defn.name, existing)
+    if approved_error is not None:
+        return json.dumps({"error": approved_error})
+
     overwrite = bool(tool_input.get("overwrite", False))
-    if get_definition(defn.name) is not None and not overwrite:
+    if existing is not None and not overwrite:
         return json.dumps({
             "error": (
                 f"a custom workflow named {defn.name!r} already exists; pass "
@@ -246,11 +317,29 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
             )
         })
 
+    # A tool-using workflow waits for a person to turn it on from its review
+    # card. Applied after the token check so the token still covers exactly
+    # what was drafted. (Replacing an approved, switched-on one was refused above.)
+    if _needs_review(defn):
+        defn = defn.model_copy(update={"is_active": False})
+
     try:
-        stored = upsert_definition(defn)
+        # Conditional on the row read above, so an activation (from any
+        # process) landing after the approved-workflow check can't be
+        # overwritten by this save.
+        saved = save_if_unchanged(defn, existing, owner_person_id=_session_caller_id())
     except Exception as exc:
         logger.exception("save_workflow: persist failed")
         return json.dumps({"error": f"failed to save: {exc}"})
+    if saved is None:
+        return json.dumps({
+            "error": (
+                f"{defn.name!r} changed while saving (e.g. the user just turned "
+                "it on). Nothing was saved; check its current state before "
+                "drafting again."
+            )
+        })
+    stored = saved
 
     # Reconcile any cadence into the scheduler.
     try:
@@ -260,7 +349,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         )
 
         cancel_cadence_rows(stored.name)
-        if stored.cadence:
+        if stored.is_active and stored.cadence:
             schedule_dynamic_workflow_cadence(stored)
     except Exception:
         logger.exception("save_workflow: cadence scheduling failed (non-fatal)")
@@ -272,15 +361,29 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         f"Saved custom workflow {stored.name!r} ({len(stored.steps)} steps)",
         session_id=session_id,
         actor="executive",
-        details={"name": stored.name, "title": stored.title, "cadence": stored.cadence},
+        details={
+            "name": stored.name,
+            "title": stored.title,
+            "cadence": stored.cadence,
+            "pending_review": not stored.is_active,
+        },
     )
 
     base = get_settings().ui_base_url.rstrip("/")
-    return json.dumps({
-        "status": "saved",
-        "name": stored.name,
-        "deep_link": f"{base}/jobs/{stored.name}",
-    })
+    deep_link = f"{base}/jobs/{stored.name}"
+    if not stored.is_active:
+        # Tool workflows always; any other workflow only if drafted off.
+        return json.dumps({
+            "status": "saved_pending_review",
+            "name": stored.name,
+            "deep_link": deep_link,
+            "note": (
+                "Saved switched OFF. It won't run or follow its schedule until "
+                "the user reviews it and turns it on at deep_link — give them "
+                "the link."
+            ),
+        })
+    return json.dumps({"status": "saved", "name": stored.name, "deep_link": deep_link})
 
 
 WORKFLOW_AUTHORING_TOOLS: list[dict[str, Any]] = [

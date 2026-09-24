@@ -11,11 +11,28 @@ import asyncio
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.orchestrator.committee_reviewers import Critique
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.executive import Executive
 from openexecutive.orchestrator.session import Session
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this module's audit rows out of the default `./episodic_memory.db`.
+
+    A committee turn schedules episodic extraction fire-and-forget, and the
+    resulting `memory_extraction` row goes through `audit.log_event`, which
+    targets the default DB whatever `db_path` the extraction was handed. The
+    rows then surface as real data in other modules' assertions during a full
+    run only — the audit-log pollution trap in CLAUDE.md.
+    """
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event", lambda *a, **kw: None, raising=False
+    )
 
 
 class _NoopAsyncStream:

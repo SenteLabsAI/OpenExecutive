@@ -74,8 +74,11 @@ class _FakeAio:
         self._last = last_call
         self._answer = answer
 
-    async def peer(self, peer_id: str) -> _FakePeer:
+    async def peer(
+        self, peer_id: str, *, metadata: Any = None, configuration: Any = None
+    ) -> _FakePeer:
         self._last.setdefault("peers", []).append(peer_id)
+        self._last.setdefault("peer_configs", {})[peer_id] = configuration
         return _FakePeer(_FakeAioPeer(self._last, self._answer), peer_id=peer_id)
 
     async def session(self, session_id: str) -> _FakeSession:
@@ -715,8 +718,14 @@ def test_sync_department_turn_audit_row_carries_snapshotted_ids(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] == "sess-abc"
     assert row["ctx_turn_id"] == "t-xyz"
 
@@ -750,8 +759,14 @@ def test_sync_turn_audit_row_carries_snapshotted_ids(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] == "sess-person"
     assert row["ctx_turn_id"] == "t-person"
 
@@ -781,8 +796,14 @@ def test_append_department_note_audit_row_carries_snapshotted_ids(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] == "sess-note"
     assert row["ctx_turn_id"] == "t-note"
 
@@ -816,7 +837,90 @@ def test_snapshot_is_none_when_called_outside_set_turn(
     asyncio.run(runner())
     peer_rows = [r for r in captured if r["event_type"] == "peer_memory"]
     ok_rows = [r for r in peer_rows if r["details"]["outcome"] == "ok"]
-    assert len(ok_rows) == 1
-    row = ok_rows[0]
+    # A seed_identity row may follow the persist row. Every row a sync emits
+    # must carry the same snapshotted ids, so check they all agree, then
+    # inspect the persist row itself.
+    assert len({(r["ctx_session_id"], r["ctx_turn_id"]) for r in ok_rows}) == 1
+    assert len([r for r in ok_rows if r["details"]["op"] == "seed_identity"]) <= 1
+    sync_rows = [r for r in ok_rows if r["details"]["op"] != "seed_identity"]
+    assert len(sync_rows) == 1
+    row = sync_rows[0]
     assert row["ctx_session_id"] is None
     assert row["ctx_turn_id"] is None
+
+
+# --------------------------------------------------------------------------- #
+# the Executive peer is not observed on the department surfaces either
+# --------------------------------------------------------------------------- #
+
+
+def test_sync_department_turn_resolves_the_executive_peer_unobserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from honcho.api_types import PeerConfig
+
+    _enable(monkeypatch)
+    last: dict[str, Any] = {}
+    fake = _FakeClient(last)
+
+    async def runner() -> None:
+        with _patched_client(fake):
+            honcho_client.sync_department_turn(
+                "what is our burn?", "About $1.2M.", department_slug="finance", session_id="s1"
+            )
+            await asyncio.sleep(0.05)
+
+    asyncio.run(runner())
+    assert last["peer_configs"]["executive"] == PeerConfig(observe_me=False)
+    assert last["peer_configs"]["department_finance"] is None
+
+
+def test_append_department_note_resolves_the_executive_peer_unobserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from honcho.api_types import PeerConfig
+
+    _enable(monkeypatch)
+    last: dict[str, Any] = {}
+    fake = _FakeClient(last)
+
+    async def runner() -> None:
+        with _patched_client(fake):
+            honcho_client.append_department_note(
+                department_slug="finance", kind="decision", body="Hold burn at $1.2M."
+            )
+            await asyncio.sleep(0.05)
+
+    asyncio.run(runner())
+    assert last["peer_configs"]["executive"] == PeerConfig(observe_me=False)
+
+
+def test_prefetch_department_ignores_the_prefetch_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Department memory has no per-turn inline path to protect: it stays a
+    dialectic question at the requested reasoning level."""
+    _enable(monkeypatch)
+    monkeypatch.setenv("HONCHO_PREFETCH_MODE", "representation")
+    last: dict[str, Any] = {}
+    fake = _FakeClient(last, answer="Finance is watching burn.")
+    with _patched_client(fake):
+        result = asyncio.run(
+            honcho_client.prefetch_department("what is finance tracking?", department_slug="finance")
+        )
+    assert result == "Finance is watching burn."
+    assert last["chat"]["reasoning_level"] == "low"
+    assert "context" not in last
+
+
+def test_directional_chat_ignores_the_prefetch_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ask_about_person tool is a deliberate, model-authored question
+    that needs a reasoned answer; it stays on the dialectic."""
+    _enable(monkeypatch)
+    monkeypatch.setenv("HONCHO_PREFETCH_MODE", "representation")
+    last: dict[str, Any] = {}
+    fake = _FakeClient(last, answer="Alice thinks Bob is thorough.")
+    with _patched_client(fake):
+        result = asyncio.run(
+            honcho_client.directional_chat(1, "what does Alice think of Bob?", target_person_id=2)
+        )
+    assert result == "Alice thinks Bob is thorough."
+    assert last["chat"]["reasoning_level"] == "medium" and "context" not in last

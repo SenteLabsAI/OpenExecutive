@@ -138,6 +138,14 @@ def is_live(alert: Alert, now: datetime | None = None) -> bool:
     return alert.status == "unread" and not is_expired(alert, now) and not _is_snoozed(alert, now)
 
 
+# How many live alerts every board-shaped surface takes. `/today` renders this
+# many cards, and `briefing.context` trusts this many ids for `ack_alert` —
+# those two MUST agree, or a card the principal can see and discuss is one the
+# Executive is refused permission to clear. Shared here, with `list_live_alerts`,
+# rather than duplicated as a literal at each call site.
+BOARD_LIMIT = 100
+
+
 def list_live_alerts(
     limit: int = 100,
     db_path: Path | None = None,
@@ -190,12 +198,17 @@ def expire_stale_alerts(
         ]
         if not expired_ids:
             return 0
-        count = len(bulk_set_status(
+        changed = bulk_set_status(
             EXPIRED_STATUS, alert_ids=expired_ids, only_status="unread", db_path=db_path
-        ))
+        )
+        count = len(changed)
     except Exception:
         logger.exception("alerts.lifecycle: expiry sweep failed")
         return 0
+    # An alert nobody acted on before its TTL didn't matter: void the review's
+    # DMs about it rather than leave them counted as ignored.
+    for alert_id in expired_ids:
+        resolve_alert_outreach(_AlertRef(alert_id), EXPIRED_STATUS)
 
     if count:
         try:
@@ -235,6 +248,41 @@ def mute_pattern_for(alert: Alert) -> str | None:
     return tags[0] if tags else None
 
 
+class _AlertRef:
+    """Just enough of an Alert for :func:`resolve_alert_outreach` to void it."""
+
+    def __init__(self, alert_id: int) -> None:
+        self.id: int | None = alert_id
+        self.routed_to_person_id: int | None = None
+
+
+def resolve_alert_outreach(alert: Alert | _AlertRef, status: str) -> None:
+    """Resolve the Attunement outcome rows for review DMs about ``alert``.
+
+    Acknowledged or resolved: the DMs to the person it is routed to (and to
+    the principal, who is escalated to) landed. Dismissed or stale: the alert
+    didn't matter, so those DMs are voided — counted neither way. Never
+    attributes an outcome to anyone else the alert was once DM'd to, and a
+    dismissal can never lower anyone's rate. Never raises."""
+    if alert.id is None:
+        return
+    try:
+        from openexecutive.attunement.outcomes import OUTCOME_ACTED, OUTCOME_VOID, resolve_by_ref
+        from openexecutive.people.store import find_principal_person
+
+        ref = f"alert:{alert.id}"
+        if status in ("ack", "resolved"):
+            owners = {pid for pid in (getattr(alert, "routed_to_person_id", None),) if pid}
+            principal = find_principal_person()
+            if principal is not None and principal.id is not None:
+                owners.add(principal.id)
+            resolve_by_ref(ref, OUTCOME_ACTED, person_ids=owners)
+        elif status in ("dismissed", "stale", "expired"):
+            resolve_by_ref(ref, OUTCOME_VOID)
+    except Exception:
+        logger.debug("resolve_alert_outreach failed", exc_info=True)
+
+
 def record_ack_feedback(alert: Alert, status: str) -> None:
     """Teach the source of an alert from the principal's verdict.
 
@@ -243,6 +291,8 @@ def record_ack_feedback(alert: Alert, status: str) -> None:
     sources have no feedback sink yet. Never raises.
     """
     from openexecutive.briefing.ranking import watch_slug_from_tags
+
+    resolve_alert_outreach(alert, status)
 
     slug = watch_slug_from_tags(list(alert.topic_tags or []))
     if slug is None:

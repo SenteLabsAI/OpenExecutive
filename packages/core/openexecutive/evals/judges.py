@@ -11,6 +11,34 @@ from openexecutive.providers import get_provider
 _JUDGE_MODEL = "claude-opus-4-7"
 
 
+def _peer_memory_section(scenario: dict[str, Any]) -> str:
+    """Judge context for scenarios that inject a ``<peer_memory>`` block.
+
+    Only rendered when the scenario carries ``peer_memory_context`` — every
+    other chat judge prompt stays byte-identical. The block is what the
+    assistant was shown about the asker, so the judge needs it to score
+    "did not re-ask" and "let the current message override an older note";
+    the scenario's true ``quality_criteria`` are listed in the same case.
+    """
+    memory = scenario.get("peer_memory_context")
+    if not memory:
+        return ""
+    # Scenario keys are snake_case identifiers; the judge reads prose.
+    criteria = [k.replace("_", " ") for k, v in (scenario.get("quality_criteria") or {}).items() if v]
+    section = (
+        "\nBACKGROUND THE ASSISTANT WAS GIVEN ABOUT THE ASKER "
+        "(older notes; the question itself is more recent):\n"
+        f"{str(memory).strip()}\n"
+    )
+    if criteria:
+        section += (
+            f"\nAdditional criteria this response must satisfy: {', '.join(criteria)}. "
+            "Check each one. If any is not satisfied, overall must be 2 or lower and "
+            "notes must name the criterion that failed.\n"
+        )
+    return section
+
+
 async def judge_chat(
     scenario: dict[str, Any],
     response: str,
@@ -24,7 +52,7 @@ QUESTION: {scenario['query']}
 RESPONSE: {response}
 
 Expected topics to cover: {', '.join(scenario.get('expected_topics', []))}
-
+{_peer_memory_section(scenario)}
 Rate each dimension (1=poor, 3=acceptable, 5=excellent):
 1. persona_coherence: Does it sound like a senior executive, not a generic AI?
 2. domain_accuracy: Is the advice factually correct and professionally sound?

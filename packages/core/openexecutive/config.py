@@ -130,6 +130,17 @@ class Settings(BaseSettings):
     knowledge_distance_threshold: float = Field(
         0.55, alias="KNOWLEDGE_DISTANCE_THRESHOLD"
     )
+    # Optional tighter gate for the BUILTIN collection only. Built-in
+    # knowledge is generic MBA material and an order of magnitude larger than
+    # a typical company corpus, so the distance that admits the right company
+    # doc also admits a lot of unrelated handbook prose. Unset (None) keeps
+    # the single shared threshold, which is the historical behaviour.
+    # Cosine distance is in [0, 2]; a negative value would silently disable
+    # builtin retrieval entirely and read as "the knowledge base stopped
+    # helping" rather than as a config error.
+    knowledge_builtin_distance_threshold: float | None = Field(
+        None, ge=0.0, le=2.0, alias="KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD"
+    )
     knowledge_builtin_n_results: int = Field(5, alias="KNOWLEDGE_BUILTIN_N_RESULTS")
     knowledge_company_n_results: int = Field(3, alias="KNOWLEDGE_COMPANY_N_RESULTS")
 
@@ -304,10 +315,11 @@ class Settings(BaseSettings):
 
     # ---- Honcho memory provider ----------------------------------------
     # External per-person memory layer (https://honcho.dev). When enabled,
-    # the Executive queries Honcho for a `<peer_memory>` block keyed off the
-    # inbound user's Person.id (so Slack-Alice and Discord-Alice share one
-    # peer card) and syncs each completed turn back to Honcho. Default OFF
-    # so a fresh checkout's behavior is unchanged.
+    # the Executive fetches a `<peer_memory>` block keyed off the inbound
+    # user's Person.id (so Slack-Alice and Discord-Alice share one peer
+    # card) — by default from the peer's derived representation, see
+    # HONCHO_PREFETCH_MODE — and syncs each completed turn back to Honcho.
+    # Default OFF so a fresh checkout's behavior is unchanged.
     honcho_enabled: bool = Field(False, alias="HONCHO_ENABLED")
     honcho_api_key: str | None = Field(None, alias="HONCHO_API_KEY")
     # Self-hosted Honcho lives at whatever URL the operator deploys it to.
@@ -319,6 +331,20 @@ class Settings(BaseSettings):
     # turn. 3s is generous for a local-network self-host; on timeout we
     # silently degrade to no peer_memory block and continue.
     honcho_prefetch_timeout_s: float = Field(3.0, alias="HONCHO_PREFETCH_TIMEOUT_S")
+    # How the per-turn prefetch reads the person's memory. ``representation``
+    # reads the derived representation + peer card relevant to the inbound
+    # message: a GET with no LLM behind it (~100 ms). ``dialectic`` asks
+    # Honcho a reasoned question instead: an LLM call, seconds. Applies to
+    # every per-person prefetch, committee turns included; department
+    # prefetches and the ask_about_person tool always use the dialectic call.
+    honcho_prefetch_mode: Literal["representation", "dialectic"] = Field(
+        "representation", alias="HONCHO_PREFETCH_MODE"
+    )
+    # Conclusions retrieved per turn in representation mode (Honcho accepts
+    # 1..100). The rendered block is additionally capped by size.
+    honcho_prefetch_max_conclusions: int = Field(
+        20, alias="HONCHO_PREFETCH_MAX_CONCLUSIONS", ge=1, le=100
+    )
 
     @model_validator(mode="after")
     def _validate_honcho(self) -> "Settings":
@@ -335,12 +361,24 @@ class Settings(BaseSettings):
         # because hosted Honcho doesn't need an operator-set URL.
         return self
 
-    chat_stream_timeout_s: float = Field(120.0, alias="CHAT_STREAM_TIMEOUT_S")
+    # Whole-turn wall-clock ceiling for a streaming chat turn. Raised from 120s
+    # because deep multi-specialist turns were being cut off mid-answer. A
+    # ceiling this high is only tolerable because the user can end a turn
+    # themselves — see POST /chat/stop in api/routes/chat.py.
+    chat_stream_timeout_s: float = Field(300.0, alias="CHAT_STREAM_TIMEOUT_S")
 
     # Extra wall-clock allowance added to chat_stream_timeout_s when a request
-    # opts in to Committee review. Committee adds three reviewer calls + one
-    # full-pass revision on top of the draft, typically 5–12s.
+    # opts in to Committee review (so 360s in total at the defaults). Committee
+    # adds three reviewer calls + one full-pass revision on top of the draft,
+    # typically 5–12s.
     committee_extra_timeout_s: float = Field(60.0, alias="COMMITTEE_EXTRA_TIMEOUT_S")
+
+    # Per-call ceiling for the onboarding interview. It used to borrow
+    # chat_stream_timeout_s, which meant raising that to 300s would have let the
+    # wizard's 2-attempt retry loop hang for up to 600s before surfacing
+    # InterviewTimeout. Split out at its own former effective value so the
+    # wizard's behaviour is unchanged.
+    interview_timeout_s: float = Field(120.0, alias="INTERVIEW_TIMEOUT_S")
 
     # Reasoning effort for deep-reasoning specialists (adaptive thinking +
     # `output_config.effort`; translated to OpenRouter `reasoning.effort` on
@@ -463,8 +501,25 @@ class Settings(BaseSettings):
     )
     google_chat_project_number: str | None = Field(None, alias="GOOGLE_CHAT_PROJECT_NUMBER")
 
+    # ---- Tool results ----
+    # Upper bound on a single tool result's characters before it enters the
+    # prompt. A circuit breaker against an unbounded result (a large document
+    # fetch) dominating a turn and then being re-sent on every remaining
+    # iteration of the tool loop — deliberately set high enough that ordinary
+    # tool output never reaches it. Applies to every tool, not just MCP.
+    tool_result_max_chars: int = Field(
+        50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
+    )
+
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"
+    )
+    # Directories a workflow action step's `oe__read_file` tool may read —
+    # where tools that download files (e.g. Gmail attachments via
+    # workspace-mcp) save them. Comma-separated. Empty means workspace-mcp's
+    # own default: $WORKSPACE_ATTACHMENT_DIR, else ~/.workspace-mcp/attachments.
+    workflow_file_dirs: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="WORKFLOW_FILE_DIRS"
     )
     # Left unset, this is inferred from the presence of mcp_servers_config_path
     # (see _resolve_mcp). Set explicitly, the explicit value always wins.
@@ -555,7 +610,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "web_search_allowed_domains", "web_search_blocked_domains",
-        "research_specialists", mode="before",
+        "research_specialists", "workflow_file_dirs", mode="before",
     )
     @classmethod
     def _parse_domain_list(cls, v: Any) -> list[str]:
@@ -681,6 +736,44 @@ class Settings(BaseSettings):
     # Stop re-chasing the same item forever: after this many delivered nudges
     # for one scope_key, the scan stops emitting for it. 0 disables the cap.
     nudge_max_per_scope: int = Field(3, alias="NUDGE_MAX_PER_SCOPE")
+
+    # Attunement — per-person open loops. A teammate's "I'll send the quote by
+    # Thursday" (or the principal's "Sara will send it Monday") becomes an open
+    # loop the nudge engine's commitment source chases once it is due, and a
+    # later "sent it" from the same person closes it. Rows live in
+    # scheduled_actions (kind="open_loop"); see attunement/open_loops.py.
+    attunement_enabled: bool = Field(True, alias="ATTUNEMENT_ENABLED")
+    attunement_open_loops_enabled: bool = Field(True, alias="ATTUNEMENT_OPEN_LOOPS_ENABLED")
+    # When no due date is stated, the loop is due this many days after it opens.
+    attunement_loop_default_due_days: int = Field(2, alias="ATTUNEMENT_LOOP_DEFAULT_DUE_DAYS")
+    # Open loops older than this are closed as expired so a forgotten promise
+    # cannot sit in /today (and the nudge queue) forever.
+    attunement_loop_ttl_days: int = Field(21, alias="ATTUNEMENT_LOOP_TTL_DAYS")
+    attunement_max_open_loops_per_person: int = Field(
+        15, alias="ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON"
+    )
+    # Ceiling on open-loop extraction model calls per UTC day, across everyone.
+    attunement_max_calls_per_day: int = Field(200, alias="ATTUNEMENT_MAX_CALLS_PER_DAY")
+    # Outcome ledger: a proactive DM with no reply / action after this long is
+    # counted as ignored.
+    attunement_ignore_after_hours: int = Field(72, alias="ATTUNEMENT_IGNORE_AFTER_HOURS")
+    # A person whose last ATTUNEMENT_MUTE_MIN_SENDS resolved sends from one
+    # nudge source all went unanswered is chased less for that source: ranked
+    # last and on a longer cooldown. A single answer lifts it.
+    attunement_mute_min_sends: int = Field(5, alias="ATTUNEMENT_MUTE_MIN_SENDS")
+    attunement_mute_cooldown_multiplier: int = Field(
+        3, alias="ATTUNEMENT_MUTE_COOLDOWN_MULTIPLIER"
+    )
+    # Working style: a few short "how they like replies" rules per person,
+    # learned from their own reactions and requests (attunement/style.py).
+    # A pass runs after this many new messages from the person (or right
+    # after a thumbs-down), at most once per interval and N times a day.
+    attunement_style_enabled: bool = Field(True, alias="ATTUNEMENT_STYLE_ENABLED")
+    attunement_style_trigger_turns: int = Field(10, alias="ATTUNEMENT_STYLE_TRIGGER_TURNS")
+    attunement_style_min_interval_hours: int = Field(
+        2, alias="ATTUNEMENT_STYLE_MIN_INTERVAL_HOURS"
+    )
+    attunement_style_max_per_day: int = Field(4, alias="ATTUNEMENT_STYLE_MAX_PER_DAY")
 
     # External-condition monitoring — heartbeat that polls source adapters
     # (vendor_status in PR-A; RSS + stock in PR-B) and emits external_signals

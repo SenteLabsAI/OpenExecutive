@@ -105,3 +105,50 @@ def test_identity_addendum_reinforced_in_inbound_email_section() -> None:
     # The "Handling Inbound Emails" guidance must remind the model to sign
     # as itself, not as the original sender or any roster person.
     assert "Be signed as yourself" in persona_text
+
+
+def test_persona_has_single_authoritative_length_rule() -> None:
+    """Exactly one length rule may exist, and it must be the ladder.
+
+    The persona previously carried "Keep responses under 500 words" mid-prompt
+    and "Short questions get short answers - one or two sentences" as its final
+    line. Two ceilings ~250x apart let the model pick, and it picked the looser
+    one. Both competing rules must stay gone: asserting only that the ladder is
+    present would not catch either being reinstated alongside it.
+    """
+    assert "## Length" in EXECUTIVE_PERSONA_PROMPT
+    for superseded in ("Keep responses under 500 words", "Short questions get short answers"):
+        assert superseded not in EXECUTIVE_PERSONA_PROMPT, (
+            f"superseded length rule reinstated alongside the ladder: {superseded!r}"
+        )
+    # The ladder's rungs, lowest first.
+    for rung in ("one sentence", "one or two sentences", "under 80 words", "under 200 words"):
+        assert rung in EXECUTIVE_PERSONA_PROMPT, f"missing length rung: {rung}"
+
+
+def test_persona_forbids_closing_offers() -> None:
+    """Guards the no-closing-offer instruction against silent deletion.
+
+    This asserts the instruction is present, not that the model obeys it --
+    a unit test cannot verify the latter without a model call. Behavioral
+    coverage lives in the eval suite's `concision` dimension.
+    """
+    assert "Do not close with an offer." in EXECUTIVE_PERSONA_PROMPT
+
+
+def test_persona_brevity_never_suppresses_a_hedge() -> None:
+    """Guards the hedge carve-out against silent deletion.
+
+    Presence check only, for the same reason as above -- the ladder must never
+    be trimmed without this clause surviving alongside it.
+    """
+    assert "Brevity never costs a hedge." in EXECUTIVE_PERSONA_PROMPT
+
+
+def test_persona_follow_up_loop_is_bounded() -> None:
+    """Guards both follow-up stopping rules against silent deletion.
+
+    Presence check only; see the note on the closing-offer test above.
+    """
+    assert "A correction is not a deflection." in EXECUTIVE_PERSONA_PROMPT
+    assert 'An explicit "drop it" ends it.' in EXECUTIVE_PERSONA_PROMPT

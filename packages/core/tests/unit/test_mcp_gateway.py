@@ -184,6 +184,23 @@ def test_gateway_forwards_ms365_env(
     assert "MS365_MCP_TENANT_ID" not in env
 
 
+def test_gateway_launches_the_pinned_extensible_mcp(tmp_path: Path) -> None:
+    """start() must use the shared launch args, so the pin and cutoff the Dockerfile
+    pre-warms are what actually runs."""
+    from openexecutive.orchestrator.mcp_gateway import _EXTENSIBLE_MCP_LAUNCH_ARGS
+
+    session = _make_mock_session()
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    with _FakeMcpModules(session, _make_mock_stdio_cm()):
+        asyncio.run(MCPGateway().start(config))
+        params_cls = sys.modules["mcp"].StdioServerParameters
+        kwargs = params_cls.call_args.kwargs
+
+    assert kwargs["command"] == "uvx"
+    assert kwargs["args"] == [*_EXTENSIBLE_MCP_LAUNCH_ARGS, "--config", str(config)]
+
 def test_gateway_env_none_when_no_cache_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

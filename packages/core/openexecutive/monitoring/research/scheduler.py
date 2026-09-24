@@ -47,6 +47,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from openexecutive.workflows.gate import ensure_workflow_event
+
 logger = logging.getLogger(__name__)
 
 # Heartbeat identity. Mirrors the constants in monitoring.pipeline and
@@ -494,6 +496,7 @@ async def run_watchlist_research_scan(
             async for event in workflow.run(
                 inputs=wf_inputs, store=effective_store,
             ):
+                event = ensure_workflow_event(event, site='research.scheduler')
                 if event.type == "result" and event.data:
                     raw_findings = event.data.get("findings")
                     if isinstance(raw_findings, list):

@@ -61,7 +61,12 @@ def audit_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict]]
 def dms(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str]]:
     sent: list[tuple[int, str]] = []
 
-    async def fake_dm(person_id: int, text: str, *, headline: str = "") -> tuple[bool, str]:
+    async def fake_dm(
+        person_id: int, text: str, *, headline: str = "", alert_id: int | None = None
+    ) -> tuple[bool, str]:
+        # Every review DM must say which alert it is about, so acking or
+        # dismissing that alert can resolve it in the outcome ledger.
+        assert alert_id is not None
         sent.append((person_id, text))
         return True, "sent"
 
@@ -412,7 +417,7 @@ def test_draft_calls_draft_artifact_and_marks_source(db: Path, audit_events, mon
 
     async def fake_draft(tool_input: dict) -> str:
         drafted.append(tool_input)
-        return '{"status": "drafted"}'
+        return '{"ok": true, "artifact_id": "alert:999"}'
 
     import openexecutive.orchestrator.artifact_tools as artifact_tools
 
@@ -429,6 +434,22 @@ def test_draft_calls_draft_artifact_and_marks_source(db: Path, audit_events, mon
     assert row is not None and row.review_verdict == "drafted" and row.status == "unread"
     assert summary.drafted == 1 and summary.moves_used == 1
     assert any(e[0] == review.EVENT_DRAFTED for e in audit_events)
+
+
+def test_rejected_draft_is_not_labelled_drafted(db: Path, audit_events, monkeypatch) -> None:
+    async def fake_draft(tool_input: dict) -> str:
+        return '{"error": "document is 60001 chars; the limit is 60000"}'
+
+    import openexecutive.orchestrator.artifact_tools as artifact_tools
+
+    monkeypatch.setattr(artifact_tools, "handle_draft_artifact", fake_draft)
+    aid = _insert(db, "Write the Q3 pricing memo")
+    summary = review.ReviewSummary()
+    label = _apply(db, aid, _verdict(aid, recommended_move="draft", draft_title="Memo",
+                                     draft_document="x"), summary=summary)
+    assert label != "drafted"
+    assert summary.drafted == 0
+    assert not any(e[0] == review.EVENT_DRAFTED for e in audit_events)
 
 
 def test_suggest_workflow_only_from_offered_list_and_never_runs(db: Path, audit_events) -> None:
@@ -822,7 +843,7 @@ def test_draft_is_idempotent_across_passes(db: Path, monkeypatch) -> None:
 
     async def fake_draft(tool_input: dict) -> str:
         drafted.append(tool_input)
-        return '{"status": "drafted"}'
+        return '{"ok": true, "artifact_id": "alert:999"}'
 
     import openexecutive.orchestrator.artifact_tools as artifact_tools
 
@@ -839,7 +860,9 @@ def test_draft_is_idempotent_across_passes(db: Path, monkeypatch) -> None:
 def test_failed_escalation_dm_is_not_counted_and_is_retried(db: Path, audit_events, monkeypatch) -> None:
     attempts: list[int] = []
 
-    async def flaky_dm(person_id: int, text: str, *, headline: str = "") -> tuple[bool, str]:
+    async def flaky_dm(
+        person_id: int, text: str, *, headline: str = "", alert_id: int | None = None
+    ) -> tuple[bool, str]:
         attempts.append(person_id)
         return (len(attempts) > 1), "ok" if len(attempts) > 1 else "no channel"
 

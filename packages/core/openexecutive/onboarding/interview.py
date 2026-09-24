@@ -467,13 +467,14 @@ def _extract_tool_call(response: Any) -> tuple[str, dict[str, Any]]:
     raise InterviewError("The setup assistant did not return a usable response.")
 
 
-def _build_messages(
-    transcript: list[Turn], existing_profile: CompanyProfile | None
+def replay_transcript(
+    transcript: list[Turn], continue_prompt: str
 ) -> list[dict[str, Any]]:
-    """Replay the transcript as plain text turns.
+    """Replay stored turns as alternating plain-text Messages API turns.
 
-    An existing profile is prepended to the FIRST user turn, never put in the
-    cached system block (see module docstring).
+    Shared by every interview-style loop (this one and
+    ``workflows/designer.py``). Returns an empty list when nothing is left to
+    send; the caller decides what that means.
     """
     # Coalesce consecutive same-role turns. The Anthropic API rejects a
     # non-alternating sequence, and two user turns in a row are reachable in
@@ -487,15 +488,27 @@ def _build_messages(
             messages[-1]["content"] = f"{messages[-1]['content']}\n\n{t.text}"
             continue
         messages.append({"role": t.role, "content": t.text})
-    if not messages:
-        raise InterviewError("The setup session has no conversation yet.")
     # A draft records itself as an assistant turn, so the transcript can end on
     # one — e.g. "ask me more questions" then "draft again" without typing.
     # Sending that as a trailing assistant message is a prefill, which the API
     # rejects alongside a forced tool_choice, and semantically asks the model to
     # continue its own summary rather than act.
-    if messages[-1]["role"] == "assistant":
-        messages.append({"role": "user", "content": _CONTINUE_PROMPT})
+    if messages and messages[-1]["role"] == "assistant":
+        messages.append({"role": "user", "content": continue_prompt})
+    return messages
+
+
+def _build_messages(
+    transcript: list[Turn], existing_profile: CompanyProfile | None
+) -> list[dict[str, Any]]:
+    """Replay the transcript as plain text turns.
+
+    An existing profile is prepended to the FIRST user turn, never put in the
+    cached system block (see module docstring).
+    """
+    messages = replay_transcript(transcript, _CONTINUE_PROMPT)
+    if not messages:
+        raise InterviewError("The setup session has no conversation yet.")
     if existing_profile is not None and not existing_profile.is_empty():
         block = existing_profile.to_prompt_block()
         if block:
@@ -569,7 +582,7 @@ async def advance(
     for attempt in range(2):
         try:
             response = await asyncio.wait_for(
-                _call(), timeout=settings.chat_stream_timeout_s
+                _call(), timeout=settings.interview_timeout_s
             )
         except TimeoutError as exc:  # asyncio.TimeoutError is an alias since 3.11
             raise InterviewTimeout(

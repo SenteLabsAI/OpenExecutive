@@ -86,21 +86,43 @@ def test_get_missing_returns_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_update_builtin_returns_403(client: TestClient) -> None:
+def test_update_builtin_saves_customization_and_delete_reverts(client: TestClient) -> None:
     payload = {
         "name": "competitive-teardown",
         "category": "strategy",
-        "description": "changed",
+        "description": "our teardown",
         "when_to_use": "changed",
-        "body": "changed",
+        "body": "ours",
     }
     resp = client.put("/skills/competitive-teardown", json=payload)
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["source"], resp.json()["customized"]) == ("company", True)
 
+    listed = [s for s in client.get("/skills").json()["skills"] if s["name"] == payload["name"]]
+    assert len(listed) == 1 and listed[0]["customized"] is True
 
-def test_delete_builtin_returns_403(client: TestClient) -> None:
     resp = client.delete("/skills/competitive-teardown")
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert resp.json() == {"name": "competitive-teardown", "outcome": "reverted"}
+    assert client.get("/skills/competitive-teardown").json()["source"] == "builtin"
+
+
+def test_delete_builtin_hides_and_restore_unhides(client: TestClient) -> None:
+    resp = client.delete("/skills/competitive-teardown")
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "hidden"
+
+    names = {s["name"] for s in client.get("/skills").json()["skills"]}
+    assert "competitive-teardown" not in names
+    with_hidden = client.get("/skills", params={"include_hidden": True}).json()["skills"]
+    assert any(s["name"] == "competitive-teardown" and s["hidden"] for s in with_hidden)
+    detail = client.get("/skills/competitive-teardown")
+    assert detail.status_code == 200 and detail.json()["hidden"] is True
+
+    resp = client.post("/skills/competitive-teardown/restore")
+    assert resp.status_code == 200
+    assert resp.json()["hidden"] is False
+    assert client.post("/skills/competitive-teardown/restore").status_code == 404
 
 
 def test_update_company_skill(client: TestClient) -> None:
@@ -129,7 +151,7 @@ def test_delete_company_skill(client: TestClient) -> None:
     }
     assert client.post("/skills", json=payload).status_code == 201
     resp = client.delete("/skills/throwaway")
-    assert resp.status_code == 204
+    assert resp.status_code == 200
     assert client.get("/skills/throwaway").status_code == 404
 
 
@@ -156,3 +178,26 @@ def test_put_body_name_mismatch_400(client: TestClient) -> None:
         json={**create_payload, "name": "different"},
     )
     assert resp.status_code == 400
+
+
+def test_list_and_detail_report_workflows_that_follow_a_playbook(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows.playbooks import PlaybookUser
+
+    monkeypatch.setattr(
+        skills_route,
+        "playbook_users",
+        lambda: {
+            "competitive-teardown": [
+                PlaybookUser(name="competitive_teardown", title="Competitive teardown")
+            ]
+        },
+    )
+    expected = [
+        {"name": "competitive_teardown", "title": "Competitive teardown", "is_custom": False}
+    ]
+    listed = {s["name"]: s for s in client.get("/skills").json()["skills"]}
+    assert listed["competitive-teardown"]["used_by"] == expected
+    detail = client.get("/skills/competitive-teardown").json()
+    assert detail["used_by"] == expected

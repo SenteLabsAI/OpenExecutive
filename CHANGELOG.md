@@ -5,7 +5,112 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+From 0.3.0 on, entries are written by release-please from the titles of the
+merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
+the next entry; edit it there before merging if a line needs rewording.
+
+## [0.3.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.1...v0.3.2) (2026-09-23)
+
+
+### Added
+
+* **ui:** add an assistant-led workflow wizard and compact the jobs catalog ([#189](https://github.com/SenteLabsAI/OpenExecutive/issues/189)) ([c52b96c](https://github.com/SenteLabsAI/OpenExecutive/commit/c52b96c551143246e15fc938806f9fe9b6975de9))
+
+
+### Fixed
+
+* **ui:** validate check-in cadences and clear emptied leave dates ([#191](https://github.com/SenteLabsAI/OpenExecutive/issues/191)) ([5940557](https://github.com/SenteLabsAI/OpenExecutive/commit/594055792c346622fb174d65164c67cc77e346bd))
+
+## [0.3.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.0...v0.3.1) (2026-09-23)
+
+
+### Added
+
+* **chat:** suggest a follow-up in the composer ([#182](https://github.com/SenteLabsAI/OpenExecutive/issues/182)) ([7f7c1c1](https://github.com/SenteLabsAI/OpenExecutive/commit/7f7c1c1e2304c7333f83282fdcfb544f54fb47f0))
+* **ui:** group council model picker by provider ([#186](https://github.com/SenteLabsAI/OpenExecutive/issues/186)) ([8b3fb2f](https://github.com/SenteLabsAI/OpenExecutive/commit/8b3fb2fdf531eab1687443b99aa7f439c5dfd16f))
+
+
+### Fixed
+
+* **memory:** quote extraction and open loops from the speaker's own words ([#187](https://github.com/SenteLabsAI/OpenExecutive/issues/187)) ([100f7d9](https://github.com/SenteLabsAI/OpenExecutive/commit/100f7d9ba07de8ce06a8a0434815f173a39271ee))
+* **memory:** record only the person's own words in peer memory ([#185](https://github.com/SenteLabsAI/OpenExecutive/issues/185)) ([c32cf49](https://github.com/SenteLabsAI/OpenExecutive/commit/c32cf49c43137d20b325a29e2f576e1cda6e7fa9))
+
+## [0.3.0] - 2026-09-23
+
+### Added
+- **Attunement: the Executive follows up on what people owe** (#175). When
+  anyone on the roster commits to something in chat ("I'll send the vendor
+  quote Thursday"), asks for something, or the principal says a teammate will
+  do something, it becomes an open loop. Loops come due, get chased by the
+  nudge engine through the usual routing and outbound checks, and close when
+  their owner says it's done. The Executive can list them ("what is Sara
+  waiting on?") and close one on request. Each person's page lists their open
+  loops with Mark done. Every chat message now records who actually sent it,
+  so nothing an outsider writes is read as someone on the roster.
+- **👍/👎 on replies** (#175), in the main chat and the Ask OE panel.
+- **Attunement: learning which proactive messages land** (#176). Every
+  proactive DM (nudges, follow-ups, reflection, research and alert-review
+  messages) is resolved as replied, acted on, ignored after 72 hours, or void
+  when it stopped mattering. Credit only goes to the person who acted. A kind
+  of nudge a person's last five resolved sends all went unanswered on ranks
+  last for them on a longer cooldown until they answer one. The morning
+  reflection gets a "What lands" summary, and each person's page a "How they
+  respond" card.
+- **Attunement: per-person working style** (#177). Up to four short rules on
+  how to write replies for each person ("lead with the recommendation, then
+  the numbers"), learned only from their own messages and 👍/👎 and pinned
+  into their own conversations. Rules are checked before they are stored and
+  every time they are used, and must be about how replies read, never an
+  action. A "How I work with them" card lets the principal or the person
+  edit, lock or reset them.
+- New settings, all with defaults: `ATTUNEMENT_*` in `.env.example`.
+  `ATTUNEMENT_ENABLED=false` turns off open-loop tracking and style learning;
+  the outcome ledger has no switch and always records. None of it needs
+  Honcho.
+
+## [0.2.2] - 2026-09-22
+
+### Changed
+- **The MCP gateway runs a pinned extensible-mcp commit.** It was launched from
+  the repo's default branch, so every container start ran whatever that
+  branch held that day: a versioned image did not pin its gateway, rolling
+  back an image did not roll the gateway back, and a start without network
+  failed. The gateway and the image's pre-warm now launch the same commit
+  with the same `--exclude-newer` cutoff, which also freezes extensible-mcp's
+  own dependencies (uvx re-resolved those against PyPI on every start), and a
+  unit test keeps the two in step. An image whose pre-warm succeeded now
+  starts the gateway without network; the pre-warm is still best-effort, so
+  a build during a GitHub outage ships an image that fetches it at first
+  start. Updating the gateway is a deliberate bump of the commit and cutoff.
+
+### Fixed
+- **The compose health check no longer fails on a healthy API.** It runs
+  `curl -f http://localhost:8000/health` inside the API container, but the
+  image never installed `curl`, so the check failed on every run and compose
+  reported a working API as unhealthy. The API image now includes `curl`.
+- **The People tab shows the newest notes about a person** (#174). Its
+  "recent" list and "learned" date asked Honcho for conclusions with
+  `reverse=True`, which returns the oldest page, so a person's correction
+  made in chat never appeared there. It now reads the newest page.
+
+## [0.2.1] - 2026-09-22
+
+### Changed
+- **The API image installs the CPU-only build of torch.** torch is only
+  present because `sentence-transformers` needs it, and the container runs on
+  CPU hosts, but the default Linux wheel is the CUDA build and pulled in
+  nineteen packages the image never used — fifteen `nvidia-*` libraries,
+  three `cuda-*` shims and triton, about 2.2 GB of compressed wheels. torch
+  now resolves from PyTorch's CPU index (2.13.0 → 2.14.0+cpu on Linux, plain
+  2.14.0 on macOS, both from that index) and the Dockerfile installs from the
+  lock with `uv sync` instead of an exported requirements file, so each
+  package comes from the index the lock names. Expect the API image to shrink
+  by several GB and cold builds and pulls to get much faster. `uv sync` gets
+  the same wheels locally; a GPU deployment would need to override the index,
+  and a plain `pip install` of the package (which ignores uv sources) still
+  gets the CUDA build.
+
+## [0.2.0] - 2026-09-22
 
 ### Security
 - **The sign-in allow-list is now the union of `ALLOWED_EMAILS` and the People
@@ -53,7 +158,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `app_migrations` table); the sweep can be deleted in the release after
   next.
 
+### Changed
+- **The chat turn ceiling is now 300s (360s with Committee review)**, up from
+  120s/180s: deep multi-specialist turns were being cut off mid-answer. A
+  ceiling this generous is only reasonable because a turn can now be ended by
+  the user, so the two changes ship together. The onboarding interview, which
+  previously borrowed `CHAT_STREAM_TIMEOUT_S`, gets its own
+  `INTERVIEW_TIMEOUT_S` (still 120s) — it retries twice, so inheriting the new
+  ceiling would have meant a 10-minute hang before the wizard surfaced a
+  timeout.
+
+### Fixed
+- **A turn broken off early is no longer missing from the next turn's
+  context.** On the disconnect and timeout paths the route persisted the
+  partial turn to SQLite, but the Executive's post-turn block — which mirrors
+  it into the live in-memory session — was skipped, and a cached session never
+  re-reads its history from the DB. The next turn in the same process then
+  prompted as though the turn had never happened, while a page reload showed
+  it. The route now mirrors the turn itself on every broken-out path.
+- **The UI proxy now forwards client disconnects upstream.** `signal:
+  req.signal` was missing from the backend proxy's `fetch`, so the API never
+  saw `http.disconnect` and its `request.is_disconnected()` check could not
+  fire in production: closing a tab left the turn running to completion against
+  Anthropic and the partial reply was never saved.
+- **A disconnected turn no longer keeps working after the client is gone.**
+  The SSE driver races the stop switch with `asyncio.wait`, which — unlike the
+  `asyncio.wait_for` it replaced — does not cancel its futures when the task
+  awaiting it is cancelled. Since Starlette cancels the response body on
+  `http.disconnect`, the in-flight step is now cancelled in a `finally`, so a
+  closed tab cannot leave a specialist or tool round running with no deadline
+  and no persistence.
+
 ### Added
+- **Versioned container images on GitHub Container Registry** (#142). Every
+  push to `main` publishes `ghcr.io/sentelabsai/openexecutive-api:main` and
+  `…/openexecutive-ui:main`; pushing a `vX.Y.Z` git tag publishes `X.Y.Z`,
+  `X.Y` and `latest`. Deployments can pull a pinned version instead of
+  building from source. See `docs/deployment.md` → Images.
+- **Stop button in chat.** A reply can now be halted mid-stream, from the main
+  chat composer and the Ask OE side panel (Escape works too). Whatever the
+  Executive had written is kept, persisted and marked *Stopped by you*, so a
+  truncated answer is not read back as a complete one after a reload. The
+  client mints a `client_turn_id` and sends it with the turn; `POST /chat/stop`
+  halts it. Keying on a client-minted id is what makes the button live from the
+  moment Send is pressed — the server spends several seconds fetching context
+  before the response stream exists, and a stop inside that window costs
+  nothing because no model call has been made yet. An unknown id and another
+  caller's turn both return 404, so the endpoint cannot be used to probe which
+  turns are live.
 - **Conversational onboarding.** `/onboard` now opens with "tell me about your
   company" instead of a 12-step form. The user writes a paragraph (and can
   attach a deck, one-pager or brief), the new `onboarding_interviewer` agent
@@ -318,5 +470,8 @@ Initial public release.
 - Open-source project setup: Apache-2.0 license, contribution guide, code of
   conduct, security policy, issue/PR templates, and CI.
 
-[Unreleased]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.1.0...HEAD
+[0.3.0]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/SenteLabsAI/OpenExecutive/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SenteLabsAI/OpenExecutive/releases/tag/v0.1.0

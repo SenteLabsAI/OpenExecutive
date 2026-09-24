@@ -51,18 +51,59 @@ def save_message(
     content: str | list[dict[str, Any]],
     db_path: Path = DB_PATH,
     action_chips: str | None = None,
-) -> None:
-    """Persist one chat message. ``action_chips`` is a JSON-encoded list of the
-    assistant turn's action-chip dicts (or None), so reopening a saved session
-    restores the ✓ tool-action pills instead of bare prose."""
+    stopped: bool = False,
+    sender_person_id: int | None = None,
+) -> int:
+    """Persist one chat message and return its row id. ``action_chips`` is a
+    JSON-encoded list of the assistant turn's action-chip dicts (or None), so
+    reopening a saved session restores the ✓ tool-action pills instead of bare
+    prose. ``stopped`` marks an assistant message the user halted mid-stream,
+    so the reply is not read back as a complete one. ``sender_person_id`` is
+    the rostered Person who actually wrote a user message — pass the resolved
+    sender, never the session owner's principal fallback, so per-person
+    learning never reads an outsider's words as someone on the roster."""
     text = content if isinstance(content, str) else str(content)
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path) as conn:
-        conn.execute(
-            "INSERT INTO chat_messages (session_id, role, content, created_at, action_chips) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, text, now, action_chips),
+        cur = conn.execute(
+            "INSERT INTO chat_messages "
+            "(session_id, role, content, created_at, action_chips, stopped, sender_person_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, role, text, now, action_chips, 1 if stopped else 0, sender_person_id),
         )
+        return int(cur.lastrowid or 0)
+
+
+FEEDBACK_VALUES = frozenset({"up", "down"})
+_FEEDBACK_NOTE_MAX = 500
+
+
+def set_message_feedback(
+    session_id: str,
+    message_id: int,
+    feedback: str | None,
+    note: str | None = None,
+    db_path: Path = DB_PATH,
+    by_person_id: int | None = None,
+) -> bool:
+    """Record 👍/👎 (or clear it with ``None``) on one assistant message.
+
+    Scoped by ``session_id`` as well as the id so a caller cannot rate a
+    message in a session it does not own by guessing ids. Returns False when
+    no assistant message matched. ``by_person_id`` is who left it (the
+    resolved caller), so per-person learning reads only a person's own
+    reactions."""
+    if feedback is not None and feedback not in FEEDBACK_VALUES:
+        raise ValueError(f"feedback must be one of {sorted(FEEDBACK_VALUES)} or None")
+    clean_note = (note or "").strip()[:_FEEDBACK_NOTE_MAX] or None
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE chat_messages SET feedback = ?, feedback_note = ?, feedback_by_person_id = ? "
+            "WHERE id = ? AND session_id = ? AND role = 'assistant'",
+            (feedback, clean_note if feedback is not None else None,
+             by_person_id if feedback is not None else None, message_id, session_id),
+        )
+        return cur.rowcount > 0
 
 
 def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
@@ -70,13 +111,20 @@ def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, An
         return []
     with _get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT role, content, action_chips FROM chat_messages "
+            "SELECT id, role, content, action_chips, stopped, feedback FROM chat_messages "
             "WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
     out: list[dict[str, Any]] = []
     for row in rows:
         msg: dict[str, Any] = {"role": row["role"], "content": row["content"]}
+        # The row id lets the UI attach 👍/👎 to a reloaded reply. Only on
+        # assistant rows, alongside `feedback`, for the same reason as
+        # `actions` below: untouched user rows keep their exact shape.
+        if row["role"] == "assistant":
+            msg["id"] = row["id"]
+            if row["feedback"]:
+                msg["feedback"] = row["feedback"]
         raw = row["action_chips"]
         if raw:
             try:
@@ -85,6 +133,13 @@ def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, An
                 chips = None
             if chips:
                 msg["actions"] = chips
+        # Attached only when true, like `actions` above, so untouched rows keep
+        # the exact dict shape every existing consumer expects. Safe to ride
+        # along into `Session.conversation_history`: the Executive rebuilds each
+        # history turn as {"role", "content"}, so extra keys never reach the
+        # Anthropic payload.
+        if row["stopped"]:
+            msg["stopped"] = True
         out.append(msg)
     return out
 
@@ -97,7 +152,8 @@ def list_sessions(
 
     Legacy rows with caller_person_id IS NULL (created before this column
     existed) are excluded — the comparison `NULL = ?` never matches in
-    SQLite. They remain reachable by direct session_id URL.
+    SQLite. Only the principal can still open them by id (see
+    `api.routes.chat._session_access`).
     """
     if not db_path.exists():
         return []
@@ -142,3 +198,17 @@ def get_session_metadata(session_id: str, db_path: Path = DB_PATH) -> dict[str, 
             (session_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_session_owner(session_id: str, db_path: Path = DB_PATH) -> tuple[bool, int | None]:
+    """``(exists, caller_person_id)`` for one session."""
+    if not db_path.exists():
+        return False, None
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT caller_person_id FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    if row is None:
+        return False, None
+    owner = row["caller_person_id"]
+    return True, (int(owner) if owner is not None else None)

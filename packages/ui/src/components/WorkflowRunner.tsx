@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   WorkflowEvent,
   WorkflowMeta,
@@ -9,7 +10,7 @@ import {
   runWorkflow,
 } from "@/lib/api";
 
-type StepState = "pending" | "running" | "done" | "skipped";
+type StepState = "pending" | "running" | "done" | "skipped" | "paused";
 
 interface StepStatus {
   def: WorkflowStepDef;
@@ -36,12 +37,14 @@ export default function WorkflowRunner({
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [started, setStarted] = useState(false);
+  const [paused, setPaused] = useState<WorkflowEvent | null>(null);
 
   async function handleStart() {
     setStarted(true);
     setStreaming(true);
     setError(null);
     setRunId(null);
+    setPaused(null);
     setSteps(workflow.steps.map((s) => ({ def: s, state: "pending" })));
 
     try {
@@ -68,6 +71,15 @@ export default function WorkflowRunner({
       );
       return;
     }
+    if (evt.type === "progress" && evt.step_id) {
+      // A running action step reports each tool it uses; show the latest.
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.def.id === evt.step_id ? { ...s, summary: evt.summary } : s
+        )
+      );
+      return;
+    }
     if (evt.type === "step_done" && evt.step_id) {
       const isSkipped =
         typeof evt.summary === "string" && evt.summary.startsWith("Skipped");
@@ -81,6 +93,15 @@ export default function WorkflowRunner({
               }
             : s
         )
+      );
+      return;
+    }
+    if (evt.type === "awaiting_human") {
+      // The stream ends here — no `done` or `error` follows. Without this the
+      // gate step sat spinning on "running" and the panel just went quiet.
+      setPaused(evt);
+      setSteps((prev) =>
+        prev.map((s) => (s.state === "running" ? { ...s, state: "paused" } : s))
       );
       return;
     }
@@ -104,7 +125,7 @@ export default function WorkflowRunner({
             onClick={handleStart}
             className="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition"
           >
-            Run job
+            Run workflow
           </button>
           <button
             type="button"
@@ -129,7 +150,10 @@ export default function WorkflowRunner({
                 Running
               </span>
             )}
-            {!streaming && !error && runId && (
+            {!streaming && !error && paused && (
+              <span className="text-xs text-amber-400">Paused</span>
+            )}
+            {!streaming && !error && !paused && runId && (
               <span className="text-xs text-emerald-400">Complete</span>
             )}
             {error && <span className="text-xs text-red-400">Failed</span>}
@@ -159,6 +183,11 @@ export default function WorkflowRunner({
               </li>
             ))}
           </ol>
+          {paused && (
+            <div className="mt-4">
+              <PausedNotice event={paused} runId={runId} />
+            </div>
+          )}
           {error && (
             <div className="mt-4 text-sm text-red-400 bg-red-500/5 border border-red-500/20 rounded-md p-3">
               <div className="font-medium mb-1">Workflow failed</div>
@@ -171,7 +200,57 @@ export default function WorkflowRunner({
   );
 }
 
+function PausedNotice({
+  event,
+  runId,
+}: {
+  event: WorkflowEvent;
+  runId: string | null;
+}) {
+  // Only `sent` and `self` mean the approver actually has the question. Saying
+  // "waiting on them" for the others would describe a request nobody received.
+  const delivery = event.delivery;
+  const reached = delivery === "sent" || delivery === "self";
+  return (
+    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300 space-y-2">
+      <div className="font-medium">Paused for sign-off</div>
+      {event.question && (
+        <div className="text-fg">&ldquo;{event.question}&rdquo;</div>
+      )}
+      <div className="text-xs space-y-1">
+        <div>
+          {reached
+            ? `Sent to person ${event.person_id} — waiting on their reply.`
+            : `Person ${event.person_id} has NOT been asked yet (${delivery ?? "unknown"}).`}
+        </div>
+        {event.resumable ? (
+          <div>The run continues by itself once they answer.</div>
+        ) : (
+          <div>
+            Their answer is recorded, but this run stops at the gate.
+          </div>
+        )}
+      </div>
+      {runId && (
+        <Link
+          href={`/jobs/runs/${encodeURIComponent(runId)}`}
+          className="inline-block text-xs text-indigo-400 hover:underline"
+        >
+          Follow this run →
+        </Link>
+      )}
+    </div>
+  );
+}
+
 function StepIndicator({ state, index }: { state: StepState; index: number }) {
+  if (state === "paused") {
+    return (
+      <div className="flex-shrink-0 w-6 h-6 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[10px] font-bold">
+        ⏸
+      </div>
+    );
+  }
   if (state === "done") {
     return (
       <div className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-[10px] font-bold">

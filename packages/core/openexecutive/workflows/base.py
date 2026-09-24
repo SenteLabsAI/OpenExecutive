@@ -47,6 +47,8 @@ class WorkflowEvent(BaseModel):
 
     - `step_start`: a step has begun. `step_id`, `step_title` set.
     - `step_done`:  a step finished. `step_id`, `summary` (short preview) set.
+    - `progress`:   a running step reports activity (e.g. a workflow action
+                    step calling a tool). `step_id`, `summary` set.
     - `result`:     structured output ready for programmatic consumers
                     (e.g. a chat tool that needs to iterate). `data` is the
                     typed payload; the human-targeted artifact still
@@ -86,6 +88,14 @@ class WorkflowMeta(BaseModel):
     # True for user-created (dynamic) workflows; False for the built-ins.
     # Lets the catalog UI offer edit/delete only for custom workflows.
     is_custom: bool = False
+    # True for workflows the system runs on its own (scheduler, onboarding,
+    # reflection). Still runnable by hand; the catalog files them under
+    # "System" instead of mixing them in with the jobs a user starts.
+    background: bool = False
+    # Names of the playbooks (skills) this workflow's steps follow — see
+    # workflows/playbooks.py. Drives "Follows playbooks" on the workflow page
+    # and "Used by workflows" on the Playbooks tab.
+    playbooks: list[str] = Field(default_factory=list)
 
 
 class Workflow(ABC):
@@ -101,6 +111,11 @@ class Workflow(ABC):
     description: str
     section: WorkflowSection  # UI grouping
     estimated_minutes: int = 3
+    # See WorkflowMeta.background.
+    background: bool = False
+    # See WorkflowMeta.playbooks. Declare every playbook `run` loads via
+    # workflows.playbooks.load_playbook (a test holds the two in sync).
+    playbooks: tuple[str, ...] = ()
 
     @abstractmethod
     def input_model(self) -> type[BaseModel]:
@@ -154,4 +169,10 @@ class Workflow(ABC):
             estimated_minutes=self.estimated_minutes,
             input_schema=self.input_model().model_json_schema(),
             steps=self.steps(),
+            background=self.background,
+            playbooks=self.followed_playbooks(),
         )
+
+    def followed_playbooks(self) -> list[str]:
+        """Names of the playbooks this workflow's steps follow."""
+        return list(self.playbooks)

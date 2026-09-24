@@ -24,8 +24,8 @@ jobs:
       - name: Install uv
         run: pip install uv
 
-      # docker/Dockerfile installs from uv.lock with `uv export --locked`, which
-      # fails the deploy build if the lock is stale. `uv sync` below would
+      # docker/Dockerfile installs from uv.lock with `uv sync --locked`, which
+      # fails the image build if the lock is stale. `uv sync` below would
       # silently refresh a stale lock in this checkout, so check it first.
       - name: Check uv.lock is current
         run: cd packages/core && uv lock --check

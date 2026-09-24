@@ -1,6 +1,6 @@
 [project]
 name = "openexecutive"
-version = "0.1.0"
+version = "0.3.2"
 description = "AI-powered virtual executive team"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,9 @@ dependencies = [
     "slack-bolt>=1.18.0",
     "discord.py>=2.4.0",
     "sentence-transformers>=3.0.0",
+    # Declared directly only so the [tool.uv.sources] entry below applies;
+    # uv honours sources for direct dependencies, not transitive ones.
+    "torch>=2.0",
     "httpx>=0.27.0",
     "aiofiles>=23.2.0",
     "python-multipart>=0.0.9",
@@ -29,7 +32,7 @@ dependencies = [
     "google-auth>=2.29.0",
     "google-api-python-client>=2.131.0",
     "mcp<2,>=1.2.0",
-    "honcho-ai>=2.0,<3",
+    "honcho-ai>=2.1,<3",
     "defusedxml>=0.7.1",
     "feedparser>=6.0.11",
     "tzdata>=2026.4",
@@ -73,6 +76,19 @@ python_version = "3.11"
 strict = false
 ignore_missing_imports = true
 exclude = ["tests/"]
+
+# torch is only here because sentence-transformers needs it, and the API runs
+# on CPU hosts. The default PyPI wheel on Linux is the CUDA build, which drags
+# in ~2.2 GB of wheels the container never uses (~2.0 GB of NVIDIA libraries,
+# plus triton) and roughly triples the image. Resolve torch alone from PyTorch's CPU-only index instead.
+# `explicit = true` keeps every other package on PyPI.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

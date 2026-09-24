@@ -21,6 +21,8 @@ from openexecutive.memory.episodic import (
     reschedule_action,
 )
 from openexecutive.orchestrator.mcp_gateway import MCPGateway
+from openexecutive.scheduler.pause import is_paused
+from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +152,27 @@ async def run_scheduler(
     logger.info(
         "scheduler started (poll_interval=%ds)", poll_interval_seconds
     )
-    # Throttle the "no profile" log so it fires once per gap, not every poll.
+    # Throttle the "no profile" / "paused" logs so each fires once per gap,
+    # not every poll.
     holding_for_profile = False
+    holding_for_pause = False
     while True:
         try:
             now = datetime.now(UTC)
+            # Operator pause (scheduler/pause.py) comes first: paused means
+            # idle — no sweeps, no claims. Due rows stay 'pending' and fire
+            # on the first tick after resume; in-flight actions finish.
+            if is_paused():
+                if not holding_for_pause:
+                    logger.warning(
+                        "scheduler: executive paused — holding all scheduled work"
+                    )
+                    holding_for_pause = True
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+            if holding_for_pause:
+                logger.info("scheduler: executive resumed — releasing held work")
+                holding_for_pause = False
             # Alert expiry is pure DB hygiene and must not wait for
             # onboarding or a client rotation — it runs before both gates.
             _maybe_sweep_alerts(now)
@@ -348,6 +366,7 @@ async def _execute_action(
             workflow = DepartmentCheckInWorkflow()
             artifact = ""
             async for event in workflow.run(inputs=wf_inputs, store=store):
+                event = ensure_workflow_event(event, site="scheduler.dept_cadence")
                 if event.type == "artifact" and event.content:
                     artifact = event.content
                 elif event.type == "error" and event.message:
@@ -799,12 +818,16 @@ async def _execute_action(
         )
 
         executive = Executive(mcp_gateway=gateway)
-        await executive.chat(
-            user_message=synthetic_message,
-            session=session,
-            retrieved_context=retrieved_context,
-            episodic_context=episodic_context,
-        )
+        from openexecutive.attunement.outcomes import tag_proactive
+
+        source, ref = _outreach_source(action)
+        with tag_proactive(source, ref):
+            await executive.chat(
+                user_message=synthetic_message,
+                session=session,
+                retrieved_context=retrieved_context,
+                episodic_context=episodic_context,
+            )
 
     except Exception as exc:
         logger.exception("scheduler: action %d failed", action.id)
@@ -1118,7 +1141,9 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         schedule_dynamic_workflow_cadence,
     )
     from openexecutive.workflows.dynamic_store import get_definition
+    from openexecutive.workflows.gate import checkpoint_gate
     from openexecutive.workflows.persistence import complete_run, create_run, fail_run
+    from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
     assert action.id is not None
     name = action.channel_ref
@@ -1139,19 +1164,39 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         )
         store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
         artifact = ""
+        paused = False
         async for event in workflow.run(inputs=wf_inputs, store=store):
-            etype = getattr(event, "type", None)
-            content = getattr(event, "content", None)
-            if etype == "artifact" and content:
-                artifact = content
-            elif etype == "error":
-                message = getattr(event, "message", None)
-                if message:
-                    raise RuntimeError(message)
-            # A WaitForHumanEvent (approval gate) has no `type`; a cadence run
-            # can't pause for a human, so we ignore the gate and finish with
-            # whatever was assembled.
-        complete_run(run_id, artifact or "(no artifact)")
+            # The one pause a scheduled run CAN take: an action step held
+            # writes to new targets. Nothing waits in-process — the run is
+            # checkpointed, its owner is asked, and the resumer finishes it
+            # (and DMs the artifact to this cadence's recipient) later.
+            if (
+                isinstance(event, WaitForHumanEvent)
+                and event.resume_state is not None
+                and event.resume_state.kind == "held_writes"
+            ):
+                event.resume_state.deliver_to_person_id = action.assigned_to_person_id
+                await checkpoint_gate(run_id=run_id, event=event, workflow_title=workflow.title)
+                paused = True
+                break
+            # The only scheduler branch that can receive a DYNAMIC workflow, so
+            # the only one that can be handed an approval gate. A cadence fire
+            # has no human in the loop, and `validate_definition` forbids gates
+            # in cadence-enabled workflows for exactly that reason — but a
+            # definition saved before that rule, or edited while a scheduled
+            # row was pending, still lands here. This used to ignore the gate
+            # and store `complete_run(run_id, "(no artifact)")`: a phantom
+            # successful run, every period, with nothing in it. Raising instead
+            # lets the handler below record a real failure.
+            event = ensure_workflow_event(event, site="scheduler.dynamic_workflow")
+            if event.type == "artifact" and event.content:
+                artifact = event.content
+            elif event.type == "error" and event.message:
+                raise RuntimeError(event.message)
+        if paused:
+            artifact = ""  # the resumer delivers it once the owner answers
+        else:
+            complete_run(run_id, artifact or "(no artifact)")
     except Exception as exc:
         logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
         with contextlib.suppress(Exception):
@@ -1230,6 +1275,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         fingerprint: str | None = None
         suppressed = False
         async for event in workflow.run(inputs=wf_inputs, store=store):
+            event = ensure_workflow_event(event, site="scheduler.principal_brief")
             if event.type == "artifact" and event.content:
                 artifact = event.content
             elif event.type == "result" and event.data and event.data.get("brief_fingerprint"):
@@ -1279,6 +1325,37 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
     _enqueue_next_principal_brief(kind, after=datetime.now(UTC))
 
 
+def _outreach_source(action: ScheduledAction) -> tuple[str, str]:
+    """``(source, ref)`` for the outcome ledger of one dispatched action.
+
+    A nudge is keyed by its scope key (``nudge:<source>:<id>``) so closing the
+    thing it chased resolves it; a commitment nudge whose target is an open
+    loop is reported as an open-loop chase. Anything else is a scheduled
+    follow-up."""
+    from openexecutive.attunement import outcomes
+
+    if action.kind != "proactive_nudge" or not action.scope_key:
+        return outcomes.SOURCE_FOLLOWUP, f"action:{action.id}"
+    scope = action.scope_key
+    parts = scope.split(":")
+    kind = parts[1] if len(parts) > 2 else ""
+    if kind == "commitment":
+        from openexecutive.memory.episodic import get_scheduled_action
+
+        try:
+            target = get_scheduled_action(int(parts[2]))
+        except Exception:
+            # A malformed id or a lookup failure just means "not a loop".
+            target = None
+        if target is not None and target.kind == "open_loop":
+            return outcomes.SOURCE_OPEN_LOOP, scope
+        return outcomes.SOURCE_NUDGE_COMMITMENT, scope
+    return {
+        "stalled": outcomes.SOURCE_NUDGE_STALLED,
+        "initiative": outcomes.SOURCE_NUDGE_INITIATIVE,
+    }.get(kind, outcomes.SOURCE_FOLLOWUP), scope
+
+
 # --------------------------------------------------------------------------- #
 # Executive reflection (Shift 5)
 # --------------------------------------------------------------------------- #
@@ -1325,6 +1402,7 @@ async def _run_executive_reflection(
         store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
         artifact = ""
         async for event in workflow.run(inputs=wf_inputs, store=store):
+            event = ensure_workflow_event(event, site="scheduler.executive_reflection")
             if event.type == "artifact" and event.content:
                 artifact = event.content
             elif event.type == "error" and event.message:

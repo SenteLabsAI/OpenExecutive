@@ -18,6 +18,29 @@ export interface ActionTaken {
   iteration?: number;
 }
 
+// Names the round of tool calls currently in flight, so the progress line can
+// say what is actually happening. One event per tool-use iteration, emitted
+// immediately before `thinking`. Ephemeral — unlike ActionTaken it is never
+// persisted with the assistant message. Real specialist fan-out is
+// deliberately generic ("Consulting specialists…"); individual specialist
+// names are never surfaced. See backend `orchestrator/activity_labels.py`.
+// Shown when a tool round is in flight but no `activity` event named it —
+// an older backend, or the agent loop's defensive fallback when the labeller
+// itself failed. Deliberately worded the same as the backend's own
+// `FALLBACK_LABEL` in orchestrator/activity_labels.py: both mean "something is
+// running that we can't name". Nothing enforces that across the language
+// boundary, so change the two together.
+export const FALLBACK_ACTIVITY_LABEL = "Working…";
+
+export interface Activity {
+  type: "activity";
+  // Present-progressive and already ends in an ellipsis — render verbatim.
+  label: string;
+  // Canonical tool behind the label; for MCP this is the underlying tool name.
+  tool: string;
+  iteration?: number;
+}
+
 export interface ChatChunk {
   type:
     | "chunk"
@@ -25,9 +48,14 @@ export interface ChatChunk {
     | "error"
     | "thinking"
     | "phase"
-    | "committee_critique";
+    | "committee_critique"
+    // The user pressed Stop. Always followed by `done` over the same still-open
+    // stream, so the consumer's state machine still reaches a clean end.
+    | "stopped";
   content?: string;
   session_id?: string;
+  // On `done`: row id of the persisted assistant reply, used to attach 👍/👎.
+  message_id?: number;
   message?: string;
   // committee fields (when type === "phase" or "committee_critique")
   phase?: CommitteePhase;
@@ -98,7 +126,12 @@ export interface FormPatch {
   iteration?: number;
 }
 
-export type StreamItem = ChatChunk | DebugEvent | ActionTaken | FormPatch;
+export type StreamItem =
+  | ChatChunk
+  | DebugEvent
+  | ActionTaken
+  | FormPatch
+  | Activity;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -109,6 +142,18 @@ export interface StreamChatOptions {
   // Ask OE panel only — what page/form the user is looking at. Ignored on
   // the multipart route (the panel doesn't support attachments).
   pageContext?: PageContext;
+  // Client-minted id for this turn, so it can be addressed by `stopChat`.
+  // Omit it and the turn simply isn't stoppable.
+  clientTurnId?: string;
+  // What peer memory records as the user's words for this turn, when
+  // `message` carries text they did not write (a briefing handoff seeds the
+  // Executive's own card body). JSON route only; the multipart route derives
+  // its own from the typed text and filenames.
+  memoryText?: string;
+  // Safety net only. The normal stop path leaves the stream open and lets the
+  // server wind down and send `stopped` + `done`; this aborts the fetch
+  // outright if that never arrives.
+  signal?: AbortSignal;
 }
 
 export async function* streamChat(
@@ -125,10 +170,12 @@ export async function* streamChat(
     form.append("message", message);
     if (sessionId) form.append("session_id", sessionId);
     form.append("committee_review", String(committeeReview));
+    if (opts?.clientTurnId) form.append("client_turn_id", opts.clientTurnId);
     for (const file of files) form.append("files", file, file.name);
     response = await fetch(`${API_BASE}/chat/upload`, {
       method: "POST",
       body: form,
+      signal: opts?.signal,
     });
   } else {
     response = await fetch(`${API_BASE}/chat`, {
@@ -139,7 +186,10 @@ export async function* streamChat(
         session_id: sessionId,
         committee_review: committeeReview,
         page_context: opts?.pageContext ?? undefined,
+        client_turn_id: opts?.clientTurnId ?? undefined,
+        memory_text: opts?.memoryText ?? undefined,
       }),
+      signal: opts?.signal,
     });
   }
 
@@ -160,24 +210,50 @@ export async function* streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
 
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        try {
-          const data: StreamItem = JSON.parse(line.slice(6));
-          yield data;
-        } catch {
-          // skip malformed lines
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data: StreamItem = JSON.parse(line.slice(6));
+            yield data;
+          } catch {
+            // skip malformed lines
+          }
         }
       }
     }
+  } finally {
+    // `break`-ing out of the caller's `for await` closes this generator but
+    // would otherwise leave the HTTP body open.
+    await reader.cancel().catch(() => {});
+  }
+}
+
+/** Ask the backend to stop an in-flight turn.
+ *
+ * Best-effort and never throws: a 404 just means the turn already ended, and a
+ * network failure is covered by the caller's abort fallback. The SSE stream
+ * stays the authority on how the turn actually finished — this only flips the
+ * server-side switch. Returns whether the server accepted the stop.
+ */
+export async function stopChat(clientTurnId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/chat/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_turn_id: clientTurnId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -636,6 +712,19 @@ export async function peekExternalSource(
   return res.json();
 }
 
+// Mirrors SKILL_CATEGORIES in packages/core/openexecutive/knowledge/skills.py.
+export const SKILL_CATEGORIES = [
+  "strategy",
+  "finance",
+  "hr",
+  "legal",
+  "operations",
+  "marketing",
+  "product",
+  "board",
+  "general",
+] as const;
+
 export interface SkillMeta {
   name: string;
   category: string;
@@ -643,11 +732,28 @@ export interface SkillMeta {
   when_to_use: string;
   source: "builtin" | "company";
   filename: string;
+  /** A company skill that replaces a built-in of the same name. */
+  customized: boolean;
+  /** A built-in hidden for this company (only listed with includeHidden). */
+  hidden: boolean;
+  /** Workflows whose steps follow this playbook (switched-off custom ones too). */
+  used_by: { name: string; title: string; is_custom: boolean }[];
 }
 
 export interface SkillDetail extends SkillMeta {
   body: string;
 }
+
+export interface SkillInput {
+  name: string;
+  category: string;
+  description: string;
+  when_to_use: string;
+  body: string;
+}
+
+/** What DELETE did: removed, reverted a customization, or hid a built-in. */
+export type SkillDeleteOutcome = "deleted" | "reverted" | "hidden";
 
 export interface SkillSearchHit {
   name: string;
@@ -658,16 +764,23 @@ export interface SkillSearchHit {
   score: number;
 }
 
-export async function listSkills(): Promise<SkillMeta[]> {
-  const res = await fetch(`${API_BASE}/skills`);
-  if (!res.ok) throw new Error("Failed to list skills");
+async function skillError(res: Response, fallback: string): Promise<Error> {
+  const err = await res.json().catch(() => ({}));
+  const detail = (err as { detail?: unknown }).detail;
+  return new Error(typeof detail === "string" ? detail : fallback);
+}
+
+export async function listSkills(includeHidden = false): Promise<SkillMeta[]> {
+  const qs = includeHidden ? "?include_hidden=true" : "";
+  const res = await fetch(`${API_BASE}/skills${qs}`);
+  if (!res.ok) throw new Error("Failed to list playbooks");
   const data = await res.json();
   return data.skills;
 }
 
 export async function getSkill(name: string): Promise<SkillDetail> {
   const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error("Failed to load skill");
+  if (!res.ok) throw await skillError(res, "Failed to load playbook");
   return res.json();
 }
 
@@ -677,19 +790,104 @@ export async function searchSkills(
 ): Promise<SkillSearchHit[]> {
   const params = new URLSearchParams({ q, n: String(n) });
   const res = await fetch(`${API_BASE}/skills/search?${params.toString()}`);
-  if (!res.ok) throw new Error("Failed to search skills");
+  if (!res.ok) throw new Error("Failed to search playbooks");
   const data = await res.json();
   return data.results;
 }
 
-export async function deleteSkill(name: string): Promise<void> {
+export async function createSkill(input: SkillInput): Promise<SkillDetail> {
+  const res = await fetch(`${API_BASE}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await skillError(res, "Failed to create playbook");
+  return res.json();
+}
+
+/** Full replace. On a built-in this saves a customized copy. */
+export async function updateSkill(input: SkillInput): Promise<SkillDetail> {
+  const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(input.name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await skillError(res, "Failed to save playbook");
+  return res.json();
+}
+
+export async function deleteSkill(name: string): Promise<SkillDeleteOutcome> {
   const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail ?? "Failed to delete skill");
-  }
+  if (!res.ok) throw await skillError(res, "Failed to delete playbook");
+  const data = (await res.json()) as { outcome: SkillDeleteOutcome };
+  return data.outcome;
+}
+
+export async function restoreSkill(name: string): Promise<SkillDetail> {
+  const res = await fetch(
+    `${API_BASE}/skills/${encodeURIComponent(name)}/restore`,
+    { method: "POST" }
+  );
+  if (!res.ok) throw await skillError(res, "Failed to restore playbook");
+  return res.json();
+}
+
+/** A playbook change the Executive proposed from chat, awaiting review. */
+export interface SkillDraft {
+  action: "create" | "update" | "delete";
+  name: string;
+  category: string;
+  description: string;
+  when_to_use: string;
+  body: string;
+  proposed_at: string;
+  /** Version token: approve/discard act only on this exact draft. */
+  id: string;
+  /** The playbook in effect now (null for a create). */
+  current: SkillDetail | null;
+  /** Workflows that follow this name (for a create too). */
+  followers: { name: string; title: string; is_custom: boolean }[];
+}
+
+export async function listSkillDrafts(): Promise<SkillDraft[]> {
+  const res = await fetch(`${API_BASE}/skill-drafts`);
+  if (!res.ok) throw new Error("Failed to list playbook drafts");
+  const data = await res.json();
+  return data.drafts;
+}
+
+export async function getSkillDraft(name: string): Promise<SkillDraft> {
+  const res = await fetch(`${API_BASE}/skill-drafts/${encodeURIComponent(name)}`);
+  if (!res.ok) throw await skillError(res, "Failed to load draft");
+  return res.json();
+}
+
+/** Approve the reviewed version (`id`); 409 if the draft changed since. */
+export async function approveSkillDraft(
+  name: string,
+  id: string
+): Promise<{ action: SkillDraft["action"]; skill: SkillDetail | null }> {
+  const res = await fetch(
+    `${API_BASE}/skill-drafts/${encodeURIComponent(name)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }
+  );
+  if (!res.ok) throw await skillError(res, "Failed to approve draft");
+  return res.json();
+}
+
+/** Discard the reviewed version (`id`); resolves quietly if it's already gone. */
+export async function discardSkillDraft(name: string, id: string): Promise<void> {
+  const qs = new URLSearchParams({ id }).toString();
+  const res = await fetch(`${API_BASE}/skill-drafts/${encodeURIComponent(name)}?${qs}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) throw await skillError(res, "Failed to discard draft");
 }
 
 export interface SessionSummary {
@@ -733,6 +931,25 @@ export async function getSuggestedPrompts(
   return res.json();
 }
 
+// One suggested next message for the chat composer, grounded in the tail of
+// the session. Resolves to null on any non-OK response — the composer then
+// keeps its static placeholder — but rejects on abort so callers can tell a
+// cancelled fetch apart from "no suggestion".
+export async function getFollowupSuggestion(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const res = await fetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/followup`,
+    { signal },
+  );
+  if (!res.ok) return null;
+  const body: { suggestion?: unknown } = await res.json();
+  return typeof body.suggestion === "string" && body.suggestion.trim()
+    ? body.suggestion.trim()
+    : null;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -741,6 +958,15 @@ export interface ChatMessage {
   // `chat_messages.action_chips` so reopening a saved session restores
   // them (the backend re-attaches them here via load_messages).
   actions?: ActionTaken[];
+  // True when the user stopped this reply mid-stream. Persisted to
+  // `chat_messages.stopped`, so the marker survives a reload rather than
+  // letting a truncated reply read as a complete one.
+  stopped?: boolean;
+  // Assistant rows only: the persisted row id (from the stream's `done`
+  // event, or from a reloaded session) and any 👍/👎 on it. The id is what
+  // lets the reply be rated.
+  id?: number;
+  feedback?: "up" | "down" | null;
 }
 
 export interface Decision {
@@ -768,6 +994,31 @@ export interface Advice {
   domain: string;
   query_summary: string;
   advice_summary: string;
+}
+
+// Peer memory — what the Executive has learned about each person, derived
+// server-side and read-only here (no edit/delete: it is not the Executive's
+// own record the way decisions and advice are).
+export interface PersonConclusion {
+  content: string;
+  created_at: string;
+}
+
+export interface PersonMemory {
+  person_id: number;
+  full_name: string;
+  is_principal: boolean;
+  card: string[];
+  conclusion_count: number;
+  last_observed_at: string | null;
+  recent: PersonConclusion[];
+  error: string | null;
+}
+
+export interface PeopleMemory {
+  status: "ok" | "disabled" | "error";
+  people: PersonMemory[];
+  conclusion_total: number;
 }
 
 export async function listDecisions(): Promise<Decision[]> {
@@ -833,6 +1084,71 @@ export async function deleteAdvice(id: number): Promise<void> {
   if (!res.ok) throw new Error("Failed to delete advice");
 }
 
+// The Pulse header and the People tab both mount on page load and both need
+// this; behind it are one Honcho listing plus two reads per person, so the
+// two mounts share one in-flight request instead of doubling that fan-out.
+const PEOPLE_MEMORY_SHARE_MS = 5_000;
+// `settledAt` is null while the request is still running: a pending request is
+// always shared, however long it has run (the backend bounds it, not us), and a
+// resolved one for five seconds after it settled.
+let peopleMemoryShared: {
+  recent: number;
+  promise: Promise<PeopleMemory>;
+  settledAt: number | null;
+} | null = null;
+
+export function listPeopleMemory(recent = 5): Promise<PeopleMemory> {
+  const shared = peopleMemoryShared;
+  if (
+    shared &&
+    shared.recent === recent &&
+    (shared.settledAt === null || Date.now() - shared.settledAt < PEOPLE_MEMORY_SHARE_MS)
+  ) {
+    return shared.promise;
+  }
+  const promise = (async () => {
+    const res = await fetch(`${API_BASE}/memories/people?recent=${recent}`);
+    if (!res.ok) throw new Error("Failed to list people memory");
+    return (await res.json()) as PeopleMemory;
+  })();
+  const entry = { recent, promise, settledAt: null as number | null };
+  peopleMemoryShared = entry;
+  promise.then(
+    () => {
+      entry.settledAt = Date.now();
+    },
+    () => {
+      // A failure must not be served to the next caller.
+      if (peopleMemoryShared === entry) peopleMemoryShared = null;
+    },
+  );
+  return promise;
+}
+
+export interface PersonConclusionsPage {
+  status: "ok" | "disabled" | "error";
+  person_id: number;
+  items: PersonConclusion[];
+  page: number;
+  size: number;
+  total: number | null;
+  has_more: boolean;
+}
+
+// Every conclusion about one person, newest first, one page at a time — the
+// People tab's "show all" pane. The overview above carries only the newest few.
+export async function listPersonConclusions(
+  personId: number,
+  page: number,
+  size = 50,
+): Promise<PersonConclusionsPage> {
+  const res = await fetch(
+    `${API_BASE}/memories/people/${personId}/conclusions?page=${page}&size=${size}`,
+  );
+  if (!res.ok) throw new Error("Failed to list person conclusions");
+  return res.json();
+}
+
 export interface ScheduledAction {
   id: number;
   created_at: string;
@@ -882,6 +1198,45 @@ export async function cancelScheduledAction(id: number): Promise<ScheduledAction
 }
 
 // ----------------------------------------------------------------------------
+// Executive pause switch — holds all autonomous work (scheduler, inbox,
+// workflow timers); chat and direct messages keep working.
+// ----------------------------------------------------------------------------
+
+export interface ExecutiveStatus {
+  paused: boolean;
+  paused_at: string | null;
+  paused_by: string | null;
+  reason: string | null;
+  // Pending scheduled actions already due — they fire on resume.
+  held_actions: number;
+  // Whether the signed-in viewer may resume (principal-only once one exists).
+  can_resume: boolean;
+}
+
+export async function getExecutiveStatus(signal?: AbortSignal): Promise<ExecutiveStatus> {
+  const res = await fetch(`${API_BASE}/executive/status`, { signal });
+  if (!res.ok) throw new Error("Failed to load executive status");
+  return res.json();
+}
+
+export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> {
+  const res = await fetch(`${API_BASE}/executive/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason?.trim() || null }),
+  });
+  if (!res.ok) throw new Error("Failed to pause the Executive");
+  return res.json();
+}
+
+export async function resumeExecutive(): Promise<ExecutiveStatus> {
+  const res = await fetch(`${API_BASE}/executive/resume`, { method: "POST" });
+  if (res.status === 403) throw new Error("Only the principal can resume the Executive.");
+  if (!res.ok) throw new Error("Failed to resume the Executive");
+  return res.json();
+}
+
+// ----------------------------------------------------------------------------
 // Workflows
 // ----------------------------------------------------------------------------
 
@@ -926,6 +1281,11 @@ export interface WorkflowMeta {
   input_schema: WorkflowJsonSchema;
   steps: WorkflowStepDef[];
   is_custom?: boolean;
+  // Run by the system itself (scheduler, onboarding, reflection); the catalog
+  // files these under "System".
+  background?: boolean;
+  /** Playbooks (skills) this workflow's steps follow. */
+  playbooks?: string[];
 }
 
 // ---- User-created (dynamic) workflows ----
@@ -947,6 +1307,8 @@ export type DynamicStep =
       specialist: string;
       goal: string;
       rag_query?: string;
+      /** Name of a playbook (skill) the step follows. */
+      playbook?: string;
     }
   | {
       kind: "approval_gate";
@@ -965,6 +1327,17 @@ export type DynamicStep =
       description?: string;
       instructions?: string;
       specialist?: string;
+    }
+  | {
+      // Gets something done with tools. `tools` is the exact allowlist the
+      // user approves when they create the workflow (or turn it on).
+      kind: "action";
+      id: string;
+      title: string;
+      description?: string;
+      goal: string;
+      tools: string[];
+      max_tool_calls?: number;
     };
 
 export interface DynamicWorkflowDef {
@@ -980,6 +1353,9 @@ export interface DynamicWorkflowDef {
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;
+  // Who created it (server-managed; echoing it back in a body has no effect).
+  // Asked to approve the workflow's first write to a new target.
+  owner_person_id?: number | null;
 }
 
 // The 8 specialists a dynamic step may consult (matches SPECIALIST_REGISTRY,
@@ -1008,6 +1384,25 @@ export async function getCustomWorkflow(name: string): Promise<DynamicWorkflowDe
   return res.json();
 }
 
+/** An error from the custom-workflow endpoints, carrying the HTTP status. */
+export class CustomWorkflowError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+/** The server's error detail; a 422's validation-error array is joined. */
+async function _customError(res: Response): Promise<CustomWorkflowError> {
+  let detail: unknown = res.statusText;
+  try {
+    detail = (await res.json()).detail;
+  } catch {
+    /* keep statusText */
+  }
+  const msg = Array.isArray(detail) ? detail.join("; ") : String(detail);
+  return new CustomWorkflowError(msg, res.status);
+}
+
 /** Returns the server's validation errors (array) when the response is 422. */
 async function _writeCustom(
   url: string,
@@ -1019,16 +1414,7 @@ async function _writeCustom(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(def),
   });
-  if (!res.ok) {
-    let detail: unknown = res.statusText;
-    try {
-      detail = (await res.json()).detail;
-    } catch {
-      /* keep statusText */
-    }
-    const msg = Array.isArray(detail) ? detail.join("; ") : String(detail);
-    throw new Error(msg);
-  }
+  if (!res.ok) throw await _customError(res);
   return res.json();
 }
 
@@ -1043,6 +1429,48 @@ export function updateCustomWorkflow(
   return _writeCustom(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}`, "PUT", def);
 }
 
+/**
+ * Turn a custom workflow on — the approval for one chat saved switched off.
+ * `reviewed` is the definition the user was shown; the server refuses (409)
+ * if the stored one has changed since, so only what was seen gets switched on.
+ */
+export async function activateCustomWorkflow(
+  reviewed: DynamicWorkflowDef
+): Promise<DynamicWorkflowDef> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(reviewed.name)}/activate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: true, definition: reviewed }),
+    }
+  );
+  if (!res.ok) throw await _customError(res);
+  return res.json();
+}
+
+/** A target a workflow's tool steps may write to without asking again. */
+export interface ApprovedTarget {
+  value: string;
+  key: string;
+  approved_at: string;
+  run_id: string;
+}
+
+export async function listApprovedTargets(name: string): Promise<ApprovedTarget[]> {
+  const res = await fetch(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}/targets`);
+  if (!res.ok) throw await _customError(res);
+  return (await res.json()).targets;
+}
+
+export async function forgetApprovedTarget(name: string, value: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/targets?value=${encodeURIComponent(value)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw await _customError(res);
+}
+
 export async function deleteCustomWorkflow(name: string): Promise<void> {
   const res = await fetch(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}`, {
     method: "DELETE",
@@ -1050,28 +1478,182 @@ export async function deleteCustomWorkflow(name: string): Promise<void> {
   if (!res.ok) throw new Error("Failed to delete custom workflow");
 }
 
+// ---- Tools a workflow action step can use ----
+
+export interface WorkflowToolInfo {
+  name: string;
+  description: string;
+  // true = only reads; null = may change something (can't tell from the name)
+  read_only: boolean | null;
+  source: "mcp" | "builtin";
+}
+
+export async function searchWorkflowTools(q: string): Promise<WorkflowToolInfo[]> {
+  const res = await fetch(
+    `${API_BASE}/workflows/tools/search?q=${encodeURIComponent(q)}`
+  );
+  if (!res.ok) throw new Error("Tool search failed");
+  return (await res.json()).tools;
+}
+
+export async function describeWorkflowTools(
+  names: string[]
+): Promise<WorkflowToolInfo[]> {
+  if (names.length === 0) return [];
+  const res = await fetch(
+    `${API_BASE}/workflows/tools/describe?names=${encodeURIComponent(names.join(","))}`
+  );
+  if (!res.ok) throw new Error("Tool lookup failed");
+  return (await res.json()).tools;
+}
+
+// ---- Conversational workflow designer (/jobs/new wizard) ----
+
+export interface WorkflowDesignerDraft {
+  // Exactly the body POST /workflows/custom takes.
+  definition: DynamicWorkflowDef;
+  summary: string;
+  assumptions: string[];
+}
+
+export interface WorkflowDesignerTurn {
+  session_id: string;
+  phase: "question" | "draft";
+  questions_asked: number;
+  max_questions: number;
+  question: string | null;
+  hint: string | null;
+  options: string[];
+  draft: WorkflowDesignerDraft | null;
+  transcript: { role: "user" | "assistant"; text: string }[];
+}
+
+async function _designerPost(
+  path: string,
+  body: Record<string, string>,
+  fallback: string
+): Promise<WorkflowDesignerTurn> {
+  const res = await fetch(`${API_BASE}/workflows/designer/${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await onboardError(res, fallback);
+  return res.json();
+}
+
+export function startWorkflowDesigner(message: string): Promise<WorkflowDesignerTurn> {
+  return _designerPost("start", { message }, "Could not start the workflow assistant");
+}
+
+export function sendWorkflowDesignerMessage(
+  sessionId: string,
+  message: string
+): Promise<WorkflowDesignerTurn> {
+  return _designerPost(
+    "message",
+    { session_id: sessionId, message },
+    "Could not send that message"
+  );
+}
+
+export function forceWorkflowDesignerDraft(sessionId: string): Promise<WorkflowDesignerTurn> {
+  return _designerPost("draft", { session_id: sessionId }, "Could not draft the workflow");
+}
+
+export async function getWorkflowDesignerSession(
+  sessionId: string
+): Promise<WorkflowDesignerTurn> {
+  const res = await fetch(
+    `${API_BASE}/workflows/designer/${encodeURIComponent(sessionId)}`
+  );
+  if (!res.ok) throw await onboardError(res, "That workflow draft has expired");
+  return res.json();
+}
+
 export interface WorkflowSample {
   workflow: string;
   inputs: Record<string, unknown>;
 }
 
+/** Every status `workflow_runs.status` can hold. `awaiting_human`, `resolved`
+ *  and `timed_out` have been served for a while; the union only ever listed
+ *  three, so the others reached the UI as unhandled strings. */
+export type WorkflowRunStatus =
+  | "running"
+  | "done"
+  | "error"
+  | "awaiting_human"
+  | "resolved"
+  | "timed_out";
+
+/** Statuses the run will not move on from by itself. Anything else means a
+ *  poll is worth repeating: `running` is working, `awaiting_human` is waiting
+ *  on a person, and `resolved` is queued for the resumer to pick up. */
+export const TERMINAL_RUN_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
+  "done",
+  "error",
+  "timed_out",
+]);
+
+/** How the gate's question actually reached the approver. Anything other than
+ *  `sent` or `self` means nobody was asked, and the UI must not imply
+ *  otherwise. */
+export type GateDelivery = "self" | "sent" | "suppressed" | "alerted" | "failed";
+
 export interface WorkflowRunSummary {
   run_id: string;
   workflow_name: string;
   title: string;
-  status: "running" | "done" | "error";
+  status: WorkflowRunStatus;
   created_at: string;
   updated_at: string;
+}
+
+/** Which steps a paused run already finished. The server sends this in place
+ *  of the raw resume payload, which carries every completed step's full text
+ *  and would otherwise ride on every poll. */
+export interface ResumeProgress {
+  gate_step_id: string;
+  completed_step_ids: string[];
 }
 
 export interface WorkflowRunDetail extends WorkflowRunSummary {
   inputs: Record<string, unknown>;
   artifact: string | null;
   error: string | null;
+  // Checkpoint columns the run record has always carried; the detail route
+  // returns the whole row, so these were already on the wire untyped.
+  awaiting_person_id?: number | null;
+  awaiting_until?: string | null;
+  state_json?: string | null;
+  resolution_json?: string | null;
+  resume_progress?: ResumeProgress | null;
+}
+
+/** The serialized gate in `state_json`, for rendering what a paused run is
+ *  waiting on. Every field is optional: older checkpoints predate some of
+ *  them, which is exactly how the server tells legacy rows apart. */
+export interface GateState {
+  question?: string;
+  person_id?: number;
+  expected_reply_shape?: string;
+  delivery?: GateDelivery;
+  channel?: string;
 }
 
 export interface WorkflowEvent {
-  type: "run_created" | "step_start" | "step_done" | "artifact" | "done" | "error";
+  type:
+    | "run_created"
+    | "step_start"
+    | "step_done"
+    // A running step reports activity (an action step using a tool).
+    | "progress"
+    | "result"
+    | "artifact"
+    | "done"
+    | "error"
+    | "awaiting_human";
   run_id?: string;
   title?: string;
   workflow?: string;
@@ -1082,6 +1664,17 @@ export interface WorkflowEvent {
   sources?: string[];
   message?: string;
   steps?: WorkflowStepDef[];
+  /** `result` events only. */
+  data?: Record<string, unknown>;
+  // `awaiting_human` only. A paused run emits NO `done` or `error` — this
+  // frame is the last one, which `terminal` says explicitly so a client
+  // doesn't sit waiting for an end that never comes.
+  person_id?: number;
+  question?: string;
+  awaiting_until?: string;
+  delivery?: GateDelivery;
+  resumable?: boolean;
+  terminal?: boolean;
 }
 
 export async function listWorkflows(): Promise<WorkflowMeta[]> {
@@ -1114,6 +1707,19 @@ export async function listWorkflowRuns(
   return data.runs;
 }
 
+/** Answer a run waiting on a yes/no sign-off (the person asked, or the principal). */
+export async function decideWorkflowRun(
+  runId: string,
+  decision: "approve" | "reject"
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
+  if (!res.ok) throw await _customError(res);
+}
+
 export async function getWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
   const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}`);
   if (!res.ok) throw new Error("Failed to load workflow run");
@@ -1144,11 +1750,36 @@ export interface ArtifactSummary {
   status: string;
   severity: string | null;
   archived_at: string | null; // ISO ts when archived; null = active
+  // Registered format — see packages/core/openexecutive/orchestrator/artifact_formats.py.
+  format: ArtifactFormat;
+  format_label: string;
+  // Download targets; the first is the artifact's own file. Empty for links.
+  downloads: ArtifactFormat[];
+  external_url: string | null;
+  link_label: string | null;
+  supersedes_id: string | null; // id of the earlier version this revised
 }
 
+export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";
+
+export const ARTIFACT_EXTENSIONS: Record<ArtifactFormat, string | null> = {
+  docx: "docx",
+  html: "html",
+  link: null,
+  markdown: "md",
+  xlsx: "xlsx",
+};
+
 export interface ArtifactDetail extends ArtifactSummary {
+  // Sanitized HTML for "html"; Markdown for every other format.
   body: string;
   rationale: string | null;
+}
+
+// Same-origin proxy URL, so a plain <a href> download carries the session.
+export function artifactDownloadUrl(id: string, as?: ArtifactFormat): string {
+  const qs = as ? `?as=${encodeURIComponent(as)}` : "";
+  return `${API_BASE}/artifacts/${encodeURIComponent(id)}/download${qs}`;
 }
 
 export async function listArtifacts(
@@ -1608,9 +2239,20 @@ export async function testAgent(
   return res.json();
 }
 
-export async function listAgentModels(agentId?: string): Promise<string[]> {
+// One allowlisted model, grouped for the Council's Provider → Model picker.
+// Mirrors ModelOption in api/routes/agents.py. `route` says which backend
+// actually serves the id (it mirrors providers.registry.get_provider).
+export interface ModelOption {
+  id: string;
+  provider: string;
+  provider_label: string;
+  route: "direct" | "openrouter" | "local";
+  label: string;
+}
+
+export async function listAgentModelOptions(agentId?: string): Promise<ModelOption[]> {
   const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
-  const res = await fetch(`${API_BASE}/agents/models${qs}`);
+  const res = await fetch(`${API_BASE}/agents/models/options${qs}`);
   if (!res.ok) throw new Error("Failed to list models");
   return res.json();
 }
@@ -2090,7 +2732,7 @@ export async function updateDepartment(slug: string, patch: DepartmentPatch): Pr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`Failed to update department: ${res.statusText}`);
+  if (!res.ok) throw await onboardError(res, `Failed to update department: ${res.statusText}`);
   return res.json();
 }
 
@@ -2260,6 +2902,112 @@ export async function archivePerson(id: number): Promise<void> {
   if (!res.ok) throw new Error(`Failed to archive person: ${res.statusText}`);
 }
 
+// Attunement — open loops: things a person committed to or was asked for in
+// conversation and hasn't reported done. Overdue ones are chased by the
+// nudge engine; closing one stops the chase.
+export interface OpenLoop {
+  loop_id: number;
+  owner_person_id: number;
+  owner_name: string;
+  description: string;
+  due_at: string;
+  created_at: string;
+}
+
+export async function getPersonOpenLoops(id: number): Promise<OpenLoop[]> {
+  const res = await fetch(`${API_BASE}/people/${id}/open-loops`);
+  if (!res.ok) throw new Error(`Failed to load open loops: ${res.statusText}`);
+  return res.json();
+}
+
+export async function closeOpenLoop(
+  loopId: number,
+  reason: "done" | "not_needed" | "cancelled" = "done",
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/open-loops/${loopId}/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) throw new Error(`Failed to close open loop: ${res.statusText}`);
+}
+
+// Attunement outcome ledger: how a person responded to proactive outreach
+// over the last 30 days, per kind of outreach.
+export interface OutreachStat {
+  source: string;
+  label: string;
+  sent: number;
+  replied: number;
+  acted: number;
+  ignored: number;
+  pending: number;
+}
+
+export async function getPersonOutreach(id: number): Promise<OutreachStat[]> {
+  const res = await fetch(`${API_BASE}/people/${id}/outreach`);
+  if (!res.ok) throw new Error(`Failed to load outreach: ${res.statusText}`);
+  return res.json();
+}
+
+// Attunement working style: a few short "how they like replies" rules pinned
+// into this person's own turns. Learned from their own 👍/👎 and requests;
+// editable, lockable (a locked profile is never re-learned) and resettable.
+export interface WorkingStyle {
+  rules: { text: string; basis: string }[];
+  locked: boolean;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export async function getPersonWorkingStyle(id: number): Promise<WorkingStyle> {
+  const res = await fetch(`${API_BASE}/people/${id}/attunement`);
+  if (!res.ok) throw new Error(`Failed to load working style: ${res.statusText}`);
+  return res.json();
+}
+
+// `rules` null keeps the current rules and only sets the lock.
+export async function savePersonWorkingStyle(
+  id: number,
+  rules: string[] | null,
+  locked: boolean,
+): Promise<WorkingStyle> {
+  const res = await fetch(`${API_BASE}/people/${id}/attunement`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules, locked }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      typeof body?.detail === "string" ? body.detail : `Failed to save: ${res.statusText}`,
+    );
+  }
+  return res.json();
+}
+
+export async function resetPersonWorkingStyle(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/people/${id}/attunement`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to reset working style: ${res.statusText}`);
+}
+
+// Explicit 👍/👎 on one assistant reply (null clears it).
+export async function setMessageFeedback(
+  sessionId: string,
+  messageId: number,
+  feedback: "up" | "down" | null,
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/messages/${messageId}/feedback`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback }),
+    },
+  );
+  if (!res.ok) throw new Error(`Failed to save feedback: ${res.statusText}`);
+}
+
 // ---------------------------------------------------------------------------
 // Today (live dashboard) — was previously named "Morning Brief"
 // ---------------------------------------------------------------------------
@@ -2355,6 +3103,10 @@ export interface ProposalItem {
   superseded_count?: number;
   // Registry workflow the review suggested as the next step ('' = none).
   suggested_workflow?: string;
+  // Drafted artifacts only: the format (body is already Markdown for every
+  // format) and, for "link" artifacts, the URL in the connected app.
+  artifact_format?: ArtifactFormat | null;
+  artifact_url?: string | null;
 }
 
 // One autonomous alert-review move since the last delivered morning brief

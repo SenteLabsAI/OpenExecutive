@@ -146,6 +146,14 @@ def _build_reflection_system(configured: set[str], has_roster: bool = True) -> s
         "on the previous run. Do NOT re-act on or re-notify anyone about a "
         "signal listed there unless the input shows it changed since — "
         "repeating a DM or a proposal a day later is noise, not diligence. "
+        "OPEN LOOPS are commitments and asks people made in conversation; "
+        "the nudge engine already chases overdue ones, so don't DM about a "
+        "loop just because it's overdue — use them to connect signals or to "
+        "flag a slipped promise that matters for the brief. "
+        "WHAT LANDS shows, per person, how often each kind of proactive DM "
+        "got an answer: prefer the kind of outreach that lands with that "
+        "person, and don't DM someone through a kind they reliably ignore — "
+        "raise it in the brief instead. "
         "Open alerts carry the review verdict of your alert-review job "
         "(relevant / changed / likely_stale) and its recommended move; you "
         "never close alerts here (that job does, with evidence).\n\n"
@@ -178,6 +186,8 @@ def _render_reflection_context(
     recent_alerts: list[dict[str, Any]],
     external_signals: list[dict[str, Any]],
     previous_reflection: str | None = None,
+    open_loops: list[str] | None = None,
+    outreach: list[str] | None = None,
 ) -> str:
     """Pack /today + activity + open alerts + external signals into a
     single user-turn block for the LLM to reason over.
@@ -255,6 +265,21 @@ def _render_reflection_context(
             parts.append(line)
         parts.append("")
 
+    if open_loops:
+        # Pre-rendered, soonest-due first (attunement.open_loops). Overdue
+        # ones are already chased by the nudge engine; listing them lets the
+        # standup connect a slipped promise to the rest of the org state.
+        parts.append("OPEN LOOPS (what people owe, soonest due first):")
+        parts.extend(open_loops)
+        parts.append("")
+
+    if outreach:
+        # Per-person answer rates by kind of outreach (attunement.outcomes),
+        # last 30 days: which DMs actually land with whom.
+        parts.append("WHAT LANDS (answered / resolved proactive DMs, last 30 days):")
+        parts.extend(outreach)
+        parts.append("")
+
     if previous_reflection:
         parts.append("YESTERDAY'S STANDUP (already handled — do not repeat):")
         parts.append(previous_reflection.strip()[:_PREVIOUS_REFLECTION_CHARS])
@@ -315,6 +340,28 @@ def _previous_reflection_artifact() -> str | None:
         return None
 
 
+def _open_loop_lines() -> list[str]:
+    """Open loops for the standup; a lookup failure just omits the block."""
+    try:
+        from openexecutive.attunement.open_loops import render_for_reflection
+
+        return render_for_reflection(limit=10)
+    except Exception:
+        logger.debug("reflection: open loops lookup failed", exc_info=True)
+        return []
+
+
+def _outreach_lines() -> list[str]:
+    """How proactive DMs land per person; a lookup failure omits the block."""
+    try:
+        from openexecutive.attunement.outcomes import render_for_reflection
+
+        return render_for_reflection()
+    except Exception:
+        logger.debug("reflection: outreach stats lookup failed", exc_info=True)
+        return []
+
+
 class ExecutiveReflectionWorkflow(Workflow):
     name = "executive_reflection"
     title = "Executive Reflection"
@@ -330,6 +377,7 @@ class ExecutiveReflectionWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 2
+    background = True
 
     def input_model(self) -> type[BaseModel]:
         return ExecutiveReflectionInput
@@ -483,6 +531,8 @@ class ExecutiveReflectionWorkflow(Workflow):
             recent_alerts=recent_alerts,
             external_signals=external_signals,
             previous_reflection=_previous_reflection_artifact(),
+            open_loops=_open_loop_lines(),
+            outreach=_outreach_lines(),
         )
         roster = _render_team_roster(people)
         if roster:
@@ -516,7 +566,21 @@ class ExecutiveReflectionWorkflow(Workflow):
         # Withhold the raw per-channel DM tools: DMs go through message_person
         # (server resolves the channel id), so the model can't pass — or
         # fabricate — a channel id. Mirrors executive_research's synthesis.
-        _excluded_dm = {"send_slack_dm", "send_discord_dm", "send_telegram_message"}
+        # `ack_alert` is withheld for the same reason the architecture notes
+        # already state that "Reflection never closes alerts — the alert
+        # review does, with evidence": this pass runs unattended with open
+        # alerts rendered into its context, and those headlines come from
+        # inbound mail and chat, so an injected "the principal already
+        # dismissed 13" would be acted on with nobody watching.
+        _excluded_dm = {
+            "send_slack_dm",
+            "send_discord_dm",
+            "send_telegram_message",
+            "ack_alert",
+            # Same reasoning as ack_alert: loop descriptions are quoted from
+            # what people wrote, and nobody is watching this pass.
+            "close_open_loop",
+        }
         tools = sorted(
             (t for t in _ALL_SKILL_TOOLS if t["name"] not in _excluded_dm),
             key=lambda t: t["name"],
@@ -554,7 +618,12 @@ class ExecutiveReflectionWorkflow(Workflow):
                     )
                     return
 
-                iter_summaries = await _execute_tool_calls(response, _ALL_SKILL_HANDLERS)
+                # Only the await sits inside the tag — this is an async
+                # generator, and a ContextVar set across a `yield` would leak.
+                from openexecutive.attunement.outcomes import SOURCE_REFLECTION, tag_proactive
+
+                with tag_proactive(SOURCE_REFLECTION):
+                    iter_summaries = await _execute_tool_calls(response, _ALL_SKILL_HANDLERS)
                 tool_call_summaries.extend(iter_summaries)
 
                 text = _extract_artifact_from_response(response)

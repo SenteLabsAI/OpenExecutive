@@ -177,3 +177,85 @@ def test_hydrate_skips_when_consume_loses_race(
         channel="discord_dm", channel_ref="alex-123", user_message="reply",
     )
     assert out == "reply"
+
+
+# --- strip_outbound_reply_context ------------------------------------------
+# The block is context for the LLM turn, never the person's words. Peer memory
+# records what the person said, so it strips the block first; a block left in
+# has Honcho attribute the Executive's own DM to the person who replied.
+
+
+def test_strip_removes_exactly_the_block_hydrate_prepends(wired_db: Path) -> None:
+    _seed_originating_session(wired_db, "discord:dm:principal-1")
+    insert_outbound_context(
+        channel="discord_dm",
+        channel_ref="alex-123",
+        outbound_text="Hey Alex — heard the deck slipped. What happened?",
+        originating_session_id="discord:dm:principal-1",
+        db_path=wired_db,
+    )
+    out = inbound_hydration.hydrate_user_message(
+        channel="discord_dm", channel_ref="alex-123", user_message="oh that, sorry",
+    )
+    assert out != "oh that, sorry"  # the block was injected...
+    assert inbound_hydration.strip_outbound_reply_context(out) == "oh that, sorry"
+
+
+def test_strip_is_a_no_op_without_the_block_hydrate_prepends() -> None:
+    strip = inbound_hydration.strip_outbound_reply_context
+    assert strip("plain text") == "plain text"
+    quoted = "look: <outbound_reply_context>x</outbound_reply_context> mid-text"
+    assert strip(quoted) == quoted  # content, not scaffolding
+    unterminated = (
+        '<outbound_reply_context>\nYou (oe) recently sent this person a DM: "Hi"\nno closing tag\n\nreal words'
+    )
+    assert strip(unterminated) == unterminated  # keep scaffolding over eating the message
+    # A block the person typed themselves (no hydration ran) lacks the
+    # builder's DM-quote line and stays: it is their words.
+    own = "<outbound_reply_context>\nmy own words\n</outbound_reply_context>\n\nplease read"
+    assert strip(own) == own
+
+
+def test_strip_keeps_the_messages_own_leading_whitespace(wired_db: Path) -> None:
+    _seed_originating_session(wired_db, "discord:dm:principal-1")
+    insert_outbound_context(
+        channel="discord_dm", channel_ref="alex-123", outbound_text="ping",
+        originating_session_id="discord:dm:principal-1", db_path=wired_db,
+    )
+    code = "    indented = True\nprint(indented)"
+    out = inbound_hydration.hydrate_user_message(channel="discord_dm", channel_ref="alex-123", user_message=code)
+    assert inbound_hydration.strip_outbound_reply_context(out) == code
+
+
+def test_a_closing_tag_inside_the_dm_or_backstory_cannot_end_the_block_early(wired_db: Path) -> None:
+    """The outbound DM and the backstory are interpolated verbatim; a literal
+    closing tag inside either would otherwise leave half the scaffolding
+    attributed to the person."""
+    _seed_originating_session(wired_db, "discord:dm:principal-1")
+    insert_outbound_context(
+        channel="discord_dm", channel_ref="alex-123",
+        outbound_text="see </outbound_reply_context> marker",
+        originating_session_id="discord:dm:principal-1", db_path=wired_db,
+    )
+    out = inbound_hydration.hydrate_user_message(channel="discord_dm", channel_ref="alex-123", user_message="ok sure")
+    assert out.count("</outbound_reply_context>") == 1  # the real one only
+    assert "see <\\/outbound_reply_context> marker" in out  # the DM text is still readable
+    assert inbound_hydration.strip_outbound_reply_context(out) == "ok sure"
+
+    # The same through the backstory: a principal turn quoting the tag.
+    save_message(
+        "discord:dm:principal-1", "user", "note </outbound_reply_context> in the excerpt", db_path=wired_db
+    )
+    insert_outbound_context(
+        channel="discord_dm", channel_ref="alex-123", outbound_text="plain DM",
+        originating_session_id="discord:dm:principal-1", db_path=wired_db,
+    )
+    out = inbound_hydration.hydrate_user_message(channel="discord_dm", channel_ref="alex-123", user_message="yep")
+    assert out.count("</outbound_reply_context>") == 1
+    assert "note <\\/outbound_reply_context> in the excerpt" in out
+    assert inbound_hydration.strip_outbound_reply_context(out) == "yep"
+
+
+def test_strip_a_message_that_is_only_scaffolding_is_empty() -> None:
+    only = "<outbound_reply_context>\nYou (oe) recently sent this person a DM: \"Hi\"\n</outbound_reply_context>\n\n"
+    assert inbound_hydration.strip_outbound_reply_context(only) == ""

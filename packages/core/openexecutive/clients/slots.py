@@ -58,8 +58,10 @@ logger = logging.getLogger(__name__)
 CLIENT_WORKSPACE_PREFIX = "openexec-client-"
 
 # Tables preserved verbatim across slot restores — operator-level state that
-# does not belong to any one client company.
-_GLOBAL_TABLES = ("generated_fixtures",)
+# does not belong to any one client company. `executive_control` is the
+# global pause switch (scheduler/pause.py): activating a client must never
+# silently un-pause (or re-pause) the Executive.
+_GLOBAL_TABLES = ("generated_fixtures", "executive_control")
 
 # Engagement metadata lives in meta.json — deliberately OUTSIDE the swapped
 # client state, so the practice layer (cockpit, renewal awareness) can see
@@ -119,6 +121,12 @@ _BLANK_WIPE_TABLES = (
     "watchlist",
     "page_watch_state",
     "outbound_context",
+    # Attunement's daily model-call counter (open loops themselves live in
+    # scheduled_actions, and sender/feedback columns in chat_messages).
+    "attunement_usage",
+    "proactive_outcomes",
+    "attunement_profiles",
+    "attunement_profile_history",
     # Legacy talent / staff-onboarding tables. Both features are gone and
     # nothing writes these any more, but the rows may still exist on upgraded
     # installs and they carry candidate PII (names, employers, screening
@@ -556,6 +564,7 @@ def _ensure_schemas() -> None:
     from openexecutive.memory.episodic import initialize_db as init_episodic
     from openexecutive.monitoring.store import initialize_db as init_monitoring
     from openexecutive.people.store import initialize_db as init_people
+    from openexecutive.scheduler.pause import initialize_pause_db
 
     # Pass the path explicitly everywhere: some initializers bind their
     # DB_PATH default at import time, which would ignore a runtime override.
@@ -576,6 +585,9 @@ def _ensure_schemas() -> None:
     init_people(db_path)
     init_departments(db_path)
     init_monitoring(db_path)
+    # Before _restore_global_tables: a slot saved before the pause switch
+    # existed lacks the table, and the restore skips tables it can't find.
+    initialize_pause_db(db_path)
     ReviewStore.initialize_db(db_path)
     # Register shipped knowledge as trusted defaults too — without this a
     # freshly activated slot has an empty review_items table until the next
@@ -668,7 +680,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     can stub the vector layer without touching the file/DB round-trip logic.
     """
     from openexecutive.knowledge.loader import ingest_file
-    from openexecutive.knowledge.skills_index import SKILLS_COLLECTION, index_skill
+    from openexecutive.knowledge.skills_index import (
+        SKILLS_COLLECTION,
+        index_skill,
+        sync_builtin_skill_index,
+    )
     from openexecutive.knowledge.skills_repo import list_skills
     from openexecutive.knowledge.store import ChromaDBStore
 
@@ -678,6 +694,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     store.delete_documents(
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         where={"type": "recent_research"},
+    )
+    # Indexed artifacts (orchestrator/artifact_tools.py) share that collection.
+    store.delete_documents(
+        collection=ChromaDBStore.RESEARCH_COLLECTION,
+        where={"type": "artifact"},
     )
     store.delete_notion_docs()
     # Inbound attachments are per-company too, and no longer swept by
@@ -713,6 +734,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
                 index_skill(skill, store)
             except Exception:
                 logger.exception("client-slots: reindex skill failed")
+    # The restored client may hide or customize different built-ins.
+    try:
+        sync_builtin_skill_index(store)
+    except Exception:
+        logger.exception("client-slots: reconcile built-in skills failed")
 
     if app_state is not None and hasattr(app_state, "store"):
         app_state.store = ChromaDBStore(persist_directory=settings.vector_store_path)

@@ -82,8 +82,11 @@ def _strip_cache_control(kwargs: dict[str, Any]) -> None:
             if isinstance(t, dict):
                 t.pop("cache_control", None)
 
-    # cache_control can also appear on user-turn content blocks for rolling
-    # cache. Strip it there too.
+    # cache_control also appears on user-turn content blocks — notably the
+    # agent loop's intra-turn marker, which rides on a tool_result block.
+    # Strip it there too. One level deep is enough because every marker we
+    # emit sits at a content block's own top level, never nested inside a
+    # tool_result's own content list.
     messages = kwargs.get("messages")
     if isinstance(messages, list):
         for m in messages:

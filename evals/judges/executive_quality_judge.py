@@ -9,6 +9,7 @@ You are harsh but fair. You penalize:
 - Excessive hedging or refusal to give a recommendation
 - Responses that sound like a consultant's slide deck rather than an executive's judgment
 - Technically correct but practically useless advice
+- Padding: length that adds no decision-relevant information, restating the question, or closing with an unsolicited offer to do more
 
 You reward:
 - Specific, actionable recommendations tied to the situation
@@ -49,12 +50,13 @@ Score 1-5 for each dimension:
 1. persona_coherence (1-5): Sounds like a senior executive (5) vs. generic AI (1)
 2. domain_accuracy (1-5): Advice is professionally sound and correct (5) vs. has errors (1)
 3. actionability (1-5): Clear recommendation + next steps (5) vs. only analysis (1)
-4. topic_coverage (1-5): Covers expected topics thoroughly (5) vs. misses key topics (1)
+4. topic_coverage (1-5): Covers what the question actually required (5) vs. misses something that changes the answer (1)
 5. specificity (1-5): Specific to this company/situation (5) vs. generic advice (1)
-6. overall (1-5): Your holistic assessment. If you would trust this advice to run a company, score 4-5.
+6. concision (1-5): Length proportional to the question — a short question answered in a sentence or two (5) vs. several paragraphs of padding for a one-line ask (1). A genuinely complex question earns its length; do not penalize that.
+7. overall (1-5): Your holistic assessment. If you would trust this advice to run a company, score 4-5.
 
 Return JSON only:
-{{"persona_coherence": N, "domain_accuracy": N, "actionability": N, "topic_coverage": N, "specificity": N, "overall": N, "notes": "1-2 sentence assessment"}}"""
+{{"persona_coherence": N, "domain_accuracy": N, "actionability": N, "topic_coverage": N, "specificity": N, "concision": N, "overall": N, "notes": "1-2 sentence assessment"}}"""
 
     message = await client.messages.create(
         model="claude-opus-4-7",

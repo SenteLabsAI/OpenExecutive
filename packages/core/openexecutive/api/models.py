@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,6 +56,31 @@ class ChatRequest(BaseModel):
     committee_review: bool = False
     # Set by the Ask OE side panel only; absent on the main chat page.
     page_context: PageContext | None = None
+    # Client-minted id for THIS turn, so the client can address it via
+    # POST /chat/stop from the moment Send is pressed. It is deliberately not
+    # the audit `turn_id` (that keeps its server-minted `t-` shape, which audit
+    # queries filter on) — see `_clean_client_turn_id` in api/routes/chat.py.
+    # Bounded, but deliberately NOT pattern-validated here: a malformed id only
+    # means this turn can't be stopped, and 422-ing the whole chat turn over it
+    # would contradict `_clean_client_turn_id`, which drops it and carries on.
+    # The max_length is a size bound, not a format check.
+    client_turn_id: str | None = Field(None, max_length=64)
+    # The caller's own words for this turn, when `message` carries text the
+    # caller did not write — a briefing handoff seeds the turn with the
+    # Executive's own card body. Peer memory records it, and episodic
+    # extraction and open loops quote commitments from it. Absent → `message`.
+    # Recorded under the caller's own peer and, like `message` would be, in
+    # the shared memory of each department consulted that turn; it is not in
+    # the transcript, so the chat_turn audit row keeps it next to `message`.
+    memory_text: str | None = Field(None, min_length=1, max_length=2000)
+
+
+class StopChatRequest(BaseModel):
+    """Body of POST /chat/stop — the `client_turn_id` sent with the turn."""
+
+    client_turn_id: str = Field(
+        ..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
 
 
 class ChatResponse(BaseModel):
@@ -107,7 +132,13 @@ class HealthResponse(BaseModel):
     company_name: str | None = None
     builtin_skills: int = 0
     company_skills: int = 0
-    version: str = "0.1.0"
+    version: str = "0.3.2"  # x-release-please-version
+
+
+class SkillWorkflowRef(BaseModel):
+    name: str
+    title: str
+    is_custom: bool = False
 
 
 class SkillMeta(BaseModel):
@@ -117,6 +148,10 @@ class SkillMeta(BaseModel):
     when_to_use: str
     source: str
     filename: str
+    customized: bool = False
+    hidden: bool = False
+    # Workflows whose steps follow this playbook (switched-off custom ones too).
+    used_by: list[SkillWorkflowRef] = []
 
 
 class SkillDetail(SkillMeta):
@@ -133,6 +168,50 @@ class SkillCreate(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: list[SkillMeta]
+
+
+class SkillDeleteResponse(BaseModel):
+    name: str
+    # "deleted" (company skill removed), "reverted" (customization removed,
+    # the built-in is back) or "hidden" (built-in hidden for this company).
+    outcome: Literal["deleted", "reverted", "hidden"]
+
+
+class SkillDraftOut(BaseModel):
+    """A playbook change the Executive proposed from chat, awaiting review."""
+
+    action: Literal["create", "update", "delete"]
+    name: str
+    category: str
+    description: str
+    when_to_use: str
+    body: str
+    proposed_at: str
+    # Version token: send it back to approve or discard exactly this draft.
+    id: str
+    # The playbook in effect now (None for a create) — what an update or
+    # delete would change.
+    current: SkillDetail | None = None
+    # Workflows that follow this name — for a create too, since a workflow
+    # may still name a playbook that was deleted.
+    followers: list[SkillWorkflowRef] = []
+
+
+class SkillDraftDecision(BaseModel):
+    id: str
+
+
+class SkillDraftListResponse(BaseModel):
+    drafts: list[SkillDraftOut]
+
+
+class SkillDraftApproval(BaseModel):
+    action: Literal["create", "update", "delete"]
+    name: str
+    # Set for an approved delete: deleted / reverted / hidden.
+    outcome: Literal["deleted", "reverted", "hidden"] | None = None
+    # Set for an approved create or update.
+    skill: SkillDetail | None = None
 
 
 class SkillSearchHit(BaseModel):
@@ -305,3 +384,48 @@ class OnboardCommitRequest(BaseModel):
     profile: CompanyProfileUpdateRequest
     people: list[OnboardPersonDraft] = Field(default_factory=list)
     departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+
+
+# ── /workflows/designer/* (conversational "New workflow" wizard) ─────────────
+# Bounded in the route, not with Field(max_length=...), so a rejection is a
+# fixed string instead of FastAPI's 422 echo of the whole message. The question
+# and transcript budgets live in workflows/designer.py, which enforces them.
+WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS = 8_000
+
+
+class WorkflowDesignerStartRequest(BaseModel):
+    message: str
+
+
+class WorkflowDesignerMessageRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class WorkflowDesignerSessionRequest(BaseModel):
+    session_id: str
+
+
+class WorkflowDesignerTranscriptTurn(BaseModel):
+    role: str
+    text: str
+
+
+class WorkflowDesignerDraftResponse(BaseModel):
+    # A DynamicWorkflowDef dump — the exact body POST /workflows/custom takes.
+    definition: dict[str, Any]
+    summary: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class WorkflowDesignerTurnResponse(BaseModel):
+    session_id: str
+    # "question" while designing, "draft" once a reviewable draft exists.
+    phase: str
+    questions_asked: int
+    max_questions: int
+    question: str | None = None
+    hint: str | None = None
+    options: list[str] = Field(default_factory=list)
+    draft: WorkflowDesignerDraftResponse | None = None
+    transcript: list[WorkflowDesignerTranscriptTurn] = Field(default_factory=list)

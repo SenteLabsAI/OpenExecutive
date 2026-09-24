@@ -101,6 +101,25 @@ def _parse_cadence_spec(spec: str, after: datetime) -> datetime | None:
     return None
 
 
+CADENCE_FORMATS_HINT = (
+    "daily@HH:MM, weekly@DOW@HH:MM (e.g. weekly@mon@09:00) "
+    "or quarterly@DD-HH:MM, times in UTC"
+)
+
+
+def is_valid_cadence_spec(spec: str) -> bool:
+    """Return True if ``spec`` parses to a next occurrence.
+
+    Used to reject bad specs at save time rather than letting the scheduler
+    skip them silently. An out-of-range time (``daily@25:00``) makes
+    ``datetime.replace`` raise, so that counts as invalid too.
+    """
+    try:
+        return _parse_cadence_spec(spec, datetime.now(UTC)) is not None
+    except ValueError:
+        return False
+
+
 def _has_pending_cadence(slug: str, conn: object) -> bool:  # type: ignore[type-arg]
     """Return True if a pending or running dept_cadence row exists for slug."""
     import sqlite3 as _sqlite3

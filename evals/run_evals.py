@@ -70,9 +70,11 @@ Rate each dimension (1=poor, 3=acceptable, 5=excellent):
 3. actionability: Does it give concrete next steps with clear recommendations?
 4. topic_coverage: Does it address the expected topics?
 5. specificity: Is it specific to the situation, not generic advice?
+6. concision: Is the length proportional to the question? Penalize padding, restating the question, and unsolicited closing offers. A genuinely complex question earns its length.
+7. overall: Your holistic assessment of the response.
 
 Respond in JSON format:
-{{"persona_coherence": N, "domain_accuracy": N, "actionability": N, "topic_coverage": N, "specificity": N, "overall": N, "notes": "brief explanation"}}"""
+{{"persona_coherence": N, "domain_accuracy": N, "actionability": N, "topic_coverage": N, "specificity": N, "concision": N, "overall": N, "notes": "brief explanation"}}"""
 
     message = await client.messages.create(
         model="claude-opus-4-7",

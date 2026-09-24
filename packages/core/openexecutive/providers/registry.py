@@ -15,7 +15,7 @@ the hardcoded ``OPENROUTER_MODELS`` snapshot when nothing has been loaded.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from fastapi import HTTPException
 
@@ -30,6 +30,8 @@ from openexecutive.providers.provider import LLMProvider
 # Anthropic-direct slugs — used as canonical model names everywhere in
 # the codebase (config defaults, agent class defaults, override DB).
 ANTHROPIC_DIRECT_MODELS: list[str] = [
+    "claude-fable-5-1",
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-haiku-4-5",
@@ -225,6 +227,88 @@ def allowed_models_for(agent_id: str | None) -> list[str]:
     future per-agent rules.)
     """
     return allowed_models()
+
+
+# Display names for the provider keys ``model_options_for`` emits. A vendor
+# missing here (a new OPENROUTER_CATALOG_PROVIDERS entry) shows its raw
+# OpenRouter prefix, which is still a usable group name.
+_PROVIDER_LABELS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google",
+    "meta-llama": "Meta",
+    "deepseek": "DeepSeek",
+    "x-ai": "xAI",
+    "mistralai": "Mistral",
+    "qwen": "Qwen",
+    "local": "Local",
+}
+# ``anthropic/claude-opus-4.8`` → family ``opus``, version ``4.8``.
+_OPENROUTER_CLAUDE_SLUG_RE = re.compile(
+    r"^anthropic/claude-(?P<family>[a-z]+)-(?P<version>\d{1,3}(?:\.\d{1,3})?)$"
+)
+
+
+ModelRoute = Literal["direct", "openrouter", "local"]
+
+
+class ModelOption(TypedDict):
+    id: str
+    provider: str
+    provider_label: str
+    route: ModelRoute
+    label: str
+
+
+def _claude_label(model: str) -> str | None:
+    """``claude-opus-5-5`` / ``anthropic/claude-opus-5.5`` → ``Claude Opus 5.5``."""
+    slug = openrouter_slug_for_claude(model) or model
+    m = _OPENROUTER_CLAUDE_SLUG_RE.match(slug)
+    if m is None:
+        return None
+    return f"Claude {m.group('family').capitalize()} {m.group('version')}"
+
+
+def _model_option(model: str, *, local: bool, openrouter_enabled: bool) -> ModelOption:
+    """Provider grouping + display name for one allowlisted model.
+
+    ``route`` mirrors ``get_provider``: local slugs stay local, Claude ids
+    go direct unless OpenRouter is on, everything else is OpenRouter.
+    """
+    route: ModelRoute
+    if local:
+        provider, route, label = "local", "local", model
+    elif _is_claude(model):
+        provider = "anthropic"
+        route = "openrouter" if openrouter_enabled else "direct"
+        label = _claude_label(model) or model
+    else:
+        vendor, sep, name = model.partition("/")
+        provider = vendor if sep else "other"
+        route = "openrouter"
+        label = (_claude_label(model) if provider == "anthropic" else None) or name or model
+    return {
+        "id": model,
+        "provider": provider,
+        "provider_label": _PROVIDER_LABELS.get(provider, provider),
+        "route": route,
+        "label": label,
+    }
+
+
+def model_options_for(agent_id: str | None) -> list[ModelOption]:
+    """``allowed_models_for(agent_id)`` annotated for the Council's
+    Provider → Model picker. Same ids, same order — the flat list stays the
+    PATCH validator's source of truth; this only adds grouping and labels.
+    """
+    settings = get_settings()
+    local = set(_local_models(settings))
+    return [
+        _model_option(
+            m, local=m in local, openrouter_enabled=bool(settings.openrouter_enabled)
+        )
+        for m in allowed_models_for(agent_id)
+    ]
 
 
 def _is_claude(model: str) -> bool:

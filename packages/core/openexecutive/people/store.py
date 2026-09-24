@@ -357,7 +357,7 @@ def find_person_by_telegram_chat_id(telegram_chat_id: str, db_path: Path | None 
 def find_person_by_email(email: str, db_path: Path | None = None) -> Person | None:
     """Return the first non-archived Person with this email address, or None.
 
-    Case-insensitive match — IMAP `From:` headers come back with the
+    Case-insensitive match — email `From:` headers come back with the
     sender's chosen capitalization, which isn't necessarily what was
     stored on the Person row.
     """
@@ -466,6 +466,23 @@ def list_people(
         return [_row_to_person(row, conn) for row in rows]
 
 
+def is_principal_or_self(
+    caller_person_id: int | None, person_id: int | None, db_path: Path | None = None
+) -> bool:
+    """Whether ``caller_person_id`` may act on something ``person_id`` owns:
+    it is that person, or the principal. An unresolved caller never may, and
+    something with no owner (``person_id`` None) is the principal's alone.
+
+    The one authorization rule behind closing an open loop and rating a reply,
+    kept here so the chat tools and the HTTP routes cannot drift apart."""
+    if caller_person_id is None:
+        return False
+    if person_id is not None and caller_person_id == person_id:
+        return True
+    caller = get_person(caller_person_id, db_path=db_path)
+    return bool(caller is not None and caller.is_principal and not caller.archived)
+
+
 def archive_person(person_id: int, db_path: Path | None = None) -> bool:
     """Soft-delete a person. Returns True if a row was found and archived."""
     with _get_conn(db_path) as conn:
@@ -473,7 +490,24 @@ def archive_person(person_id: int, db_path: Path | None = None) -> bool:
             "UPDATE people SET archived = 1, updated_at = ? WHERE id = ? AND archived = 0",
             (_now(), person_id),
         )
-        return cursor.rowcount > 0
+        archived = cursor.rowcount > 0
+    if archived and db_path is None:
+        # An archived person can no longer be chased, so their open loops
+        # would otherwise sit in /today forever. Only on the live store: a
+        # caller passing its own db_path owns its own episodic DB too.
+        try:
+            from openexecutive.attunement.open_loops import close_loops_for_person
+
+            close_loops_for_person(person_id, reason="owner_archived")
+        except Exception:
+            logger.warning("archive_person: closing open loops failed", exc_info=True)
+        try:
+            from openexecutive.attunement.style import delete_profile
+
+            delete_profile(person_id)
+        except Exception:
+            logger.warning("archive_person: dropping working style failed", exc_info=True)
+    return archived
 
 
 def find_approvers(

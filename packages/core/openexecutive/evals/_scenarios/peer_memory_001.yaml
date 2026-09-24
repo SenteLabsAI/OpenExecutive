@@ -1,0 +1,34 @@
+id: peer_memory_001
+domain: operations
+description: "Executive uses <peer_memory>: matches a remembered format preference without re-asking, and lets the current message override an older remembered fact"
+company_context:
+  name: "Harbourline Residential"
+  industry: "Residential property management"
+  stage: "Growth"
+  headcount: 60
+  arr: 9000000
+# Injected verbatim as the <peer_memory> body, in the shape Honcho's
+# representation read returns: the peer card line, then timestamped
+# observations that name the person by bare peer id. Passed straight through
+# as peer_memory_context, so no memory service is needed; what is under test
+# is the persona guidance about the block.
+peer_memory_context: |
+  IDENTITY: Name: Priya Nair
+
+  ## Explicit Observations
+
+  [2026-08-14 09:12:03] 3 said she reads updates between site visits and wants portfolio summaries as a short table, not prose
+  [2026-08-14 09:14:40] 3 confirmed that the correct unit count for St. Albans is 48
+  [2026-09-02 16:05:21] 3 mentioned that Riverside Court is 36 units and fully let
+query: "St. Albans is 52 units now that the annex is done. Give me the portfolio summary for tomorrow's owners' call."
+expected_topics:
+  - portfolio_summary
+  - st_albans_52_units
+  - riverside_court_36_units
+  - short_table
+quality_criteria:
+  uses_table: true
+  concise: true
+  does_not_reask_format: true
+  current_statement_overrides_memory: true   # 52 units, not the remembered 48
+  no_memory_meta_talk: true                  # never "my notes say" / "I recall that"

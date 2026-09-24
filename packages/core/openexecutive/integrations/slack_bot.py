@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
+
+from openexecutive.audit.redaction import ERROR_DETAIL_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,163 @@ _bot_user_id: str | None = None
 # `concurrency=10` pool only did dispatch+ack, which returns immediately, so
 # 5 (not 10) was the real cap on concurrent executive.chat() calls.
 _MAX_CONCURRENT_HANDLERS = 5
+
+# Serializes turns within one conversation. The semaphore above caps how many
+# Slack messages are in flight across the workspace; it does nothing to stop
+# two messages in the SAME conversation from being processed concurrently,
+# which makes both turns read history before either writes it — interleaved
+# turns and a confused reply. Mirrors the per-chat lock in telegram_bot.py and
+# the per-session lock in discord_bot.py. Unbounded growth matches both of
+# those; a conversation's lock is a few dozen bytes.
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+def _session_lock(session_id: str) -> asyncio.Lock:
+    lock = _session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[session_id] = lock
+    return lock
+
+
+def _slack_session_id(
+    *,
+    mode: str,
+    channel: str,
+    user_id: str,
+    thread_ts: str,
+    is_threaded_reply: bool,
+) -> str:
+    """Deterministic session id keyed to the conversation surface.
+
+    The previous scheme was ``slack:{channel}:{thread_ts}`` with ``thread_ts``
+    falling back to the message's own ``ts``. In a DM there is no ``thread_ts``,
+    so every single message minted a fresh id — which, once history was
+    persisted against it, would still have left every Slack turn starting from
+    zero. That is the root cause of #136: the bot asked "should I send it to
+    Slack?", the user said yes, and the next turn had no record of the question.
+
+    - DM → ``slack:dm:{user_id}`` — one long-lived conversation per person,
+      matching ``discord:dm:{user_id}``.
+    - Reply inside an existing thread → ``slack:thread:{channel}:{thread_ts}``.
+    - Mention that starts a thread → ``slack:channel:{channel}:{user_id}``, a
+      rolling per-(channel, person) session. The reply also roots a Slack
+      thread at this message's ``ts``, so the turn is double-written to
+      ``slack:thread:{channel}:{ts}`` (see `_persist_turn`) — otherwise the
+      first continuation inside that thread would start cold.
+    """
+    if mode == "dm":
+        return f"slack:dm:{user_id}"
+    if is_threaded_reply:
+        return f"slack:thread:{channel}:{thread_ts}"
+    return f"slack:channel:{channel}:{user_id}"
+
+
+def _format_user_content(text: str, speaker: str | None) -> str:
+    """Prefix a persisted user turn with its speaker in multi-human threads.
+
+    Replayed history is otherwise unattributed: in a thread with three people
+    the model cannot tell who said what. Mirrors discord_bot's
+    `_format_user_content`; DMs stay unprefixed (1:1, no ambiguity).
+    """
+    if not speaker:
+        return text
+    return f"[{speaker}]: {text}"
+
+
+def _session_title(person: object, mode: str) -> str:
+    """Human-readable title for the /sessions sidebar."""
+    name = (
+        getattr(person, "display_name", None)
+        or getattr(person, "full_name", None)
+        or "Slack"
+    )
+    surface = {"dm": "DM", "mention": "channel", "thread_continuation": "thread"}
+    return f"Slack {surface.get(mode, mode)} — {name}"
+
+
+def _persist_turn(
+    *,
+    session_id: str,
+    title: str,
+    created_at: str,
+    owner_person_id: int | None,
+    user_text: str,
+    assistant_text: str,
+    also_session_id: str | None = None,
+    sender_person_id: int | None = None,
+) -> None:
+    """Write one Q+A to the session store, best-effort.
+
+    Sync (SQLite) — call it via ``asyncio.to_thread``. Never raises: the user
+    already has their reply, so a persistence failure must not turn a
+    successful turn into the generic error path. ``also_session_id`` is the
+    double-write target for a mention that roots a new Slack thread.
+    """
+    from openexecutive.memory.session_store import (
+        create_session,
+        save_message,
+        update_session_timestamp,
+    )
+
+    for sid in (session_id, also_session_id):
+        if not sid:
+            continue
+        try:
+            create_session(sid, title, created_at, caller_person_id=owner_person_id)
+            save_message(sid, "user", user_text, sender_person_id=sender_person_id)
+            save_message(sid, "assistant", assistant_text)
+            update_session_timestamp(sid)
+        except Exception:
+            logger.exception("Slack: failed to persist turn for session %s", sid)
+
+
+def _thread_root_author(thread_replies: list[dict] | None) -> str:
+    """The user_id who posted the message a thread hangs off, if known."""
+    if not thread_replies:
+        return ""
+    return str(thread_replies[0].get("user") or "")
+
+
+def _session_id_aliases(
+    *,
+    mode: str,
+    channel: str,
+    user_id: str,
+    session_id: str,
+    is_threaded_reply: bool,
+    thread_replies: list[dict] | None,
+) -> list[str]:
+    """Every session id this inbound message legitimately belongs to.
+
+    Normally just its own. The exception is a reply inside a thread THIS
+    person rooted: the bot answers an @mention in a channel by replying in a
+    thread hung off that mention, so the conversation also lives under the
+    rolling `slack:channel:{channel}:{user}` session — the same pair
+    `_persist_turn` double-writes history to. Without the parent id, a gate
+    raised on the mention can never be answered in the thread it was asked in.
+
+    The root-author check is what keeps that from being a hole. Widening on
+    "threaded and not a DM" alone would offer Alice's channel session inside
+    ANY thread in that channel — including one rooted by Bob's mention — so a
+    remark Alice made to Bob could resolve her open gate, post the run's title
+    into Bob's thread, and do it having skipped the multi-human response gate
+    (the resolver runs before it). Scoped to threads this person started, the
+    alias only ever names a conversation that is genuinely theirs.
+
+    A thread whose replies could not be fetched degrades to no alias: the
+    gate stays unanswered, which is recoverable, rather than over-matching.
+    """
+    aliases = [session_id]
+    if (
+        mode != "dm"
+        and is_threaded_reply
+        and channel
+        and user_id
+        and _thread_root_author(thread_replies) == user_id
+    ):
+        aliases.append(f"slack:channel:{channel}:{user_id}")
+    return aliases
 
 
 def _replies_contain_bot_message(messages: list[dict], bot_user_id: str | None) -> bool:
@@ -163,23 +323,35 @@ async def create_slack_app():
 
         thread_ts = event.get("thread_ts") or event.get("ts")
         slack_user_id = event.get("user", "")
-        # Deterministic per-thread session id so every audit row from this
-        # inbound (chat_turn, specialist_consult, tool_invocation) shares a
-        # grouping key with the integration_inbound row.
-        session_id = f"slack:{event.get('channel', '')}:{thread_ts}"
+
+        # Whether this message is a reply *inside* an existing thread, as
+        # opposed to a thread starter or a DM. Used for three things: whether
+        # to fetch thread replies, which session id to use, and whether
+        # `thread_ts` is a meaningful reply reference for the inbound resolver.
+        is_threaded_reply = (
+            thread_ts is not None
+            and str(thread_ts) != str(event.get("ts") or "")
+        )
+        # Deterministic per-conversation session id. Every audit row from this
+        # inbound (chat_turn, specialist_consult, tool_invocation) shares it
+        # with the integration_inbound row, and it is the key the stored
+        # conversation history hangs off.
+        session_id = _slack_session_id(
+            mode=mode,
+            channel=str(event.get("channel", "")),
+            user_id=str(slack_user_id),
+            thread_ts=str(thread_ts or ""),
+            is_threaded_reply=is_threaded_reply,
+        )
 
         # Fetch thread replies ONCE up front so we can use the result for
         # (a) the "has the bot engaged?" check on thread_continuation mode,
         # (b) the single-human bypass on the response gate, and
         # (c) the multi-peer co-presence enumeration further down.
         # Standalone messages and DMs are 1:1 — skip the API call.
-        is_threaded_reply = (
-            client is not None
-            and thread_ts is not None
-            and str(thread_ts) != str(event.get("ts") or "")
-        )
+        can_fetch_replies = client is not None and is_threaded_reply
         thread_replies: list[dict] | None = None
-        if is_threaded_reply:
+        if can_fetch_replies:
             try:
                 # 5s bound: this call sits on the user-facing TTFB path (it
                 # runs before executive.chat). Enforced with wait_for, not the
@@ -268,35 +440,44 @@ async def create_slack_app():
             return
 
         # WaitForHuman inbound resolver — check BEFORE alert triage.
-        # If this message resolves an awaiting workflow run, skip triage.
-        if slack_user_id:
-            try:
-                from openexecutive.people.store import find_person_by_slack_id
-                from openexecutive.workflows.inbound_resolver import resolve_inbound_message
-                from openexecutive.workflows.resumer import apply_resolution
+        # If this message answers an awaiting workflow run, skip triage.
+        if sender_person.id is not None:
+            from openexecutive.workflows.inbound_resolver import (
+                resolve_and_acknowledge,
+            )
 
-                person = await asyncio.to_thread(
-                    find_person_by_slack_id, slack_user_id
-                )
-                if person is not None and person.id is not None:
-                    resolution = await resolve_inbound_message(
-                        channel="slack",
-                        channel_ref=slack_user_id,
-                        from_person_id=person.id,
-                        text=cleaned,
-                        message_id=str(event.get("ts") or ""),
-                        in_reply_to=str(thread_ts or ""),
-                    )
-                    if resolution is not None and resolution.run_id:
-                        success = await apply_resolution(resolution.run_id, resolution)
-                        if success:
-                            await say(
-                                text="Got it — your response has been recorded.",
-                                thread_ts=thread_ts,
-                            )
-                            return
-            except Exception:
-                logger.exception("Slack: inbound resolver check failed")
+            async def _say_ack(text: str) -> None:
+                await say(text=text, thread_ts=thread_ts)
+
+            if await resolve_and_acknowledge(
+                channel="slack",
+                channel_ref=slack_user_id,
+                person_id=sender_person.id,
+                text=cleaned,
+                send=_say_ack,
+                message_id=str(event.get("ts") or ""),
+                # Only a reply INSIDE a thread carries a meaningful reply
+                # reference. `thread_ts` falls back to this message's own ts,
+                # and passing that made the resolver treat every Slack message
+                # as an explicit reference to nothing — which short-circuited
+                # tiers 2 and 3 and made Slack approvals impossible (#136).
+                in_reply_to=str(thread_ts) if is_threaded_reply else "",
+                # Both ids this conversation is reachable under. A mention in
+                # a channel raises its gate under the rolling channel session,
+                # but the bot's reply roots a thread — so the answer arrives
+                # under the THREAD id. Offering only one made that gate
+                # permanently unanswerable, which is #136 one surface over.
+                # Mirrors the history double-write in `_persist_turn`.
+                session_ids=_session_id_aliases(
+                    mode=mode,
+                    channel=str(event.get("channel", "")),
+                    user_id=str(slack_user_id),
+                    session_id=session_id,
+                    is_threaded_reply=is_threaded_reply,
+                    thread_replies=thread_replies,
+                ),
+            ):
+                return
 
         # Response gate — only for thread continuations (mentions/DMs are
         # unconditional). Single-human threads bypass: every message in a
@@ -364,100 +545,232 @@ async def create_slack_app():
             logger.exception("Failed to schedule alert evaluation for Slack message")
 
         try:
+            from openexecutive.integrations.channel_context import (
+                attach_briefing_context,
+                build_channel_context_block,
+            )
             from openexecutive.knowledge.retriever import retrieve
             from openexecutive.memory.episodic import format_for_prompt
+            from openexecutive.memory.session_store import load_messages
             from openexecutive.onboarding.profile_builder import load_or_create_profile
             from openexecutive.orchestrator.executive import Executive
             from openexecutive.orchestrator.mcp_gateway import get_active_gateway
             from openexecutive.orchestrator.session import Session
 
-            profile = await asyncio.to_thread(load_or_create_profile)
-            session = Session(
-                session_id=session_id,
-                company_profile=profile if not profile.is_empty() else None,
-            )
-            slack_user = event.get("user")
-            if slack_user:
-                session.seen_channel_refs.add(("slack_dm", str(slack_user)))
+            # Everything from here to the persist below runs under the
+            # conversation's lock: two messages in the same thread must not
+            # both read history before either writes it.
+            async with _session_lock(session_id):
+                profile = await asyncio.to_thread(load_or_create_profile)
+                # Where this conversation is happening, so a workflow that
+                # raises an approval gate mid-turn can record that the
+                # person's next reply HERE answers it (#136).
+                session = Session(
+                    session_id=session_id,
+                    company_profile=profile if not profile.is_empty() else None,
+                    origin_channel="slack",
+                    origin_channel_ref=str(slack_user_id or ""),
+                    caller_person_id=sender_person.id,
+                )
+                # Replay the stored conversation. Slack was the only chat
+                # adapter with no history at all — every turn started cold,
+                # so a multi-turn confirmation could never work (#136).
+                history = await asyncio.to_thread(load_messages, session_id)
+                if history:
+                    session.conversation_history = history
+                slack_user = event.get("user")
+                if slack_user:
+                    session.seen_channel_refs.add(("slack_dm", str(slack_user)))
 
-            # Sender was already resolved at the roster gate above; reuse it
-            # so we don't hit the DB twice in the hot path.
-            person_id = sender_person.id
+                # Sender was already resolved at the roster gate above; reuse it
+                # so we don't hit the DB twice in the hot path.
+                person_id = sender_person.id
 
-            # Multi-peer co-presence: enumerate other thread participants
-            # from the already-fetched conversations_replies payload (one
-            # API call total) and resolve each to a Person via
-            # find_person_by_slack_id. Any client/API failure earlier left
-            # thread_replies as None; that degrades to an empty list.
-            co_present_person_ids: list[int] = []
-            if thread_replies is not None:
-                seen: set[str] = set()
-                for msg in thread_replies:
-                    uid = str(msg.get("user") or "")
-                    if not uid or uid == str(slack_user) or uid in seen:
-                        continue
-                    if _bot_user_id and uid == _bot_user_id:
-                        continue
-                    seen.add(uid)
-                    other = await asyncio.to_thread(find_person_by_slack_id, uid)
-                    if other and other.id is not None:
-                        co_present_person_ids.append(other.id)
+                # Multi-peer co-presence: enumerate other thread participants
+                # from the already-fetched conversations_replies payload (one
+                # API call total) and resolve each to a Person via
+                # find_person_by_slack_id. Any client/API failure earlier left
+                # thread_replies as None; that degrades to an empty list.
+                co_present_person_ids: list[int] = []
+                if thread_replies is not None:
+                    seen: set[str] = set()
+                    for msg in thread_replies:
+                        uid = str(msg.get("user") or "")
+                        if not uid or uid == str(slack_user) or uid in seen:
+                            continue
+                        if _bot_user_id and uid == _bot_user_id:
+                            continue
+                        seen.add(uid)
+                        other = await asyncio.to_thread(find_person_by_slack_id, uid)
+                        if other and other.id is not None:
+                            co_present_person_ids.append(other.id)
 
-            # Offloaded for the same reason api/routes/chat.py offloads them:
-            # both are blocking (ChromaDB query + embedding, SQLite read) and
-            # the handler now awaits on the application event loop, so running
-            # them inline would stall every other request. `get_store()` hands
-            # over the warm ChromaDB client the lifespan built, instead of
-            # constructing a fresh PersistentClient on every message.
-            from openexecutive.mcp_server.server import get_store
+                # Offloaded for the same reason api/routes/chat.py offloads them:
+                # both are blocking (ChromaDB query + embedding, SQLite read) and
+                # the handler now awaits on the application event loop, so running
+                # them inline would stall every other request. `get_store()` hands
+                # over the warm ChromaDB client the lifespan built, instead of
+                # constructing a fresh PersistentClient on every message.
+                from openexecutive.mcp_server.server import get_store
 
-            retrieved_context, episodic_context = await asyncio.gather(
-                asyncio.to_thread(retrieve, query=cleaned, store=get_store()),
-                asyncio.to_thread(format_for_prompt),
-            )
-
-            # On the 1:1 DM path, hydrate with the context of any recent
-            # outbound DM oe sent this user, so a reply oe solicited from
-            # another session arrives with its backstory. One-shot consumed
-            # inside the helper. Gated to DMs: a public-channel reply must not
-            # pull private outbound context into a shared thread.
-            chat_user_message = cleaned
-            if mode == "dm" and slack_user_id:
-                from openexecutive.integrations.inbound_hydration import (
-                    hydrate_user_message,
+                retrieved_context, episodic_context = await asyncio.gather(
+                    asyncio.to_thread(retrieve, query=cleaned, store=get_store()),
+                    # session_id-scoped, matching discord_bot: an unscoped
+                    # call mixes every other conversation's episodes into
+                    # this turn.
+                    asyncio.to_thread(format_for_prompt, session_id=session_id),
                 )
 
-                chat_user_message = await asyncio.to_thread(
-                    hydrate_user_message,
-                    channel="slack_dm",
-                    channel_ref=str(slack_user_id),
-                    user_message=cleaned,
+                # The open-alert digest, so the Executive can actually answer
+                # "what's on my plate?" from Slack and can cite a trustworthy
+                # alert_id. Gated to the principal's DMs: the board is
+                # company-wide, and pulling it into a shared channel would
+                # leak every open item to everyone in that channel. Same gate
+                # shape the outbound-context hydration below uses.
+                briefing_context = await asyncio.to_thread(
+                    attach_briefing_context,
+                    session,
+                    is_dm=(mode == "dm"),
+                    person=sender_person,
                 )
 
-            executive = Executive(mcp_gateway=get_active_gateway())
-            response = await executive.chat(
-                user_message=chat_user_message,
-                session=session,
-                retrieved_context=retrieved_context,
-                episodic_context=episodic_context,
-                person_id=person_id,
-                co_present_person_ids=co_present_person_ids or None,
-            )
+                # On the 1:1 DM path, hydrate with the context of any recent
+                # outbound DM oe sent this user, so a reply oe solicited from
+                # another session arrives with its backstory. One-shot consumed
+                # inside the helper. Gated to DMs: a public-channel reply must not
+                # pull private outbound context into a shared thread.
+                chat_user_message = cleaned
+                if mode == "dm" and slack_user_id:
+                    from openexecutive.integrations.inbound_hydration import (
+                        hydrate_user_message,
+                    )
 
-            await say(text=response, thread_ts=thread_ts)
+                    chat_user_message = await asyncio.to_thread(
+                        hydrate_user_message,
+                        channel="slack_dm",
+                        channel_ref=str(slack_user_id),
+                        user_message=cleaned,
+                    )
 
-        except Exception as e:
-            logger.error(f"Slack handler error: {e}", exc_info=True)
-            await say(
-                text="I encountered an error processing your request. Please try again.",
-                thread_ts=thread_ts,
+                executive = Executive(mcp_gateway=get_active_gateway())
+                response = await executive.chat(
+                    user_message=chat_user_message,
+                    session=session,
+                    retrieved_context=retrieved_context,
+                    episodic_context=episodic_context,
+                    briefing_context=briefing_context,
+                    channel_context_block=build_channel_context_block("slack"),
+                    person_id=person_id,
+                    co_present_person_ids=co_present_person_ids or None,
+                )
+
+                await say(text=response, thread_ts=thread_ts)
+
+                # Persist AFTER the reply lands, and never let a persistence
+                # failure trigger the user-facing error path — the user
+                # already has their answer. Discord and Telegram both do the
+                # same. Offloaded because save_message is sync SQLite and
+                # this handler awaits on the application event loop.
+                #
+                # `cleaned`, NOT `chat_user_message`: the latter may carry the
+                # one-shot <outbound_reply_context> block from
+                # hydrate_user_message, and persisting that would replay a
+                # consumed one-shot on every future turn.
+                speaker = (
+                    None
+                    if mode == "dm"
+                    else (
+                        getattr(sender_person, "display_name", None)
+                        or getattr(sender_person, "full_name", None)
+                        or slack_user_id
+                    )
+                )
+                # A mention that starts a thread gets its reply rooted at this
+                # message's ts, so that thread's own session must also carry
+                # the Q+A or its first continuation would start cold.
+                also_session_id = None
+                if mode != "dm" and not is_threaded_reply:
+                    also_session_id = (
+                        f"slack:thread:{event.get('channel', '')}:"
+                        f"{event.get('ts', '')}"
+                    )
+                await asyncio.to_thread(
+                    _persist_turn,
+                    session_id=session_id,
+                    title=_session_title(sender_person, mode),
+                    created_at=session.created_at.isoformat(),
+                    owner_person_id=person_id,
+                    user_text=_format_user_content(cleaned, speaker),
+                    assistant_text=response,
+                    also_session_id=also_session_id,
+                    sender_person_id=sender_person.id,
+                )
+
+        except Exception as exc:
+            # Correlate the traceback with the audit trail. Without the
+            # session_id the /audit page shows an integration_inbound row with
+            # no matching turn and no way to find the log line that explains
+            # it — which is how #136 stayed undiagnosable.
+            logger.exception(
+                "Slack: handler error session=%s user=%s channel=%s "
+                "thread_ts=%s mode=%s",
+                session_id,
+                slack_user_id,
+                event.get("channel"),
+                thread_ts,
+                mode,
             )
+            # Reuse integration_inbound rather than minting a new event type:
+            # the audit UI already styles and counts it, and `outcome` already
+            # carries a vocabulary (rejected_unknown_sender, skipped_gate).
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    audit_log,
+                    "integration_inbound",
+                    f"Slack handler error for user={slack_user_id}: "
+                    f"{type(exc).__name__}",
+                    actor="slack",
+                    session_id=session_id,
+                    details={
+                        "channel": "slack",
+                        "slack_user": slack_user_id,
+                        "slack_channel": event.get("channel"),
+                        "ts": event.get("ts"),
+                        "thread_ts": thread_ts,
+                        "mode": mode,
+                        "outcome": "handler_error",
+                        "error": repr(exc)[:ERROR_DETAIL_LEN],
+                    },
+                )
+            # Guard the apology itself. Telegram and Google Chat already do
+            # this; Slack did not, so a failing say() escaped into Bolt.
+            try:
+                await say(
+                    text=(
+                        "I encountered an error processing your request. "
+                        "Please try again."
+                    ),
+                    thread_ts=thread_ts,
+                )
+            except Exception:
+                logger.exception(
+                    "Slack: also failed to send the error reply for session=%s",
+                    session_id,
+                )
 
     @app.event("app_mention")
     async def handle_mention(event: dict, say, client) -> None:
         # Bolt auto-injects `client` (an AsyncWebClient) when listed in the
         # signature; we pass it through so the multi-peer thread-member
         # fetch can call conversations.replies without a separate import.
+        #
+        # Slack fires app_mention for an @-mention inside a DM too, and the
+        # `message` listener has already taken that one as mode="dm". Handling
+        # it twice meant two replies AND two different session ids, forking
+        # the conversation's history — and a gate raised on the mention copy
+        # recorded a session the user's next plain DM would never match.
+        if event.get("channel_type") == "im":
+            return
         async with inflight:
             await _handle_message(event, say, client=client, mode="mention")
 

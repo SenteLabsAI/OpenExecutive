@@ -185,3 +185,32 @@ def test_memory_extractor_records_usage(
     rows = audit.query(event_type="cache_event")
     assert len(rows) == 1 and rows[0].actor == "memory_extractor"
     assert rows[0].details["model"] == "claude-test"
+
+
+def test_memory_extractor_retry_records_its_own_usage(
+    audit: AuditLogger, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The corrective pass is a second model call and must show up as one."""
+    from openexecutive.memory import episodic as ep
+
+    db = tmp_path / "episodic.db"
+    ep.initialize_db(db)
+    bad_quote = SimpleNamespace(
+        type="tool_use", name="store_memories",
+        input={"decisions": [{
+            "summary": "Cut burn", "user_commitment_quote": "we will cut the burn",
+        }]},
+    )
+    first = _response(input_tokens=12, output_tokens=2)
+    first.content = [bad_quote]
+    provider = SimpleNamespace(messages_create=AsyncMock(side_effect=[
+        first, _response(input_tokens=30, output_tokens=1),
+    ]))
+    monkeypatch.setattr("openexecutive.providers.get_provider", lambda _m: provider)
+    monkeypatch.setattr(
+        "openexecutive.config.get_settings", lambda: SimpleNamespace(routing_model="claude-test"),
+    )
+    asyncio.run(ep.extract_and_store("Cut burn to 400k.", "ok", db_path=db))
+    rows = audit.query(event_type="cache_event")
+    assert len(rows) == 2 and {r.actor for r in rows} == {"memory_extractor"}
+    assert sorted(r.details["input_tokens"] for r in rows) == [12, 30]

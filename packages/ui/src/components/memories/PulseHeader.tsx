@@ -6,25 +6,38 @@ import {
   listAdvice,
   listDecisions,
   listInitiatives,
+  listPeopleMemory,
   listScheduledActions,
   type DailyActivityCount,
   type ScheduledAction,
 } from "@/lib/api";
 import {
+  deriveVitals,
+  formatTrend,
+  formatVitalDate,
+  type TrendDirection,
+} from "@/lib/heartbeatVitals";
+import {
   LivePulse,
+  STAT_VALUE_TONE,
   Skeleton,
   StatTile,
   formatRunAt,
   groupByRhythm,
   metaFor,
+  type StatTone,
 } from "./shared";
 
 // The Pulse header is the page's at-a-glance band: a strip of headline metrics
 // plus the "heartbeat" — a GitHub-contributions-style heatmap of the
-// Executive's self-initiated activity over the last 90 days. Every metric is
+// Executive's self-initiated activity over the last 90 days, with a vitals
+// panel (streaks, totals, trend) derived from the same counts. Every metric is
 // derived from data the page already needs (pending scheduled actions + the
 // three memory lists); only the per-day heatmap requires its own endpoint,
-// since /today/activity returns the last-N items, not a daily timeline.
+// since /today/activity returns the last-N items, not a daily timeline. Peer
+// memory is optional and remote, so it is fetched apart from the gating
+// batch: the strip renders from local data and the tile folds the peer notes
+// in when (and only if) they arrive.
 
 const HEATMAP_DAYS = 90;
 
@@ -37,6 +50,23 @@ interface HeaderData {
 export default function PulseHeader() {
   const [data, setData] = useState<HeaderData | null>(null);
   const [loading, setLoading] = useState(true);
+  // null until peer memory answers (or fails / is disabled): the tile then
+  // shows the local counts alone, which is not the same as "zero peer notes".
+  const [peerNotes, setPeerNotes] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listPeopleMemory()
+      .then((people) => {
+        if (!cancelled && people.status === "ok") setPeerNotes(people.conclusion_total);
+      })
+      .catch(() => {
+        /* the tile simply shows the local counts */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -71,7 +101,7 @@ export default function PulseHeader() {
     };
   }, []);
 
-  const stats = useMemo(() => (data ? deriveStats(data) : null), [data]);
+  const stats = useMemo(() => (data ? deriveStats(data, peerNotes) : null), [data, peerNotes]);
 
   return (
     <header className="space-y-6">
@@ -112,11 +142,20 @@ export default function PulseHeader() {
           </div>
           <LivePulse />
         </div>
-        {loading || !data ? (
-          <Skeleton className="h-24 w-full" />
-        ) : (
-          <Heatmap days={data.heatmap} />
-        )}
+        {/* The heatmap is fixed-width (~14 week columns), so the vitals panel
+            takes the rest of the row on md+ and stacks beneath it below. */}
+        <div className="flex flex-col md:flex-row gap-6">
+          <div className="shrink-0 min-w-0">
+            {loading || !data ? (
+              <Skeleton className="h-32 w-56" />
+            ) : (
+              <Heatmap days={data.heatmap} />
+            )}
+          </div>
+          <div className="flex-1 min-w-0 md:border-l md:border-line md:pl-6">
+            {loading || !data ? <VitalsSkeleton /> : <Vitals days={data.heatmap} />}
+          </div>
+        </div>
       </section>
     </header>
   );
@@ -133,7 +172,10 @@ interface Stat {
   tone?: "default" | "accent" | "emerald" | "amber";
 }
 
-function deriveStats({ pending, memoriesTotal, heatmap }: HeaderData): Stat[] {
+function deriveStats(
+  { pending, memoriesTotal, heatmap }: HeaderData,
+  peerNotes: number | null,
+): Stat[] {
   const groups = groupByRhythm(pending);
   const followups = pending.filter((a) => a.kind === "ad_hoc").length;
 
@@ -155,8 +197,120 @@ function deriveStats({ pending, memoriesTotal, heatmap }: HeaderData): Stat[] {
     { label: "Daily rhythms", value: groups.daily.length },
     { label: "Dept check-ins", value: groups.departments.length },
     { label: "Follow-ups", value: followups },
-    { label: "Memories", value: memoriesTotal },
+    // Three episodic lists plus what peer memory has learned about people;
+    // the hint says how much of the number is peer notes so it reconciles
+    // with the tabs (the People tab badge counts people, not notes).
+    {
+      label: "Memories",
+      value: memoriesTotal + (peerNotes ?? 0),
+      hint:
+        peerNotes === null
+          ? undefined
+          : peerNotes > 0
+            ? `incl. ${peerNotes} peer notes`
+            : "no peer notes yet",
+    },
   ];
+}
+
+// --------------------------------------------------------------------------- #
+// Vitals — summary numbers beside the heatmap, derived from the same counts
+// --------------------------------------------------------------------------- #
+
+const VITALS_COUNT = 6;
+
+const TREND_TONE: Record<TrendDirection, StatTone> = {
+  up: "emerald",
+  down: "amber",
+  flat: "default",
+  new: "emerald",
+  none: "default",
+};
+
+function plural(n: number, one: string, many: string = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+function Vital({
+  label,
+  value,
+  hint,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: StatTone;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle truncate">
+        {label}
+      </div>
+      <div className={`mt-1 text-xl font-semibold tabular-nums truncate ${STAT_VALUE_TONE[tone]}`}>
+        {value}
+      </div>
+      {hint && <div className="text-[11px] text-fg-muted mt-0.5 truncate">{hint}</div>}
+    </div>
+  );
+}
+
+const VITALS_GRID = "grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-5";
+
+function Vitals({ days }: { days: DailyActivityCount[] }) {
+  const v = useMemo(() => deriveVitals(days), [days]);
+  const { trend } = v;
+
+  return (
+    <div className={VITALS_GRID}>
+      <Vital
+        label="Current streak"
+        value={plural(v.currentStreak.days, "day")}
+        hint={
+          v.currentStreak.days === 0
+            ? "no active days lately"
+            : v.currentStreak.throughToday
+              ? "through today"
+              : "through yesterday"
+        }
+        tone="emerald"
+      />
+      <Vital label="Longest streak" value={plural(v.longestStreak, "day")} />
+      <Vital
+        label={`${days.length}-day total`}
+        value={plural(v.total, "beat")}
+        hint={`on ${v.activeDays} of ${days.length} days`}
+      />
+      <Vital
+        label="Avg per active day"
+        value={v.avgPerActiveDay === null ? "—" : v.avgPerActiveDay.toFixed(1)}
+      />
+      <Vital
+        label="Busiest day"
+        value={v.busiestDay ? formatVitalDate(v.busiestDay.date) : "—"}
+        hint={v.busiestDay ? plural(v.busiestDay.count, "action") : undefined}
+      />
+      <Vital
+        label={`Last ${trend.windowDays} vs prior`}
+        value={formatTrend(trend)}
+        hint={trend.windowDays > 0 ? `${trend.current} vs ${trend.prior}` : undefined}
+        tone={TREND_TONE[trend.direction]}
+      />
+    </div>
+  );
+}
+
+function VitalsSkeleton() {
+  return (
+    <div className={VITALS_GRID}>
+      {Array.from({ length: VITALS_COUNT }).map((_, i) => (
+        <div key={i}>
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="h-6 w-14 mt-2" />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 // --------------------------------------------------------------------------- #

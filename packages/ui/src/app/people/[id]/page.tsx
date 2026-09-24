@@ -5,10 +5,19 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import {
   archivePerson,
+  closeOpenLoop,
   getPerson,
+  getPersonOpenLoops,
+  getPersonOutreach,
+  getPersonWorkingStyle,
+  resetPersonWorkingStyle,
+  savePersonWorkingStyle,
   updatePerson,
   type AvailabilityWindow,
+  type OpenLoop,
+  type OutreachStat,
   type Person,
+  type WorkingStyle,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +37,268 @@ const ALL_SCOPES = [
 ];
 
 const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
+
+// ---------------------------------------------------------------------------
+// How they respond to outreach (attunement outcome ledger)
+// ---------------------------------------------------------------------------
+
+function OutreachSection({ personId }: { personId: number }) {
+  const [rows, setRows] = useState<OutreachStat[] | null>(null);
+
+  useEffect(() => {
+    getPersonOutreach(personId)
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, [personId]);
+
+  if (!rows || rows.length === 0) return null;
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-1">
+        How they respond
+      </h2>
+      <p className="text-xs text-fg-muted mb-3">
+        Proactive messages over the last 30 days. Kinds they reliably ignore are
+        sent less often.
+      </p>
+      <div className="space-y-1.5">
+        {rows.map((r) => {
+          const answered = r.replied + r.acted;
+          const resolved = answered + r.ignored;
+          return (
+            <div
+              key={r.source}
+              className="flex items-center justify-between gap-3 px-4 py-2 rounded-lg border border-line bg-surface-elevated text-sm"
+            >
+              <span className="text-fg capitalize">{r.label}</span>
+              <span className="text-xs text-fg-muted">
+                {resolved > 0 ? `${answered} of ${resolved} answered` : "no answers yet"}
+                {r.pending > 0 ? ` · ${r.pending} pending` : ""}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// How I work with them — learned working style (attunement)
+// ---------------------------------------------------------------------------
+
+const MAX_STYLE_RULES = 4;
+const STYLE_TEXTAREA_ROWS = 4;
+
+function WorkingStyleSection({ personId }: { personId: number }) {
+  const [style, setStyle] = useState<WorkingStyle | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPersonWorkingStyle(personId)
+      .then(setStyle)
+      .catch(() => setStyle(null));
+  }, [personId]);
+
+  async function run(action: () => Promise<WorkingStyle>) {
+    setBusy(true);
+    setError(null);
+    try {
+      setStyle(await action());
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!style) return null;
+  const rules = draft
+    .split("\n")
+    .map((line) => line.replace(/^[-•]\s*/, "").trim())
+    .filter(Boolean);
+  return (
+    <section className="mb-6">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+          How I work with them
+        </h2>
+        {!editing && (
+          <div className="flex gap-3 text-xs">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setDraft(style.rules.map((r) => r.text).join("\n"));
+                setEditing(true);
+              }}
+              className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                run(() => savePersonWorkingStyle(personId, null, !style.locked))
+              }
+              className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+            >
+              {style.locked ? "Unlock" : "Lock"}
+            </button>
+            {style.rules.length > 0 && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    await resetPersonWorkingStyle(personId);
+                    return getPersonWorkingStyle(personId);
+                  })
+                }
+                className="text-fg-muted hover:text-fg disabled:opacity-50"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-fg-muted mb-3">
+        How replies are written for them, learned from their own 👍/👎 and requests.
+        {style.locked
+          ? " Locked — kept as is."
+          : " Updated as they use it; rules you type are always kept. Lock it to stop learning."}
+      </p>
+      {error && <p className="text-xs text-rose-300 mb-2">{error}</p>}
+      {editing ? (
+        <div className="space-y-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={STYLE_TEXTAREA_ROWS}
+            placeholder="One rule per line, e.g. Lead with the recommendation, then the numbers."
+            className="w-full px-3 py-2 rounded-lg border border-line bg-surface-elevated text-sm text-fg"
+          />
+          {rules.length > MAX_STYLE_RULES && (
+            <p className="text-xs text-amber-300">At most {MAX_STYLE_RULES} rules.</p>
+          )}
+          <div className="flex gap-3 text-xs">
+            <button
+              type="button"
+              disabled={busy || rules.length > MAX_STYLE_RULES}
+              onClick={() => run(() => savePersonWorkingStyle(personId, rules, style.locked))}
+              className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+            >
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setEditing(false)}
+              className="text-fg-muted hover:text-fg disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : style.rules.length === 0 ? (
+        <p className="text-sm text-fg-muted">Nothing learned yet.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {style.rules.map((r) => (
+            <li
+              key={r.text}
+              className="px-4 py-2 rounded-lg border border-line bg-surface-elevated text-sm text-fg"
+            >
+              {r.text}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Open loops — what this person owes (attunement)
+// ---------------------------------------------------------------------------
+
+function OpenLoopsSection({ personId }: { personId: number }) {
+  const [loops, setLoops] = useState<OpenLoop[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [closing, setClosing] = useState<number | null>(null);
+
+  useEffect(() => {
+    getPersonOpenLoops(personId)
+      .then(setLoops)
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
+  }, [personId]);
+
+  async function close(loopId: number) {
+    setClosing(loopId);
+    setError(null);
+    try {
+      await closeOpenLoop(loopId, "done");
+      setLoops((prev) => (prev ?? []).filter((l) => l.loop_id !== loopId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to close");
+    } finally {
+      setClosing(null);
+    }
+  }
+
+  const now = Date.now();
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-1">
+        Open loops
+      </h2>
+      <p className="text-xs text-fg-muted mb-3">
+        Things they committed to or were asked for in conversation. Overdue ones are
+        followed up automatically; close one once it&apos;s done.
+      </p>
+      {error && <p className="text-xs text-rose-300 mb-2">{error}</p>}
+      {loops === null ? (
+        !error && <p className="text-sm text-fg-muted">Loading…</p>
+      ) : loops.length === 0 ? (
+        <p className="text-sm text-fg-muted">Nothing open.</p>
+      ) : (
+        <div className="space-y-2">
+          {loops.map((l) => {
+            const overdue = new Date(l.due_at).getTime() <= now;
+            return (
+              <div
+                key={l.loop_id}
+                className="flex items-start justify-between gap-3 px-4 py-2.5 rounded-lg border border-line bg-surface-elevated text-sm"
+              >
+                <div className="min-w-0">
+                  <p className="text-fg">{l.description}</p>
+                  <p className={`text-xs mt-0.5 ${overdue ? "text-amber-300" : "text-fg-muted"}`}>
+                    {overdue ? "Overdue since " : "Due "}
+                    {new Date(l.due_at).toLocaleDateString()}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={closing === l.loop_id}
+                  onClick={() => close(l.loop_id)}
+                  className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+                >
+                  {closing === l.loop_id ? "Closing…" : "Mark done"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
 
 const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -271,6 +542,8 @@ export default function PersonDetailPage() {
         preferred_channel: form.preferred_channel,
         response_sla_hours: slaNum >= 1 ? slaNum : 24,
         on_leave_until: form.on_leave_until || null,
+        // The backend only clears the date on an explicit flag; null alone is ignored.
+        clear_on_leave: !form.on_leave_until,
         authority_scope: form.authority_scope,
         availability: form.availability,
       });
@@ -642,6 +915,10 @@ export default function PersonDetailPage() {
                   </div>
                 )}
               </section>
+
+              {!person.archived && <OpenLoopsSection personId={personId} />}
+              {!person.archived && <OutreachSection personId={personId} />}
+              {!person.archived && <WorkingStyleSection personId={personId} />}
 
               {/* Archive */}
               {!person.is_principal && !person.archived && (

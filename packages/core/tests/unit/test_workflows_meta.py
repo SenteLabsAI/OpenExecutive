@@ -68,3 +68,12 @@ def test_meta_serializes_section_as_string() -> None:
     # through as a plain string for the UI.
     meta = WORKFLOW_REGISTRY["board_prep"].meta().model_dump()
     assert meta["section"] == "Board"
+
+
+_BACKGROUND = {"morning_brief", "end_of_day_digest", "executive_reflection", "executive_research"}
+
+
+def test_background_flag_marks_only_the_system_workflows() -> None:
+    """The /jobs catalog files these under "System" instead of the default view."""
+    flagged = {name for name, wf in WORKFLOW_REGISTRY.items() if wf.meta().background}
+    assert flagged == _BACKGROUND

@@ -1,62 +1,68 @@
 """HTTP surface for the Executive Artifacts section.
 
-A read-only, unified view over the two places the Executive already stores
-Markdown deliverables — no new table, the underlying rows stay canonical:
+A unified view over the two places the Executive stores deliverables — no
+new table, the underlying rows stay canonical:
 
-1. `draft_artifact` documents, written to the alerts table
-   (`source='artifact'`), and
+1. `draft_artifact` output, written to the alerts table
+   (`source='artifact'`) in any registered format (Markdown, HTML, Word,
+   Excel, or a link into a connected app — `orchestrator/artifact_formats.py`),
 2. completed workflow runs, whose Markdown lives in
    `workflow_runs.artifact`.
 
 Both sources are merged, sorted newest-first, and addressed by a composite
-id `"{kind}:{native_id}"` (`alert:<int>` / `run:<hex>`). The `kind` prefix
-doubles as the dispatch key for every per-artifact route. The native id
-spaces are colon-free, so the scheme is unambiguous and reversible.
+id `"{kind}:{native_id}"` (`alert:<int>` / `run:<hex>`). Lookup, archive and
+delete go through `orchestrator/artifact_records.py`, which the Executive's
+`list_artifacts` / `get_artifact` tools share.
 
 Archive is a reversible soft-hide (a nullable `archived_at` column on each
 backing table); delete is a permanent hard-delete of the underlying row.
 The default list shows only active artifacts; `?archived=true` shows only
-archived ones. Every mutating route refuses non-artifact alert ids the same
-way the detail route does — these routes must not become general
-alert/run mutators.
+archived ones. Every route refuses non-artifact alert ids — these routes
+must not become general alert/run readers or mutators.
+
+Downloads are always served as attachments with `nosniff` and a sandbox CSP,
+so an HTML artifact never renders on the app's origin (the UI shows it in a
+sandboxed iframe instead).
 
 Endpoints:
-- GET    /artifacts                       Unified list (summaries, no bodies)
-- GET    /artifacts/{composite_id}        One artifact with its full Markdown body
+- GET    /artifacts                          Unified list (summaries, no bodies)
+- GET    /artifacts/{composite_id}           One artifact with its displayable body
+- GET    /artifacts/{composite_id}/download  The file (optionally ?as=<format>)
 - POST   /artifacts/{composite_id}/archive   Soft-hide (reversible)
 - POST   /artifacts/{composite_id}/restore   Un-archive
-- DELETE /artifacts/{composite_id}        Permanently delete the underlying row
+- DELETE /artifacts/{composite_id}           Permanently delete the underlying row
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from collections.abc import Callable
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from openexecutive.alerts.models import Alert
-from openexecutive.alerts.store import (
-    delete_alert,
-    get_alert,
-    list_artifact_alerts,
-    set_alert_archived,
+from openexecutive.orchestrator.artifact_formats import get_format
+from openexecutive.orchestrator.artifact_records import (
+    ArtifactNotFound,
+    ArtifactRecord,
+    MalformedArtifactId,
+    artifact_downloads,
+    load_artifact,
+    render_artifact_file,
 )
-from openexecutive.alerts.store import (
-    initialize_db as initialize_alerts_db,
+from openexecutive.orchestrator.artifact_records import (
+    delete_artifact as delete_artifact_record,
 )
-from openexecutive.workflows.persistence import (
-    delete_run,
-    get_run,
-    initialize_runs_db,
-    list_artifact_runs,
-    set_run_archived,
+from openexecutive.orchestrator.artifact_records import (
+    list_artifacts as list_artifact_records,
+)
+from openexecutive.orchestrator.artifact_records import (
+    set_archived as set_artifact_archived,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_DRAFT_SOURCE_LABEL = "Drafted by Executive"
 # Max artifacts returned by the list endpoint (mirrors alerts.list_alerts' cap).
 _DEFAULT_LIMIT = 200
 # Chars of body shown as a card preview. Unrelated to _DEFAULT_LIMIT despite
@@ -76,9 +82,19 @@ class ArtifactSummary(BaseModel):
     # ISO timestamp when archived; None = active. Lets the detail page show
     # Archive vs Restore correctly and keeps the TS interface honest.
     archived_at: str | None = None
+    # Registered format name (artifact_formats.ARTIFACT_FORMAT_NAMES).
+    format: str = "markdown"
+    format_label: str = "Document"
+    # Download targets, first = the artifact's own file. Empty for links.
+    downloads: list[str] = []
+    external_url: str | None = None
+    link_label: str | None = None
+    supersedes_id: str | None = None
 
 
 class ArtifactDetail(ArtifactSummary):
+    # What the page renders: raw (sanitized) HTML for 'html', Markdown for
+    # every other format (a spreadsheet arrives as Markdown tables).
     body: str
     rationale: str | None = None
 
@@ -92,108 +108,78 @@ async def list_artifacts(
     Defaults to active artifacts; `?archived=true` returns only archived ones
     (the gallery's Active / Archived views are clean swaps, not supersets).
     """
-    initialize_alerts_db()
-    initialize_runs_db()
-
-    items: list[ArtifactSummary] = []
-
-    for alert in list_artifact_alerts(limit=limit, archived=archived):
-        items.append(
-            ArtifactSummary(
-                id=f"alert:{alert.id}",
-                kind="draft",
-                title=alert.headline,
-                source_label=_DRAFT_SOURCE_LABEL,
-                created_at=alert.created_at,
-                preview=_preview(alert.body) or None,
-                status=alert.status,
-                severity=alert.severity,
-                archived_at=alert.archived_at,
-            )
-        )
-
-    for run in list_artifact_runs(limit=limit, archived=archived):
-        items.append(
-            ArtifactSummary(
-                id=f"run:{run['run_id']}",
-                kind="workflow",
-                title=run["title"],
-                source_label=run["workflow_name"],
-                created_at=run["created_at"],
-                # Body excluded from the run list query — title + workflow carry the card.
-                preview=None,
-                status="done",
-                severity=None,
-                archived_at=run.get("archived_at"),
-            )
-        )
-
-    items.sort(key=lambda a: a.created_at, reverse=True)
-    return {"artifacts": items[:limit]}
+    records = list_artifact_records(limit, archived=archived)
+    return {"artifacts": [_summary(r) for r in records]}
 
 
 @router.get("/artifacts/{composite_id}")
 async def get_artifact(composite_id: str) -> ArtifactDetail:
-    """One artifact with its full Markdown body, addressed by composite id."""
-    kind, native_id = _parse_composite_id(composite_id)
+    """One artifact with its displayable body, addressed by composite id."""
+    rec = _load(composite_id)
+    stored = rec.stored or ""
+    body = stored if rec.format == "html" else get_format(rec.format).display(stored)
+    return ArtifactDetail(**_summary(rec).model_dump(), body=body, rationale=rec.rationale)
 
-    if kind == "alert":
-        alert = _require_artifact_alert(native_id, composite_id)
-        return ArtifactDetail(
-            id=f"alert:{alert.id}",
-            kind="draft",
-            title=alert.headline,
-            source_label=_DRAFT_SOURCE_LABEL,
-            created_at=alert.created_at,
-            preview=_preview(alert.body) or None,
-            status=alert.status,
-            severity=alert.severity,
-            archived_at=alert.archived_at,
-            body=alert.body,
-            rationale=alert.suggested_action or None,
+
+@router.get("/artifacts/{composite_id}/download")
+async def download_artifact(
+    composite_id: str, as_: Annotated[str | None, Query(alias="as")] = None
+) -> Response:
+    """The artifact as a file. `?as=docx` exports a Markdown artifact to Word."""
+    rec = _load(composite_id)
+    try:
+        file = render_artifact_file(rec, as_)
+    except ArtifactNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "artifact download render failed for %s as %s", composite_id, as_ or rec.format
         )
-
-    run = _require_artifact_run(native_id, composite_id)
-    return ArtifactDetail(
-        id=f"run:{run['run_id']}",
-        kind="workflow",
-        title=run["title"],
-        source_label=run["workflow_name"],
-        created_at=run["created_at"],
-        preview=None,
-        status="done",
-        severity=None,
-        archived_at=run.get("archived_at"),
-        body=run["artifact"],
-        rationale=None,
+        raise HTTPException(status_code=500, detail="Could not render the file") from exc
+    return Response(
+        content=file.content,
+        media_type=file.mime,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file.filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox",
+            "Cache-Control": "no-store",
+        },
     )
 
 
 @router.post("/artifacts/{composite_id}/archive")
 async def archive_artifact(composite_id: str) -> dict[str, str]:
-    """Soft-hide an artifact (reversible). Drops it from the default list."""
-    _set_artifact_archived(composite_id, archived=True)
+    """Soft-hide an artifact (reversible). Drops it from the default list and
+    from the Executive's recall (knowledge index)."""
+    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=True))
+    from openexecutive.orchestrator.artifact_tools import unindex_artifact
+
+    await unindex_artifact(rec.id)
     return {"status": "archived", "id": composite_id}
 
 
 @router.post("/artifacts/{composite_id}/restore")
 async def restore_artifact(composite_id: str) -> dict[str, str]:
-    """Un-archive an artifact, returning it to the active list."""
-    _set_artifact_archived(composite_id, archived=False)
+    """Un-archive an artifact, returning it to the active list and, for a
+    drafted artifact, to the knowledge index."""
+    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=False))
+    if rec.kind == "draft" and rec.stored:
+        from openexecutive.orchestrator.artifact_tools import index_artifact
+
+        await index_artifact(rec.id, rec.title, rec.format, rec.stored)
     return {"status": "restored", "id": composite_id}
 
 
 @router.delete("/artifacts/{composite_id}")
 async def delete_artifact(composite_id: str) -> dict[str, str]:
     """Permanently delete the underlying alert / workflow-run row."""
-    kind, native_id = _parse_composite_id(composite_id)
-    if kind == "alert":
-        alert = _require_artifact_alert(native_id, composite_id)
-        assert alert.id is not None  # loaded from DB — id is always set
-        delete_alert(alert.id)  # existence already validated above
-    else:
-        run = _require_artifact_run(native_id, composite_id)
-        delete_run(run["run_id"])
+    rec = _mutate(lambda: delete_artifact_record(composite_id))
+    from openexecutive.orchestrator.artifact_tools import unindex_artifact
+
+    # The canonical id (`alert:5`, not whatever spelling the path used) is
+    # what indexing keyed the chunks on.
+    await unindex_artifact(rec.id)
     return {"status": "deleted", "id": composite_id}
 
 
@@ -202,70 +188,42 @@ async def delete_artifact(composite_id: str) -> dict[str, str]:
 # -----------------------------------------------------------------------------
 
 
-def _parse_composite_id(composite_id: str) -> tuple[str, str]:
-    """Split `"{kind}:{native_id}"` into its parts, or 400 if malformed.
-
-    Validates only the shape (known kind prefix + non-empty native id); the
-    per-kind native-id validation (e.g. alert ids must be ints) and the
-    artifact-existence check live in `_require_artifact_*`.
-    """
-    kind, sep, native_id = composite_id.partition(":")
-    if not sep or kind not in ("alert", "run") or not native_id:
-        raise HTTPException(
-            status_code=400, detail=f"Malformed artifact id: {composite_id!r}"
-        )
-    return kind, native_id
-
-
-def _require_artifact_alert(native_id: str, composite_id: str) -> Alert:
-    """Load an alert-backed artifact or raise: 400 on bad id, 404 otherwise.
-
-    404s a non-artifact alert id (`source != 'artifact'`) so neither the
-    detail route nor any mutating route can reach a general alert row.
-    """
+def _load(composite_id: str) -> ArtifactRecord:
     try:
-        alert_id = int(native_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Malformed artifact id: {composite_id!r}"
-        ) from exc
-    alert = get_alert(alert_id)
-    if alert is None or alert.source != "artifact":
-        raise HTTPException(
-            status_code=404, detail=f"Artifact {composite_id!r} not found"
-        )
-    return alert
+        return load_artifact(composite_id)
+    except MalformedArtifactId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ArtifactNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _require_artifact_run(native_id: str, composite_id: str) -> dict[str, Any]:
-    """Load a run-backed artifact or 404. An empty body counts as no artifact."""
-    run = get_run(native_id)
-    if run is None or not run.get("artifact"):
-        raise HTTPException(
-            status_code=404, detail=f"Artifact {composite_id!r} not found"
-        )
-    return run
+def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
+    try:
+        return action()
+    except MalformedArtifactId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ArtifactNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _set_artifact_archived(composite_id: str, *, archived: bool) -> None:
-    """Archive or restore an artifact, dispatching on the composite-id kind."""
-    kind, native_id = _parse_composite_id(composite_id)
-    if kind == "alert":
-        alert = _require_artifact_alert(native_id, composite_id)
-        assert alert.id is not None  # loaded from DB — id is always set
-        set_alert_archived(alert.id, archived)
-    else:
-        run = _require_artifact_run(native_id, composite_id)
-        set_run_archived(run["run_id"], archived)
 
-
-def _preview(markdown: str, n: int = _PREVIEW_CHARS) -> str:
-    """A short plain-ish preview: strip leading heading marks / whitespace."""
-    text = (markdown or "").lstrip()
-    # Drop a single leading '# ...' heading line so the preview isn't just the title.
-    if text.startswith("#"):
-        first_break = text.find("\n")
-        if first_break != -1:
-            text = text[first_break + 1 :].lstrip()
-    collapsed = " ".join(text.split())
-    return collapsed[:n]
+def _summary(rec: ArtifactRecord) -> ArtifactSummary:
+    fmt = get_format(rec.format)
+    preview = fmt.text(rec.stored)[:_PREVIEW_CHARS] if rec.stored else ""
+    return ArtifactSummary(
+        id=rec.id,
+        kind=rec.kind,
+        title=rec.title,
+        source_label=rec.source_label,
+        created_at=rec.created_at,
+        preview=preview or None,
+        status=rec.status,
+        severity=rec.severity,
+        archived_at=rec.archived_at,
+        format=fmt.name,
+        format_label=rec.link_label if fmt.name == "link" and rec.link_label else fmt.label,
+        downloads=artifact_downloads(rec),
+        external_url=rec.url,
+        link_label=rec.link_label,
+        supersedes_id=rec.supersedes_id,
+    )

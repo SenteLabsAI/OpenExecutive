@@ -10,6 +10,25 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this module's `memory_extraction` rows out of the default
+    `./episodic_memory.db`.
+
+    Driving a turn schedules episodic extraction fire-and-forget, and its
+    audit row goes through `audit.log_event`, which targets the default DB
+    whatever `db_path` the extraction was handed. Those rows surface as real
+    data in other modules' assertions during a full run only — the audit-log
+    pollution trap in CLAUDE.md.
+    """
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event", lambda *a, **kw: None, raising=False
+    )
+
+
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-not-used")
 
 

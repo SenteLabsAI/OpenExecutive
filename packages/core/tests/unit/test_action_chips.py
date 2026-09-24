@@ -291,6 +291,11 @@ _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     # people_tools
     "list_people",
     "ask_about_person",
+    # open_loop_tools
+    "list_open_loops",
+    # artifact_tools
+    "list_artifacts",
+    "get_artifact",
     # department_tools
     "list_department_goals",
     # skills_tools
@@ -313,6 +318,7 @@ def _all_registered_tool_names() -> set[str]:
     from openexecutive.orchestrator.broadcast_tools import BROADCAST_TOOL_HANDLERS
     from openexecutive.orchestrator.department_tools import DEPARTMENT_TOOL_HANDLERS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
+    from openexecutive.orchestrator.open_loop_tools import OPEN_LOOP_TOOL_HANDLERS
     from openexecutive.orchestrator.people_tools import PEOPLE_TOOL_HANDLERS
     from openexecutive.orchestrator.schedule_tools import SCHEDULE_TOOL_HANDLERS
     from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS
@@ -321,6 +327,7 @@ def _all_registered_tool_names() -> set[str]:
     return (
         set(SCHEDULE_TOOL_HANDLERS)
         | set(PEOPLE_TOOL_HANDLERS)
+        | set(OPEN_LOOP_TOOL_HANDLERS)
         | set(DEPARTMENT_TOOL_HANDLERS)
         | set(SKILL_TOOL_HANDLERS)
         | set(BROADCAST_TOOL_HANDLERS)
@@ -358,3 +365,24 @@ def test_no_silent_omission_from_side_effecting_tools() -> None:
         f"(to emit a chip) or _KNOWN_READ_ONLY_TOOLS (to deliberately skip): "
         f"{sorted(unclassified)}"
     )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "result", "summary"),
+    [
+        ("create_skill", {"drafted": True}, "Drafted playbook: p"),
+        ("update_skill", {"drafted": True}, "Drafted a change to playbook: p"),
+        ("delete_skill", {"drafted": True}, "Proposed deleting playbook: p"),
+    ],
+)
+def test_skill_chips_say_playbook_and_link_to_tab(
+    tool_name: str, result: dict[str, object], summary: str
+) -> None:
+    payload = summarize_action(
+        tool_name=tool_name,
+        tool_input={"name": "p"},
+        tool_result=json.dumps(result),
+    )
+    assert payload is not None
+    assert payload["summary"] == summary
+    assert payload["link"] == "/jobs?tab=playbooks&draft=p"

@@ -13,7 +13,7 @@ any workflow conversationally and get the artifact back in the same turn.
   validate inputs, ``create_run``, stream events,
   ``complete_run`` / ``fail_run``. It also handles the approval-gate case — a
   workflow that yields a ``WaitForHumanEvent`` is checkpointed
-  (``save_checkpoint``) and reported as ``awaiting_human`` (exactly as the route
+  (``gate.checkpoint_gate``) and reported as ``awaiting_human`` (exactly as the route
   does, ``api/routes/workflows.py``), rather than hanging or erroring.
 
 JSON-in / JSON-out, audited, matching the other orchestrator tools.
@@ -25,10 +25,10 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from openexecutive.audit import log_event as audit_log
+from openexecutive.audit.redaction import ERROR_DETAIL_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,92 @@ logger = logging.getLogger(__name__)
 # and ``run_workflow`` refuses them, pointing the model at the dedicated tool.
 _CHAT_LAUNCH_BLOCKLIST = frozenset({"executive_research"})
 
-# Cap error text stored in the audit detail (kept short so audit rows stay
-# scannable) and the exception snippet surfaced back to the model.
-_AUDIT_ERR_MAXLEN = 300
+# What to tell the principal for each gate-delivery outcome. "Paused for
+# sign-off" is only true when someone was actually asked; the other branches
+# exist so the Executive never reports a question that was never delivered as
+# though it were waiting on a reply.
+_AWAITING_HINTS: dict[str, str] = {
+    "self": (
+        "This workflow paused for the principal's own sign-off. Put the "
+        "question to them in your reply — their answer in this conversation "
+        "will be recorded against the run. Do not re-run it."
+    ),
+    "sent": (
+        "This workflow paused for sign-off from the named person, and the "
+        "question has been sent to them on their preferred channel. Tell the "
+        "principal it's waiting on them; do not re-run it."
+    ),
+    "alerted": (
+        "This workflow paused for sign-off, but the named person could not be "
+        "reached on any messaging channel — the request is on their briefing "
+        "board instead. Say so plainly; do not claim they were messaged, and "
+        "do not re-run it."
+    ),
+    "suppressed": (
+        "This workflow paused for sign-off, but the outbound guard suppressed "
+        "the message (duplicate, rate cap, or quiet hours), so the person has "
+        "NOT been asked yet. Say that, and offer to reach them another way. "
+        "Do not re-run the workflow."
+    ),
+    "failed": (
+        "This workflow paused for sign-off, but the question could not be "
+        "delivered, so nobody has been asked yet. Say that plainly rather "
+        "than implying it is waiting on them. Do not re-run it."
+    ),
+}
+
+
+def _assert_hints_cover_every_delivery_status() -> None:
+    """Raise if a DeliveryStatus has no hint. Called by the unit suite.
+
+    Deliberately NOT called at import: `api/main.py` builds the app at module
+    level, so an import-time raise here takes the whole process down rather
+    than degrading one tool — the same trap CLAUDE.md records for
+    OE_PUBLIC_DEPLOYMENT. A test gives identical coverage with no production
+    blast radius.
+
+    The hints and the `run_workflow` tool description are two hand-written
+    paraphrases of the same delivery semantics, so a new status could
+    otherwise be added with nothing forcing either to be updated — and the
+    fallback would quietly describe it as "could not be delivered".
+    """
+    from typing import get_args
+
+    from openexecutive.workflows.gate_delivery import DeliveryStatus
+
+    missing = set(get_args(DeliveryStatus)) - set(_AWAITING_HINTS)
+    if missing:
+        raise RuntimeError(
+            "_AWAITING_HINTS is missing a presentation hint for "
+            f"{sorted(missing)} — add one, and check whether "
+            "RUN_WORKFLOW_TOOL's description still describes the delivery "
+            "outcomes correctly."
+        )
+
+
+# Whether the run carries on by itself once answered. Kept separate from
+# _AWAITING_HINTS because delivery and resumability are independent: a
+# question can be delivered to a pause-only gate, and a resumable gate's
+# question can fail to send.
+_RESUMABLE_CLAUSE = (
+    " Once they answer, the workflow picks up where it left off and finishes "
+    "on its own — you do not need to do anything further."
+)
+_PAUSE_ONLY_CLAUSE = (
+    " Their answer will be recorded, but this workflow does not continue past "
+    "the gate on its own, so say so rather than implying more will happen."
+)
+
+
+def _awaiting_hint(delivery: str, *, resumable: bool) -> str:
+    """How the Executive should present a paused run to the principal."""
+    base = _AWAITING_HINTS.get(delivery, _AWAITING_HINTS["failed"])
+    return base + (_RESUMABLE_CLAUSE if resumable else _PAUSE_ONLY_CLAUSE)
+
+
+# The exception snippet surfaced back to the model when a workflow crashes
+# mid-run. Shorter than ERROR_DETAIL_LEN because it is quoted inside a longer
+# sentence; audit-detail truncation uses the shared cap.
 _EXC_SNIPPET_MAXLEN = 200
 
 
@@ -74,12 +157,21 @@ RUN_WORKFLOW_TOOL: dict[str, Any] = {
         "name and its required `inputs` with list_workflows first, then pass "
         "`inputs` as an object matching that workflow's fields.\n"
         "Notes:\n"
-        "- A few workflows dispatch real messages when run (morning_brief and "
-        "end_of_day_digest DM the principal; executive_reflection can DM heads "
-        "and post broadcasts). Confirm the principal actually wants an ad-hoc "
-        "run before firing those — don't trigger them speculatively.\n"
+        "- Running a workflow HERE returns its artifact into this "
+        "conversation. It does NOT deliver DMs, post broadcasts, or send the "
+        "artifact anywhere. The recurring principal briefs (morning_brief, "
+        "end_of_day_digest) are delivered only by the scheduler on their own "
+        "cadence — running one here renders it for you to relay, nothing "
+        "more. To actually send the result to someone, call message_person "
+        "afterwards.\n"
+        "- The one exception is executive_reflection, which executes tool "
+        "calls of its own (it can DM department heads, post company "
+        "broadcasts, and create alerts). Confirm the principal wants an "
+        "ad-hoc run of THAT one before firing it.\n"
         "- If a workflow pauses for a human sign-off, this returns "
-        "status='awaiting_human' with who it's waiting on; relay that and do "
+        "status='awaiting_human' with who it's waiting on, whether the "
+        "question was actually delivered to them, and whether the run "
+        "continues by itself once answered (`resumable`); relay that and do "
         "not re-run it."
     ),
     "input_schema": {
@@ -123,7 +215,7 @@ def _audit(tool: str, kind: str, ok: bool, summary: str, details: dict[str, Any]
 
 
 def _err(tool: str, msg: str, kind: str = "read") -> str:
-    _audit(tool, kind, False, f"{tool}: {msg}", {"error": msg[:_AUDIT_ERR_MAXLEN]})
+    _audit(tool, kind, False, f"{tool}: {msg}", {"error": msg[:ERROR_DETAIL_LEN]})
     return json.dumps({"error": msg})
 
 
@@ -183,11 +275,11 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
     from openexecutive.knowledge.store import ChromaDBStore
     from openexecutive.workflows import get_workflow
+    from openexecutive.workflows.gate import checkpoint_gate
     from openexecutive.workflows.persistence import (
         complete_run,
         create_run,
         fail_run,
-        save_checkpoint,
     )
     from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
@@ -234,7 +326,22 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
         logger.exception("run_workflow: create_run failed")
         return _err("run_workflow", f"could not start run: {exc}", kind="write")
 
-    store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
+    # Constructing the store can fail (bad persist path, a Chroma client that
+    # won't initialise). It used to sit outside the try below, so the exception
+    # escaped this handler entirely, took down the whole chat turn via the
+    # orchestrator's tool gather, and left the run row stuck at 'running'.
+    try:
+        store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
+    except Exception as exc:
+        logger.exception("run_workflow: knowledge store init failed")
+        with contextlib.suppress(Exception):
+            fail_run(run_id, f"knowledge store unavailable: {exc}")
+        return _err(
+            "run_workflow",
+            f"knowledge store unavailable: {exc}",
+            kind="write",
+        )
+
     artifact = ""
     last_error = ""
     awaiting: dict[str, Any] | None = None
@@ -245,22 +352,24 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
             # api/routes/workflows.py — the resumer applies the timeout policy
             # and the inbound resolver records the human's reply.
             if isinstance(event, WaitForHumanEvent):
-                until = datetime.now(UTC) + timedelta(hours=event.timeout_hours)
-                # Deliberately NOT suppressed: if the checkpoint can't be
-                # written the run must NOT be reported as awaiting_human — a
-                # silently-dropped checkpoint would orphan the run in 'running'
-                # where the resumer/inbound resolver can never find it. Let the
-                # failure fall through to the outer handler, which fails the run.
-                save_checkpoint(
+                # Delivery + checkpoint live in `workflows.gate`, shared with
+                # the HTTP route and the resumer. Deliberately NOT suppressed:
+                # if the checkpoint can't be written the run must NOT be
+                # reported as awaiting_human — a silently-dropped checkpoint
+                # would orphan the run in 'running' where the resumer and the
+                # inbound resolver can never find it. Let the failure fall
+                # through to the outer handler, which fails the run.
+                pause = await checkpoint_gate(
                     run_id=run_id,
-                    state_json=event.model_dump_json(),
-                    awaiting_person_id=event.person_id,
-                    awaiting_until=until,
+                    event=event,
+                    workflow_title=workflow.title,
                 )
                 awaiting = {
-                    "person_id": event.person_id,
-                    "question": event.question,
-                    "awaiting_until": until.isoformat(),
+                    "person_id": pause.person_id,
+                    "question": pause.question,
+                    "awaiting_until": pause.awaiting_until.isoformat(),
+                    "delivery": pause.delivery,
+                    "resumable": pause.resumable,
                 }
                 break
             if event.type == "artifact" and event.content:
@@ -274,17 +383,23 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     if awaiting is not None:
         _audit(
             "run_workflow", "write", True,
-            f"run_workflow {name} awaiting_human run_id={run_id}",
-            {"workflow": name, "run_id": run_id, "status": "awaiting_human"},
+            f"run_workflow {name} awaiting_human run_id={run_id} "
+            f"delivery={awaiting.get('delivery', '')}",
+            {
+                "workflow": name,
+                "run_id": run_id,
+                "status": "awaiting_human",
+                "delivery": awaiting.get("delivery", ""),
+            },
         )
         return json.dumps({
             "status": "awaiting_human",
             "workflow": name,
             "run_id": run_id,
             **awaiting,
-            "presentation_hint": (
-                "This workflow paused for sign-off from the named person. Tell the "
-                "principal it's waiting on them; do not re-run it."
+            "presentation_hint": _awaiting_hint(
+                str(awaiting.get("delivery", "")),
+                resumable=bool(awaiting.get("resumable")),
             ),
         })
 

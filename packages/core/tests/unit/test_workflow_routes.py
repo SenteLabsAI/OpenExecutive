@@ -6,6 +6,7 @@ integration tests).
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -270,3 +271,173 @@ def test_all_workflows_listed_via_api(client: TestClient) -> None:
     assert r.status_code == 200
     api_names = {w["name"] for w in r.json()["workflows"]}
     assert api_names == set(WORKFLOW_REGISTRY.keys())
+
+
+# -----------------------------------------------------------------------------
+# Approval gates over SSE
+# -----------------------------------------------------------------------------
+
+class _GateRouteWorkflow:
+    """A workflow that pauses, with a resume payload like a real dynamic one."""
+
+    name = "gate_route"
+    title = "Gate Route Workflow"
+    description = "Pauses for a sign-off."
+    estimated_minutes = 1
+
+    def __init__(self, *, resumable: bool = True) -> None:
+        self._resumable = resumable
+
+    def input_model(self):  # noqa: ANN201 - duck-typed stub
+        from pydantic import BaseModel as _BM
+        from pydantic import create_model
+        model: type[_BM] = create_model("_GateIn", topic=(str, ""))
+        return model
+
+    def steps(self):  # noqa: ANN201
+        from openexecutive.workflows.base import WorkflowStepDef
+        return [WorkflowStepDef(id="gate", title="Approve", description="Sign off.")]
+
+    async def run(self, inputs, store):  # noqa: ANN001, ANN201
+        from openexecutive.workflows.wait_for_human import (
+            WaitForHumanEvent,
+            WorkflowResumeState,
+        )
+        state = (
+            WorkflowResumeState(
+                workflow_name="gate_route", gate_step_id="gate",
+                gate_step_index=0, next_step_index=1, outputs={},
+            )
+            if self._resumable
+            else None
+        )
+        yield WaitForHumanEvent(person_id=7, question="Approve?", resume_state=state)
+
+
+def _sse_events(body: str) -> list[dict]:
+    return [
+        json.loads(line[len("data: "):])
+        for line in body.split("\n")
+        if line.startswith("data: ")
+    ]
+
+
+@pytest.fixture
+def gate_client(temp_db: Path):  # noqa: ANN201
+    """A client whose registry resolves `gate_route`, with delivery stubbed."""
+    async def _deliver(event, **_kw):  # noqa: ANN001, ANN202
+        return event.model_copy(update={"channel": "slack", "channel_ref": "U1"}), "sent"
+
+    with patch("openexecutive.workflows.persistence.DB_PATH", temp_db), \
+         patch("openexecutive.api.routes.workflows.create_run",
+               side_effect=lambda **kw: create_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.get_run",
+               side_effect=lambda run_id: get_run(run_id, db_path=temp_db)), \
+         patch("openexecutive.api.routes.workflows.get_workflow",
+               lambda name: _GateRouteWorkflow()), \
+         patch("openexecutive.workflows.gate_delivery.deliver_gate_question", _deliver):
+        app = create_app()
+        with TestClient(app) as c:
+            yield c
+
+
+def test_paused_run_ends_the_stream_with_a_terminal_frame(
+    gate_client: TestClient, temp_db: Path
+) -> None:
+    """A paused run emits no `done` and no `error` — the stream just stops. The
+    `terminal` flag is what tells a client that IS the end, instead of leaving
+    it waiting for a frame that never comes."""
+    r = gate_client.post("/workflows/gate_route/runs", json={"topic": "x"})
+    assert r.status_code == 200
+    events = _sse_events(r.text)
+
+    assert events[-1]["type"] == "awaiting_human"
+    assert events[-1]["terminal"] is True
+    assert events[-1]["resumable"] is True
+    assert events[-1]["delivery"] == "sent"
+    assert not any(e["type"] in {"done", "error"} for e in events)
+
+
+def test_paused_run_is_checkpointed_with_its_payload(
+    gate_client: TestClient, temp_db: Path
+) -> None:
+    r = gate_client.post("/workflows/gate_route/runs", json={"topic": "x"})
+    run_id = _sse_events(r.text)[-1]["run_id"]
+
+    run = get_run(run_id, db_path=temp_db)
+    assert run is not None
+    assert run["status"] == "awaiting_human"
+    assert json.loads(run["resume_state_json"])["gate_step_id"] == "gate"
+
+
+def test_a_stream_error_after_the_checkpoint_does_not_fail_the_run(
+    temp_db: Path,
+) -> None:
+    """`fail_run` has no status guard, so an exception raised after a
+    successful checkpoint used to overwrite `awaiting_human` with `error` —
+    destroying a resumable run for something as ordinary as a client
+    disconnecting mid-frame."""
+    async def _deliver(event, **_kw):  # noqa: ANN001, ANN202
+        return event.model_copy(update={"channel": "slack"}), "sent"
+
+    def _boom(payload):  # noqa: ANN001, ANN202
+        if payload.get("type") == "awaiting_human":
+            raise RuntimeError("client went away")
+        return f"data: {json.dumps(payload)}\n\n"
+
+    with patch("openexecutive.workflows.persistence.DB_PATH", temp_db), \
+         patch("openexecutive.api.routes.workflows.create_run",
+               side_effect=lambda **kw: create_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.get_workflow",
+               lambda name: _GateRouteWorkflow()), \
+         patch("openexecutive.workflows.gate_delivery.deliver_gate_question", _deliver), \
+         patch("openexecutive.api.routes.workflows._sse", _boom):
+        app = create_app()
+        with TestClient(app) as c:
+            c.post("/workflows/gate_route/runs", json={"topic": "x"})
+
+    runs = list_runs(db_path=temp_db)
+    assert len(runs) == 1
+    assert runs[0]["status"] == "awaiting_human", (
+        "a broken stream must not destroy the parked run"
+    )
+
+
+def test_run_detail_strips_the_resume_payload(
+    gate_client: TestClient, temp_db: Path
+) -> None:
+    """The payload holds every completed step's full text, and the run-detail
+    page polls this endpoint every few seconds while a run is unfinished."""
+    r = gate_client.post("/workflows/gate_route/runs", json={"topic": "x"})
+    run_id = _sse_events(r.text)[-1]["run_id"]
+
+    detail = gate_client.get(f"/workflows/runs/{run_id}").json()
+
+    assert "resume_state_json" not in detail
+    assert detail["resume_progress"]["gate_step_id"] == "gate"
+    assert detail["resume_progress"]["completed_step_ids"] == []
+
+
+def test_run_detail_resume_progress_is_null_for_a_pause_only_run(
+    temp_db: Path,
+) -> None:
+
+    async def _deliver(event, **_kw):  # noqa: ANN001, ANN202
+        return event.model_copy(), "sent"
+
+    with patch("openexecutive.workflows.persistence.DB_PATH", temp_db), \
+         patch("openexecutive.api.routes.workflows.create_run",
+               side_effect=lambda **kw: create_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.get_run",
+               side_effect=lambda run_id: get_run(run_id, db_path=temp_db)), \
+         patch("openexecutive.api.routes.workflows.get_workflow",
+               lambda name: _GateRouteWorkflow(resumable=False)), \
+         patch("openexecutive.workflows.gate_delivery.deliver_gate_question", _deliver):
+        app = create_app()
+        with TestClient(app) as c:
+            r = c.post("/workflows/gate_route/runs", json={"topic": "x"})
+            events = _sse_events(r.text)
+            assert events[-1]["resumable"] is False
+            detail = c.get(f"/workflows/runs/{events[-1]['run_id']}").json()
+
+    assert detail["resume_progress"] is None

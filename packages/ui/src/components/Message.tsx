@@ -15,6 +15,56 @@ interface MessageProps {
   // workflow opened, person updated, alert flagged…). User messages
   // never have actions.
   actions?: ActionTaken[];
+  // The user stopped this reply mid-stream. Renders a marker so a truncated
+  // answer isn't read as a complete one — on reload too, since the flag is
+  // persisted with the message.
+  stopped?: boolean;
+  // Explicit 👍/👎 on a persisted reply. Rendered only when `onFeedback` is
+  // given (the reply has a stored id) and the reply has finished streaming.
+  feedback?: "up" | "down" | null;
+  onFeedback?: (value: "up" | "down" | null) => void;
+}
+
+function FeedbackButtons({
+  value,
+  onChange,
+}: {
+  value: "up" | "down" | null | undefined;
+  onChange: (value: "up" | "down" | null) => void;
+}) {
+  const button = (kind: "up" | "down", glyph: string, label: string) => {
+    const active = value === kind;
+    return (
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={active}
+        title={label}
+        onClick={() => onChange(active ? null : kind)}
+        // An emoji ignores the text colour, so selection has to show some
+        // other way: unselected ones are greyed out, the selected one is in
+        // full colour on a ringed chip. Sized as a comfortable tap target.
+        className={`min-w-[2rem] min-h-[2rem] px-2 rounded-md text-sm transition-all ${
+          active
+            ? "bg-indigo-500/15 ring-1 ring-indigo-400/70"
+            : "grayscale opacity-50 hover:opacity-100 hover:grayscale-0"
+        }`}
+      >
+        {glyph}
+      </button>
+    );
+  };
+  return (
+    <div className="mt-2 flex items-center gap-1" aria-label="Rate this reply">
+      {button("up", "👍", "Helpful")}
+      {button("down", "👎", "Not helpful")}
+      {value && (
+        <span className="ml-1 text-xs text-fg-muted" role="status">
+          {value === "up" ? "Marked helpful" : "Marked not helpful"}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function ActionChip({ action }: { action: ActionTaken }) {
@@ -34,7 +84,15 @@ function ActionChip({ action }: { action: ActionTaken }) {
   return inner;
 }
 
-export default function Message({ role, content, isStreaming, actions }: MessageProps) {
+export default function Message({
+  role,
+  content,
+  isStreaming,
+  actions,
+  stopped,
+  feedback,
+  onFeedback,
+}: MessageProps) {
   if (role === "user") {
     return (
       <div className="flex justify-end mb-6">
@@ -83,6 +141,14 @@ export default function Message({ role, content, isStreaming, actions }: Message
               <ActionChip key={`${action.tool}-${i}`} action={action} />
             ))}
           </div>
+        )}
+
+        {stopped && !isStreaming && (
+          <p className="mt-2 text-xs text-fg-muted">Stopped by you</p>
+        )}
+
+        {onFeedback && !isStreaming && (
+          <FeedbackButtons value={feedback} onChange={onFeedback} />
         )}
       </div>
     </div>

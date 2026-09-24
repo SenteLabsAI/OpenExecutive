@@ -4,6 +4,8 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
+import ToolPicker from "@/components/jobs/ToolPicker";
+import WorkflowWizard from "@/components/jobs/WorkflowWizard";
 import {
   DYNAMIC_SPECIALISTS,
   DynamicInputField,
@@ -14,7 +16,10 @@ import {
   WorkflowSection,
   createCustomWorkflow,
   getCustomWorkflow,
+  getWorkflowDesignerSession,
   listPeople,
+  listSkills,
+  type SkillMeta,
   updateCustomWorkflow,
 } from "@/lib/api";
 
@@ -44,6 +49,8 @@ function newStep(kind: StepKind, idx: number): DynamicStep {
       timeout_hours: 48,
       on_timeout: "escalate",
     };
+  if (kind === "action")
+    return { kind, id, title: "", goal: "", tools: [] };
   return { kind, id, title: "Assemble", instructions: "", specialist: "cso" };
 }
 
@@ -61,12 +68,16 @@ const INPUT_FIELDS_SCHEMA =
 function stepsSchema(people: Person[]): string {
   const roster = people.map((p) => `${p.id} = ${p.full_name} (${p.role})`).join("; ");
   return (
-    "JSON array of step objects, run in order. Three kinds: " +
+    "JSON array of step objects, run in order. Four kinds: " +
     '{"kind": "specialist", "id": string, "title": string, "specialist": one of [' +
     DYNAMIC_SPECIALISTS.join(", ") +
-    '], "goal": string (may use {field} placeholders), "rag_query"?: string} | ' +
+    '], "goal": string (may use {field} placeholders), "rag_query"?: string, ' +
+    '"playbook"?: string (name of an existing playbook the step follows)} | ' +
     '{"kind": "approval_gate", "id": string, "title": string, "person_id": number, ' +
     '"question": string, "timeout_hours"?: number, "on_timeout"?: "escalate" | "auto_proceed" | "fail"} | ' +
+    '{"kind": "action", "id": string, "title": string, "goal": string (what to get done with tools), ' +
+    '"tools": string[] (exact tool names — keep the ones already chosen; new ones must come from the tool search), ' +
+    '"max_tool_calls"?: number (1-50)} | ' +
     '{"kind": "synthesis", "id": string, "title": string, "specialist"?: string, "instructions"?: string}. ' +
     "The LAST step must be a synthesis step. " +
     (roster ? `person_id must be one of: ${roster}.` : "No people on the roster yet.")
@@ -104,6 +115,7 @@ function coerceInputFields(raw: unknown): DynamicInputField[] | null {
 
 const STEP_KINDS: ReadonlySet<string> = new Set([
   "specialist",
+  "action",
   "approval_gate",
   "synthesis",
 ]);
@@ -131,8 +143,12 @@ function BuilderInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editName = searchParams.get("edit");
+  // A wizard session whose draft seeds this form ("Edit details"). Create
+  // mode — the draft has not been saved yet.
+  const designerId = editName ? null : searchParams.get("designer");
 
   const [people, setPeople] = useState<Person[]>([]);
+  const [playbooks, setPlaybooks] = useState<SkillMeta[]>([]);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -149,17 +165,31 @@ function BuilderInner() {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(!!editName);
+  const [loading, setLoading] = useState(!!editName || !!designerId);
+  // Saving edits keeps a switched-off workflow off: turning it on from its
+  // review card is the approval step, not "Save changes".
+  const [isActive, setIsActive] = useState(true);
 
   useEffect(() => {
     listPeople()
       .then((p) => setPeople(p.filter((x) => !x.archived)))
       .catch(() => setPeople([]));
+    listSkills()
+      .then(setPlaybooks)
+      .catch(() => setPlaybooks([]));
   }, []);
 
   useEffect(() => {
-    if (!editName) return;
-    getCustomWorkflow(editName)
+    const load: Promise<DynamicWorkflowDef> | null = editName
+      ? getCustomWorkflow(editName)
+      : designerId
+      ? getWorkflowDesignerSession(designerId).then((t) => {
+          if (!t.draft) throw new Error("That conversation has no draft yet.");
+          return t.draft.definition;
+        })
+      : null;
+    if (!load) return;
+    load
       .then((d) => {
         setName(d.name);
         setTitle(d.title);
@@ -168,6 +198,7 @@ function BuilderInner() {
         setEstimatedMinutes(d.estimated_minutes);
         setFields(d.input_fields);
         setSteps(d.steps);
+        if (editName) setIsActive(d.is_active !== false);
         if (d.cadence) {
           setCadenceEnabled(true);
           setCadence(d.cadence);
@@ -176,7 +207,7 @@ function BuilderInner() {
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [editName]);
+  }, [editName, designerId]);
 
   // ---- Ask OE registration -------------------------------------------------
   // Recreated each render so getFields/applyPatch close over current state;
@@ -186,7 +217,7 @@ function BuilderInner() {
     formId: "workflow_builder",
     title: editName ? "Edit workflow" : "New workflow",
     description:
-      "Builds a reusable executive job from specialist steps, optional approval gates, and a final synthesis step.",
+      "Builds a reusable workflow from specialist steps, optional approval gates, and a final synthesis step.",
     getFields: (): PageFormField[] => [
       {
         name: "name",
@@ -374,6 +405,7 @@ function BuilderInner() {
       steps,
       cadence: cadenceEnabled ? cadence.trim() : null,
       cadence_person_id: cadenceEnabled ? cadencePersonId : null,
+      is_active: isActive,
     };
     try {
       if (editName) await updateCustomWorkflow(editName, def);
@@ -544,6 +576,13 @@ function BuilderInner() {
             <button
               type="button"
               className="text-xs text-indigo-400 hover:text-indigo-300"
+              onClick={() => setSteps((ss) => [...ss, newStep("action", ss.length)])}
+            >
+              + Action
+            </button>
+            <button
+              type="button"
+              className="text-xs text-indigo-400 hover:text-indigo-300"
               onClick={() =>
                 setSteps((ss) => [...ss, newStep("approval_gate", ss.length)])
               }
@@ -553,8 +592,10 @@ function BuilderInner() {
           </div>
         </div>
         <p className="text-xs text-fg-muted">
-          Steps run in order. The last step must be a <b>synthesis</b> step that
-          assembles the artifact. Place any approval gate just before it.
+          Steps run in order. <b>Specialist</b> steps analyze and write;{" "}
+          <b>action</b> steps get things done with the tools you choose. The last
+          step must be a <b>synthesis</b> step that assembles the result. Place any
+          approval gate just before it.
         </p>
         {steps.map((s, i) => (
           <StepEditor
@@ -563,6 +604,7 @@ function BuilderInner() {
             index={i}
             total={steps.length}
             people={people}
+            playbooks={playbooks}
             onChange={(patch) => updateStep(i, patch)}
             onMove={(dir) => moveStep(i, dir)}
             onRemove={() => setSteps((ss) => ss.filter((_, idx) => idx !== i))}
@@ -631,8 +673,15 @@ function BuilderInner() {
         >
           {saving ? "Saving…" : editName ? "Save changes" : "Create workflow"}
         </button>
-        <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          Cancel
+        <Link
+          href={
+            designerId
+              ? `/jobs/new?session=${encodeURIComponent(designerId)}`
+              : "/jobs"
+          }
+          className="text-sm text-fg-muted hover:text-fg"
+        >
+          {designerId ? "Back to conversation" : "Cancel"}
         </Link>
       </div>
     </div>
@@ -644,6 +693,7 @@ function StepEditor({
   index,
   total,
   people,
+  playbooks,
   onChange,
   onMove,
   onRemove,
@@ -652,6 +702,7 @@ function StepEditor({
   index: number;
   total: number;
   people: Person[];
+  playbooks: SkillMeta[];
   onChange: (patch: Partial<DynamicStep>) => void;
   onMove: (dir: -1 | 1) => void;
   onRemove: () => void;
@@ -732,6 +783,69 @@ function StepEditor({
               className={inputCls}
               value={step.rag_query ?? ""}
               onChange={(e) => onChange({ rag_query: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>Follow a playbook (optional)</label>
+            <select
+              className={inputCls}
+              value={step.playbook ?? ""}
+              onChange={(e) => onChange({ playbook: e.target.value })}
+            >
+              <option value="">None</option>
+              {/* Keep a saved choice visible even if that playbook is gone. */}
+              {step.playbook && !playbooks.some((p) => p.name === step.playbook) && (
+                <option value={step.playbook}>{step.playbook} (not found)</option>
+              )}
+              {playbooks.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} — {p.description}
+                </option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
+
+      {step.kind === "action" && (
+        <>
+          <div>
+            <label className={labelCls}>
+              Goal — what to get done, and where (use {"{field}"} placeholders)
+            </label>
+            <textarea
+              className={`${inputCls} min-h-[80px]`}
+              value={step.goal}
+              placeholder="e.g. Find today's emailed bills, read each PDF, and add a row per bill (vendor, amount, due date) to the Bill tracker sheet. Skip bills already listed."
+              onChange={(e) => onChange({ goal: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>
+              Tools this step may use — saving the workflow approves them
+            </label>
+            <ToolPicker
+              value={step.tools}
+              onChange={(tools) => onChange({ tools })}
+              inputCls={inputCls}
+            />
+          </div>
+          <div className="sm:w-48">
+            <label className={labelCls}>Max tool calls per run</label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              className={inputCls}
+              placeholder="20 (default)"
+              value={step.max_tool_calls ?? ""}
+              onChange={(e) =>
+                // Empty means "use the server default" — undefined is dropped
+                // from the saved JSON, where 0 would fail validation.
+                onChange({
+                  max_tool_calls: e.target.value === "" ? undefined : Number(e.target.value),
+                })
+              }
             />
           </div>
         </>
@@ -826,29 +940,74 @@ function StepEditor({
   );
 }
 
-export default function NewWorkflowPage() {
+function AdvancedBuilderPage() {
+  const searchParams = useSearchParams();
+  const editing = !!searchParams.get("edit");
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto px-6 py-8">
         <div className="max-w-3xl mx-auto">
           <div className="mb-6">
             <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
-              ← Back to jobs
+              ← Back to workflows
             </Link>
             <h1 className="text-2xl font-semibold text-fg mt-2 mb-1">
-              New workflow
+              {editing ? "Edit workflow" : "New workflow"}
             </h1>
             <p className="text-sm text-fg-muted">
-              Build a reusable executive job from specialist steps, optional
-              approval gates, and a final synthesis step. You can also ask the
-              Executive in chat to create one for you.
+              Build a reusable workflow from specialist steps, optional
+              approval gates, and a final synthesis step.
+              {!editing && (
+                <>
+                  {" "}
+                  <Link href="/jobs/new" className="text-indigo-400 hover:text-indigo-300">
+                    Describe it instead
+                  </Link>{" "}
+                  and let the assistant draft it.
+                </>
+              )}
             </p>
           </div>
-          <Suspense fallback={null}>
-            <BuilderInner />
-          </Suspense>
+          <BuilderInner />
         </div>
       </main>
     </div>
+  );
+}
+
+function WizardPage() {
+  return (
+    <div className="flex flex-col h-full min-h-0 bg-surface text-fg">
+      <div className="border-b border-line px-6 py-4">
+        <div className="max-w-3xl mx-auto">
+          <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
+            ← Back to workflows
+          </Link>
+          <h1 className="text-xl font-semibold text-fg mt-1">New workflow</h1>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0">
+        <WorkflowWizard />
+      </div>
+    </div>
+  );
+}
+
+function NewWorkflowRouter() {
+  const searchParams = useSearchParams();
+  // The step-by-step form is the advanced editor: editing a saved workflow,
+  // refining a wizard draft ("Edit details"), or opting in explicitly.
+  const advanced =
+    !!searchParams.get("edit") ||
+    !!searchParams.get("designer") ||
+    searchParams.get("mode") === "advanced";
+  return advanced ? <AdvancedBuilderPage /> : <WizardPage />;
+}
+
+export default function NewWorkflowPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewWorkflowRouter />
+    </Suspense>
   );
 }

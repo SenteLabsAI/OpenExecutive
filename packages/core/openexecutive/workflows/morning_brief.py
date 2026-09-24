@@ -76,6 +76,7 @@ class MorningBriefWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 1
+    background = True
 
     def input_model(self) -> type[BaseModel]:
         return MorningBriefInput
@@ -194,7 +195,10 @@ class MorningBriefWorkflow(Workflow):
             step_title="Synthesize the brief",
         )
 
-        from openexecutive.briefing.narrative import synthesize_briefing_narrative
+        from openexecutive.briefing.narrative import (
+            QUIET_PRINCIPAL,
+            synthesize_briefing_narrative,
+        )
 
         try:
             # standalone=True → the enumerated DM brief (no cards beside it),
@@ -210,9 +214,9 @@ class MorningBriefWorkflow(Workflow):
             return
 
         if not artifact_text:
-            # Matches the shared synthesizer's quiet-day line so the empty
+            # The shared synthesizer's own quiet-day line, so the empty
             # fallback reads identically to a model-produced quiet brief.
-            artifact_text = "Quiet right now — nothing pressing."
+            artifact_text = QUIET_PRINCIPAL
 
         yield WorkflowEvent(
             type="step_done",

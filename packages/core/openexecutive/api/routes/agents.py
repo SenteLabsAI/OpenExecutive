@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
@@ -28,10 +28,21 @@ router = APIRouter()
 # what the runtime can actually serve — when OPENROUTER_ENABLED is on,
 # the curated OpenRouter set folds in automatically.
 from openexecutive.providers import allowed_models_for as _allowed_models_for  # noqa: E402
+from openexecutive.providers import model_options_for as _model_options_for  # noqa: E402
 
 
 def _allowed(agent_id: str | None = None) -> list[str]:
     return _allowed_models_for(agent_id)
+
+
+class ModelOption(BaseModel):
+    """One allowlisted model, grouped for the Council's Provider → Model picker."""
+
+    id: str
+    provider: str
+    provider_label: str
+    route: Literal["direct", "openrouter", "local"]
+    label: str
 
 
 class AgentMeta(BaseModel):
@@ -100,6 +111,10 @@ def _role_default(name: str) -> str:
         return "Utility · Client engagement intake (grounded company drafts)"
     if name == "onboarding_interviewer":
         return "Utility · Company setup interviewer (conversational onboarding)"
+    if name == "workflow_designer":
+        return "Utility · Workflow designer (conversational New workflow wizard)"
+    if name == "workflow_actor":
+        return "Utility · Workflow actor (runs workflow action steps with tools)"
     from openexecutive.orchestrator.router import SPECIALIST_DESCRIPTIONS
 
     description = SPECIALIST_DESCRIPTIONS.get(name, name)
@@ -113,6 +128,8 @@ _research_council_agent: Any = None
 _fixture_generator_agent: Any = None
 _engagement_intake_agent: Any = None
 _onboarding_interviewer_agent: Any = None
+_workflow_designer_agent: Any = None
+_workflow_actor_agent: Any = None
 
 
 def _agent_registry() -> dict[str, Any]:
@@ -124,7 +141,9 @@ def _agent_registry() -> dict[str, Any]:
     response gate / title gen, wait_for_human parser, inbound resolver
     disambiguation), and the ``fixture_generator`` that authors company
     simulator fixtures, the ``onboarding_interviewer`` that runs the
-    conversational company-setup flow, and the ``research`` virtual agent
+    conversational company-setup flow, the ``workflow_designer`` behind the
+    conversational New workflow wizard, the ``workflow_actor`` that runs
+    workflow action steps with tools, and the ``research`` virtual agent
     whose model + deep-reasoning drive the executive_research fan-out. These
     live here (not in SPECIALIST_REGISTRY) because we want them overridable
     through the Council but NOT callable via the ``consult_specialist`` tool.
@@ -132,6 +151,7 @@ def _agent_registry() -> dict[str, Any]:
     global _executive_proxy, _quality_judge_agent, _utility_fast_agent
     global _research_council_agent, _fixture_generator_agent
     global _engagement_intake_agent, _onboarding_interviewer_agent
+    global _workflow_designer_agent, _workflow_actor_agent
     if _executive_proxy is None:
         from openexecutive.agents.executive_proxy import ExecutiveProxy
         _executive_proxy = ExecutiveProxy()
@@ -155,6 +175,12 @@ def _agent_registry() -> dict[str, Any]:
             OnboardingInterviewerAgent,
         )
         _onboarding_interviewer_agent = OnboardingInterviewerAgent()
+    if _workflow_designer_agent is None:
+        from openexecutive.agents.workflow_designer import WorkflowDesignerAgent
+        _workflow_designer_agent = WorkflowDesignerAgent()
+    if _workflow_actor_agent is None:
+        from openexecutive.agents.workflow_actor import WorkflowActorAgent
+        _workflow_actor_agent = WorkflowActorAgent()
     from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
 
     return {
@@ -166,6 +192,8 @@ def _agent_registry() -> dict[str, Any]:
         "fixture_generator": _fixture_generator_agent,
         "engagement_intake": _engagement_intake_agent,
         "onboarding_interviewer": _onboarding_interviewer_agent,
+        "workflow_designer": _workflow_designer_agent,
+        "workflow_actor": _workflow_actor_agent,
     }
 
 
@@ -325,6 +353,13 @@ def list_models(agent_id: str | None = None) -> list[str]:
     """Return the model allowlist. ``agent_id`` is accepted (and forwarded)
     for call-site stability, but every agent currently gets the same list."""
     return _allowed(agent_id)
+
+
+@router.get("/agents/models/options", response_model=list[ModelOption])
+def list_model_options(agent_id: str | None = None) -> list[ModelOption]:
+    """The ``/agents/models`` allowlist (same ids, same order) annotated with
+    provider, route and a display label so the UI can group it."""
+    return [ModelOption(**o) for o in _model_options_for(agent_id)]
 
 
 def _is_known_agent(agent_id: str) -> bool:

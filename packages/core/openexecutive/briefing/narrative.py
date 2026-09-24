@@ -23,6 +23,17 @@ from openexecutive.alerts.lifecycle import parse_aware
 
 logger = logging.getLogger(__name__)
 
+# The quiet-day lines. Single-sourced here, in the module that owns the
+# prompts, because three different code paths must emit text identical to what
+# the model is told to emit on a quiet day: this module's prompts, `today`'s
+# empty-board short-circuit (which skips the model entirely), and
+# `morning_brief`'s empty fallback. They were five separate literals across
+# three files, matching only by convention — a prompt reword would have
+# silently desynced the short-circuit from the model's own wording.
+# `test_briefing_narrative.py` asserts each prompt still carries its line.
+QUIET_PRINCIPAL = "Quiet right now — nothing pressing."
+QUIET_VIEWER = "Quiet right now — nothing needs you."
+
 # Standalone morning-brief DM prompt. Unlike the /today header, this is
 # delivered as a DM with NO cards beside it — so it MUST enumerate what needs
 # the principal's attention (it's the only thing they see). Whole-company,
@@ -55,7 +66,7 @@ STANDALONE_BRIEF_SYSTEM = (
     "  6. **At risk** — departments / goals trending off-track the principal "
     "hasn't already been briefed on.\n\n"
     "Skip headers entirely for sections with no content. If everything is "
-    "genuinely quiet, output one line: 'Quiet right now — nothing pressing.'"
+    "genuinely quiet, output one line: '" + QUIET_PRINCIPAL + "'"
 )
 
 
@@ -94,7 +105,7 @@ BRIEFING_NARRATIVE_SYSTEM = (
     "though: a smart reader should get every line on the FIRST read — short "
     "sentences, plain words over jargon, and when a domain term is unavoidable "
     "state its consequence plainly. Reference specifics by name. If it's "
-    "genuinely quiet, output one line: 'Quiet right now — nothing pressing.'"
+    "genuinely quiet, output one line: '" + QUIET_PRINCIPAL + "'"
 )
 
 
@@ -121,7 +132,7 @@ def _viewer_system_prompt(name: str, role: str) -> str:
         "report. But clarity first: they should get every line on the first "
         "read — short sentences, plain words over jargon. Address them directly "
         "('you'); the context is already scoped to them. If nothing is on their "
-        "plate, output one line: 'Quiet right now — nothing needs you.'"
+        "plate, output one line: '" + QUIET_VIEWER + "'"
     )
 
 
@@ -226,7 +237,19 @@ def render_briefing_context(
         parts.append("")
 
     if activity:
-        parts.append("OE ACTIVITY SINCE LAST BRIEF (most recent first):")
+        # Only the standalone briefs pass `since`, and only they bound the
+        # activity list to it — so only they may call it a delta. The /today
+        # header gets whatever the rail holds, which can predate the last
+        # brief entirely; labelling that "since last brief" made the header
+        # report weeks-old rows as overnight news.
+        if since is not None:
+            parts.append("OE ACTIVITY SINCE LAST BRIEF (most recent first):")
+        else:
+            parts.append(
+                "RECENT OE ACTIVITY (most recent first) — this is a history "
+                "rail, NOT a delta: the principal may have seen these already, "
+                "so never describe them as new or as having just happened:"
+            )
         for item in activity[:15]:
             parts.append(
                 f"- [{item.get('at', '')[:10]}] {item.get('kind', 'action')}: "
@@ -250,10 +273,13 @@ async def synthesize_briefing_narrative(
     since: datetime | None = None,
     handled: list[dict[str, Any]] | None = None,
     pending_watch_suggestions: int = 0,
+    rendered_context: str | None = None,
 ) -> str:
     """Synthesize the briefing narrative. Returns Markdown, or "" when empty.
 
     Prompt selection:
+    ``rendered_context`` overrides the context render (see below).
+
       - ``standalone=True`` → the enumerated whole-company DM brief
         (morning_brief): a self-contained message with no cards beside it, so
         it lists what needs attention. (`viewer` is ignored.)
@@ -275,7 +301,11 @@ async def synthesize_briefing_narrative(
         system = _viewer_system_prompt(viewer["name"], viewer["role"])
     else:
         system = BRIEFING_NARRATIVE_SYSTEM
-    user_content = render_briefing_context(
+    # `rendered_context` lets a caller hand in the exact block it already
+    # rendered. The /today header path does, because it hashes that string as
+    # its cache key — re-rendering here could quietly drift from what was
+    # hashed and leave the cache keyed on something the model never saw.
+    user_content = rendered_context if rendered_context is not None else render_briefing_context(
         period_label=period_label, today_data=today_data, activity=activity,
         since=since, handled=handled,
         pending_watch_suggestions=pending_watch_suggestions,
@@ -293,6 +323,8 @@ async def synthesize_briefing_narrative(
 
 __all__ = [
     "BRIEFING_NARRATIVE_SYSTEM",
+    "QUIET_PRINCIPAL",
+    "QUIET_VIEWER",
     "STANDALONE_BRIEF_SYSTEM",
     "render_briefing_context",
     "synthesize_briefing_narrative",

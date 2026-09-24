@@ -18,6 +18,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "upsert_person",
     "archive_person",
     "set_department_head",
+    # Attunement: closing an open loop stops the nudge engine chasing it
+    "close_open_loop",
     # Department goal mutations (Phase B — chat-driven progress updates)
     "update_department_goal",
     # Skills mutations
@@ -61,6 +64,14 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "call_tool",
     "load_mcp_server",
 })
+
+
+_PLAYBOOKS_LINK = "/jobs?tab=playbooks"
+
+
+def _draft_link(name: str) -> str:
+    """Chat's playbook changes are drafts; the chip opens the one to review."""
+    return f"{_PLAYBOOKS_LINK}&draft={quote(name)}" if name else _PLAYBOOKS_LINK
 
 
 def _parse_result(tool_result: str) -> dict[str, Any] | None:
@@ -151,6 +162,10 @@ def summarize_action(
         # so we don't paint "Approved proposal #N" over a non-event.
         return None
 
+    if tool_name == "close_open_loop" and (parsed or {}).get("status") != "closed":
+        # Refused, or the loop was no longer open — nothing changed.
+        return None
+
     payload: dict[str, Any] = {
         "type": "action_taken",
         "tool": tool_name,
@@ -202,6 +217,9 @@ def summarize_action(
         payload["target"] = full_name or None
         if isinstance(pid, int):
             payload["link"] = f"/people/{pid}"
+    elif tool_name == "close_open_loop":
+        loop_id = tool_input.get("loop_id")
+        payload["summary"] = f"Closed open loop #{loop_id}" if loop_id else "Closed an open loop"
     elif tool_name == "archive_person":
         pid = tool_input.get("person_id")
         payload["summary"] = f"Archived person #{pid}" if pid else "Archived a person"
@@ -244,16 +262,23 @@ def summarize_action(
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Saved skill: {name}" if name else "Saved a skill"
+        payload["summary"] = f"Drafted playbook: {name}" if name else "Drafted a playbook"
         payload["target"] = name or None
+        payload["link"] = _draft_link(name)
     elif tool_name == "update_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Updated skill: {name}" if name else "Updated a skill"
+        payload["summary"] = (
+            f"Drafted a change to playbook: {name}" if name else "Drafted a playbook change"
+        )
         payload["target"] = name or None
+        payload["link"] = _draft_link(name)
     elif tool_name == "delete_skill":
         name = tool_input.get("name", "")
-        payload["summary"] = f"Deleted skill: {name}" if name else "Deleted a skill"
+        payload["summary"] = (
+            f"Proposed deleting playbook: {name}" if name else "Proposed deleting a playbook"
+        )
         payload["target"] = name or None
+        payload["link"] = _draft_link(name)
     elif tool_name == "create_alert":
         headline = (tool_input.get("headline") or "")[:60]
         payload["summary"] = f"Flagged alert: {headline}" if headline else "Flagged alert"
@@ -262,6 +287,8 @@ def summarize_action(
         title = (tool_input.get("title") or "")[:60]
         payload["summary"] = f"Drafted artifact for review: {title}" if title else "Drafted artifact for review"
         payload["target"] = title or None
+        artifact_id = (parsed or {}).get("artifact_id") if parsed else None
+        payload["link"] = f"/artifacts/{artifact_id}" if isinstance(artifact_id, str) else "/artifacts"
     elif tool_name == "ack_alert":
         alert_id = tool_input.get("alert_id")
         status = tool_input.get("status", "ack")

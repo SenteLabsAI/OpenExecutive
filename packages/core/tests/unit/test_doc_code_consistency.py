@@ -6,9 +6,10 @@ actually does — the failure mode the ``/architecture`` page is most prone to
 BOTH the YAML and the code, so changing one without the other breaks CI.
 
 Current coverage: the ``wait_for_human`` resume invariant (the canonical drift
-example — docs once claimed paused workflows auto-continue while the code
-defers full generator resume to "Phase 7"). Add further invariants here as
-they are identified.
+example — the docs and the code have now disagreed in BOTH directions, first
+claiming paused workflows auto-continued when they did not, and later still
+calling resume deferred after it shipped). Add further invariants here as they
+are identified.
 """
 from __future__ import annotations
 
@@ -30,45 +31,69 @@ def _resumer_source() -> str:
     return Path(resumer.__file__).read_text()
 
 
-def test_resumer_still_defers_full_generator_resume() -> None:
-    """Pins the code reality the docs describe: full generator resume is NOT
-    implemented (deferred to "Phase 7"). If someone implements it and removes
-    the marker, this fails — prompting them to update both the code note and
-    the architecture facts (see the doc test below)."""
-    src = _resumer_source()
-    assert "Phase 7" in src, (
-        "resumer.py no longer marks full generator resume as deferred. If "
-        "resume was implemented, update architecture-facts.yaml "
-        "(workflows.human_in_the_loop) and this test together."
+def _code_resumes() -> bool:
+    """Whether the code can actually continue a run past its gate.
+
+    Structural, not textual: the executor and the engine entry point must both
+    exist. A comment can be edited to say anything; these cannot.
+    """
+    from openexecutive.workflows.dynamic import DynamicWorkflow
+
+    return (
+        hasattr(resumer, "_execute_resume")
+        and hasattr(resumer, "_process_resumable")
+        and hasattr(DynamicWorkflow, "resume")
     )
-    # The capture path that IS shipped must still exist...
+
+
+def test_resumer_implements_generator_resume() -> None:
+    """Pins the shipped reality: a resolved run with a resume payload is
+    claimed and executed. Previously this guard pinned the OPPOSITE — that
+    resume was deferred to "Phase 7" — and it fired when resume landed, which
+    is exactly what it was for. It now guards the other direction: if the
+    executor is removed or renamed, update the facts and this test together."""
+    assert _code_resumes(), (
+        "resumer no longer exposes the resume executor. If resume was removed, "
+        "update architecture-facts.yaml (workflows.human_in_the_loop) and this "
+        "test together."
+    )
+    # The capture path resume builds on must still exist.
     assert hasattr(resumer, "apply_resolution")
-    # ...and no public auto-continue entry point should exist yet.
-    assert not hasattr(resumer, "resume_run")
-    assert not hasattr(resumer, "continue_run")
+    # The deferral marker must be gone from the source, or the module is
+    # describing behaviour it no longer has.
+    assert "Phase 7" not in _resumer_source(), (
+        "resumer.py still marks full generator resume as deferred to Phase 7, "
+        "but the executor exists. Remove the stale note."
+    )
 
 
-def test_hitl_doc_does_not_overclaim_resume() -> None:
-    """The facts must not claim paused workflows auto-continue while the code
-    defers that — the exact drift this guard exists to catch."""
+def test_hitl_doc_does_not_understate_resume() -> None:
+    """The facts must not still describe resume as unshipped now that it is.
+
+    The mirror of the original guard: that one caught the docs overclaiming,
+    this one catches them underclaiming. Both are the same failure — the page
+    saying something the code does not do."""
     hitl = _load_facts()["workflows"]["human_in_the_loop"]
 
-    # The retired overclaim: resumer "continues the next step".
-    assert "continues the next step" not in hitl, (
-        "architecture-facts.yaml claims wait_for_human continues the next "
-        "step, but resumer.py defers full generator resume to Phase 7."
+    assert "NOT YET SHIPPED" not in hitl, (
+        "architecture-facts.yaml still lists a NOT YET SHIPPED resume gap, but "
+        "resumer executes resolved runs."
     )
-    # And it must positively signal the deferral so the doc stays honest.
-    assert ("Phase 7" in hitl) or ("NOT YET SHIPPED" in hitl)
+    assert "Phase 7" not in hitl
+    # And it must positively describe the mechanism, so the doc is useful and
+    # not merely silent about it.
+    assert "resume_state_json" in hitl, (
+        "workflows.human_in_the_loop should name the column the resume payload "
+        "is stored in, so the page explains HOW a run continues."
+    )
 
 
 def test_hitl_doc_and_code_agree_on_resume() -> None:
-    """Couple the two directly: if the code defers resume, the doc must say so
-    (and vice versa). The one assertion that ties code reality to the page."""
-    code_defers = "Phase 7" in _resumer_source()
+    """Couple the two directly: the doc admits a resume gap if and only if the
+    code has one. The one assertion that ties code reality to the page."""
     hitl = _load_facts()["workflows"]["human_in_the_loop"]
     doc_admits_gap = ("Phase 7" in hitl) or ("NOT YET SHIPPED" in hitl)
-    assert code_defers == doc_admits_gap, (
+    assert _code_resumes() != doc_admits_gap, (
         "Resume status disagrees between resumer.py and architecture-facts.yaml "
         "(workflows.human_in_the_loop). Update both."
     )

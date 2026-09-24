@@ -24,7 +24,16 @@ All PRs must:
 3. Include tests for new behavior
 4. For new or modified agents: include at least 2 eval scenarios
 5. **Architecture docs**: verify `/architecture` reflects your change (see below)
-6. **A completed PR description using the template** — what changed, why, and
+6. **A title in the form `type(scope): what changed`**, in the imperative —
+   `fix(chat): bind the session for the whole SSE turn`. Types are `fix`,
+   `feat`, `docs`, `chore`, `refactor`, `test` and `perf` — a new specialist
+   agent is a `feat` and a new eval scenario is a `test`, so the `agent/` and
+   `eval/` branch prefixes above have no type of their own. The scope is the
+   subsystem (`chat`, `memory`, `alerts`, `ui`, `deps`, …), not a file path,
+   and is dropped only when a change genuinely spans the repo.
+   Say what changed rather than what it is about — `fix(memory): stop the
+   extractor dropping short approvals`, not `fix(memory): extractor bug`.
+7. **A completed PR description using the template** — what changed, why, and
    how it works, with the checklist filled in. PRs submitted with an empty
    template will be closed; you're welcome to resubmit with the sections
    completed.

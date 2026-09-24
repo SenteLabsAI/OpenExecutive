@@ -346,7 +346,7 @@ async def test_timeout_raises_interview_timeout(
     _install(monkeypatch, Slow())
     monkeypatch.setattr(
         "openexecutive.onboarding.interview.get_settings",
-        lambda: SimpleNamespace(chat_stream_timeout_s=0.01),
+        lambda: SimpleNamespace(interview_timeout_s=0.01),
     )
     with pytest.raises(iv.InterviewTimeout):
         await iv.advance(_opening())

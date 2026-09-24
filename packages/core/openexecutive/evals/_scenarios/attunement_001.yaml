@@ -1,0 +1,19 @@
+id: attunement_001
+domain: operations
+description: "Principal asks what the team still owes them; Executive must consult the tracked open loops (commitments and asks people made in conversation) rather than guess from memory"
+company_context:
+  stage: "Series A"
+  industry: "B2B SaaS"
+  headcount: 45
+query: "Before my 1:1s tomorrow — what are people on the team still on the hook for? Anything overdue I should raise?"
+expected_topics:
+  - open_loops
+  - commitments
+  - overdue
+required_tool_calls:
+  - list_open_loops
+quality_criteria:
+  grounded_in_tool_result: true
+  flags_overdue_items: true
+  does_not_invent_commitments: true
+  not_generic: true

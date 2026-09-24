@@ -256,3 +256,184 @@ def test_retrieve_failures_honors_withheld_items() -> None:
 
     assert "USEFUL FAILURE STORY" in out
     assert "REJECTED FAILURE STORY" not in out
+
+
+def test_builtin_threshold_setting_tightens_builtin_only(
+    fake_review_store: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD gates builtin without touching company.
+
+    Both collections return a hit at 0.62. With the shared gate at 0.65 and the
+    builtin-only gate at 0.60, the company doc survives and the builtin chunk
+    does not -- the whole point of the split.
+    """
+    import openexecutive.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            knowledge_builtin_n_results=5,
+            knowledge_company_n_results=3,
+            knowledge_distance_threshold=0.65,
+            knowledge_builtin_distance_threshold=0.60,
+            vector_store_path="/unused",
+        ),
+    )
+    store = _make_store(
+        builtin_hits=[{"text": "generic handbook", "metadata": {"filename": "b.md"}, "distance": 0.62}],
+        company_hits=[{"text": "our own doc", "metadata": {"filename": "c.md"}, "distance": 0.62}],
+    )
+    out = retrieve(query="a real question about strategy", store=store, review_store=fake_review_store)
+    assert "our own doc" in out
+    assert "generic handbook" not in out
+
+
+def test_builtin_threshold_unset_falls_back_to_shared(
+    fake_review_store: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unset (None) preserves the historical single-threshold behaviour."""
+    import openexecutive.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            knowledge_builtin_n_results=5,
+            knowledge_company_n_results=3,
+            knowledge_distance_threshold=0.65,
+            knowledge_builtin_distance_threshold=None,
+            vector_store_path="/unused",
+        ),
+    )
+    store = _make_store(
+        builtin_hits=[{"text": "generic handbook", "metadata": {"filename": "b.md"}, "distance": 0.62}],
+        company_hits=[],
+    )
+    out = retrieve(query="a real question about strategy", store=store, review_store=fake_review_store)
+    assert "generic handbook" in out
+
+
+def test_builtin_setting_survives_a_caller_pinned_shared_threshold(
+    fake_review_store: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pinned shared threshold must not revoke the operator's builtin gate.
+
+    A caller loosening the shared gate for an unrelated reason (wider company
+    recall for one report) would otherwise silently re-open builtin to the
+    generic-chunk flood the setting exists to prevent.
+    """
+    import openexecutive.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            knowledge_builtin_n_results=5,
+            knowledge_company_n_results=3,
+            knowledge_distance_threshold=0.55,
+            knowledge_builtin_distance_threshold=0.60,
+            vector_store_path="/unused",
+        ),
+    )
+    store = _make_store(
+        builtin_hits=[{"text": "generic handbook", "metadata": {"filename": "b.md"}, "distance": 0.70}],
+        company_hits=[{"text": "our own doc", "metadata": {"filename": "c.md"}, "distance": 0.70}],
+    )
+    out = retrieve(
+        query="a real question about strategy",
+        store=store,
+        review_store=fake_review_store,
+        distance_threshold=0.80,
+    )
+    # The pinned 0.80 reaches company...
+    assert "our own doc" in out
+    # ...but builtin stays on its own 0.60 gate.
+    assert "generic handbook" not in out
+
+
+def test_builtin_gate_can_only_tighten_never_loosen(
+    fake_review_store: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A builtin value looser than the shared gate is clamped to the shared gate.
+
+    Guards the transposed-env-var mistake: pasting the company number into the
+    builtin variable would otherwise make builtin LOOSER than company, admitting
+    handbook prose at a distance where a company doc is still dropped.
+    """
+    import openexecutive.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            knowledge_builtin_n_results=5,
+            knowledge_company_n_results=3,
+            knowledge_distance_threshold=0.55,
+            knowledge_builtin_distance_threshold=0.65,
+            vector_store_path="/unused",
+        ),
+    )
+    store = _make_store(
+        builtin_hits=[{"text": "generic handbook", "metadata": {"filename": "b.md"}, "distance": 0.62}],
+        company_hits=[{"text": "our own doc", "metadata": {"filename": "c.md"}, "distance": 0.62}],
+    )
+    out = retrieve(query="a real question about strategy", store=store, review_store=fake_review_store)
+    assert "generic handbook" not in out
+    assert "our own doc" not in out
+
+
+def test_builtin_gate_is_inclusive_at_the_boundary(
+    fake_review_store: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """distance == threshold is kept (_passes_threshold uses <=)."""
+    import openexecutive.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            knowledge_builtin_n_results=5,
+            knowledge_company_n_results=3,
+            knowledge_distance_threshold=0.65,
+            knowledge_builtin_distance_threshold=0.60,
+            vector_store_path="/unused",
+        ),
+    )
+    store = _make_store(
+        builtin_hits=[{"text": "exactly at the gate", "metadata": {"filename": "b.md"}, "distance": 0.60}],
+        company_hits=[],
+    )
+    out = retrieve(query="a real question about strategy", store=store, review_store=fake_review_store)
+    assert "exactly at the gate" in out
+
+
+def test_explicit_builtin_arg_wins_over_everything(
+    fake_review_store: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """builtin_distance_threshold outranks both the pinned shared arg and the setting."""
+    import openexecutive.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: SimpleNamespace(
+            knowledge_builtin_n_results=5,
+            knowledge_company_n_results=3,
+            knowledge_distance_threshold=0.65,
+            knowledge_builtin_distance_threshold=0.99,
+            vector_store_path="/unused",
+        ),
+    )
+    store = _make_store(
+        builtin_hits=[{"text": "generic handbook", "metadata": {"filename": "b.md"}, "distance": 0.62}],
+        company_hits=[],
+    )
+    out = retrieve(
+        query="a real question about strategy",
+        store=store,
+        review_store=fake_review_store,
+        distance_threshold=0.90,
+        builtin_distance_threshold=0.50,
+    )
+    assert "generic handbook" not in out

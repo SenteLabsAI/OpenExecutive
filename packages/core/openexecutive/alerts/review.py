@@ -24,6 +24,7 @@ Heartbeat plumbing (``alert_review_scan`` rows) mirrors ``scheduler/nudge_engine
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -510,17 +511,24 @@ def _dm_text(headline: str, text: str) -> str:
     return f"[Alert review] Re: {_untrusted(headline, 120)}\n\n{body}"
 
 
-async def _dm(person_id: int, text: str, *, headline: str = "") -> tuple[bool, str]:
+async def _dm(
+    person_id: int, text: str, *, headline: str = "", alert_id: int | None = None
+) -> tuple[bool, str]:
     """DM a rostered person through the real handler (server-side channel
-    resolution + the outbound anti-spam guard). Returns (ok, detail)."""
+    resolution + the outbound anti-spam guard). Returns (ok, detail).
+
+    Tagged as alert-review outreach about ``alert_id``, so acknowledging or
+    dismissing that alert later resolves whether the DM landed."""
     import json
 
+    from openexecutive.attunement.outcomes import SOURCE_ALERT_REVIEW, tag_proactive
     from openexecutive.orchestrator.schedule_tools import handle_message_person
 
     try:
-        raw = await handle_message_person({
-            "person_id": person_id, "text": _dm_text(headline, text),
-        })
+        with tag_proactive(SOURCE_ALERT_REVIEW, f"alert:{alert_id}" if alert_id else ""):
+            raw = await handle_message_person({
+                "person_id": person_id, "text": _dm_text(headline, text),
+            })
         parsed = json.loads(raw)
     except Exception as exc:
         return False, f"dm failed: {exc}"
@@ -600,6 +608,11 @@ def _close_or_annotate(ctx: _MoveContext) -> str:
     if strong:
         new_status = lifecycle.RESOLVED_STATUS if v.verdict == "resolved" else "dismissed"
         alert_store.set_status(ctx.alert_id, new_status, db_path=ctx.db_path)
+        # The review's own earlier DMs about this alert: resolved means they
+        # landed; stale means they didn't matter (voided, never "ignored").
+        lifecycle.resolve_alert_outreach(
+            alert, "resolved" if new_status == lifecycle.RESOLVED_STATUS else "stale"
+        )
         alert_store.set_review(
             ctx.alert_id, verdict=v.verdict, note=ctx.note, recommended_move="close",
             why_now="", due_at=None, reviewed_at=ctx.now.isoformat(), db_path=ctx.db_path,
@@ -727,6 +740,7 @@ async def _apply_route(ctx: _MoveContext) -> None:
         alert_store.update_alert_routing(ctx.alert_id, target, db_path=ctx.db_path)
         ok, detail = await _dm(
             target, v.message or f"Can you own this? {alert.headline}", headline=alert.headline,
+            alert_id=ctx.alert_id,
         )
     ctx.summary.moves_used += 1
     if ok:
@@ -754,6 +768,7 @@ async def _apply_nudge(ctx: _MoveContext) -> None:
         return
     ok, detail = await _dm(
         target, v.message or f"Checking in on: {alert.headline}", headline=alert.headline,
+        alert_id=ctx.alert_id,
     )
     ctx.summary.moves_used += 1
     if ok:
@@ -781,6 +796,7 @@ async def _apply_escalate(ctx: _MoveContext) -> None:
         ctx.principal_id,
         v.message or f"Needs you today: {alert.headline}\n{v.why_now or ''}".strip(),
         headline=alert.headline,
+        alert_id=ctx.alert_id,
     )
     ctx.summary.moves_used += 1
     if not ok:
@@ -810,14 +826,20 @@ async def _apply_draft(ctx: _MoveContext) -> None:
     try:
         from openexecutive.orchestrator.artifact_tools import handle_draft_artifact
 
-        await handle_draft_artifact({
+        result = json.loads(await handle_draft_artifact({
             "title": v.draft_title,
             "document": v.draft_document,
             "why_interesting": (ctx.note or f"Drafted from alert: {alert.headline[:100]}")[:300],
             "severity": alert.severity,
-        })
+        }))
     except Exception:
         logger.exception("alert_review: draft failed for alert %d", ctx.alert_id)
+        return
+    if not result.get("ok"):
+        # A rejected draft (e.g. over the document cap) must not be labelled
+        # "drafted", or the review would never try again.
+        logger.warning("alert_review: draft rejected for alert %d: %s",
+                       ctx.alert_id, result.get("error"))
         return
     ctx.summary.moves_used += 1
     ctx.summary.drafted += 1

@@ -10,10 +10,17 @@ the reply to ``Executive.chat`` so oe knows what the person is replying about.
 
 Per the prompt-caching invariant (CLAUDE.md), this context goes in the **user
 turn** (prepended to the message text), never the cached system block.
+
+The block is context for the LLM turn, never the person's own words. Peer
+memory (``memory.honcho_client``: the turn sync, the department sync and the
+prefetch query) strips it with :func:`strip_outbound_reply_context` before
+recording what the person said; otherwise the Executive's own DM gets
+attributed to the person who replied to it.
 """
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 
 from openexecutive.memory.episodic import (
@@ -35,6 +42,35 @@ _EXCERPT_TURNS = 4
 _EXCERPT_MAX_CHARS = 800
 # Per-message cap inside the excerpt so one long turn can't crowd out the rest.
 _PER_MESSAGE_CHARS = 300
+
+OUTBOUND_REPLY_CONTEXT_TAG = "outbound_reply_context"
+_DM_QUOTE_PREFIX = "You (oe) recently sent this person a DM: "
+# Exactly the block ``hydrate_user_message`` prepends — opening tag, the DM
+# quote line, through the closing tag and the blank line after it — and only
+# at the start of the message. Anchoring on the quote line means a block the
+# person typed themselves (no hydration ran) is content and stays; matching
+# the builder's own "\n\n" rather than any whitespace keeps the message's
+# leading indentation intact.
+_LEADING_BLOCK_RE = re.compile(
+    rf"\A<{re.escape(OUTBOUND_REPLY_CONTEXT_TAG)}>\n{re.escape(_DM_QUOTE_PREFIX)}"
+    rf".*?\n</{re.escape(OUTBOUND_REPLY_CONTEXT_TAG)}>\n\n",
+    re.DOTALL,
+)
+
+
+def _neutralize_closing_tag(text: str) -> str:
+    """Interpolated content (the outbound DM, the backstory) must not be able
+    to close the block early; a literal closing tag inside it is defanged."""
+    return text.replace(f"</{OUTBOUND_REPLY_CONTEXT_TAG}>", f"<\\/{OUTBOUND_REPLY_CONTEXT_TAG}>")
+
+
+def strip_outbound_reply_context(text: str) -> str:
+    """Return ``text`` without the leading block :func:`hydrate_user_message`
+    prepends — the person's own words only. Unchanged when the message does
+    not start with that exact block (no hydration, a block the person wrote,
+    a missing closing tag: better to keep scaffolding than to eat the
+    message)."""
+    return _LEADING_BLOCK_RE.sub("", text)
 
 
 def _build_backstory_excerpt(originating_session_id: str | None) -> str:
@@ -96,18 +132,18 @@ def hydrate_user_message(
         # Build the block BEFORE consuming. If excerpt-building fails, the
         # linkage stays open for a later retry instead of being silently
         # consumed-without-injection.
-        excerpt = _build_backstory_excerpt(row.originating_session_id)
+        excerpt = _neutralize_closing_tag(_build_backstory_excerpt(row.originating_session_id))
         backstory = (
             f"Backstory from the originating conversation:\n{excerpt}"
             if excerpt
             else "No further backstory is available."
         )
         block = (
-            "<outbound_reply_context>\n"
-            f'You (oe) recently sent this person a DM: "{row.outbound_text}"\n'
+            f"<{OUTBOUND_REPLY_CONTEXT_TAG}>\n"
+            f'{_DM_QUOTE_PREFIX}"{_neutralize_closing_tag(row.outbound_text)}"\n'
             "This incoming message MAY be their reply to it. "
             f"{backstory}\n"
-            "</outbound_reply_context>\n\n"
+            f"</{OUTBOUND_REPLY_CONTEXT_TAG}>\n\n"
         )
 
         # Consume last + race-safe: only the writer that flips open→consumed

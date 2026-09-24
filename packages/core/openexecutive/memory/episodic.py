@@ -9,7 +9,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
@@ -190,6 +190,7 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
                 content    TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 action_chips TEXT,
+                stopped INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id)
             );
             CREATE TABLE IF NOT EXISTS scheduled_actions (
@@ -262,6 +263,39 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
                 if "duplicate column" not in str(exc).lower():
                     raise
 
+        # Additive migration: flag an assistant message the user stopped
+        # mid-stream, so the "Stopped" marker survives a reload instead of a
+        # truncated reply reading as a complete one. Legacy rows default to 0.
+        if "stopped" not in _cm_existing:
+            try:
+                conn.execute(
+                    "ALTER TABLE chat_messages "
+                    "ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
+        # Attunement: who actually sent each message (the resolved rostered
+        # Person, never the session owner's principal fallback) and the
+        # explicit thumbs up/down on an assistant reply. Both nullable; legacy
+        # rows stay NULL and are never used for per-person learning.
+        for col, ddl in (
+            ("sender_person_id", "INTEGER"),
+            ("feedback", "TEXT"),
+            ("feedback_note", "TEXT"),
+            # Who left the feedback: the reply's own speaker's reaction is
+            # what their working-style profile learns from; the principal
+            # rating someone else's session is not that person's reaction.
+            ("feedback_by_person_id", "INTEGER"),
+        ):
+            if col not in _cm_existing:
+                try:
+                    conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+
         # Phase 4 additive columns for scheduled_actions only.
         _sa_existing = {
             row["name"]
@@ -296,6 +330,86 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
             "CREATE INDEX IF NOT EXISTS idx_scheduled_scope_key "
             "ON scheduled_actions(scope_key, created_at DESC) "
             "WHERE scope_key IS NOT NULL"
+        )
+
+        # Attunement: per-UTC-day ceiling on open-loop extraction model calls.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS attunement_usage ("
+            "  day TEXT PRIMARY KEY,"
+            "  calls INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+
+        # Attunement working-style profiles: at most a few short style rules
+        # per person, learned from their own reactions and requests, plus
+        # the bookkeeping that paces the learning pass
+        # (attunement/style.py). History keeps every change for review.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS attunement_profiles ("
+            "  person_id INTEGER PRIMARY KEY,"
+            "  rules TEXT NOT NULL DEFAULT '[]',"
+            "  locked INTEGER NOT NULL DEFAULT 0,"
+            "  updated_at TEXT,"
+            "  updated_by TEXT,"
+            "  last_pass_at TEXT,"
+            "  pass_day TEXT,"
+            "  passes_today INTEGER NOT NULL DEFAULT 0,"
+            "  last_message_id INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS attunement_profile_history ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  person_id INTEGER NOT NULL,"
+            "  created_at TEXT NOT NULL,"
+            "  rules TEXT NOT NULL,"
+            "  locked INTEGER NOT NULL DEFAULT 0,"
+            "  updated_by TEXT NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attunement_profile_history_person "
+            "ON attunement_profile_history(person_id, id)"
+        )
+
+        # Attunement outcome ledger: one row per proactive DM to a rostered
+        # person, resolved replied / acted / void / ignored
+        # (attunement/outcomes.py).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS proactive_outcomes ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  created_at TEXT NOT NULL,"
+            "  person_id INTEGER NOT NULL,"
+            "  source TEXT NOT NULL,"
+            "  ref TEXT,"
+            "  channel TEXT NOT NULL,"
+            "  channel_ref TEXT NOT NULL,"
+            "  outbound_context_id INTEGER,"
+            "  outcome TEXT,"
+            "  resolved_at TEXT"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proactive_outcomes_person "
+            "ON proactive_outcomes(person_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proactive_outcomes_ref "
+            "ON proactive_outcomes(ref) WHERE ref IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proactive_outcomes_ctx "
+            "ON proactive_outcomes(outbound_context_id) WHERE outbound_context_id IS NOT NULL"
+        )
+
+        # Attunement open loops: at most one OPEN loop per scope_key. Closing a
+        # loop clears awaiting_response_since, which takes it out of the index,
+        # so the same ask can be reopened later. The insert path relies on this
+        # to dedupe concurrent extraction passes (INSERT hits IntegrityError).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_open_loop_scope "
+            "ON scheduled_actions(scope_key) "
+            "WHERE kind = 'open_loop' AND awaiting_response_since IS NOT NULL"
         )
 
         # Multi-user scoping: tag each session with the Person who started it
@@ -478,16 +592,21 @@ def store_initiative(
     department: str = "",
     person_id: int | None = None,
     db_path: Path = DB_PATH,
+    updated_by_person_id: int | None = None,
 ) -> None:
     now = datetime.now(UTC).isoformat()
     is_insert = False
     is_status_change = False
+    is_real_update = False
     with _get_conn(db_path) as conn:
         existing = conn.execute(
-            "SELECT id, status FROM initiatives WHERE title = ?", (title,)
+            "SELECT id, status, summary FROM initiatives WHERE title = ?", (title,)
         ).fetchone()
         if existing:
             is_status_change = existing["status"] != status
+            is_real_update = is_status_change or (
+                bool(summary) and summary != (existing["summary"] or "")
+            )
             # Only overwrite an existing department when the caller actually
             # passed a non-empty value — preserves the original tag if the
             # update path is invoked without department context.
@@ -507,6 +626,10 @@ def store_initiative(
                 "INSERT INTO initiatives (title, status, created_at, updated_at, summary, department) VALUES (?, ?, ?, ?, ?, ?)",
                 (title, status, now, now, summary, department),
             )
+    if existing and is_real_update:
+        # Only a real change answers a check-in — a same-status re-mention
+        # during routine extraction does not.
+        _resolve_initiative_outreach(int(existing["id"]), updated_by_person_id, db_path)
     # Mirror only on a new initiative OR a real status transition.
     # Idempotent upserts (same title + same status) don't fire — that
     # would spam the dept peer with redundant notes on every routine
@@ -732,6 +855,7 @@ def update_initiative(
     status: str | None = None,
     summary: str | None = None,
     db_path: Path = DB_PATH,
+    updated_by_person_id: int | None = None,
 ) -> bool:
     fields: list[tuple[str, str]] = []
     if title is not None:
@@ -749,7 +873,40 @@ def update_initiative(
         cursor = conn.execute(
             f"UPDATE initiatives SET {set_clause} WHERE id = ?", values
         )
-        return cursor.rowcount > 0
+        updated = cursor.rowcount > 0
+    if updated:
+        _resolve_initiative_outreach(initiative_id, updated_by_person_id, db_path)
+    return updated
+
+
+def _principal_person_id() -> int | None:
+    """The principal's roster id, or None when there is none. Never raises."""
+    try:
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+    except Exception:
+        logger.debug("principal lookup failed", exc_info=True)
+        return None
+    return principal.id if principal is not None else None
+
+
+def _resolve_initiative_outreach(
+    initiative_id: int, updated_by_person_id: int | None, db_path: Path | None
+) -> None:
+    """The person a check-in nudge went to updated the initiative, so it landed.
+
+    Credit goes only to the updater's own pending check-ins. An update from
+    someone else (the principal editing the card, an unauthenticated API call)
+    says nothing about whether the department head answered."""
+    if updated_by_person_id is None:
+        return
+    from openexecutive.attunement.outcomes import OUTCOME_ACTED, resolve_by_ref
+
+    resolve_by_ref(
+        f"nudge:initiative:{initiative_id}", OUTCOME_ACTED,
+        person_ids={updated_by_person_id}, db_path=db_path,
+    )
 
 
 def update_advice(
@@ -964,7 +1121,13 @@ def mark_outbound_context_consumed(
             "WHERE id = ? AND status = 'open'",
             (datetime.now(UTC).isoformat(), context_id),
         )
-        return cursor.rowcount > 0
+        consumed = cursor.rowcount > 0
+    if consumed:
+        # A matched reply is the clearest sign a proactive DM landed.
+        from openexecutive.attunement.outcomes import OUTCOME_REPLIED, resolve_by_outbound_context
+
+        resolve_by_outbound_context(context_id, OUTCOME_REPLIED, db_path=db_path)
+    return consumed
 
 
 def scope_key_in_use(scope_key: str, db_path: Path | None = None) -> bool:
@@ -1401,9 +1564,14 @@ def list_scheduled_actions(
     status: str | None = None,
     limit: int = 100,
     order: str = "asc",
+    exclude_internal: bool = False,
     db_path: Path | None = None,
 ) -> list[ScheduledAction]:
     """List scheduled actions, optionally filtered by status.
+
+    ``exclude_internal`` drops ``__internal__``-channel rows in SQL, so a
+    caller that only wants real sends (the activity feed) is not starved by
+    internal rows — open loops, heartbeats — filling its ``limit``.
 
     `order` sorts by `run_at`: "asc" (default) puts the soonest-due pending
     rows first — the right default for the upcoming queue; "desc" puts the
@@ -1416,17 +1584,19 @@ def list_scheduled_actions(
     resolved = _resolve_db_path(db_path)
     if not resolved.exists():
         return []
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if exclude_internal:
+        clauses.append("channel != '__internal__'")
+    where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
     with _get_conn(resolved) as conn:
-        if status is None:
-            rows = conn.execute(
-                f"SELECT * FROM scheduled_actions ORDER BY run_at {direction} LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT * FROM scheduled_actions WHERE status = ? ORDER BY run_at {direction} LIMIT ?",
-                (status, limit),
-            ).fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM scheduled_actions {where}ORDER BY run_at {direction} LIMIT ?",
+            (*params, limit),
+        ).fetchall()
     return [ScheduledAction(**dict(row)) for row in rows]
 
 
@@ -1493,7 +1663,12 @@ def list_awaiting_replies_by_person(
             "  AND assigned_to_person_id IS NOT NULL "
             "  AND status IN ('pending', 'done') "
             "  AND kind != 'proactive_nudge' "
-            "GROUP BY assigned_to_person_id"
+            # An open loop's awaiting_response_since is its DUE time: until
+            # then nobody is waiting on the owner (the nudge engine uses the
+            # same cut-off).
+            "  AND NOT (kind = 'open_loop' AND awaiting_response_since > ?) "
+            "GROUP BY assigned_to_person_id",
+            (datetime.now(UTC).isoformat(),),
         ).fetchall()
     return {int(r["pid"]): (int(r["cnt"]), r["oldest"]) for r in rows}
 
@@ -1519,6 +1694,10 @@ def last_contact_at_by_person(
             "FROM scheduled_actions "
             "WHERE assigned_to_person_id IS NOT NULL "
             "  AND status = 'done' "
+            # An open loop is a record of what someone owes, not a message
+            # we sent them — counting it would report contact that never
+            # happened.
+            "  AND kind != 'open_loop' "
             "GROUP BY assigned_to_person_id"
         ).fetchall()
     return {int(r["pid"]): r["last"] for r in rows}
@@ -1730,7 +1909,8 @@ _EXTRACTION_SYSTEM = (
     "Required for every item: a `user_commitment_quote` field with verbatim text copied from "
     "the USER QUESTION block. The quote must be a declarative commitment — NOT a question, "
     "NOT a hypothetical, NOT a paraphrase. If you cannot find such a quote in the USER QUESTION "
-    "text, do not include the item at all. A deterministic post-extraction validator will "
+    "text, do not include the item at all. Copy it exactly as the user typed it — typos, "
+    "casing and punctuation included; never correct or tidy it. A deterministic post-extraction validator will "
     "drop any item whose quote does not appear verbatim in the USER QUESTION or whose quote "
     "ends in a question mark — fabricating quotes wastes a tool call.\n"
     "\n"
@@ -1833,12 +2013,557 @@ def _is_valid_user_commitment(quote: str, user_message: str) -> bool:
 
 _MAX_INPUT_CHARS = 20_000  # cap each side to avoid runaway cost
 
-# Minimum combined chars (user + assistant) required to schedule extraction.
-# Below this floor, the turn is a clarifying question or small-talk exchange
-# and the LLM gate's cost isn't justified. Both stream_chat and the committee
-# path use this constant — keeping them symmetric prevents the committee path
-# from firing 2.5x more often than streaming, which it used to.
-MIN_TURN_CHARS_FOR_EXTRACTION = 1500
+# How many individual drop records ride along in the audit row's `details`.
+# `dropped_count` is always exact; this caps only the itemised list, because a
+# model that returns fifty malformed items would otherwise put fifty records
+# in one audit row. Ten is enough to see the pattern — and the pattern is what
+# an operator reads this field for, since the counts above it already say how
+# bad it is.
+_MAX_DROPPED_IN_AUDIT = 10
+
+def should_extract(
+    user_message: str,
+    *,
+    origin_channel: str = "",
+    person_id: int | None = None,
+) -> bool:
+    """True when this turn is worth an extraction pass.
+
+    **No length floor.** There used to be one on the combined user+assistant
+    length, which discarded short instructions answered at length — on a live
+    tenant it blocked every commitment the principal made while admitting only
+    the long analytical exchanges that had none, and the extractor ran 13
+    times storing nothing.
+
+    Moving that floor to the user's side does not fix it, it relocates it: the
+    canonical executive decision is a long analysis answered with "Approve
+    option B." (17 chars) or "Do B." (5), and any floor high enough to skip
+    "Done" (4) also skips those. Length cannot separate a decision from an
+    acknowledgement — "Do B." and "Done" differ by one character and mean
+    opposite things. A pass over an acknowledgement costs one utility-fast
+    call and stores nothing, which is the right trade against losing
+    approvals. If per-turn cost ever becomes the binding constraint, the lever
+    is a semantic prefilter or a per-session cap — not a length proxy for a
+    property it cannot measure.
+
+    **Only the principal's own words.** `_is_valid_user_commitment` is the
+    gate that tests for a commitment, and it does so by requiring a verbatim
+    quote from `user_message`. That is only meaningful when `user_message`
+    actually holds the principal's words. On a chat channel it does not: a
+    teammate's Slack line would be stored in `decisions` with no speaker
+    attached, indistinguishable from the principal's own; an inbound email
+    body is text the sender chose, and a self-quote is free.
+
+    Removing the length floor is what makes this matter — short channel
+    traffic used to fall under it incidentally — so the speaker check lands
+    with it. A turn with no `origin_channel` came from the web app, the CLI or
+    the API, all of which are the principal's own authenticated surfaces, and
+    `person_id` is legitimately None there in a single-user install. A turn
+    that names a channel must resolve to a person marked `is_principal`.
+
+    The single decision point for both call sites in `orchestrator.executive`,
+    so the rule is testable directly and the two paths cannot drift apart.
+    """
+    if not user_message.strip():
+        return False
+    if not origin_channel:
+        return True
+    if person_id is None:
+        return False
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(person_id)
+    except Exception:
+        # Fail closed: an unresolvable speaker is not the principal.
+        logger.warning(
+            "extraction_speaker_lookup_failed person_id=%s channel=%s",
+            person_id,
+            origin_channel,
+            exc_info=True,
+        )
+        return False
+    return bool(person is not None and person.is_principal)
+
+
+# Drop reasons for a payload SHAPE the model got wrong, as opposed to an item
+# it proposed and that was then rejected. Kept apart in the audit row so the
+# `proposed == stored + item drops` arithmetic stays true.
+_SHAPE_REASONS = frozenset({"not_a_list", "item_not_a_dict", "payload_not_a_dict"})
+
+
+class _ItemSpec(NamedTuple):
+    """How one kind of extracted item is read out of the model's payload.
+
+    The three kinds differ only in their field names, so this is the one place
+    those names live. Spelling them once keeps a drop recorded by
+    `_iter_items` and a drop recorded by `_accept` under the same `kind`,
+    which is what makes "bad-quote drops on decisions this week" a single
+    query rather than a union over spellings that have drifted apart.
+    """
+
+    key: str
+    """The payload key the model writes, e.g. `decisions`."""
+
+    kind: str
+    """Singular name every drop record for this kind is filed under."""
+
+    required: tuple[str, ...]
+    """Fields that must be non-empty for the item to be worth storing."""
+
+    label: str
+    """The field echoed (truncated) into a drop so a human can identify it."""
+
+
+_DECISIONS = _ItemSpec("decisions", "decision", ("summary",), "summary")
+_INITIATIVES = _ItemSpec("initiatives", "initiative", ("title", "summary"), "title")
+_ADVICE = _ItemSpec(
+    "advice", "advice", ("query_summary", "advice_summary"), "query_summary"
+)
+
+
+def _iter_items(
+    payload: dict[str, Any], spec: _ItemSpec, dropped: list[dict[str, str]]
+) -> list[dict[str, Any]]:
+    """The dict-shaped items for ``spec``, skipping anything malformed.
+
+    The model's tool payload is not schema-checked, so `{"decisions": "..."}`
+    or `{"decisions": ["text"]}` used to raise out of the whole pass — taking
+    the other two kinds with it AND suppressing the audit row, which left the
+    log looking exactly like "extraction never ran". Malformed shapes are now
+    counted as drops and the pass continues.
+
+    A missing key or an explicit `null` is not a drop: the model omitting a
+    kind it found nothing for is the normal case.
+    """
+    raw = payload.get(spec.key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        dropped.append({"kind": spec.kind, "reason": "not_a_list"})
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(item)
+        else:
+            dropped.append({"kind": spec.kind, "reason": "item_not_a_dict"})
+    return out
+
+
+def _accept(
+    item: dict[str, Any],
+    spec: _ItemSpec,
+    user_message: str,
+    dropped: list[dict[str, str]],
+    rejected: list[tuple[_ItemSpec, dict[str, Any]]] | None = None,
+) -> bool:
+    """True when ``item`` is complete and genuinely the user's own commitment.
+
+    ``rejected`` collects the full item on the bad-quote path so the retry can
+    show the model exactly what it wrote; the audit record keeps only the
+    truncated label.
+
+    Shared by all three kinds so a drop is recorded on every rejecting path.
+    Counting an item as proposed and then returning without a drop record is
+    the bug this centralises away: it broke `proposed == stored + dropped`,
+    which is the arithmetic an operator uses to tell "the model found nothing"
+    from "the model found things and every one was rejected".
+
+    The quote check is the hard gate. The model has repeatedly proven willing
+    to log the Executive's *recommendations* as if the user had committed to
+    them — the May 27 incident turned the question "Should we scope as fixed
+    POC or hourly?" into the decision "First $30K deal will be structured as
+    fixed POC". Requiring a verbatim quote from the user's own message is what
+    catches that; the prompt is only the soft instruction layer.
+    """
+    missing = [field for field in spec.required if not item.get(field)]
+    if missing:
+        dropped.append(
+            {"kind": spec.kind, "reason": "missing_field", "field": missing[0]}
+        )
+        return False
+
+    quote = _quote_of(item)
+    label = str(item.get(spec.label, ""))
+    if not _is_valid_user_commitment(quote, user_message):
+        dropped.append(
+            {"kind": spec.kind, "reason": "bad_quote", "label": label[:_LABEL_CHARS]}
+        )
+        if rejected is not None:
+            rejected.append((spec, item))
+        logger.debug(
+            "Dropping %s — invalid user_commitment_quote %r (%s=%r)",
+            spec.kind,
+            quote[:120],
+            spec.label,
+            label[:80],
+        )
+        return False
+    return True
+
+
+_ITEM_SPECS = (_DECISIONS, _INITIATIVES, _ADVICE)
+
+# How much of an item's label rides in its drop record, in the retry prompt and
+# in the identity the two passes use to recognise the same item. One number,
+# because a drop record and a re-submission must cut the label identically to
+# match up.
+_LABEL_CHARS = 60
+
+# How much of a rejected quote is echoed back to the model on the retry. The
+# quote is model output and uncapped, so this bounds the retry prompt.
+_RETRY_QUOTE_ECHO_CHARS = 200
+
+# Output budget for both extraction calls. Three short arrays of items; a
+# model that needs more is padding, not extracting.
+_EXTRACTION_MAX_TOKENS = 1024
+
+
+def _store_item(
+    spec: _ItemSpec, item: dict[str, Any], *, session_id: str, db_path: Path
+) -> None:
+    """Persist one accepted item. The three store functions take different
+    fields, so this is the one place the mapping lives; both extraction passes
+    go through it. Raises on a failed write — a locked database must surface
+    as the pass's `failure`, not as a healthy-looking `stored=0`."""
+    if spec is _DECISIONS:
+        store_decision(
+            domain=item.get("domain", "general"),
+            summary=item["summary"],
+            rationale=item.get("rationale", ""),
+            session_id=session_id,
+            db_path=db_path,
+        )
+    elif spec is _INITIATIVES:
+        # Extraction only runs on the principal's own words (should_extract),
+        # so the principal is the one updating it.
+        store_initiative(
+            title=item["title"],
+            status=item.get("status", "active"),
+            summary=item["summary"],
+            db_path=db_path,
+            updated_by_person_id=_principal_person_id(),
+        )
+    else:
+        store_advice(
+            domain=item.get("domain", "general"),
+            query_summary=item["query_summary"],
+            advice_summary=item["advice_summary"],
+            session_id=session_id,
+            db_path=db_path,
+        )
+
+
+def _run_items(
+    payload: dict[str, Any],
+    user_message: str,
+    *,
+    proposed: dict[str, int],
+    stored: dict[str, int],
+    dropped: list[dict[str, str]],
+    rejected: list[tuple[_ItemSpec, dict[str, Any]]],
+    accepted: set[tuple[str, str]],
+    session_id: str,
+    db_path: Path,
+) -> None:
+    """First pass over one tool payload: read → count → validate → store.
+
+    ``accepted`` receives the `_stored_quote_key` of every stored item so the retry
+    can tell a re-send of something already stored from a recovered or new
+    item.
+    """
+    for spec in _ITEM_SPECS:
+        for item in _iter_items(payload, spec, dropped):
+            proposed[spec.key] += 1
+            _validate_and_store(
+                item, spec, user_message,
+                dropped=dropped, rejected=rejected, stored=stored,
+                accepted=accepted, session_id=session_id, db_path=db_path,
+            )
+
+
+def _validate_and_store(
+    item: dict[str, Any],
+    spec: _ItemSpec,
+    user_message: str,
+    *,
+    dropped: list[dict[str, str]],
+    rejected: list[tuple[_ItemSpec, dict[str, Any]]] | None,
+    stored: dict[str, int],
+    accepted: set[tuple[str, str]],
+    session_id: str,
+    db_path: Path,
+) -> bool:
+    """First-pass item: validate and, if it passes, store and count it. The
+    retry classifies an accepted item first (recovery / re-send / new), so it
+    calls `_accept` and `_store_and_count` itself."""
+    if not _accept(item, spec, user_message, dropped, rejected):
+        return False
+    _store_and_count(
+        spec, item, stored=stored, accepted=accepted, session_id=session_id, db_path=db_path
+    )
+    return True
+
+
+def _store_and_count(
+    spec: _ItemSpec,
+    item: dict[str, Any],
+    *,
+    stored: dict[str, int],
+    accepted: set[tuple[str, str]],
+    session_id: str,
+    db_path: Path,
+) -> None:
+    """Store an accepted item and count it — after the write, never before."""
+    _store_item(spec, item, session_id=session_id, db_path=db_path)
+    stored[spec.key] += 1
+    accepted.add(_stored_quote_key(spec, item))
+
+
+def _quote_of(item: dict[str, Any]) -> str:
+    """The item's quote as text. A JSON `null` is no quote, not the word
+    "None" — which `str()` would make it, and which then matches any user
+    message containing that word."""
+    quote = item.get("user_commitment_quote")
+    return "" if quote is None else str(quote)
+
+
+def _drop_label_key(spec: _ItemSpec, item: dict[str, Any]) -> tuple[str, str]:
+    """How a re-submission is matched to its drop record: kind and label, cut
+    the way the record cuts it. A reworded label does not match — the item is
+    then stored as a new proposal and the original drop stands, because
+    "reworded" and "different" cannot be told apart."""
+    return spec.kind, str(item.get(spec.label, ""))[:_LABEL_CHARS]
+
+
+def _stored_quote_key(spec: _ItemSpec, item: dict[str, Any]) -> tuple[str, str]:
+    """How a re-sent, already-stored item is recognised: kind and the quote it
+    rests on, ignoring terminal punctuation. The model rewords labels freely
+    but keeps a quote that passed, so the quote is the stable identity; asked
+    to re-copy character-for-character it may gain or lose the full stop, so
+    that must not make a new identity. Checked only after the drop records:
+    a correctly re-quoted item whose label matches a pending drop is a
+    recovery even when its sentence already supports a stored item."""
+    return spec.kind, _normalize_for_quote_match(_quote_of(item)).strip(" .!")
+
+
+def _find_drop(dropped: list[dict[str, str]], key: tuple[str, str]) -> int | None:
+    """Index of the bad-quote drop record a re-submitted item was filed under.
+
+    Only an exact `(kind, label)` match counts. A looser rule — "any bad-quote
+    drop of this kind" — would let an unrelated valid item consume the record
+    and report a recovery that never happened, erasing the very `bad_quote`
+    census this row exists to show. None means the item is a new proposal,
+    whether or not the model meant it as a reworded re-send.
+    """
+    kind, label = key
+    for i, d in enumerate(dropped):
+        if d["kind"] == kind and d["reason"] == "bad_quote" and d.get("label") == label:
+            return i
+    return None
+
+
+def _retry_prompt(
+    turn_block: str, rejected: list[tuple[_ItemSpec, dict[str, Any]]]
+) -> str:
+    lines = []
+    for spec, item in rejected:
+        _, label = _drop_label_key(spec, item)
+        quote = _quote_of(item)[:_RETRY_QUOTE_ECHO_CHARS]
+        lines.append(f'- {spec.kind} "{label}": quote given "{quote}"')
+    return (
+        f"{turn_block}\n\n"
+        "REJECTED ITEMS — the user_commitment_quote you gave was NOT found "
+        "verbatim in USER QUESTION:\n"
+        + "\n".join(lines)
+        + "\n\nRe-submit ONLY these items. Copy user_commitment_quote "
+        "character-for-character from USER QUESTION, including typos and casing. "
+        "If USER QUESTION has no declarative sentence that supports an item, omit "
+        "it. Do not add new items. Return empty arrays for anything you cannot "
+        "re-quote."
+    )
+
+
+async def _retry_rejected(
+    rejected: list[tuple[_ItemSpec, dict[str, Any]]],
+    *,
+    turn_block: str,
+    user_message: str,
+    routing_model: str,
+    proposed: dict[str, int],
+    stored: dict[str, int],
+    dropped: list[dict[str, str]],
+    accepted: set[tuple[str, str]],
+    result: dict[str, Any],
+    session_id: str,
+    db_path: Path,
+) -> None:
+    """One corrective pass for items the first pass dropped as `bad_quote`.
+
+    The model has repeatedly paraphrased the user's words instead of copying
+    them, and the validator (rightly) rejects a paraphrase — so a real
+    commitment was lost on the first slip with no second chance. This shows
+    the model exactly which quotes failed and asks for the verbatim span, with
+    the tool forced so a text-only reply cannot happen. Cost: one utility-model
+    call, only on turns that dropped something.
+
+    Accounting keeps `proposed == stored + item drops` true. Every retry item
+    is validated first; a still-invalid one adds no second drop and is counted
+    under `still_invalid`. A valid item is then classified in this order: its
+    label matches a pending bad-quote drop record → a recovery, stored and the
+    record released; else its quote (same kind, terminal punctuation ignored)
+    already supports a stored item → a re-send, ignored and counted under
+    `repeated`; else a new proposal, stored and counted — including a
+    re-submission whose label the model reworded, since that cannot be told
+    from a different item, and its original drop then stands. Recovery is
+    checked before re-send because two items can rest on one sentence.
+    Malformed shapes at any level — a kind that is not a list, an item that is
+    not a dict, a tool payload that is not a dict, or a response with no
+    `store_memories` call at all — are counted under `malformed`, so a retry
+    that returned garbage does not read as one that obediently returned
+    nothing. The tool is forced where the provider supports tool choice.
+
+    ``result`` is the caller's `retry` block, mutated in place: work done
+    before a cancellation stays counted. An `Exception` here is recorded as
+    the retry's own `failure` and leaves the first pass's results untouched;
+    cancellation propagates so the whole pass is marked FAILED, as it is
+    today.
+    """
+    from openexecutive.audit.usage import log_model_usage
+    from openexecutive.providers import get_provider
+
+    scratch: list[dict[str, str]] = []
+    tool_calls: int | None = None  # None until a response arrives
+    try:
+        response = await get_provider(routing_model).messages_create(
+            model=routing_model,
+            max_tokens=_EXTRACTION_MAX_TOKENS,
+            system=_EXTRACTION_SYSTEM,
+            tools=[_EXTRACTION_TOOL],
+            tool_choice={"type": "tool", "name": "store_memories"},
+            messages=[{"role": "user", "content": _retry_prompt(turn_block, rejected)}],
+        )
+        log_model_usage(response, model=routing_model, actor="memory_extractor")
+
+        tool_calls = 0
+        for block in response.content:
+            if block.type != "tool_use" or block.name != "store_memories":
+                continue
+            tool_calls += 1
+            inp = block.input
+            if not isinstance(inp, dict):
+                scratch.append({"kind": "pass", "reason": "payload_not_a_dict"})
+                continue
+            for spec in _ITEM_SPECS:
+                for item in _iter_items(inp, spec, scratch):
+                    if not _accept(item, spec, user_message, scratch):
+                        continue
+                    drop_at = _find_drop(dropped, _drop_label_key(spec, item))
+                    if drop_at is None and _stored_quote_key(spec, item) in accepted:
+                        result["repeated"] += 1
+                        continue
+                    _store_and_count(
+                        spec, item, stored=stored, accepted=accepted,
+                        session_id=session_id, db_path=db_path,
+                    )
+                    if drop_at is None:
+                        proposed[spec.key] += 1
+                    else:
+                        del dropped[drop_at]
+                        result["recovered"] += 1
+    except Exception as exc:
+        result["failure"] = type(exc).__name__
+        logger.exception("Episodic memory extraction retry failed — keeping first pass")
+    finally:
+        # Counted in `finally` so a retry that died mid-loop still reports the
+        # drops it had already seen, not zeros beside its `failure`. A response
+        # with no tool call is one malformed shape; no response at all is not.
+        malformed = sum(1 for d in scratch if d["reason"] in _SHAPE_REASONS)
+        result["malformed"] = malformed + (1 if tool_calls == 0 else 0)
+        result["still_invalid"] = len(scratch) - malformed
+
+
+def _no_retry() -> dict[str, Any]:
+    """The `retry` audit shape when no corrective pass ran (or before it has)."""
+    return {
+        "rejected": 0,
+        "recovered": 0,
+        "repeated": 0,
+        "still_invalid": 0,
+        "malformed": 0,
+        "failure": "",
+    }
+
+
+def _audit_extraction(
+    proposed: dict[str, int],
+    stored: dict[str, int],
+    dropped: list[dict[str, str]],
+    *,
+    session_id: str,
+    failure: str = "",
+    retry: dict[str, Any] | None = None,
+) -> None:
+    """One `memory_extraction` audit row per extraction pass.
+
+    `retry` is always present in the details (zeros when nothing was rejected)
+    so a query never has to branch on key presence; it says how many bad-quote
+    drops a corrective pass was owed and how many it recovered.
+
+    The point is that "the model proposed nothing" and "the model proposed
+    things and every one was rejected" are different failures with different
+    fixes, and until this row existed they were indistinguishable outside a
+    SQLite session on the tenant. A pass that proposes and stores nothing is
+    normal on most turns, so this is deliberately not a warning — the signal
+    is the RATIO over time, which a `proposed>0, stored=0` streak makes
+    obvious.
+
+    `proposed` counts items the model actually emitted as objects, so every
+    proposed item is either stored or dropped and
+    `proposed == stored + (dropped - malformed)` holds. A malformed SHAPE was
+    never a usable item, so it is counted separately rather than folded into
+    `proposed` — otherwise `dropped > proposed` on a payload that was nothing
+    but garbage. `malformed` is broken out for the same reason the rest of
+    this row exists: without it a pass where the model returned only garbage
+    reads `proposed=0 stored=0`, which is what "the model found nothing"
+    looks like.
+
+    Never raises: auditing an extraction must not be able to break the turn
+    that produced it.
+    """
+    total_proposed = sum(proposed.values())
+    total_stored = sum(stored.values())
+    malformed = sum(1 for d in dropped if d["reason"] in _SHAPE_REASONS)
+    prefix = f"FAILED({failure}) " if failure else ""
+    retry = retry if retry is not None else _no_retry()
+    retry_note = (
+        f" retry={retry['recovered']}/{retry['rejected']}" if retry["rejected"] else ""
+    )
+    try:
+        from openexecutive.audit import log_event
+
+        log_event(
+            "memory_extraction",
+            f"{prefix}proposed={total_proposed} stored={total_stored} "
+            f"dropped={len(dropped)} malformed={malformed}{retry_note}",
+            session_id=session_id or None,
+            actor="memory_extractor",
+            details={
+                "proposed": proposed,
+                "stored": stored,
+                "dropped_count": len(dropped),
+                "malformed_count": malformed,
+                "failure": failure,
+                # Structured like `proposed`/`stored` so "how many bad-quote
+                # drops on decisions this week" is a query, not a string split
+                # over a field that can itself contain colons.
+                "dropped": dropped[:_MAX_DROPPED_IN_AUDIT],
+                "retry": retry,
+            },
+        )
+    except Exception:
+        logger.debug("memory extraction audit failed", exc_info=True)
 
 
 async def extract_and_store(
@@ -1846,13 +2571,58 @@ async def extract_and_store(
     assistant_response: str,
     db_path: Path = DB_PATH,
     session_id: str = "",
+    audit_session_id: str | None = None,
+    audit_turn_id: str | None = None,
 ) -> None:
     """Extract memorable items from a conversation turn and persist them.
 
     `session_id` is forwarded to store_decision/store_advice so the stored
     rows can later be scoped back to this conversation via format_for_prompt.
     Runs as a background task — never blocks the response stream.
+
+    `audit_session_id` / `audit_turn_id` are the caller's audit ContextVars,
+    snapshotted by schedule_extraction before this task was spawned and
+    re-bound here. A background task starts from a context in which the
+    caller's `with set_turn(...)` has already exited, so without them this
+    function's model call records unattributed.
     """
+    from openexecutive.audit.context import get_active_ids, set_turn
+
+    # Fall back per field, not as a pair. Binding a half-empty snapshot
+    # would erase the ambient counterpart — a row under a session with no
+    # turn, or a turn that joins to nothing — which is worse than either
+    # binding both or leaving the ambient values alone. With nothing to
+    # restore at all this is a plain no-op, so a caller that awaits this
+    # directly from inside its own `with set_turn(...)` keeps its binding.
+    ambient_session, ambient_turn = get_active_ids()
+    effective_session = audit_session_id if audit_session_id is not None else ambient_session
+    effective_turn = audit_turn_id if audit_turn_id is not None else ambient_turn
+
+    if (effective_session, effective_turn) == (ambient_session, ambient_turn):
+        await _extract_and_store(
+            user_message, assistant_response, db_path, session_id
+        )
+        return
+
+    with set_turn(session_id=effective_session, turn_id=effective_turn):
+        await _extract_and_store(
+            user_message, assistant_response, db_path, session_id
+        )
+
+
+async def _extract_and_store(
+    user_message: str,
+    assistant_response: str,
+    db_path: Path,
+    session_id: str,
+) -> None:
+    proposed = {"decisions": 0, "initiatives": 0, "advice": 0}
+    stored = {"decisions": 0, "initiatives": 0, "advice": 0}
+    dropped: list[dict[str, str]] = []
+    rejected: list[tuple[_ItemSpec, dict[str, Any]]] = []
+    accepted: set[tuple[str, str]] = set()
+    retry = _no_retry()
+    failure = ""
     try:
         from openexecutive.audit.usage import log_model_usage
         from openexecutive.config import get_settings
@@ -1878,98 +2648,90 @@ async def extract_and_store(
         else:
             existing_block = ""
 
+        turn_block = (
+            f"{existing_block}"
+            f"USER QUESTION:\n{user_message[:_MAX_INPUT_CHARS]}\n\n"
+            f"EXECUTIVE RESPONSE:\n{assistant_response[:_MAX_INPUT_CHARS]}"
+        )
         response = await get_provider(routing_model).messages_create(
             model=routing_model,
-            max_tokens=1024,
+            max_tokens=_EXTRACTION_MAX_TOKENS,
             system=_EXTRACTION_SYSTEM,
             tools=[_EXTRACTION_TOOL],
             tool_choice={"type": "auto"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"{existing_block}"
-                        f"USER QUESTION:\n{user_message[:_MAX_INPUT_CHARS]}\n\n"
-                        f"EXECUTIVE RESPONSE:\n{assistant_response[:_MAX_INPUT_CHARS]}"
-                    ),
-                }
-            ],
+            messages=[{"role": "user", "content": turn_block}],
         )
 
         log_model_usage(response, model=routing_model, actor="memory_extractor")
+
+        # Extraction outcome, per turn. Without this a working extractor and a
+        # broken one look identical from the outside: drops were `logger.debug`
+        # and a successful store wrote no row either, so the only symptom of a
+        # total failure was an empty `decisions` table nobody was watching. It
+        # took reading a tenant's SQLite to find that the turn gate had been
+        # discarding every commitment for the whole life of the install.
 
         for block in response.content:
             if block.type != "tool_use" or block.name != "store_memories":
                 continue
 
             inp = block.input
-            # Validate every item against the user's actual text. The LLM has
-            # repeatedly proven willing to log the executive's recommendations
-            # as if the user had committed to them — see the May 27 incident
-            # where "Should we scope as fixed POC or hourly?" produced a
-            # decision "First $30K deal will be structured as fixed POC".
-            # The user_commitment_quote field + this validator are the
-            # hard gate that catches that pattern; the prompt is now just
-            # the soft instruction layer.
-            for d in inp.get("decisions", []):
-                domain = d.get("domain", "general")
-                summary = d.get("summary", "")
-                quote = d.get("user_commitment_quote", "")
-                if not summary:
-                    continue
-                if not _is_valid_user_commitment(quote, user_message):
-                    logger.debug(
-                        "Dropping decision — invalid user_commitment_quote %r (summary=%r)",
-                        quote[:120],
-                        summary[:80],
-                    )
-                    continue
-                store_decision(
-                    domain=domain,
-                    summary=summary,
-                    rationale=d.get("rationale", ""),
-                    session_id=session_id,
-                    db_path=db_path,
-                )
-            for i in inp.get("initiatives", []):
-                title = i.get("title", "")
-                status = i.get("status", "active")
-                summary = i.get("summary", "")
-                quote = i.get("user_commitment_quote", "")
-                if not (title and summary):
-                    continue
-                if not _is_valid_user_commitment(quote, user_message):
-                    logger.debug(
-                        "Dropping initiative — invalid user_commitment_quote %r (title=%r)",
-                        quote[:120],
-                        title[:80],
-                    )
-                    continue
-                store_initiative(title=title, status=status, summary=summary, db_path=db_path)
-            for a in inp.get("advice", []):
-                domain = a.get("domain", "general")
-                query_summary = a.get("query_summary", "")
-                advice_summary = a.get("advice_summary", "")
-                quote = a.get("user_commitment_quote", "")
-                if not (query_summary and advice_summary):
-                    continue
-                if not _is_valid_user_commitment(quote, user_message):
-                    logger.debug(
-                        "Dropping advice — invalid user_commitment_quote %r (query=%r)",
-                        quote[:120],
-                        query_summary[:80],
-                    )
-                    continue
-                store_advice(
-                    domain=domain,
-                    query_summary=query_summary,
-                    advice_summary=advice_summary,
-                    session_id=session_id,
-                    db_path=db_path,
-                )
+            if not isinstance(inp, dict):
+                dropped.append({"kind": "pass", "reason": "payload_not_a_dict"})
+                continue
+            _run_items(
+                inp,
+                user_message,
+                proposed=proposed,
+                stored=stored,
+                dropped=dropped,
+                rejected=rejected,
+                accepted=accepted,
+                session_id=session_id,
+                db_path=db_path,
+            )
 
-    except Exception:
+        if rejected:
+            await _retry_rejected(
+                rejected,
+                turn_block=turn_block,
+                user_message=user_message,
+                routing_model=routing_model,
+                proposed=proposed,
+                stored=stored,
+                dropped=dropped,
+                accepted=accepted,
+                result=retry,
+                session_id=session_id,
+                db_path=db_path,
+            )
+
+    except Exception as exc:
+        # Recorded so the audit row can say the pass FAILED. Without it a
+        # provider outage writes no rows at all, which reads identically to
+        # "extraction was never scheduled" — the indistinguishable-failure
+        # state this row exists to eliminate.
+        failure = type(exc).__name__
         logger.exception("Episodic memory extraction failed — skipping silently")
+    except BaseException as exc:
+        # `CancelledError` is a BaseException, so the clause above misses it
+        # while the `finally` still writes a row. A pass cancelled at shutdown
+        # would then be logged as `proposed=0 stored=0 failure=''` — byte for
+        # byte what "the model proposed nothing" looks like, which is the one
+        # ambiguity this row exists to remove. Labelled and re-raised, never
+        # swallowed: cancellation still has to propagate.
+        failure = type(exc).__name__
+        raise
+    finally:
+        # In `finally`, not the happy path: a pass that crashed is exactly the
+        # one an operator needs to see. `rejected` is the count of bad-quote
+        # drops a corrective pass was owed, set here from the complete list so
+        # neither a store failure before the retry nor a cancellation during
+        # it can leave a block that denies the drop records beside it.
+        retry["rejected"] = len(rejected)
+        _audit_extraction(
+            proposed, stored, dropped, session_id=session_id, failure=failure, retry=retry
+        )
 
 
 def schedule_extraction(
@@ -1982,10 +2744,27 @@ def schedule_extraction(
     Pass `session_id` to tag extracted decisions and advice with the
     originating conversation so format_for_prompt can scope them later.
     """
+    from openexecutive.audit.context import get_active_ids
+
+    # Snapshot the audit ContextVars at scheduling time. By the time the
+    # background task runs, the caller's ``with set_turn(...)`` block has
+    # exited and the vars are back to None — so without this snapshot the
+    # memory_extractor's own model call records with ``session_id=NULL``
+    # and is invisible in the per-session view. Same pattern as
+    # memory.honcho_client's background syncs. The thread branch needs it
+    # even more: a new thread starts from an empty context, so nothing is
+    # inherited there at all.
+    audit_sid, audit_tid = get_active_ids()
     try:
         loop = asyncio.get_running_loop()
         task = loop.create_task(
-            extract_and_store(user_message, assistant_response, session_id=session_id)
+            extract_and_store(
+                user_message,
+                assistant_response,
+                session_id=session_id,
+                audit_session_id=audit_sid,
+                audit_turn_id=audit_tid,
+            )
         )
         # Hold a strong reference so GC cannot cancel the task mid-flight.
         _background_tasks.add(task)
@@ -1994,7 +2773,13 @@ def schedule_extraction(
         # No running event loop (CLI context) — run in a daemon thread.
         threading.Thread(
             target=lambda: asyncio.run(
-                extract_and_store(user_message, assistant_response, session_id=session_id)
+                extract_and_store(
+                    user_message,
+                    assistant_response,
+                    session_id=session_id,
+                    audit_session_id=audit_sid,
+                    audit_turn_id=audit_tid,
+                )
             ),
             daemon=True,
         ).start()

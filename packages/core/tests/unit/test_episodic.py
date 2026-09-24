@@ -35,6 +35,21 @@ def db(tmp_path: Path) -> Path:
     return db_path
 
 
+@pytest.fixture(autouse=True)
+def _no_audit_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `memory_extraction` rows out of the default `./episodic_memory.db`.
+
+    `_audit_extraction` calls `openexecutive.audit.log_event`, which targets
+    the default DB regardless of the `db_path` the extraction was given. The
+    tests below that drive `extract_and_store` therefore leak rows that other
+    modules read back as real data — visible only in a full-suite run, which
+    is the audit-log pollution trap in CLAUDE.md.
+    """
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event", lambda *a, **kw: None, raising=False
+    )
+
+
 def test_decision_update_and_delete(db: Path) -> None:
     store_decision("strategy", "Expand to EU", rationale="Larger market", db_path=db)
     items = list_decisions(db_path=db)
@@ -443,41 +458,97 @@ def test_extraction_prompt_includes_source_attribution_rule() -> None:
         )
 
 
-def test_min_turn_chars_for_extraction_is_exported_and_sane() -> None:
-    """The threshold is the single floor that gates extraction in both
-    stream_chat and the committee path. If it disappears or drops back into
-    the low-hundreds, extraction starts firing on trivial Q&A again.
+def test_extraction_gate_has_no_length_floor() -> None:
+    """The floor was removed, not moved.
+
+    It began as a combined user+assistant length and discarded short
+    instructions answered at length. Relocating it to the user's side only
+    relocates the bug: "Do B." (5 chars) and "Done" (4) differ by one
+    character and mean opposite things, so no threshold separates them.
+    `_is_valid_user_commitment` is the gate that actually tests for a
+    commitment.
     """
-    from openexecutive.memory.episodic import MIN_TURN_CHARS_FOR_EXTRACTION
+    from openexecutive.memory import episodic
 
-    assert isinstance(MIN_TURN_CHARS_FOR_EXTRACTION, int)
-    # Anything under 1000 would re-create the bug — clarifying questions
-    # are commonly ~500-800 chars combined.
-    assert MIN_TURN_CHARS_FOR_EXTRACTION >= 1000
+    for decision in ("Do B.", "Approve option B.", "Kill it.", "no, drop that"):
+        assert episodic.should_extract(decision)
+    for blank in ("", "  "):
+        assert not episodic.should_extract(blank)
+    assert not hasattr(episodic, "MIN_USER_CHARS_FOR_EXTRACTION")
+    assert not hasattr(episodic, "MIN_TURN_CHARS_FOR_EXTRACTION")
 
 
-def test_executive_call_sites_use_min_turn_chars_constant() -> None:
-    """Both extraction trigger sites in executive.py must reference the
-    constant, not a hard-coded number. Previously they were 300 (committee)
-    and 800 (stream) — asymmetric, low, and easy to drift further. Pin via
-    source inspection because the call sites live inside long async streaming
-    methods that aren't unit-testable end-to-end.
+def test_executive_call_sites_use_the_shared_gate() -> None:
+    """Every `schedule_extraction` in executive.py must be guarded by a bare
+    `should_extract(...)` call and nothing else.
+
+    Checked against the parsed syntax tree rather than the source text. A
+    string search pins yesterday's spelling: `if should_extract(user_message)
+    and len(user_message) >= 200:` re-introduces the exact defect this work
+    removed — a length floor at the call site — while still containing the
+    substring a `count(...)` assertion looks for. The AST sees the extra
+    condition.
+
+    The call sites live inside long async streaming methods that are not
+    unit-testable end-to-end, which is why the guard is pinned structurally
+    rather than by driving it.
     """
+    import ast
     import inspect
 
     from openexecutive.orchestrator import executive
 
-    src = inspect.getsource(executive)
-    # The constant must be referenced at least twice (once per call site).
-    assert src.count("MIN_TURN_CHARS_FOR_EXTRACTION") >= 2, (
-        "executive.py must reference MIN_TURN_CHARS_FOR_EXTRACTION in both "
-        "the stream_chat and stream_chat_with_committee extraction guards"
+    tree = ast.parse(inspect.getsource(executive))
+
+    def _calls_schedule(node: ast.AST) -> bool:
+        return any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "schedule_extraction"
+            for n in ast.walk(node)
+        )
+
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and _calls_schedule(node)
+    ]
+    assert len(guards) == 2, (
+        "expected exactly two guarded extraction sites (stream_chat and "
+        f"stream_chat_with_committee), found {len(guards)}"
     )
-    # And the old hard-coded thresholds must be gone — guard against a
-    # partial revert that wires the constant in one place but leaves the
-    # other path on the old number.
-    assert "len(user_message) >= 800" not in src
-    assert "len(user_message) >= 300" not in src
+
+    for guard in guards:
+        test = guard.test
+        assert isinstance(test, ast.Call), (
+            f"line {guard.lineno}: the guard must be a bare should_extract(...) "
+            f"call, not {type(test).__name__} — an `and len(...) >= N` clause "
+            "is the length floor coming back"
+        )
+        assert isinstance(test.func, ast.Name) and test.func.id == "should_extract", (
+            f"line {guard.lineno}: guard must call should_extract"
+        )
+        # The speaker's own words (`memory_text` when given), not the prompt:
+        # a quoted Executive email or a briefing card's body in the prompt
+        # would satisfy the verbatim-quote gate with the Executive's words.
+        assert [a.id for a in test.args if isinstance(a, ast.Name)] == ["speaker_text"], (
+            f"line {guard.lineno}: guard must read speaker_text, not the prompt"
+        )
+        # The speaker check is not optional: a channel turn carries someone
+        # else's words, and the quote validator cannot tell whose they are.
+        assert {kw.arg for kw in test.keywords} == {"origin_channel", "person_id"}, (
+            f"line {guard.lineno}: guard must pass the speaker's channel and id"
+        )
+
+    # No extraction may be scheduled outside a guard.
+    guarded = {id(n) for g in guards for n in ast.walk(g)}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "schedule_extraction"
+        ):
+            assert id(node) in guarded, f"line {node.lineno}: unguarded extraction"
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +800,9 @@ def test_extract_and_store_drops_decision_with_question_quote(
     assert ep.list_decisions(db_path=db) == [], (
         "decision with question-mark quote must be dropped by the validator"
     )
+    assert create_mock.await_count == 2, (
+        "a bad quote earns one corrective call; the replayed quote is rejected again"
+    )
 
 
 def test_extract_and_store_stores_decision_with_valid_quote(
@@ -821,4 +895,7 @@ def test_extract_and_store_drops_initiative_with_hallucinated_quote(
 
     assert ep.list_initiatives(db_path=db) == [], (
         "initiative with hallucinated user_commitment_quote must be dropped"
+    )
+    assert create_mock.await_count == 2, (
+        "a bad quote earns one corrective call; the replayed quote is rejected again"
     )

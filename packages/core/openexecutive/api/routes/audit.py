@@ -19,8 +19,8 @@ from pydantic import BaseModel
 from openexecutive.audit import AuditLogger, get_audit_logger
 from openexecutive.audit.logger import EVENT_TYPES
 
-# Session IDs are integration-derived (e.g. "discord:dm:42",
-# "slack:C123:1700000000.001", "telegram:5556677", "email:thread@host"). They
+# Session IDs are integration-derived (e.g. "discord:dm:42", "slack:dm:U123",
+# "slack:thread:C1:1700000000.001", "telegram:5556677", "email:thread@host"). They
 # come from third-party webhooks, so reflecting an unvalidated value into the
 # response body would let an attacker shape stored XSS via a malformed inbound.
 # 256 chars is generous (longest observed in practice is ~80).

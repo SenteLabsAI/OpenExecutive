@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from openexecutive.audit import log_event as audit_log
+from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ async def handle_run_executive_research(
     store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
     try:
         async for event in workflow.run(inputs=wf_inputs, store=store):
+            event = ensure_workflow_event(event, site='research_tools.run_executive_research')
             if event.type == "result" and event.data:
                 result_data = event.data
             elif event.type == "artifact" and event.content:

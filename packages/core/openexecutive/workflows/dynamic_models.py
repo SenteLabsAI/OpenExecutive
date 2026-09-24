@@ -50,6 +50,18 @@ _MAX_STEPS = 12
 _MAX_INPUT_FIELDS = 16
 _MAX_GOAL_CHARS = 4000
 
+# Action steps: the tool allowlist IS the user's approval, so it is kept short
+# enough to read on the review card. Names are the exact tool names the engine
+# will call — MCP tools are ``server__tool``; built-ins are ``oe__*``.
+TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_MAX_STEP_TOOLS = 16
+MAX_TOOL_CALLS_CAP = 50
+DEFAULT_MAX_TOOL_CALLS = 20
+# The gateway's own meta-tools. A step naming one of these could reach every
+# downstream tool (call_tool) or attach a new server (load_mcp_server), which
+# would make the per-step allowlist meaningless.
+FORBIDDEN_STEP_TOOLS = frozenset({"search_tools", "call_tool", "load_mcp_server"})
+
 
 class InputFieldSpec(BaseModel):
     """One free-text input field on a dynamic workflow's form.
@@ -84,15 +96,37 @@ class SpecialistStepSpec(BaseModel):
         default="",
         description="Optional retrieval query; when set, RAG chunks are fetched and passed in.",
     )
+    playbook: str = Field(
+        default="",
+        description=(
+            "Optional name of an existing playbook (skill) the step follows — its "
+            "steps are appended to the goal. Leave empty unless one clearly fits."
+        ),
+    )
 
 
 class ApprovalGateStepSpec(BaseModel):
     """Pause the run for a human decision (the wait_for_human primitive).
 
-    NOTE: full generator-resume after the human replies is a deferred upstream
-    capability. A gate followed by further steps will pause at
-    ``awaiting_human`` and not auto-continue; place gates immediately before
-    the synthesis step (or use ``on_timeout='auto_proceed'``).
+    The question is delivered to ``person_id`` on their preferred channel and
+    the run parks at ``awaiting_human``. When they answer, the run CONTINUES
+    from the next step — a gate may sit anywhere in the sequence, and a
+    definition may have more than one.
+
+    What the answer does:
+    - ``approve`` (and the ``auto_proceed`` a timeout synthesises) → the
+      remaining steps run, and the decision is recorded as this step's own
+      output, so it appears as a section in the artifact.
+    - ``reject`` / ``defer`` → the run ends at ``error`` with the person's
+      note. Everything after a sign-off exists to act on a yes.
+
+    ``on_timeout`` applies when nobody answers within ``timeout_hours``:
+    ``escalate`` files a briefing alert and ends the run at ``timed_out``,
+    ``auto_proceed`` continues as though approved, ``fail`` ends it at
+    ``error``.
+
+    Not allowed in a cadence-enabled workflow: a scheduled fire has no
+    interactive human to ask (``validate_definition`` rejects it).
     """
 
     kind: Literal["approval_gate"] = "approval_gate"
@@ -124,8 +158,26 @@ class SynthesisStepSpec(BaseModel):
     specialist: str = "cso"
 
 
+class ActionStepSpec(BaseModel):
+    """Get something done with tools (send, update, file, look up…).
+
+    An agent works toward ``goal`` using ONLY the tools named in ``tools`` —
+    the allowlist the user approved when they created the workflow — for at
+    most ``max_tool_calls`` calls. Its report of what it did becomes the
+    step's output. See ``workflows/action_step.py``.
+    """
+
+    kind: Literal["action"] = "action"
+    id: str
+    title: str
+    description: str = ""
+    goal: str
+    tools: list[str] = Field(default_factory=list)
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
+
+
 StepSpec = Annotated[
-    SpecialistStepSpec | ApprovalGateStepSpec | SynthesisStepSpec,
+    SpecialistStepSpec | ApprovalGateStepSpec | SynthesisStepSpec | ActionStepSpec,
     Field(discriminator="kind"),
 ]
 
@@ -185,6 +237,43 @@ def _person_exists(person_id: int) -> bool:
         return person is not None and not getattr(person, "archived", False)
     except Exception:
         return False
+
+
+def _check_action_tools(step: ActionStepSpec) -> list[str]:
+    """Shape rules for an action step's tool allowlist (existence is async —
+    see ``tool_catalog.validate_tools_available``)."""
+    errors: list[str] = []
+    if not step.tools:
+        errors.append(f"action step {step.id!r} must name at least one tool")
+    if len(step.tools) > _MAX_STEP_TOOLS:
+        errors.append(f"action step {step.id!r} names too many tools (max {_MAX_STEP_TOOLS})")
+    if len(set(step.tools)) != len(step.tools):
+        errors.append(f"action step {step.id!r} lists a tool more than once")
+    for tool in step.tools:
+        if not TOOL_NAME_RE.match(tool):
+            errors.append(f"action step {step.id!r} has an invalid tool name {tool!r}")
+        elif tool in FORBIDDEN_STEP_TOOLS:
+            errors.append(
+                f"action step {step.id!r} may not use {tool!r} — name the specific "
+                "tools the step needs instead"
+            )
+    if not 1 <= step.max_tool_calls <= MAX_TOOL_CALLS_CAP:
+        errors.append(
+            f"action step {step.id!r} max_tool_calls must be 1-{MAX_TOOL_CALLS_CAP}"
+        )
+    return errors
+
+
+def _playbook_exists(name: str) -> bool:
+    """True when `name` is a playbook in effect (hidden built-ins don't count)."""
+    from openexecutive.knowledge.skills import SkillParseError
+    from openexecutive.knowledge.skills_repo import SkillNotFoundError, get_skill
+
+    try:
+        get_skill(name)
+    except (SkillNotFoundError, SkillParseError):
+        return False
+    return True
 
 
 def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
@@ -260,6 +349,11 @@ def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
             errors.extend(_check_placeholders(step.id, step.goal, field_names))
             if step.rag_query:
                 errors.extend(_check_placeholders(step.id, step.rag_query, field_names))
+            if step.playbook and not _playbook_exists(step.playbook):
+                errors.append(
+                    f"step {step.id!r} names unknown playbook {step.playbook!r} "
+                    "(see the Playbooks tab for names)"
+                )
 
         elif isinstance(step, ApprovalGateStepSpec):
             if not step.question.strip():
@@ -285,10 +379,21 @@ def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
             if step.instructions:
                 errors.extend(_check_placeholders(step.id, step.instructions, field_names))
 
+        elif isinstance(step, ActionStepSpec):
+            specialist_step_count += 1
+            if not step.goal.strip():
+                errors.append(f"step {step.id!r} must have a goal")
+            if len(step.goal) > _MAX_GOAL_CHARS:
+                errors.append(f"step {step.id!r} goal exceeds {_MAX_GOAL_CHARS} chars")
+            errors.extend(_check_placeholders(step.id, step.goal, field_names))
+            errors.extend(_check_action_tools(step))
+
     if synthesis_count != 1:
         errors.append("workflow must have exactly one synthesis step (and it must be last)")
     if specialist_step_count < 1:
-        errors.append("workflow must have at least one specialist step before synthesis")
+        errors.append(
+            "workflow must have at least one specialist or action step before synthesis"
+        )
 
     # --- cadence ---
     if defn.cadence:

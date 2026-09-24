@@ -46,6 +46,7 @@ from openexecutive.onboarding.wizard import (
     get_current_question,
     process_answer,
 )
+from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ async def _fire_post_onboarding_research(session_id: str) -> None:
         async def _run() -> str:
             captured = ""
             async for event in workflow.run(inputs=wf_inputs, store=store):
+                event = ensure_workflow_event(event, site='onboarding.post_onboarding_research')
                 if event.type == "artifact" and event.content:
                     captured = event.content
                 elif event.type == "error" and event.message:

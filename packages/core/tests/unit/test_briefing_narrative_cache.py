@@ -40,36 +40,59 @@ def test_put_upserts_on_scope(tmp_path: Path) -> None:
     assert got is not None and got.narrative_text == "v2" and got.input_hash == "h2"
 
 
+def _ctx(today_data: dict, activity: list | None = None) -> str:
+    from openexecutive.briefing.narrative import render_briefing_context
+
+    return render_briefing_context(
+        period_label="2026-09-20", today_data=today_data, activity=activity or [],
+    )
+
+
 def test_hash_stable_for_same_state() -> None:
     data = {
         "proposals": [{"headline": "A", "category": "action"}],
-        "departments": [{"slug": "fin", "at_risk_count": 1, "off_track_count": 0}],
-        "people": [{"id": 3, "awaiting_count": 2}],
+        "departments": [{"title": "Fin", "slug": "fin", "at_risk_count": 1,
+                         "off_track_count": 0, "awaiting_count": 0}],
+        "people": [{"id": 3, "full_name": "Dana", "role": "CFO", "awaiting_count": 2}],
     }
-    assert narrative_cache.build_narrative_input_hash(data) == \
-        narrative_cache.build_narrative_input_hash(dict(data))
+    assert narrative_cache.build_narrative_input_hash(_ctx(data)) == \
+        narrative_cache.build_narrative_input_hash(_ctx(dict(data)))
 
 
 def test_hash_changes_when_proposals_change() -> None:
     base = {"proposals": [{"headline": "A", "category": "action"}], "departments": [], "people": []}
     changed = {"proposals": [{"headline": "B", "category": "action"}], "departments": [], "people": []}
-    assert narrative_cache.build_narrative_input_hash(base) != \
-        narrative_cache.build_narrative_input_hash(changed)
+    assert narrative_cache.build_narrative_input_hash(_ctx(base)) != \
+        narrative_cache.build_narrative_input_hash(_ctx(changed))
 
 
 def test_hash_differs_by_scope() -> None:
     # Same content, different viewer → distinct cache keys (no cross-user reuse).
-    data = {"proposals": [], "departments": [], "people": []}
-    assert narrative_cache.build_narrative_input_hash(data, "principal") != \
-        narrative_cache.build_narrative_input_hash(data, "person:5")
+    ctx = _ctx({"proposals": [], "departments": [], "people": []})
+    assert narrative_cache.build_narrative_input_hash(ctx, "principal") != \
+        narrative_cache.build_narrative_input_hash(ctx, "person:5")
 
 
 def test_hash_ignores_volatile_fields() -> None:
-    # created_at / alert_id / score should not churn the hash — only headline
-    # + category feed it.
+    # created_at / alert_id / score are not rendered into the header context,
+    # so they cannot churn the key. This now holds by construction — the key is
+    # a hash of the rendered context — rather than by a hand-maintained field
+    # list that had to be remembered.
     a = {"proposals": [{"headline": "A", "category": "action", "created_at": "2026-01-01", "score": 40}],
          "departments": [], "people": []}
     b = {"proposals": [{"headline": "A", "category": "action", "created_at": "2026-12-31", "score": 99}],
          "departments": [], "people": []}
-    assert narrative_cache.build_narrative_input_hash(a) == \
-        narrative_cache.build_narrative_input_hash(b)
+    assert narrative_cache.build_narrative_input_hash(_ctx(a)) == \
+        narrative_cache.build_narrative_input_hash(_ctx(b))
+
+
+def test_hash_refuses_a_today_data_dict() -> None:
+    """The signature changed from the `today_data` dict to the rendered string.
+    A dict is JSON-serialisable, so without this guard a stale caller would
+    hash silently and key the entry on input the model never saw."""
+    import pytest
+
+    with pytest.raises(TypeError, match="RENDERED context string"):
+        narrative_cache.build_narrative_input_hash(
+            {"proposals": [], "departments": [], "people": []}  # type: ignore[arg-type]
+        )

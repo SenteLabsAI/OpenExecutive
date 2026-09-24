@@ -459,6 +459,11 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         where={"type": "recent_research"},
     )
+    # Indexed artifacts (orchestrator/artifact_tools.py) are per-company too.
+    store.delete_documents(
+        collection=ChromaDBStore.RESEARCH_COLLECTION,
+        where={"type": "artifact"},
+    )
     store.delete_notion_docs()
     store.delete_attachment_docs()
     from openexecutive.knowledge.notion_sync import reset_local_state
@@ -703,6 +708,11 @@ async def reset_all_state(
             collection=ChromaDBStore.RESEARCH_COLLECTION,
             where={"type": "recent_research"},
         )
+        # Indexed artifacts (orchestrator/artifact_tools.py) are per-company too.
+        store.delete_documents(
+            collection=ChromaDBStore.RESEARCH_COLLECTION,
+            where={"type": "artifact"},
+        )
         store.delete_notion_docs()
         store.delete_attachment_docs()
         from openexecutive.knowledge.notion_sync import reset_local_state
@@ -713,7 +723,10 @@ async def reset_all_state(
         # the company-source rows from the shared `skills` ChromaDB
         # collection. Built-in skills (source='builtin') are preserved so
         # the box still has its default skill library after a reset.
-        from openexecutive.knowledge.skills_index import SKILLS_COLLECTION
+        from openexecutive.knowledge.skills_index import (
+            SKILLS_COLLECTION,
+            sync_builtin_skill_index,
+        )
         company_skills_dir: Path = settings.company_profile_path.parent / "skills"
         if company_skills_dir.exists():
             shutil.rmtree(company_skills_dir)
@@ -721,6 +734,9 @@ async def reset_all_state(
             collection=SKILLS_COLLECTION,
             where={"source": "company"},
         )
+        # The wiped dir held the hidden list and any customizations, so every
+        # built-in is back in effect.
+        sync_builtin_skill_index(store)
 
         # 3. Episodic rows — includes chat history, voice personas, alerts
         # state (alerts, mutes, preferences), AND the run/audit
@@ -772,6 +788,18 @@ async def reset_all_state(
                 *PER_CLIENT_CACHE_TABLES,
             ),
         )
+
+        # Attunement's daily call counter, outcome ledger and working styles. Created by initialize_db, which an
+        # older DB may not have run yet, so guarded per table (the helper
+        # above only guards the file).
+        if EPISODIC_DB_PATH.exists():
+            with sqlite3.connect(str(EPISODIC_DB_PATH)) as _conn:
+                for _table in ("attunement_usage", "proactive_outcomes",
+                               "attunement_profiles", "attunement_profile_history"):
+                    if _conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_table,)
+                    ).fetchone():
+                        _conn.execute(f"DELETE FROM {_table}")
 
         # 3c. Knowledge review state (same DB as the episodic rows above). A
         # "factory reset" that keeps the previous operator's approvals,

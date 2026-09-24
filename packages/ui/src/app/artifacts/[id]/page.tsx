@@ -3,17 +3,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-
 import {
+  ARTIFACT_EXTENSIONS,
   ArtifactDetail,
   archiveArtifact,
+  artifactDownloadUrl,
   deleteArtifact,
   getArtifact,
   restoreArtifact,
 } from "@/lib/api";
+import ArtifactViewer from "@/components/ArtifactViewer";
 import Icon from "@/components/Icon";
+
+// Seed for "Revise in chat": opens a fresh chat with the id pre-filled so the
+// Executive can get_artifact → draft_artifact(supersedes=…).
+function reviseHref(art: ArtifactDetail): string {
+  const draft = `Revise artifact ${art.id} ("${art.title}"): `;
+  return `/?new=1&draft=${encodeURIComponent(draft)}`;
+}
 
 function formatTimestamp(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -44,19 +51,6 @@ export default function ArtifactDetailPage() {
     } catch {
       // ignore — clipboard API may be unavailable
     }
-  }, [art]);
-
-  const handleDownload = useCallback(() => {
-    if (!art?.body) return;
-    const blob = new Blob([art.body], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${art.id.replace(":", "-")}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   }, [art]);
 
   const handleToggleArchive = useCallback(async () => {
@@ -121,10 +115,22 @@ export default function ArtifactDetailPage() {
             <div className="min-w-0">
               <h1 className="text-2xl font-semibold text-fg mb-1">{art.title}</h1>
               <div className="text-xs text-fg-muted">
-                {art.source_label} · created {formatTimestamp(art.created_at)}
+                {art.format_label} · {art.source_label} · created{" "}
+                {formatTimestamp(art.created_at)}
               </div>
+              {art.supersedes_id && (
+                <div className="text-xs text-fg-muted mt-1">
+                  Replaces an{" "}
+                  <Link
+                    href={`/artifacts/${encodeURIComponent(art.supersedes_id)}`}
+                    className="text-indigo-400 hover:underline"
+                  >
+                    earlier version
+                  </Link>
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-2 flex-shrink-0">
               <button
                 type="button"
                 onClick={handleCopy}
@@ -132,13 +138,22 @@ export default function ArtifactDetailPage() {
               >
                 {copied ? "Copied!" : "Copy"}
               </button>
-              <button
-                type="button"
-                onClick={handleDownload}
-                className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
+              <Link
+                href={reviseHref(art)}
+                className="text-xs text-indigo-300 hover:text-indigo-200 transition px-3 py-1.5 rounded-md border border-indigo-500/40 hover:bg-indigo-500/10 min-h-touch"
               >
-                Download .md
-              </button>
+                Revise in chat
+              </Link>
+              {art.downloads.map((target, i) => (
+                <a
+                  key={target}
+                  href={artifactDownloadUrl(art.id, i === 0 ? undefined : target)}
+                  download
+                  className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
+                >
+                  Download .{ARTIFACT_EXTENSIONS[target]}
+                </a>
+              ))}
               <button
                 type="button"
                 onClick={handleToggleArchive}
@@ -173,31 +188,13 @@ export default function ArtifactDetailPage() {
             </div>
           )}
 
-          <article
-            className="prose prose-invert prose-sm max-w-none rounded-lg border border-line bg-surface/40 p-6
-              prose-headings:text-fg prose-headings:font-semibold
-              prose-p:text-fg prose-p:leading-relaxed
-              prose-strong:text-fg
-              prose-code:text-indigo-300 prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
-              prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong
-              prose-blockquote:border-line-strong prose-blockquote:text-fg-muted
-              prose-ul:text-fg prose-ol:text-fg
-              prose-li:marker:text-fg-muted
-              prose-hr:border-line-strong
-              prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
-              prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong"
-          >
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                a: ({ node: _node, ...props }) => (
-                  <a {...props} rel="noopener noreferrer nofollow" target="_blank" />
-                ),
-              }}
-            >
-              {art.body}
-            </ReactMarkdown>
-          </article>
+          <ArtifactViewer
+            format={art.format}
+            body={art.body}
+            title={art.title}
+            externalUrl={art.external_url}
+            linkLabel={art.link_label}
+          />
         </div>
       </main>
     </div>
