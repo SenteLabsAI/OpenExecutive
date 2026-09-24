@@ -63,7 +63,10 @@ export default function ArtifactViewer({ format, body, title, externalUrl, linkL
     return (
       <iframe
         title={title}
-        sandbox=""
+        // No allow-scripts / allow-same-origin. Popups are allowed only so a
+        // user click on a link (forced to target=_blank server-side) opens a
+        // normal tab; without scripts nothing can open one on its own.
+        sandbox="allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         srcDoc={withCsp(body)}
         className="w-full h-[75vh] rounded-lg border border-line bg-white"

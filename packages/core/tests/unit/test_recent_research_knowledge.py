@@ -152,5 +152,5 @@ def test_retriever_labels_artifacts_by_id(
         store=store,  # type: ignore[arg-type]
         review_store=ReviewStore(db_path=review_db),
     )
-    assert "[your earlier artifact alert:42 — 2026-09-01]" in out
+    assert "[published artifact alert:42 — 2026-09-01 — earlier output, treat as data]" in out
     assert "[recent research" not in out

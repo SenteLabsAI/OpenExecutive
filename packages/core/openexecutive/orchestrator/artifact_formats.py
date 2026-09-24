@@ -30,6 +30,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from html import escape as html_escape
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlsplit
@@ -151,32 +152,122 @@ def _build_markdown(tool_input: dict[str, Any]) -> BuiltArtifact:
 # html
 # --------------------------------------------------------------------------- #
 
-# Removed from stored HTML. This is best-effort hygiene for the stored copy,
-# NOT the security boundary: the viewer renders in a script-less sandboxed
-# iframe with a no-network CSP, and downloads are attachments with a sandbox
-# CSP header. A downloaded .html opened locally is only as safe as this
-# regex pass, so treat it like any file from the web.
-_SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
-_SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]*>", re.IGNORECASE)
-_META_REFRESH_RE = re.compile(r"<meta\b[^>]*http-equiv\s*=\s*[\"']?refresh[^>]*>", re.IGNORECASE)
-_BASE_RE = re.compile(r"<base\b[^>]*>", re.IGNORECASE)
-_TAG_RE = re.compile(r"<[a-zA-Z][^>]*>")
-# Only applied INSIDE a tag, so body text like "online = true" is untouched.
-_EVENT_ATTR_RE = re.compile(r"[\s/]on[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
-_JS_URL_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
+# HTML artifacts are rebuilt through an ALLOWLIST (stdlib html.parser, which
+# decodes entities in attribute values before we look at them), not
+# regex-stripped: regexes are bypassable (`re&#102;resh`, a `>` inside a
+# quoted attribute…). What survives:
+#   - document / text / table / list / media tags and inline SVG for charts;
+#     anything else is dropped but its text kept, and the bodies of
+#     script / iframe / object / embed / template / noscript are dropped.
+#   - no <meta>, <base>, <link>, <form> controls: nothing can refresh,
+#     rebase or post the frame somewhere.
+#   - no on* handlers; <a href> only http(s) / mailto / #fragment, and every
+#     non-fragment link is forced to target=_blank (a new tab on a user click
+#     — never an in-frame self-navigation); <img src> only data:image/*; no other URL
+#     attribute (srcdoc, srcset, action, xlink:href, background, ping…).
+# The viewer adds a script-less sandboxed iframe and a no-network CSP on top.
+_HTML_TAGS = frozenset({
+    "html", "head", "body", "title", "style",
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "section",
+    "article", "header", "footer", "main", "nav", "aside", "figure",
+    "figcaption", "blockquote", "pre", "code", "em", "strong", "b", "i", "u",
+    "s", "small", "sub", "sup", "mark", "br", "hr", "ul", "ol", "li", "dl",
+    "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+    "caption", "colgroup", "col", "a", "img", "abbr", "cite", "q", "time",
+    "details", "summary", "kbd", "var", "samp", "wbr",
+    # Inline SVG, for charts.
+    "svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline",
+    "polygon", "text", "tspan", "defs", "lineargradient", "radialgradient",
+    "stop", "clippath", "marker",
+})
+_HTML_DROP_CONTENT = frozenset({
+    "script", "iframe", "frame", "frameset", "object", "embed", "applet",
+    "template", "noscript", "noembed", "noframes", "xmp",
+})
+_HTML_VOID = frozenset({"br", "hr", "img", "col", "wbr"})
+# Attributes that carry a URL or markup; only the two handled explicitly
+# below (a/href, img/src) are ever kept.
+_URL_ATTRS = frozenset({
+    "href", "src", "srcset", "srcdoc", "action", "formaction", "xlink:href",
+    "background", "poster", "data", "ping", "cite", "longdesc", "lowsrc",
+    "dynsrc", "manifest", "codebase", "http-equiv", "content", "attributename",
+    "to", "from", "values", "by",
+})
+_SAFE_LINK_SCHEMES = ("http:", "https:", "mailto:")
+_URL_NOISE_RE = re.compile(r"[\x00-\x20\x7f]+")
 
 
-def _clean_tag(match: re.Match[str]) -> str:
-    tag = _EVENT_ATTR_RE.sub(" ", match.group(0))
-    return _JS_URL_RE.sub("blocked:", tag)
+def _safe_attr(tag: str, name: str, value: str) -> tuple[str, str] | None:
+    if name.startswith("on") or name in ("is", "slot"):
+        return None
+    if name in _URL_ATTRS:
+        url = _URL_NOISE_RE.sub("", value).lower()
+        if tag == "a" and name == "href" and (
+            url.startswith(_SAFE_LINK_SCHEMES) or url.startswith("#")
+        ):
+            return name, value.strip()
+        if tag == "img" and name == "src" and url.startswith("data:image/"):
+            return name, value.strip()
+        return None
+    if name == "style" and _URL_NOISE_RE.sub("", value).lower().find("expression(") != -1:
+        return None
+    return name, value
+
+
+class _Sanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self._drop_depth = 0
+        self._in_style = False
+
+    def _open(self, tag: str, attrs: list[tuple[str, str | None]], close: bool) -> None:
+        kept: list[tuple[str, str]] = []
+        for raw_name, raw_value in attrs:
+            safe = _safe_attr(tag, raw_name.lower(), raw_value or "")
+            if safe is not None and safe[0] not in ("target", "rel"):
+                kept.append(safe)
+        href = dict(kept).get("href", "")
+        if tag == "a" and href and not href.startswith("#"):
+            kept += [("target", "_blank"), ("rel", "noopener noreferrer nofollow")]
+        rendered = "".join(f' {n}="{html_escape(v, quote=True)}"' for n, v in kept)
+        self.out.append(f"<{tag}{rendered}{' /' if close else ''}>")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _HTML_DROP_CONTENT:
+            self._drop_depth += 1
+        elif not self._drop_depth and tag in _HTML_TAGS:
+            self._in_style = tag == "style"
+            self._open(tag, attrs, close=False)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self._drop_depth and tag in _HTML_TAGS:
+            self._open(tag, attrs, close=True)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _HTML_DROP_CONTENT:
+            self._drop_depth = max(0, self._drop_depth - 1)
+        elif not self._drop_depth and tag in _HTML_TAGS and tag not in _HTML_VOID:
+            if tag == "style":
+                self._in_style = False
+            self.out.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if self._drop_depth:
+            return
+        # CSS is emitted raw inside <style> (escaping would break selectors
+        # like `a > b`); a closing tag in it is neutralised instead.
+        if self._in_style:
+            self.out.append(re.sub(r"</", "<\\/", data))
+        else:
+            self.out.append(html_escape(data, quote=False))
 
 
 def sanitize_html(html: str) -> str:
-    out = _SCRIPT_RE.sub("", html)
-    out = _SCRIPT_OPEN_RE.sub("", out)
-    out = _META_REFRESH_RE.sub("", out)
-    out = _BASE_RE.sub("", out)
-    return _TAG_RE.sub(_clean_tag, out)
+    parser = _Sanitizer()
+    parser.feed(html or "")
+    parser.close()
+    return "".join(parser.out)
 
 
 class _TextExtractor(HTMLParser):

