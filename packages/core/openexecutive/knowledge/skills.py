@@ -88,6 +88,13 @@ def parse_skill_text(text: str, path: Path, source: SkillSource) -> Skill:
         raise SkillParseError(
             f"Skill {path.name} is missing required frontmatter field(s): {', '.join(missing)}"
         )
+    # YAML reads `description: 2024` as an int and `yes` as a bool; reject
+    # those here so every malformed file surfaces as SkillParseError.
+    not_text = [k for k in required if not isinstance(data[k], str)]
+    if not_text:
+        raise SkillParseError(
+            f"Skill {path.name}: frontmatter field(s) must be text: {', '.join(not_text)}"
+        )
 
     validate_skill_name(data["name"])
     if data["category"] not in SKILL_CATEGORIES:
@@ -115,7 +122,10 @@ def parse_skill_text(text: str, path: Path, source: SkillSource) -> Skill:
 
 
 def parse_skill_file(path: Path, source: SkillSource) -> Skill:
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise SkillParseError(f"Skill {path.name} could not be read: {e}") from e
     return parse_skill_text(text, path, source)
 
 

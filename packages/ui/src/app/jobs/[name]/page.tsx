@@ -240,6 +240,24 @@ export default function JobDetailPage() {
             <p className="text-sm text-fg-muted leading-relaxed">
               {workflow.description}
             </p>
+            {(workflow.playbooks?.length ?? 0) > 0 && (
+              <p className="mt-2 text-xs text-fg-muted">
+                Follows{" "}
+                {workflow.playbooks!.length === 1 ? "playbook" : "playbooks"}:{" "}
+                {workflow.playbooks!.map((p, i) => (
+                  <span key={p}>
+                    {i > 0 && ", "}
+                    <Link
+                      href={`/jobs?tab=playbooks&playbook=${encodeURIComponent(p)}`}
+                      className="text-indigo-400 hover:underline"
+                    >
+                      {p}
+                    </Link>
+                  </span>
+                ))}
+                {" "}— customize it to change how this workflow writes.
+              </p>
+            )}
           </div>
 
           {!running && (

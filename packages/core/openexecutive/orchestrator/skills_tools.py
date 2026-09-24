@@ -18,6 +18,7 @@ from openexecutive.knowledge.skills_repo import (
     SkillNotFoundError,
 )
 from openexecutive.knowledge.store import ChromaDBStore
+from openexecutive.workflows.playbooks import playbook_users
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ SKILL_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Search the skills library for reusable procedures relevant to the current task. "
             "Returns up to N matches with name, description, and when_to_use — but NOT the body. "
+            "A hit's `workflows` lists workflows that follow it: when the user "
+            "wants that full deliverable, offer or run the workflow instead. "
             "Use this when you suspect a task is something you've codified before, or when a "
             "user request looks repeatable. Follow up with `load_skill` to read the chosen procedure."
         ),
@@ -111,8 +114,9 @@ SKILL_TOOLS: list[dict[str, Any]] = [
         "name": "update_skill",
         "description": (
             "Refine an existing user-created skill. All fields are required — this is a "
-            "full replace. Built-in skills (and the company's customized copies of them) "
-            "cannot be changed from chat: the user customizes them on the Playbooks tab."
+            "full replace. Built-in skills, customized copies of them, and any skill a "
+            "workflow follows cannot be changed from chat: the user edits those on the "
+            "Playbooks tab."
         ),
         "input_schema": {
             "type": "object",
@@ -129,8 +133,9 @@ SKILL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "delete_skill",
         "description": (
-            "Delete a user-created skill. Built-in skills (and customized copies of them) "
-            "cannot be deleted or hidden from chat: the user does that on the Playbooks tab. "
+            "Delete a user-created skill. Built-in skills, customized copies of them, and any "
+            "skill a workflow follows cannot be deleted or hidden from chat: the user does "
+            "that on the Playbooks tab. "
             "Use sparingly — only when the user explicitly asks or the skill is clearly obsolete."
         ),
         "input_schema": {
@@ -150,6 +155,9 @@ async def handle_search_skills(input: dict[str, Any]) -> str:
     if not query:
         return json.dumps({"error": "missing required field: query"})
     hits = _search_skills(query=query, store=_get_store(), n_results=n)
+    users = playbook_users()
+    for hit in hits:
+        hit["workflows"] = [u.name for u in users.get(hit["name"], [])]
     return json.dumps({"results": hits}, ensure_ascii=False)
 
 
@@ -175,6 +183,11 @@ async def handle_load_skill(input: dict[str, Any]) -> str:
 
 
 async def handle_create_skill(input: dict[str, Any]) -> str:
+    # A workflow may still name a playbook that was deleted (it runs without
+    # it); chat must not be able to fill that name with new instructions.
+    refusal = _followed_refusal(str(input.get("name", "")))
+    if refusal:
+        return refusal
     try:
         skill = skills_repo.create_skill(
             name=input["name"],
@@ -199,32 +212,63 @@ async def handle_create_skill(input: dict[str, Any]) -> str:
     })
 
 
-# Built-in playbooks feed automated workflows by fixed name (board_prep,
-# quarterly_plan), and this tool loop also runs on inbound email and chat
-# channels. So customizing or hiding one — which changes what those
-# workflows follow — is left to a person on the Playbooks tab, never to a
-# model that a crafted message could steer.
+# Playbooks that workflows follow are read at run time — including by
+# scheduled custom workflows a person approved, whose later action steps can
+# write to already-approved targets unattended. This tool loop also runs on
+# inbound email and chat channels, so changing what such a workflow follows
+# (customizing, hiding, editing or deleting its playbook) is left to a
+# person on the Playbooks tab, never to a model a crafted message could steer.
+# That covers every built-in (workflows read them by fixed name) and any
+# company playbook any workflow follows (switched-off custom ones included).
 _BUILTIN_UI_ONLY = (
     "'{name}' is a built-in playbook. Built-ins and customized copies of them can "
     "only be customized, reverted or hidden by the user on the Playbooks tab "
     "(Workflows → Playbooks). Point the user there, or save a new playbook under "
     "a different name."
 )
+_FOLLOWED_UI_ONLY = (
+    "'{name}' is followed by the workflow(s) {workflows}, so only the user can "
+    "change or delete it, on the Playbooks tab (Workflows → Playbooks). Point the "
+    "user there, or save a new playbook under a different name."
+)
 
 
-def _builtin_refusal(name: str) -> str | None:
+def _followed_refusal(name: str) -> str | None:
+    """Refusal JSON when a workflow follows `name` (or that can't be checked)."""
+    try:
+        followers = playbook_users(strict=True).get(name, [])
+    except Exception:
+        logger.exception("Could not check which workflows follow playbook %r", name)
+        return json.dumps({
+            "error": (
+                f"Couldn't check whether a workflow follows '{name}', so it can't be "
+                "changed from chat right now. The user can change it on the Playbooks tab."
+            ),
+            "code": "unverifiable",
+        })
+    if followers:
+        titles = ", ".join(u.title for u in followers)
+        return json.dumps({
+            "error": _FOLLOWED_UI_ONLY.format(name=name, workflows=titles),
+            "code": "followed_by_workflow",
+        })
+    return None
+
+
+def _protected_refusal(name: str) -> str | None:
+    """Refusal JSON when chat may not change `name`, else None."""
     try:
         if skills_repo.is_builtin_name(name):
             return json.dumps({"error": _BUILTIN_UI_ONLY.format(name=name), "code": "builtin"})
     except SkillParseError as e:
         return json.dumps({"error": str(e), "code": "invalid"})
-    return None
+    return _followed_refusal(name)
 
 
 async def handle_update_skill(input: dict[str, Any]) -> str:
     if not input.get("name"):
         return json.dumps({"error": "missing required field: name"})
-    refusal = _builtin_refusal(str(input["name"]))
+    refusal = _protected_refusal(str(input["name"]))
     if refusal:
         return refusal
     try:
@@ -249,7 +293,7 @@ async def handle_delete_skill(input: dict[str, Any]) -> str:
     name = input.get("name", "")
     if not name:
         return json.dumps({"error": "missing required field: name"})
-    refusal = _builtin_refusal(name)
+    refusal = _protected_refusal(name)
     if refusal:
         return refusal
     try:

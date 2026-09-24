@@ -135,6 +135,12 @@ class HealthResponse(BaseModel):
     version: str = "0.3.2"  # x-release-please-version
 
 
+class SkillWorkflowRef(BaseModel):
+    name: str
+    title: str
+    is_custom: bool = False
+
+
 class SkillMeta(BaseModel):
     name: str
     category: str
@@ -144,6 +150,8 @@ class SkillMeta(BaseModel):
     filename: str
     customized: bool = False
     hidden: bool = False
+    # Workflows whose steps follow this playbook (switched-off custom ones too).
+    used_by: list[SkillWorkflowRef] = []
 
 
 class SkillDetail(SkillMeta):

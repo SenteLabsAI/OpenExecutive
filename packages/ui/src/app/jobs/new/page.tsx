@@ -18,6 +18,8 @@ import {
   getCustomWorkflow,
   getWorkflowDesignerSession,
   listPeople,
+  listSkills,
+  type SkillMeta,
   updateCustomWorkflow,
 } from "@/lib/api";
 
@@ -69,7 +71,8 @@ function stepsSchema(people: Person[]): string {
     "JSON array of step objects, run in order. Four kinds: " +
     '{"kind": "specialist", "id": string, "title": string, "specialist": one of [' +
     DYNAMIC_SPECIALISTS.join(", ") +
-    '], "goal": string (may use {field} placeholders), "rag_query"?: string} | ' +
+    '], "goal": string (may use {field} placeholders), "rag_query"?: string, ' +
+    '"playbook"?: string (name of an existing playbook the step follows)} | ' +
     '{"kind": "approval_gate", "id": string, "title": string, "person_id": number, ' +
     '"question": string, "timeout_hours"?: number, "on_timeout"?: "escalate" | "auto_proceed" | "fail"} | ' +
     '{"kind": "action", "id": string, "title": string, "goal": string (what to get done with tools), ' +
@@ -145,6 +148,7 @@ function BuilderInner() {
   const designerId = editName ? null : searchParams.get("designer");
 
   const [people, setPeople] = useState<Person[]>([]);
+  const [playbooks, setPlaybooks] = useState<SkillMeta[]>([]);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -170,6 +174,9 @@ function BuilderInner() {
     listPeople()
       .then((p) => setPeople(p.filter((x) => !x.archived)))
       .catch(() => setPeople([]));
+    listSkills()
+      .then(setPlaybooks)
+      .catch(() => setPlaybooks([]));
   }, []);
 
   useEffect(() => {
@@ -597,6 +604,7 @@ function BuilderInner() {
             index={i}
             total={steps.length}
             people={people}
+            playbooks={playbooks}
             onChange={(patch) => updateStep(i, patch)}
             onMove={(dir) => moveStep(i, dir)}
             onRemove={() => setSteps((ss) => ss.filter((_, idx) => idx !== i))}
@@ -685,6 +693,7 @@ function StepEditor({
   index,
   total,
   people,
+  playbooks,
   onChange,
   onMove,
   onRemove,
@@ -693,6 +702,7 @@ function StepEditor({
   index: number;
   total: number;
   people: Person[];
+  playbooks: SkillMeta[];
   onChange: (patch: Partial<DynamicStep>) => void;
   onMove: (dir: -1 | 1) => void;
   onRemove: () => void;
@@ -774,6 +784,25 @@ function StepEditor({
               value={step.rag_query ?? ""}
               onChange={(e) => onChange({ rag_query: e.target.value })}
             />
+          </div>
+          <div>
+            <label className={labelCls}>Follow a playbook (optional)</label>
+            <select
+              className={inputCls}
+              value={step.playbook ?? ""}
+              onChange={(e) => onChange({ playbook: e.target.value })}
+            >
+              <option value="">None</option>
+              {/* Keep a saved choice visible even if that playbook is gone. */}
+              {step.playbook && !playbooks.some((p) => p.name === step.playbook) && (
+                <option value={step.playbook}>{step.playbook} (not found)</option>
+              )}
+              {playbooks.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} — {p.description}
+                </option>
+              ))}
+            </select>
           </div>
         </>
       )}

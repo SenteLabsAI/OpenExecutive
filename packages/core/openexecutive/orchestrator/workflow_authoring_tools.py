@@ -65,7 +65,8 @@ DEFINITION_SCHEMA: dict[str, Any] = {
             "type": "array",
             "description": (
                 "Ordered steps. Each has a 'kind': "
-                "'specialist' {id,title,specialist,goal,rag_query?} (analysis by an advisor), "
+                "'specialist' {id,title,specialist,goal,rag_query?,playbook?} (analysis by an "
+                "advisor; playbook = name of an existing playbook the step follows), "
                 "'action' {id,title,goal,tools,max_tool_calls?} (gets something done with "
                 "tools — 'tools' is the exact list of tool names the step may call, e.g. "
                 "'google_workspace__append_table_rows' or 'oe__read_file'; max_tool_calls "
@@ -228,7 +229,8 @@ def _summarize(defn: Any) -> str:
     for i, step in enumerate(defn.steps, 1):
         kind = getattr(step, "kind", "?")
         if kind == "specialist":
-            lines.append(f"{i}. [{step.specialist}] {step.title}")
+            follows = f" · follows playbook {step.playbook}" if step.playbook else ""
+            lines.append(f"{i}. [{step.specialist}{follows}] {step.title}")
         elif kind == "approval_gate":
             lines.append(f"{i}. [approval gate → person {step.person_id}] {step.title}")
         elif kind == "action":

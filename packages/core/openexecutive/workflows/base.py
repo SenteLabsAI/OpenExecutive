@@ -92,6 +92,10 @@ class WorkflowMeta(BaseModel):
     # reflection). Still runnable by hand; the catalog files them under
     # "System" instead of mixing them in with the jobs a user starts.
     background: bool = False
+    # Names of the playbooks (skills) this workflow's steps follow — see
+    # workflows/playbooks.py. Drives "Follows playbooks" on the workflow page
+    # and "Used by workflows" on the Playbooks tab.
+    playbooks: list[str] = Field(default_factory=list)
 
 
 class Workflow(ABC):
@@ -109,6 +113,9 @@ class Workflow(ABC):
     estimated_minutes: int = 3
     # See WorkflowMeta.background.
     background: bool = False
+    # See WorkflowMeta.playbooks. Declare every playbook `run` loads via
+    # workflows.playbooks.load_playbook (a test holds the two in sync).
+    playbooks: tuple[str, ...] = ()
 
     @abstractmethod
     def input_model(self) -> type[BaseModel]:
@@ -163,4 +170,9 @@ class Workflow(ABC):
             input_schema=self.input_model().model_json_schema(),
             steps=self.steps(),
             background=self.background,
+            playbooks=self.followed_playbooks(),
         )
+
+    def followed_playbooks(self) -> list[str]:
+        """Names of the playbooks this workflow's steps follow."""
+        return list(self.playbooks)

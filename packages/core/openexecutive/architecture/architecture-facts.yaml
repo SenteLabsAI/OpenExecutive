@@ -847,6 +847,35 @@ knowledge:
 
     Chat chips: create/update/delete_skill chips read "Saved / Updated /
     Deleted playbook: <name>" and link to the Playbooks tab.
+
+    Workflows follow playbooks (workflows/playbooks.py): `load_playbook`
+    returns the body in effect ("" when hidden, missing or malformed — never
+    raises) and `playbook_clause` appends it to a step prompt. Built-ins
+    declare `Workflow.playbooks`; test_workflow_playbooks.py asserts the
+    declaration equals the module's load_playbook("…") calls, so the "used
+    by" reporting can't drift. Pairs: board_prep→board-prep-deck,
+    quarterly_plan→quarterly-okr-set + quarterly-forecast,
+    mbr→monthly-business-review, competitive_teardown→competitive-teardown,
+    fundraising_prep→fundraise-narrative, exec_search_brief→role-scorecard.
+    (board_prep used to also load board-update-memo and never use it; that
+    dead load is gone.) Custom workflows: SpecialistStepSpec.playbook,
+    validated at save, appended AFTER {field} rendering. playbook_users()
+    feeds SkillMeta.used_by, search_skills hits' `workflows`, and the UI's
+    hide/revert/delete warnings, and the chat-tool guard: update_skill /
+    delete_skill also refuse (code "followed_by_workflow") any company
+    playbook any workflow follows (switched-off custom ones too, via
+    list_definitions(active_only=False)) — an approved scheduled custom
+    workflow reads it at each run and later action steps write to
+    already-approved targets unattended, so a crafted inbound message must
+    not be able to rewrite it. create_skill runs the same follower check
+    (a deleted playbook's name a workflow still follows can't be refilled
+    from chat), and the check uses playbook_users(strict=True): a store
+    error refuses with code "unverifiable" instead of failing open.
+    load_playbook catches every exception; a
+    custom step whose playbook is unavailable emits a `progress` event.
+    Persona routing: a hit with `workflows` +
+    a request for the finished deliverable -> run/offer the workflow;
+    otherwise follow the playbook inline.
   collections:
     - name: BUILTIN
       what: Curated MBA-style domain knowledge shipped with the repo.

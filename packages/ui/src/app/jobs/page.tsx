@@ -285,7 +285,12 @@ function JobsPageInner() {
             />
           )}
 
-          {tab === "playbooks" && <PlaybooksBrowser onCountChange={setPlaybookCount} />}
+          {tab === "playbooks" && (
+            <PlaybooksBrowser
+              onCountChange={setPlaybookCount}
+              initialPlaybook={searchParams.get("playbook") ?? undefined}
+            />
+          )}
 
           {!loading && tab === "runs" && (
             <RunsView

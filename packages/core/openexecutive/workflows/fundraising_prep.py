@@ -23,6 +23,7 @@ from openexecutive.workflows.base import (
     WorkflowSection,
     WorkflowStepDef,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
 _FR_EXAMPLE_ROUND = (
     "Series B, $25M target, $100M pre-money. Lead TBD; current top-of-funnel "
@@ -111,6 +112,7 @@ class FundraisingPrepWorkflow(Workflow):
     )
     section = WorkflowSection.CAPITAL
     estimated_minutes = 4
+    playbooks = ("fundraise-narrative",)
 
     def input_model(self) -> type[BaseModel]:
         return FundraisingPrepInput
@@ -168,6 +170,7 @@ class FundraisingPrepWorkflow(Workflow):
 
         yield WorkflowEvent(type="step_start", step_id="context", step_title="Load context")
         ctx.profile = load_or_create_profile()
+        ctx.playbook = load_playbook("fundraise-narrative")
         ctx.rag = retrieve(
             query=f"venture fundraising pitch narrative {ctx.inputs.round_label}",
             specialist_name="cso",
@@ -261,6 +264,7 @@ class _FundraisingPrepContext:
     def __init__(self, inputs: FundraisingPrepInput) -> None:
         self.inputs = inputs
         self.profile: CompanyProfile | None = None
+        self.playbook: str = ""
         self.rag: str = ""
         self.narrative: str = ""
         self.metrics_page: str = ""
@@ -312,6 +316,9 @@ def _build_narrative_prompt(ctx: _FundraisingPrepContext) -> str:
         "the proof point investors should hold us to.\n\n"
         "Do not invent metrics or customer names not in the inputs. Use "
         "placeholders like '[ARR figure]' when needed."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Follow this fundraise-narrative playbook for the narrative arc",
     )
 
 
