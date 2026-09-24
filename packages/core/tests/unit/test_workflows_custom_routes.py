@@ -161,14 +161,15 @@ def test_activate_revalidates_tools(client: TestClient, monkeypatch: pytest.Monk
     from openexecutive.api.routes import workflows as routes
 
     real = routes.validate_definition_and_tools
-    assert client.post("/workflows/custom", json=_action_definition(["oe__read_file"])).status_code == 201
+    defn = _action_definition(["oe__read_file"])
+    assert client.post("/workflows/custom", json=defn).status_code == 201
     assert client.post("/workflows/custom/file_bills/activate", json={"is_active": False}).status_code == 200
 
     async def _missing(_defn: Any) -> list[str]:
         return ["step 'file': tool 'oe__read_file' is not available"]
 
     monkeypatch.setattr(routes, "validate_definition_and_tools", _missing)
-    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True})
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": defn})
     assert r.status_code == 422
     assert "not available" in " ".join(r.json()["detail"])
     assert dynamic_store.get_definition("file_bills").is_active is False  # type: ignore[union-attr]
@@ -176,13 +177,58 @@ def test_activate_revalidates_tools(client: TestClient, monkeypatch: pytest.Monk
     assert client.post("/workflows/custom/file_bills/activate", json={"is_active": False}).status_code == 200
 
     monkeypatch.setattr(routes, "validate_definition_and_tools", real)
-    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True})
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": defn})
     assert r.status_code == 200, r.text
     assert r.json()["is_active"] is True
 
 
+def test_activate_requires_the_reviewed_version(client: TestClient) -> None:
+    """The click can only switch on what the card showed: a tool workflow
+    changed since (e.g. overwritten from chat) or activated blind is a 409."""
+    shown = _action_definition(["oe__read_file"])
+    assert client.post("/workflows/custom", json=shown).status_code == 201
+    client.post("/workflows/custom/file_bills/activate", json={"is_active": False})
+    changed = _action_definition(["oe__read_file", "oe__create_alert"])
+    assert client.put("/workflows/custom/file_bills", json={**changed, "is_active": False}).status_code == 200
+
+    for body in ({"is_active": True, "definition": shown}, {"is_active": True}, {"is_active": True, "definition": "x"}):
+        r = client.post("/workflows/custom/file_bills/activate", json=body)
+        assert r.status_code == 409, body
+    assert dynamic_store.get_definition("file_bills").is_active is False  # type: ignore[union-attr]
+
+    # The stored definition as fetched (timestamps, is_active) still matches.
+    fetched = client.get("/workflows/custom/file_bills").json()
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": fetched})
+    assert r.status_code == 200, r.text
+    assert r.json()["is_active"] is True
+
+
+def test_activate_rechecks_after_validation(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A save landing while the tool check awaits the gateway is not switched on."""
+    from openexecutive.api.routes import workflows as routes
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    shown = _action_definition(["oe__read_file"])
+    client.post("/workflows/custom", json=shown)
+    client.post("/workflows/custom/file_bills/activate", json={"is_active": False})
+
+    async def _swap_during_check(_defn: Any) -> list[str]:
+        swapped = _action_definition(["oe__read_file", "oe__create_alert"])
+        dynamic_store.upsert_definition(
+            DynamicWorkflowDef.model_validate({**swapped, "is_active": False})
+        )
+        return []
+
+    monkeypatch.setattr(routes, "validate_definition_and_tools", _swap_during_check)
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": shown})
+    assert r.status_code == 409
+    assert dynamic_store.get_definition("file_bills").is_active is False  # type: ignore[union-attr]
+
+
 def test_activate_ignores_non_object_body(client: TestClient) -> None:
+    """A non-object body falls back to the default (turn on) instead of a 500."""
     client.post("/workflows/custom", json=_definition())
+    client.post("/workflows/custom/weekly_watch/activate", json={"is_active": False})
     r = client.post("/workflows/custom/weekly_watch/activate", json=[1, 2])
     assert r.status_code == 200
     assert r.json()["is_active"] is True

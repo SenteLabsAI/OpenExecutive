@@ -1229,17 +1229,20 @@ export function updateCustomWorkflow(
   return _writeCustom(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}`, "PUT", def);
 }
 
-/** Turn a custom workflow on (the approval for one chat saved switched off) or off. */
+/**
+ * Turn a custom workflow on — the approval for one chat saved switched off.
+ * `reviewed` is the definition the user was shown; the server refuses (409)
+ * if the stored one has changed since, so only what was seen gets switched on.
+ */
 export async function activateCustomWorkflow(
-  name: string,
-  isActive = true
+  reviewed: DynamicWorkflowDef
 ): Promise<DynamicWorkflowDef> {
   const res = await fetch(
-    `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/activate`,
+    `${API_BASE}/workflows/custom/${encodeURIComponent(reviewed.name)}/activate`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_active: isActive }),
+      body: JSON.stringify({ is_active: true, definition: reviewed }),
     }
   );
   if (!res.ok) throw new Error(await _customError(res));

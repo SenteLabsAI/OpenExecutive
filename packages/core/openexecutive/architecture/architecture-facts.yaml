@@ -3358,13 +3358,23 @@ workflows:
     schemas are fixed, so the cached tool list stays stable. The step-by-step
     advanced editor drives the `/workflows/custom` CRUD endpoints directly.
     A definition with action (tool) steps saved from chat is stored
-    is_active=False (applied after the token check; an overwrite of an
-    approved one switches it off too), its cadence is not scheduled, and
+    is_active=False (applied after the token check), its cadence is not
+    scheduled, and
     save_workflow returns status `saved_pending_review` + the /jobs/{name}
     link. The chat token is model-held, so it is not a human seeing the tools:
     the approval is **Turn on workflow** on the review card that /jobs/{name}
     shows for an inactive custom workflow (POST /workflows/custom/{name}/
     activate, which re-runs validate_definition_and_tools when turning on).
+    Chat may keep revising a switched-off one, but draft/save REFUSE to
+    replace a switched-on workflow with action steps (any replacement, even
+    analysis-only): an inbound email steering the Executive could otherwise
+    switch off an approved job and stage new tools under its familiar name.
+    Those edits go through /jobs/new?edit=<name>.
+    Activation is bound to what was reviewed: for a definition with action
+    steps the body must carry the reviewed `definition`; it must equal the
+    stored one (model_dump minus is_active/created_at/updated_at) or 409, and
+    the stored one is re-read after the awaited tool check (no await before
+    set_active) so a save landing mid-check is not switched on.
     The Jobs catalog lists inactive custom workflows in a "Waiting for your
     approval" strip; the advanced editor preserves is_active on save, so
     "Save changes" never switches one on.

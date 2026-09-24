@@ -188,20 +188,34 @@ def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
     assert scheduled == []
 
 
-def test_chat_overwrite_switches_approved_tool_workflow_off(scheduled: list[str]) -> None:
+def test_chat_cannot_replace_an_approved_tool_workflow(scheduled: list[str]) -> None:
+    """Replacing a switched-on tool workflow from chat (e.g. steered by an
+    inbound email) would switch it off and stage new tools under a familiar
+    name — refused at draft and save; edits happen on the Jobs page."""
     from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
 
-    # An already-approved (active) tool workflow...
     dynamic_store.upsert_definition(DynamicWorkflowDef.model_validate(_action_definition()))
-    assert dynamic_store.get_definition("weekly_watch").is_active is True  # type: ignore[union-attr]
-    # ...edited from chat needs approving again.
     d = _action_definition()
     d["title"] = "Weekly Watch v2"
-    out = _save(d, wat._canonical_token(d), overwrite=True)
+    drafted = _draft(d)
+    assert "error" in drafted and "/jobs/new?edit=weekly_watch" in drafted["error"]
+    saved = _save(d, wat._canonical_token(d), overwrite=True)
+    assert "error" in saved and "approved" in saved["error"]
+    # An analysis-only replacement is refused too — it would still drop the tools the user approved.
+    assert "error" in _save(_valid_definition(), wat._canonical_token(_valid_definition()), overwrite=True)
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True and stored.title == "Weekly Watch"
+
+
+def test_chat_can_revise_a_pending_tool_workflow(scheduled: list[str]) -> None:
+    """Before approval (switched off) chat may keep revising it; it stays off."""
+    d = _action_definition()
+    assert _save(d, wat._canonical_token(d))["status"] == "saved_pending_review"
+    d2 = {**_action_definition(), "title": "Weekly Watch v2"}
+    out = _save(d2, wat._canonical_token(d2), overwrite=True)
     assert out["status"] == "saved_pending_review"
     stored = dynamic_store.get_definition("weekly_watch")
-    assert stored is not None and stored.is_active is False
-    assert stored.title == "Weekly Watch v2"
+    assert stored is not None and stored.is_active is False and stored.title == "Weekly Watch v2"
 
 
 def test_analysis_workflow_still_saves_active_and_schedules(scheduled: list[str]) -> None:
@@ -211,3 +225,12 @@ def test_analysis_workflow_still_saves_active_and_schedules(scheduled: list[str]
     stored = dynamic_store.get_definition("weekly_watch")
     assert stored is not None and stored.is_active is True
     assert scheduled == ["weekly_watch"]
+
+
+def test_analysis_workflow_drafted_off_reports_pending(scheduled: list[str]) -> None:
+    """A save that ends up switched off never reports plain 'saved' (runnable)."""
+    d = {**_valid_definition(), "is_active": False}
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved_pending_review"
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is False

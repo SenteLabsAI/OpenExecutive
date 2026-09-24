@@ -26,6 +26,7 @@ from openexecutive.workflows import (
 )
 from openexecutive.workflows.dynamic_models import (
     TOOL_NAME_RE,
+    ActionStepSpec,
     DynamicWorkflowDef,
 )
 from openexecutive.workflows.dynamic_store import (
@@ -192,8 +193,29 @@ async def delete_custom_workflow(name: str) -> dict[str, str]:
     return {"status": "deleted", "name": name}
 
 
+# Fields a reviewer can't see or that the server manages; the rest is what the
+# review card shows, and what an activation must match.
+_REVIEW_EXCLUDE = {"is_active", "created_at", "updated_at"}
+
+
+def _reviewed_matches(stored: DynamicWorkflowDef, reviewed: Any) -> bool:
+    """True when ``reviewed`` (the definition the user looked at) is ``stored``."""
+    try:
+        seen = DynamicWorkflowDef.model_validate(reviewed)
+    except ValidationError:
+        return False
+    return seen.model_dump(exclude=_REVIEW_EXCLUDE) == stored.model_dump(exclude=_REVIEW_EXCLUDE)
+
+
 @router.post("/workflows/custom/{name}/activate")
 async def activate_custom_workflow(name: str, request: Request) -> dict[str, Any]:
+    """Turn a custom workflow on or off.
+
+    Turning one on is the approval for a tool workflow chat saved switched off,
+    so the body must carry the ``definition`` the user reviewed when the stored
+    one has action steps: a mismatch (e.g. chat overwrote it while the card was
+    open) is a 409, so the click can only switch on what was shown.
+    """
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -205,12 +227,22 @@ async def activate_custom_workflow(name: str, request: Request) -> dict[str, Any
     if current is None:
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
     if is_active:
-        # Turning a workflow on is the approval point for one chat saved
-        # switched off, so its tools must still resolve — same check as
-        # create/update.
+        reviewed = body.get("definition")
+        needs_review = any(isinstance(s, ActionStepSpec) for s in current.steps)
+        changed = "This workflow changed since you opened it — reload to review the current version."
+        if (needs_review or reviewed is not None) and not _reviewed_matches(current, reviewed):
+            raise HTTPException(status_code=409, detail=changed)
+        # Its tools must still resolve — same check as create/update.
         errors = await validate_definition_and_tools(current)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
+        # The check above may await the gateway; re-read with no await before
+        # the write so what gets switched on is what was validated.
+        latest = get_definition(name)
+        if latest is None:
+            raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+        if latest.model_dump(exclude=_REVIEW_EXCLUDE) != current.model_dump(exclude=_REVIEW_EXCLUDE):
+            raise HTTPException(status_code=409, detail=changed)
     if not set_active(name, is_active):
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
     defn = get_definition(name)

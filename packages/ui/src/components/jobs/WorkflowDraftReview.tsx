@@ -114,7 +114,7 @@ export default function WorkflowDraftReview({
     setSaving(true);
     try {
       if (pending) {
-        await activateCustomWorkflow(def.name);
+        await activateCustomWorkflow(def);
         pending.onActivated();
       } else {
         const saved = await createCustomWorkflow(def);
@@ -229,8 +229,9 @@ export default function WorkflowDraftReview({
 
       {error && (
         <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          {error} — adjust it in the details editor
-          {pending ? "." : ", or tell me what to change."}
+          {pending
+            ? `${error} — reload the page to see its current state.`
+            : `${error} — adjust it in the details editor, or tell me what to change.`}
         </p>
       )}
 

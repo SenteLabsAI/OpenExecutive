@@ -151,13 +151,36 @@ SAVE_WORKFLOW_TOOL: dict[str, Any] = {
 def _canonical_token(definition: dict[str, Any]) -> str:
     """Stable hash over the user-meaningful parts of a definition.
 
-    Excludes only the server-managed timestamps. Everything the user can set —
+    Excludes only the server-managed timestamps. Everything the model drafted —
     including ``is_active`` — is covered, so a save can't silently differ from
-    the drafted definition the user approved (e.g. flip the workflow inactive).
+    the definition shown in chat. (The one deliberate difference is the
+    server's own: ``handle_save_workflow`` stores a tool workflow switched
+    off, after this check.)
     """
     payload = {k: v for k, v in definition.items() if k not in {"created_at", "updated_at"}}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def _approved_tool_workflow_error(name: str) -> str | None:
+    """Refuse chat overwrites of a switched-on tool workflow.
+
+    A person approved its tools. Chat (including a turn steered by an inbound
+    email) replacing it would switch it off and stage different tools under
+    the same familiar name, so edits to it happen on the Jobs page instead.
+    """
+    from openexecutive.config import get_settings
+    from openexecutive.workflows.dynamic_store import get_definition
+
+    existing = get_definition(name)
+    if existing is None or not existing.is_active or not _needs_review(existing):
+        return None
+    base = get_settings().ui_base_url.rstrip("/")
+    return (
+        f"{name!r} is a switched-on workflow whose tools the user approved; it "
+        "can't be replaced from chat. Pick a different name for a new "
+        f"workflow, or tell the user to edit it at {base}/jobs/new?edit={name}"
+    )
 
 
 def _needs_review(defn: Any) -> bool:
@@ -215,6 +238,8 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.workflows.dynamic_store import get_definition
 
     defn, error = await _build_def(tool_input.get("definition"))
+    if error is None:
+        error = _approved_tool_workflow_error(defn.name)
     if error is not None:
         return json.dumps({"error": error})
     token = _canonical_token(tool_input["definition"])
@@ -270,6 +295,10 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
             )
         })
 
+    approved_error = _approved_tool_workflow_error(defn.name)
+    if approved_error is not None:
+        return json.dumps({"error": approved_error})
+
     overwrite = bool(tool_input.get("overwrite", False))
     if get_definition(defn.name) is not None and not overwrite:
         return json.dumps({
@@ -281,9 +310,8 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
 
     # A tool-using workflow waits for a person to turn it on from its review
     # card. Applied after the token check so the token still covers exactly
-    # what was drafted; an overwrite of an approved one switches it off too.
-    pending_review = _needs_review(defn)
-    if pending_review:
+    # what was drafted. (Replacing an approved, switched-on one was refused above.)
+    if _needs_review(defn):
         defn = defn.model_copy(update={"is_active": False})
 
     try:
@@ -316,21 +344,22 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
             "name": stored.name,
             "title": stored.title,
             "cadence": stored.cadence,
-            "pending_review": pending_review,
+            "pending_review": not stored.is_active,
         },
     )
 
     base = get_settings().ui_base_url.rstrip("/")
     deep_link = f"{base}/jobs/{stored.name}"
-    if pending_review:
+    if not stored.is_active:
+        # Tool workflows always; any other workflow only if drafted off.
         return json.dumps({
             "status": "saved_pending_review",
             "name": stored.name,
             "deep_link": deep_link,
             "note": (
                 "Saved switched OFF. It won't run or follow its schedule until "
-                "the user reviews its tools and turns it on at deep_link — "
-                "give them the link."
+                "the user reviews it and turns it on at deep_link — give them "
+                "the link."
             ),
         })
     return json.dumps({"status": "saved", "name": stored.name, "deep_link": deep_link})
