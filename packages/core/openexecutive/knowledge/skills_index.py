@@ -67,11 +67,21 @@ def write_hidden_builtin_names(names: set[str]) -> None:
 
 
 def company_skill_names() -> set[str]:
-    """Names (filename stems) of every company-authored skill on disk."""
+    """Names of every valid company-authored skill on disk.
+
+    A malformed company file shadows nothing (it is skipped everywhere
+    else too), so it must not knock its built-in out of the index.
+    """
     root = _company_skills_path()
     if not root.exists():
         return set()
-    return {p.stem for p in root.rglob("*.md")}
+    names: set[str] = set()
+    for path in root.rglob("*.md"):
+        try:
+            names.add(parse_skill_file(path, source="company").frontmatter.name)
+        except SkillParseError:
+            continue
+    return names
 
 
 def _skill_id(name: str, source: SkillSource) -> str:

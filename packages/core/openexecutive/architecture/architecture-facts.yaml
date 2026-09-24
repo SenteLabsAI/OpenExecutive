@@ -776,12 +776,21 @@ knowledge:
       - A company skill with a built-in's name CUSTOMIZES it — the company
         file wins in get/list/load and in workflows that read a skill body
         (board_prep, quarterly_plan via get_skill). `update_skill` on a
-        built-in writes that company copy; the built-in file is never
-        touched. The built-in's index row is dropped while shadowed.
+        built-in writes that company copy with frontmatter
+        `customizes_builtin: true`; the built-in file is never touched. The
+        built-in's index row is dropped while shadowed. Only a flagged copy
+        of a built-in that is not hidden counts as `customized` — a company
+        skill that merely shares a name with a built-in shipped later is the
+        user's own, so deleting it reports "deleted", not "reverted".
+      - A malformed company file shadows nothing: lookups, listing and
+        index reconciliation all skip it, and the next write for that name
+        replaces it (one company file per name).
       - `delete_skill` never raises for built-ins any more. It returns an
         outcome: "deleted" (plain company skill), "reverted" (company
         customization removed, built-in re-indexed) or "hidden" (built-in
         added to company/skills/.hidden.yaml and dropped from the index).
+        `restore_skill` validates the built-in before editing the hidden
+        list, so a failed restore changes nothing.
       - Hidden built-ins are invisible to search_skills/load_skill and to
         list_skills unless include_hidden; `GET /skills/{name}` still reads
         them so the UI can show one before `POST /skills/{name}/restore`.
@@ -796,9 +805,16 @@ knowledge:
     non-empty, so a built-in added in a release never reached an existing
     install's index.
 
+    Chat tools stay off built-ins: `update_skill` / `delete_skill` in
+    orchestrator/skills_tools.py refuse any name a built-in ships under
+    (code "builtin"), including the company's customized copy. Workflows
+    read built-ins by fixed name and the tool loop also runs on inbound
+    email/Slack/etc., so letting the model customize or hide one would let a
+    crafted message rewrite what board_prep / quarterly_plan follow.
+    Customize / revert / hide / restore are HTTP-only (the Playbooks tab).
+
     Chat chips: create/update/delete_skill chips read "Saved / Updated /
-    Customized / Deleted / Reverted / Hid playbook: <name>" and link to the
-    Playbooks tab.
+    Deleted playbook: <name>" and link to the Playbooks tab.
   collections:
     - name: BUILTIN
       what: Curated MBA-style domain knowledge shipped with the repo.

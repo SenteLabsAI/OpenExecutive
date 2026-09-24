@@ -262,3 +262,90 @@ def test_list_includes_both_sources(isolated: ChromaDBStore) -> None:
     assert sources == {"builtin", "company"}
     names = {s.frontmatter.name for s in all_skills}
     assert names == {"alpha", "user-skill"}
+
+
+def _write_company(root: Path, category: str, name: str, frontmatter_extra: str = "") -> Path:
+    target = root / category / f"{name}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        f"---\nname: {name}\ndescription: company {name}\n"
+        f"when_to_use: tests\ncategory: {category}\n{frontmatter_extra}---\n\n# ours\n",
+        encoding="utf-8",
+    )
+    return target
+
+
+def test_same_name_company_skill_is_not_a_customization(isolated: ChromaDBStore) -> None:
+    """A company skill predating a same-name built-in is the user's own, not a customization."""
+    import asyncio
+
+    company = _write_company(skills_repo._company_skills_path(), "general", "foo")
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "foo")
+    asyncio.run(seed_builtin_skills(store=isolated))
+
+    skill = get_skill("foo")
+    assert (skill.source, skill.customized) == ("company", False)
+    assert delete_skill("foo", store=isolated) == "deleted"
+    assert not company.exists()
+    assert get_skill("foo").source == "builtin"
+
+
+def test_malformed_company_file_does_not_shadow_builtin(isolated: ChromaDBStore) -> None:
+    import asyncio
+
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "builtin-thing")
+    broken = skills_repo._company_skills_path() / "finance" / "builtin-thing.md"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("no frontmatter here\n", encoding="utf-8")
+    asyncio.run(seed_builtin_skills(store=isolated))
+
+    assert get_skill("builtin-thing").source == "builtin"
+    assert _hit_sources(isolated, "builtin-thing") == {"builtin"}
+
+    # Customizing replaces the broken file rather than leaving two with one name.
+    update_skill(
+        name="builtin-thing",
+        description="ours",
+        when_to_use="w",
+        category="strategy",
+        body="b",
+        store=isolated,
+    )
+    assert not broken.exists()
+    assert get_skill("builtin-thing").customized is True
+
+
+def test_override_of_hidden_builtin_deletes_rather_than_reverts(
+    isolated: ChromaDBStore,
+) -> None:
+    import asyncio
+
+    _write_builtin(skills_index.BUILTIN_SKILLS_PATH, "finance", "foo")
+    _write_company(
+        skills_repo._company_skills_path(), "finance", "foo", "customizes_builtin: true\n"
+    )
+    skills_index.write_hidden_builtin_names({"foo"})
+    asyncio.run(seed_builtin_skills(store=isolated))
+
+    assert get_skill("foo").customized is False
+    assert delete_skill("foo", store=isolated) == "deleted"
+    with pytest.raises(SkillNotFoundError):
+        get_skill("foo")
+    assert _hit_sources(isolated, "foo") == set()
+
+
+def test_failed_restore_leaves_hidden_list_untouched(isolated: ChromaDBStore) -> None:
+    skills_index.write_hidden_builtin_names({"gone"})
+    with pytest.raises(SkillNotFoundError):
+        restore_skill("gone", store=isolated)
+    assert skills_index.hidden_builtin_names() == {"gone"}
+
+    bad = skills_index.BUILTIN_SKILLS_PATH / "finance" / "bad.md"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("no frontmatter\n", encoding="utf-8")
+    skills_index.write_hidden_builtin_names({"bad"})
+    from openexecutive.knowledge.skills import SkillParseError
+
+    with pytest.raises(SkillParseError):
+        restore_skill("bad", store=isolated)
+    assert skills_index.hidden_builtin_names() == {"bad"}

@@ -165,7 +165,8 @@ function JobsPageInner() {
         listSkills().catch(() => undefined),
       ]);
       setWorkflows(wfs);
-      setPlaybookCount(playbooks?.length);
+      // The Playbooks tab reports its own, fresher count once mounted.
+      setPlaybookCount((current) => current ?? playbooks?.length);
       setRuns(rs);
       setOffWorkflows(custom.filter((d) => !d.is_active));
     } catch (e) {

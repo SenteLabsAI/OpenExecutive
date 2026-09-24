@@ -66,8 +66,6 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
 
 
 _PLAYBOOKS_LINK = "/jobs?tab=playbooks"
-# `delete_skill` outcome -> chip verb (see skills_repo.delete_skill).
-_SKILL_DELETE_VERBS = {"deleted": "Deleted", "reverted": "Reverted", "hidden": "Hid"}
 
 
 def _parse_result(tool_result: str) -> dict[str, Any] | None:
@@ -263,14 +261,12 @@ def summarize_action(
         payload["link"] = _PLAYBOOKS_LINK
     elif tool_name == "update_skill":
         name = tool_input.get("name", "")
-        verb = "Customized" if (parsed or {}).get("customized") else "Updated"
-        payload["summary"] = f"{verb} playbook: {name}" if name else f"{verb} a playbook"
+        payload["summary"] = f"Updated playbook: {name}" if name else "Updated a playbook"
         payload["target"] = name or None
         payload["link"] = _PLAYBOOKS_LINK
     elif tool_name == "delete_skill":
         name = tool_input.get("name", "")
-        verb = _SKILL_DELETE_VERBS.get(str((parsed or {}).get("outcome")), "Deleted")
-        payload["summary"] = f"{verb} playbook: {name}" if name else f"{verb} a playbook"
+        payload["summary"] = f"Deleted playbook: {name}" if name else "Deleted a playbook"
         payload["target"] = name or None
         payload["link"] = _PLAYBOOKS_LINK
     elif tool_name == "create_alert":

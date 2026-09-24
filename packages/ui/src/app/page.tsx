@@ -295,9 +295,9 @@ export default function HomePage() {
               initialSessionId={activeSessionId}
               initialInput={pendingPrompt}
               // Briefing handoffs (Discuss / Approve / Dismiss / Edit&Approve)
-              // are the only path that sets pendingPrompt; those are commit-
-              // ments, not drafts, so auto-fire the first turn instead of
-              // making the user hit Send again.
+              // are commitments, not drafts, so they auto-fire the first
+              // turn. A `?draft=` deep link also sets pendingPrompt but
+              // clears autoSubmitPending, so it only pre-fills.
               autoSubmitInitialInput={Boolean(pendingPrompt) && autoSubmitPending}
               initialMemoryText={pendingMemoryText}
               onTurnComplete={handleTurnComplete}

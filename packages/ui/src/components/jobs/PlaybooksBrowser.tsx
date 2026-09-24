@@ -32,6 +32,8 @@ const DELETE_NOTICE: Record<SkillDeleteOutcome, (name: string) => string> = {
 };
 
 interface EditorState {
+  /** Remounts the form, so "+ New playbook" always starts blank. */
+  id: number;
   mode: "create" | "edit";
   /** Editing a built-in: saving creates this company's customized copy. */
   customizing: boolean;
@@ -83,6 +85,13 @@ export default function PlaybooksBrowser({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<SkillSearchHit[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [editorSeq, setEditorSeq] = useState(0);
+
+  function openEditor(state: Omit<EditorState, "id">) {
+    const id = editorSeq + 1;
+    setEditorSeq(id);
+    setEditor({ ...state, id });
+  }
 
   const load = useCallback(async () => {
     try {
@@ -109,6 +118,7 @@ export default function PlaybooksBrowser({
     }
   }
 
+  /** Run a mutation, then reload the list (and any search) even if it failed. */
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError(null);
@@ -118,6 +128,10 @@ export default function PlaybooksBrowser({
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
+      await load();
+      if (searchHits !== null && searchQuery.trim()) {
+        setSearchHits(await searchSkills(searchQuery.trim(), 10).catch(() => []));
+      }
       setBusy(false);
     }
   }
@@ -132,7 +146,6 @@ export default function PlaybooksBrowser({
     void run(async () => {
       const outcome = await deleteSkill(skill.name);
       setNotice(DELETE_NOTICE[outcome](skill.name));
-      await load();
       if (outcome === "reverted") setSelected(await getSkill(skill.name));
       else if (outcome === "hidden" && showHidden) setSelected(await getSkill(skill.name));
       else setSelected(null);
@@ -143,7 +156,6 @@ export default function PlaybooksBrowser({
     void run(async () => {
       setSelected(await restoreSkill(skill.name));
       setNotice(`Restored “${skill.name}”.`);
-      await load();
     });
   }
 
@@ -159,7 +171,6 @@ export default function PlaybooksBrowser({
           ? `Saved your version of “${saved.name}”. Delete it any time to go back to the built-in.`
           : `Saved “${saved.name}”.`
       );
-      await load();
     });
   }
 
@@ -228,7 +239,7 @@ export default function PlaybooksBrowser({
           onClick={() => {
             setSelected(null);
             setNotice(null);
-            setEditor({ mode: "create", customizing: false, initial: EMPTY_INPUT });
+            openEditor({ mode: "create", customizing: false, initial: EMPTY_INPUT });
           }}
           className="shrink-0 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition"
         >
@@ -308,7 +319,7 @@ export default function PlaybooksBrowser({
         <div className="flex-1 min-w-0">
           {editor ? (
             <PlaybookEditor
-              key={`${editor.mode}:${editor.initial.name}`}
+              key={editor.id}
               editor={editor}
               busy={busy}
               onCancel={() => setEditor(null)}
@@ -319,7 +330,7 @@ export default function PlaybooksBrowser({
               skill={selected}
               busy={busy}
               onEdit={() =>
-                setEditor({
+                openEditor({
                   mode: "edit",
                   customizing: selected.source === "builtin",
                   initial: toInput(selected),

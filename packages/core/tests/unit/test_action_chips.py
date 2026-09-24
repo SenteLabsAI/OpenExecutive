@@ -368,11 +368,8 @@ def test_no_silent_omission_from_side_effecting_tools() -> None:
     ("tool_name", "result", "summary"),
     [
         ("create_skill", {"saved": True}, "Saved playbook: p"),
-        ("update_skill", {"updated": True, "customized": False}, "Updated playbook: p"),
-        ("update_skill", {"updated": True, "customized": True}, "Customized playbook: p"),
+        ("update_skill", {"updated": True}, "Updated playbook: p"),
         ("delete_skill", {"deleted": True, "outcome": "deleted"}, "Deleted playbook: p"),
-        ("delete_skill", {"deleted": True, "outcome": "reverted"}, "Reverted playbook: p"),
-        ("delete_skill", {"deleted": True, "outcome": "hidden"}, "Hid playbook: p"),
     ],
 )
 def test_skill_chips_say_playbook_and_link_to_tab(
