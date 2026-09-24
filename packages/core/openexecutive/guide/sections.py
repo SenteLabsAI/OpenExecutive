@@ -52,7 +52,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="jobs",
-        title="Jobs (Workflows)",
+        title="Workflows",
         sub="Multi-step workflows that produce a deliverable — board prep, GTM plan, perf review.",
     ),
     GuideSection(

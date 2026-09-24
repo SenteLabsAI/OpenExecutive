@@ -30,7 +30,7 @@ export default function PendingWorkflowReview({
     <div className="h-full overflow-y-auto bg-surface text-fg">
       <div className="mx-auto max-w-3xl px-4 py-6 space-y-4">
         <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          ← Back to jobs
+          ← Back to workflows
         </Link>
         <p className="text-sm text-fg-muted">
           This workflow is off. Review what it does and which tools it uses, then

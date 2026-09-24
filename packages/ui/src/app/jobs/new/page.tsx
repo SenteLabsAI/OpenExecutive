@@ -210,7 +210,7 @@ function BuilderInner() {
     formId: "workflow_builder",
     title: editName ? "Edit workflow" : "New workflow",
     description:
-      "Builds a reusable executive job from specialist steps, optional approval gates, and a final synthesis step.",
+      "Builds a reusable workflow from specialist steps, optional approval gates, and a final synthesis step.",
     getFields: (): PageFormField[] => [
       {
         name: "name",
@@ -920,13 +920,13 @@ function AdvancedBuilderPage() {
         <div className="max-w-3xl mx-auto">
           <div className="mb-6">
             <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
-              ← Back to jobs
+              ← Back to workflows
             </Link>
             <h1 className="text-2xl font-semibold text-fg mt-2 mb-1">
               {editing ? "Edit workflow" : "New workflow"}
             </h1>
             <p className="text-sm text-fg-muted">
-              Build a reusable executive job from specialist steps, optional
+              Build a reusable workflow from specialist steps, optional
               approval gates, and a final synthesis step.
               {!editing && (
                 <>
@@ -952,7 +952,7 @@ function WizardPage() {
       <div className="border-b border-line px-6 py-4">
         <div className="max-w-3xl mx-auto">
           <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
-            ← Back to jobs
+            ← Back to workflows
           </Link>
           <h1 className="text-xl font-semibold text-fg mt-1">New workflow</h1>
         </div>

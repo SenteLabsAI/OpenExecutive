@@ -251,7 +251,7 @@ function JobsPageInner() {
           </div>
 
           {loading && (
-            <div className="text-sm text-fg-muted">Loading jobs…</div>
+            <div className="text-sm text-fg-muted">Loading workflows…</div>
           )}
           {error && (
             <div className="text-sm text-red-400 mb-4">Error: {error}</div>
@@ -483,7 +483,7 @@ function CatalogView({
         <SearchInput
           value={query}
           onChange={onQueryChange}
-          placeholder="Search jobs…"
+          placeholder="Search workflows…"
         />
       </div>
       <div className="mb-4 flex flex-wrap gap-1.5">
@@ -505,10 +505,10 @@ function CatalogView({
       </div>
 
       {workflows.length === 0 ? (
-        <div className="text-sm text-fg-muted">No jobs registered yet.</div>
+        <div className="text-sm text-fg-muted">No workflows yet.</div>
       ) : visible.length === 0 ? (
         <div className="text-sm text-fg-muted">
-          {query ? <>No jobs match &ldquo;{query}&rdquo;.</> : "Nothing here yet."}
+          {query ? <>No workflows match &ldquo;{query}&rdquo;.</> : "Nothing here yet."}
         </div>
       ) : section === "all" ? (
         <div className="space-y-5">
@@ -739,9 +739,9 @@ export default function JobsPage() {
         <div className="max-w-6xl mx-auto">
           <div className="mb-4 flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold text-fg">Executive Jobs</h1>
+              <h1 className="text-xl font-semibold text-fg">Workflows</h1>
               <p className="text-sm text-fg-muted">
-                Multi-step jobs that produce a finished deliverable.
+                Multi-step workflows that produce a finished deliverable.
               </p>
             </div>
             <Link

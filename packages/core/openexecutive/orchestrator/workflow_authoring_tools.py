@@ -167,7 +167,7 @@ def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
 
     A person approved its tools. Chat (including a turn steered by an inbound
     email) replacing it would switch it off and stage different tools under
-    the same familiar name, so edits to it happen on the Jobs page instead.
+    the same familiar name, so edits to it happen on the Workflows page instead.
     """
     from openexecutive.config import get_settings
 
@@ -184,7 +184,7 @@ def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
 def _needs_review(defn: Any) -> bool:
     """True when the workflow has tool-using steps, which a person must approve.
 
-    Their approval is turning the workflow on from its review card on the Jobs
+    Their approval is turning the workflow on from its review card on the Workflows
     page — a chat confirmation (a token this model holds itself) is not a
     human seeing the tools.
     """

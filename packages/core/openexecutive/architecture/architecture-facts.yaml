@@ -3383,7 +3383,7 @@ workflows:
     updated_at (dynamic_store.activate_if_unchanged), so a save landing during
     the awaited tool check — from any process, e.g. a standalone chat bot on
     the same DB — is a 409, never switched on.
-    The Jobs catalog lists inactive custom workflows in a "Waiting for your
+    The Workflows catalog (/jobs) lists inactive custom workflows in a "Waiting for your
     approval" strip; the advanced editor preserves is_active on save, so
     "Save changes" never switches one on.
 
