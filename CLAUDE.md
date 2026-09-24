@@ -224,6 +224,14 @@ cd evals && python run_evals.py --scenarios scenarios/ --output results/
   change is, not by how big it is. PRs are squash-merged with the PR title as
   the commit subject, which is what release-please reads — branch commit
   messages do not reach `main`.
+- `!` / `BREAKING CHANGE:` only for a real break (a removed or reshaped
+  endpoint, a new required env var, a migration an operator must run) — never
+  to get a bigger bump. To release a larger version for any other reason, end
+  one PR's description with a `Release-As: X.Y.Z` line (the squash body is the
+  PR body, so it lands on `main` as a footer). It applies to the next release
+  only. To un-mark a merged PR, add a `BEGIN_COMMIT_OVERRIDE` /
+  `END_COMMIT_OVERRIDE` block with the corrected message to its description;
+  release-please picks it up on the next push to `main`.
 - PR description is three sections and nothing else: **Problem**, **Approach**,
   **Checklist** (see `.github/PULL_REQUEST_TEMPLATE.md`). Rationale, review
   findings and alternatives go in the commit message; open questions go in the
