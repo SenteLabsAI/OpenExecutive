@@ -1430,6 +1430,21 @@ peer_memory:
       caught too. The UI is
       read-only here: peer memory is Honcho's derived view, not the
       Executive's own record the way decisions and advice are.
+    person_conclusions: |
+      ``GET /memories/people/{person_id}/conclusions?page=&size=``
+      (``honcho_client.person_conclusions``) — every self-conclusion about
+      one person, newest first, one page at a time (``size`` 1–100, default
+      50). The People tab renders each person as a card whose notes pane is
+      seeded from the overview's ``recent`` and, on "Show all", reads this
+      page by page as the pane scrolls. The peer is found through the same
+      ``peers()`` listing as the overview (shared ``_matched_peers``), never
+      ``peer(id)``: an unknown, archived or never-talked person is a 404,
+      not a new peer. Items are ordered by instant and scrubbed by the same
+      ``_to_conclusion`` as the overview. Response ``{status, person_id,
+      items, page, size, total, has_more}``; ``has_more`` falls back to "the
+      page was full" when the server sends no total. Listing under the 15 s
+      clock, the page read under the unscaled prefetch budget; one
+      ``peer_memory`` row per page, ``op=conclusions``.
     audit_filter: |
       ``/audit?event_type=peer_memory`` for the flat list;
       ``/audit/session/{id}`` for per-turn context with peer_memory

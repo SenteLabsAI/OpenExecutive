@@ -1003,6 +1003,30 @@ export function listPeopleMemory(recent = 5): Promise<PeopleMemory> {
   return promise;
 }
 
+export interface PersonConclusionsPage {
+  status: "ok" | "disabled" | "error";
+  person_id: number;
+  items: PersonConclusion[];
+  page: number;
+  size: number;
+  total: number | null;
+  has_more: boolean;
+}
+
+// Every conclusion about one person, newest first, one page at a time — the
+// People tab's "show all" pane. The overview above carries only the newest few.
+export async function listPersonConclusions(
+  personId: number,
+  page: number,
+  size = 50,
+): Promise<PersonConclusionsPage> {
+  const res = await fetch(
+    `${API_BASE}/memories/people/${personId}/conclusions?page=${page}&size=${size}`,
+  );
+  if (!res.ok) throw new Error("Failed to list person conclusions");
+  return res.json();
+}
+
 export interface ScheduledAction {
   id: number;
   created_at: string;

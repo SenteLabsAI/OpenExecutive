@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteAdvice,
   deleteDecision,
@@ -9,6 +9,7 @@ import {
   listDecisions,
   listInitiatives,
   listPeopleMemory,
+  listPersonConclusions,
   updateAdvice,
   updateDecision,
   updateInitiative,
@@ -16,6 +17,7 @@ import {
   type Decision,
   type Initiative,
   type PeopleMemory,
+  type PersonConclusion,
   type PersonMemory,
 } from "@/lib/api";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
@@ -632,7 +634,7 @@ function PeopleTab({
   if (data.people.length === 0) return <EmptyState message={PEOPLE_EMPTY} />;
 
   return (
-    <div className="divide-y divide-line">
+    <div className="space-y-3">
       {data.people.map((p) => (
         <PersonMemoryRow key={p.person_id} item={p} />
       ))}
@@ -640,43 +642,149 @@ function PeopleTab({
   );
 }
 
+// Card lines past this many fold behind a toggle so one talkative card
+// doesn't push everyone else off the screen.
+const CARD_PREVIEW_LINES = 4;
+// Load the next page once the notes pane is scrolled within this many pixels
+// of its bottom.
+const NOTES_SCROLL_SLACK_PX = 48;
+
 function PersonMemoryRow({ item }: { item: PersonMemory }) {
   const notes = `${item.conclusion_count} ${item.conclusion_count === 1 ? "note" : "notes"}`;
   const learned = item.last_observed_at ? ` · learned ${formatDate(item.last_observed_at)}` : "";
   const nothingYet = !item.error && item.conclusion_count === 0 && item.card.length === 0;
   return (
-    <div className="py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-sm font-semibold text-fg flex items-center gap-2">
-          {item.full_name}
+    <div className="rounded-lg border border-line bg-surface-overlay/30 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-semibold text-fg truncate">{item.full_name}</span>
           {item.is_principal && (
             <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/20 text-violet-300 border-violet-500/30">
               Principal
             </span>
           )}
           {/* The notes below name people by their bare peer id; this is the key. */}
-          <span className="text-[10px] font-normal text-fg-subtle">peer {item.person_id}</span>
+          <span className="text-[10px] text-fg-subtle shrink-0">peer {item.person_id}</span>
         </div>
         <div className="text-xs text-fg-muted tabular-nums shrink-0">
           {item.error ? "couldn't read" : `${notes}${learned}`}
         </div>
       </div>
-      {item.card.length > 0 && (
-        <div className="mt-1 text-xs text-fg-muted">{item.card.join(" · ")}</div>
+      {item.card.length > 0 && <PersonCard lines={item.card} />}
+      {item.recent.length > 0 && <PersonNotes item={item} />}
+      {nothingYet && <div className="mt-2 text-xs text-fg-subtle">Nothing learned yet.</div>}
+    </div>
+  );
+}
+
+function PersonCard({ lines }: { lines: string[] }) {
+  const [open, setOpen] = useState(false);
+  const hidden = lines.length - CARD_PREVIEW_LINES;
+  const shown = open || hidden <= 0 ? lines : lines.slice(0, CARD_PREVIEW_LINES);
+  return (
+    <div className="mt-3">
+      <div className="text-[10px] uppercase tracking-wide text-fg-subtle mb-1">Profile</div>
+      <ul className="space-y-0.5 text-xs text-fg-muted list-disc pl-4 marker:text-fg-subtle">
+        {shown.map((line, i) => (
+          <li key={i} className="break-words">{line}</li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button onClick={() => setOpen((o) => !o)} className="mt-1 text-xs text-fg-muted hover:text-fg">
+          {open ? "Show less" : `Show ${hidden} more`}
+        </button>
       )}
-      {item.recent.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {item.recent.map((c, i) => (
-            <li key={`${c.created_at}-${i}`} className="text-sm text-fg-muted flex gap-2">
-              <span className="text-[10px] text-fg-subtle tabular-nums shrink-0 pt-0.5">
-                {formatDate(c.created_at)}
-              </span>
-              <span>{c.content}</span>
+    </div>
+  );
+}
+
+/** Newest first. Seeds from the overview's few; "Show all" then reads the
+ * full list page by page as the pane scrolls. */
+function PersonNotes({ item }: { item: PersonMemory }) {
+  const [notes, setNotes] = useState<PersonConclusion[]>(item.recent);
+  const [nextPage, setNextPage] = useState<number | null>(null); // null until "Show all"
+  const [hasMore, setHasMore] = useState(item.conclusion_count > item.recent.length);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const loadingRef = useRef(false);
+  const paneRef = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(
+    async (page: number) => {
+      if (loadingRef.current) return;
+      loadingRef.current = true;
+      setLoading(true);
+      setFailed(false);
+      try {
+        const res = await listPersonConclusions(item.person_id, page);
+        if (res.status !== "ok") throw new Error(res.status);
+        setNotes((prev) => {
+          // Page 1 already holds the seeded few; later pages append. New notes
+          // landing between reads shift the pages, so drop repeats.
+          const base = page === 1 ? [] : prev;
+          const seen = new Set(base.map((c) => `${c.created_at}|${c.content}`));
+          return [...base, ...res.items.filter((c) => !seen.has(`${c.created_at}|${c.content}`))];
+        });
+        setHasMore(res.has_more);
+        setNextPage(page + 1);
+      } catch {
+        setFailed(true);
+      } finally {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    },
+    [item.person_id],
+  );
+
+  const onScroll = () => {
+    const el = paneRef.current;
+    if (!el || nextPage === null || !hasMore || failed) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < NOTES_SCROLL_SLACK_PX) void load(nextPage);
+  };
+
+  // A page too short to scroll can never fire onScroll: keep filling until it can.
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el || nextPage === null || !hasMore || loading || failed) return;
+    if (el.scrollHeight <= el.clientHeight) void load(nextPage);
+  }, [notes, nextPage, hasMore, loading, failed, load]);
+
+  const remaining = Math.max(item.conclusion_count - notes.length, 0);
+  return (
+    <div className="mt-3">
+      <div className="text-[10px] uppercase tracking-wide text-fg-subtle mb-1">
+        Notes{nextPage !== null && ` · ${notes.length} of ${Math.max(item.conclusion_count, notes.length)}`}
+      </div>
+      <div
+        ref={paneRef}
+        onScroll={onScroll}
+        className="max-h-80 overflow-y-auto rounded-md border border-line/60 bg-surface-elevated/40"
+      >
+        <ul className="divide-y divide-line/60">
+          {notes.map((c, i) => (
+            <li key={`${c.created_at}-${i}`} className="grid grid-cols-[5.5rem_1fr] gap-3 px-3 py-2">
+              <span className="text-[11px] text-fg-subtle tabular-nums pt-0.5">{formatDate(c.created_at)}</span>
+              <span className="text-sm text-fg leading-relaxed break-words">{c.content}</span>
             </li>
           ))}
         </ul>
-      )}
-      {nothingYet && <div className="mt-1 text-xs text-fg-subtle">Nothing learned yet.</div>}
+        {(loading || failed || (hasMore && nextPage === null)) && (
+          <div className="px-3 py-2 text-xs text-fg-muted border-t border-line/60">
+            {loading ? (
+              "Loading…"
+            ) : failed ? (
+              <button onClick={() => void load(nextPage ?? 1)} className="hover:text-fg">
+                Couldn&apos;t load more — retry
+              </button>
+            ) : (
+              <button onClick={() => void load(1)} className="hover:text-fg">
+                Show all {item.conclusion_count} notes ({remaining} more)
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
