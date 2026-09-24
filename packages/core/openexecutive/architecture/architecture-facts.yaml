@@ -3373,8 +3373,10 @@ workflows:
     Activation is bound to what was reviewed: for a definition with action
     steps the body must carry the reviewed `definition`; it must equal the
     stored one (model_dump minus is_active/created_at/updated_at) or 409, and
-    the stored one is re-read after the awaited tool check (no await before
-    set_active) so a save landing mid-check is not switched on.
+    the switch is one conditional UPDATE keyed on the validated revision's
+    updated_at (dynamic_store.activate_if_unchanged), so a save landing during
+    the awaited tool check — from any process, e.g. a standalone chat bot on
+    the same DB — is a 409, never switched on.
     The Jobs catalog lists inactive custom workflows in a "Waiting for your
     approval" strip; the advanced editor preserves is_active on save, so
     "Save changes" never switches one on.

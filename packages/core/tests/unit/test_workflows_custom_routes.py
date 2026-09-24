@@ -225,6 +225,35 @@ def test_activate_rechecks_after_validation(client: TestClient, monkeypatch: pyt
     assert dynamic_store.get_definition("file_bills").is_active is False  # type: ignore[union-attr]
 
 
+def test_activate_if_unchanged_is_compare_and_set(client: TestClient) -> None:
+    """The store only switches on the exact revision the caller read, so a
+    save from another process between check and write can't be switched on."""
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    shown = _action_definition(["oe__read_file"])
+    client.post("/workflows/custom", json=shown)
+    client.post("/workflows/custom/file_bills/activate", json={"is_active": False})
+    read = dynamic_store.get_definition("file_bills")
+    assert read is not None
+
+    # Another writer lands after the read.
+    swapped = _action_definition(["oe__read_file", "oe__create_alert"])
+    dynamic_store.upsert_definition(DynamicWorkflowDef.model_validate({**swapped, "is_active": False}))
+    assert dynamic_store.activate_if_unchanged(read) is False
+    latest = dynamic_store.get_definition("file_bills")
+    assert latest is not None and latest.is_active is False
+    assert [s.tools for s in latest.steps if s.kind == "action"] == [["oe__read_file", "oe__create_alert"]]
+
+    # The current revision switches on, keeping its body in sync.
+    assert dynamic_store.activate_if_unchanged(latest) is True
+    on = dynamic_store.get_definition("file_bills")
+    assert on is not None and on.is_active is True
+    assert [d.name for d in dynamic_store.list_definitions(active_only=True)] == ["file_bills"]
+    # Gone -> None.
+    dynamic_store.delete_definition("file_bills")
+    assert dynamic_store.activate_if_unchanged(latest) is None
+
+
 def test_activate_ignores_non_object_body(client: TestClient) -> None:
     """A non-object body falls back to the default (turn on) instead of a 500."""
     client.post("/workflows/custom", json=_definition())

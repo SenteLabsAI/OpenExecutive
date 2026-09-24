@@ -30,6 +30,7 @@ from openexecutive.workflows.dynamic_models import (
     DynamicWorkflowDef,
 )
 from openexecutive.workflows.dynamic_store import (
+    activate_if_unchanged,
     delete_definition,
     get_definition,
     list_definitions,
@@ -236,14 +237,14 @@ async def activate_custom_workflow(name: str, request: Request) -> dict[str, Any
         errors = await validate_definition_and_tools(current)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
-        # The check above may await the gateway; re-read with no await before
-        # the write so what gets switched on is what was validated.
-        latest = get_definition(name)
-        if latest is None:
+        # The check above may await the gateway, and chat may run in another
+        # process: switch on only if the row is still the revision validated.
+        switched = activate_if_unchanged(current)
+        if switched is None:
             raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
-        if latest.model_dump(exclude=_REVIEW_EXCLUDE) != current.model_dump(exclude=_REVIEW_EXCLUDE):
+        if not switched:
             raise HTTPException(status_code=409, detail=changed)
-    if not set_active(name, is_active):
+    elif not set_active(name, is_active):
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
     defn = get_definition(name)
     assert defn is not None

@@ -133,3 +133,33 @@ def _table_exists(conn: object) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dynamic_workflows'"
     ).fetchone()
     return row is not None
+
+
+def activate_if_unchanged(
+    expected: DynamicWorkflowDef, db_path: Path | None = None
+) -> bool | None:
+    """Switch ``expected`` on only if its stored row is still that revision.
+
+    One conditional UPDATE keyed on ``updated_at`` (every write stamps a new
+    one), so a save from any process that lands after the caller read and
+    checked ``expected`` makes this a no-op instead of switching on a revision
+    nobody reviewed. Returns True if switched on, False if the row changed,
+    None if it no longer exists.
+    """
+    now = datetime.now(UTC).isoformat()
+    stored = expected.model_copy(update={"is_active": True, "updated_at": now})
+    with _get_conn(_resolve(db_path)) as conn:
+        cur = conn.execute(
+            """
+            UPDATE dynamic_workflows
+               SET definition = ?, is_active = 1, updated_at = ?
+             WHERE name = ? AND updated_at = ?
+            """,
+            (stored.model_dump_json(), now, expected.name, expected.updated_at),
+        )
+        if cur.rowcount:
+            return True
+        exists = conn.execute(
+            "SELECT 1 FROM dynamic_workflows WHERE name = ?", (expected.name,)
+        ).fetchone()
+    return False if exists else None
