@@ -53,10 +53,13 @@ function currentStreak(days: ActivityDay[]): HeartbeatVitals["currentStreak"] {
   return { days: n, throughToday };
 }
 
+// Compares complete days only: today is still in progress, so counting it
+// would make a perfectly steady rhythm read as "down" every (UTC) morning.
 function trend(days: ActivityDay[]): HeartbeatTrend {
-  const windowDays = Math.min(TREND_WINDOW_DAYS, Math.floor(days.length / 2));
-  const current = windowDays > 0 ? sum(days.slice(-windowDays)) : 0;
-  const prior = windowDays > 0 ? sum(days.slice(-2 * windowDays, -windowDays)) : 0;
+  const complete = days.slice(0, -1);
+  const windowDays = Math.min(TREND_WINDOW_DAYS, Math.floor(complete.length / 2));
+  const current = windowDays > 0 ? sum(complete.slice(-windowDays)) : 0;
+  const prior = windowDays > 0 ? sum(complete.slice(-2 * windowDays, -windowDays)) : 0;
   if (prior === 0) {
     return { windowDays, current, prior, pct: null, direction: current > 0 ? "new" : "none" };
   }

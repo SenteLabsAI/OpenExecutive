@@ -85,10 +85,14 @@ test("busiest-day tie goes to the most recent day", () => {
 
 // --- trend -------------------------------------------------------------------
 
-test("trend compares the last 30 days to the 30 before", () => {
-  // 90 days: first 30 ignored, prior 30 sum to 30, last 30 sum to 36.
-  const counts = [...Array(30).fill(9), ...Array(30).fill(1), ...Array(24).fill(1), ...Array(6).fill(2)];
-  const v = deriveVitals(window(counts));
+// Trend compares complete days only, so each case appends an in-progress
+// "today" whose count must not move the result.
+const withToday = (completeCounts, today = 0) => window([...completeCounts, today]);
+
+test("trend compares the last 30 complete days to the 30 before", () => {
+  // 89 complete days: first 29 ignored, prior 30 sum to 30, last 30 sum to 36.
+  const counts = [...Array(29).fill(9), ...Array(30).fill(1), ...Array(24).fill(1), ...Array(6).fill(2)];
+  const v = deriveVitals(withToday(counts, 50));
   assert.equal(v.trend.windowDays, 30);
   assert.equal(v.trend.prior, 30);
   assert.equal(v.trend.current, 36);
@@ -97,28 +101,36 @@ test("trend compares the last 30 days to the 30 before", () => {
   assert.equal(formatTrend(v.trend), "▲ 20%");
 });
 
+test("a steady rhythm reads flat while today is still idle", () => {
+  // One beat a day for 89 days, nothing yet today (early UTC morning).
+  const v = deriveVitals(withToday(Array(89).fill(1), 0));
+  assert.equal(v.trend.current, 30);
+  assert.equal(v.trend.prior, 30);
+  assert.equal(v.trend.direction, "flat");
+});
+
 test("a drop reads as down with an absolute percentage", () => {
-  const v = deriveVitals(window([...Array(30).fill(2), ...Array(30).fill(1)]));
+  const v = deriveVitals(withToday([...Array(30).fill(2), ...Array(30).fill(1)]));
   assert.equal(v.trend.pct, -50);
   assert.equal(formatTrend(v.trend), "▼ 50%");
 });
 
 test("equal halves read as flat", () => {
-  const v = deriveVitals(window(Array(60).fill(1)));
+  const v = deriveVitals(withToday(Array(60).fill(1), 7));
   assert.equal(v.trend.direction, "flat");
   assert.equal(formatTrend(v.trend), "flat");
 });
 
 test("no prior activity: pct is null and direction is new", () => {
-  const v = deriveVitals(window([...zeros(30), ...Array(30).fill(1)]));
+  const v = deriveVitals(withToday([...zeros(30), ...Array(30).fill(1)]));
   assert.equal(v.trend.pct, null);
   assert.equal(v.trend.direction, "new");
   assert.equal(formatTrend(v.trend), "new");
 });
 
 test("a window shorter than 60 days compares the halves that exist", () => {
-  const v = deriveVitals(window([1, 1, 1, 1, 2, 2, 2, 2, 5]));
-  // 9 days → 4-day halves: prior = days[1..4] = 1+1+1+2, current = days[5..8] = 2+2+2+5.
+  const v = deriveVitals(withToday([1, 1, 1, 1, 2, 2, 2, 2, 5], 9));
+  // 9 complete days → 4-day halves: prior = 1+1+1+2, current = 2+2+2+5.
   assert.equal(v.trend.windowDays, 4);
   assert.equal(v.trend.prior, 5);
   assert.equal(v.trend.current, 11);
