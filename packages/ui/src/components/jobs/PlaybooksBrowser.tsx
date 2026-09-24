@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -85,6 +85,10 @@ export default function PlaybooksBrowser({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<SkillSearchHit[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  // The query behind the shown results (null = no results shown). A ref, so
+  // a mutation that finishes later refreshes the search the user has *now*,
+  // not the one captured when it started.
+  const submittedQueryRef = useRef<string | null>(null);
   const [editorSeq, setEditorSeq] = useState(0);
 
   function openEditor(state: Omit<EditorState, "id">) {
@@ -129,8 +133,10 @@ export default function PlaybooksBrowser({
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
       await load();
-      if (searchHits !== null && searchQuery.trim()) {
-        setSearchHits(await searchSkills(searchQuery.trim(), 10).catch(() => []));
+      const q = submittedQueryRef.current;
+      if (q) {
+        const hits = await searchSkills(q, 10).catch(() => []);
+        if (submittedQueryRef.current === q) setSearchHits(hits);
       }
       setBusy(false);
     }
@@ -176,14 +182,17 @@ export default function PlaybooksBrowser({
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (!searchQuery.trim()) {
+    const q = searchQuery.trim();
+    submittedQueryRef.current = q || null;
+    if (!q) {
       setSearchHits(null);
       return;
     }
     setIsSearching(true);
     setError(null);
     try {
-      setSearchHits(await searchSkills(searchQuery.trim(), 10));
+      const hits = await searchSkills(q, 10);
+      if (submittedQueryRef.current === q) setSearchHits(hits);
     } catch {
       setError("Search failed");
     } finally {
@@ -227,6 +236,7 @@ export default function PlaybooksBrowser({
               onClick={() => {
                 setSearchQuery("");
                 setSearchHits(null);
+                submittedQueryRef.current = null;
               }}
               className="px-3 py-2 border border-line-strong text-fg-muted hover:text-fg text-sm rounded-lg transition-colors"
             >

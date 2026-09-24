@@ -349,3 +349,20 @@ def test_failed_restore_leaves_hidden_list_untouched(isolated: ChromaDBStore) ->
     with pytest.raises(SkillParseError):
         restore_skill("bad", store=isolated)
     assert skills_index.hidden_builtin_names() == {"bad"}
+
+
+def test_create_never_deletes_a_malformed_company_file(isolated: ChromaDBStore) -> None:
+    broken = skills_repo._company_skills_path() / "finance" / "foo.md"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("---\nname: foo\ndescription: 'unclosed\n---\nmy procedure\n", encoding="utf-8")
+
+    with pytest.raises(SkillConflictError):
+        create_skill(
+            name="foo",
+            description="d",
+            when_to_use="w",
+            category="general",
+            body="b",
+            store=isolated,
+        )
+    assert broken.exists()

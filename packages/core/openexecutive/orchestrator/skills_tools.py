@@ -222,7 +222,9 @@ def _builtin_refusal(name: str) -> str | None:
 
 
 async def handle_update_skill(input: dict[str, Any]) -> str:
-    refusal = _builtin_refusal(str(input.get("name", "")))
+    if not input.get("name"):
+        return json.dumps({"error": "missing required field: name"})
+    refusal = _builtin_refusal(str(input["name"]))
     if refusal:
         return refusal
     try:

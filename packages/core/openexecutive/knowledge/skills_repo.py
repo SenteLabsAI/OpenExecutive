@@ -188,7 +188,12 @@ def create_skill(
     """
     validate_skill_name(name)
     _validate_category(category)
-    if _find_skill_on_disk(name, include_hidden=True) is not None:
+    # Any company file counts, malformed or not: _write_company_skill clears
+    # other files with this name, and a create must never delete one.
+    if (
+        _find_in(_company_skills_path(), name) is not None
+        or _find_skill_on_disk(name, include_hidden=True) is not None
+    ):
         raise SkillConflictError(f"Skill '{name}' already exists")
 
     skill = _write_company_skill(name, description, when_to_use, category, body)
