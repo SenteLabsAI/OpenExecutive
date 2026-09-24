@@ -351,6 +351,7 @@ async def _execute_resume(
     "executed N" count means completions, not merely claims.
     """
     import contextlib
+    import sqlite3
 
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
@@ -455,7 +456,14 @@ async def _execute_resume(
         now = datetime.now(UTC)
         if now - last_heartbeat >= _RESUME_HEARTBEAT_EVERY:
             last_heartbeat = now
-            if not _wf_persistence.touch_resume_claim(run_id, claim, db_path=db_path):
+            try:
+                still_ours = _wf_persistence.touch_resume_claim(run_id, claim, db_path=db_path)
+            except sqlite3.OperationalError:
+                # A busy shared DB is not a lost claim — keep working; the next
+                # event retries. Only a definite False means superseded.
+                logger.warning("resumer: database busy on heartbeat for run %s", run_id)
+                still_ours = True
+            if not still_ours:
                 # Superseded: another worker owns this run now. Stop before the
                 # next step acts again (action steps have external effects).
                 logger.warning(

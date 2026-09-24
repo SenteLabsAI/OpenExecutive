@@ -911,3 +911,29 @@ def test_a_superseded_resume_stops_before_acting_again(
     assert reached == []
     run = wf_persistence.get_run("res-1")
     assert run["status"] == "running" and run["artifact"] is None
+
+
+def test_a_busy_database_on_heartbeat_does_not_kill_the_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from openexecutive.workflows import resumer
+    from openexecutive.workflows.base import WorkflowEvent
+
+    monkeypatch.setattr(resumer, "_RESUME_HEARTBEAT_EVERY", timedelta(0))
+
+    def _locked(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(wf_persistence, "touch_resume_claim", _locked)
+    _resolved()
+    wf = _real_workflow(
+        [
+            WorkflowEvent(type="progress", step_id="act", summary="Using x…"),
+            WorkflowEvent(type="artifact", content="# Done"),
+        ]
+    )
+    _install_stub(monkeypatch, wf)
+    assert asyncio.run(resumer._process_resumable(datetime.now(UTC))) == 1
+    assert wf_persistence.get_run("res-1")["status"] == "done"

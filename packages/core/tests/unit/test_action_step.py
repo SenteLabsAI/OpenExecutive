@@ -424,3 +424,102 @@ async def test_preflight_fails_before_any_step_acts(
     assert [e.type for e in events] == ["error"]
     assert "srv__gone" in (events[0].message or "") and "did not start" in (events[0].message or "")
     assert provider.calls == [] and gateway.calls == []
+
+
+# --- resume after a gate -------------------------------------------------------
+
+
+def _gated_defn(before_tools: list[str], after_tools: list[str]) -> DynamicWorkflowDef:
+    return DynamicWorkflowDef.model_validate(
+        {
+            "name": "gated_actions",
+            "title": "Gated actions",
+            "steps": [
+                {"kind": "action", "id": "before", "title": "Before", "goal": "Go.", "tools": before_tools},
+                {"kind": "approval_gate", "id": "gate", "title": "Approve", "person_id": 7, "question": "OK?"},
+                {"kind": "action", "id": "after", "title": "After", "goal": "Go.", "tools": after_tools},
+                {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+            ],
+        }
+    )
+
+
+async def _resume(defn: DynamicWorkflowDef, decision: str = "approve") -> list[Any]:
+    from openexecutive.workflows.dynamic import _steps_fingerprint
+    from openexecutive.workflows.wait_for_human import (
+        WaitForHumanResolution,
+        WorkflowResumeState,
+    )
+
+    wf = DynamicWorkflow(defn)
+    state = WorkflowResumeState(
+        workflow_name=defn.name,
+        gate_step_id="gate",
+        gate_step_index=1,
+        steps_fingerprint=_steps_fingerprint(defn),
+        outputs={"before": ("Before", "did it")},
+    )
+    resolution = WaitForHumanResolution(
+        reply_text="yes", source_channel="slack",
+        parsed_decision={"decision": decision}, person_id=7,
+    )
+    return [
+        e
+        async for e in wf.resume(
+            inputs=wf.input_model()(), state=state, resolution=resolution, store=None  # type: ignore[arg-type]
+        )
+    ]
+
+
+@pytest.fixture()
+def _profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.workflows.dynamic.load_or_create_profile",
+        lambda: SimpleNamespace(name="Northwind", is_empty=lambda: True),
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_ignores_tools_of_steps_that_already_ran(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]], _profile: None
+) -> None:
+    """The pre-gate step already acted; its tool vanishing must not fail the
+    remaining steps."""
+    provider = _ScriptedProvider([_resp(_use(APPEND, {}, "tu_1")), _resp(_text("Done after."))])
+    _install(monkeypatch, provider)
+    events = await _resume(_gated_defn(["srv__gone"], [APPEND]))
+    assert not any(e.type == "error" for e in events)
+    artifact = next(e for e in events if e.type == "artifact").content or ""
+    assert "did it" in artifact and "Done after." in artifact
+
+
+@pytest.mark.asyncio
+async def test_resume_checks_remaining_tools_after_the_decision(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]], _profile: None
+) -> None:
+    _install(monkeypatch, _ScriptedProvider([]))
+    events = await _resume(_gated_defn([READ], ["srv__gone"]))
+    assert events[-1].type == "error"
+    assert "after the approval did not run" in (events[-1].message or "")
+    # A rejection is reported as a rejection, not as a missing tool.
+    rejected = await _resume(_gated_defn([READ], ["srv__gone"]), decision="reject")
+    assert "srv__gone" not in (rejected[-1].message or "")
+
+
+@pytest.mark.asyncio
+async def test_last_turn_always_switches_tools_off(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    """Even with budget left, the final turn must let the model report rather
+    than act and then be failed without one."""
+    step = _step(max_tool_calls=5)
+    turns = step.max_tool_calls + act._EXTRA_TURNS
+    provider = _ScriptedProvider(
+        [_resp(_use("srv__forbidden", {}, f"tu_{i}")) for i in range(turns - 1)]
+        + [_resp(_text("Could not do it with these tools."))]
+    )
+    _install(monkeypatch, provider)
+    out = await _run(step)
+    assert provider.calls[-1]["tool_choice"] == {"type": "none"}
+    assert all("tool_choice" not in c for c in provider.calls[:-1])
+    assert out[-1][0] == "output"

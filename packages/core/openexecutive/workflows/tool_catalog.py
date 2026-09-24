@@ -364,11 +364,22 @@ async def validate_definition_and_tools(defn: DynamicWorkflowDef) -> list[str]:
     return validate_definition(defn) or await validate_tools_available(defn)
 
 
-async def unavailable_step_tools(defn: DynamicWorkflowDef) -> list[str]:
-    """Names of action-step tools that do not resolve right now (sorted)."""
+async def unavailable_step_tools(defn: DynamicWorkflowDef, start_index: int = 0) -> list[str]:
+    """Names of action-step tools that do not resolve right now (sorted).
+
+    ``start_index`` limits the check to the steps still to run — a resumed
+    run must not fail over a tool only an already-finished step used.
+    """
     from openexecutive.workflows.dynamic_models import ActionStepSpec
 
-    wanted = sorted({t for s in defn.steps if isinstance(s, ActionStepSpec) for t in s.tools})
+    wanted = sorted(
+        {
+            t
+            for s in defn.steps[start_index:]
+            if isinstance(s, ActionStepSpec)
+            for t in s.tools
+        }
+    )
     if not wanted:
         return []
     found = await resolve(wanted)

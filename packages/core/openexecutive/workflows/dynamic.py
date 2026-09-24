@@ -240,10 +240,6 @@ class DynamicWorkflow(Workflow):
         if stale:
             yield _stale_error(stale)
             return
-        missing_tools = await unavailable_step_tools(self._defn)
-        if missing_tools:
-            yield _missing_tools_error(missing_tools)
-            return
 
         gate = self._gate_for_resume(state)
         if gate is None:
@@ -296,6 +292,16 @@ class DynamicWorkflow(Workflow):
                     + (f": {note}" if note else "")
                 ),
             )
+            return
+
+        # Only the steps still to run matter — the ones before the gate already
+        # acted. Checked after the gate and the decision, so a rejection is
+        # reported as a rejection, but before any remaining step acts.
+        missing_tools = await unavailable_step_tools(
+            self._defn, start_index=state.gate_step_index + 1
+        )
+        if missing_tools:
+            yield _missing_tools_error(missing_tools, resuming=True)
             return
 
         # Give the synthesis step the decision as a readable section, and
@@ -605,13 +611,15 @@ def _format_resolution(
     return f"## {step.title}\n\n{body}\n"
 
 
-def _missing_tools_error(missing: list[str]) -> WorkflowEvent:
+def _missing_tools_error(missing: list[str], *, resuming: bool = False) -> WorkflowEvent:
+    outcome = (
+        "the steps after the approval did not run"
+        if resuming
+        else "the workflow did not start"
+    )
     return WorkflowEvent(
         type="error",
-        message=(
-            "these tools are not available right now, so the workflow did not "
-            f"start: {', '.join(missing)}"
-        ),
+        message=f"these tools are not available right now, so {outcome}: {', '.join(missing)}",
     )
 
 

@@ -255,7 +255,8 @@ async def run_action_step(
     budget = _Budget(step.max_tool_calls)
     actions: list[tuple[str, str]] = []
 
-    for turn in range(step.max_tool_calls + _EXTRA_TURNS):
+    max_turns = step.max_tool_calls + _EXTRA_TURNS
+    for turn in range(max_turns):
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "max_tokens": _MAX_TOKENS,
@@ -263,7 +264,9 @@ async def run_action_step(
             "tools": tools,
             "messages": messages,
         }
-        if budget.spent:
+        # Tools off once the budget is spent, and on the last turn regardless,
+        # so the model always gets a turn to report what it did.
+        if budget.spent or turn == max_turns - 1:
             kwargs["tool_choice"] = {"type": "none"}
         response, failure = await _model_turn(
             provider, kwargs, step_id=step.id, model=resolved_model, turn=turn
