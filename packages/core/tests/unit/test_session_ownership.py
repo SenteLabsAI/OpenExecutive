@@ -114,6 +114,14 @@ def _owner(db_path: Path, session_id: str) -> int | None:
     return row[0]
 
 
+def _message_count(db_path: Path, session_id: str) -> int:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return int(row[0])
+
+
 def _seed(session_id: str, owner: int | None) -> None:
     session_store.create_session(session_id, "t", "2026-01-01T00:00:00", caller_person_id=owner)
 
@@ -130,13 +138,25 @@ def test_reads_are_limited_to_owner_and_principal(
 
     assert client.get(url, headers=SABIN).status_code == 200
     assert client.get(url, headers=ALEX).status_code == 200
-    assert client.get(url, headers=RIYA).status_code == 403
-    assert client.get(url, headers=STRANGER).status_code == 403
+    assert client.get(url, headers=RIYA).status_code == 404
+    assert client.get(url, headers=STRANGER).status_code == 404
 
 
-def test_unknown_session_is_404_not_403(client: TestClient, people: dict[str, int]) -> None:
-    assert client.get("/sessions/nope/messages", headers=RIYA).status_code == 404
-    assert client.delete("/sessions/nope", headers=RIYA).status_code == 404
+def test_someone_elses_session_looks_exactly_like_an_unknown_one(
+    client: TestClient, people: dict[str, int]
+) -> None:
+    """Ids are guessable, so "exists but not yours" must not be told apart
+    from "no such session" — or the routes would reveal who has chatted."""
+    _seed("slack:dm:USABIN", people["sabin"])
+
+    for sid in ("slack:dm:USABIN", "slack:dm:UNOBODY"):
+        for resp in (
+            client.get(f"/sessions/{sid}", headers=RIYA),
+            client.get(f"/sessions/{sid}/messages", headers=RIYA),
+            client.get(f"/sessions/{sid}/followup", headers=RIYA),
+            client.delete(f"/sessions/{sid}", headers=RIYA),
+        ):
+            assert (resp.status_code, resp.json()) == (404, {"detail": "Session not found"})
 
 
 def test_legacy_ownerless_session_is_the_principals_alone(
@@ -145,8 +165,8 @@ def test_legacy_ownerless_session_is_the_principals_alone(
     _seed("legacy", None)
 
     assert client.get("/sessions/legacy/messages", headers=ALEX).status_code == 200
-    assert client.get("/sessions/legacy/messages", headers=SABIN).status_code == 403
-    assert client.get("/sessions/legacy/messages", headers=STRANGER).status_code == 403
+    assert client.get("/sessions/legacy/messages", headers=SABIN).status_code == 404
+    assert client.get("/sessions/legacy/messages", headers=STRANGER).status_code == 404
 
 
 def test_delete_refuses_someone_elses_session_and_keeps_it(
@@ -154,7 +174,7 @@ def test_delete_refuses_someone_elses_session_and_keeps_it(
 ) -> None:
     _seed("sabin-chat", people["sabin"])
 
-    assert client.delete("/sessions/sabin-chat", headers=RIYA).status_code == 403
+    assert client.delete("/sessions/sabin-chat", headers=RIYA).status_code == 404
     assert _session_ids(db) == ["sabin-chat"]
 
     assert client.delete("/sessions/sabin-chat", headers=SABIN).status_code == 204
@@ -176,31 +196,21 @@ def test_delete_evicts_the_in_memory_session(
 # --- continuing a chat -----------------------------------------------------
 
 
-def test_chat_refuses_to_continue_someone_elses_session(
+def test_chat_never_writes_into_someone_elses_session(
     client: TestClient, db: Path, people: dict[str, int]
 ) -> None:
+    """Naming another person's session starts a fresh chat instead: nothing
+    lands in theirs, and the response is the same as for an unknown id."""
     _seed("sabin-chat", people["sabin"])
 
-    assert _chat(client, RIYA, "sabin-chat") == 403
-    assert _chat(client, STRANGER, "sabin-chat") == 403
+    assert _chat(client, RIYA, "sabin-chat") == 200
+    assert _chat(client, STRANGER, "sabin-chat") == 200
+    assert _message_count(db, "sabin-chat") == 0
+    assert len(_session_ids(db)) == 3  # sabin-chat + one fresh chat each
+
     assert _chat(client, SABIN, "sabin-chat") == 200
     assert _chat(client, ALEX, "sabin-chat") == 200
-
-
-def test_forbidden_chat_does_not_strand_a_stop_entry(
-    client: TestClient, people: dict[str, int]
-) -> None:
-    _seed("sabin-chat", people["sabin"])
-    before = dict(chat_route._active_stops)
-
-    resp = client.post(
-        "/chat",
-        json={"message": "hi", "session_id": "sabin-chat", "client_turn_id": "c-123"},
-        headers=RIYA,
-    )
-
-    assert resp.status_code == 403
-    assert chat_route._active_stops == before
+    assert _message_count(db, "sabin-chat") == 4
 
 
 def test_unresolved_caller_can_continue_only_their_own_new_chat(
@@ -214,8 +224,56 @@ def test_unresolved_caller_can_continue_only_their_own_new_chat(
 
     assert _chat(client, STRANGER, sid) == 200
     assert client.get(f"/sessions/{sid}/messages", headers=STRANGER).status_code == 200
-    assert _chat(client, {"x-caller-email": "other@example.com"}, sid) == 403
-    assert _chat(client, SABIN, sid) == 403
+    assert _chat(client, {"x-caller-email": "other@example.com"}, sid) == 200
+    assert _chat(client, SABIN, sid) == 200
+    assert _message_count(db, sid) == 4  # only the starter's two turns
+    assert client.get(f"/sessions/{sid}/messages", headers=SABIN).status_code == 404
+
+
+def test_stale_cached_session_is_not_handed_to_the_next_claimant(
+    client: TestClient, db: Path, people: dict[str, int]
+) -> None:
+    """A fixture reset or client-slot switch wipes the rows but not the
+    in-memory cache. Whoever names the id next must get an empty chat, not the
+    cached transcript."""
+    assert _chat(client, SABIN) == 200
+    (sid,) = _session_ids(db)
+    stale = chat_route._sessions[sid]
+    stale.conversation_history = [{"role": "user", "content": "SABIN'S SECRET"}]
+    chat_route._session_starters.clear()  # e.g. a resumed chat: no starter here
+    session_store.delete_session(sid)  # what reset_all_state does to the row
+
+    assert _chat(client, RIYA, sid) == 200
+    assert chat_route._sessions[sid] is not stale
+    assert "SABIN'S SECRET" not in repr(chat_route._sessions[sid].conversation_history)
+    assert _message_count(db, sid) == 2  # Riya's turn only
+
+
+def test_turn_finishing_after_its_session_was_deleted_is_not_saved(
+    client: TestClient, db: Path, people: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleting a chat while a reply streams must not leave that reply's
+    messages behind under the deleted id."""
+    from openexecutive.orchestrator import executive as exec_mod
+
+    class _DeletesMidStream:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **_kwargs: Any) -> AsyncIterator[str]:
+            (sid,) = _session_ids(db)
+            session_store.delete_session(sid)
+            chat_route.forget_session(sid)
+            yield "ok"
+
+    monkeypatch.setattr(exec_mod, "Executive", _DeletesMidStream)
+
+    assert _chat(client, SABIN) == 200
+    assert _session_ids(db) == []
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 0
 
 
 def test_fresh_install_without_a_principal_keeps_working(
@@ -286,7 +344,7 @@ def test_orphaned_chat_after_restart_continues_in_a_fresh_one(
     chat_route._sessions.clear()
     chat_route._session_starters.clear()  # simulate a restart
 
-    assert client.get(f"/sessions/{sid}/messages", headers=STRANGER).status_code == 403
+    assert client.get(f"/sessions/{sid}/messages", headers=STRANGER).status_code == 404
     assert _chat(client, STRANGER, sid) == 200
     ids = _session_ids(db)
     assert len(ids) == 2 and ids[0] == sid

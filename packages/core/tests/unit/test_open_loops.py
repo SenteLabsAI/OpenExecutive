@@ -456,7 +456,9 @@ def test_feedback_route_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from openexecutive.api.routes import sessions as route
 
-    monkeypatch.setattr(route, "get_session_owner", lambda sid: (True, 5))
+    monkeypatch.setattr(
+        "openexecutive.memory.session_store.get_session_owner", lambda sid: (True, 5)
+    )
     monkeypatch.setattr(route, "set_message_feedback", lambda *a, **k: True)
     principal = SimpleNamespace(is_principal=True, archived=False)
     teammate = SimpleNamespace(is_principal=False, archived=False)
@@ -473,8 +475,9 @@ def test_feedback_route_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert call(5) == 204      # the session's own caller
     assert call(1) == 204      # the principal
-    assert call(7) == 403      # someone else
-    assert call(None) == 403   # unrostered
+    # Refused like an unknown session, so the route can't probe which exist.
+    assert call(7) == 404      # someone else
+    assert call(None) == 404   # unrostered
 
 
 def test_close_open_loop_chip_only_when_closed() -> None:

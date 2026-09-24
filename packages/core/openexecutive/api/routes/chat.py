@@ -452,6 +452,12 @@ def _session_access(
     return "forbidden"
 
 
+def _is_current_session(session: Any) -> bool:
+    """Whether ``session`` is still the live one for its id — False once it was
+    deleted (or its id reclaimed after a reset) while a turn held it."""
+    return _sessions.get(session.session_id) is session
+
+
 def forget_session(session_id: str) -> bool:
     """Drop a deleted session's in-process state; True if there was any.
 
@@ -663,22 +669,27 @@ async def _run_chat_turn(
     # by signed-in user); see its docstring for the precedence rule that
     # protects against cross-identity leakage.
     caller_person_id = _resolve_caller_person_id(request)
-    # A client-supplied id must be the caller's own chat. Refused before the
-    # stop switch is armed, so a 403 strands nothing in the registry.
+    # A client-supplied id must be the caller's own chat; any other id the
+    # turn can't use is swapped for a fresh chat before the stop switch arms.
     requested_id = _clean_session_id(session_id)
     access: SessionAccess = "missing"
     if requested_id is not None:
         access = _session_access(request, requested_id, caller_person_id)
-        if access == "forbidden":
-            logger.warning("chat.session_forbidden session_id=%s", requested_id)
-            raise HTTPException(status_code=403, detail="Not your session")
-        if access == "orphaned":
-            # Nobody here can vouch for this ownerless chat (its starter was
-            # lost to a restart). Continue in a fresh chat rather than fail
-            # every send until the user presses New chat.
-            logger.info("chat.session_orphaned session_id=%s", requested_id)
+        if access in ("forbidden", "orphaned"):
+            # Someone else's chat, or an ownerless one nobody here can vouch
+            # for (its starter was lost to a restart). Continue in a fresh
+            # chat: that neither fails every send nor answers differently for
+            # "exists but not yours" than for an unknown id, so guessable ids
+            # (`slack:dm:<user id>`) can't be probed for which chats exist.
+            logger.warning("chat.session_refused access=%s session_id=%s", access, requested_id)
             requested_id, access = None, "missing"
-        elif access == "missing" and _is_channel_namespaced(requested_id):
+        elif access == "missing":
+            # No stored row and no live starter, so any cached Session under
+            # this id is stale — its row was removed by a fixture reset or a
+            # client-slot switch, neither of which clears `_sessions`. Never
+            # hand that transcript to whoever names the id next.
+            _sessions.pop(requested_id, None)
+        if access == "missing" and requested_id and _is_channel_namespaced(requested_id):
             # A web caller minting an adapter's id would squat it: the
             # adapter's INSERT OR IGNORE keeps the first owner, so whoever
             # claimed `slack:dm:<someone>` first would own that person's DM
@@ -1002,6 +1013,14 @@ async def _run_chat_turn(
                 # Discord / Slack / Telegram / Email / Google Chat) records
                 # the response uniformly. Don't duplicate it here.
                 if not full_response:
+                    return
+                if not _is_current_session(session):
+                    # Deleted (or reset) while this turn streamed. Writing now
+                    # would leave messages under an id with no session row,
+                    # which the next caller to claim that id would inherit.
+                    logger.info(
+                        "chat.persist_skipped_deleted session_id=%s", session.session_id
+                    )
                     return
                 if not is_first_turn:
                     update_session_timestamp(session.session_id)

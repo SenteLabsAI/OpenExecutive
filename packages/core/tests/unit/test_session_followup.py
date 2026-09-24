@@ -4,7 +4,7 @@ Covers:
 - A conversation ending on a persisted reply returns the model's suggestion.
 - Model failure / bad output returns ``null`` with a 200, and is not cached.
 - A conversation that does not end on a reply skips the model entirely.
-- Unknown session → 404; someone else's session → 403.
+- Unknown session and someone else's session → 404 alike.
 - Repeat calls for the same reply hit the cache.
 - The fast-model helper parses fenced JSON and rejects runaway answers.
 """
@@ -46,9 +46,9 @@ def _patch_session(
     exists: bool = True,
     allowed: bool = True,
 ) -> None:
-    monkeypatch.setattr(sessions_route, "get_session_owner", lambda _sid: (exists, 1))
+    access = "missing" if not exists else ("allowed" if allowed else "forbidden")
     monkeypatch.setattr(sessions_route, "_resolve_caller_person_id", lambda _req: 1)
-    monkeypatch.setattr(sessions_route, "is_principal_or_self", lambda _c, _o: allowed)
+    monkeypatch.setattr(sessions_route, "_session_access", lambda _req, _sid, _c: access)
     monkeypatch.setattr(sessions_route, "load_messages", lambda _sid: list(messages))
 
 
@@ -124,14 +124,15 @@ def test_unknown_session_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 0
 
 
-def test_other_callers_session_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_other_callers_session_looks_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """404, like an unknown id, so the route can't probe which chats exist."""
     _patch_session(monkeypatch, _CONVO, allowed=False)
     calls = _patch_llm(monkeypatch, "x")
 
     with TestClient(_make_app()) as client:
         res = client.get("/sessions/s1/followup")
 
-    assert res.status_code == 403
+    assert res.status_code == 404
     assert calls["n"] == 0
 
 

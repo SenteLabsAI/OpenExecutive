@@ -1518,7 +1518,9 @@ attunement:
     Every per-session HTTP route (GET /sessions/{id}, GET /sessions/{id}/messages,
     DELETE /sessions/{id}, POST /chat with a session_id, and feedback/followup)
     is limited to the session's owner or the principal (`is_principal_or_self`;
-    a NULL-owner legacy row is the principal's alone). Session ids are guessable
+    a NULL-owner legacy row is the principal's alone). The sessions routes answer
+    404 for anyone else, identical to an unknown id, so they are no oracle for
+    which chats exist; POST /chat instead runs the turn in a fresh chat. Session ids are guessable
     (`slack:dm:<user id>`, `telegram:<chat id>`), so the id alone is no proof.
     `chat._session_access` also admits whoever started the chat in this process
     (`_session_starters` holds the starter's `_caller_keys`: Person id and/or
@@ -1528,13 +1530,19 @@ attunement:
     Person, and that turn late-binds the row to them. Only the starter binds an
     ownerless row: the principal continuing it does not take it over. The record
     is in-memory; after a restart an ownerless row nobody here started is
-    "orphaned": reads get 403 and POST /chat continues in a fresh chat instead
-    of failing. POST /chat refuses a forbidden id with 403 before arming the
-    stop switch, and ignores an unknown namespaced id (contains ':') rather
-    than letting a web caller squat an id a channel adapter will later create
-    (INSERT OR IGNORE keeps the first owner).
+    "orphaned": reads get 404 and POST /chat continues in a fresh chat instead
+    of failing. POST /chat also ignores an unknown namespaced id (contains ':')
+    rather than letting a web caller squat an id a channel adapter will later
+    create (INSERT OR IGNORE keeps the first owner). A "missing" id evicts any
+    cached Session under it: fixture reset and client-slot switching remove
+    rows without clearing `_sessions`, and the stale transcript must not be
+    handed to the next claimant. A turn whose Session was deleted mid-stream
+    (no longer the cached object) skips persisting, so no orphan messages are
+    left under the deleted id.
     DELETE also evicts the in-memory Session so the id cannot resume its history.
-    Known gap, not covered: GET /audit/sessions/{id} is not owner-scoped.
+    Known gaps, not covered: GET /audit/sessions/{id} is not owner-scoped, and
+    GET /debug/last-turn returns the last turn's session id and events to any
+    caller.
   feedback: |
     `chat_messages.feedback` up|down (+ `feedback_note`) via
     POST /sessions/{id}/messages/{message_id}/feedback — session's own caller
