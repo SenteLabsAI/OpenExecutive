@@ -83,7 +83,7 @@ def test_pause_after_resume_starts_fresh() -> None:
     assert again.reason is None
 
 
-def test_is_paused_fails_open_on_unreadable_db(
+def test_is_paused_fails_closed_on_unreadable_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     garbage = tmp_path / "garbage.db"
@@ -91,7 +91,8 @@ def test_is_paused_fails_open_on_unreadable_db(
     monkeypatch.setattr(episodic, "DB_PATH", garbage)
     with pytest.raises(sqlite3.DatabaseError):
         pause_store.get_pause_state()
-    assert pause_store.is_paused() is False
+    # A brake that can't be read holds work rather than silently releasing it.
+    assert pause_store.is_paused() is True
 
 
 def test_count_held_actions_counts_only_due_pending_rows() -> None:
@@ -101,23 +102,6 @@ def test_count_held_actions_counts_only_due_pending_rows() -> None:
     _insert_action(now + timedelta(hours=1))  # not yet due
     _insert_action(now - timedelta(minutes=5), status="done")
     assert pause_store.count_held_actions(now) == 2
-
-
-def test_pause_survives_client_slot_restore(_isolated: Path) -> None:
-    """The switch is operator-level: a slot restore must carry it across."""
-    from openexecutive.clients import slots
-
-    pause_store.pause("ceo@example.com", "holiday")
-    preserved = slots._dump_global_tables()
-    # Simulate the restore replacing the DB with a client's older state.db
-    # that predates the table.
-    _isolated.unlink()
-    episodic.initialize_db(_isolated)
-    pause_store.initialize_pause_db(_isolated)
-    slots._restore_global_tables(preserved)
-    state = pause_store.get_pause_state()
-    assert state.paused is True
-    assert state.reason == "holiday"
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +203,31 @@ def test_resumer_holds_startup_sweep_and_ticks_while_paused(
     pause_store.resume("ceo@example.com")
     asyncio.run(_run_briefly(resumer.run_resumer(poll_interval_seconds=60)))
     assert calls == ["startup", "tick"]
+
+
+def test_resumer_runs_deferred_startup_sweep_once_on_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One loop that boots paused and is then resumed: the held startup sweep
+    runs exactly once, before the first tick, and ticks continue after."""
+    from openexecutive.workflows import resumer
+
+    calls: list[str] = []
+
+    async def _startup() -> None:
+        calls.append("startup")
+
+    async def _tick(now: datetime) -> None:
+        calls.append("tick")
+
+    monkeypatch.setattr(resumer, "_startup_sweep", _startup)
+    monkeypatch.setattr(resumer, "_tick", _tick)
+    states = iter([True, True, False, False, False])
+    monkeypatch.setattr(pause_store, "is_paused", lambda: next(states, False))
+
+    asyncio.run(_run_briefly(resumer.run_resumer(poll_interval_seconds=0)))
+    assert calls[:3] == ["startup", "tick", "tick"]
+    assert calls.count("startup") == 1
 
 
 def _seed_resumable_run(run_id: str) -> None:

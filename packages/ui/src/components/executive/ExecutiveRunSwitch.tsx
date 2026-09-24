@@ -23,22 +23,38 @@ function heldLabel(n: number): string {
  * - `card`: the always-expanded panel, for the Settings page.
  */
 export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "card" }) {
-  const { status, busy, error, pause, resume } = useExecutiveStatus();
+  const { status, unknown, busy, error, pause, resume } = useExecutiveStatus();
   const [expanded, setExpanded] = useState(false);
   const [reason, setReason] = useState("");
 
   if (!status) return null;
+  if (unknown) {
+    // The last status read failed: say so rather than show a stale state,
+    // and offer no action whose effect we can't confirm.
+    return (
+      <div
+        className={variant === "card" ? "rounded-xl border border-line bg-surface-elevated p-4" : "pb-1"}
+        title="Couldn't reach the backend — retrying"
+      >
+        <div className="flex items-center gap-2.5 px-3 py-2 text-sm text-fg-muted">
+          <span className="inline-block w-2 h-2 rounded-full flex-shrink-0 bg-fg-subtle" aria-hidden="true" />
+          <span className="truncate">Executive status unknown</span>
+        </div>
+      </div>
+    );
+  }
   const paused = status.paused;
   const open = variant === "card" || expanded;
 
+  // Collapse only on success so a failure's error stays visible.
   const onPause = async () => {
-    await pause(reason);
-    setReason("");
-    setExpanded(false);
+    if (await pause(reason)) {
+      setReason("");
+      setExpanded(false);
+    }
   };
   const onResume = async () => {
-    await resume();
-    setExpanded(false);
+    if (await resume()) setExpanded(false);
   };
 
   const dot = (
@@ -67,6 +83,9 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
             )}
           </p>
           <p className="text-xs text-amber-300">{heldLabel(status.held_actions)}</p>
+          {!status.can_resume ? (
+            <p className="text-xs text-fg-muted">Only the principal can resume the Executive.</p>
+          ) : (
           <button
             type="button"
             onClick={onResume}
@@ -76,6 +95,7 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
             <Icon name="play" size="w-3.5 h-3.5" />
             {busy ? "Resuming…" : "Resume Executive"}
           </button>
+          )}
         </>
       ) : (
         <>

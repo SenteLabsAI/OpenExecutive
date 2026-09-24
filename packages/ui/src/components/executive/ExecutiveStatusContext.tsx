@@ -16,11 +16,15 @@ import {
 interface ExecutiveStatusContextValue {
   /** Null until the first status request succeeds (or while signed out). */
   status: ExecutiveStatus | null;
+  /** True when the latest status read failed — the shown state may be stale,
+   *  so the UI must not keep claiming "paused" (or "running"). */
+  unknown: boolean;
   /** True while a pause/resume request is in flight. */
   busy: boolean;
   error: string | null;
-  pause: (reason?: string) => Promise<void>;
-  resume: () => Promise<void>;
+  /** Resolve true on success; on failure `error` is set. */
+  pause: (reason?: string) => Promise<boolean>;
+  resume: () => Promise<boolean>;
   refresh: () => void;
 }
 
@@ -35,17 +39,27 @@ export function ExecutiveStatusProvider({ children }: { children: React.ReactNod
   const [status, setStatus] = useState<ExecutiveStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // A poll that started before a pause/resume must not overwrite its result.
+  const [unknown, setUnknown] = useState(false);
+  // A poll that started before a pause/resume must not overwrite its result
+  // (the seq bump in `run` drops it), and no poll starts while one is in
+  // flight — its GET could be answered before the POST commits.
   const requestSeqRef = useRef(0);
+  const mutatingRef = useRef(false);
 
   const refresh = useCallback(() => {
+    if (mutatingRef.current) return;
     const seq = ++requestSeqRef.current;
     getExecutiveStatus()
       .then((s) => {
-        if (seq === requestSeqRef.current) setStatus(s);
+        if (seq !== requestSeqRef.current) return;
+        setStatus(s);
+        setUnknown(false);
       })
-      // Silent: a transient failure keeps the last known state.
-      .catch(() => {});
+      .catch(() => {
+        // Only flag once we have shown a state that may now be wrong; before
+        // the first success (e.g. signed out) there is nothing to render.
+        if (seq === requestSeqRef.current) setUnknown(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -60,26 +74,36 @@ export function ExecutiveStatusProvider({ children }: { children: React.ReactNod
     };
   }, [authStatus, refresh]);
 
-  const run = useCallback(async (op: () => Promise<ExecutiveStatus>) => {
+  const run = useCallback(async (op: () => Promise<ExecutiveStatus>): Promise<boolean> => {
     const seq = ++requestSeqRef.current;
+    mutatingRef.current = true;
     setBusy(true);
     setError(null);
+    let ok = false;
     try {
       const next = await op();
-      if (seq === requestSeqRef.current) setStatus(next);
+      if (seq === requestSeqRef.current) {
+        setStatus(next);
+        setUnknown(false);
+      }
+      ok = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
+      mutatingRef.current = false;
       setBusy(false);
     }
-  }, []);
+    // A failed request also dropped any poll in flight — re-read the truth.
+    if (!ok) refresh();
+    return ok;
+  }, [refresh]);
 
   const pause = useCallback((reason?: string) => run(() => pauseExecutive(reason)), [run]);
   const resume = useCallback(() => run(resumeExecutive), [run]);
 
   const value = useMemo(
-    () => ({ status, busy, error, pause, resume, refresh }),
-    [status, busy, error, pause, resume, refresh],
+    () => ({ status, unknown, busy, error, pause, resume, refresh }),
+    [status, unknown, busy, error, pause, resume, refresh],
   );
   return (
     <ExecutiveStatusContext.Provider value={value}>{children}</ExecutiveStatusContext.Provider>

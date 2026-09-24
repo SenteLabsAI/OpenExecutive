@@ -1087,6 +1087,8 @@ export interface ExecutiveStatus {
   reason: string | null;
   // Pending scheduled actions already due — they fire on resume.
   held_actions: number;
+  // Whether the signed-in viewer may resume (principal-only once one exists).
+  can_resume: boolean;
 }
 
 export async function getExecutiveStatus(signal?: AbortSignal): Promise<ExecutiveStatus> {
@@ -1107,6 +1109,7 @@ export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> 
 
 export async function resumeExecutive(): Promise<ExecutiveStatus> {
   const res = await fetch(`${API_BASE}/executive/resume`, { method: "POST" });
+  if (res.status === 403) throw new Error("Only the principal can resume the Executive.");
   if (!res.ok) throw new Error("Failed to resume the Executive");
   return res.json();
 }

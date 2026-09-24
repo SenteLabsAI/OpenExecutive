@@ -623,3 +623,24 @@ async def test_generated_requires_valid_bundle(env: SimpleNamespace) -> None:
             env.settings, display_name="Ghost Co", source="generated", bundle=bad
         )
     assert not (env.company / "_client_slots" / "ghost_co").exists()
+
+
+async def test_executive_pause_survives_switch_to_a_pre_pause_slot(
+    env: SimpleNamespace,
+) -> None:
+    """The pause switch is operator-level, and a slot saved before the switch
+    existed (its state.db has no `executive_control` table) must not
+    silently un-pause the Executive when it is activated."""
+    from openexecutive.scheduler import pause as pause_store
+
+    _seed_live_company(env)
+    await create_client_slot(env.settings, display_name="Acme", source="current")
+    await create_client_slot(env.settings, display_name="Beta", source="blank")
+    await activate_client_slot(env.settings, "beta")
+
+    pause_store.pause("ceo@example.com", "holiday")
+    await activate_client_slot(env.settings, "acme")
+
+    state = pause_store.get_pause_state()
+    assert state.paused is True
+    assert state.reason == "holiday"

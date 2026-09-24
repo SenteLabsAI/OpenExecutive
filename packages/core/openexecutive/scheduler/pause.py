@@ -15,10 +15,13 @@ when the pause lands finishes. Inbound conversations (web chat, Slack,
 Discord, Telegram, Google Chat) are deliberately NOT gated — pausing stops
 what the Executive starts on its own, not its answers to people.
 
-``is_paused`` fails open, like the rotation claim pause: a DB error reads as
-"not paused" so a storage hiccup can never wedge every loop. It is also
-read-only — it never creates the DB file or the table — so loops running
-against an unconfigured or test DB leave no trace.
+``is_paused`` fails CLOSED: a DB file or table that does not exist yet reads
+as "running" (nothing was ever paused), but a read *error* on an existing DB
+reads as "paused" — for a brake, the safe failure is holding work, never
+silently releasing it while the UI still shows "paused". A broken DB would
+stall ``claim_due_actions`` anyway; the hold is logged once per failure
+streak. It is also read-only — it never creates the DB file or the table —
+so loops running against an unconfigured or test DB leave no trace.
 
 The table survives client-slot swaps (``clients.slots._GLOBAL_TABLES``): the
 switch belongs to the operator, not to whichever client company is active.
@@ -110,17 +113,19 @@ _read_failing = False
 
 
 def is_paused() -> bool:
-    """True while the operator has paused autonomous work. Never raises."""
+    """True while the operator has paused autonomous work — or while the
+    pause state cannot be read (fail closed). Never raises."""
     global _read_failing
     try:
         paused = get_pause_state().paused
     except Exception:
         if not _read_failing:
             logger.exception(
-                "pause: could not read pause state — treating as NOT paused"
+                "pause: could not read pause state — holding autonomous work "
+                "until it can be read"
             )
             _read_failing = True
-        return False
+        return True
     _read_failing = False
     return paused
 

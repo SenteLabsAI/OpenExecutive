@@ -11,13 +11,16 @@ from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import executive as executive_route
 from openexecutive.memory import episodic
+from openexecutive.people import store as people_store
 
 
 @pytest.fixture()
 def audit_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     db = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", db)
+    monkeypatch.setattr(people_store, "DB_PATH", db)
     episodic.initialize_db(db)
+    people_store.initialize_db(db)
     events: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
         "openexecutive.audit.log_event",
@@ -42,6 +45,8 @@ def test_status_defaults_to_running(client: TestClient) -> None:
         "paused_by": None,
         "reason": None,
         "held_actions": 0,
+        # No principal on the roster yet: resume stays open.
+        "can_resume": True,
     }
 
 
@@ -95,3 +100,46 @@ def test_pause_rejects_overlong_reason(client: TestClient) -> None:
     resp = client.post("/executive/pause", json={"reason": "x" * 201})
     assert resp.status_code == 422
     assert client.get("/executive/status").json()["paused"] is False
+
+
+def _roster_principal_and_teammate() -> None:
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="ceo@example.com"
+    )
+    people_store.upsert_person(full_name="Tia Teammate", email="tia@example.com")
+
+
+def test_only_the_principal_can_resume(
+    client: TestClient, audit_events: list[tuple[str, dict[str, Any]]]
+) -> None:
+    _roster_principal_and_teammate()
+    teammate = {"x-caller-email": "tia@example.com"}
+    # Anyone signed in may pull the brake...
+    resp = client.post("/executive/pause", headers=teammate)
+    assert resp.status_code == 200
+    assert resp.json()["paused_by"] == "tia@example.com"
+    assert resp.json()["can_resume"] is False
+
+    # ...but only the principal releases held work.
+    denied = client.post("/executive/resume", headers=teammate)
+    assert denied.status_code == 403
+    stranger = client.post(
+        "/executive/resume", headers={"x-caller-email": "nobody@example.com"}
+    )
+    assert stranger.status_code == 403
+    assert client.get("/executive/status").json()["paused"] is True
+
+    ok = client.post("/executive/resume", headers={"x-caller-email": "ceo@example.com"})
+    assert ok.status_code == 200
+    assert ok.json()["paused"] is False
+    assert ok.json()["can_resume"] is True
+    assert [e[0] for e in audit_events] == ["executive_paused", "executive_resumed"]
+
+
+def test_headerless_api_caller_resolves_to_the_principal(client: TestClient) -> None:
+    """CLI / direct curl (no x-caller-email) acts as the principal, as in chat."""
+    _roster_principal_and_teammate()
+    client.post("/executive/pause")
+    resp = client.post("/executive/resume")
+    assert resp.status_code == 200
+    assert resp.json()["paused"] is False

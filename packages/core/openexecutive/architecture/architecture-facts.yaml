@@ -1939,7 +1939,11 @@ scheduler:
     /executive/resume (api/routes/executive.py; shared-secret only, not
     SCHEDULED_ADMIN_TOKEN, so the UI proxy can call it; paused_by from
     x-caller-email, else "api"; audit executive_paused /
-    executive_resumed). `is_paused()` is the FIRST check of each
+    executive_resumed). Pause is open to any signed-in caller (it only
+    holds work); resume is principal-only via
+    people.store.is_principal_or_self (403 otherwise; open while no
+    principal is rostered so a pause can always be lifted; status
+    carries can_resume for the viewer). `is_paused()` is the FIRST check of each
     run_scheduler tick — before the alert/watchlist sweep and the
     company-profile / rotation gates — so a paused tick does nothing;
     due rows stay pending and fire on the first tick after resume.
@@ -1947,8 +1951,10 @@ scheduler:
     integrations.email_poller (skips the poll; mail stays unread) and
     workflows.resumer (no startup sweep, timeouts or resumes;
     apply_resolution records the reply but skips _kick_resume).
-    is_paused() is read-only (never creates the DB file or table) and
-    fails open like the rotation pause. Pause re-apply is idempotent
+    is_paused() is read-only (never creates the DB file or table). A
+    missing file/table reads as running; a read ERROR reads as paused
+    (fails closed — a brake must not silently release while the UI
+    shows paused; the UI shows "status unknown" on a failed read). Pause re-apply is idempotent
     (keeps the original paused_at/by/reason). Persists across restarts
     (boot logs a WARNING) and across client-slot switches (listed in
     clients.slots._GLOBAL_TABLES; _ensure_schemas creates the table
