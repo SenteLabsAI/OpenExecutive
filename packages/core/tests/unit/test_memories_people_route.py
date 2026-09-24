@@ -618,3 +618,19 @@ def test_conclusions_read_failure_is_an_error_status(
 def test_conclusions_paging_is_bounded(query: str, roster: dict[str, int]) -> None:
     resp = _client().get(f"/memories/people/{roster['member']}/conclusions?{query}")
     assert resp.status_code == 422
+
+
+def test_a_malformed_conclusions_page_is_an_error_status(
+    roster: dict[str, int], audit_rows: list[dict[str, Any]]
+) -> None:
+    client = _Client([_Peer(str(roster["member"]), conclusions=[_Conclusion("a", _T1)])])
+
+    async def _bad_list(*_: Any, **__: Any) -> Any:
+        return _Page([_Conclusion("a", _T1)], "not-a-number")  # type: ignore[arg-type]
+
+    client.aio._peers[0].conclusions.aio.list = _bad_list  # type: ignore[method-assign]
+    with _with_client(client):
+        resp = _client().get(f"/memories/people/{roster['member']}/conclusions")
+    assert resp.status_code == 200 and resp.json()["status"] == "error"
+    audit = [r["details"] for r in audit_rows if r["event_type"] == "peer_memory"]
+    assert audit[-1]["outcome"] == "error" and audit[-1]["error_type"] == "ValueError"

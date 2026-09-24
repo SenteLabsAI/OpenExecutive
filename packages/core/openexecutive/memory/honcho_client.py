@@ -2372,6 +2372,8 @@ async def _matched_peers(client: Any, roster: dict[int, Any]) -> list[tuple[Any,
         person_id = int(peer_id)
         if str(person_id) == peer_id and person_id in roster and person_id not in found:
             found[person_id] = (roster[person_id], peer)
+            if len(found) == len(roster):
+                break
     return list(found.values())
 
 
@@ -2512,12 +2514,15 @@ async def person_conclusions(person_id: int, *, page: int, size: int) -> PersonC
             peer.conclusions.aio.list(page=page, size=size, reverse=False),
             timeout=base_prefetch_timeout_s(settings.honcho_prefetch_timeout_s),
         )
+        # Inside the try: a malformed page is an error status, not a bare 500.
+        items = sorted(result.items, key=lambda c: _as_instant(c.created_at), reverse=True)
+        conclusions = [_to_conclusion(c) for c in items]
+        raw_total = getattr(result, "total", None)
+        total = None if raw_total is None else int(raw_total)
     except Exception as exc:
         logger.warning("Honcho conclusions read failed: %s", type(exc).__name__)
         return _failed(type(exc).__name__)
 
-    items = sorted(result.items, key=lambda c: _as_instant(c.created_at), reverse=True)
-    total = getattr(result, "total", None)
     has_more = page * size < total if total is not None else len(items) == size
     _emit_peer_memory(
         op="conclusions",
@@ -2529,9 +2534,9 @@ async def person_conclusions(person_id: int, *, page: int, size: int) -> PersonC
     return PersonConclusionsPage(
         status="ok",
         person_id=person_id,
-        items=[_to_conclusion(c) for c in items],
+        items=conclusions,
         page=page,
         size=size,
-        total=None if total is None else int(total),
+        total=total,
         has_more=has_more,
     )
