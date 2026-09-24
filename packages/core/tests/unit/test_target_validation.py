@@ -134,7 +134,7 @@ async def test_empty_body_is_not_feed_no_crash(
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_readability_check_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only the head of a huge body is reduced for the readability check."""
+    """Only the head of a body over the cap is reduced for the readability check."""
     calls: list[int] = []
 
     def fake_html_to_text(body: bytes) -> str:
@@ -142,7 +142,7 @@ async def test_readability_check_is_bounded(monkeypatch: pytest.MonkeyPatch) -> 
         return "x" * 500
 
     monkeypatch.setattr(tv, "html_to_text", fake_html_to_text)
-    _install(monkeypatch, fetch=_fetch_returning(b"<p>" * 1_000_000))
+    _install(monkeypatch, fetch=_fetch_returning(b"<p>" * (tv._READABILITY_SCAN_BYTES // 3 + 1)))
     st, _target, _config = await tv.validate_and_normalize_target("rss", "https://big.example/x", {})
     assert st == "page_watch"
     assert calls == [tv._READABILITY_SCAN_BYTES]
