@@ -235,7 +235,10 @@ cd evals && python run_evals.py --scenarios scenarios/ --output results/
   GitHub or the Claude footer appends text after it (#210). It applies to the
   next release only. The same block with a corrected message un-marks a
   merged PR (e.g. drops a wrong `!`). Either takes effect on the next push to
-  `main`.
+  `main`. Write the begin marker only once in a PR description, and never in
+  prose: release-please takes the text after its first occurrence, so a
+  backticked mention earlier in the body becomes the "message", fails to
+  parse, and drops that commit from the release (#210, #211).
 - PR description is three sections and nothing else: **Problem**, **Approach**,
   **Checklist** (see `.github/PULL_REQUEST_TEMPLATE.md`). Rationale, review
   findings and alternatives go in the commit message; open questions go in the
