@@ -1542,9 +1542,9 @@ attunement:
     messages already stored under it (orphans from a delete/reset race or from
     before this check), so they are never loaded as the claimant's history.
     DELETE also evicts the in-memory Session so the id cannot resume its history.
-    Known gaps, not covered: GET /audit/sessions/{id} is not owner-scoped, and
-    GET /debug/last-turn returns the last turn's session id and events to any
-    caller.
+    Known gap, not covered: GET /audit/sessions/{id} is not owner-scoped.
+    (GET /debug/last-turn, which leaked the last turn to any caller, was
+    removed in #200.)
   feedback: |
     `chat_messages.feedback` up|down (+ `feedback_note`) via
     POST /sessions/{id}/messages/{message_id}/feedback — session's own caller
