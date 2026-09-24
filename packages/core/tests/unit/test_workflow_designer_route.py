@@ -374,3 +374,12 @@ async def test_concurrent_message_gets_409_before_the_length_cap(
     assert exc.value.status_code == 409
     release.set()
     await first
+
+
+def test_session_keeps_discovered_tools_between_turns(client: TestClient, seeded: _Queue) -> None:
+    seeded += [wd.DesignerQuestion(question="Which sheet?"), _draft()]
+    sid = _start(client)["session_id"]
+    first = seeded.calls[0]["discovered_tools"]
+    first["sheets__append_rows"] = "Append rows."  # what a search would record
+    client.post("/workflows/designer/message", json={"session_id": sid, "message": "Bill tracker"})
+    assert seeded.calls[1]["discovered_tools"] is first

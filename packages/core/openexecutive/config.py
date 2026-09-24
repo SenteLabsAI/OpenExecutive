@@ -513,6 +513,13 @@ class Settings(BaseSettings):
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"
     )
+    # Directories a workflow action step's `oe__read_file` tool may read —
+    # where tools that download files (e.g. Gmail attachments via
+    # workspace-mcp) save them. Comma-separated. Empty means workspace-mcp's
+    # own default: $WORKSPACE_ATTACHMENT_DIR, else ~/.workspace-mcp/attachments.
+    workflow_file_dirs: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="WORKFLOW_FILE_DIRS"
+    )
     # Left unset, this is inferred from the presence of mcp_servers_config_path
     # (see _resolve_mcp). Set explicitly, the explicit value always wins.
     mcp_enabled: bool = Field(False, alias="MCP_ENABLED")
@@ -583,7 +590,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "web_search_allowed_domains", "web_search_blocked_domains",
-        "research_specialists", mode="before",
+        "research_specialists", "workflow_file_dirs", mode="before",
     )
     @classmethod
     def _parse_domain_list(cls, v: Any) -> list[str]:

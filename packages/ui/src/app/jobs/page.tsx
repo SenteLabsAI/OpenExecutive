@@ -11,11 +11,13 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  DynamicWorkflowDef,
   WorkflowMeta,
   WorkflowRunSummary,
   WorkflowSection,
   deleteCustomWorkflow,
   deleteWorkflowRun,
+  listCustomWorkflows,
   listWorkflowRuns,
   listWorkflows,
 } from "@/lib/api";
@@ -137,6 +139,9 @@ function JobsPageInner() {
   const section: SectionFilter = isSectionFilter(sectionParam) ? sectionParam : "all";
 
   const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
+  // Custom workflows that are switched off (e.g. saved from chat with tool
+  // steps): not runnable, so absent from `workflows` until someone turns them on.
+  const [offWorkflows, setOffWorkflows] = useState<DynamicWorkflowDef[]>([]);
   const [runs, setRuns] = useState<WorkflowRunSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -148,9 +153,15 @@ function JobsPageInner() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [wfs, rs] = await Promise.all([listWorkflows(), listWorkflowRuns()]);
+      const [wfs, rs, custom] = await Promise.all([
+        listWorkflows(),
+        listWorkflowRuns(),
+        // Optional strip — never fail the whole page over it.
+        listCustomWorkflows().catch(() => [] as DynamicWorkflowDef[]),
+      ]);
       setWorkflows(wfs);
       setRuns(rs);
+      setOffWorkflows(custom.filter((d) => !d.is_active));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -246,6 +257,10 @@ function JobsPageInner() {
             <div className="text-sm text-red-400 mb-4">Error: {error}</div>
           )}
 
+          {!loading && tab === "catalog" && offWorkflows.length > 0 && (
+            <OffWorkflowsStrip items={offWorkflows} onDelete={handleDeleteCustom} />
+          )}
+
           {!loading && tab === "catalog" && (
             <CatalogView
               workflows={workflows}
@@ -323,6 +338,50 @@ function SearchInput({
       placeholder={placeholder}
       className="w-full sm:w-80 px-3 py-1.5 text-sm rounded-md bg-surface/60 border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-indigo-500/40 focus:border-line-strong"
     />
+  );
+}
+
+/** Compact list of switched-off custom workflows, each linking to its review card. */
+function OffWorkflowsStrip({
+  items,
+  onDelete,
+}: {
+  items: DynamicWorkflowDef[];
+  onDelete: (name: string) => void;
+}) {
+  return (
+    <div className="mb-4 rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-wide text-indigo-300 mb-1">
+        Waiting for your approval
+      </p>
+      <ul className="divide-y divide-line/60">
+        {items.map((d) => {
+          const tools = new Set(d.steps.flatMap((s) => (s.kind === "action" ? s.tools : [])));
+          return (
+            <li key={d.name} className="flex items-center gap-3 py-1.5 text-sm min-w-0">
+              <span className="truncate text-fg min-w-0 flex-1">{d.title}</span>
+              <span className="shrink-0 text-[11px] text-fg-subtle">
+                off
+                {tools.size > 0 && ` · ${tools.size} ${tools.size === 1 ? "tool" : "tools"}`}
+              </span>
+              <Link
+                href={`/jobs/${encodeURIComponent(d.name)}`}
+                className="shrink-0 text-[11px] text-indigo-400 hover:text-indigo-300"
+              >
+                Review
+              </Link>
+              <button
+                type="button"
+                onClick={() => onDelete(d.name)}
+                className="shrink-0 text-[11px] text-fg-muted hover:text-red-400 transition"
+              >
+                Delete
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

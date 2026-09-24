@@ -76,7 +76,7 @@ async def deliver_gate_question(
     if (
         session is not None
         and origin_channel
-        and _session_caller_id(session) == event.person_id
+        and session_caller_id(session) == event.person_id
     ):
         return (
             event.model_copy(
@@ -193,7 +193,7 @@ def _dm_session_id(channel: str, channel_ref: str) -> str:
     return pattern.format(ref=channel_ref)
 
 
-def _session_caller_id(session: object) -> int | None:
+def session_caller_id(session: object) -> int | None:
     """The person id behind the current chat session, if it is known."""
     for attr in ("caller_person_id", "person_id"):
         value = getattr(session, attr, None)
@@ -212,7 +212,7 @@ async def _launcher_name(session: object) -> str:
     is the difference between a sign-off request and an anonymous one that
     merely looks official.
     """
-    person_id = _session_caller_id(session)
+    person_id = session_caller_id(session)
     if person_id is None:
         return ""
     try:

@@ -131,3 +131,165 @@ def test_save_rejects_builtin_collision() -> None:
     out = _draft(definition)
     # Even drafting fails validation (built-in collision).
     assert "error" in out and "built-in" in out["error"]
+
+
+def _action_definition() -> dict[str, Any]:
+    d = _valid_definition()
+    d["steps"] = [
+        {"kind": "action", "id": "file_bills", "title": "File bills",
+         "goal": "Add {topic} bills to the sheet.", "tools": ["oe__read_file"]},
+        {"kind": "synthesis", "id": "assemble", "title": "Assemble"},
+    ]
+    return d
+
+
+@pytest.fixture
+def scheduled(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record cadence scheduling instead of touching the scheduler DB."""
+    from openexecutive.workflows import dynamic_cadence, dynamic_models
+
+    calls: list[str] = []
+    monkeypatch.setattr(dynamic_models, "_person_exists", lambda _pid: True)
+    monkeypatch.setattr(dynamic_cadence, "cancel_cadence_rows", lambda _name: 0)
+    monkeypatch.setattr(
+        dynamic_cadence,
+        "schedule_dynamic_workflow_cadence",
+        lambda defn: calls.append(defn.name) or 1,
+    )
+    return calls
+
+
+def _with_cadence(d: dict[str, Any]) -> dict[str, Any]:
+    return {**d, "input_fields": [], "cadence": "daily@09:00", "cadence_person_id": 1,
+            "steps": [{**s, "goal": s["goal"].replace("{topic}", "the")} if "goal" in s else s
+                      for s in d["steps"]]}
+
+
+def test_tool_workflow_drafts_with_requires_review() -> None:
+    out = _draft(_action_definition())
+    assert out["status"] == "drafted"
+    assert out["requires_review"] is True
+    assert "switched OFF" in out["note"]
+    assert "action · tools: oe__read_file" in out["summary"]
+    # Analysis-only drafts carry no review flag.
+    assert "requires_review" not in _draft(_valid_definition())
+
+
+def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
+    """Chat 'confirmation' is a token the model holds itself, so a tool
+    workflow is saved inactive — a person turns it on from its review card."""
+    d = _with_cadence(_action_definition())
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved_pending_review"
+    assert out["deep_link"].endswith("/jobs/weekly_watch")
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is False
+    # Inactive, so its cadence is not scheduled.
+    assert scheduled == []
+
+
+def test_chat_cannot_replace_an_approved_tool_workflow(scheduled: list[str]) -> None:
+    """Replacing a switched-on tool workflow from chat (e.g. steered by an
+    inbound email) would switch it off and stage new tools under a familiar
+    name — refused at draft and save; edits happen on the Jobs page."""
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    dynamic_store.upsert_definition(DynamicWorkflowDef.model_validate(_action_definition()))
+    d = _action_definition()
+    d["title"] = "Weekly Watch v2"
+    drafted = _draft(d)
+    assert "error" in drafted and "/jobs/new?edit=weekly_watch" in drafted["error"]
+    saved = _save(d, wat._canonical_token(d), overwrite=True)
+    assert "error" in saved and "approved" in saved["error"]
+    # An analysis-only replacement is refused too — it would still drop the tools the user approved.
+    assert "error" in _save(_valid_definition(), wat._canonical_token(_valid_definition()), overwrite=True)
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True and stored.title == "Weekly Watch"
+
+
+def test_chat_can_revise_a_pending_tool_workflow(scheduled: list[str]) -> None:
+    """Before approval (switched off) chat may keep revising it; it stays off."""
+    d = _action_definition()
+    assert _save(d, wat._canonical_token(d))["status"] == "saved_pending_review"
+    d2 = {**_action_definition(), "title": "Weekly Watch v2"}
+    out = _save(d2, wat._canonical_token(d2), overwrite=True)
+    assert out["status"] == "saved_pending_review"
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is False and stored.title == "Weekly Watch v2"
+
+
+def test_analysis_workflow_still_saves_active_and_schedules(scheduled: list[str]) -> None:
+    d = _with_cadence(_valid_definition())
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved"
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True
+    assert scheduled == ["weekly_watch"]
+
+
+def test_analysis_workflow_drafted_off_reports_pending(scheduled: list[str]) -> None:
+    """A save that ends up switched off never reports plain 'saved' (runnable)."""
+    d = {**_valid_definition(), "is_active": False}
+    out = _save(d, wat._canonical_token(d))
+    assert out["status"] == "saved_pending_review"
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is False
+
+
+def test_save_is_conditional_on_the_row_it_checked(
+    scheduled: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The approved-workflow refusal is decided from a read; an activation
+    from another process landing after it makes the save a no-op instead of
+    replacing the revision the user just approved."""
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    pending = DynamicWorkflowDef.model_validate({**_action_definition(), "is_active": False})
+    dynamic_store.upsert_definition(pending)
+    read = dynamic_store.get_definition("weekly_watch")
+    real_get = dynamic_store.get_definition
+
+    def _get_then_user_activates(name: str, db_path: Any = None) -> Any:
+        row = real_get(name, db_path=db_path)
+        if row is not None and not row.is_active:
+            assert dynamic_store.activate_if_unchanged(row) is True
+        return row  # the save decides from this (now stale) read
+
+    monkeypatch.setattr(dynamic_store, "get_definition", _get_then_user_activates)
+    d = {**_action_definition(), "title": "Swapped"}
+    out = _save(d, wat._canonical_token(d), overwrite=True)
+    assert "error" in out and "changed while saving" in out["error"]
+    monkeypatch.setattr(dynamic_store, "get_definition", real_get)
+    stored = dynamic_store.get_definition("weekly_watch")
+    assert stored is not None and stored.is_active is True and stored.title == "Weekly Watch"
+    assert read is not None
+
+
+def test_save_if_unchanged_insert_only_when_absent() -> None:
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    defn = DynamicWorkflowDef.model_validate(_valid_definition())
+    assert dynamic_store.save_if_unchanged(defn, None) is not None
+    # A second "create" that expected no row finds one.
+    assert dynamic_store.save_if_unchanged(defn, None) is None
+
+
+def test_updated_at_comes_from_the_column(isolated_db: Path) -> None:
+    """A body edited out of band can't make the row unmatchable for the
+    compare-and-set writes: get_definition reports the column's updated_at."""
+    import sqlite3
+
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+    dynamic_store.upsert_definition(
+        DynamicWorkflowDef.model_validate({**_action_definition(), "is_active": False})
+    )
+    with sqlite3.connect(isolated_db) as conn:
+        body = conn.execute("SELECT definition FROM dynamic_workflows").fetchone()[0]
+        conn.execute(
+            "UPDATE dynamic_workflows SET definition = ?",
+            (body.replace('"updated_at":"', '"updated_at":"stale-'),),
+        )
+    row = dynamic_store.get_definition("weekly_watch")
+    assert row is not None and not row.updated_at.startswith("stale-")
+    assert dynamic_store.activate_if_unchanged(row) is True

@@ -65,6 +65,9 @@ class DesignerSession:
     phase: str = "question"
     last_hint: str = ""
     last_options: list[str] = field(default_factory=list)
+    # Tools the designer's searches found, replayed into later turns (see
+    # workflows/designer.py) so a forced draft can still use exact names.
+    discovered_tools: dict[str, str] = field(default_factory=dict)
     last_touched: float = field(default_factory=time.monotonic)
     # One model turn at a time. Two tabs on the same ?session=, or a retry
     # while a slow turn is still running, would otherwise interleave appends
@@ -196,6 +199,7 @@ async def _advance(
             session.transcript,
             context_block=session.context_block,
             previous_draft=session.draft.definition if session.draft else None,
+            discovered_tools=session.discovered_tools,
             force_draft=force_draft,
             questions_asked=session.questions_asked,
         )

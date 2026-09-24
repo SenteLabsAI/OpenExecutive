@@ -33,6 +33,20 @@ logger = logging.getLogger(__name__)
 _CONFIDENCE_THRESHOLD = 0.85
 
 
+class HeldCall(BaseModel):
+    """A tool call an action step held because it writes to a new target.
+
+    Stored in the resume payload so that, if the owner approves, exactly this
+    call — the tool and arguments the model chose — runs, rather than a fresh
+    model turn that might choose differently.
+    """
+
+    tool: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    # (argument key, value) pairs that were not yet approved.
+    targets: list[tuple[str, str]] = Field(default_factory=list)
+
+
 class WorkflowResumeState(BaseModel):
     """Everything needed to restart a paused workflow at the step after its gate.
 
@@ -69,6 +83,19 @@ class WorkflowResumeState(BaseModel):
     # step_id -> (step title, output text) for every step completed before the
     # gate. Round-trips through JSON as a 2-array and back to a tuple.
     outputs: dict[str, tuple[str, str]] = Field(default_factory=dict)
+    # What paused the run. "gate": an approval-gate step at gate_step_index.
+    # "held_writes": the action step at gate_step_index held writes to new
+    # targets (``held``); the step itself has run, and the owner's answer
+    # decides whether those exact calls run before the next step. Payloads
+    # written before this field existed parse as "gate".
+    kind: Literal["gate", "held_writes"] = "gate"
+    held: list[HeldCall] = Field(default_factory=list)
+    # Scheduled runs DM their artifact on completion; a run that paused
+    # completes in the resumer instead, which delivers it to this person.
+    deliver_to_person_id: int | None = None
+    # Values the run itself created before pausing (ids a write returned), so
+    # its target check still trusts them after resuming.
+    run_created: list[str] = Field(default_factory=list)
 
 
 class WaitForHumanEvent(BaseModel):

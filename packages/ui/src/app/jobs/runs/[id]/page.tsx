@@ -9,6 +9,7 @@ import {
   GateState,
   TERMINAL_RUN_STATUSES,
   WorkflowRunDetail,
+  decideWorkflowRun,
   getWorkflowRun,
 } from "@/lib/api";
 import { runStatusLabel, runStatusTextColor } from "@/lib/runStatus";
@@ -182,7 +183,9 @@ export default function RunDetailPage() {
           )}
 
           {run.status === "awaiting_human" && (
-            <AwaitingPanel run={run} />
+            // Keyed on the question, so a later sign-off in the same run starts
+            // with fresh buttons rather than the previous answer.
+            <AwaitingPanel key={`${run.awaiting_until ?? ""}:${run.state_json ?? ""}`} run={run} />
           )}
 
           {run.status === "resolved" && (
@@ -272,6 +275,24 @@ const DELIVERY_NOTES: Record<string, string> = {
 
 function AwaitingPanel({ run }: { run: WorkflowRunDetail }) {
   const gate = parseGateState(run.state_json);
+  const [answer, setAnswer] = useState<"approve" | "reject" | null>(null);
+  const [sending, setSending] = useState(false);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+  // Yes/no requests can be answered here; written replies still go via chat.
+  const canAnswer = (gate?.expected_reply_shape ?? "approve_reject") === "approve_reject";
+
+  async function decide(decision: "approve" | "reject") {
+    setSending(true);
+    setAnswerError(null);
+    try {
+      await decideWorkflowRun(run.run_id, decision);
+      setAnswer(decision);
+    } catch (e) {
+      setAnswerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  }
   const delivery = gate?.delivery;
   const undelivered = delivery !== undefined && delivery !== "sent" && delivery !== "self";
   const deadline = run.awaiting_until
@@ -286,8 +307,37 @@ function AwaitingPanel({ run }: { run: WorkflowRunDetail }) {
         {run.awaiting_person_id ? ` from person ${run.awaiting_person_id}` : ""}
       </div>
       {gate?.question && (
-        <div className="text-fg text-sm">&ldquo;{gate.question}&rdquo;</div>
+        <div className="text-fg text-sm whitespace-pre-wrap break-words">
+          &ldquo;{gate.question}&rdquo;
+        </div>
       )}
+      {canAnswer && !answer && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => void decide("approve")}
+            disabled={sending}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition"
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            onClick={() => void decide("reject")}
+            disabled={sending}
+            className="rounded-md border border-line px-3 py-1.5 text-xs text-fg hover:bg-surface-overlay disabled:opacity-50 transition"
+          >
+            Decline
+          </button>
+          <span className="text-xs text-fg-muted">or reply in chat</span>
+        </div>
+      )}
+      {answer && (
+        <div className="text-xs text-fg">
+          {answer === "approve" ? "Approved" : "Declined"} — the run picks up again in a moment.
+        </div>
+      )}
+      {answerError && <div className="text-xs text-red-300">{answerError}</div>}
       <div className="text-xs space-y-1">
         {deadline && <div>Deadline {deadline}.</div>}
         {delivery && (

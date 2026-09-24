@@ -25,13 +25,17 @@ from openexecutive.workflows import (
     list_workflows,
 )
 from openexecutive.workflows.dynamic_models import (
+    TOOL_NAME_RE,
+    ActionStepSpec,
     DynamicWorkflowDef,
-    validate_definition,
 )
 from openexecutive.workflows.dynamic_store import (
+    activate_if_unchanged,
     delete_definition,
     get_definition,
+    get_owner,
     list_definitions,
+    save_if_unchanged,
     set_active,
     upsert_definition,
 )
@@ -45,6 +49,9 @@ from openexecutive.workflows.persistence import (
     initialize_runs_db,
     list_runs,
 )
+from openexecutive.workflows.tool_catalog import resolve as resolve_tools_catalog
+from openexecutive.workflows.tool_catalog import search as search_tools_catalog
+from openexecutive.workflows.tool_catalog import validate_definition_and_tools
 from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
 router = APIRouter()
@@ -88,32 +95,146 @@ async def delete_workflow_run(run_id: str) -> dict[str, str]:
     return {"status": "deleted", "run_id": run_id}
 
 
+_WEB_DECISIONS = {"approve", "reject"}
+
+
+@router.post("/workflows/runs/{run_id}/decision")
+async def decide_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Answer a run waiting for a yes/no sign-off from the web app.
+
+    The same resolution a chat reply produces, so the run resumes exactly as
+    it would have. Only the person the run is waiting on — or the principal —
+    may answer; free-text / numeric / document requests still need a reply in
+    chat, since there is nothing here to parse.
+    """
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.people.store import is_principal_or_self
+    from openexecutive.workflows.resumer import apply_resolution
+    from openexecutive.workflows.wait_for_human import WaitForHumanResolution
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        body = {}
+    decision = body.get("decision") if isinstance(body, dict) else None
+    if decision not in _WEB_DECISIONS:
+        raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'")
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if run.get("status") != "awaiting_human":
+        raise HTTPException(status_code=409, detail="This run isn't waiting for an answer.")
+    try:
+        gate = json.loads(run.get("state_json") or "{}")
+    except json.JSONDecodeError:
+        gate = {}
+    if not isinstance(gate, dict) or gate.get("expected_reply_shape", "approve_reject") != "approve_reject":
+        raise HTTPException(
+            status_code=409, detail="This request needs a written reply — answer it in chat."
+        )
+    awaiting = run.get("awaiting_person_id")
+    caller = _resolve_caller_person_id(request)
+    if not is_principal_or_self(caller, awaiting):
+        raise HTTPException(
+            status_code=403, detail="Only the person this is waiting on, or the principal, can answer."
+        )
+    assert caller is not None  # is_principal_or_self refuses an unresolved caller
+    resolution = WaitForHumanResolution(
+        run_id=run_id,
+        reply_text=f"[{decision} from the web app]",
+        source_channel="web",
+        parsed_decision={"decision": decision, "note": "answered in the web app"},
+        person_id=caller,
+    )
+    if not await apply_resolution(run_id, resolution):
+        raise HTTPException(status_code=409, detail="This run was answered already.")
+    return {"status": "resolved", "run_id": run_id, "decision": decision}
+
+
 # -----------------------------------------------------------------------------
 # Dynamic (user-created) workflow CRUD. Declared BEFORE "/workflows/{name}" so
 # the literal "custom" segment isn't captured by the {name} path parameter.
 # -----------------------------------------------------------------------------
 
 
+_TOOL_SEARCH_MAX_QUERY = 200
+
+
+@router.get("/workflows/tools/search")
+async def search_workflow_tools(q: str = "") -> dict[str, Any]:
+    """Tools an action step can use that match ``q`` (built-ins + MCP gateway).
+
+    Backs the advanced editor's tool picker. Literal path, declared before
+    ``/workflows/{name}``.
+    """
+    query = q.strip()[:_TOOL_SEARCH_MAX_QUERY]
+    if not query:
+        return {"tools": []}
+    return {"tools": [t.as_dict() for t in await search_tools_catalog(query)]}
+
+
+_TOOL_DESCRIBE_MAX_NAMES = 32
+
+
+@router.get("/workflows/tools/describe")
+async def describe_workflow_tools(names: str = "") -> dict[str, Any]:
+    """Exact-name lookup for a comma-separated list of tool names.
+
+    Lets the review card and the advanced editor label each approved tool
+    (description, reads-only) — the definition itself only stores names.
+    Unknown names are simply absent from the result.
+    """
+    # Only well-formed, distinct names: each non-built-in one costs a gateway
+    # search, so junk must not fan out into the shared MCP session.
+    wanted = list(
+        dict.fromkeys(n.strip() for n in names.split(",") if TOOL_NAME_RE.match(n.strip()))
+    )[:_TOOL_DESCRIBE_MAX_NAMES]
+    if not wanted:
+        return {"tools": []}
+    found = await resolve_tools_catalog(wanted)
+    return {"tools": [found[n].as_dict() for n in wanted if n in found]}
+
+
+def _with_owner(defn: DynamicWorkflowDef) -> dict[str, Any]:
+    """A definition as the UI sees it: its fields plus who created it.
+
+    ``owner_person_id`` is server-managed (a column, not a definition field),
+    so a client echoing it back in a body has no effect.
+    """
+    return {**defn.model_dump(), "owner_person_id": get_owner(defn.name)}
+
+
 @router.get("/workflows/custom")
 async def list_custom_workflows() -> dict[str, Any]:
     """All dynamic definitions (active and inactive) for the builder UI."""
-    return {"definitions": [d.model_dump() for d in list_definitions(active_only=False)]}
+    return {"definitions": [_with_owner(d) for d in list_definitions(active_only=False)]}
 
 
 @router.post("/workflows/custom", status_code=201)
 async def create_custom_workflow(request: Request) -> dict[str, Any]:
-    """Create a new dynamic workflow definition from a builder-UI submission."""
+    """Create a new dynamic workflow definition from a builder-UI submission.
+
+    The signed-in caller becomes its owner — the person asked to approve its
+    first write to a new target.
+    """
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
     defn = await _parse_definition(request)
+    exists = f"A custom workflow named {defn.name!r} already exists"
     if get_definition(defn.name) is not None:
-        raise HTTPException(
-            status_code=409, detail=f"A custom workflow named {defn.name!r} already exists"
-        )
-    errors = validate_definition(defn)
+        raise HTTPException(status_code=409, detail=exists)
+    errors = await validate_definition_and_tools(defn)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
-    stored = upsert_definition(defn)
+    # Insert-only: a create racing another save of the same name is a 409,
+    # never a silent overwrite of someone else's workflow (or its owner).
+    stored = save_if_unchanged(
+        defn, None, owner_person_id=_resolve_caller_person_id(request)
+    )
+    if stored is None:
+        raise HTTPException(status_code=409, detail=exists)
     _sync_cadence(stored)
-    return stored.model_dump()
+    return _with_owner(stored)
 
 
 @router.get("/workflows/custom/{name}")
@@ -121,7 +242,7 @@ async def get_custom_workflow(name: str) -> dict[str, Any]:
     defn = get_definition(name)
     if defn is None:
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
-    return defn.model_dump()
+    return _with_owner(defn)
 
 
 @router.put("/workflows/custom/{name}")
@@ -133,7 +254,7 @@ async def update_custom_workflow(name: str, request: Request) -> dict[str, Any]:
         raise HTTPException(
             status_code=422, detail="definition name does not match the path name"
         )
-    errors = validate_definition(defn)
+    errors = await validate_definition_and_tools(defn)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     stored = upsert_definition(defn)
@@ -151,14 +272,77 @@ async def delete_custom_workflow(name: str) -> dict[str, str]:
     return {"status": "deleted", "name": name}
 
 
+@router.get("/workflows/custom/{name}/targets")
+async def list_approved_targets(name: str) -> dict[str, Any]:
+    """Where this workflow's tool steps may write without asking again."""
+    from openexecutive.workflows.approved_targets import list_targets
+
+    if get_definition(name) is None:
+        raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+    return {"targets": list_targets(name)}
+
+
+@router.delete("/workflows/custom/{name}/targets")
+async def forget_approved_target(name: str, value: str) -> dict[str, str]:
+    """Forget one approved target; the next write there asks again."""
+    from openexecutive.workflows.approved_targets import forget
+
+    if not forget(name, value):
+        raise HTTPException(status_code=404, detail="That target isn't approved for this workflow")
+    return {"status": "forgotten", "name": name}
+
+
+# Fields a reviewer can't see or that the server manages; the rest is what the
+# review card shows, and what an activation must match.
+_REVIEW_EXCLUDE = {"is_active", "created_at", "updated_at"}
+
+
+def _reviewed_matches(stored: DynamicWorkflowDef, reviewed: Any) -> bool:
+    """True when ``reviewed`` (the definition the user looked at) is ``stored``."""
+    try:
+        seen = DynamicWorkflowDef.model_validate(reviewed)
+    except ValidationError:
+        return False
+    return seen.model_dump(exclude=_REVIEW_EXCLUDE) == stored.model_dump(exclude=_REVIEW_EXCLUDE)
+
+
 @router.post("/workflows/custom/{name}/activate")
 async def activate_custom_workflow(name: str, request: Request) -> dict[str, Any]:
+    """Turn a custom workflow on or off.
+
+    Turning one on is the approval for a tool workflow chat saved switched off,
+    so the body must carry the ``definition`` the user reviewed when the stored
+    one has action steps: a mismatch (e.g. chat overwrote it while the card was
+    open) is a 409, so the click can only switch on what was shown.
+    """
     try:
         body = await request.json()
     except json.JSONDecodeError:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
     is_active = bool(body.get("is_active", True))
-    if not set_active(name, is_active):
+    current = get_definition(name)
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+    if is_active:
+        reviewed = body.get("definition")
+        needs_review = any(isinstance(s, ActionStepSpec) for s in current.steps)
+        changed = "This workflow changed since you opened it — reload to review the current version."
+        if (needs_review or reviewed is not None) and not _reviewed_matches(current, reviewed):
+            raise HTTPException(status_code=409, detail=changed)
+        # Its tools must still resolve — same check as create/update.
+        errors = await validate_definition_and_tools(current)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
+        # The check above may await the gateway, and chat may run in another
+        # process: switch on only if the row is still the revision validated.
+        switched = activate_if_unchanged(current)
+        if switched is None:
+            raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
+        if not switched:
+            raise HTTPException(status_code=409, detail=changed)
+    elif not set_active(name, is_active):
         raise HTTPException(status_code=404, detail=f"Custom workflow {name!r} not found")
     defn = get_definition(name)
     assert defn is not None

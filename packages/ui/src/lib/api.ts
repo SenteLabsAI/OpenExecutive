@@ -1162,6 +1162,17 @@ export type DynamicStep =
       description?: string;
       instructions?: string;
       specialist?: string;
+    }
+  | {
+      // Gets something done with tools. `tools` is the exact allowlist the
+      // user approves when they create the workflow (or turn it on).
+      kind: "action";
+      id: string;
+      title: string;
+      description?: string;
+      goal: string;
+      tools: string[];
+      max_tool_calls?: number;
     };
 
 export interface DynamicWorkflowDef {
@@ -1177,6 +1188,9 @@ export interface DynamicWorkflowDef {
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;
+  // Who created it (server-managed; echoing it back in a body has no effect).
+  // Asked to approve the workflow's first write to a new target.
+  owner_person_id?: number | null;
 }
 
 // The 8 specialists a dynamic step may consult (matches SPECIALIST_REGISTRY,
@@ -1205,6 +1219,25 @@ export async function getCustomWorkflow(name: string): Promise<DynamicWorkflowDe
   return res.json();
 }
 
+/** An error from the custom-workflow endpoints, carrying the HTTP status. */
+export class CustomWorkflowError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+/** The server's error detail; a 422's validation-error array is joined. */
+async function _customError(res: Response): Promise<CustomWorkflowError> {
+  let detail: unknown = res.statusText;
+  try {
+    detail = (await res.json()).detail;
+  } catch {
+    /* keep statusText */
+  }
+  const msg = Array.isArray(detail) ? detail.join("; ") : String(detail);
+  return new CustomWorkflowError(msg, res.status);
+}
+
 /** Returns the server's validation errors (array) when the response is 422. */
 async function _writeCustom(
   url: string,
@@ -1216,16 +1249,7 @@ async function _writeCustom(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(def),
   });
-  if (!res.ok) {
-    let detail: unknown = res.statusText;
-    try {
-      detail = (await res.json()).detail;
-    } catch {
-      /* keep statusText */
-    }
-    const msg = Array.isArray(detail) ? detail.join("; ") : String(detail);
-    throw new Error(msg);
-  }
+  if (!res.ok) throw await _customError(res);
   return res.json();
 }
 
@@ -1240,11 +1264,82 @@ export function updateCustomWorkflow(
   return _writeCustom(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}`, "PUT", def);
 }
 
+/**
+ * Turn a custom workflow on — the approval for one chat saved switched off.
+ * `reviewed` is the definition the user was shown; the server refuses (409)
+ * if the stored one has changed since, so only what was seen gets switched on.
+ */
+export async function activateCustomWorkflow(
+  reviewed: DynamicWorkflowDef
+): Promise<DynamicWorkflowDef> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(reviewed.name)}/activate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: true, definition: reviewed }),
+    }
+  );
+  if (!res.ok) throw await _customError(res);
+  return res.json();
+}
+
+/** A target a workflow's tool steps may write to without asking again. */
+export interface ApprovedTarget {
+  value: string;
+  key: string;
+  approved_at: string;
+  run_id: string;
+}
+
+export async function listApprovedTargets(name: string): Promise<ApprovedTarget[]> {
+  const res = await fetch(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}/targets`);
+  if (!res.ok) throw await _customError(res);
+  return (await res.json()).targets;
+}
+
+export async function forgetApprovedTarget(name: string, value: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/targets?value=${encodeURIComponent(value)}`,
+    { method: "DELETE" }
+  );
+  if (!res.ok) throw await _customError(res);
+}
+
 export async function deleteCustomWorkflow(name: string): Promise<void> {
   const res = await fetch(`${API_BASE}/workflows/custom/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete custom workflow");
+}
+
+// ---- Tools a workflow action step can use ----
+
+export interface WorkflowToolInfo {
+  name: string;
+  description: string;
+  // true = only reads; null = may change something (can't tell from the name)
+  read_only: boolean | null;
+  source: "mcp" | "builtin";
+}
+
+export async function searchWorkflowTools(q: string): Promise<WorkflowToolInfo[]> {
+  const res = await fetch(
+    `${API_BASE}/workflows/tools/search?q=${encodeURIComponent(q)}`
+  );
+  if (!res.ok) throw new Error("Tool search failed");
+  return (await res.json()).tools;
+}
+
+export async function describeWorkflowTools(
+  names: string[]
+): Promise<WorkflowToolInfo[]> {
+  if (names.length === 0) return [];
+  const res = await fetch(
+    `${API_BASE}/workflows/tools/describe?names=${encodeURIComponent(names.join(","))}`
+  );
+  if (!res.ok) throw new Error("Tool lookup failed");
+  return (await res.json()).tools;
 }
 
 // ---- Conversational workflow designer (/jobs/new wizard) ----
@@ -1387,6 +1482,8 @@ export interface WorkflowEvent {
     | "run_created"
     | "step_start"
     | "step_done"
+    // A running step reports activity (an action step using a tool).
+    | "progress"
     | "result"
     | "artifact"
     | "done"
@@ -1443,6 +1540,19 @@ export async function listWorkflowRuns(
   if (!res.ok) throw new Error("Failed to list workflow runs");
   const data = await res.json();
   return data.runs;
+}
+
+/** Answer a run waiting on a yes/no sign-off (the person asked, or the principal). */
+export async function decideWorkflowRun(
+  runId: string,
+  decision: "approve" | "reject"
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
+  if (!res.ok) throw await _customError(res);
 }
 
 export async function getWorkflowRun(runId: string): Promise<WorkflowRunDetail> {

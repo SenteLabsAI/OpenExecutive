@@ -16,6 +16,9 @@ Step interpretation:
                     step (see "Pause and resume" below).
 - ``synthesis``   → assemble prior outputs into the final Markdown artifact,
                     either by concatenation or via one synthesis consult.
+- ``action``      → run the ``workflow_actor`` agent with ONLY the step's
+                    approved tools (``workflows/action_step.py``); its report
+                    of what it did becomes the step's output.
 
 Pause and resume
 ----------------
@@ -35,7 +38,7 @@ from __future__ import annotations
 import hashlib
 import string
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, Field, create_model
 
@@ -51,23 +54,66 @@ from openexecutive.workflows.base import (
     WorkflowStepDef,
 )
 from openexecutive.workflows.dynamic_models import (
+    ActionStepSpec,
     ApprovalGateStepSpec,
     DynamicWorkflowDef,
     SpecialistStepSpec,
     SynthesisStepSpec,
 )
+from openexecutive.workflows.tool_catalog import unavailable_step_tools
 from openexecutive.workflows.wait_for_human import (
     CONTINUE_DECISIONS,
     DECISION_VERBS,
     NON_APPROVAL_SHAPES,
+    HeldCall,
     WaitForHumanEvent,
     WaitForHumanResolution,
     WorkflowResumeState,
 )
 
+if TYPE_CHECKING:  # imported lazily at runtime (workflows -> orchestrator cycle)
+    from openexecutive.workflows.action_step import TargetPolicy
+
+# How long the owner has to answer about new write targets. No answer means
+# the held writes are skipped and the run finishes without them.
+HELD_WRITES_TIMEOUT_HOURS = 48
+
 # Synthetic first step every dynamic workflow runs — loads the company profile
 # and surfaces a "Load context" row in the UI, mirroring the built-ins.
 _CONTEXT_STEP_ID = "context"
+
+
+def _context_start() -> WorkflowEvent:
+    return WorkflowEvent(type="step_start", step_id=_CONTEXT_STEP_ID, step_title="Load context")
+
+_StepT = TypeVar("_StepT", ApprovalGateStepSpec, ActionStepSpec)
+
+
+def _with_dropped(
+    error: WorkflowEvent, workflow_name: str, state: WorkflowResumeState, reason: str
+) -> WorkflowEvent:
+    """A resume that stops before settling its held writes: audit them as
+    dropped and say so in the error."""
+    if state.kind != "held_writes" or not state.held:
+        return error
+    from openexecutive.workflows.action_step import drop_held_calls
+
+    note = drop_held_calls(workflow_name, state.gate_step_id, state.held, reason)
+    return error.model_copy(update={"message": f"{error.message} ({note})"})
+
+
+def _load_context(verb: str) -> tuple[str, WorkflowEvent]:
+    """The company block, plus the event closing the "Load context" row.
+
+    Re-derived on resume rather than persisted: it is a pure function of the
+    profile, and a profile edited during a pause is the one later steps see.
+    """
+    profile = load_or_create_profile()
+    return _company_context_block(profile), WorkflowEvent(
+        type="step_done",
+        step_id=_CONTEXT_STEP_ID,
+        summary=f"{verb} profile for {profile.name or 'company'}.",
+    )
 
 # Cap on the approver's own text carried into the artifact — and therefore
 # into the synthesis specialist's prompt. A decision needs a sentence or two
@@ -181,18 +227,18 @@ class DynamicWorkflow(Workflow):
         if stale:
             yield _stale_error(stale)
             return
+        # Same promise for action steps: a tool that vanished (server removed,
+        # deny-listed, gateway down) fails the run BEFORE any step acts, not
+        # after earlier steps already sent or changed something.
+        missing_tools = await unavailable_step_tools(self._defn)
+        if missing_tools:
+            yield _missing_tools_error(missing_tools)
+            return
 
         # --- context ---
-        yield WorkflowEvent(
-            type="step_start", step_id=_CONTEXT_STEP_ID, step_title="Load context"
-        )
-        profile = load_or_create_profile()
-        company_block = _company_context_block(profile)
-        yield WorkflowEvent(
-            type="step_done",
-            step_id=_CONTEXT_STEP_ID,
-            summary=f"Loaded profile for {profile.name or 'company'}.",
-        )
+        yield _context_start()
+        company_block, loaded = _load_context("Loaded")
+        yield loaded
 
         async for event in self._run_steps(
             start_index=0,
@@ -200,6 +246,7 @@ class DynamicWorkflow(Workflow):
             company_block=company_block,
             outputs={},
             store=store,
+            policy=self._target_policy(),
         ):
             yield event
 
@@ -226,7 +273,14 @@ class DynamicWorkflow(Workflow):
         # it with "Unknown specialist: …" as a section is worse than failing.
         stale = _stale_specialist_steps(self._defn)
         if stale:
-            yield _stale_error(stale)
+            yield _with_dropped(_stale_error(stale), self.name, state, "the run could not resume")
+            return
+
+        if state.kind == "held_writes":
+            async for event in self._resume_held_writes(
+                values=values, state=state, resolution=resolution, store=store
+            ):
+                yield event
             return
 
         gate = self._gate_for_resume(state)
@@ -247,19 +301,9 @@ class DynamicWorkflow(Workflow):
             )
             return
 
-        # Re-derive the company block rather than persisting it: it is a pure
-        # function of the profile, and a profile edited during the pause should
-        # be the one the remaining steps see.
-        yield WorkflowEvent(
-            type="step_start", step_id=_CONTEXT_STEP_ID, step_title="Load context"
-        )
-        profile = load_or_create_profile()
-        company_block = _company_context_block(profile)
-        yield WorkflowEvent(
-            type="step_done",
-            step_id=_CONTEXT_STEP_ID,
-            summary=f"Reloaded profile for {profile.name or 'company'}.",
-        )
+        yield _context_start()
+        company_block, loaded = _load_context("Reloaded")
+        yield loaded
 
         decision = str(resolution.parsed_decision.get("decision") or "")
         if not _may_continue(gate, decision):
@@ -280,6 +324,16 @@ class DynamicWorkflow(Workflow):
                     + (f": {note}" if note else "")
                 ),
             )
+            return
+
+        # Only the steps still to run matter — the ones before the gate already
+        # acted. Checked after the gate and the decision, so a rejection is
+        # reported as a rejection, but before any remaining step acts.
+        missing_tools = await unavailable_step_tools(
+            self._defn, start_index=state.gate_step_index + 1
+        )
+        if missing_tools:
+            yield _missing_tools_error(missing_tools, resuming=True)
             return
 
         # Give the synthesis step the decision as a readable section, and
@@ -305,15 +359,161 @@ class DynamicWorkflow(Workflow):
             company_block=company_block,
             outputs=outputs,
             store=store,
+            policy=self._target_policy(state.run_created),
         ):
             yield event
+
+    async def _resume_held_writes(
+        self,
+        *,
+        values: dict[str, Any],
+        state: WorkflowResumeState,
+        resolution: WaitForHumanResolution,
+        store: ChromaDBStore,
+    ) -> AsyncIterator[WorkflowEvent]:
+        """Continue a run that paused because an action step held new-target writes.
+
+        The step itself already ran. Only an explicit "approve" runs the held
+        calls (exactly as stored); a "no", a timeout, or anything unreadable
+        skips them. Either way the run then carries on at the next step.
+        """
+        from openexecutive.workflows.action_step import run_held_calls
+
+        step = self._step_for_resume(state, ActionStepSpec)
+        if step is None:
+            yield _with_dropped(
+                WorkflowEvent(
+                    type="error",
+                    message=(
+                        "the workflow definition changed while this run was waiting "
+                        "for approval of new write targets, so it can no longer be "
+                        f"resumed safely (expected action step {state.gate_step_id!r}) "
+                        "— re-run the workflow"
+                    ),
+                ),
+                self.name, state, "the definition changed",
+            )
+            return
+
+        yield _context_start()
+        company_block, loaded = _load_context("Reloaded")
+        yield loaded
+
+        # Same order as a gate: the remaining steps' tools are checked before
+        # anything acts — including the held writes about to be approved.
+        missing_tools = await unavailable_step_tools(
+            self._defn, start_index=state.gate_step_index + 1
+        )
+        if missing_tools:
+            yield _with_dropped(
+                _missing_tools_error(missing_tools, resuming=True),
+                self.name, state, "a later step's tools are unavailable",
+            )
+            return
+
+        decision = str(resolution.parsed_decision.get("decision") or "")
+        approved = decision == "approve"
+        skip_reason = {
+            "reject": "declined",
+            "auto_proceed": "no answer in time",
+        }.get(decision, "not approved")
+        policy = self._target_policy(state.run_created)
+        section = await run_held_calls(
+            step,
+            state.held,
+            workflow_name=self.name,
+            run_id=resolution.run_id,
+            approved=approved,
+            skip_reason=skip_reason,
+            policy=policy,
+        )
+        outputs: dict[str, tuple[str, str]] = dict(state.outputs)
+        title, text = outputs.get(step.id, (step.title, ""))
+        outputs[step.id] = (title, f"{text}\n\n{section}".strip())
+        yield WorkflowEvent(
+            type="step_done", step_id=step.id, summary=_first_line(section)
+        )
+
+        async for event in self._run_steps(
+            start_index=state.gate_step_index + 1,
+            values=values,
+            company_block=company_block,
+            outputs=outputs,
+            store=store,
+            policy=policy,
+        ):
+            yield event
+
+    async def _held_writes_pause(
+        self,
+        step: ActionStepSpec,
+        index: int,
+        held: list[HeldCall],
+        outputs: dict[str, tuple[str, str]],
+        policy: TargetPolicy | None,
+    ) -> WaitForHumanEvent | None:
+        """The pause that asks the owner about ``step``'s held writes.
+
+        Asks the workflow's creator (falling back to the principal). With no
+        one to ask, the held writes are skipped, noted in the step's output,
+        and None is returned so the run carries on.
+        """
+        from openexecutive.workflows.action_step import held_question, run_held_calls
+        from openexecutive.workflows.approved_targets import approver_for
+
+        approver = approver_for(self.name)
+        if approver is None:
+            section = await run_held_calls(
+                step,
+                held,
+                workflow_name=self.name,
+                run_id="",
+                approved=False,
+                skip_reason="no one to approve it",
+                policy=policy,
+            )
+            title, text = outputs[step.id]
+            outputs[step.id] = (title, f"{text}\n\n{section}")
+            return None
+        return WaitForHumanEvent(
+            person_id=approver,
+            question=held_question(self.title, held),
+            timeout_hours=HELD_WRITES_TIMEOUT_HOURS,
+            # No answer skips the held writes (only "approve" runs them) and
+            # lets the rest of the run finish.
+            on_timeout="auto_proceed",
+            expected_reply_shape="approve_reject",
+            context_summary=f"New write targets in workflow {self.title!r}",
+            resume_state=WorkflowResumeState(
+                workflow_name=self.name,
+                gate_step_id=step.id,
+                gate_step_index=index,
+                steps_fingerprint=_steps_fingerprint(self._defn),
+                outputs=dict(outputs),
+                kind="held_writes",
+                held=list(held),
+                run_created=policy.created() if policy is not None else [],
+            ),
+        )
+
+    def _target_policy(self, created: list[str] | None = None) -> TargetPolicy:
+        from openexecutive.workflows.action_step import TargetPolicy
+
+        return TargetPolicy.for_workflow(self._defn, created=created or ())
 
     # -- step loop ---------------------------------------------------------
 
     def _gate_for_resume(
         self, state: WorkflowResumeState
     ) -> ApprovalGateStepSpec | None:
-        """The gate this payload paused at, or None if it no longer matches.
+        """The approval gate this payload paused at, or None if it no longer matches."""
+        return self._step_for_resume(state, ApprovalGateStepSpec)
+
+    def _step_for_resume(
+        self, state: WorkflowResumeState, step_type: type[_StepT]
+    ) -> _StepT | None:
+        """The step a payload paused at (a gate, or the action step that held
+        writes), or None if it no longer matches.
 
         Every field is checked against the LIVE definition because all of them
         can go stale during a pause: the payload may predate this build
@@ -328,7 +528,7 @@ class DynamicWorkflow(Workflow):
         if not 0 <= state.gate_step_index < len(self._defn.steps):
             return None
         step = self._defn.steps[state.gate_step_index]
-        if not isinstance(step, ApprovalGateStepSpec) or step.id != state.gate_step_id:
+        if not isinstance(step, step_type) or step.id != state.gate_step_id:
             return None
         # The gate being where we left it is NOT enough. Someone can keep the
         # gate identical and replace every step after it while the run is
@@ -348,6 +548,7 @@ class DynamicWorkflow(Workflow):
         company_block: str,
         outputs: dict[str, tuple[str, str]],
         store: ChromaDBStore,
+        policy: TargetPolicy | None,
     ) -> AsyncIterator[WorkflowEvent]:
         """Interpret steps from ``start_index`` on.
 
@@ -424,10 +625,67 @@ class DynamicWorkflow(Workflow):
                         # a live reference would keep mutating under it if the
                         # loop ever continued.
                         outputs=dict(outputs),
+                        run_created=policy.created() if policy is not None else [],
                     ),
                 )
                 yield gate  # type: ignore[misc]
                 return
+
+            elif isinstance(step, ActionStepSpec):
+                from openexecutive.workflows.action_step import (
+                    drop_held_calls,
+                    run_action_step,
+                )
+
+                yield WorkflowEvent(
+                    type="step_start", step_id=step.id, step_title=step.title
+                )
+                try:
+                    goal = _render(step.goal, values)
+                except (KeyError, IndexError) as exc:
+                    yield WorkflowEvent(
+                        type="error",
+                        message=f"step {step.id!r} placeholder error: {exc}",
+                    )
+                    return
+                held: list[HeldCall] = []
+                try:
+                    async for kind, payload in run_action_step(
+                        step,
+                        workflow_name=self.name,
+                        workflow_title=self.title,
+                        goal=goal,
+                        values=values,
+                        company_block=company_block,
+                        prior_outputs=dict(outputs),
+                        policy=policy,
+                    ):
+                        if kind == "progress":
+                            yield WorkflowEvent(
+                                type="progress", step_id=step.id, summary=payload
+                            )
+                        elif kind == "held":
+                            held.append(payload)
+                        elif kind == "error":
+                            if held:
+                                note = drop_held_calls(self.name, step.id, held, "the step failed")
+                                payload = f"{payload} ({note})"
+                            yield WorkflowEvent(type="error", message=payload)
+                            return
+                        else:
+                            outputs[step.id] = (step.title, payload)
+                            yield WorkflowEvent(
+                                type="step_done", step_id=step.id, summary=_first_line(payload)
+                            )
+                except BaseException:  # cancellation too: they will never run
+                    if held:
+                        drop_held_calls(self.name, step.id, held, "the step stopped")
+                    raise
+                if held:
+                    pause = await self._held_writes_pause(step, index, held, outputs, policy)
+                    if pause is not None:
+                        yield pause  # type: ignore[misc]
+                        return
 
             elif isinstance(step, SynthesisStepSpec):
                 yield WorkflowEvent(
@@ -553,13 +811,25 @@ def _format_resolution(
     return f"## {step.title}\n\n{body}\n"
 
 
+def _missing_tools_error(missing: list[str], *, resuming: bool = False) -> WorkflowEvent:
+    outcome = (
+        "the steps after the approval did not run"
+        if resuming
+        else "the workflow did not start"
+    )
+    return WorkflowEvent(
+        type="error",
+        message=f"these tools are not available right now, so {outcome}: {', '.join(missing)}",
+    )
+
+
 def _stale_specialist_steps(defn: DynamicWorkflowDef) -> list[tuple[str, str]]:
     """(step_id, specialist) for every step that would consult a specialist
     missing from the live registry. A synthesis step only consults one when it
     has `instructions`."""
     stale: list[tuple[str, str]] = []
     for step in defn.steps:
-        if isinstance(step, ApprovalGateStepSpec):
+        if isinstance(step, ApprovalGateStepSpec | ActionStepSpec):
             continue
         if isinstance(step, SynthesisStepSpec) and not step.instructions:
             continue

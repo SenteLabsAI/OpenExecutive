@@ -832,3 +832,186 @@ def test_a_second_gate_pause_is_not_counted_as_a_completion(
     )
 
     assert asyncio.run(_process_resumable(datetime.now(UTC))) == 0
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat — a long resume (workflow action steps) must never look dead
+# ---------------------------------------------------------------------------
+
+
+def test_touch_resume_claim_only_for_the_live_claim() -> None:
+    _resolved()
+    token = wf_persistence.claim_run_for_resume("res-1")
+    assert token is not None
+    before = wf_persistence.get_run("res-1")["resumed_at"]
+    assert wf_persistence.touch_resume_claim("res-1", token) is True
+    assert wf_persistence.get_run("res-1")["resumed_at"] >= before
+    assert wf_persistence.touch_resume_claim("res-1", "not-the-claim") is False
+
+
+def test_heartbeat_keeps_a_long_resume_off_the_stale_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Events refresh `resumed_at`, so the stale sweep never requeues (and
+    replays the side effects of) a resume that is still working."""
+    from openexecutive.workflows import resumer
+    from openexecutive.workflows.base import WorkflowEvent
+
+    monkeypatch.setattr(resumer, "_RESUME_HEARTBEAT_EVERY", timedelta(0))
+    _resolved()
+    wf = _real_workflow()
+    seen_stale: list[list[str]] = []
+
+    async def _resume(*, inputs, state, resolution, store):  # noqa: ANN001, ANN202
+        # Pretend this worker has been busy for longer than the stale window.
+        with wf_persistence._get_conn(wf_persistence._resolve(None)) as conn:
+            conn.execute(
+                "UPDATE workflow_runs SET resumed_at = ? WHERE run_id = 'res-1'",
+                ((datetime.now(UTC) - timedelta(days=1)).isoformat(),),
+            )
+        yield WorkflowEvent(type="progress", step_id="act", summary="Using a tool…")
+        seen_stale.append(
+            wf_persistence.list_stale_resuming_runs(
+                datetime.now(UTC) - resumer._RESUME_STALE_AFTER, 3
+            )
+        )
+        yield WorkflowEvent(type="artifact", content="# Done")
+
+    wf.resume = _resume  # type: ignore[method-assign]
+    _install_stub(monkeypatch, wf)
+    asyncio.run(resumer._process_resumable(datetime.now(UTC)))
+    assert seen_stale == [[]]
+    assert wf_persistence.get_run("res-1")["status"] == "done"
+
+
+def test_a_superseded_resume_stops_before_acting_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the sweep handed the run to another worker, this one must stop at
+    its next event — not carry on sending/writing a second time."""
+    from openexecutive.workflows import resumer
+    from openexecutive.workflows.base import WorkflowEvent
+
+    monkeypatch.setattr(resumer, "_RESUME_HEARTBEAT_EVERY", timedelta(0))
+    _resolved()
+    wf = _real_workflow()
+    reached: list[str] = []
+
+    async def _resume(*, inputs, state, resolution, store):  # noqa: ANN001, ANN202
+        yield WorkflowEvent(type="progress", step_id="act", summary="Using x…")
+        wf_persistence.requeue_run_for_resume("res-1")  # the sweep gave up on us…
+        wf_persistence.claim_run_for_resume("res-1")  # …and another worker took it
+        yield WorkflowEvent(type="progress", step_id="act", summary="Using y…")
+        reached.append("kept going")
+        yield WorkflowEvent(type="artifact", content="# must not land")
+
+    wf.resume = _resume  # type: ignore[method-assign]
+    _install_stub(monkeypatch, wf)
+    assert asyncio.run(resumer._process_resumable(datetime.now(UTC))) == 0
+    assert reached == []
+    run = wf_persistence.get_run("res-1")
+    assert run["status"] == "running" and run["artifact"] is None
+
+
+def test_a_busy_database_on_heartbeat_does_not_kill_the_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from openexecutive.workflows import resumer
+    from openexecutive.workflows.base import WorkflowEvent
+
+    monkeypatch.setattr(resumer, "_RESUME_HEARTBEAT_EVERY", timedelta(0))
+
+    def _locked(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(wf_persistence, "touch_resume_claim", _locked)
+    _resolved()
+    wf = _real_workflow(
+        [
+            WorkflowEvent(type="progress", step_id="act", summary="Using x…"),
+            WorkflowEvent(type="artifact", content="# Done"),
+        ]
+    )
+    _install_stub(monkeypatch, wf)
+    assert asyncio.run(resumer._process_resumable(datetime.now(UTC))) == 1
+    assert wf_persistence.get_run("res-1")["status"] == "done"
+
+
+def test_requeue_with_cutoff_spares_a_freshly_heartbeated_run() -> None:
+    """The sweep reads stale ids, then requeues; a heartbeat landing in
+    between must win, or a live worker's run is handed to a second one."""
+    _resolved()
+    token = wf_persistence.claim_run_for_resume("res-1")
+    assert token is not None
+    cutoff = datetime.now(UTC) - timedelta(minutes=90)
+    wf_persistence.touch_resume_claim("res-1", token)  # fresh heartbeat
+    assert wf_persistence.requeue_run_for_resume("res-1", stale_before=cutoff) is False
+    assert wf_persistence.get_run("res-1")["resume_claim"] == token
+    # A genuinely stale claim is still requeued.
+    assert wf_persistence.requeue_run_for_resume(
+        "res-1", stale_before=datetime.now(UTC) + timedelta(minutes=1)
+    ) is True
+
+
+def _scheduled_resume_state() -> str:
+    state = json.loads(_RESUME_STATE)
+    state["deliver_to_person_id"] = 11
+    return json.dumps(state)
+
+
+def _capture_dms(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    sent: list[dict] = []
+
+    async def _send(payload: dict) -> str:
+        sent.append(payload)
+        return "{}"
+
+    monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", _send)
+    return sent
+
+
+def test_resumed_scheduled_run_dms_its_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scheduled run that paused (held writes) completes in the resumer, which
+    makes the delivery the scheduler would have made."""
+    from openexecutive.workflows.resumer import _process_resumable
+
+    sent = _capture_dms(monkeypatch)
+    _resolved(resume_state=_scheduled_resume_state())
+    _install_stub(monkeypatch, _real_workflow())
+    assert asyncio.run(_process_resumable(datetime.now(UTC))) == 1
+    assert sent == [{"person_id": 11, "text": "# Final artifact"}]
+
+    # A run with no scheduled recipient delivers nothing.
+    sent.clear()
+    _resolved(run_id="res-2")
+    _install_stub(monkeypatch, _real_workflow())
+    asyncio.run(_process_resumable(datetime.now(UTC)))
+    assert sent == []
+
+
+def test_a_later_pause_keeps_the_scheduled_recipient(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.workflows.resumer import _process_resumable
+    from openexecutive.workflows.wait_for_human import WaitForHumanEvent, WorkflowResumeState
+
+    sent = _capture_dms(monkeypatch)
+    later = WaitForHumanEvent(
+        person_id=7, question="Again?",
+        resume_state=WorkflowResumeState(
+            workflow_name="weekly_watch", gate_step_id="gate", gate_step_index=1,
+            steps_fingerprint="x",
+        ),
+    )
+    checkpointed: list[WaitForHumanEvent] = []
+
+    async def _checkpoint(*, event: WaitForHumanEvent, **_kw: object) -> None:
+        checkpointed.append(event)
+
+    monkeypatch.setattr("openexecutive.workflows.gate.checkpoint_gate", _checkpoint)
+    _resolved(resume_state=_scheduled_resume_state())
+    _install_stub(monkeypatch, _real_workflow([later]))
+    asyncio.run(_process_resumable(datetime.now(UTC)))
+    assert checkpointed[0].resume_state is not None
+    assert checkpointed[0].resume_state.deliver_to_person_id == 11
+    assert sent == []

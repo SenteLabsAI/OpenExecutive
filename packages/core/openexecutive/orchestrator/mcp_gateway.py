@@ -732,7 +732,12 @@ class MCPGateway:
 
     async def search_tools(self, tool_input: dict[str, Any]) -> str:
         session = self._require_session()
-        result = await session.call_tool("search_tools", {"query": tool_input["query"]})
+        args: dict[str, Any] = {"query": tool_input["query"]}
+        # Optional: callers resolving an exact tool name widen the net
+        # (extensible-mcp defaults to 5 results).
+        if isinstance(tool_input.get("top_k"), int):
+            args["top_k"] = tool_input["top_k"]
+        result = await session.call_tool("search_tools", args)
         return result.content[0].text if result.content else json.dumps({"tools": []})
 
     async def call_tool(self, tool_input: dict[str, Any]) -> str:
