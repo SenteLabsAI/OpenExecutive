@@ -231,3 +231,98 @@ def test_refusal_is_audited_with_graph_recipients(audit: list[tuple[str, dict]])
     refused = [d for e, d in audit if e == "artifact_attachment_refused"]
     assert len(refused) == 1
     assert refused[0]["recipients"] == [ALICE]
+
+
+def test_update_mail_message_refuses_an_artifact_entry_anywhere() -> None:
+    cid = _artifact()
+    result, session_call = _send(
+        {"messageId": "m", "body": {"attachments": [{"artifact_id": cid}]}},
+        tool="microsoft_365__update-mail-message",
+    )
+    assert "cannot carry attachments" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_send_draft_message_refuses_an_artifact_entry_in_the_expander() -> None:
+    """In `call_tool` the referenced-message gate refuses send-draft first;
+    the expander itself must still refuse rather than pass the entry on."""
+    cid = _artifact()
+    with patch("openexecutive.audit.log_event", lambda *a, **k: None):
+        result = asyncio.run(gw_module._expand_m365_artifact_attachments(
+            "microsoft_365__send-draft-message", "microsoft_365__send_draft_message",
+            {"messageId": "m", "body": {"attachments": [{"artifact_id": cid}]}},
+        ))
+    assert isinstance(result, str)
+    assert "cannot carry attachments" in json.loads(result)["error"]
+
+
+@pytest.mark.parametrize("tool, arguments", [
+    # The other tool's location.
+    ("microsoft_365__create-draft-email",
+     {"body": {"Message": {"subject": "s", "attachments": [{"artifact_id": "ALERT"}]}}}),
+    ("microsoft_365__send-mail", {"body": {"attachments": [{"artifact_id": "ALERT"}]}}),
+    # Somewhere unrelated, and stringified.
+    ("microsoft_365__send-mail",
+     {"body": {"Message": {"subject": "s", "extra": {"artifact_id": "ALERT"}}}}),
+    ("microsoft_365__send-mail",
+     {"body": {"Message": {"subject": "s", "note": '[{"artifact_id": "ALERT"}]'}}}),
+])
+def test_artifact_entry_outside_the_expanded_locations_is_refused(
+    tool: str, arguments: dict,
+) -> None:
+    cid = _artifact()
+    arguments = json.loads(json.dumps(arguments).replace("ALERT", cid))
+    result, session_call = _send(arguments, tool=tool)
+    assert "must be in the top-level 'attachments'" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_capitalised_top_level_attachments_key_is_moved_too() -> None:
+    cid = _artifact()
+    _, session_call = _send({"body": {"Message": _message()}, "Attachments": [{"artifact_id": cid}]})
+    forwarded = _forwarded(session_call)
+    assert "Attachments" not in forwarded and "attachments" not in forwarded
+    (att,) = forwarded["body"]["Message"]["attachments"]
+    _assert_graph_file(att)
+
+
+@pytest.mark.parametrize("body", ['{"subject": "Q3"}', ["x"], 7])
+def test_stringified_or_non_object_body_is_refused_not_wiped(body: Any) -> None:
+    cid = _artifact()
+    result, session_call = _send(
+        {"body": body, "attachments": [{"artifact_id": cid}]},
+        tool="microsoft_365__create-draft-email",
+    )
+    assert "'body' must be a JSON object" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_single_object_graph_attachment_survives_the_combine() -> None:
+    cid = _artifact()
+    existing = {"@odata.type": "#microsoft.graph.fileAttachment", "name": "a.pdf",
+                "contentBytes": "AA=="}
+    _, session_call = _send({
+        "body": {"Message": _message(attachments=existing)},
+        "attachments": {"artifact_id": cid},
+    })
+    first, second = _forwarded(session_call)["body"]["Message"]["attachments"]
+    assert first == existing
+    _assert_graph_file(second)
+
+
+def test_non_json_nested_attachments_string_is_refused_when_an_artifact_is_present() -> None:
+    cid = _artifact()
+    result, session_call = _send({
+        "body": {"Message": _message(attachments="not json")},
+        "attachments": [{"artifact_id": cid}],
+    })
+    assert "not valid JSON" in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_caller_arguments_are_not_mutated() -> None:
+    cid = _artifact()
+    args = {"body": {"Message": _message()}, "attachments": [{"artifact_id": cid}]}
+    snapshot = json.loads(json.dumps(args))
+    _send(args)
+    assert args == snapshot

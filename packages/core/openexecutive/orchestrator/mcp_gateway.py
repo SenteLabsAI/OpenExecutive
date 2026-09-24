@@ -242,7 +242,7 @@ _M365_FREE_TEXT_KEYS = frozenset({"content", "subject", "comment", "bodypreview"
 # OData annotation KEYS (`@odata.type` on a Graph fileAttachment, `@odata.id`,
 # …) carry a literal `@` that is not an address. The key itself is skipped by
 # the malformed-address check; its VALUE is still scanned like any other.
-_ODATA_ANNOTATION_KEY_RE = re.compile(r"^@odata\.[A-Za-z]+$")
+_ODATA_ANNOTATION_KEY_RE = re.compile(r"@odata\.[A-Za-z]+")
 
 # The one M365 send whose arguments name the recipients explicitly, so an
 # outbound-context linkage can be recorded after it succeeds. Reply/forward
@@ -627,15 +627,47 @@ def _ci_walk(mapping: Any, path: tuple[str, ...]) -> Any:
     return cursor
 
 
+def _has_artifact_entry(value: Any, skip: frozenset[int] = frozenset()) -> bool:
+    """Whether an `artifact_id` entry (a dict carrying that key, or a string
+    that spells it — a stringified entry) appears anywhere under ``value``,
+    not descending into the objects whose ids are in ``skip``."""
+    if id(value) in skip:
+        return False
+    if isinstance(value, dict):
+        return "artifact_id" in value or any(_has_artifact_entry(v, skip) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_artifact_entry(v, skip) for v in value)
+    return isinstance(value, str) and "artifact_id" in value
+
+
+def _coerce_attachment_list(value: Any) -> list[Any] | str:
+    """A Graph `attachments` value as a list: a list as is, one object wrapped,
+    a JSON string decoded (models stringify nested arguments), None empty.
+    Returns an error reason for anything else."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return "attachments is not valid JSON"
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return "attachments must be a list of attachment objects"
+
+
 def _with_message_attachments(
     arguments: dict[str, Any], path: tuple[str, ...], expanded: list[Any]
 ) -> dict[str, Any]:
     """A copy of ``arguments`` with ``expanded`` as the message's
     `attachments` at ``path`` (existing key casing kept, the canonical casing
     used for a level that does not exist yet) and no top-level `attachments`.
+    Every level on the path is copied, never mutated; the caller has already
+    refused a level that exists but is not an object.
     """
-    result = dict(arguments)
-    result.pop("attachments", None)
+    result = {k: v for k, v in arguments.items() if not (isinstance(k, str) and k.lower() == "attachments")}
     cursor: dict[str, Any] = result
     for key in path:
         actual = next(
@@ -651,6 +683,21 @@ def _with_message_attachments(
     return result
 
 
+def _non_object_on_path(arguments: dict[str, Any], path: tuple[str, ...]) -> str | None:
+    """The first key on ``path`` whose value exists but is not an object (a
+    stringified body, a list) — writing attachments through it would replace
+    the model's message with an empty one."""
+    cursor: Any = arguments
+    for key in path:
+        nxt = _ci_get(cursor, key)
+        if nxt is None:
+            return None
+        if not isinstance(nxt, dict):
+            return key
+        cursor = nxt
+    return None
+
+
 async def _expand_m365_artifact_attachments(
     tool: str, normalized: str, arguments: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]] | str:
@@ -661,36 +708,42 @@ async def _expand_m365_artifact_attachments(
     …}]` on "the mail send or draft tool", so the entries may arrive at the top
     level of the arguments (where Gmail takes them) or already inside the
     Graph message (`body.Message.attachments` / `body.attachments`, see
-    `_M365_ARTIFACT_MESSAGE_PATHS`). Both are read, expanded together, and
-    written to the Graph location — a top-level list is moved, never left for
-    the server to reject. Tools whose request cannot carry attachments refuse
-    an artifact entry instead of passing it through.
+    `_M365_ARTIFACT_MESSAGE_PATHS`). Both are read, expanded together with
+    whatever other attachments sit there, and written to the Graph location —
+    a top-level list is moved, never left for the server to reject. An
+    artifact entry anywhere else, on a tool whose request cannot carry
+    attachments, or behind a body that is not an object is refused rather than
+    forwarded unexpanded (the server would drop it and the model would believe
+    the file went out).
     """
     path = _M365_ARTIFACT_MESSAGE_PATHS.get(normalized)
-    top = _normalize_attachment_list(arguments.get("attachments"))
+    top_raw = _ci_get(arguments, "attachments")
     nested_raw = _ci_get(_ci_walk(arguments, path), "attachments") if path else None
-    nested = _normalize_attachment_list(nested_raw)
-    if isinstance(top, str):
-        return _refuse_attachment(tool, arguments, top)
-    if isinstance(nested, str):
-        return _refuse_attachment(tool, arguments, nested)
-    if top is None and nested is None:
+    stray = _has_artifact_entry(arguments, frozenset({id(top_raw), id(nested_raw)}))
+    if not (stray or _has_artifact_entry(top_raw) or _has_artifact_entry(nested_raw)):
         return arguments, []
     if path is None:
         return _refuse_attachment(tool, arguments, (
             f"{tool} cannot carry attachments; send with "
             f"{_M365_PREFIX}send-mail or create a draft with them instead"
         ))
-    combined: list[Any] = []
-    if nested is not None:
-        combined.extend(nested)
-    elif isinstance(nested_raw, list):
-        combined.extend(nested_raw)
-    if top is not None:
-        combined.extend(top)
-    elif isinstance(arguments.get("attachments"), list):
-        combined.extend(arguments["attachments"])
-    out = await _expand_artifact_entries(tool, arguments, combined, _graph_file_entry)
+    if stray:
+        return _refuse_attachment(tool, arguments, (
+            "an artifact attachment must be in the top-level 'attachments' or in "
+            f"the message's 'attachments' ({'.'.join(path)}) for {tool}"
+        ))
+    bad_level = _non_object_on_path(arguments, path)
+    if bad_level is not None:
+        return _refuse_attachment(tool, arguments, (
+            f"'{bad_level}' must be a JSON object (not a string or list) to carry attachments"
+        ))
+    nested = _coerce_attachment_list(nested_raw)
+    top = _coerce_attachment_list(top_raw)
+    if isinstance(nested, str):
+        return _refuse_attachment(tool, arguments, nested)
+    if isinstance(top, str):
+        return _refuse_attachment(tool, arguments, top)
+    out = await _expand_artifact_entries(tool, arguments, [*nested, *top], _graph_file_entry)
     if isinstance(out, str):
         return out
     expanded, attached = out
@@ -922,7 +975,7 @@ def _check_m365_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
     """
     allow = _roster_allow_set()
     for s in _iter_arg_strings_skipping(arguments, _M365_FREE_TEXT_KEYS):
-        if _ODATA_ANNOTATION_KEY_RE.match(s):
+        if _ODATA_ANNOTATION_KEY_RE.fullmatch(s):
             continue
         if any(ord(ch) < 0x20 for ch in s):
             return _block(

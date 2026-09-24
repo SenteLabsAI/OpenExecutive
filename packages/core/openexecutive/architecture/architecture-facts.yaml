@@ -604,9 +604,13 @@ routing:
       send-mail / reply / forward / createReply* drafts, `body.attachments`
       for create-draft-email); an entry the model put at the top level (where
       the artifact tool text says) or inside the message is read from either
-      place and written to the Graph one, and update-mail-message /
-      send-draft-message, whose requests cannot carry attachments, refuse an
-      artifact entry instead of forwarding it. Normalises a stringified or
+      place and written to the Graph one; an artifact entry ANYWHERE else in
+      the arguments (the other tool's location, an unrelated key, a
+      stringified copy) is refused, as is one on update-mail-message /
+      send-draft-message (their requests cannot carry attachments) or behind
+      a `body` that is not an object (writing through it would replace the
+      model's message with an empty one) — nothing is ever forwarded
+      unexpanded. Normalises a stringified or
       single-object `attachments` first (an unexpanded artifact entry would be
       silently skipped by workspace-mcp, rejected by Graph). Refuses unknown /
       non-artifact ids, links, extra keys, more than 5 distinct artifacts
@@ -4177,9 +4181,12 @@ integrations:
     Junk/Deleted), get-mail-message with HTML→text (workspace/_html, a real
     HTMLParser) plus one list-mail-attachments call when hasAttachments, so
     the ATTACHMENTS section carries the same `N. name (mime, size KB)` lines
-    workspace-mcp prints for Gmail (inline parts skipped; names go to peer
-    memory via email_poller._attachment_name; on a failed listing only the
-    download-bytes hint remains), mark read via update-mail-message
+    workspace-mcp prints for Gmail (inline parts skipped; the sender-
+    controlled name and MIME type are whitespace-collapsed / restricted to
+    media-type characters and length-capped so they cannot forge or break a
+    line; names go to peer memory via email_poller._attachment_name; on a
+    failed listing only the download-bytes hint remains), mark read via
+    update-mail-message
     {isRead:true}, send via
     send-mail's nested Graph shape (body.Message.toRecipients[].emailAddress),
     events via create-calendar-event with isOnlineMeeting +

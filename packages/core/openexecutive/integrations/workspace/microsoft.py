@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -41,6 +43,10 @@ _ATTACHMENT_SELECT = "id,name,contentType,size,isInline"
 # Attachment names are sender-controlled; keep one line per file short enough
 # for email_poller._attachment_name (which caps a line at 512 chars).
 _ATTACHMENT_NAME_MAX = 200
+# The MIME type is sender-controlled too and sits inside the `(mime, size KB)`
+# tail that parser splits on " (" and ", ": keep only media-type characters.
+_MIME_CHARS_RE = re.compile(r"[^A-Za-z0-9.+/_-]")
+_MIME_MAX = 100
 # showAs values that mean the slot is taken. `free` and `workingElsewhere`
 # are not conflicts.
 _BUSY_STATES = frozenset({"busy", "oof", "tentative"})
@@ -226,13 +232,15 @@ class MicrosoftMail:
             if not isinstance(name, str) or not name.strip():
                 continue
             name = " ".join(name.split())[:_ATTACHMENT_NAME_MAX]
-            mime = item.get("contentType")
+            mime = _MIME_CHARS_RE.sub("", item.get("contentType") or "")[:_MIME_MAX]
             size = item.get("size")
-            kb = size / 1024 if isinstance(size, int | float) and size >= 0 else 0.0
+            kb = (
+                size / 1024
+                if isinstance(size, int | float) and math.isfinite(size) and size >= 0
+                else 0.0
+            )
             lines.append(
-                f"{len(lines) + 1}. {name} "
-                f"({mime if isinstance(mime, str) and mime else 'application/octet-stream'}, "
-                f"{kb:.1f} KB)"
+                f"{len(lines) + 1}. {name} ({mime or 'application/octet-stream'}, {kb:.1f} KB)"
             )
         return [*lines, hint]
 

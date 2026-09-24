@@ -125,6 +125,8 @@ def test_fetch_lists_attachment_names_in_the_gmail_line_shape() -> None:
          "isInline": True},
         {"id": "a3", "name": "notes.txt", "size": 2048},
         {"id": "a4", "name": "   "},
+        # Sender-controlled MIME type and size cannot break the line shape.
+        {"id": "a5", "name": "odd.bin", "contentType": "x (y, z\n", "size": float("inf")},
     ]}
     gw = _gateway(json.dumps(_graph_message()), json.dumps(listing))
     msg = asyncio.run(MicrosoftMail().fetch(gw, MessageRef("AAMk1", ""), MAILBOX))
@@ -136,6 +138,7 @@ def test_fetch_lists_attachment_names_in_the_gmail_line_shape() -> None:
     assert msg.attachments == [
         "1. Q3 deck (final).pdf (application/pdf, 15.0 KB)",
         "2. notes.txt (application/octet-stream, 2.0 KB)",
+        "3. odd.bin (xyz, 0.0 KB)",
         "Fetch one with microsoft_365__download-bytes; list them with "
         "microsoft_365__list-mail-attachments (messageId=AAMk1).",
     ]
@@ -143,7 +146,7 @@ def test_fetch_lists_attachment_names_in_the_gmail_line_shape() -> None:
 
     rendered = render_for_executive(msg, MicrosoftMail().reply_block(msg))
     assert _email_memory_text(rendered).endswith(
-        "(Attached files: Q3 deck (final).pdf, notes.txt)"
+        "(Attached files: Q3 deck (final).pdf, notes.txt, odd.bin)"
     )
 
 

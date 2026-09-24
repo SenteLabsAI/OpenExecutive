@@ -653,3 +653,11 @@ def test_odata_annotation_key_is_not_an_address_but_its_value_is_scanned() -> No
     args["body"]["Message"]["attachments"][0]["name"] = f"for {STRANGER}"
     assert _blocked(_call(gateway, args, allowed=[ROSTER]))
     assert session_call.await_count == 0
+
+
+def test_odata_key_with_a_trailing_newline_is_still_refused() -> None:
+    gateway, session_call = _make_gateway()
+    args = _send_mail_args(to=[ROSTER])
+    args["body"]["Message"]["attachments"] = [{"@odata.type\n": "#microsoft.graph.fileAttachment"}]
+    assert _blocked(_call(gateway, args, allowed=[ROSTER]))
+    assert session_call.await_count == 0
