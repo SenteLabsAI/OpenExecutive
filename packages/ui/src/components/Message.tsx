@@ -3,7 +3,9 @@
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import AnswerSourcesFooter from "@/components/AnswerSourcesFooter";
 import BrandMark from "@/components/BrandMark";
+import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
 
 interface MessageProps {
@@ -19,6 +21,9 @@ interface MessageProps {
   // answer isn't read as a complete one — on reload too, since the flag is
   // persisted with the message.
   stopped?: boolean;
+  // What the reply looked at, and any part of the analysis it had to leave
+  // out. Shown once the reply has finished streaming.
+  sources?: AnswerSources;
   // Explicit 👍/👎 on a persisted reply. Rendered only when `onFeedback` is
   // given (the reply has a stored id) and the reply has finished streaming.
   feedback?: "up" | "down" | null;
@@ -90,6 +95,7 @@ export default function Message({
   isStreaming,
   actions,
   stopped,
+  sources,
   feedback,
   onFeedback,
 }: MessageProps) {
@@ -142,6 +148,8 @@ export default function Message({
             ))}
           </div>
         )}
+
+        {sources && !isStreaming && <AnswerSourcesFooter sources={sources} />}
 
         {stopped && !isStreaming && (
           <p className="mt-2 text-xs text-fg-muted">Stopped by you</p>

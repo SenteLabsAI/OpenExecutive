@@ -91,7 +91,7 @@ def patched_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         retriever,
         "retrieve",
-        lambda query, specialist_name=None, store=None: "",
+        lambda query, specialist_name=None, store=None, **_k: "",
     )
 
     from openexecutive.utils import session_title as _title_mod

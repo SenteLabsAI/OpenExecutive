@@ -263,6 +263,17 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
                 if "duplicate column" not in str(exc).lower():
                     raise
 
+        # Additive migration: what an assistant reply looked at and which part
+        # of the analysis it had to leave out (orchestrator/answer_sources.py),
+        # shown under the reply in the web chat. Nullable JSON TEXT
+        # {"sources": [...], "unavailable": [...]}; legacy rows stay NULL.
+        if "sources" not in _cm_existing:
+            try:
+                conn.execute("ALTER TABLE chat_messages ADD COLUMN sources TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
         # Additive migration: flag an assistant message the user stopped
         # mid-stream, so the "Stopped" marker survives a reload instead of a
         # truncated reply reading as a complete one. Legacy rows default to 0.
@@ -723,6 +734,31 @@ def get_recent_decisions(
                 "SELECT * FROM decisions ORDER BY timestamp DESC LIMIT ?", (limit,)
             ).fetchall()
     return [Decision(**dict(row)) for row in rows]
+
+
+def has_department_decision_since(
+    department: str,
+    since: datetime,
+    db_path: Path | None = None,
+) -> bool:
+    """True when a decision tagged ``department`` was logged after ``since``.
+
+    Filtered in SQL, so a busy company's newest-N page of decisions cannot
+    hide one department's. Timestamps are UTC ISO strings, compared as text
+    (the same convention ``store_decision``'s dedup window uses).
+    """
+    if not department:
+        return False
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return False
+    bound = since.astimezone(UTC).isoformat() if since.tzinfo else since.isoformat()
+    with _get_conn(resolved) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM decisions WHERE department = ? AND timestamp > ? LIMIT 1",
+            (department, bound),
+        ).fetchone()
+    return row is not None
 
 
 def get_active_initiatives(db_path: Path = DB_PATH) -> list[Initiative]:

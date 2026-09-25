@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from openexecutive.api.models import ChatRequest, PageContext, StopChatRequest
 from openexecutive.audit import log_event as audit_log
 from openexecutive.integrations.attachments import build_attachment_output
+from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
 
 # Per-file size cap. Mirrors `_DEFAULT_MAX_BYTES` in
@@ -881,6 +882,11 @@ async def _run_chat_turn(
     # instead of only the ones that reach the recorder.
     session.trusted_alert_ids = set()
 
+    # What this reply looks at, from this search on, and which areas it has to
+    # leave out. Owned here rather than by the Executive so it is sent and
+    # saved on every ending, a stopped or timed-out reply included.
+    turn_sources = TurnSources()
+
     # `_sse_body`'s `finally` is what normally releases the registry entry, but
     # it only runs once Starlette starts consuming the generator. Everything
     # from here to the `StreamingResponse` below therefore needs its own
@@ -894,6 +900,7 @@ async def _run_chat_turn(
                 query=message,
                 specialist_name=None,
                 store=request.app.state.store if hasattr(request.app.state, "store") else None,
+                record_source=turn_sources.add,
             ),
             _do_episodic(),
             _do_prefetch(),
@@ -993,6 +1000,7 @@ async def _run_chat_turn(
                     page_context_block=page_context_block,
                     turn_id=turn_id,
                     memory_text=memory_text,
+                    turn_sources=turn_sources,
                 ).__aiter__()
             else:
                 stream = executive.stream_chat(
@@ -1008,6 +1016,7 @@ async def _run_chat_turn(
                     page_context_block=page_context_block,
                     turn_id=turn_id,
                     memory_text=memory_text,
+                    turn_sources=turn_sources,
                 ).__aiter__()
 
             # Whole-turn deadline, not per-chunk: a stream that drips bytes
@@ -1018,6 +1027,8 @@ async def _run_chat_turn(
             # persist with the assistant message (the live UI loses them on
             # reload otherwise) — the same dicts the client renders inline.
             action_chips: list[dict[str, Any]] = []
+            # `turn_sources` as sent and saved once the reply is over.
+            answer_sources: dict[str, Any] | None = None
 
             async def _persist_turn() -> None:
                 # Persist the turn on every terminal path — normal completion,
@@ -1056,6 +1067,7 @@ async def _run_chat_turn(
                     full_response,
                     action_chips=json.dumps(action_chips) if action_chips else None,
                     stopped=stopped,
+                    sources=json.dumps(answer_sources) if answer_sources else None,
                 )
                 # The Executive's own post-turn block (executive.py, after its
                 # `async for`) is what normally mirrors the turn into the live
@@ -1224,6 +1236,9 @@ async def _run_chat_turn(
                     with contextlib.suppress(Exception):
                         await aclose()
 
+            if not turn_sources.is_empty():
+                answer_sources = turn_sources.payload()
+
             if client_disconnected:
                 # Connection is gone, so we can't yield anything more — but we
                 # still persist whatever the Executive produced before the
@@ -1240,6 +1255,12 @@ async def _run_chat_turn(
             # skipped on the stop path above, so persisting first no longer
             # makes the button feel dead.
             await _persist_turn()
+
+            # Before the terminal frames, which is when the UI finishes the
+            # reply. Shown under it: what it looked at, and any area missing.
+            if answer_sources is not None and full_response:
+                sources_evt = {"type": "sources", "session_id": session.session_id, **answer_sources}
+                yield f"data: {json.dumps(sources_evt)}\n\n"
 
             if stopped:
                 # Not an `error` event — a stop is a user decision, not a

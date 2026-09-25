@@ -82,6 +82,7 @@ RAG context goes in the **user turn**, not the system prompt.
 3. Register in `orchestrator/router.py`:
    - Add to `SPECIALIST_REGISTRY` dict
    - Add tool enum value to `SPECIALIST_TOOLS[0]["input_schema"]["properties"]["specialist"]["enum"]`
+   - Add its area in plain words (e.g. `"sales": "sales"`) to `_AREAS` in `orchestrator/answer_sources.py`. The web chat names that area when the specialist can't answer, and a test checks every registered specialist has one
 
 4. Add knowledge docs to `knowledge/your_domain/`
 

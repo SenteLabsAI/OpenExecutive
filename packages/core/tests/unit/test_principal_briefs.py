@@ -23,6 +23,13 @@ def _setup_isolated_db(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     episodic.initialize_db(db)
 
 
+@pytest.fixture(autouse=True)
+def _no_default_audit_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The brief handler audits every outcome; keep those rows out of the
+    default ./episodic_memory.db, where they leak into other modules."""
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+
+
 # ---------------------------------------------------------------------------
 # Workflow registration
 # ---------------------------------------------------------------------------
@@ -219,7 +226,7 @@ def _run_brief(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deliver_ok: b
     monkeypatch.setattr(wf_persistence, "DB_PATH", db)
     monkeypatch.setitem(WORKFLOW_REGISTRY, "morning_brief", _fake_brief_workflow("fp-123"))
 
-    async def _deliver(text: str) -> tuple[bool, str]:
+    async def _deliver(text: str, **_kw: object) -> tuple[bool, str]:
         return deliver_ok, "discord_dm → 1"
 
     monkeypatch.setattr(runner, "_deliver_to_principal", _deliver)
@@ -258,3 +265,246 @@ def test_run_principal_brief_does_not_record_on_delivery_failure(
 
     _run_brief(tmp_path, monkeypatch, deliver_ok=False)
     assert brief_state.last_delivered("principal_brief_morning") is None
+
+
+# ---------------------------------------------------------------------------
+# Delivery: preferred channel honoured, email via the MCP gateway, and no
+# synthesis when nothing can reach the principal
+# ---------------------------------------------------------------------------
+
+
+class _Sent:
+    """Records every outbound send the delivery path makes."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+
+
+class _Gateway:
+    def __init__(self, sent: _Sent, result: str = "Email sent! Message ID: m-1") -> None:
+        self._sent = sent
+        self._result = result
+
+    async def call_tool(self, tool_input: dict) -> str:  # type: ignore[type-arg]
+        self._sent.calls.append(("gmail", tool_input))
+        return self._result
+
+
+@pytest.fixture
+def sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Sent:
+    """Isolated people DB, recording chat send handlers, no MCP gateway."""
+    import json
+
+    from openexecutive.orchestrator import mcp_gateway, schedule_tools
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    db = tmp_path / "people.db"
+    _setup_isolated_db(db, monkeypatch)
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    people_registry.invalidate()
+    monkeypatch.setattr(mcp_gateway, "_active_gateway", None)
+
+    rec = _Sent()
+
+    def _handler(name: str):  # type: ignore[no-untyped-def]
+        async def _send(args: dict) -> str:  # type: ignore[type-arg]
+            rec.calls.append((name, args))
+            return json.dumps({"status": "sent"})
+        return _send
+
+    monkeypatch.setattr(schedule_tools, "handle_send_slack_dm", _handler("slack"))
+    monkeypatch.setattr(schedule_tools, "handle_send_discord_dm", _handler("discord"))
+    monkeypatch.setattr(schedule_tools, "handle_send_telegram_message", _handler("telegram"))
+    return rec
+
+
+def _principal(**fields: object) -> int:
+    from openexecutive.people import store as people_store
+
+    return people_store.upsert_person(full_name="Owner", is_principal=True, **fields)  # type: ignore[arg-type]
+
+
+def _with_gateway(monkeypatch: pytest.MonkeyPatch, sent: _Sent, **kw: str) -> None:
+    from openexecutive.orchestrator import mcp_gateway
+
+    monkeypatch.setattr(mcp_gateway, "_active_gateway", _Gateway(sent, **kw))
+
+
+def _deliver(text: str = "BRIEF", label: str = "Morning Brief") -> tuple[bool, str]:
+    import asyncio
+
+    return asyncio.run(runner._deliver_to_principal(text, label=label))
+
+
+def test_preferred_slack_is_honoured(sent: _Sent) -> None:
+    """`preferred_channel` is "slack", not "slack_dm" — it used to match nothing."""
+    _principal(
+        preferred_channel="slack", slack_user_id="U1", discord_user_id="D1",
+        telegram_chat_id="42",
+    )
+    ok, detail = _deliver()
+    assert ok and detail == "slack_dm → U1"
+    assert [name for name, _ in sent.calls] == ["slack"]
+
+
+def test_preferred_discord_goes_ahead_of_slack(sent: _Sent) -> None:
+    _principal(preferred_channel="discord", slack_user_id="U1", discord_user_id="D1")
+    ok, _ = _deliver()
+    assert ok
+    assert [name for name, _ in sent.calls] == ["discord"]
+
+
+def test_preferred_email_sends_through_the_gateway(
+    sent: _Sent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.config import get_settings
+
+    _principal(preferred_channel="email", email="owner@example.com", slack_user_id="U1")
+    _with_gateway(monkeypatch, sent)
+
+    ok, detail = _deliver("the brief", label="Morning Brief")
+
+    assert ok and detail == "email → owner@example.com"
+    ((name, call),) = sent.calls
+    assert name == "gmail"
+    assert call["name"] == "google_workspace__send_gmail_message"
+    args = call["arguments"]
+    assert args["user_google_email"] == get_settings().exec_email_address
+    assert args["to"] == "owner@example.com"
+    assert args["subject"] == f"Morning Brief — {datetime.now(UTC).strftime('%Y-%m-%d')}"
+    assert args["body"] == "the brief"
+
+
+def test_email_error_falls_back_to_chat(sent: _Sent, monkeypatch: pytest.MonkeyPatch) -> None:
+    _principal(preferred_channel="email", email="owner@example.com", slack_user_id="U1")
+    _with_gateway(monkeypatch, sent, result='{"error": "recipient not on the roster"}')
+
+    ok, detail = _deliver()
+
+    assert ok and detail == "slack_dm → U1"
+    assert [name for name, _ in sent.calls] == ["gmail", "slack"]
+
+
+def test_any_with_only_an_email_uses_email(sent: _Sent, monkeypatch: pytest.MonkeyPatch) -> None:
+    _principal(email="owner@example.com")  # preferred_channel defaults to "any"
+    _with_gateway(monkeypatch, sent)
+
+    ok, detail = _deliver()
+
+    assert ok and detail == "email → owner@example.com"
+
+
+def test_any_with_a_chat_channel_never_emails(
+    sent: _Sent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An owner linked by email at setup (preference "any") who also has Slack
+    must not start getting the briefs by email too."""
+    _principal(email="owner@example.com", slack_user_id="U1")
+    _with_gateway(monkeypatch, sent)
+
+    ok, detail = _deliver()
+
+    assert ok and detail == "slack_dm → U1"
+    assert [name for name, _ in sent.calls] == ["slack"]
+
+
+def test_email_without_a_gateway_is_not_delivered(sent: _Sent) -> None:
+    _principal(preferred_channel="email", email="owner@example.com")
+
+    ok, detail = _deliver()
+
+    assert not ok and "no deliverable channel" in detail
+    assert sent.calls == []
+
+
+def test_client_digest_still_delivers(sent: _Sent, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from openexecutive.clients import rotation
+
+    _principal(preferred_channel="email", email="owner@example.com")
+    _with_gateway(monkeypatch, sent)
+
+    async def _rotate(_settings: object) -> dict:  # type: ignore[type-arg]
+        return {"ran": True, "rotated": ["acme"], "failed": {}, "digest": "# Across your clients"}
+
+    monkeypatch.setattr(rotation, "run_client_rotation", _rotate)
+    monkeypatch.setattr(rotation, "seed_client_rotation", lambda: None)
+    action_id = episodic.insert_scheduled_action(
+        run_at=datetime.now(UTC).isoformat(), channel="__internal__",
+        channel_ref="client_rotation", intent_text="rotate", kind="client_rotation",
+    )
+    action = episodic.get_scheduled_action(action_id)
+    assert action is not None
+
+    asyncio.run(runner._execute_action(action, None))
+
+    ((_, call),) = sent.calls
+    assert call["arguments"]["subject"].startswith("Across your clients — ")
+    assert call["arguments"]["body"] == "# Across your clients"
+
+
+def test_brief_with_no_deliverable_channel_is_still_generated_and_stored(
+    sent: _Sent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A web-only principal still gets the brief run and artifact (read on the
+    Artifacts page); it is just not delivered, so the window does not move,
+    and the next occurrence is chained."""
+    import asyncio
+
+    from openexecutive.alerts import review
+    from openexecutive.briefing import brief_state, narrative_cache
+    from openexecutive.workflows import persistence as wf_persistence
+    from openexecutive.workflows.base import WorkflowEvent
+    from openexecutive.workflows.morning_brief import MorningBriefInput, MorningBriefWorkflow
+
+    _principal(email="owner@example.com")  # "any", an email, but no gateway
+    monkeypatch.setattr(narrative_cache, "DB_PATH", tmp_path / "cache.db")
+    monkeypatch.setattr(wf_persistence, "DB_PATH", episodic.DB_PATH)
+    wf_persistence.initialize_runs_db(episodic.DB_PATH)
+    ran: list[str] = []
+
+    class _Brief(MorningBriefWorkflow):
+        async def run(self, inputs, store):  # type: ignore[override]
+            ran.append("brief")
+            yield WorkflowEvent(type="result", data={"brief_fingerprint": "fp", "suppressed": False})
+            yield WorkflowEvent(type="artifact", content="BRIEF")
+
+        def input_model(self):  # type: ignore[override]
+            return MorningBriefInput
+
+    async def _review(**_kw: object) -> None:
+        ran.append("review")
+
+    class _NoStore:
+        def __init__(self, **_kw: object) -> None: ...
+
+    monkeypatch.setitem(WORKFLOW_REGISTRY, "morning_brief", _Brief())
+    monkeypatch.setattr(review, "run_alert_review", _review)
+    monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", _NoStore)
+    chained: list[str] = []
+    monkeypatch.setattr(
+        runner, "_enqueue_next_principal_brief", lambda kind, after: chained.append(kind),
+    )
+    action_id = episodic.insert_scheduled_action(
+        run_at=datetime.now(UTC).isoformat(), channel="__internal__", channel_ref="principal",
+        intent_text="brief", kind="principal_brief_morning",
+    )
+    action = episodic.get_scheduled_action(action_id)
+    assert action is not None
+
+    asyncio.run(runner._run_principal_brief(action, datetime.now(UTC)))
+
+    assert ran == ["review", "brief"]
+    assert sent.calls == []  # nothing delivered
+    (run,) = wf_persistence.list_runs(workflow_name="morning_brief")
+    assert run["status"] == "done"
+    stored = wf_persistence.get_run(run["run_id"])
+    assert stored is not None and stored["artifact"] == "BRIEF"
+    # Only a delivered brief advances the window.
+    assert brief_state.last_delivered("principal_brief_morning") is None
+    row = episodic.get_scheduled_action(action_id)
+    assert row is not None and row.status == "done"
+    assert chained == ["principal_brief_morning"]

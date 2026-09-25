@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.agents.base import BaseAgent
@@ -186,22 +187,71 @@ def partition_specialist_fanout(
     return run_tool_uses, run_calls, skipped_results, cap
 
 
-async def _retrieve_for_call(call: dict[str, str]) -> str:
-    """Run a per-specialist, domain-filtered vector retrieval for one tool call."""
+async def _retrieve_for_call(
+    call: dict[str, str], record_source: Callable[..., None] | None = None
+) -> str:
+    """Run a per-specialist, domain-filtered vector retrieval for one tool call.
+
+    A retrieval that fails leaves this specialist without knowledge context
+    rather than failing the turn: every specialist's retrieval is gathered
+    together, so one exception here used to lose the whole answer.
+    """
     from openexecutive.knowledge.retriever import retrieve
 
-    return await asyncio.to_thread(
-        retrieve, query=call["query"], specialist_name=call["specialist"]
-    )
+    try:
+        return await asyncio.to_thread(
+            retrieve,
+            query=call["query"],
+            specialist_name=call["specialist"],
+            record_source=record_source,
+        )
+    except Exception:
+        logger.warning(
+            "knowledge retrieval for %s failed; answering without it",
+            call["specialist"],
+            exc_info=True,
+        )
+        return ""
 
 
 async def _retrieve_failures_for_call(call: dict[str, str]) -> str:
-    """Domain-filtered failure case retrieval for one specialist call."""
+    """Domain-filtered failure case retrieval for one specialist call. Degrades
+    to no failure cases on error, for the same reason as `_retrieve_for_call`."""
     from openexecutive.knowledge.retriever import retrieve_failures
 
-    return await asyncio.to_thread(
-        retrieve_failures, query=call["query"], specialist_name=call["specialist"]
+    try:
+        return await asyncio.to_thread(
+            retrieve_failures, query=call["query"], specialist_name=call["specialist"]
+        )
+    except Exception:
+        logger.warning(
+            "failure-case retrieval for %s failed; answering without it",
+            call["specialist"],
+            exc_info=True,
+        )
+        return ""
+
+
+def specialist_unavailable_result(specialist: str, reason: str, *, tell_user: bool) -> str:
+    """The tool_result for a specialist that failed or returned nothing, so the
+    Executive answers from the others instead of losing the turn.
+
+    ``tell_user`` is False on the web chat, which shows the missing area under
+    the reply itself; elsewhere the reply is the only place to say it.
+    """
+    text = (
+        f"UNAVAILABLE: the {specialist} specialist could not answer this time "
+        f"({reason}). Its view is missing from this turn. Do not invent it and "
+        "do not consult it again this turn; answer from what the other "
+        "specialists said."
     )
+    if tell_user:
+        return text + (
+            " In your reply, say in one short sentence that this part of the "
+            "analysis is missing and that asking again may fill it in. Do not "
+            "mention specialists."
+        )
+    return text + " The app tells the user which part is missing, so you need not mention it."
 
 
 async def _prefetch_department_for_call(
@@ -235,6 +285,10 @@ async def route_parallel(
     session_id: str | None = None,
     debug_collector: DebugCollector | None = None,
     company_stage: str | None = None,
+    *,
+    record_source: Callable[..., None] | None = None,
+    failed_calls_out: list[int] | None = None,
+    tell_user_when_unavailable: bool = True,
 ) -> list[str]:
     """Execute multiple specialist calls concurrently.
 
@@ -262,12 +316,30 @@ async def route_parallel(
 
     Returns results in the same order as ``calls`` so callers can zip
     with tool_use_ids.
+
+    One specialist that raises, or returns no text, no longer fails the
+    batch: its result becomes `specialist_unavailable_result`, its index in
+    ``calls`` goes into ``failed_calls_out`` (in call order), and the others'
+    results stand.
+    Cancellation (the user pressing Stop) still propagates. ``record_source``
+    receives each document the knowledge retrieval of a specialist that
+    answered returned, in call order (see ``orchestrator.answer_sources``).
+    A failed specialist's documents never reached the answer, so they are
+    not recorded.
     """
     if company_stage is None:
         company_stage = await asyncio.to_thread(load_company_stage)
 
+    # Each call's documents wait here until the batch is done.
+    held_sources: list[list[tuple[tuple[Any, ...], dict[str, Any]]]] = [[] for _ in calls]
+
+    def hold_for(idx: int) -> Callable[..., None] | None:
+        if record_source is None:
+            return None
+        return lambda *args, **kwargs: held_sources[idx].append((args, kwargs))
+
     if retrieved_knowledge_map is None:
-        knowledge_futures = [_retrieve_for_call(c) for c in calls]
+        knowledge_futures = [_retrieve_for_call(c, hold_for(i)) for i, c in enumerate(calls)]
         failures_futures = [_retrieve_failures_for_call(c) for c in calls]
         all_results = await asyncio.gather(*knowledge_futures, *failures_futures)
         mid = len(calls)
@@ -289,6 +361,20 @@ async def route_parallel(
         )
     )
 
+    failed: set[int] = set()
+
+    def unavailable(idx: int, specialist: str, reason: str, t_start: float) -> str:
+        failed.add(idx)
+        if debug_collector:
+            debug_collector.emit("specialist_unavailable", {
+                "specialist": specialist,
+                "reason": reason,
+                "duration_ms": round((time.monotonic() - t_start) * 1000),
+            })
+        return specialist_unavailable_result(
+            specialist, reason, tell_user=tell_user_when_unavailable
+        )
+
     async def call_one(idx: int, call: dict[str, str]) -> str:
         specialist = call["specialist"]
         if debug_collector:
@@ -300,17 +386,25 @@ async def route_parallel(
                 "department_memory_chars": len(dept_memory_per_call[idx]),
             })
         t_start = time.monotonic()
-        result = await route_to_specialist(
-            specialist_name=specialist,
-            query=call["query"],
-            context=call.get("context", ""),
-            retrieved_knowledge=knowledge_per_call[idx],
-            episodic_context=episodic_context,
-            failure_cases=failures_per_call[idx],
-            department_memory=dept_memory_per_call[idx],
-            actor="specialist",
-            company_stage=company_stage,
-        )
+        try:
+            result = await route_to_specialist(
+                specialist_name=specialist,
+                query=call["query"],
+                context=call.get("context", ""),
+                retrieved_knowledge=knowledge_per_call[idx],
+                episodic_context=episodic_context,
+                failure_cases=failures_per_call[idx],
+                department_memory=dept_memory_per_call[idx],
+                actor="specialist",
+                company_stage=company_stage,
+            )
+        except Exception as exc:
+            logger.warning(
+                "specialist %s failed; answering without it", specialist, exc_info=True
+            )
+            return unavailable(idx, specialist, f"it failed with {type(exc).__name__}", t_start)
+        if not result.strip():
+            return unavailable(idx, specialist, "it returned no analysis", t_start)
         if debug_collector:
             debug_collector.emit("specialist_done", {
                 "specialist": specialist,
@@ -320,4 +414,15 @@ async def route_parallel(
             })
         return result
 
-    return list(await asyncio.gather(*(call_one(i, c) for i, c in enumerate(calls))))
+    results = list(await asyncio.gather(*(call_one(i, c) for i, c in enumerate(calls))))
+    if failed_calls_out is not None:
+        failed_calls_out.extend(sorted(failed))
+    if record_source is not None:
+        try:
+            for idx, held in enumerate(held_sources):
+                if idx not in failed:
+                    for args, kwargs in held:
+                        record_source(*args, **kwargs)
+        except Exception:
+            logger.warning("recording answer sources failed", exc_info=True)
+    return results

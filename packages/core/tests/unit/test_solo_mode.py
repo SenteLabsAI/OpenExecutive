@@ -196,26 +196,35 @@ def test_a_check_in_running_across_the_switch_does_not_chain(_isolated: Path) ->
     assert _count(_isolated, "dept_cadence") == before
 
 
-def test_team_dept_cadence_row_still_reaches_the_gate(
+def test_team_dept_cadence_row_still_reaches_the_check_in(
     _isolated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Control: in team mode the same row goes through the authority gate."""
+    """Control: in team mode the same row is not retired — it reaches the
+    check-in path. A check-in is not authority-gated (it sends nothing), so
+    the gate is never consulted."""
     from openexecutive.scheduler import runner
 
     seen: list[str] = []
+    gated: list[str] = []
 
     class _Stop(Exception):
         pass
 
-    def _gate(dept: str, *_a: object, **_k: object) -> Any:
-        seen.append(dept)
+    def _skip_reason(slug: str, *_a: object, **_k: object) -> Any:
+        seen.append(slug)
         raise _Stop
 
+    def _gate(dept: str, *_a: object, **_k: object) -> Any:
+        gated.append(dept)
+        raise AssertionError("dept_cadence must not be authority-gated")
+
+    monkeypatch.setattr(runner, "_dept_check_in_skip_reason", _skip_reason)
     monkeypatch.setattr("openexecutive.departments.authority.gate_action", _gate)
     action = _claim_dept_cadence()
     with pytest.raises(_Stop):
         asyncio.run(runner._execute_action(action, None))
     assert seen == ["finance"]
+    assert gated == []
 
 
 # --------------------------------------------------------------------------- #
