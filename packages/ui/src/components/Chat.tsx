@@ -22,6 +22,7 @@ import {
   setMessageFeedback,
   streamChat,
 } from "@/lib/api";
+import type { AnswerSources } from "@/lib/answerSources";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
 
 interface ChatProps {
@@ -256,6 +257,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     // Local mirror of streamingActions so the closure builds the final
     // message without depending on the async setState applying first.
     const turnActions: ActionTaken[] = [];
+    // What the reply looked at; sent once, just before `done`.
+    let turnSources: AnswerSources | undefined;
     let wasStopped = false;
     // Row id of the persisted reply, from `done`; it is what makes the reply
     // rateable with 👍/👎.
@@ -300,6 +303,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         } else if (item.type === "action_taken") {
           turnActions.push(item);
           setStreamingActions([...turnActions]);
+        } else if (item.type === "sources") {
+          turnSources = { sources: item.sources ?? [], unavailable: item.unavailable ?? [] };
         } else if (item.type === "stopped") {
           // The server acknowledged the stop and is winding the turn down
           // itself; `done` follows over the same stream. Stand the abort
@@ -347,6 +352,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             content: accumulated,
             actions: turnActions.length > 0 ? turnActions : undefined,
             stopped: wasStopped || undefined,
+            sources: turnSources,
             id: replyId,
           },
         ]);
@@ -525,6 +531,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   content={msg.content}
                   actions={msg.role === "assistant" ? msg.actions : undefined}
                   stopped={msg.role === "assistant" ? msg.stopped : undefined}
+                  sources={msg.role === "assistant" ? msg.sources : undefined}
                   feedback={msg.role === "assistant" ? msg.feedback : undefined}
                   onFeedback={
                     msg.role === "assistant" && msg.id && sessionId

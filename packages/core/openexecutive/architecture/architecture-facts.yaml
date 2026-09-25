@@ -372,6 +372,62 @@ routing:
     carries requested_count / cap / dispatched_count / skipped_count so the
     fan-out width is observable per turn.
   retrieval_per_call: Each parallel tool call runs its own domain-filtered ChromaDB query before the specialist sees the question.
+  failure_isolation: |
+    route_parallel isolates every call. A specialist whose analyze() raises
+    (timeout, 529 overloaded, any provider error after the SDK's own
+    retries) or returns no text does NOT fail the batch any more — before,
+    the bare asyncio.gather propagated the first exception out of the agent
+    loop and the web chat answered "An internal error occurred". Now:
+      - its tool_result is router.specialist_unavailable_result: "UNAVAILABLE:
+        the <name> specialist could not answer this time (<reason>)… Do not
+        invent it and do not consult it again this turn; answer from what the
+        other specialists said." Reason is the exception CLASS only.
+      - tell_user_when_unavailable (the Executive passes
+        `not session.from_web_chat`) appends "say in one short sentence that
+        this part of the analysis is missing… Do not mention specialists" on
+        channels; on the web chat it says the app shows it instead, so the
+        user sees the gap once.
+      - its name goes to unavailable_out → TurnSources.mark_unavailable,
+        which stores the AREA ("finance", "legal", "people and hiring"…,
+        answer_sources._AREAS; unknown → "one area") — never the specialist,
+        per the one-voice invariant.
+      - a `specialist_unavailable` debug event carries name + reason.
+    asyncio.CancelledError (Stop, turn timeout) is BaseException and still
+    propagates. _retrieve_for_call / _retrieve_failures_for_call degrade to
+    "" on any exception (warning logged) for the same reason: their gather
+    had no return_exceptions either. No prompt changed: the instruction
+    lives in the tool_result (user turn), so caching is untouched.
+  answer_sources: |
+    orchestrator/answer_sources.py — what a turn LOOKED AT (not per-sentence
+    citations; that was the product choice). One TurnSources per turn,
+    created in stream_chat / stream_chat_with_committee and passed to
+    _stream_agent_loop(turn_sources=…). Producers:
+      - knowledge: route_parallel(record_source=turn_sources.add) →
+        _retrieve_for_call → retrieve(record_source=…) → _record_sources:
+        company (filename), knowledge (title_from_filename), notion
+        (filename), research ("Research notes from <date>"), document
+        (published artifact title, url /artifacts/<quoted id>). Never raises.
+      - web: record_web_sources(final_msg.content) per model response —
+        pages cited by text-block citations first, then the first 3 results
+        of each web_search_tool_result. Never raises.
+    Caps: 12 sources, at most 6 web; dedupe on (kind, url or title);
+    titles whitespace-folded and clipped to 120; url kept only if http(s)
+    or an in-app path matching /[A-Za-z0-9_%~/-]* (no "//", no "\", no
+    "."). Thread-safe (retrieval records from asyncio.to_thread workers;
+    ContextVars are not used — the collector is passed explicitly).
+    Delivery: after the reply (after synthesis_done; committee: after the
+    revision, and also on its empty-draft fallback) the Executive yields
+    {"type": "sources", session_id, sources: [{kind, title, url}],
+    unavailable: [area]} only when non-empty. The .chat() wrapper used by
+    Slack/Discord/Telegram/email/Google Chat ignores dict items, so it is
+    web-only by construction. api/routes/chat.py forwards it verbatim and
+    saves {sources, unavailable} in chat_messages.sources; load_messages
+    re-attaches it (assistant rows only, dict only, malformed JSON
+    ignored). UI: lib/answerSources.ts (groups, safe links, the "Some of
+    the analysis is missing (finance, legal)…" line) and
+    components/AnswerSourcesFooter.tsx under each reply in the chat and
+    the Ask OE panel; scripts/answerSources.test.mjs keeps the UI's kinds
+    equal to SourceKind.
   committee_review: |
     Optional 3-phase response synthesis exposed via
     Executive.stream_chat_with_committee():
@@ -2369,6 +2425,7 @@ chat:
     - "debug_event — internal observability for the Agent Activity panel (knowledge_retrieved, routing_decision, specialist_start/done, synthesis_start, skill_invocation, mcp_invocation, web_search_invocation, committee_*). Not part of the user-visible conversation."
     - "form_patch — emitted when the Executive calls `propose_form_values` (Ask OE panel form-fill tier). Fields: type, form_id, fields (name → proposed value map), rationale, iteration. The panel applies the values into the registered on-screen form as highlighted suggestions; nothing is saved server-side and the user submits through the form's normal Save. NOT persisted with the assistant message (same deferred-persistence bucket as the action-chip note below predating chip persistence) — reopening a panel session loses the proposal cards, though values already applied to a form are unaffected."
     - "stopped — the user halted the turn via POST /chat/stop. Carries type + session_id. ALWAYS followed by `done` over the same still-open stream: the server winds the turn down and reports, rather than the connection simply dying, so a consumer's state machine reaches its normal terminal state and there is no abort path to special-case. Deliberately NOT an `error` — a stop is a user decision, not a failure — so a consumer that ignores the event degrades to 'the turn ended normally', which is the safe reading. Whatever the Executive produced before the stop is persisted and flagged (chat_messages.stopped)."
+    - "sources — once per turn, just before `done`, only when the turn looked at something or had to leave an area out. Fields: type, session_id, sources ([{kind: company|knowledge|notion|research|document|web, title, url: http(s) or in-app path or null}], ≤12, ≤6 web), unavailable ([area], e.g. \"finance\" — never a specialist name). Persisted as chat_messages.sources; see routing.answer_sources."
     - "done — final marker carrying the resolved session_id; UI uses this to commit the streamed assistant message and clear the pending-prompt state."
     - "error — terminal error before/after streaming. Always followed by `done` so the stream consumer's state-machine reaches a clean end."
   stop_control: |
@@ -2494,13 +2551,16 @@ chat:
     panel and non-panel turns alternate. Guarded by
     tests/unit/test_executive_form_patch.py::test_tool_list_is_cache_stable_and_includes_form_tool.
   persisted_message_fields: |
-    Two per-message fields survive a reload alongside the prose, both attached
-    by `load_messages` only when set so an untouched row keeps the exact dict
-    shape every consumer expects:
+    These per-message fields survive a reload alongside the prose, each
+    attached by `load_messages` only when set so an untouched row keeps the
+    exact dict shape every consumer expects:
       - `chat_messages.action_chips` — JSON list of the turn's action chips.
       - `chat_messages.stopped` — 1 when the user halted the reply mid-stream,
         so a truncated answer is not read back as a complete one. Additive
         migration guarded by a PRAGMA check, same shape as action_chips.
+      - `chat_messages.sources` — JSON {sources, unavailable} from the
+        turn's `sources` event (routing.answer_sources); assistant rows only.
+        Same additive migration shape.
     Safe to ride along into `Session.conversation_history`: the Executive
     rebuilds each history turn as {"role", "content"}, so neither key ever
     reaches the Anthropic payload.

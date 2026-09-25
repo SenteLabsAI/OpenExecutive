@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import Message from "@/components/Message";
 import { useAskOE } from "@/components/askoe/AskOEContext";
+import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken, FormPatch } from "@/lib/api";
 import { setMessageFeedback, streamChat } from "@/lib/api";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
@@ -28,6 +29,8 @@ interface PanelMessage {
   patches?: PatchCardData[];
   /** The user stopped this reply mid-stream. */
   stopped?: boolean;
+  /** What the reply looked at, and any part of the analysis it left out. */
+  sources?: AnswerSources;
   /** Persisted row id (from `done`), needed to rate the reply. */
   messageId?: number;
   feedback?: "up" | "down" | null;
@@ -154,6 +157,7 @@ export default function AskOEPanel() {
       let messageId: number | undefined;
       const actions: ActionTaken[] = [];
       const patches: PatchCardData[] = [];
+      let sources: AnswerSources | undefined;
       try {
         // Page context is snapshotted per turn — current route, form
         // descriptor, and live field values at the moment of sending.
@@ -173,6 +177,8 @@ export default function AskOEPanel() {
             patches.push(handlePatch(item));
           } else if (item.type === "action_taken") {
             actions.push(item);
+          } else if (item.type === "sources") {
+            sources = { sources: item.sources ?? [], unavailable: item.unavailable ?? [] };
           } else if (item.type === "error") {
             setError(item.message ?? "Something went wrong.");
           } else if (item.type === "stopped") {
@@ -213,6 +219,7 @@ export default function AskOEPanel() {
               actions: actions.length ? actions : undefined,
               patches: patches.length ? patches : undefined,
               stopped: wasStopped || undefined,
+              sources,
               messageId,
             },
           ]);
@@ -357,6 +364,7 @@ export default function AskOEPanel() {
                 content={m.content}
                 actions={m.actions}
                 stopped={m.stopped}
+                sources={m.role === "assistant" ? m.sources : undefined}
                 feedback={m.feedback}
                 onFeedback={
                   m.role === "assistant" && m.messageId && sessionId

@@ -999,6 +999,9 @@ async def _run_chat_turn(
             # persist with the assistant message (the live UI loses them on
             # reload otherwise) — the same dicts the client renders inline.
             action_chips: list[dict[str, Any]] = []
+            # What the reply looked at, sent once after it (orchestrator/
+            # answer_sources.py); saved with it for the same reason.
+            answer_sources: dict[str, Any] | None = None
 
             async def _persist_turn() -> None:
                 # Persist the turn on every terminal path — normal completion,
@@ -1037,6 +1040,7 @@ async def _run_chat_turn(
                     full_response,
                     action_chips=json.dumps(action_chips) if action_chips else None,
                     stopped=stopped,
+                    sources=json.dumps(answer_sources) if answer_sources else None,
                 )
                 # The Executive's own post-turn block (executive.py, after its
                 # `async for`) is what normally mirrors the turn into the live
@@ -1162,6 +1166,11 @@ async def _run_chat_turn(
                         else:
                             if isinstance(item, dict) and item.get("type") == "action_taken":
                                 action_chips.append(item)
+                            if isinstance(item, dict) and item.get("type") == "sources":
+                                answer_sources = {
+                                    "sources": item.get("sources") or [],
+                                    "unavailable": item.get("unavailable") or [],
+                                }
                             yield f"data: {json.dumps(item)}\n\n"
 
                         if stop_event is not None and stop_event.is_set():

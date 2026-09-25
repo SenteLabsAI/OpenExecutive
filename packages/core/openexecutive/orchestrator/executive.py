@@ -30,6 +30,7 @@ from openexecutive.orchestrator.alert_tools import (
     CREATE_ALERT_TOOL,
     handle_create_alert,
 )
+from openexecutive.orchestrator.answer_sources import TurnSources, record_web_sources
 from openexecutive.orchestrator.artifact_tools import (
     DRAFT_ARTIFACT_TOOL_HANDLERS,
     DRAFT_ARTIFACT_TOOLS,
@@ -742,6 +743,7 @@ class Executive:
 
         t0 = time.monotonic()
         full_response = ""
+        turn_sources = TurnSources()
         with set_turn(session_id=session.session_id, turn_id=turn_id):
             # Per-person prefetch from Honcho. Runs once per turn (NOT inside
             # the tool-call loop) so a long multi-tool turn doesn't accrue
@@ -799,6 +801,7 @@ class Executive:
                 debug_collector=debug_collector,
                 consulted_out=consulted,
                 turn_id=turn_id,
+                turn_sources=turn_sources,
             ):
                 if isinstance(item, str) and item != self._THINKING:
                     full_response += item
@@ -810,6 +813,10 @@ class Executive:
                 "response_length": len(full_response),
             })
             yield debug_collector.to_sse_dict(evt)
+        # What the answer looked at and what it had to leave out, for the web
+        # chat to show under it. Other channels ignore the event.
+        if not turn_sources.is_empty():
+            yield turn_sources.event(session.session_id)
 
         session.add_user_message(user_message)
         session.add_assistant_message(full_response)
@@ -1053,6 +1060,7 @@ class Executive:
         draft = ""
         consulted: list[str] = []
         specialist_outputs: dict[str, str] = {}
+        turn_sources = TurnSources()
         _emit_memory_snapshot(
             session_id=session.session_id,
             turn_id=turn_id,
@@ -1077,6 +1085,7 @@ class Executive:
             consulted_out=consulted,
             specialist_outputs_out=specialist_outputs,
             turn_id=turn_id,
+            turn_sources=turn_sources,
         ):
             # Swallow draft text and the THINKING sentinel — the user sees
             # only the revised stream. Pass debug-event dicts through so the
@@ -1112,6 +1121,8 @@ class Executive:
             }
             fallback = "I was unable to complete the analysis. Please try again."
             yield fallback
+            if not turn_sources.is_empty():
+                yield turn_sources.event(session.session_id)
             session.add_user_message(user_message)
             session.add_assistant_message(fallback)
             # Reset audit ContextVars so this task doesn't leak the turn_id
@@ -1252,6 +1263,8 @@ class Executive:
                 "revision_ms": revision_ms,
             })
             yield debug_collector.to_sse_dict(evt)
+        if not turn_sources.is_empty():
+            yield turn_sources.event(session.session_id)
 
         session.add_user_message(user_message)
         # Guard against a revision pass that produced no text (only tool_use
@@ -1370,12 +1383,17 @@ class Executive:
         consulted_out: list[str] | None = None,
         specialist_outputs_out: dict[str, str] | None = None,
         turn_id: str | None = None,
+        turn_sources: TurnSources | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Tool-use loop that yields text deltas as they arrive.
 
         Yields _THINKING before each specialist call round so callers can send
         keepalive/progress events while the blocking specialist calls run.
         Also yields debug event dicts when a debug_collector is provided.
+
+        ``turn_sources`` collects the documents and web pages the turn looked
+        at, and the areas whose specialist couldn't answer; the caller sends
+        it once the reply is complete.
         """
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
@@ -1473,6 +1491,8 @@ class Executive:
                     # OpenRouter reasoning continuity across tool iterations
                     # (replayed as ``reasoning_details`` by the translator).
                     response_content.append(replay)
+            if turn_sources is not None:
+                record_web_sources(turn_sources, final_msg.content)
 
             last_full_text = full_text
 
@@ -1594,12 +1614,23 @@ class Executive:
             session_id = getattr(current_session.get(), "session_id", None)
             if specialist_calls:
                 spec_t0 = time.monotonic()
+                unavailable: list[str] = []
                 specialist_results = await route_parallel(
                     run_calls,
                     episodic_context=episodic_context,
                     session_id=session_id,
                     debug_collector=debug_collector,
+                    record_source=turn_sources.add if turn_sources is not None else None,
+                    unavailable_out=unavailable,
+                    # The web chat shows a missing area under the reply;
+                    # everywhere else the reply itself has to say so.
+                    tell_user_when_unavailable=not getattr(
+                        current_session.get(), "from_web_chat", False
+                    ),
                 )
+                if turn_sources is not None:
+                    for specialist in unavailable:
+                        turn_sources.mark_unavailable(specialist)
                 spec_ms = round((time.monotonic() - spec_t0) * 1000)
                 for tu, result in zip(
                     run_tool_uses, specialist_results, strict=True

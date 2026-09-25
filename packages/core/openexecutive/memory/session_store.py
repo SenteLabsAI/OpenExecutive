@@ -53,6 +53,7 @@ def save_message(
     action_chips: str | None = None,
     stopped: bool = False,
     sender_person_id: int | None = None,
+    sources: str | None = None,
 ) -> int:
     """Persist one chat message and return its row id. ``action_chips`` is a
     JSON-encoded list of the assistant turn's action-chip dicts (or None), so
@@ -61,15 +62,20 @@ def save_message(
     so the reply is not read back as a complete one. ``sender_person_id`` is
     the rostered Person who actually wrote a user message — pass the resolved
     sender, never the session owner's principal fallback, so per-person
-    learning never reads an outsider's words as someone on the roster."""
+    learning never reads an outsider's words as someone on the roster.
+    ``sources`` is the JSON ``TurnSources.payload()`` of an assistant reply —
+    what it looked at and which areas it had to leave out — or None."""
     text = content if isinstance(content, str) else str(content)
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO chat_messages "
-            "(session_id, role, content, created_at, action_chips, stopped, sender_person_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, role, text, now, action_chips, 1 if stopped else 0, sender_person_id),
+            "(session_id, role, content, created_at, action_chips, stopped, sender_person_id, "
+            "sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id, role, text, now, action_chips, 1 if stopped else 0,
+                sender_person_id, sources,
+            ),
         )
         return int(cur.lastrowid or 0)
 
@@ -111,7 +117,7 @@ def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, An
         return []
     with _get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, role, content, action_chips, stopped, feedback FROM chat_messages "
+            "SELECT id, role, content, action_chips, stopped, feedback, sources FROM chat_messages "
             "WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
@@ -140,6 +146,15 @@ def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, An
         # Anthropic payload.
         if row["stopped"]:
             msg["stopped"] = True
+        # What the reply looked at, for the web chat to show under it. Same
+        # attach-only-when-present rule as `actions`.
+        if row["role"] == "assistant" and row["sources"]:
+            try:
+                sources = json.loads(row["sources"])
+            except (ValueError, TypeError):
+                sources = None
+            if isinstance(sources, dict):
+                msg["sources"] = sources
         out.append(msg)
     return out
 
