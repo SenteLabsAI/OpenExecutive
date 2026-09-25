@@ -223,19 +223,34 @@ def test_team_dept_cadence_row_still_reaches_the_gate(
 # --------------------------------------------------------------------------- #
 
 
+def _apply_file(path: Path, *, keep_when_missing: bool = False) -> dict[str, Any]:
+    return fixture_loader._apply_workspace(
+        fixture_loader._read_workspace_file(path), keep_when_missing=keep_when_missing
+    )
+
+
 def test_workspace_file_applied_after_reset(tmp_path: Path) -> None:
     ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Asia/Seoul"))
     f = tmp_path / "workspace.yaml"
     f.write_text("mode: solo\ntimezone: America/Chicago\n")
-    out = fixture_loader._apply_workspace_file(f)
+    out = _apply_file(f)
     assert out == {"mode": "solo", "timezone": "America/Chicago"}
     assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="America/Chicago")
 
 
-def test_missing_workspace_file_means_defaults(tmp_path: Path) -> None:
+def test_missing_workspace_file_means_defaults_for_a_fixture(tmp_path: Path) -> None:
     ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Asia/Seoul"))
-    out = fixture_loader._apply_workspace_file(tmp_path / "workspace.yaml")
+    assert fixture_loader._read_workspace_file(tmp_path / "workspace.yaml") is None
+    out = _apply_file(tmp_path / "workspace.yaml")
     assert out == {"mode": "team", "timezone": None}
+
+
+def test_missing_workspace_file_keeps_settings_for_a_legacy_backup(tmp_path: Path) -> None:
+    """Unloading from a backup that predates workspace.yaml must not reset the
+    user's settings to team / no zone."""
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Asia/Seoul"))
+    out = _apply_file(tmp_path / "workspace.yaml", keep_when_missing=True)
+    assert out == {"mode": "solo", "timezone": "Asia/Seoul"}
 
 
 @pytest.mark.parametrize(
@@ -243,6 +258,13 @@ def test_missing_workspace_file_means_defaults(tmp_path: Path) -> None:
     [
         ("mode: enterprise\ntimezone: Europe/Oslo\n", {"mode": "team", "timezone": "Europe/Oslo"}),
         ("mode: solo\ntimezone: Mars/Base\n", {"mode": "solo", "timezone": None}),
+        # zoneinfo raises IsADirectoryError / ValueError for these, not
+        # ZoneInfoNotFoundError — none may abort the load.
+        ("mode: solo\ntimezone: America\n", {"mode": "solo", "timezone": None}),
+        ("timezone: Europe/\n", {"mode": "team", "timezone": None}),
+        ("timezone: ../etc\n", {"mode": "team", "timezone": None}),
+        ("timezone: 42\n", {"mode": "team", "timezone": None}),
+        ("mode: [solo]\n", {"mode": "team", "timezone": None}),
         ("- just\n- a list\n", {"mode": "team", "timezone": None}),
         ("mode: [unclosed\n", {"mode": "team", "timezone": None}),
     ],
@@ -252,7 +274,7 @@ def test_bad_workspace_file_values_are_skipped(
 ) -> None:
     f = tmp_path / "workspace.yaml"
     f.write_text(text)
-    assert fixture_loader._apply_workspace_file(f) == expected
+    assert _apply_file(f) == expected
 
 
 def test_snapshot_round_trip_restores_the_users_settings(tmp_path: Path) -> None:
@@ -261,7 +283,7 @@ def test_snapshot_round_trip_restores_the_users_settings(tmp_path: Path) -> None
     f.parent.mkdir()
     fixture_loader._dump_workspace(f)
     ws.reset_workspace_settings()  # a fixture load in between
-    fixture_loader._apply_workspace_file(f)  # unload applies the backup
+    _apply_file(f, keep_when_missing=True)  # unload applies the backup
     assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="Europe/Dublin")
 
 
@@ -278,9 +300,13 @@ def _top_level_calls(fn: Any) -> set[str]:
 
 
 def test_fixture_load_path_always_applies_the_workspace_file() -> None:
-    """Every load/unload resets the settings — a fixture with no workspace.yaml
-    must not inherit the previous company's mode or zone."""
-    assert "_apply_workspace_file" in _top_level_calls(fixture_loader._apply_state_from_source)
+    """Every load/unload reads the file before swapping anything and then
+    applies it — a fixture with no workspace.yaml must not inherit the
+    previous company's mode or zone."""
+    calls = _top_level_calls(fixture_loader._apply_state_from_source)
+    assert {"_read_workspace_file", "_apply_workspace"} <= calls
+    src = inspect.getsource(fixture_loader._apply_state_from_source)
+    assert src.index("_read_workspace_file(") < src.index("profile.save_to_yaml(")
     assert "_dump_workspace" in _top_level_calls(fixture_loader.snapshot_user_state)
 
 

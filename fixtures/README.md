@@ -138,10 +138,12 @@ mode: solo                 # solo | team — solo: one person using Open Executi
 timezone: America/Chicago  # IANA zone for the brief times, "tomorrow at 9", quiet hours
 ```
 
-A value that doesn't validate is logged and ignored. Taking a snapshot of your
-own company (the first fixture load does this automatically) writes your
-current settings to `workspace.yaml` in the backup, so unloading the fixture
-restores them.
+A value that doesn't validate (including a region like `America` rather than a
+zone like `America/Chicago`) is logged and ignored; it never stops the load.
+Loading a fixture while your own company is live writes your current settings
+to `workspace.yaml` in the backup — even when an earlier backup is reused — so
+unloading the fixture restores them. Unloading from an older backup that has no
+`workspace.yaml` leaves the current settings as they are.
 
 ## Adding a New Fixture
 

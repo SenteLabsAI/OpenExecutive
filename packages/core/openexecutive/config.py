@@ -914,10 +914,13 @@ class Settings(BaseSettings):
     @field_validator("user_timezone")
     @classmethod
     def _validate_tz(cls, v: str) -> str:
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        from zoneinfo import ZoneInfo
         try:
             ZoneInfo(v)
-        except ZoneInfoNotFoundError as exc:
+        except Exception as exc:
+            # Not only ZoneInfoNotFoundError: a region directory ("America")
+            # raises IsADirectoryError and a malformed key ValueError, and
+            # either would otherwise escape as a raw traceback at startup.
             raise ValueError(f"USER_TIMEZONE {v!r} is not a known IANA zone") from exc
         return v
 

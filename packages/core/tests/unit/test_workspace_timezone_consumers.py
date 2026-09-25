@@ -101,37 +101,48 @@ def _prefs(tz: str) -> UserPreferences:
     return UserPreferences(quiet_hours_start="22:00", quiet_hours_end="07:00", quiet_hours_tz=tz)
 
 
-def test_default_quiet_hours_zone_follows_the_workspace_zone() -> None:
-    assert UserPreferences().quiet_hours_tz == ""  # the default: no zone of its own
-    assert _in_quiet_hours(_prefs(""), now=_NOW)  # no zone anywhere: UTC, as before
+@pytest.mark.parametrize("stored", ["UTC", "", "   "])
+def test_default_quiet_hours_zone_follows_the_workspace_zone(stored: str) -> None:
+    """"UTC" is the historical model default and the column DEFAULT, and
+    nothing in the app writes the column — so a stored "UTC" (or nothing)
+    means "the user's zone", not a choice of UTC."""
+    assert UserPreferences().quiet_hours_tz == "UTC"
+    assert _in_quiet_hours(_prefs(stored), now=_NOW)  # no zone anywhere: UTC, as before
     _set_zone("America/New_York")
-    assert not _in_quiet_hours(_prefs(""), now=_NOW)  # 19:00 in New York
-    assert not _in_quiet_hours(_prefs("   "), now=_NOW)
+    assert not _in_quiet_hours(_prefs(stored), now=_NOW)  # 19:00 in New York
 
 
 def test_explicit_quiet_hours_zone_is_kept() -> None:
     _set_zone("America/New_York")
-    # A stored "UTC" is a choice, not a default: 23:00 UTC is inside.
-    assert _in_quiet_hours(_prefs("UTC"), now=_NOW)
     # 23:00 UTC is 08:00 in Tokyo — outside the window there.
     assert not _in_quiet_hours(_prefs("Asia/Tokyo"), now=_NOW)
     # 23:00 UTC is 00:00 in London (BST) — inside.
     assert _in_quiet_hours(_prefs("Europe/London"), now=_NOW)
 
 
-def test_unknown_stored_quiet_hours_zone_falls_back_to_the_user_zone() -> None:
+@pytest.mark.parametrize("stored", ["Nowhere/Land", "America", "Europe/", "../etc"])
+def test_unloadable_stored_quiet_hours_zone_falls_back_to_the_user_zone(stored: str) -> None:
     _set_zone("America/New_York")
-    assert not _in_quiet_hours(_prefs("Nowhere/Land"), now=_NOW)
+    assert not _in_quiet_hours(_prefs(stored), now=_NOW)
 
 
-def test_stored_row_without_a_zone_follows_the_user_zone(tmp_path: Path) -> None:
+def test_existing_utc_row_follows_the_user_zone(tmp_path: Path) -> None:
+    """An alert-preferences row as it exists on every install today — the
+    column DEFAULT 'UTC' — follows the workspace zone."""
+    import sqlite3
+
     from openexecutive.alerts import store as alert_store
-    from openexecutive.alerts.preferences import get_preferences, save_preferences
+    from openexecutive.alerts.preferences import get_preferences
 
     db = tmp_path / "alerts.db"
     alert_store.initialize_db(db)
-    save_preferences(UserPreferences(quiet_hours_start="22:00", quiet_hours_end="07:00"), db_path=db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO user_preferences (id, quiet_hours_start, quiet_hours_end, updated_at) "
+            "VALUES (1, '22:00', '07:00', '2026-01-01T00:00:00+00:00')"
+        )
     loaded = get_preferences(db_path=db)
-    assert loaded.quiet_hours_tz == ""
+    assert loaded.quiet_hours_tz == "UTC"
+    assert _in_quiet_hours(loaded, now=_NOW)
     _set_zone("America/New_York")
     assert not _in_quiet_hours(loaded, now=_NOW)

@@ -1,6 +1,7 @@
 """memory/workspace_settings.py — the solo/team mode and the user's zone."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -82,7 +83,15 @@ def test_set_and_get_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ws.get_workspace().mode == "team"
 
 
-@pytest.mark.parametrize("bad", ["Mars/Olympus_Mons", "not a zone", "../etc/passwd", "x" * 65])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "Mars/Olympus_Mons", "not a zone", "../etc/passwd", "x" * 65,
+        # Not ZoneInfoNotFoundError: a region directory raises
+        # IsADirectoryError, an unnormalized/escaping key ValueError.
+        "America", "Etc", "Europe/", "../etc", "/etc/localtime", "UTC\x00",
+    ],
+)
 def test_invalid_timezone_rejected(bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("openexecutive.scheduler.runner.reschedule_principal_rhythm", lambda: 0)
     ws.set_timezone("Europe/Paris")
@@ -123,20 +132,79 @@ def test_stored_zone_wins_over_setting(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ws.get_user_timezone().key == "Australia/Sydney"
 
 
-def test_bad_stored_values_read_as_defaults(_isolated: Path) -> None:
+@pytest.mark.parametrize("stored", ["Nowhere/Land", "America", "Europe/", "../etc", 42])
+def test_bad_stored_values_read_as_defaults(_isolated: Path, stored: object) -> None:
+    """A stored zone that cannot load (hand-edited, or a tz database that
+    lost it) must never make get_workspace() raise — boot reads it."""
     ws.init_workspace_settings_db()
     with sqlite3.connect(str(_isolated)) as conn:
         conn.execute(
-            "INSERT INTO workspace_settings (id, mode, timezone) VALUES (1, 'party', 'Nowhere/Land')"
+            "INSERT INTO workspace_settings (id, mode, timezone) VALUES (1, 'party', ?)",
+            (stored,),
         )
     assert ws.get_workspace() == ws.WorkspaceSettings()
+    assert ws.get_user_timezone().key == "UTC"
 
 
-def test_read_error_reads_as_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stored_bad_zone_keeps_a_valid_mode(_isolated: Path) -> None:
+    ws.init_workspace_settings_db()
+    with sqlite3.connect(str(_isolated)) as conn:
+        conn.execute(
+            "INSERT INTO workspace_settings (id, mode, timezone) VALUES (1, 'solo', 'America')"
+        )
+    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone=None)
+
+
+class _Records(logging.Handler):
+    """Collects records straight off the module logger. caplog hangs off the
+    root logger, which misses them once another test in the same worker has
+    run the app's logging setup (it stops `openexecutive` propagating)."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture()
+def ws_log() -> Any:
+    handler = _Records()
+    log = logging.getLogger(ws.__name__)
+    old_level = log.level
+    log.addHandler(handler)
+    log.setLevel(logging.DEBUG)
+    yield handler
+    log.removeHandler(handler)
+    log.setLevel(old_level)
+
+
+def test_read_error_reads_as_defaults_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ws_log: _Records
+) -> None:
     garbage = tmp_path / "garbage.db"
     garbage.write_bytes(b"this is not a sqlite database" * 100)
     monkeypatch.setattr(episodic, "DB_PATH", garbage)
     assert ws.get_workspace() == ws.WorkspaceSettings()
+    warnings = [r for r in ws_log.records if r.levelno == logging.WARNING]
+    assert warnings and "could not read settings" in warnings[0].getMessage()
+    # The traceback is kept, at debug, for diagnosis.
+    assert any(r.levelno == logging.DEBUG and r.exc_info for r in ws_log.records)
+
+
+def test_any_read_failure_reads_as_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_path: Path) -> Any:
+        raise PermissionError("denied")
+
+    ws.init_workspace_settings_db()
+    monkeypatch.setattr(ws, "_connect", _boom)
+    assert ws.get_workspace() == ws.WorkspaceSettings()
+
+
+def test_a_missing_table_reads_as_defaults_silently(_isolated: Path, ws_log: _Records) -> None:
+    assert ws.get_workspace() == ws.WorkspaceSettings()
+    assert ws_log.records == []
 
 
 # --------------------------------------------------------------------------- #

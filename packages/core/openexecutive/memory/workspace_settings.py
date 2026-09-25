@@ -29,7 +29,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
@@ -90,37 +90,65 @@ def init_workspace_settings_db(db_path: Path | None = None) -> None:
         conn.close()
 
 
+def load_zone(name: str) -> ZoneInfo | None:
+    """``ZoneInfo(name)``, or None when ``name`` is not a loadable zone.
+
+    ``zoneinfo`` fails in more ways than ``ZoneInfoNotFoundError``: a region
+    directory ("America") raises ``IsADirectoryError``, an unnormalized or
+    escaping key ("Europe/", "../etc") ``ValueError``, a non-TZif file
+    ``ValueError`` again. Every zone name this module takes from a user, a
+    file or the database goes through here, so none of them can escape as a
+    500, an aborted fixture load or a failed boot.
+    """
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+
 def validate_timezone(tz: str | None) -> str | None:
     """Return ``tz`` as a known IANA zone name, or None for "not set".
 
-    Blank means "clear". Raises ``ValueError`` for anything ``zoneinfo`` does
-    not know — the same rule as the ``USER_TIMEZONE`` setting.
+    Blank means "clear". Raises ``ValueError`` for anything ``zoneinfo``
+    cannot load — the same rule as the ``USER_TIMEZONE`` setting.
     """
     if tz is None:
         return None
+    if not isinstance(tz, str):
+        raise ValueError("timezone must be a string")
     name = tz.strip()
     if not name:
         return None
-    if len(name) > _MAX_TZ_LEN:
-        raise ValueError("timezone is not a known IANA zone")
-    try:
-        ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(f"timezone {name!r} is not a known IANA zone") from exc
+    if len(name) > _MAX_TZ_LEN or load_zone(name) is None:
+        raise ValueError(f"timezone {name[:_MAX_TZ_LEN]!r} is not a known IANA zone")
     return name
+
+
+def _stored_zone(raw: object) -> str | None:
+    """A stored zone name if it still loads, else None (logged). Never raises."""
+    try:
+        if raw is not None and not isinstance(raw, str):
+            raise ValueError("not a string")
+        return validate_timezone(raw)
+    except ValueError:
+        logger.warning("workspace: ignoring unknown stored timezone %r", raw)
+        return None
 
 
 def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
     """The stored settings, or the defaults when nothing is stored.
 
-    Never raises: a read error is logged and reads as the defaults, and a
-    stored value that is no longer valid (a hand-edited mode, a zone this
-    Python's tz database does not know) is ignored field by field.
+    Never raises — boot, every chat turn and the scheduler read it. A
+    missing file, table or row reads as the defaults; any read error (a
+    locked or corrupt DB, say) also reads as the defaults but is logged as
+    a warning so it can be diagnosed; and a stored value that no longer
+    validates (a hand-edited mode, a zone this Python cannot load) is
+    ignored field by field.
     """
-    path = _resolve_db_path(db_path)
-    if not path.exists():
-        return WorkspaceSettings()
     try:
+        path = _resolve_db_path(db_path)
+        if not path.exists():
+            return WorkspaceSettings()
         conn = _connect(path)
         try:
             row = conn.execute(
@@ -130,10 +158,10 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
             conn.close()
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc):
-            logger.exception("workspace: could not read settings — using defaults")
+            _log_read_failure(exc)
         return WorkspaceSettings()
-    except sqlite3.Error:
-        logger.exception("workspace: could not read settings — using defaults")
+    except Exception as exc:
+        _log_read_failure(exc)
         return WorkspaceSettings()
     if row is None:
         return WorkspaceSettings()
@@ -142,12 +170,15 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
     if mode not in WORKSPACE_MODES:
         logger.warning("workspace: ignoring unknown stored mode %r", mode)
         mode = DEFAULT_MODE
-    try:
-        timezone = validate_timezone(row["timezone"])
-    except ValueError:
-        logger.warning("workspace: ignoring unknown stored timezone %r", row["timezone"])
-        timezone = None
-    return WorkspaceSettings(mode=mode, timezone=timezone)
+    return WorkspaceSettings(mode=mode, timezone=_stored_zone(row["timezone"]))
+
+
+def _log_read_failure(exc: BaseException) -> None:
+    logger.warning(
+        "workspace: could not read settings (%s: %s) — using the defaults",
+        type(exc).__name__, exc,
+    )
+    logger.debug("workspace: settings read failure", exc_info=exc)
 
 
 def _configured_timezone() -> ZoneInfo:
@@ -155,17 +186,18 @@ def _configured_timezone() -> ZoneInfo:
     try:
         from openexecutive.config import get_settings
 
-        return ZoneInfo(get_settings().user_timezone)
+        zone = load_zone(get_settings().user_timezone)
     except Exception:
-        return ZoneInfo("UTC")
+        zone = None
+    return zone if zone is not None else ZoneInfo("UTC")
 
 
 def get_user_timezone(db_path: Path | None = None) -> ZoneInfo:
-    """The zone in effect: the workspace's, else ``USER_TIMEZONE``, else UTC."""
+    """The zone in effect: the workspace's, else ``USER_TIMEZONE``, else UTC.
+    Never raises."""
     stored = get_workspace(db_path).timezone
-    if stored:
-        return ZoneInfo(stored)
-    return _configured_timezone()
+    zone = load_zone(stored) if stored else None
+    return zone if zone is not None else _configured_timezone()
 
 
 def effective_workspace_mode(session: Session | None = None) -> WorkspaceMode:
@@ -209,9 +241,10 @@ def set_timezone(tz: str | None) -> WorkspaceSettings:
     for an unknown zone.
 
     When the zone in effect changes, the pending morning brief, end-of-day
-    digest and reflection are re-timed to the new zone
-    (``scheduler.runner.reschedule_principal_rhythm``); a brief that is
-    running right now finishes and chains its successor in the new zone.
+    digest and reflection rows are re-timed to the new zone in place
+    (``scheduler.runner.reschedule_principal_rhythm``: nothing inserted,
+    never two runs of a kind within 12h, never a skipped day); a brief that
+    is running right now finishes and chains its successor in the new zone.
     The re-time is best-effort: if it fails, it is logged and each brief
     moves to the new zone after it next fires (every link reads the zone
     fresh), so the stored setting is never rolled back.

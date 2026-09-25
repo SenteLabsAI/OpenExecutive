@@ -74,17 +74,23 @@ def test_put_timezone_and_mode(
     client: TestClient, db: Path, audit_events: list[tuple[str, dict[str, Any]]]
 ) -> None:
     _roster_principal_and_teammate()
+    from openexecutive.scheduler.runner import seed_principal_briefs
+
+    seed_principal_briefs()
+
+    def _rows() -> set[tuple[int, str, str]]:
+        with sqlite3.connect(str(db)) as conn:
+            return set(conn.execute("SELECT id, kind, status FROM scheduled_actions"))
+
+    before = _rows()
     resp = client.put("/workspace", json={"timezone": "America/Denver"}, headers=PRINCIPAL)
     assert resp.status_code == 200
     assert resp.json() == {
         "mode": "team", "timezone": "America/Denver", "effective_timezone": "America/Denver",
     }
-    # The zone change re-timed the principal's rhythm.
-    with sqlite3.connect(str(db)) as conn:
-        kinds = {r[0] for r in conn.execute(
-            "SELECT kind FROM scheduled_actions WHERE status = 'pending'"
-        )}
-    assert kinds == {"principal_brief_morning", "principal_brief_eod", "executive_reflection"}
+    # The zone change re-timed the principal's rhythm in place: same rows,
+    # still pending, nothing inserted or cancelled.
+    assert _rows() == before
 
     resp = client.put("/workspace", json={"mode": "solo"}, headers=PRINCIPAL)
     assert resp.status_code == 200
@@ -124,6 +130,13 @@ def test_put_unchanged_values_is_a_quiet_no_op(
     "body",
     [
         {"timezone": "Mars/Olympus_Mons"},
+        # zoneinfo raises IsADirectoryError / ValueError for these — a 422,
+        # never a 500.
+        {"timezone": "America"},
+        {"timezone": "Europe/"},
+        {"timezone": "../etc"},
+        {"timezone": "/etc/localtime"},
+        {"timezone": 7},
         {"timezone": "x" * 65},
         {"mode": "enterprise"},
         {"mode": None},

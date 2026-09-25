@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, time
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from openexecutive.alerts.models import (
     SEVERITY_RANK,
@@ -24,7 +24,7 @@ def _row_to_prefs(row: sqlite3.Row) -> UserPreferences:
         severity_threshold=AlertSeverity(d.get("severity_threshold", "medium")),
         quiet_hours_start=d.get("quiet_hours_start") or "",
         quiet_hours_end=d.get("quiet_hours_end") or "",
-        quiet_hours_tz=d.get("quiet_hours_tz") or "",
+        quiet_hours_tz=d.get("quiet_hours_tz") or "UTC",
         channels_enabled=channels or [
             AlertChannel.WEB,
             AlertChannel.SLACK_DM,
@@ -83,18 +83,24 @@ def _parse_hhmm(s: str) -> time | None:
         return None
 
 
-def _quiet_hours_zone(prefs: UserPreferences) -> ZoneInfo:
-    """The zone quiet hours are read in: a stored one (including an explicit
-    "UTC"), else — when none is stored, or it is unknown — the user's zone
-    (workspace setting, else USER_TIMEZONE, else UTC)."""
-    stored = (prefs.quiet_hours_tz or "").strip()
-    if stored:
-        try:
-            return ZoneInfo(stored)
-        except (ZoneInfoNotFoundError, ValueError):
-            pass
-    from openexecutive.memory.workspace_settings import get_user_timezone
+# Stored quiet-hours zones that mean "follow the user's zone". "UTC" is the
+# model default and the column DEFAULT (alerts/store.py), so every existing
+# row carries it, and nothing in the app writes this column (only
+# `save_preferences`, which no route calls) — a stored "UTC" is the default,
+# never a choice. Any other zone that loads is honoured as a choice.
+_FOLLOW_USER_ZONE = frozenset({"", "UTC"})
 
+
+def _quiet_hours_zone(prefs: UserPreferences) -> ZoneInfo:
+    """The zone quiet hours are read in: an explicitly chosen one, else the
+    user's zone (workspace setting, else USER_TIMEZONE, else UTC)."""
+    from openexecutive.memory.workspace_settings import get_user_timezone, load_zone
+
+    stored = (prefs.quiet_hours_tz or "").strip()
+    if stored not in _FOLLOW_USER_ZONE:
+        zone = load_zone(stored)
+        if zone is not None:
+            return zone
     return get_user_timezone()
 
 

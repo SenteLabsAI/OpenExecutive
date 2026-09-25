@@ -1122,36 +1122,111 @@ def seed_principal_briefs() -> int:
     return inserted
 
 
-def reschedule_principal_rhythm() -> int:
-    """Re-time the principal's briefs and reflection after the user's zone
-    changed: cancel their FUTURE pending rows, then seed fresh ones.
+# Two runs of one recurring principal kind are never closer than this, even
+# across a change of zone — so a zone change can neither send a second brief
+# the same local day nor, by moving a row more than this far, skip one.
+_PRINCIPAL_MIN_GAP = timedelta(hours=12)
 
-    Left alone, so they still fire once and chain their successor in the new
-    zone: a row that is running right now, and a pending row that is already
-    due (held by a pause or a missing company profile, or simply not claimed
-    yet) — cancelling that one would silently drop the brief it holds.
-    ``seed_principal_briefs`` skips any kind that still has such a row.
-    Returns the number of rows seeded.
+
+def _parse_run_at(raw: object) -> datetime | None:
+    """A stored ``run_at`` as an aware UTC datetime (naive → UTC), or None."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+def _chain_after(action: ScheduledAction) -> datetime:
+    """The ``after`` a recurring principal row chains from: now, but never
+    within ``_PRINCIPAL_MIN_GAP`` of the occurrence that just fired. In a
+    steady zone this changes nothing (the next occurrence is ~24h out); it
+    matters when the zone changed while the row ran — without it the next
+    local time could land a few hours later, a second brief the same day."""
+    now = datetime.now(UTC)
+    fired = _parse_run_at(action.run_at)
+    return max(now, fired + _PRINCIPAL_MIN_GAP) if fired is not None else now
+
+
+def reschedule_principal_rhythm(now: datetime | None = None) -> int:
+    """Re-time the principal's briefs and reflection in place after the
+    user's zone changed. Returns the number of rows moved.
+
+    Only a kind's PENDING, not-yet-due row is touched, and only its
+    ``run_at`` — nothing is inserted or cancelled, so this cannot race the
+    chain into a duplicate. A kind with no such row (one is running, one
+    just fired and is between ``mark_action_done`` and its chain insert, or
+    a due row is held by a pause or a missing company profile) is left
+    alone: that run chains its successor in the new zone itself.
+
+    The new time is the kind's next occurrence in the new zone after
+    ``max(now, last fired run + _PRINCIPAL_MIN_GAP)`` — never a second run
+    the same day. If that is more than ``_PRINCIPAL_MIN_GAP`` later than the
+    row's current time, moving it would skip a day, so the row keeps its
+    time for this one occurrence and the chain picks up the new zone.
     """
     from openexecutive.memory.episodic import _get_conn, _resolve_db_path
 
     resolved = _resolve_db_path(None)
-    if resolved.exists():
-        kinds = list(_RECURRING_KIND_ENV)
-        placeholders = ",".join("?" for _ in kinds)
+    if not resolved.exists():
+        return 0
+    now = now or datetime.now(UTC)
+    kinds = list(_RECURRING_KIND_ENV)
+    placeholders = ",".join("?" for _ in kinds)
+    with _get_conn(resolved) as conn:
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+        ).fetchone() is None:
+            return 0
+        rows = conn.execute(
+            "SELECT id, kind, run_at, status FROM scheduled_actions "
+            f"WHERE kind IN ({placeholders}) "  # noqa: S608 — placeholders only
+            "AND status IN ('pending', 'running', 'done')",
+            kinds,
+        ).fetchall()
+
+    # Plan with the DB closed: `_next_principal_run_at` reads the zone
+    # through its own connection.
+    moves: list[tuple[int, str, str]] = []
+    for kind in kinds:
+        fired = [
+            t for r in rows
+            if r["kind"] == kind and r["status"] in ("running", "done")
+            and (t := _parse_run_at(r["run_at"])) is not None
+        ]
+        floor = max(now, max(fired) + _PRINCIPAL_MIN_GAP) if fired else now
+        for r in rows:
+            if r["kind"] != kind or r["status"] != "pending":
+                continue
+            old = _parse_run_at(r["run_at"])
+            if old is None or old <= now:
+                continue  # due (or unreadable): it fires as it is
+            new = _next_principal_run_at(kind, floor)
+            if new is None or new == old:
+                continue
+            if new - old > _PRINCIPAL_MIN_GAP:
+                logger.info(
+                    "scheduler: keeping %s at %s once (the new zone's %s would skip a day)",
+                    kind, old.isoformat(), new.isoformat(),
+                )
+                continue
+            moves.append((int(r["id"]), str(r["run_at"]), new.isoformat()))
+
+    moved = 0
+    if moves:
         with _get_conn(resolved) as conn:
-            table_present = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
-            ).fetchone()
-            if table_present is not None:
-                cancelled = conn.execute(
-                    "UPDATE scheduled_actions SET status = 'cancelled' "
-                    f"WHERE status = 'pending' AND kind IN ({placeholders}) "  # noqa: S608 — placeholders only
-                    "AND run_at > ?",
-                    (*kinds, datetime.now(UTC).isoformat()),
+            for action_id, old_raw, new_raw in moves:
+                # Guarded on the row being untouched since it was read: a
+                # claim (→ running) or any other write in between wins.
+                moved += conn.execute(
+                    "UPDATE scheduled_actions SET run_at = ? "
+                    "WHERE id = ? AND status = 'pending' AND run_at = ?",
+                    (new_raw, action_id, old_raw),
                 ).rowcount
-                logger.info("scheduler: cancelled %d pending brief row(s) to re-time", cancelled)
-    return seed_principal_briefs()
+    logger.info("scheduler: re-timed %d principal rhythm row(s) to the new zone", moved)
+    return moved
 
 
 def _enqueue_next_principal_brief(kind: str, after: datetime) -> int | None:
@@ -1463,7 +1538,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
     # bad brief doesn't kill the recurring rhythm. Worst case the next
     # tick re-attempts on the same shape of input.
     mark_action_done(action.id)
-    _enqueue_next_principal_brief(kind, after=datetime.now(UTC))
+    _enqueue_next_principal_brief(kind, after=_chain_after(action))
 
 
 def _outreach_source(action: ScheduledAction) -> tuple[str, str]:
@@ -1581,4 +1656,4 @@ async def _run_executive_reflection(
     # Always chain + mark done so a single failed reflection doesn't
     # kill the recurring rhythm.
     mark_action_done(action.id)
-    _enqueue_next_principal_brief("executive_reflection", after=datetime.now(UTC))
+    _enqueue_next_principal_brief("executive_reflection", after=_chain_after(action))

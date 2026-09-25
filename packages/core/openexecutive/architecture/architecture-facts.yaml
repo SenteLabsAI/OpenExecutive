@@ -2029,9 +2029,17 @@ departments:
     Its own table, not a CompanyProfile field, because onboarding's commit
     and the form wizard rebuild the profile from scratch and would wipe it.
     Reads are fresh and read-only (a missing file/table reads as the
-    defaults and is never created). API: get_workspace(),
+    defaults and is never created) and NEVER raise — the lifespan, every
+    turn and the scheduler read them: a read error reads as the defaults
+    with a warning (traceback at debug), and a stored zone that no longer
+    loads is treated as unset. Every zone name from a user, a file or the
+    DB goes through `load_zone`, which catches everything zoneinfo raises
+    (not only ZoneInfoNotFoundError: "America" is IsADirectoryError,
+    "Europe/" and "../etc" ValueError) — so a bad zone is a 422 on the
+    API, a skipped value in a fixture, never a 500 or a failed boot.
+    API: get_workspace(),
     get_user_timezone() -> ZoneInfo, set_timezone(tz) (validated like
-    USER_TIMEZONE; re-times the principal's briefs via
+    USER_TIMEZONE; re-times the principal's briefs in place via
     scheduler.runner.reschedule_principal_rhythm when the zone in effect
     moves), set_workspace_mode(mode) (solo cancels pending dept_cadence
     rows; team re-runs bootstrap_cadences; department rows stay),
@@ -2039,9 +2047,16 @@ departments:
     else the workspace). HTTP: GET /workspace, PUT /workspace
     (principal-only, open before a principal exists). Per company: blank
     client slots wipe it (clients.slots._BLANK_WIPE_TABLES), saved slots
-    carry it in state.db, fixture load/unload reset it and apply an
-    optional workspace.yaml (the user snapshot writes one), and the
-    factory reset returns it to the defaults before re-bootstrapping. The
+    carry it in state.db, and the factory reset returns it to the defaults
+    before re-bootstrapping. Fixtures: `_apply_state_from_source` reads and
+    validates the source's optional workspace.yaml before swapping anything
+    (bad values are logged and skipped, never abort the load); a fixture
+    load resets to the defaults and applies it; the user snapshot writes
+    one, and a load while the live state is the user's own (no fixture, no
+    client active) rewrites `_user_backup/workspace.yaml` even when an
+    older backup is reused — unload keeps `_user_backup`; an unload from a
+    backup with no workspace.yaml (one that predates it) leaves the current
+    settings as they are instead of resetting them. The
     lifespan skips check_org_completeness in solo (it only warns about
     departments with no head).
   head_persona: openexecutive.departments.head_persona — generates a department-head voice persona when a head is assigned.
@@ -2225,7 +2240,7 @@ scheduler:
     - nudge_scan — internal heartbeat row owned by the nudge engine; the runner calls `nudge_engine.run_nudge_scan()` and chains the next tick via `nudge_engine.enqueue_next_scan()`. Bypasses outbound dispatch. Emission is also capped per `scope_key` at `NUDGE_MAX_PER_SCOPE` (default 3) delivered nudges (`episodic.count_nudges_for_scope`), so a parked item is not chased forever.
     - "alert_review_scan — internal heartbeat row owned by the Executive alert review (`alerts.review`). Bootstrapped idempotently at scheduler startup when `ALERT_REVIEW_ENABLED`, fires every `ALERT_REVIEW_INTERVAL_HOURS` (default 6); the runner calls `run_alert_review(reason='heartbeat')`, marks done, and chains the next tick — same crash-resilient shape as nudge_scan. `_run_principal_brief` also runs a `pre_brief` pass before the morning brief so the brief reflects fresh verdicts (a review failure never blocks the brief). Bypasses outbound dispatch itself; the moves it makes go through the real DM / draft handlers. See the `alert_review:` key. Not a kind but loop-level: the runner also calls `_maybe_sweep_alerts` (alert TTL expiry, `alerts.lifecycle.expire_stale_alerts`) once at boot and every 15 min at the top of the tick — BEFORE the company-profile and rotation gates, so an old backlog expires even pre-onboarding — pure DB hygiene, no heartbeat row."
     - proactive_nudge — per-channel nudge action emitted by `run_nudge_scan`. Carries a `scope_key` for cooldown dedup and `assigned_to_person_id` for a dispatch-time on-leave re-check that runs BEFORE the ad-hoc dispatch path: if the assignee has gone unreachable since the scan, the runner reschedules into the next available slot (clamped to fall after on_leave_until) or drops the nudge with an audit event rather than dispatching to a deaf channel.
-    - "principal_brief_morning — Shift 3 recurring row that runs the `morning_brief` workflow and DMs the artifact to the principal via their preferred channel. Seeded once per database at scheduler startup via `seed_principal_briefs()`; each fire chains the next occurrence in `_run_principal_brief()` so the recurring rhythm survives crashes. Time of day defaults to 08:00 in the user's zone (memory.workspace_settings.get_user_timezone: the workspace's zone, else USER_TIMEZONE, else UTC), computed DST-safe via `departments.cadence._parse_cadence_spec('daily@HH:MM', after, tz)`. A valid `PRINCIPAL_BRIEF_MORNING_TIME` (HH:MM) pins the time and is still read as UTC, as before zones existed, so a pinned time never moves; a malformed value is logged and ignored like an unset one. An install that set USER_TIMEZONE but pinned nothing does move to that zone, from each kind's first fire after the upgrade (rows seeded before it keep their old UTC time once). A change of zone runs `reschedule_principal_rhythm()`: FUTURE pending rows of all three recurring kinds are cancelled and re-seeded; a running row, or a pending row already due (held by a pause or a missing company profile), is left alone and chains its successor in the new zone."
+    - "principal_brief_morning — Shift 3 recurring row that runs the `morning_brief` workflow and DMs the artifact to the principal via their preferred channel. Seeded once per database at scheduler startup via `seed_principal_briefs()`; each fire chains the next occurrence in `_run_principal_brief()` so the recurring rhythm survives crashes. Time of day defaults to 08:00 in the user's zone (memory.workspace_settings.get_user_timezone: the workspace's zone, else USER_TIMEZONE, else UTC), computed DST-safe via `departments.cadence._parse_cadence_spec('daily@HH:MM', after, tz)`. A valid `PRINCIPAL_BRIEF_MORNING_TIME` (HH:MM) pins the time and is still read as UTC, as before zones existed, so a pinned time never moves; a malformed value is logged and ignored like an unset one. An install that set USER_TIMEZONE but pinned nothing does move to that zone, from each kind's first fire after the upgrade (rows seeded before it keep their old UTC time once). A change of zone runs `reschedule_principal_rhythm()`, which re-times each kind's PENDING, not-yet-due row IN PLACE (UPDATE run_at, guarded on the row being unchanged since it was read) and never inserts or cancels, so it cannot race the chain's mark_done → enqueue gap into a duplicate. New time: the next occurrence in the new zone after max(now, the kind's last fired run + 12h) — never two runs of a kind within 12h — except that if it is more than 12h later than the row's current time (moving would skip a day, e.g. at 07:59Z moving to Europe/London) the row keeps its time once. A kind with no such row (running, between mark_done and its chain insert, or a due row held by a pause / missing profile) is left alone; its chain times the next one in the new zone, and the chain itself starts from max(now, fired run_at + 12h) so a zone change mid-run cannot put a second brief hours after the first."
     - "principal_brief_eod — same shape as morning_brief, fires once per day at 18:00 in the user's zone (an explicitly set `PRINCIPAL_BRIEF_EOD_TIME` is read as UTC). Runs `end_of_day_digest` workflow. Both brief kinds bypass the per-channel anti-spam guards because the principal is by definition deliverable (channel_ref=`principal`, channel=`__internal__` triggers the workflow run rather than a direct send)."
     - "executive_reflection — Shift 5 recurring row. Seeded alongside the principal briefs (idempotent via `_has_pending_brief`), default 07:30 in the user's zone (an explicitly set `PRINCIPAL_REFLECTION_TIME` is read as UTC). The scheduler runs `_run_executive_reflection`: invokes the `executive_reflection` workflow, stores the artifact via `complete_run`, audits the outcome, then chains the next occurrence — same crash-survival pattern as principal briefs. Unlike the briefs, the artifact is NOT delivered to the principal — the morning brief that fires 30 minutes later surfaces what reflection decided via the existing /today/activity rail."
     - "external_monitor_scan — heartbeat owned by the external-condition monitoring layer. Default every 5 min via EXTERNAL_MONITOR_SCAN_INTERVAL_MINUTES. The runner calls `monitoring.pipeline.run_external_monitor_scan()` which walks enabled watchlist rows whose `last_polled_at` is stale enough, fires the matching adapter (vendor_status, rss, stock, the billed standing-query `query` adapter, the `edgar` SEC-filings adapter, and the stateful `page_watch` change-detector), enriches promotable signals with capture-time relevance, writes `external_signals` rows, and promotes qualifying signals into the alerts pipeline. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`external_monitor`). Chains the next tick via `enqueue_next_external_monitor_scan` after firing — same idempotent / crash-resilient pattern as `nudge_scan`."
@@ -4608,10 +4623,12 @@ integrations:
     `channels_enabled` governs PERSONAL delivery (DM me, email me),
     not org-level routing the triage agent already decided on.
     Severity threshold and quiet hours still apply. Quiet hours are read
-    in `user_preferences.quiet_hours_tz` when a known zone is stored there
-    (an explicit "UTC" included); the UserPreferences default is now "" —
-    no zone of its own — which reads in the user's zone
-    (memory.workspace_settings.get_user_timezone).
+    in the user's zone (memory.workspace_settings.get_user_timezone) when
+    `user_preferences.quiet_hours_tz` is "UTC" or empty, and in the stored
+    zone otherwise (an unloadable one also falls back to the user's zone).
+    "UTC" is the model default and the column DEFAULT, so every existing
+    row carries it, and nothing in the app writes the column — a stored
+    "UTC" is the default, never a choice.
 
     Privacy invariant (board / comp / legal / valuation / layoffs /
     severance stays DM-only) is encoded BOTH in the triage prompt
