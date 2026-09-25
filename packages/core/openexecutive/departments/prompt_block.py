@@ -239,14 +239,24 @@ def _render_solo_goal(goal: Goal) -> str:
     return line
 
 
-def _render_solo_founder(people: list) -> str:
+def _render_solo_founder() -> str:
     """The founder's own line: name and the channels they can be reached on.
 
-    The identifiers are there so a follow-up to the founder can name its
+    The founder is ``people.store.find_principal_person`` — the oldest
+    non-archived principal, the same rule every solo check uses (the
+    founder-only messaging guard, follow-ups, the meeting gate) — so the
+    person this block names is the person those checks let through. The
+    identifiers are there so a follow-up to the founder can name its
     channel_ref without a lookup. Other contacts are not listed — they are
     reached only when the founder asks, via list_people.
     """
-    principal = next((p for p in people if getattr(p, "is_principal", False)), None)
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+    except Exception:
+        logger.warning("render_org_block: principal lookup failed — omitting the founder", exc_info=True)
+        return ""
     if principal is None:
         return ""
     reach: list[str] = []
@@ -293,9 +303,9 @@ def _render_solo_goals(states: list[DepartmentState]) -> str:
     ])
 
 
-def _render_solo_block(states: list[DepartmentState], people: list) -> str:
+def _render_solo_block(states: list[DepartmentState]) -> str:
     return "\n\n".join(
-        part for part in (_render_solo_founder(people), _render_solo_goals(states)) if part
+        part for part in (_render_solo_founder(), _render_solo_goals(states)) if part
     )
 
 
@@ -340,7 +350,7 @@ def render_org_block(mode: str = "team") -> str:
             people = []
 
         if mode == "solo":
-            return _cap(_render_solo_block(states, people).strip())
+            return _cap(_render_solo_block(states).strip())
 
         # Build a quick id→name map for head-person lookups.
         head_name_by_id: dict[int, str] = {

@@ -512,3 +512,37 @@ def test_stream_chat_pins_the_mode_for_the_tool_handlers() -> None:
         assert seen == ["solo", "solo"]
         asyncio.run(_drain())
     assert seen[2:] == ["team", "team"]
+
+
+def test_solo_org_block_names_the_same_founder_as_every_solo_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The founder line comes from people.store.find_principal_person — the
+    rule founder_only_handlers, follow-ups and the meeting gate use — not
+    from whichever principal-flagged row a cached roster lists first."""
+    pid = _seed_founder_and_goals()
+    second = people_store.upsert_person(
+        full_name="Aaron Second", role="Co-owner", is_principal=True, email="a@example.com"
+    )
+    people_registry.invalidate()
+    founder = people_store.find_principal_person()
+    assert founder is not None and founder.id == pid  # the oldest principal
+    block = render_org_block(mode="solo")
+    assert f"- Maya Lindqvist (principal) — person_id {pid}" in block
+    assert "Aaron Second" not in block
+
+    # Whatever that rule names is what the block names.
+    other = people_store.get_person(second)
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_principal_person", lambda db_path=None: other
+    )
+    assert f"- Aaron Second (principal) — person_id {second}" in render_org_block(mode="solo")
+
+    # A failed lookup drops the founder line, never the goals or the turn.
+    def _boom(db_path: Any = None) -> Any:
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr("openexecutive.people.store.find_principal_person", _boom)
+    block = render_org_block(mode="solo")
+    assert "## The Founder" not in block
+    assert "## Your Goals" in block

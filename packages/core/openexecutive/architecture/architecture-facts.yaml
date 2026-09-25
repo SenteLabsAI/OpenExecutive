@@ -2320,9 +2320,14 @@ departments:
     preferred channel) then "## Your Goals" grouped by area (area title +
     slug, each goal's period, key result, target, current, status and
     goal_id); areas with no goals are skipped; no authority levels, heads,
-    cadences, channels or People roster. Deterministic, sanitized, and held
-    to the same 4000-char cap (the founder's line comes first so the cap
-    only ever cuts goals).
+    cadences, channels or People roster. The founder is
+    people.store.find_principal_person (the oldest non-archived principal),
+    the same rule every solo check uses (founder_only_handlers, the
+    follow-up rule, the meeting gate, reflection's founder line, research's
+    founder roster), so the person named is the person those checks let
+    through; a failed lookup drops the line, never the goals. Deterministic,
+    sanitized, and held to the same 4000-char cap (the founder's line comes
+    first so the cap only ever cuts goals).
   charters_dir: openexecutive.departments.charters — per-department playbooks loaded into the head persona.
   watched_entities: |
     `DepartmentConfig.watched_entities: list[str]` — external entities

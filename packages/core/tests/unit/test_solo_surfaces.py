@@ -159,6 +159,35 @@ def test_reflection_in_solo_offers_no_team_tools_and_frames_the_founder(
     assert "Client Contact" not in turn
 
 
+def test_solo_passes_name_the_founder_by_the_shared_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reflection's founder line and research's founder roster use
+    people.store.find_principal_person, like founder_only_handlers."""
+    from openexecutive.workflows.executive_reflection import (
+        _find_founder,
+        _render_founder_line,
+    )
+    from openexecutive.workflows.executive_research import _founder_only
+
+    _solo()
+    pid = _founder()
+    second = people_store.upsert_person(
+        full_name="Aaron Second", is_principal=True, email="a@example.com"
+    )
+    people = people_store.list_people()
+    assert _find_founder().id == pid
+    assert f"person_id={pid}" in _render_founder_line(_find_founder())
+    assert [p.id for p in _founder_only(people)] == [pid]
+
+    other = people_store.get_person(second)
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_principal_person", lambda db_path=None: other
+    )
+    assert [p.id for p in _founder_only(people)] == [second]
+    assert _find_founder().id == second
+
+
 def test_reflection_in_team_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator.schedule_tools import configured_integrations
     from openexecutive.workflows.executive_reflection import _build_reflection_system

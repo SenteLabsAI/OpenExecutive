@@ -241,11 +241,23 @@ def _build_reflection_system_solo() -> str:
     )
 
 
-def _render_founder_line(people: list[Any]) -> str:
+def _find_founder() -> Any:
+    """The founder: ``people.store.find_principal_person`` (the oldest
+    non-archived principal), the same rule as every other solo check. None
+    when there is none or the roster cannot be read."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        return find_principal_person()
+    except Exception:
+        logger.exception("reflection: principal lookup failed")
+        return None
+
+
+def _render_founder_line(principal: Any) -> str:
     """Solo: the founder's person_id and follow-up refs, in place of the team
     roster — the model needs them for create_alert / schedule_followup and
     has nobody else to address."""
-    principal = next((p for p in people if getattr(p, "is_principal", False)), None)
     if principal is None or getattr(principal, "id", None) is None:
         return ""
     refs: list[str] = []
@@ -646,7 +658,8 @@ class ExecutiveReflectionWorkflow(Workflow):
             mode=mode,
         )
         # Solo has no team roster: only the founder's own line.
-        roster = _render_founder_line(people) if solo else _render_team_roster(people)
+        founder = _find_founder() if solo else None
+        roster = _render_founder_line(founder) if solo else _render_team_roster(people)
         if roster:
             user_content = roster + "\n" + user_content
 
@@ -660,9 +673,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         # Solo seeds only the founder's refs: this unattended pass never
         # schedules anything to a contact.
         seen: set[tuple[str, str]] = set()
-        for person in people:
-            if solo and not person.is_principal:
-                continue
+        for person in ([founder] if founder is not None else []) if solo else people:
             if person.slack_user_id:
                 seen.add(("slack_dm", person.slack_user_id))
             if person.discord_user_id:

@@ -834,7 +834,7 @@ async def _executive_synthesis_loop(
     outer_session = current_session.get()
     mode = effective_workspace_mode(outer_session)
     solo = mode == "solo"
-    roster_people = [p for p in people if getattr(p, "is_principal", False)] if solo else people
+    roster_people = _founder_only(people) if solo else people
     has_roster = bool(_render_team_roster(roster_people))
     user_content = _render_synthesis_turn(findings, people, mode=mode)
 
@@ -1371,6 +1371,23 @@ def _render_team_roster(people: list[Any], heading: str = "YOUR TEAM") -> str:
     )
 
 
+def _founder_only(people: list[Any]) -> list[Any]:
+    """Solo: just the founder from ``people`` — the person
+    ``people.store.find_principal_person`` names (the oldest non-archived
+    principal), the same rule as every other solo check. Empty when there is
+    none or the roster cannot be read."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+    except Exception:
+        logger.exception("research.synthesis: principal lookup failed")
+        return []
+    if principal is None:
+        return []
+    return [p for p in people if getattr(p, "id", None) == principal.id]
+
+
 def _render_synthesis_turn(
     findings: list[ResearchFinding], people: list[Any], mode: str = "team"
 ) -> str:
@@ -1380,7 +1397,7 @@ def _render_synthesis_turn(
     solo = mode == "solo"
     roster_heading = "THE FOUNDER" if solo else "YOUR TEAM"
     if solo:
-        people = [p for p in people if getattr(p, "is_principal", False)]
+        people = _founder_only(people)
     roster = _render_team_roster(people, heading=roster_heading)
     if roster:
         parts.append(roster)
