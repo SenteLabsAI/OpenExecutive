@@ -4485,32 +4485,40 @@ workflows:
     run, no session) gets a plain JSON error that does not name the rule,
     audited refused=true with workflow, mode and caller context. A check that
     raises refuses. Team `morning_brief` is launchable by anyone as before.
-    Over HTTP the same modes apply with the web caller rule instead of the
-    surface rule: `POST /workflows/{name}/runs` (the Jobs page) and
-    `POST /evals/runs` (a workflow scenario runs `workflow.run` on live data
-    and streams the artifact back) call
-    `api.routes.workflows.refuse_principal_only_run`, which lets through
-    only the principal or anyone while no principal is on the roster
-    (`chat._caller_is_principal_or_unclaimed`, the PUT /workspace rule; a
-    request with no x-caller-email, the CLI or local login, is the
-    principal). Anyone else gets a 403 whose detail does not name the rule
-    ("Only the principal can run this workflow." / "Only the principal can
-    run the <id> eval."), before `create_run` or `create_eval_run`, audited
-    like the chat refusal (tool_invocation, refused=true, workflow, mode,
-    caller_person_id, surface jobs or evals, actor the caller's email). The
-    mode is the stored one (`read_stored_mode`), or for an eval the
-    scenario's workspace_mode first; a mode that cannot be read counts as
-    principal-only (`workflows.base.principal_only_in`), and a roster that
-    cannot be read refuses. The evals route hands `run_scenarios` the
-    scenario list it checked (`scenarios=`), so a user scenario edited in
-    between cannot swap in an unchecked workflow. Residual: the Jobs route
-    checks the stored mode, then the workflow reads the mode again when it
-    runs, so a team-to-solo switch in that instant (only the principal can
-    make one) could give a teammate the solo morning brief. Known gap, not
-    covered: reading a finished run is not gated. The scheduler records
-    every brief and weekly review in workflow_runs, and GET /workflows/runs,
-    GET /workflows/runs/{run_id}, the /artifacts routes and GET
-    /evals/runs/{run_id} return artifacts to any signed-in caller. Running a workflow
+    Over HTTP the same modes decide who may START or TRIGGER such a run,
+    with a web caller rule instead of the surface rule:
+    `POST /workflows/{name}/runs` (the Jobs page) and `POST /evals/runs` (a
+    workflow scenario runs `workflow.run` on live data) call
+    `api.routes.workflows.refuse_principal_only_run`. It lets through only a
+    caller whose x-caller-email is the principal's own, non-archived entry,
+    or a request with no x-caller-email (the CLI, local login, a direct call
+    behind the shared secret; the UI proxy stamps every other session's
+    email), which counts as the principal and needs no roster read
+    (`_caller_is_the_principal`). Unlike PUT /workspace
+    (`chat._caller_is_principal_or_unclaimed`, unchanged), an install with no
+    principal on the roster lets no signed-in caller in: that state follows
+    archiving the old principal to re-run onboarding, or a roster filled in
+    before anyone was flagged, and teammates can be signed in then. The
+    chat gate refuses everyone in that state too. Anyone else gets a 403
+    whose detail does not name the rule ("Only the principal can run this
+    workflow." / "Only the principal can run the <id> eval."), before
+    `create_run` or `create_eval_run`, audited like the chat refusal
+    (tool_invocation, refused=true, workflow, mode, caller_person_id,
+    surface jobs or evals, actor the caller's email). The mode is the stored
+    one (`read_stored_mode`), or for an eval the scenario's workspace_mode
+    first; a mode that cannot be read counts as principal-only
+    (`workflows.base.principal_only_in`), and a roster that cannot be read
+    refuses a caller with an email. The evals route hands `run_scenarios`
+    the scenario list it checked (`scenarios=`), so a user scenario edited
+    in between cannot swap in an unchecked workflow. Residual: the Jobs
+    route checks the stored mode, then the workflow reads the mode again
+    when it runs, so a team-to-solo switch in that instant (only the
+    principal can make one) could let a teammate start the solo morning
+    brief. The gate is about starting a run, not reading one: stored runs,
+    the scheduled briefs and weekly reviews included, are read under the
+    existing GET /workflows/runs and /workflows/runs/{run_id} rules (and
+    stored eval results under /evals/runs), the same as the rest of the
+    app's records such as /memories/decisions. Running a workflow
     from chat DELIVERS NOTHING — it renders the artifact into the conversation; the
     recurring principal briefs reach anyone only through the scheduler's
     `_deliver_to_principal`. The tool description previously claimed
@@ -5616,18 +5624,21 @@ evals:
     pricing). evals/run_evals.py passes the block through too.
   principal_only: |
     A workflow scenario runs `workflow.run` directly on the install's live
-    data and streams the artifact back, so POST /evals/runs refuses (403,
-    audited, surface evals) a kind=workflow run when any of its scenarios
-    names a workflow that is the principal's alone in the mode it would run
-    in (the scenario's workspace_mode, else the stored mode) and the caller
-    is not the principal, or anyone while no principal exists. Today that is
+    data, so an eval run is another way to trigger a workflow. POST
+    /evals/runs refuses (403, audited, surface evals) a kind=workflow run
+    when any of its scenarios names a workflow that is the principal's alone
+    in the mode it would run in (the scenario's workspace_mode, else the
+    stored mode) and the caller is not the principal. A request with no
+    x-caller-email counts as the principal, and an install with no
+    principal on the roster lets no signed-in caller in. Today that is
     workflow_weekly_review_001 and any user scenario naming weekly_review,
     or morning_brief in solo. It is the Jobs page's rule
     (api.routes.workflows.refuse_principal_only_run; see workflows). The
     route passes the list it checked to run_scenarios(scenarios=...) rather
     than letting it load the scenarios again. Chat scenarios need no check
     here: an eval Session is no verified surface, so run_workflow refuses
-    those workflows inside the turn.
+    those workflows inside the turn. The check covers who may trigger the
+    run; stored eval results are read under the existing /evals/runs rules.
 
 company_onboarding:
   module: openexecutive.onboarding (interview.py, commit.py, wizard.py) + api.routes.onboarding

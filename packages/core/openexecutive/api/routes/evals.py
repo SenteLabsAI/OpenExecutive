@@ -371,11 +371,12 @@ def _refuse_principal_only_scenarios(
     alone in the mode it would run in, and the caller is not the principal.
 
     The workflow runner calls ``workflow.run`` directly on the install's live
-    data and returns the artifact, so ``weekly_review`` here would hand the
-    principal's decision log to anyone who can sign in. Same rule as
-    ``POST /workflows/{name}/runs`` (``refuse_principal_only_run``). The mode
-    is the scenario's ``workspace_mode``, else the workspace's; one that
-    cannot be read counts as principal-only.
+    data, so an eval run is another way to trigger one: only the principal
+    may, as on ``POST /workflows/{name}/runs`` (``refuse_principal_only_run``).
+    This controls who may trigger the run; stored eval results are read
+    under the existing ``/evals/runs`` rules. The mode is the scenario's
+    ``workspace_mode``, else the workspace's; one that cannot be read counts
+    as principal-only.
     """
     from openexecutive.api.routes.workflows import refuse_principal_only_run
     from openexecutive.evals.runner import scenario_workspace_mode

@@ -117,12 +117,13 @@ class Workflow(ABC):
     # workflows.playbooks.load_playbook (a test holds the two in sync).
     playbooks: tuple[str, ...] = ()
     # Workspace modes in which only the principal may start this workflow:
-    # its artifact carries the principal's own data (their decisions,
+    # it is built from the principal's own data (their decisions,
     # commitments, goals, calendar) or it writes to them. Chat
     # (`run_workflow`) also wants a surface that verified it is them; the
     # Jobs page (`POST /workflows/{name}/runs`) and an eval run
-    # (`POST /evals/runs`) want a web caller who is the principal. Empty =
-    # anyone. See `principal_only_in`.
+    # (`POST /evals/runs`) want a web caller who is the principal. It
+    # controls who starts a run, not who reads one: stored runs follow the
+    # `/workflows/runs` rules. Empty = anyone. See `principal_only_in`.
     principal_only_modes: ClassVar[frozenset[str]] = frozenset()
 
     @abstractmethod

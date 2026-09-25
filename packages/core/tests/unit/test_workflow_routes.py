@@ -595,13 +595,27 @@ def test_principal_only_run_allows_the_principal(
 
 
 @pytest.mark.parametrize(("workflow", "mode"), PRINCIPAL_ONLY_CASES)
-def test_principal_only_run_is_open_on_an_unclaimed_install(
+def test_principal_only_run_with_no_principal_on_the_roster(
     principal_only: Any, workflow: str, mode: str
 ) -> None:
-    """Before anyone is the principal, nobody can be locked out of it."""
-    _roster(with_principal=False)
+    """No principal on the roster (the roster filled in before anyone was
+    flagged, or the old principal archived to re-run onboarding) lets no
+    signed-in caller in, unlike PUT /workspace. A request with no caller
+    header (the CLI, local login) still counts as the principal."""
+    from openexecutive.people import store as people_store
+
+    ids = _roster()
     _set_mode(mode)
-    r = _start(principal_only.client, workflow, TEAMMATE_EMAIL)
+    people_store.archive_person(ids["principal"])
+    for email in (TEAMMATE_EMAIL, PRINCIPAL_EMAIL):
+        r = _start(principal_only.client, workflow, email)
+        assert r.status_code == 403, (email, r.text)
+    people_store.upsert_person(full_name="Kim Park", email="kim@example.com")
+    assert _start(principal_only.client, workflow, "kim@example.com").status_code == 403
+    assert list_runs(db_path=principal_only.db) == []
+    assert len(_refusals(principal_only.audit)) == 3
+
+    r = _start(principal_only.client, workflow, None)
     assert r.status_code == 200, r.text
     assert _sse_events(r.text)[-1]["type"] == "done"
 
@@ -646,9 +660,14 @@ def test_an_unreadable_roster_refuses(
     def _boom(*_a: Any, **_kw: Any) -> None:
         raise RuntimeError("database is locked")
 
+    monkeypatch.setattr(people_store, "find_person_by_email", _boom)
     monkeypatch.setattr(people_store, "find_principal_person", _boom)
-    assert _start(principal_only.client, "weekly_review", None).status_code == 403
+    # Even the principal's own email cannot be confirmed, so it is refused...
+    assert _start(principal_only.client, "weekly_review", PRINCIPAL_EMAIL).status_code == 403
     assert list_runs(db_path=principal_only.db) == []
+    assert _refusals(principal_only.audit)[0]["caller_person_id"] is None
+    # ...while a request with no caller header needs no roster read.
+    assert _start(principal_only.client, "weekly_review", None).status_code == 200
 
 
 # The eval runner calls workflow.run directly on live data and streams the
@@ -703,6 +722,21 @@ def test_eval_run_of_a_principal_only_workflow_refuses_a_teammate(
     assert [d["surface"] for d in refusals] == ["evals"] * 3
     assert [d["workspace_mode"] for d in refusals] == ["solo", "team", "solo"]
     assert refusals[0]["scenario_id"] == "wf_weekly_review"
+
+
+def test_eval_run_with_no_principal_on_the_roster(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _roster(with_principal=False)
+    _set_mode("team")
+    client, ran = _eval_client(principal_only, monkeypatch, [_scenario("weekly_review")])
+    r = client.post("/evals/runs", json={"kind": "workflow"},
+                    headers={"x-caller-email": TEAMMATE_EMAIL})
+    assert r.status_code == 403, r.text
+    assert ran == []
+    r = client.post("/evals/runs", json={"kind": "workflow"})
+    assert r.status_code == 200, r.text
+    assert len(ran) == 1
 
 
 def test_eval_run_of_a_principal_only_workflow_allows_the_principal(
