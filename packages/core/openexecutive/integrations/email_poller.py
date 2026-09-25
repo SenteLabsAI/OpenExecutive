@@ -391,6 +391,23 @@ async def _handle_email(
     thread_id: str,
     user_email: str,
 ) -> None:
+    # One message, one turn: no session bound while this message's own rows
+    # are written. `Executive.stream_chat` binds the turn's session without
+    # unbinding it, so otherwise the previous message's session — private to
+    # the principal, say — would still be current in this long-lived task and
+    # decide whether this message's audit rows are private.
+    from openexecutive.orchestrator.schedule_tools import set_session
+
+    with set_session(None):
+        await _handle_one_email(gateway, message_id, thread_id, user_email)
+
+
+async def _handle_one_email(
+    gateway: MCPGateway,
+    message_id: str,
+    thread_id: str,
+    user_email: str,
+) -> None:
     raw = await gateway.call_tool({
         "name": "google_workspace__get_gmail_message_content",
         "arguments": {
@@ -439,12 +456,23 @@ async def _handle_email(
     from openexecutive.audit import log_event as audit_log
     from openexecutive.people.store import find_person_by_email
     sender_in_roster = find_person_by_email(from_addr) is not None
+    # Mail from one of the principal's contacts, or mail they forwarded: its
+    # turn is private to the principal (see `_run_executive`), and so is every
+    # audit row about it — these two included, which name the sender and the
+    # subject. Everyone else reading /audit sees none of them.
+    try:
+        private = _private_to_principal_mail(from_addr, raw)
+    except Exception:
+        logger.exception(
+            "could not tell whether message=%s is private — its audit rows are kept private",
+            message_id,
+        )
+        private = True
     if not sender_in_roster:
         # A contact, like any non-team sender, gets no reply from this turn
         # (the gateway reaches contacts only when the principal asks
-        # directly). Contacts are private to the principal and the audit log
-        # is readable by every signed-in user, so a contact's row is exactly
-        # a non-roster sender's: nothing here says which it was.
+        # directly). A contact's row reads exactly like a non-roster
+        # sender's; only its visibility differs (private to the principal).
         logger.info(
             "non-roster sender=%s message=%s — routing to Executive (no auto-reply allowed)",
             from_addr, message_id,
@@ -459,6 +487,7 @@ async def _handle_email(
                 "message_id": message_id,
                 "outcome": "accepted_non_roster",
             },
+            private=private,
         )
 
     logger.info("routing message=%s to Executive", message_id)
@@ -483,6 +512,7 @@ async def _handle_email(
             "from": from_addr,
             "subject": subject,
         },
+        private=private,
     )
     try:
         await _run_executive(
@@ -533,6 +563,20 @@ def _forwarded(raw_email: str) -> bool:
     """Whether the message carries a forwarded one below the sender's text."""
     _header, body, _attachments = _split_gmail_content(raw_email)
     return _new_text_lines(body)[1]
+
+
+def _private_to_principal_mail(from_addr: str, raw_email: str) -> bool:
+    """Whether this mail's turn is private to the principal — the rule
+    `_run_executive` marks the session with: mail from one of their contacts,
+    or mail the principal forwarded."""
+    if not from_addr:
+        return False
+    from openexecutive.people.store import find_person_by_email
+
+    person = find_person_by_email(from_addr)
+    if person is None:
+        return find_person_by_email(from_addr, include_contacts=True) is not None
+    return person.is_principal is True and _forwarded(raw_email)
 
 
 def _forwarded_by_principal_notice(principal: Any) -> str:

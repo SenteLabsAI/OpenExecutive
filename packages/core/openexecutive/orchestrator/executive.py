@@ -69,6 +69,7 @@ from openexecutive.orchestrator.people_tools import (
     PEOPLE_TOOL_HANDLERS,
     PEOPLE_TOOLS,
     is_principal_on_verified_surface,
+    turn_is_private_to_principal,
 )
 from openexecutive.orchestrator.research_tools import (
     RESEARCH_TOOL_HANDLERS,
@@ -81,11 +82,13 @@ from openexecutive.orchestrator.router import (
     route_parallel,
 )
 from openexecutive.orchestrator.schedule_tools import (
+    PRIVATE_TURN_WITHHELD_TOOLS,
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
     UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
+    private_turn_withheld_error,
     tools_withheld_in_mode,
     unattended_withheld_error,
     withheld_tool_error,
@@ -1492,7 +1495,16 @@ class Executive:
             if bool(getattr(current_session.get(), "unattended", False))
             else frozenset()
         )
-        withheld_tools = tools_withheld_in_mode(workspace_mode) | unattended_withheld
+        # A turn private to the principal (mail from one of their contacts,
+        # mail they forwarded) may reach the principal and nobody else: it is
+        # not offered the tools that post to other people, publish where they
+        # read, or start work outside the turn — again a stable list of its
+        # own.
+        private_withheld = (
+            PRIVATE_TURN_WITHHELD_TOOLS if turn_is_private_to_principal() else frozenset()
+        )
+        not_offered = unattended_withheld | private_withheld
+        withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
@@ -1522,14 +1534,15 @@ class Executive:
             # tools (e.g. web_search) are appended after — they use a `type`
             # field instead of input_schema and cannot accept cache_control.
             # Solo withholds the team-only tools before the sort, so each mode
-            # has its own stable, sorted tool prefix.
+            # has its own stable, sorted tool prefix (as do an unattended run
+            # and a turn private to the principal).
             client_tools = sorted(
                 (
                     t for t in filter_tools_for_workspace_mode(
                         [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
                         workspace_mode,
                     )
-                    if t["name"] not in unattended_withheld
+                    if t["name"] not in not_offered
                 ),
                 key=lambda t: t["name"],
             )
@@ -1642,6 +1655,14 @@ class Executive:
                     tu for tu in skill_tool_uses if tu["name"] not in withheld_tools
                 ]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
+            # A private turn is not offered load_mcp_server either (it
+            # reaches any URL), and the same guard refuses it.
+            withheld_mcp_uses = [tu for tu in mcp_tool_uses if tu["name"] in private_withheld]
+            if withheld_mcp_uses:
+                mcp_tool_uses = [
+                    tu for tu in mcp_tool_uses if tu["name"] not in private_withheld
+                ]
+                withheld_uses = [*withheld_uses, *withheld_mcp_uses]
 
             specialist_calls = [
                 {
@@ -1726,6 +1747,30 @@ class Executive:
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
             for tu in withheld_uses:
+                if tu["name"] in private_withheld:
+                    # Fail closed: never run, and leave a trace — private to
+                    # the principal like every row this turn writes.
+                    logger.warning(
+                        "skill:%s refused — the turn is private to the principal", tu["name"]
+                    )
+                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                    audit_log(
+                        "tool_invocation",
+                        f"{kind}:{tu['name']} refused: the turn is private to the principal",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor="executive",
+                        details={
+                            "tool": tu["name"],
+                            "kind": kind,
+                            "iteration": iteration,
+                            "ok": False,
+                            "refused": "private_turn",
+                        },
+                        private=True,
+                    )
+                    results_by_id[tu["id"]] = private_turn_withheld_error(tu["name"])
+                    continue
                 if tu["name"] in unattended_withheld:
                     logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
                     results_by_id[tu["id"]] = unattended_withheld_error(tu["name"])

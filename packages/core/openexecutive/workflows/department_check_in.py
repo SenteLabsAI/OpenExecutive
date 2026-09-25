@@ -138,9 +138,11 @@ class DepartmentCheckInWorkflow(Workflow):
         dept_decisions = [d for d in all_decisions if d.department == slug]
 
         # Recent audit entries — filter by department in Python since the
-        # query() method doesn't accept a department filter yet.
+        # query() method doesn't accept a department filter yet. Never the
+        # rows private to the principal: the check-in reports to the
+        # department.
         try:
-            all_audit = get_audit_logger().query(limit=30)
+            all_audit = get_audit_logger().query(limit=30, include_private=False)
             audit_entries = [e for e in all_audit if e.department == slug][:20]
         except Exception:
             audit_entries = []

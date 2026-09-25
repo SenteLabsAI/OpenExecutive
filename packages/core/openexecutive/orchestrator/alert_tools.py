@@ -71,7 +71,13 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.orchestrator.schedule_tools import current_session
 
+    # A turn about the principal's private mail raises a private alert (the
+    # pipeline routes it to the principal whatever was asked below), and its
+    # audit rows — which name the sender and quote the body — are the
+    # principal's alone to read.
+    private = getattr(current_session.get(), "private_to_principal", False) is True
     try:
         event = AlertEvent(
             source=tool_input.get("source", "unknown"),
@@ -92,11 +98,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                 if _routable_person(routed_id):
                     event.routed_to_person_id = routed_id
                     event.user = f"person:{routed_id}"
-        # A turn about the principal's private mail raises a private alert
-        # (the pipeline routes it to the principal whatever was asked here).
-        from openexecutive.orchestrator.schedule_tools import current_session
-
-        if getattr(current_session.get(), "private_to_principal", False) is True:
+        if private:
             event.private = True
         schedule_evaluation(event)
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
@@ -110,6 +112,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                 "from": tool_input.get("from_address", ""),
                 "body_preview": str(tool_input.get("body", ""))[:300],
             },
+            private=event.private,
         )
         return json.dumps({"status": "alert_scheduled", "subject": tool_input["subject"]})
     except Exception as exc:
@@ -124,5 +127,6 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                 "error": str(exc)[:300],
                 "ok": False,
             },
+            private=private,
         )
         return json.dumps({"error": str(exc)})

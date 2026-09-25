@@ -1648,6 +1648,71 @@ def unattended_withheld_error(tool_name: str) -> str:
     })
 
 
+# What a turn private to the principal (`Session.private_to_principal`: mail
+# from one of their contacts, mail they forwarded — set by the email poller)
+# is never offered. Such a turn may reach the principal and nobody else, and
+# each of these reaches someone else, publishes where others read it, or
+# starts work that runs outside the turn without its privacy:
+# - send_company_broadcast, send_department_message: post to the team.
+# - cancel_calendar_event: notifies every attendee.
+# - create_calendar_event, create_instant_meeting: the booking is listed on
+#   everyone's /decisions (in team mode proposed to the meeting approver) and
+#   schedules a post-meeting recap run.
+# - run_workflow, run_executive_research: start a workflow, whose steps (and
+#   the research synthesis) can message people and department channels.
+# - schedule_followup, suggest_workflow: queue a later run that is not
+#   private (it can go through a department approver), shown on the team's
+#   activity list.
+# - add_watchlist_entry: starts monitoring whose alerts are not private, and
+#   the entry is on everyone's /watchlist.
+# - draft_artifact: artifacts are visible to the whole team (the handler also
+#   refuses on a private turn).
+# - update_department_goal: goal status and progress text render in every
+#   turn's org block and on /today.
+# - save_workflow: the definition is listed on everyone's /jobs.
+# - create_skill, update_skill, delete_skill: the draft goes on the shared
+#   skill review list.
+# - load_mcp_server: connects to any HTTPS URL the model names — the URL
+#   itself can carry the turn's content to a stranger.
+# Still offered: the email, DM and invite paths reach the principal and
+# refuse anyone else (`people_tools.PRIVATE_TURN_REFUSAL`, the gateway's
+# allow-list), and an alert the turn raises is private to the principal. The
+# roster tools and create_goal already refuse every private turn (they run
+# only for the principal on a verified surface, and these turns come from
+# email). The chat loop drops this set from the offered list before the sort,
+# so a private turn has a stable tool prefix of its own, and refuses a call
+# the model emits anyway (`private_turn_withheld_error`), MCP tools included.
+PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "add_watchlist_entry",
+    "cancel_calendar_event",
+    "create_calendar_event",
+    "create_instant_meeting",
+    "create_skill",
+    "delete_skill",
+    "draft_artifact",
+    "load_mcp_server",
+    "run_executive_research",
+    "run_workflow",
+    "save_workflow",
+    "schedule_followup",
+    "send_company_broadcast",
+    "send_department_message",
+    "suggest_workflow",
+    "update_department_goal",
+    "update_skill",
+})
+
+
+def private_turn_withheld_error(tool_name: str) -> str:
+    """The JSON error tool_result for a call a turn private to the principal
+    may not make."""
+    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
+
+    return json.dumps({
+        "error": f"{tool_name} is not available on this turn. {PRIVATE_TURN_REFUSAL} Do not retry."
+    })
+
+
 def handlers_for_offered_tools(
     tools: list[dict[str, Any]], handlers: dict[str, Any]
 ) -> dict[str, Any]:

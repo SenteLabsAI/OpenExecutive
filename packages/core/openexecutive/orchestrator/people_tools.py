@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import date
 from typing import Any
@@ -346,6 +347,103 @@ PRIVATE_TURN_REFUSAL = (
     "the principal. Tell the principal instead and let them decide who else "
     "should know."
 )
+
+
+def audit_row_private_to_principal(*payloads: Any) -> bool:
+    """Whether an audit row written now is the principal's alone to read
+    (``api.routes.audit`` leaves it out for anyone else). ``payloads`` are the
+    row's summary, details and full payload.
+
+    True for every row a private turn writes (``turn_is_private_to_principal``)
+    and, while contacts are reachable (``contacts_reachable_now``: the
+    principal's own verified turn, or ``grant_contact_egress``), for a row
+    that names one of their contacts — an email or invite to one, a DM, a
+    question about one. On any other turn a contact is a stranger, so a row
+    naming one stays as it is: hiding it would tell whoever wrote it that
+    the address is a contact.
+    """
+    if turn_is_private_to_principal():
+        return True
+    if not contacts_reachable_now():
+        return False
+    return _names_a_contact(payloads)
+
+
+# Keys whose value is a person or a DM recipient: person_id,
+# assigned_to_person_id, attendee_person_ids, user_id, discord_user_id,
+# chat_id, channel_ref. Matched against a contact's person id and chat ids.
+_PERSON_REF_KEY = re.compile(r"(?:^|_)(?:person_ids?|user_id|chat_id|channel_ref)$")
+# JSON inside a string (a tool result) is walked too, up to this size.
+_MAX_JSON_WALK_CHARS = 100_000
+
+
+def _scalars(value: Any, key: str = "") -> Iterator[tuple[str, Any]]:
+    """Every (key, leaf value) in ``value``: dicts and lists are walked, and a
+    string that holds a JSON object or list is parsed and walked as well."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from _scalars(v, str(k))
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for v in value:
+            yield from _scalars(v, key)
+    else:
+        yield key, value
+        if (
+            isinstance(value, str)
+            and value[:1] in ("{", "[")
+            and len(value) <= _MAX_JSON_WALK_CHARS
+        ):
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return
+            if isinstance(parsed, (dict, list)):
+                yield from _scalars(parsed, key)
+
+
+def _names_a_contact(payloads: tuple[Any, ...]) -> bool:
+    """Whether ``payloads`` name one of the principal's contacts: their email
+    address or full name (two words or more) anywhere in the text, or their
+    person id or chat id in a person / recipient field. Fails closed."""
+    try:
+        from openexecutive.people.registry import list_people
+
+        contacts = [p for p in list_people(include_contacts=True) if p.kind != "team"]
+    except Exception:
+        logger.exception("people_tools: contact lookup for an audit row failed — row kept private")
+        return True
+    if not contacts:
+        return False
+    emails = {e for p in contacts if (e := (p.email or "").strip().lower())}
+    names = {
+        n for p in contacts
+        if len((n := " ".join((p.full_name or "").split()).lower()).split()) >= 2
+    }
+    refs = {str(p.id) for p in contacts if p.id is not None} | {
+        r for p in contacts
+        for v in (p.slack_user_id, p.discord_user_id, p.telegram_chat_id)
+        if (r := str(v or "").strip())
+    }
+    # Longest first, so one address is never matched as part of another; the
+    # guards stop "an@x.co" matching inside "dan@x.co".
+    terms = sorted(
+        [rf"(?<![\w.+-]){re.escape(e)}(?![\w-])" for e in emails]
+        + [rf"(?<!\w){re.escape(n)}(?!\w)" for n in names],
+        key=len, reverse=True,
+    )
+    pattern = re.compile("|".join(terms)) if terms else None
+    for key, value in _scalars(payloads):
+        if value is None or isinstance(value, bool):
+            continue
+        if (
+            pattern is not None
+            and isinstance(value, str)
+            and pattern.search(" ".join(value.split()).lower())
+        ):
+            return True
+        if refs and _PERSON_REF_KEY.search(key) and str(value).strip() in refs:
+            return True
+    return False
 
 
 def _roster_refusal_reason(session: Any) -> str | None:

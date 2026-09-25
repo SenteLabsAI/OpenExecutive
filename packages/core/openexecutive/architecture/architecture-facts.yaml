@@ -173,6 +173,15 @@ caching:
     unchanged: prompts/executive_persona.py is plain literals concatenated
     at import (shared head / body / tail + _TEAM_* or _SOLO_* sections, never
     formatted) and a test pins the team prompt's sha256.
+  private_turn_prefix: |
+    A turn private to the principal (Session.private_to_principal — the email
+    poller sets it for mail from one of their contacts and for mail they
+    forwarded) is sent the tool list without
+    schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS, dropped BEFORE the sort like
+    the solo and unattended sets, so it stays sorted, keeps its 1h marker on
+    the last tool, and private turns in a mode share that one stable prefix. The
+    system blocks are unchanged: such a turn comes from email, which is never
+    the principal's verified surface, so block 1 is the no-contacts variant.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
   intra_turn_cache: |
     executive._apply_loop_cache_marker moves a single ephemeral marker onto
@@ -2637,8 +2646,36 @@ people:
     mail and principal forwards) raises private alerts (`AlertEvent.private`:
     tagged, routed to the principal, persisted only — no live push, email
     or broadcast — and deduped only against other private alerts), can
-    email / DM / invite only the principal (`PRIVATE_TURN_REFUSAL`) and
-    cannot publish an artifact. A private alert shows on the principal's
+    email / DM / invite only the principal (`PRIVATE_TURN_REFUSAL`), and
+    is neither offered nor allowed to run
+    `schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS` (the chat loop drops them
+    before the sort and answers a call the model emits anyway with
+    `private_turn_withheld_error`, audited). The set is everything that
+    reaches someone else, publishes where others read, or starts work
+    outside the turn: send_company_broadcast and send_department_message
+    (post to the team); cancel_calendar_event (notifies every attendee);
+    create_calendar_event and create_instant_meeting (the booking is on
+    everyone's /decisions, in team mode proposed to the meeting approver,
+    and schedules a recap run); run_workflow and run_executive_research
+    (their steps message people and department channels);
+    schedule_followup and suggest_workflow (queue a later run that is not
+    private and can go through a department approver, shown on the
+    activity list); add_watchlist_entry (monitoring whose alerts are not
+    private, the entry on everyone's /watchlist); draft_artifact (visible
+    to the whole team; its handler refuses too); update_department_goal
+    (goal text in every turn's org block and on /today); save_workflow
+    (listed on /jobs); create_skill / update_skill / delete_skill (the
+    shared skill review list); load_mcp_server (connects to any HTTPS URL,
+    which can itself carry the turn's content — the dispatch guard covers
+    MCP tool uses too). Left offered: the email / DM / invite paths
+    (they reach only the principal; Gmail goes through call_tool, whose
+    Gmail / Calendar / Drive gates narrow recipients to the principal),
+    create_alert (private on such a turn),
+    reads, propose_form_values (the caller's own screen, and email has
+    none), ack_alert / close_open_loop / tune_ / remove_watchlist_entry
+    (carry nothing from the turn to anyone); the roster tools and
+    create_goal refuse every private turn already (principal on a verified
+    surface only). A private alert shows on the principal's
     own `/today` and chat digest only: `_build_today` excludes it by
     default (brief, digest, reflection, Discord /today), the narrative
     and activity rail never include it, the alert review never selects
@@ -2646,8 +2683,14 @@ people:
     and their bulk sweep skips it. DMs to a contact are not written to
     the activity rail.
 
-    THE AUDIT LOG (/audit, readable by every signed-in user) carries no
-    contact-specific signal: contact mail is logged exactly like any
+    THE AUDIT LOG (/audit, readable by every signed-in user) keeps what is
+    private to the principal to the principal: every row a private turn
+    writes, the poller's inbound rows for contact mail and principal
+    forwards, a private alert's row, and any row on the principal's own
+    verified turn that names one of their contacts are
+    `private_to_principal`, and every read route leaves them out for anyone
+    else (see `audit.private_rows`). The rows themselves carry no
+    contact-specific signal either: contact mail is logged exactly like any
     outside sender's (`accepted_non_roster`, and the contact notice opens
     with the non-roster notice's sentence so memory_snapshot's
     user_message_preview matches); `upsert_person` rows are name- and
@@ -2661,10 +2704,10 @@ people:
     nothing to peer or department memory, and the principal's own peer
     memory answers only the principal (`ask_about_person` returns the empty
     answer on anyone else's turn; `/memories/people` and `/conclusions`
-    leave the principal out for anyone else). Still open: the audit log
-    records every turn's reply and tool inputs in full, the principal's
-    included, so what the principal says about a contact in conversation
-    is visible there — closing that needs a principal-only audit scope.
+    leave the principal out for anyone else). Still open: a row on the
+    principal's own turn that names a contact some other way than their
+    address, full name, person id or chat id (a first name, a nickname)
+    is not recognised and stays readable by everyone.
 
     Prompt block: `departments.prompt_block.render_org_block(include_contacts=...)`
     renders contacts in a compact `## Contacts` section after "People You
@@ -3239,8 +3282,45 @@ chat:
 audit:
   purpose: Persistent, searchable record of valuable events. Separate from episodic memory (which biases future LLM behaviour) — audit is for humans to inspect what the system did.
   db: ./episodic_memory.db (shares the SQLite file used by episodic/alerts/cache — one file to look in)
-  table: audit_log (id, ts, event_type, session_id, turn_id, actor, summary, details_json, full_json, department)
+  table: audit_log (id, ts, event_type, session_id, turn_id, actor, summary, details_json, full_json, department, private_to_principal)
   department_filter: AuditLogger.query(department=…) filters on the department column in SQL. The department check-in skip rule uses it; a Python filter over the newest page missed department rows on a busy day.
+  private_rows: |
+    `private_to_principal` (INTEGER NOT NULL DEFAULT 0, added by the
+    PRAGMA-guarded migration) marks a row only the principal may read.
+    Every signed-in user can read /audit, and the principal's private
+    matters (mail from their contacts, mail they forward, who their
+    contacts are) must not reach them through it. Set at write time by
+    AuditLogger.log: `private=True` from the caller (the email poller's
+    two inbound rows for contact mail and principal forwards;
+    create_alert's row for a private alert), OR
+    people_tools.audit_row_private_to_principal(summary, details, full):
+      - True for every row written while the turn is private to the
+        principal (turn_is_private_to_principal — Session.private_to_principal
+        on current_session): the chat_turn reply, tool_invocation rows,
+        cache_event rows, and background passes whose task inherited the
+        turn's context.
+      - While contacts are reachable (contacts_reachable_now: the
+        principal's own verified turn, or grant_contact_egress), True for
+        a row that names one of their contacts: their email address or
+        full name (two words or more; case- and spacing-insensitive, word-
+        bounded so "an@x.co" never matches "dan@x.co") anywhere in the
+        text, or their person id or Slack / Discord / Telegram id in a
+        person or recipient field (key ending person_id / person_ids /
+        user_id / chat_id / channel_ref). Dicts, lists and JSON strings
+        (tool results) are walked.
+      - Otherwise False. On anyone else's turn a contact is a stranger, so
+        a row naming one keeps its visibility: hiding it would tell the
+        teammate who wrote it that the address is a contact.
+    A caller can add privacy, never remove it (`private=False` on a
+    private turn still writes a private row), and the check fails closed:
+    if it raises, or the roster cannot be read, the row is private.
+    Reads: query / count / usage_summary take include_private (default
+    True for internal readers; the department check-in passes False, since
+    its report goes to the department); api.routes.audit passes
+    `caller_is_principal(request)` — the /alerts and /decisions rule: the
+    principal's signed-in email, or no x-caller-email (CLI, curl, local
+    login) once a principal is on the roster; nobody before one is. The
+    filter is SQL, so `total` and pagination stay honest.
   event_types:
     - chat_turn — one row per user-facing turn (latency, tokens, session)
     - specialist_consult — one row per consult_specialist tool call; full payload includes `active_prompt_blocks` so the flow-chart view can show which cached system blocks were live
@@ -3271,7 +3351,7 @@ audit:
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
-  read_path: openexecutive.api.routes.audit — `GET /audit/logs` (filtered list), `GET /audit/logs/{id}` (un-truncated `full_json` drill-down), `GET /audit/sessions/{session_id}` (full ordered timeline + server-derived graph of nodes/edges for the /audit/session/[id] flow-chart view), and `GET /audit/usage` (cross-session token + cost aggregate — totals plus by-day and by-model breakdowns, summed from cache_event rows in SQL via `AuditLogger.usage_summary()` so it scales past the 1000-row `query()` cap).
+  read_path: openexecutive.api.routes.audit — `GET /audit/logs` (filtered list), `GET /audit/logs/{id}` (un-truncated `full_json` drill-down), `GET /audit/sessions/{session_id}` (full ordered timeline + server-derived graph of nodes/edges for the /audit/session/[id] flow-chart view), and `GET /audit/usage` (cross-session token + cost aggregate — totals plus by-day and by-model breakdowns, summed from cache_event rows in SQL via `AuditLogger.usage_summary()` so it scales past the 1000-row `query()` cap). For a caller who is not the principal every route leaves out rows private to the principal (see `private_rows`) — the list and its total, the usage totals, a session's timeline (404 when nothing is left) — and a private row's id answers 404 exactly like a missing one.
   redaction: openexecutive.audit.redaction strips secrets and bounds detail blobs (`_DETAILS_MAX_LEN`) so a runaway tool input never bloats the index.
   ui_surfaces:
     - /audit — filterable list with optional "Group by session" toggle, clickable session pills, and a per-group mini node-strip with "Open full view →" link
@@ -4966,7 +5046,14 @@ integrations:
     unattributed (person_id None) and the gateway refuses mail to a
     contact on a poller turn anyway. This turn and the principal-forward
     turn below set `Session.private_to_principal`: they reach the
-    principal only, raise private alerts and cannot publish artifacts
+    principal only, raise private alerts, are not offered
+    `schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS`, and write only audit rows
+    private to the principal — the poller's two inbound rows included
+    (`_private_to_principal_mail`, the same rule). Each message is handled
+    with no session bound (`schedule_tools.set_session(None)`), because
+    `Executive.stream_chat` binds its session without unbinding it and the
+    poller is one long-lived task: otherwise one message's private turn
+    would still be current, and would mark, the next message's rows
     (see `people.kind`). Mail FORWARDED BY THE PRINCIPAL (the sender
     resolves to the principal and `_new_text_lines` reports a forward)
     is framed as `<forwarded_by_principal>`: summarise it, draft a reply

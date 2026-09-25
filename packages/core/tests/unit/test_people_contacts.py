@@ -937,16 +937,17 @@ def test_a_teammates_forward_is_not_framed_as_the_principals(roster: SimpleNames
     assert "<forwarded_by_principal>" not in message
 
 
-def _poller_audit_rows() -> list[tuple[str, str, dict[str, Any]]]:
+def _poller_audit_rows() -> list[tuple[str, str, dict[str, Any], bool]]:
     import openexecutive.integrations.email_poller as poller
 
-    audited: list[tuple[str, str, dict[str, Any]]] = []
+    audited: list[tuple[str, str, dict[str, Any], bool]] = []
     gateway = AsyncMock()
     gateway.call_tool = AsyncMock(return_value=_raw(f"Jordan <{CONTACT_EMAIL}>"))
     settings = SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)
     with (
         patch("openexecutive.audit.log_event",
-              side_effect=lambda t, summary, **kw: audited.append((t, summary, kw.get("details") or {}))),
+              side_effect=lambda t, summary, **kw: audited.append(
+                  (t, summary, kw.get("details") or {}, kw.get("private") is True))),
         patch.object(poller, "get_settings", return_value=settings),
         patch.object(poller, "_run_executive", new=AsyncMock()),
         patch.object(poller, "_mark_read", new=AsyncMock()),
@@ -955,12 +956,19 @@ def _poller_audit_rows() -> list[tuple[str, str, dict[str, Any]]]:
     return audited
 
 
-def test_contact_mail_is_audited_exactly_like_any_outside_sender(roster: SimpleNamespace) -> None:
+def test_contact_mail_is_audited_like_any_outside_sender_but_privately(
+    roster: SimpleNamespace,
+) -> None:
     as_contact = _poller_audit_rows()
     people_store.archive_person(roster.contact)  # the same address, now nobody's
     as_stranger = _poller_audit_rows()
-    assert as_contact == as_stranger
-    assert any(d.get("outcome") == "accepted_non_roster" for _t, _s, d in as_contact)
+    # The same rows, word for word; only who may read them differs: the
+    # contact's are the principal's alone (every other /audit reader sees
+    # none of them), the stranger's are everyone's.
+    assert [row[:3] for row in as_contact] == [row[:3] for row in as_stranger]
+    assert {row[3] for row in as_contact} == {True}
+    assert {row[3] for row in as_stranger} == {False}
+    assert any(d.get("outcome") == "accepted_non_roster" for _t, _s, d, _p in as_contact)
     assert "contact" not in json.dumps(as_contact)
 
 
