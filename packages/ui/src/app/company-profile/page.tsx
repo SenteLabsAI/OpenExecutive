@@ -12,6 +12,9 @@ import {
   LIST_FIELDS,
   type PendingValues,
 } from "@/components/company-profile/ProfileSections";
+import { PROFILE_COPY } from "@/components/company-profile/profileCopy";
+import { profileWording } from "@/components/shell/navConfig";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   getCompanyProfile,
   updateCompanyProfile,
@@ -22,6 +25,11 @@ import {
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export default function CompanyProfilePage() {
+  // Team: the company profile, as always. Solo: a business owner's business,
+  // anyone else's work — the same fields, worded for them.
+  const { mode, role } = useWorkspace();
+  const wording = profileWording(mode, role.role_kind);
+  const copy = PROFILE_COPY[wording];
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -129,7 +137,7 @@ export default function CompanyProfilePage() {
 
           {notFound && (
             <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl px-5 py-4 flex items-center justify-between">
-              <p className="text-sm text-fg">No company profile set up yet.</p>
+              <p className="text-sm text-fg">{copy.missing}</p>
               <Link href="/onboard" className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
                 Complete setup →
               </Link>
@@ -138,7 +146,7 @@ export default function CompanyProfilePage() {
 
           {profile && (
             <>
-              <div className="flex items-center justify-between mb-8">
+              <div className={`flex items-center justify-between ${copy.intro ? "mb-4" : "mb-8"}`}>
                 <div>
                   <h1 className="text-lg font-semibold text-fg">{profile.name}</h1>
                   <p className="text-sm text-fg-muted mt-0.5">{[profile.industry, profile.stage].filter(Boolean).join(" · ")}</p>
@@ -148,7 +156,29 @@ export default function CompanyProfilePage() {
                 </Link>
               </div>
 
-              <ProfileSections profile={profile} saving={saving} onSave={save} pending={pending} />
+              {copy.intro && (
+                <p className="text-sm text-fg-muted leading-relaxed mb-8">
+                  {copy.intro}
+                  {copy.roleNote && (
+                    <>
+                      {" "}
+                      {copy.roleNote}{" "}
+                      <Link href="/settings" className="whitespace-nowrap text-indigo-400 hover:text-indigo-300 transition-colors">
+                        Settings → Workspace
+                      </Link>
+                      .
+                    </>
+                  )}
+                </p>
+              )}
+
+              <ProfileSections
+                profile={profile}
+                saving={saving}
+                onSave={save}
+                pending={pending}
+                wording={wording}
+              />
             </>
           )}
         </div>

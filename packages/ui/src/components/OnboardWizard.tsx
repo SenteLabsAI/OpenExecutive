@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { PROFILE_COPY } from "@/components/company-profile/profileCopy";
+import { profileWording } from "@/components/shell/navConfig";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { startOnboarding, submitOnboardAnswer, type OnboardStatus } from "@/lib/api";
 
 interface OnboardWizardProps {
@@ -8,6 +11,7 @@ interface OnboardWizardProps {
 }
 
 export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
+  const { mode, role } = useWorkspace();
   const [status, setStatus] = useState<OnboardStatus | null>(null);
   const [answer, setAnswer] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -107,7 +111,7 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
       {/* Progress */}
       <div className="mb-10">
         <div className="flex justify-between text-xs text-fg-muted mb-2.5 font-medium">
-          <span>Setting up your company profile</span>
+          <span>{PROFILE_COPY[profileWording(mode, role.role_kind)].progress}</span>
           <span>{status.progress_percent}% complete</span>
         </div>
         <div className="w-full bg-surface-overlay rounded-full h-1.5">

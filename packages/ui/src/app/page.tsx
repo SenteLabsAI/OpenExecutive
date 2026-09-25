@@ -8,9 +8,12 @@ import Briefing from "@/components/Briefing";
 import Chat from "@/components/Chat";
 import DebugPanel from "@/components/DebugPanel";
 import Icon from "@/components/Icon";
+import { PROFILE_COPY } from "@/components/company-profile/profileCopy";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import { MobileBottomNav } from "@/components/shell/AppShell";
 import AppSidebar from "@/components/shell/AppSidebar";
+import { profileWording } from "@/components/shell/navConfig";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import PausedBanner from "@/components/executive/PausedBanner";
 import { ChatMessage, DebugEvent, getSessionMessages } from "@/lib/api";
 import Link from "next/link";
@@ -28,6 +31,9 @@ const MAX_DRAFT_PARAM_CHARS = 2000;
 export default function HomePage() {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
+  // What the profile is called here (a team's company; in solo, an owner's
+  // business or anyone else's work), for the no-profile banner.
+  const { mode: workspaceMode, role } = useWorkspace();
 
   const [health, setHealth] = useState<HealthData | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -200,6 +206,7 @@ export default function HomePage() {
 
   const isOnboarded = health?.company_profile_loaded === true;
   const companyName = health?.company_name;
+  const profileCopy = PROFILE_COPY[profileWording(workspaceMode, role.role_kind)];
 
   return (
     <div className="flex h-full relative">
@@ -271,9 +278,7 @@ export default function HomePage() {
 
         {!isOnboarded && health && (
           <div className="border-b border-line bg-indigo-500/5 px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
-            <p className="text-xs text-fg-muted">
-              No company profile — responses will be generic.
-            </p>
+            <p className="text-xs text-fg-muted">{profileCopy.missingBanner}</p>
             <Link href="/onboard" className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors whitespace-nowrap cursor-pointer">
               Set up profile →
             </Link>

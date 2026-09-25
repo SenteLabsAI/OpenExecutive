@@ -2199,8 +2199,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                       What&apos;s going on
                     </h2>
                     <InfoTip align="left">
-                      The Executive&apos;s read on the company right now —
-                      synthesized from proposals, at-risk goals, and recent
+                      The Executive&apos;s read on {solo ? "your work" : "the company"} right
+                      now — synthesized from proposals, at-risk goals, and recent
                       activity. Regenerates as the picture changes.
                     </InfoTip>
                   </div>

@@ -1,7 +1,7 @@
 // Type-only imports, so `npm test` can load this file under
 // `node --experimental-strip-types` (see scripts/navConfig.test.mjs).
 import type { IconName } from "@/components/Icon";
-import type { WorkspaceMode } from "@/lib/api";
+import type { RoleKind, WorkspaceMode } from "@/lib/api";
 
 // Single source of truth for the app's navigation. The one sidebar
 // (`components/shell/AppSidebar.tsx`, rendered by both the chat home and
@@ -41,9 +41,65 @@ interface BuildOpts {
   /**
    * "solo" (one person using Open Executive just for themselves) swaps the
    * Company group — Departments, People, Company profile — for "You":
-   * Goals, People and Business profile. Defaults to "team".
+   * Goals, People and the profile, named for `roleKind` (see
+   * `profileWording`). Defaults to "team".
    */
   mode?: WorkspaceMode;
+  /**
+   * The principal's role kind from the workspace settings. Only solo reads
+   * it; null when unset or hidden (GET /workspace returns no role to anyone
+   * but the principal).
+   */
+  roleKind?: RoleKind | null;
+}
+
+// What the profile at /company-profile is called. A team's is its company.
+// In solo it follows the principal's role: an owner's is their business;
+// anyone else's is their work — the organisation they work in, who it
+// serves and their priorities. An unset role, or one the caller can't see,
+// reads as "work", so nobody is told they run a business they don't.
+// The profile page, its breadcrumb and onboarding use the same rule.
+export type ProfileWording = "company" | "business" | "work";
+
+export function profileWording(
+  mode: WorkspaceMode = "team",
+  roleKind: RoleKind | null = null,
+): ProfileWording {
+  if (mode !== "solo") return "company";
+  return roleKind === "owner" ? "business" : "work";
+}
+
+// The profile's nav entry: its label once set up, before setup (it then
+// points at /onboard), and the tooltip / Settings-card description.
+export const PROFILE_NAV: Record<
+  ProfileWording,
+  { label: string; setupLabel: string; description: string }
+> = {
+  company: {
+    label: "Company profile",
+    setupLabel: "Set up company",
+    description: "Your company's identity and strategy — set up once, edited any time.",
+  },
+  business: {
+    label: "Business profile",
+    setupLabel: "Set up your business",
+    description: "Your business — what you offer, who you serve, your priorities.",
+  },
+  work: {
+    label: "Your work",
+    setupLabel: "Set up your work",
+    description: "Your work — the organisation you work in, who it serves, your priorities.",
+  },
+};
+
+function profileItem(wording: ProfileWording, isOnboarded: boolean): NavItem {
+  const copy = PROFILE_NAV[wording];
+  return {
+    href: isOnboarded ? "/company-profile" : "/onboard",
+    label: isOnboarded ? copy.label : copy.setupLabel,
+    icon: "building",
+    description: copy.description,
+  };
 }
 
 const PEOPLE_DESCRIPTION =
@@ -73,19 +129,14 @@ function companyGroup(isOnboarded: boolean): NavGroup {
         icon: "users",
         description: PEOPLE_DESCRIPTION,
       },
-      {
-        href: isOnboarded ? "/company-profile" : "/onboard",
-        label: isOnboarded ? "Company profile" : "Set up company",
-        icon: "building",
-        description: "Your company's identity and strategy — set up once, edited any time.",
-      },
+      profileItem("company", isOnboarded),
     ],
   };
 }
 
 // Solo: the same destinations minus Departments (their goals live on /goals,
 // grouped by area), with the copy speaking to one person.
-function youGroup(isOnboarded: boolean): NavGroup {
+function youGroup(isOnboarded: boolean, roleKind: RoleKind | null): NavGroup {
   return {
     key: "you",
     label: "You",
@@ -97,12 +148,7 @@ function youGroup(isOnboarded: boolean): NavGroup {
         icon: "users",
         description: "The people the Executive knows about — clients, partners, anyone you work with.",
       },
-      {
-        href: isOnboarded ? "/company-profile" : "/onboard",
-        label: isOnboarded ? "Business profile" : "Set up your business",
-        icon: "building",
-        description: "Your business — what you offer, who you serve, your priorities.",
-      },
+      profileItem(profileWording("solo", roleKind), isOnboarded),
     ],
   };
 }
@@ -113,6 +159,7 @@ export function buildPrimaryNav({
   isOnboarded = true,
   reviewBadge = 0,
   mode = "team",
+  roleKind = null,
 }: BuildOpts = {}): NavGroup[] {
   return [
     {
@@ -140,7 +187,7 @@ export function buildPrimaryNav({
         },
       ],
     },
-    mode === "solo" ? youGroup(isOnboarded) : companyGroup(isOnboarded),
+    mode === "solo" ? youGroup(isOnboarded, roleKind) : companyGroup(isOnboarded),
     {
       key: "knowledge",
       label: "Knowledge",

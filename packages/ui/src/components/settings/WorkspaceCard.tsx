@@ -243,8 +243,8 @@ function RoleSection() {
     <div>
       <div className="text-xs font-medium text-fg">Your role</div>
       <p className="text-xs text-fg-muted mt-0.5 mb-2 leading-relaxed">
-        So the Executive&apos;s advice fits your job — whether it&apos;s your own business or you
-        lead a function inside someone else&apos;s.
+        So the Executive&apos;s advice fits your job, whatever your role: your own business, a
+        team you lead, or clients you advise.
       </p>
       <RoleFields
         value={form}
