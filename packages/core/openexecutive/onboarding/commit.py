@@ -188,8 +188,8 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     email would resolve sign-in to the older one); when the drafted
     principal's own row already has a different email (replacing it would
     sign the owner out — web sign-in and caller resolution both key on it —
-    so that change belongs on the People page); or when the roster can't be
-    read. "The drafted principal's row" is the one save_onboarding_people's
+    so the owner changes it on the People page, signed in with the current
+    one); or when the roster can't be read. "The drafted principal's row" is the one save_onboarding_people's
     name-keyed upsert will update — compared by id, because two rows can
     share a name and the upsert then takes the last one.
     """
@@ -223,7 +223,8 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     if own_row is not None and own_row.email and own_row.email.strip().lower() != email:
         raise OwnerEmailError(
             "Your People entry already has a different sign-in email, and setup never "
-            "replaces it. Keep that one here, or change it on the People page."
+            "replaces it. Keep that one here, or sign in with it and change it on the "
+            "People page."
         )
     return email
 
@@ -255,6 +256,37 @@ def owner_change_blocked(principal_name: str, caller_person_id: int | None) -> b
     return caller_person_id is None or not is_principal_or_self(caller_person_id, None)
 
 
+def owner_email_blocked(email: str | None, caller_person_id: int | None, caller_email: str) -> bool:
+    """Whether someone who isn't the owner is filling in the owner's missing
+    email with an address other than the one they signed in with.
+
+    Re-running setup that keeps the owner is open to everyone signed in, and
+    the commit fills in a missing owner email (check_owner_email, then
+    link_owner_email). The roster is the web sign-in allow-list, so an
+    address of the caller's choosing would let them sign in with it and be
+    resolved as the owner. Their own sign-in address is allowed: that is how
+    an owner the app can't recognise yet (their entry has no email; the
+    review screen pre-fills the one they signed in with) links it — and a
+    rostered teammate's own address is already on their own entry, which
+    check_owner_email refuses. Never blocked: nothing to link, a first
+    setup, the owner (no x-caller-email — the CLI, local login — counts),
+    and the owner's current email, which links nothing. ``email`` is
+    check_owner_email's normalised result; ``caller_email`` the lowercased
+    x-caller-email. Lookup errors propagate: the route turns them into a
+    retryable 503.
+    """
+    from openexecutive.people.store import find_principal_person, is_principal_or_self
+
+    if not email:
+        return False
+    current = find_principal_person()
+    if current is None or is_principal_or_self(caller_person_id, None):
+        return False
+    if (current.email or "").strip().lower() == email:
+        return False
+    return email != caller_email
+
+
 def link_owner_email(person_id: int, email: str) -> bool:
     """Fill in the principal's sign-in email.
 
@@ -262,8 +294,8 @@ def link_owner_email(person_id: int, email: str) -> bool:
     check_owner_email refuses both before anything is written, and this
     re-checks the row it is about to change. Best-effort, like the rest of
     this module — the profile is already saved, and a failure here only leaves
-    the owner to add their email on the People page, as before this step
-    existed.
+    the owner's email missing, as before this step existed: running setup
+    again adds it.
     """
     try:
         from openexecutive.people.store import find_person_by_email, get_person, update_person

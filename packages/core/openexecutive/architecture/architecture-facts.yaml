@@ -5496,6 +5496,23 @@ company_onboarding:
     renamed owner included), the caller — resolved from x-caller-email; no
     header means the principal — must be the principal, else 403. Keeping
     the owner, or a first setup, stays open.
+    Owner email on such a re-run: commit.owner_email_blocked, after
+    check_owner_email and before any write — a caller who is not the
+    principal may fill in the owner's MISSING email only with their own
+    x-caller-email (403 otherwise; the owner's current email is a no-op and
+    passes). Why: the roster is the web sign-in allow-list, so an address
+    of the caller's choosing on an email-less owner row would let them sign
+    in with it and resolve to the principal — the takeover the People
+    routes closed by going owner-only. Their own address stays allowed
+    because that is the way in for an owner the app can't recognise yet
+    (the review screen pre-fills it; Setup status's owner light and the
+    roster tools' refusal send them here, since the People page refuses
+    them); a rostered teammate's own address is on their own entry, which
+    check_owner_email refuses. Decision: re-running setup stays open to
+    anyone signed in who keeps the owner — PATCH /company-profile and the
+    department routes already let them change the same profile and
+    departments, so closing setup alone would protect nothing and would
+    remove that way in.
   org_structure_is_derived: |
     profile.org_structure.departments and .leadership_team are computed from
     the reviewed people and department tables at commit time
