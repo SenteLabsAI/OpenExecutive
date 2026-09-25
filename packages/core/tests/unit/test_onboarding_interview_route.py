@@ -776,3 +776,27 @@ def test_a_rejected_owner_email_writes_nothing_and_stays_retryable(
     body["owner_email"] = "dana@example.com"
     assert client.post("/onboard/interview/commit", json=body).status_code == 200
     assert profile_path.exists()
+
+
+def test_a_rerun_never_replaces_the_owners_existing_email(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["owner_email"] = "ops@example.com"
+
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 422
+    assert not profile_path.exists()
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email == "dana@example.com"
+
+    # Kept as it was (what the review screen now pre-fills on a re-run), it saves.
+    body["owner_email"] = "dana@example.com"
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email == "dana@example.com"

@@ -182,9 +182,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // setup already sets AUTH_TRUST_HOST=true explicitly and never relied on
   // that fallback anyway. A deployment that sets neither AUTH_URL nor
   // AUTH_TRUST_HOST gets `false` here — fail-closed, matching intent.
+  // One-person mode trusts the host without being told: there is no OAuth
+  // redirect to steer, only this machine can connect, and its own checks read
+  // the raw Host header, never the forwarded one.
   trustHost:
     Boolean(process.env.AUTH_URL?.trim()) ||
-    process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true",
+    process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true" ||
+    LOCAL_OWNER_MODE,
   // Never both: one-person mode is only ever on while Google is not set up.
   providers: LOCAL_OWNER_MODE ? [localOwner] : [Google],
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check

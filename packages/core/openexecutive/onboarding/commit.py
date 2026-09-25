@@ -182,44 +182,65 @@ class OwnerEmailError(ValueError):
 def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     """Normalise the owner's sign-in email, or return None when left blank.
 
-    Runs BEFORE the commit writes anything. Raises OwnerEmailError when the
-    value is not one plausible address, or when it already belongs to someone
-    other than the drafted principal: two people sharing an email would make
-    sign-in resolve to whichever row is older. The drafted principal maps onto
-    an existing row by case-insensitive name (save_onboarding_people's upsert),
-    so a row of that name holding the email is the owner re-running setup.
+    Runs BEFORE the commit writes anything, and setup only ever FILLS IN a
+    missing email. Raises OwnerEmailError when the value is not one plausible
+    address; when another non-archived person holds it (two rows sharing an
+    email would resolve sign-in to the older one); when the drafted
+    principal's own row already has a different email (replacing it would
+    sign the owner out — web sign-in and caller resolution both key on it —
+    so that change belongs on the People page); or when the roster can't be
+    read. The drafted principal maps onto an existing row by case-insensitive
+    name, exactly as save_onboarding_people's upsert does.
     """
     email = (raw or "").strip().lower()
     if not email:
         return None
     if len(email) > _OWNER_EMAIL_MAX_LEN or not _OWNER_EMAIL_RE.fullmatch(email):
         raise OwnerEmailError("That email address doesn't look right. Check it and try again.")
-    from openexecutive.people.store import find_person_by_email
+    from openexecutive.people.store import find_person_by_email, list_people
 
+    key = principal_name.strip().lower()
     try:
         holder = find_person_by_email(email)
+        own_row = {p.full_name.strip().lower(): p for p in list_people()}.get(key)
     except (OSError, sqlite3.Error) as exc:
         # Unknown is not "free": saving anyway could give two people one email.
         logger.warning("check_owner_email: lookup failed (%s)", type(exc).__name__)
         raise OwnerEmailError("Could not check that email just now. Try again.") from exc
-    if holder is not None and holder.full_name.strip().lower() != principal_name.strip().lower():
+    if holder is not None and holder.full_name.strip().lower() != key:
+        if holder.is_principal:
+            raise OwnerEmailError(
+                "That email is on the current owner's People entry, under another name. "
+                "If that's you, keep that name here (you can rename yourself on the People "
+                "page); if the owner is changing, enter the new owner's email or leave it blank."
+            )
         raise OwnerEmailError(
             "That email already belongs to someone else on the People page. "
             "Use a different one, or change theirs there first."
+        )
+    if own_row is not None and own_row.email and own_row.email.strip().lower() != email:
+        raise OwnerEmailError(
+            "Your People entry already has a different sign-in email, and setup never "
+            "replaces it. Keep that one here, or change it on the People page."
         )
     return email
 
 
 def link_owner_email(person_id: int, email: str) -> bool:
-    """Save the confirmed owner email on the principal's row.
+    """Fill in the principal's sign-in email.
 
-    Best-effort, like the rest of this module: the profile is already saved,
+    Never replaces a different one: check_owner_email refuses that before
+    anything is written, and this re-checks the row it is about to change.
+    Best-effort, like the rest of this module — the profile is already saved,
     and a failure here only leaves the owner to add their email on the People
     page, as before this step existed.
     """
     try:
-        from openexecutive.people.store import update_person
+        from openexecutive.people.store import get_person, update_person
 
+        person = get_person(person_id)
+        if person is None or (person.email and person.email.strip().lower() != email):
+            return False
         return update_person(person_id, email=email)
     except Exception as exc:
         logger.warning("link_owner_email failed (%s)", type(exc).__name__)

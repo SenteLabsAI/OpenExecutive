@@ -40,8 +40,11 @@ export default function OnboardDraftReview({
   // setup is re-run — so whoever re-runs it doesn't silently take over the
   // owner's login — otherwise with the login doing the setup. Null until
   // edited, so the field follows both as they load.
-  const { data: session } = useSession();
+  // Save waits for both: the commit runs once per setup session, so saving
+  // before they load would send no email with no way to add it afterwards.
+  const { data: session, status: sessionStatus } = useSession();
   const [currentOwnerEmail, setCurrentOwnerEmail] = useState<string | null>(null);
+  const [ownerLookupDone, setOwnerLookupDone] = useState(false);
   const [ownerEmailEdit, setOwnerEmailEdit] = useState<string | null>(null);
   const ownerEmail = ownerEmailEdit ?? currentOwnerEmail ?? session?.user?.email ?? "";
 
@@ -51,7 +54,8 @@ export default function OnboardDraftReview({
       .catch(() => setExistingTitles([]));
     listPeople()
       .then((ps) => setCurrentOwnerEmail(ps.find((p) => p.is_principal && p.email)?.email ?? null))
-      .catch(() => setCurrentOwnerEmail(null));
+      .catch(() => setCurrentOwnerEmail(null))
+      .finally(() => setOwnerLookupDone(true));
   }, []);
 
   // The seam that lets the /company-profile section editors work here: they
@@ -85,7 +89,9 @@ export default function OnboardDraftReview({
           ? "Two people have the same name — give them distinct names."
           : duplicateDepartments
             ? "Two departments have the same name."
-            : null;
+            : sessionStatus === "loading" || !ownerLookupDone
+              ? "Loading your sign-in details…"
+              : null;
 
   async function save() {
     if (blocker || saving) return;

@@ -4075,9 +4075,13 @@ auth:
         JWT expired. /signin bounces a visitor onward only when
         `sessionStillAllowed` agrees, or a refused session would loop.
     One-person mode (packages/ui/src/lib/localOwner.ts): `make dev` with
-    AUTH_GOOGLE_ID blank starts the UI with `-H 127.0.0.1` and
+    Google sign-in not set up starts the UI with `-H 127.0.0.1` and
     OE_LOCAL_OWNER_MODE=1 in one recipe line (the flag alone would hand
-    the owner's seat to the network, so nothing else sets it). The UI
+    the owner's seat to the network, so nothing else sets it). The recipe
+    decides via scripts/devMode.mjs, which loads the env the way Next does
+    (root .env exports plus packages/ui/.env*) and applies the app's own
+    `localOwnerModeEnabled`, so recipe and sign-in page cannot disagree;
+    it also reports whether AUTH_SECRET is blank everywhere. The UI
     then offers a Credentials provider (`local-owner`) instead of Google:
     an "Open" button with no password. Guards: the mode is compiled out
     of production builds (literal `process.env.NODE_ENV`, folded at build
@@ -4086,8 +4090,10 @@ auth:
     that stops DNS rebinding, since a browser cannot forge Host (it CAN
     set X-Forwarded-Host, which is why request.url is not used). The
     session has no email; the JWT carries `localOwner`, and it stops
-    working the moment Google sign-in is set up. A blank AUTH_SECRET gets
-    a throwaway per-run value from the Makefile. Docker (`make docker`)
+    working the moment Google sign-in is set up. An AUTH_SECRET blank in
+    every env file gets a throwaway per-run value from the Makefile, and
+    trustHost is on in this mode without AUTH_TRUST_HOST (no OAuth redirect
+    to steer; its checks read the raw Host). Docker (`make docker`)
     publishes port 3000 on all interfaces, so it never sets the flag.
     Both callbacks share one helper (`checkEmailAllowed`). The allowlist
     is the UNION of two additive sources — neither overrides the other:
@@ -4899,12 +4905,20 @@ company_onboarding:
     The one exception is the owner's OWN sign-in email, and it never comes
     from the model: OnboardCommitRequest.owner_email is a separate field the
     review screen pre-fills from the signed-in session and the user confirms
-    (or changes, when setting up for someone else). check_owner_email
-    lowercases it and 422s — with fixed, non-echoing messages — on a malformed
-    address, one already held by a non-archived person other than the drafted
-    principal (two rows sharing an email would resolve sign-in to the older
-    one), or a roster it cannot read; link_owner_email then saves it on the
-    principal's row after the people seed. Before this, the signed-in owner
+    (or changes, when setting up for someone else). On a re-run the field
+    starts from the CURRENT owner's email, not the re-runner's login, and
+    Save waits until both have loaded (the commit is once per session).
+    check_owner_email lowercases it and 422s — with fixed, non-echoing
+    messages — on a malformed address, one already held by a non-archived
+    person other than the drafted principal (two rows sharing an email would
+    resolve sign-in to the older one; when that holder is the current
+    principal the message says so, since a renamed owner is a new row under
+    the name-keyed upsert), one that differs from the drafted principal's
+    existing email (setup only FILLS IN a missing email: replacing it would
+    sign the owner out and hand their seat to whoever re-ran setup), or a
+    roster it cannot read. link_owner_email then saves it on the principal's
+    row after the people seed, re-checking that it replaces nothing. Before
+    this, the signed-in owner
     matched no Person, so `x-caller-email` resolved to nobody and their chat
     list stayed empty until they found the People page. Optional in
     one-person mode, whose email-less session already resolves to the

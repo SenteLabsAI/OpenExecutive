@@ -566,9 +566,42 @@ def test_linking_makes_the_owner_resolvable_by_their_sign_in(people_db: Path) ->
     assert found.is_principal
 
 
-def test_link_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_link_failure_is_swallowed(people_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = people_store.upsert_person(full_name="Dana Reyes", is_principal=True)
+
     def _boom(*a: object, **k: object) -> bool:
         raise sqlite3.OperationalError("disk I/O error")
 
     monkeypatch.setattr(people_store, "update_person", _boom)
-    assert link_owner_email(1, "dana@example.com") is False
+    assert link_owner_email(pid, "dana@example.com") is False
+
+
+def test_setup_never_replaces_the_principals_existing_email(people_db: Path) -> None:
+    """Re-run by someone else who kept their own login in the field: replacing
+    Dana's address would sign her out, since sign-in and caller resolution
+    both key on it, and hand her seat to the re-runner."""
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("ops@example.com", "Dana Reyes")
+    assert "People page" in str(err.value)
+    assert "ops@example.com" not in str(err.value)
+
+
+def test_a_renamed_owner_is_told_it_is_their_own_entry(people_db: Path) -> None:
+    """The upsert keys on the name, so a renamed principal is a new row and
+    their old one still holds the email. The message must not call that
+    "someone else"."""
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("dana@example.com", "Dana Reyes-Kim")
+    assert "current owner" in str(err.value)
+    assert "someone else" not in str(err.value)
+
+
+def test_link_never_replaces_a_different_email(people_db: Path) -> None:
+    pid = people_store.upsert_person(
+        full_name="Dana Reyes", email="dana@example.com", is_principal=True
+    )
+    assert link_owner_email(pid, "ops@example.com") is False
+    person = people_store.get_person(pid, db_path=people_db)
+    assert person is not None and person.email == "dana@example.com"

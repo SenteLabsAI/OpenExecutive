@@ -76,7 +76,9 @@ There is no password, so the protection is *where* a request can come from:
 
 - **Only `make dev` turns it on.** The same command starts the UI on
   `127.0.0.1`, so other machines on your network cannot connect. It sets
-  `OE_LOCAL_OWNER_MODE=1` for the UI; don't set that yourself.
+  `OE_LOCAL_OWNER_MODE=1` for the UI; don't set that yourself. It reads the
+  same settings the app does (the root `.env` and `packages/ui/.env.local`),
+  so if either one sets up Google sign-in, `make dev` starts as usual.
 - **Never on a server.** A production build (`next build`, the deploy image)
   compiles the mode out, and it stays off whenever `AUTH_GOOGLE_ID` or
   `OE_PUBLIC_DEPLOYMENT` is set. `make docker` publishes port 3000 to your
@@ -88,8 +90,9 @@ There is no password, so the protection is *where* a request can come from:
 
 The session has no email. The UI proxy then sends no `x-caller-email`, and the
 API treats the request as the principal's, the same way it treats the CLI. If
-`AUTH_SECRET` is blank, `make dev` uses a temporary one for that run, so you
-click **Open** again after a restart.
+`AUTH_SECRET` is blank in both files, `make dev` uses a temporary one for that
+run, so you click **Open** again after a restart. `AUTH_TRUST_HOST` isn't
+needed in this mode.
 
 To invite your team, or to run on a server, set up Google sign-in (below). As
 soon as `AUTH_GOOGLE_ID` is set, one-person mode is off and any session it
