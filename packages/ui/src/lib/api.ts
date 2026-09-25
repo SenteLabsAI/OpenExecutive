@@ -3308,6 +3308,24 @@ export async function getToday(): Promise<Today> {
   return res.json();
 }
 
+// The latest morning brief or end-of-day digest that didn't reach the owner,
+// and what fixes it. Null while briefs are going out, and for anyone but the
+// owner.
+export interface BriefDeliveryNotice {
+  brief: string;
+  at: string;
+  problem: string;
+  fix: string;
+  // False when it couldn't be written, so there is nothing to read.
+  readable: boolean;
+}
+
+export async function getBriefDelivery(signal?: AbortSignal): Promise<BriefDeliveryNotice | null> {
+  const res = await fetch(`${API_BASE}/today/brief-delivery`, { signal });
+  if (!res.ok) throw new Error(`Failed to load brief delivery: ${res.statusText}`);
+  return res.json();
+}
+
 // Mark an alert as read/ack/dismissed. Used by the briefing's
 // Approve/Dismiss affordance to groom the "Needs you" queue: any
 // non-unread status drops the alert from /today's proposals list.

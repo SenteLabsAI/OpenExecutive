@@ -1241,3 +1241,67 @@ def test_solo_prompts_are_role_neutral(name: str) -> None:
         assert assumption not in text
     if name in {"persona", "standalone_brief", "today_header", "eod_digest", "reflection"}:
         assert "lead a function inside a larger organisation" in text
+
+
+def test_scheduled_solo_brief_is_written_for_and_delivered_to_the_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through the scheduler (#226's delivery path): in solo the
+    morning brief is written with the solo prompt, goes to the principal and
+    its outcome is recorded for the Briefing notice and Setup status."""
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.api.routes.today import ActivityResponse, TodayResponse
+    from openexecutive.briefing import brief_state, narrative_cache
+    from openexecutive.briefing.narrative import STANDALONE_BRIEF_SOLO_SYSTEM
+    from openexecutive.scheduler import runner
+    from openexecutive.workflows import persistence as wf_persistence
+
+    _solo()
+    _principal()
+    monkeypatch.setattr(narrative_cache, "DB_PATH", tmp_path / "cache.db")
+    monkeypatch.setattr(wf_persistence, "DB_PATH", tmp_path / "runs.db")
+    wf_persistence.initialize_runs_db(tmp_path / "runs.db")
+    monkeypatch.setattr(
+        today_route, "_build_today",
+        lambda: TodayResponse(departments=[], people=[], proposals=[]),
+    )
+    monkeypatch.setattr(
+        today_route, "_build_activity",
+        lambda limit, since=None, **_kw: ActivityResponse(items=[]),
+    )
+    calls = _capture_synth(monkeypatch)
+    sent: list[str] = []
+
+    async def _deliver(text: str, **_kw: object) -> Any:
+        sent.append(text)
+        return runner.PrincipalDelivery(True, "telegram → 555", "delivered", "telegram")
+
+    async def _no_review(**_kw: object) -> None:
+        return None
+
+    monkeypatch.setattr(runner, "_deliver_to_principal", _deliver)
+    monkeypatch.setattr(runner, "_enqueue_next_principal_brief", lambda kind, after: None)
+    monkeypatch.setattr("openexecutive.alerts.review.run_alert_review", _no_review)
+
+    class _Store:
+        def __init__(self, **_kw: object) -> None: ...
+
+    monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", _Store)
+
+    action_id = episodic.insert_scheduled_action(
+        run_at=datetime.now(UTC).isoformat(), channel="__internal__", channel_ref="principal",
+        intent_text="brief", kind="principal_brief_morning",
+    )
+    action = episodic.get_scheduled_action(action_id)
+    assert action is not None
+    brief_state_before = brief_state.last_delivery_outcome()
+    asyncio.run(runner._run_principal_brief(action, datetime.now(UTC)))
+
+    assert brief_state_before is None
+    assert [c["system"] for c in calls] == [STANDALONE_BRIEF_SOLO_SYSTEM]
+    assert sent == ["brief"]
+    outcome = brief_state.last_delivery_outcome()
+    assert outcome is not None
+    assert (outcome.kind, outcome.reason, outcome.channel) == (
+        "principal_brief_morning", "delivered", "telegram",
+    )

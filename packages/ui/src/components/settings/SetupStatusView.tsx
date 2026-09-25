@@ -24,7 +24,14 @@ const STATE_STYLE: Record<SetupState, { dot: string; word: string; wordClass: st
 const LINK_LABELS: Record<string, string> = {
   "/people": "Open the People page",
   "/onboard": "Open the setup interview",
+  "/settings": "Open Settings",
 };
+
+function linkLabel(link: string): string {
+  // A person's page: the daily brief light links the owner's own profile.
+  if (link.startsWith("/people/")) return "Open your People profile";
+  return LINK_LABELS[link] ?? "Open";
+}
 
 function CheckRow({ check }: { check: SetupCheck }) {
   const style = STATE_STYLE[check.state];
@@ -57,7 +64,7 @@ function CheckRow({ check }: { check: SetupCheck }) {
               href={link}
               className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-fg hover:underline"
             >
-              {LINK_LABELS[link] ?? "Open"}
+              {linkLabel(link)}
               <Icon name="chevron-right" size="w-3.5 h-3.5" />
             </Link>
           ) : null}
