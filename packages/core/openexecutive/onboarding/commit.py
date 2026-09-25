@@ -323,6 +323,7 @@ def reconcile_onboarding_departments(
         from openexecutive.departments.store import (
             create_department,
             list_departments,
+            match_department,
             update_department,
         )
         from openexecutive.departments.store import (
@@ -334,9 +335,7 @@ def reconcile_onboarding_departments(
             return counts
 
         init_departments_db()
-        existing = list_departments()
-        by_slug = {d.config.slug: d.config for d in existing}
-        by_title = {d.config.title.strip().lower(): d.config for d in existing}
+        known = [d.config for d in list_departments()]
         # Two drafted titles can collide with each other as well as with an
         # existing row ("Growth" and "growth"). Without this the second one
         # would either create a `growth-2` row or silently overwrite the first
@@ -348,7 +347,9 @@ def reconcile_onboarding_departments(
             # Same fallback the store uses, so the slug we look up is the one
             # create_department would have assigned.
             drafted_slug = slugify(title, fallback=DEPARTMENT_SLUG_FALLBACK)
-            match = by_slug.get(drafted_slug) or by_title.get(title.lower())
+            # By slug or case-insensitive title — the store's shared rule,
+            # also used by the Executive's create_goal tool.
+            match = match_department(title, known)
             # Key on the row actually being touched. Keying on the drafted slug
             # alone missed the match-by-TITLE case: the shipped `hr` department
             # is titled "People & Talent", so drafts "HR" and "People & Talent"
@@ -371,8 +372,7 @@ def reconcile_onboarding_departments(
                 slug = created.config.slug
                 # Register it so a later draft in this same batch matches the
                 # row we just made instead of creating a `-2` duplicate.
-                by_slug[slug] = created.config
-                by_title[created.config.title.strip().lower()] = created.config
+                known.append(created.config)
                 # create_department fixes authority to propose_only and takes no
                 # head, so apply the drafted values in a second call.
                 update_department(slug, authority_level=draft.authority_level)

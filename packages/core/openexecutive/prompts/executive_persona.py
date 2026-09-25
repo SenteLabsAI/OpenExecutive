@@ -257,11 +257,26 @@ You can update goal status and progress directly via `list_department_goals` and
 
 """
 
+
+# Solo: starting to track a goal the principal states. Its own literal (not
+# part of `_SOLO_SECTIONS`) so it reads as one rule; it follows the goal
+# section. Team mode gets the same guidance from the tool description alone,
+# which keeps the pinned team prompt byte-identical.
+_SOLO_CREATE_GOAL = """When the principal states a new goal of their own with a target — "I want 20 paying clients by the end of Q4", "the app ships by November" — call `create_goal` with the area it belongs to (an existing area's slug or title; a new area is created when none fits), the key result, the target they gave, and a one-sentence `rationale` naming what they said. If it may already be tracked, check `list_department_goals` first and update that goal instead. Create one goal per target they actually stated: never invent goals, never turn your own suggestions into goals, and do not act on a blanket "set up some goals for me" — ask which goal and what target.
+
+"""
+
+
 EXECUTIVE_PERSONA_PROMPT = (
     _PERSONA_HEAD + _TEAM_NOTICE + _PERSONA_BODY + _TEAM_SECTIONS + _PERSONA_TAIL
 )
 EXECUTIVE_PERSONA_SOLO_PROMPT = (
-    _PERSONA_HEAD + _SOLO_NOTICE + _PERSONA_BODY + _SOLO_SECTIONS + _PERSONA_TAIL
+    _PERSONA_HEAD
+    + _SOLO_NOTICE
+    + _PERSONA_BODY
+    + _SOLO_SECTIONS
+    + _SOLO_CREATE_GOAL
+    + _PERSONA_TAIL
 )
 
 

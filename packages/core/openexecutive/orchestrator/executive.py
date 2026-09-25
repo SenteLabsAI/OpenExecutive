@@ -66,6 +66,7 @@ from openexecutive.orchestrator.open_loop_tools import (
 from openexecutive.orchestrator.people_tools import (
     PEOPLE_TOOL_HANDLERS,
     PEOPLE_TOOLS,
+    is_principal_on_verified_surface,
 )
 from openexecutive.orchestrator.research_tools import (
     RESEARCH_TOOL_HANDLERS,
@@ -79,9 +80,11 @@ from openexecutive.orchestrator.router import (
 from openexecutive.orchestrator.schedule_tools import (
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
+    UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
     tools_withheld_in_mode,
+    unattended_withheld_error,
     withheld_tool_error,
 )
 from openexecutive.orchestrator.session import Session
@@ -905,6 +908,11 @@ class Executive:
             schedule_open_loop_pass(
                 speaker_text, full_response, person_id=person_id,
                 session_id=session.session_id,
+                # The turn's pinned mode: solo opens the principal's own
+                # dated commitments, team does not — and only when this
+                # surface verified the speaker is the principal.
+                workspace_mode=workspace_mode,
+                principal_verified=is_principal_on_verified_surface(session),
             )
             # Re-learn this speaker's working style once enough new
             # messages have arrived (paced and budgeted inside).
@@ -1357,7 +1365,8 @@ class Executive:
 
         schedule_open_loop_pass(
             speaker_text, final_response, person_id=person_id,
-            session_id=session.session_id,
+            session_id=session.session_id, workspace_mode=workspace_mode,
+            principal_verified=is_principal_on_verified_surface(session),
         )
         from openexecutive.attunement.style import schedule_style_pass
 
@@ -1418,7 +1427,15 @@ class Executive:
         """
         if workspace_mode is None:
             workspace_mode = effective_workspace_mode(current_session.get())
-        withheld_tools = tools_withheld_in_mode(workspace_mode)
+        # An unattended run (the scheduler's proactive trigger) is also not
+        # offered the principal-only tools; its tool list is a stable variant
+        # of its own, like each mode's.
+        unattended_withheld = (
+            UNATTENDED_WITHHELD_TOOLS
+            if bool(getattr(current_session.get(), "unattended", False))
+            else frozenset()
+        )
+        withheld_tools = tools_withheld_in_mode(workspace_mode) | unattended_withheld
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
@@ -1450,9 +1467,12 @@ class Executive:
             # Solo withholds the team-only tools before the sort, so each mode
             # has its own stable, sorted tool prefix.
             client_tools = sorted(
-                filter_tools_for_workspace_mode(
-                    [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
-                    workspace_mode,
+                (
+                    t for t in filter_tools_for_workspace_mode(
+                        [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
+                        workspace_mode,
+                    )
+                    if t["name"] not in unattended_withheld
                 ),
                 key=lambda t: t["name"],
             )
@@ -1649,6 +1669,10 @@ class Executive:
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
             for tu in withheld_uses:
+                if tu["name"] in unattended_withheld:
+                    logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
+                    results_by_id[tu["id"]] = unattended_withheld_error(tu["name"])
+                    continue
                 logger.warning(
                     "skill:%s refused — not offered in %s mode", tu["name"], workspace_mode
                 )
@@ -1795,6 +1819,7 @@ class Executive:
                         tool_input=tu["input"],
                         tool_result=result,
                         iteration=iteration,
+                        workspace_mode=workspace_mode,
                     )
                     if chip is not None:
                         yield chip

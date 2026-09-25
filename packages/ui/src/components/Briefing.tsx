@@ -9,7 +9,9 @@ import {
   ackAlert,
   approveDecision,
   bulkAckAlerts,
+  closeOpenLoop,
   deleteInitiative,
+  getPersonOpenLoops,
   getToday,
   listInitiatives,
   rejectDecision,
@@ -20,6 +22,7 @@ import {
   type HandledItem,
   type InFlightItem,
   type Initiative,
+  type OpenLoop,
   type PersonBriefItem,
   type ClientCockpitCard,
   type ProposalItem,
@@ -27,6 +30,7 @@ import {
 } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
+import { dueSoon, principalIdOf } from "@/lib/dueSoon";
 import {
   HANDLED_REOPENABLE,
   groupHandled,
@@ -476,6 +480,7 @@ const SECTION_IDS = {
   people: "sec-people",
   practice: "sec-practice",
   projects: "sec-projects",
+  dueSoon: "sec-due-soon",
 } as const;
 
 // Smooth-scroll to the first rendered (visible) section in `ids`, popping open
@@ -1266,6 +1271,103 @@ function ProjectsPanel({ id }: { id?: string }) {
   );
 }
 
+// Solo only: what you own that is due within a week or overdue — what you
+// promised by a date (the Executive starts tracking one when you say "I'll
+// send it by Friday") and what others asked of you. Read from your open loops
+// (GET /people/{id}/open-loops); "Done" closes one (POST /open-loops/{id}/close),
+// which also stops the Executive reminding you about it.
+function DueSoonPanel({ principalId, id }: { principalId: number; id?: string }) {
+  const [loops, setLoops] = useState<OpenLoop[] | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPersonOpenLoops(principalId)
+      .then((all) => {
+        if (!cancelled) setLoops(all);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Couldn't load what's due.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [principalId]);
+
+  const markDone = async (loopId: number) => {
+    setBusyId(loopId);
+    setError(null);
+    try {
+      await closeOpenLoop(loopId, "done");
+      setLoops((prev) => (prev ?? []).filter((l) => l.loop_id !== loopId));
+    } catch {
+      setError("Couldn't mark it done — try again.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const view = loops === null ? null : dueSoon(loops);
+  return (
+    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <SectionHeading title="Due soon" count={view?.items.length} icon="bell" />
+          <InfoTip align="left">
+            What you&apos;ve promised by a date, and what others have asked of you, due in
+            the next week. Tell the Executive &ldquo;I&apos;ll send it by Friday&rdquo; and it
+            shows up here; the Executive reminds you when it&apos;s due.
+          </InfoTip>
+        </div>
+        <Link
+          href={`/people/${principalId}`}
+          className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300"
+        >
+          All open items →
+        </Link>
+      </div>
+      {error && <p className="text-xs text-rose-300 mb-2">{error}</p>}
+      {view === null ? (
+        !error && <p className="text-sm text-fg-muted py-2">Loading…</p>
+      ) : view.items.length === 0 ? (
+        <p className="text-sm text-fg-muted py-2">
+          Nothing due this week.
+          {view.later > 0 && ` ${view.later} due later.`}
+        </p>
+      ) : (
+        <>
+          <div className="max-h-[32rem] overflow-y-auto pr-1 divide-y divide-line">
+            {view.items.map((item) => (
+              <div key={item.loop.loop_id} className="py-3 flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-fg break-words">{item.text}</div>
+                  <div
+                    className={`text-xs mt-0.5 ${item.overdue ? "text-amber-300" : "text-fg-muted"}`}
+                  >
+                    {item.dueLabel}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void markDone(item.loop.loop_id)}
+                  disabled={busyId !== null}
+                  className="flex-shrink-0 px-2 py-1 text-xs rounded-lg bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {busyId === item.loop.loop_id ? "Closing…" : "✓ Done"}
+                </button>
+              </div>
+            ))}
+          </div>
+          {view.later > 0 && (
+            <p className="text-xs text-fg-muted pt-2">{view.later} more due later.</p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 // Multi-client practice mode only: rollup cards for PARKED client slots so
 // the operator sees the whole practice from the active client's brief. The
 // backend sends [] for single-company installs (0-1 slots), so this renders
@@ -1878,6 +1980,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   const goalsAtRisk = solo
     ? (today?.departments ?? []).reduce((n, d) => n + d.at_risk_count + d.off_track_count, 0)
     : 0;
+  // Solo's "Due soon" card reads the principal's own open loops.
+  const principalId = solo ? principalIdOf(today?.people ?? []) : null;
   const statPills: StatPill[] = today
     ? briefingStats({
         needsYou: mineProposals.length,
@@ -2146,6 +2250,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                       )}
                     </details>
                   </section>
+
+                  {solo && principalId != null && (
+                    <DueSoonPanel principalId={principalId} id={SECTION_IDS.dueSoon} />
+                  )}
 
                   {otherProposals.length > 0 && (
                     <section className="rounded-xl border border-line bg-surface-elevated p-4">

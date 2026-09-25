@@ -824,6 +824,56 @@ routing:
     `to_status`, and `details.rationale`. Surfaced in the live stream
     via `action_chips.summarize_action` as
     "Updated {slug} goal → {status}".
+    `create_goal` (same module, both modes) starts tracking a NEW goal the
+    principal states ("20 paying clients by the end of Q4"). Inputs: `area`
+    (free text — a department slug or title), `key_result`, `target`,
+    `rationale` (required), optional `period_type` (default quarter),
+    `period_value` (default the current period in the user's zone, shaped
+    like the UI's suggestPeriodValue), `current`, `status` (default
+    on_track). The schema is STATIC — no enum of existing areas, which would
+    change the cached tool prefix whenever one is added.
+    WHO: the whole tool runs only when the turn is the principal on a
+    verified surface (`people_tools.is_principal_on_verified_surface`, the
+    roster tools' rule: web chat, their own Slack or Discord, a private
+    Telegram chat with a valid webhook secret). A goal renders in every
+    turn's org block as one of the principal's own, so a goal from an inbound
+    email (the sender is the From header), Google Chat, the CLI, the MCP
+    server, a teammate or an unattended run would be text with their
+    authority: refused before any write, audited refused=true with
+    caller_person_id / origin_channel / from_web_chat / unattended.
+    The area resolves through `departments.store.match_department` (slug as
+    given or as the store would slug it, else case-insensitive title — the
+    rule onboarding's reconcile also uses); when nothing matches,
+    `create_department` makes it (a bare slug from the model is
+    title-cased), with a `specialist_key` only when `specialist_key_for_area`
+    maps the title (the default departments' slugs and titles, plus sales)
+    AND no department already holds that specialist — otherwise the area is
+    informational. Guards in code: field caps matching the goal routes;
+    refuses a goal whose normalized key_result the area already tracks
+    (error names the goal_id and points at update_department_goal); at most
+    5 goals per chat turn (keyed on the audit turn id — a sweep is not a
+    stated goal; no cap without a turn); at most 8 goals per area
+    (`_MAX_GOALS_PER_AREA` — common practice keeps 3-5 key results per
+    objective, and every goal renders in the 4000-char org block, so one
+    area cannot crowd the others out; the goal routes / UI are not capped).
+    A store failure reaches the model as the exception TYPE only (as
+    `executive._tool_error_result`; the log keeps the rest) — the same now
+    holds for list_department_goals and update_department_goal.
+    Audited as `tool_invocation` with `details.tool="create_goal"`,
+    department_slug, goal_id, area_created, specialist_key and the
+    rationale; invalidates the department registry. Chip: "Added a {area}
+    goal: {key_result}", linking to /goals in solo (the turn's mode reaches
+    `summarize_action(workspace_mode=...)`) and /departments/{slug} in team.
+    Never offered to an unattended run: it is in
+    `schedule_tools.UNATTENDED_WITHHELD_TOOLS`, which `unattended_toolkit`
+    drops for reflection and research (both modes) and the chat loop drops
+    (list AND dispatch, `unattended_withheld_error`) when the Session has
+    `unattended=True` — set by the scheduler's PROACTIVE TRIGGER dispatch
+    (`scheduler.runner._execute_action`). That run therefore has its own
+    stable tool prefix. The solo persona teaches it (`_SOLO_CREATE_GOAL`);
+    team mode learns it from the tool description, so the team persona
+    stays byte-identical.
+    Evals: `department_goal_update_005`.
   outbound_target_selection: |
     For any proactive outbound message, the Executive picks the audience
     by choosing which outbound tool to invoke. The persona's
@@ -2014,11 +2064,43 @@ attunement:
       (commitments via `_is_valid_user_commitment`, asks/closures by
       normalized substring); owner resolves to exactly one rostered,
       non-archived person; teammates can't attribute commitments to others
-      (hearsay); principal's own commitments left to the episodic extractor;
-      close ids must be in the closable set; per-owner cap
+      (hearsay); principal's own commitments left to the episodic extractor
+      (team; see solo_dated_commitments); close ids must be in the closable set; per-owner cap
       ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON=15; due date clamped to 60 days,
       default ATTUNEMENT_LOOP_DEFAULT_DUE_DAYS=2, date-only = 17:00 in
       the user's zone (workspace setting, else USER_TIMEZONE). Prompt says messages are data, not instructions.
+    solo_dated_commitments: |
+      Solo mode only. The turn's pinned mode reaches the pass
+      (`schedule_open_loop_pass(..., workspace_mode=...)` from both Executive
+      paths; None reads the workspace), with `principal_verified` =
+      `people_tools.is_principal_on_verified_surface(session)` (default
+      False, fail-closed). A principal commitment from an unverified surface
+      (an email's sender is its From header) is dropped as
+      `principal_commitment_unverified` before the date checks. Solo swaps the extraction system
+      prompt for `_SYSTEM_SOLO` (a separate module constant, never formatted;
+      team `_SYSTEM` is byte-identical, sha256 pinned in test_open_loops) and
+      `_accept_loop(..., solo=True)` OPENS a commitment of the principal's own
+      when it is dated: the model's `due_date` parses as YYYY-MM-DD
+      (`_stated_due_date` — stated, never `_resolve_due`'s 2-day default) AND
+      the quote matches `_STATED_DUE_HINT` — precision over recall:
+      unambiguous words alone (full weekday, today, tomorrow, next week, end
+      of Q4, in 3 days), explicit dates alone (Oct 3, 3 October, 2026-10-03,
+      10/03), and short or ambiguous tokens (may, sat, wed, q1, the 14th,
+      10/3) only after a due word (by / on / before / until / till / due /
+      through); "I may", "the 1st draft", "50/50" never match. Otherwise it is
+      dropped as `principal_commitment_undated` (an undated intention is an
+      initiative). Owner = the principal, so the nudge engine chases it once
+      overdue through their channel; when none reaches them it still
+      surfaces in the solo brief's DUE THIS WEEK block and the Briefing's
+      Due soon card (see today.solo_mode). Team behaviour is unchanged
+      (`principal_commitment`). Eval: `attunement_002` (workspace_mode solo).
+    due_soon: |
+      `open_loops.principal_due_soon(within_days=7, limit=10)` — the
+      principal's (find_principal_person) open loops overdue or due within 7
+      days, soonest first, as dicts: loop_id, description, due_at, due_date
+      (the user's local date), state (overdue | today | soon). Empty with no
+      principal or on a read failure (logged). Read by the solo morning brief
+      and the solo /today header.
     storage: |
       `scheduled_actions` row: kind='open_loop', channel='__internal__',
       channel_ref='person:{id}', status inserted as 'done' (runner never
@@ -2740,6 +2822,20 @@ today:
     team key is exactly what it was before solo existed (no team cache is
     invalidated, NARRATIVE_PROMPT_VERSION unchanged). The response shape is
     unchanged.
+    DUE THIS WEEK: for the principal's own (whole-business) view,
+    `today._with_due_soon` adds `due_soon` (open_loops.principal_due_soon)
+    to the narrative's today_data; `render_briefing_context(mode="solo")`
+    renders it as a DUE THIS WEEK block (OVERDUE (was due D) / due today (D)
+    / due <weekday> D, quoted as data), and `_nothing_needs_attention` counts
+    it in solo. A teammate's scoped view and team mode never get it, so team
+    contexts and keys are unchanged. The solo morning brief adds the same
+    list (STANDALONE_BRIEF_SOLO_SYSTEM has a "Due this week" section) and its
+    fingerprint carries `(loop_id, state)` pairs only when there are any.
+    UI: the solo Briefing's "Due soon" card (under Needs you) reads the
+    principal's loops from GET /people/{id}/open-loops (the oldest principal
+    in `people`), shows those overdue or due within 7 days via
+    `lib/dueSoon.ts` (npm-tested) with a count of later ones, and "Done"
+    calls POST /open-loops/{id}/close (which stops the chase).
   intent: |
     Give the user a one-screen "what's happening across the org right
     now" view: how each department is doing against its goals, who has
@@ -4311,7 +4407,7 @@ workflows:
     - inbound_resolver — matches human replies back to paused workflow runs.
     - crisis_comms — drafts incident response messaging.
     - churn_deep_dive — structured customer-loss analysis.
-    - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 in the user's zone; an explicit PRINCIPAL_BRIEF_MORNING_TIME env var is read as UTC). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Delivery (`scheduler.runner._deliver_to_principal`, also used for the client-rotation digest): the principal's `preferred_channel` (slack / discord / telegram / email / any) maps to slack_dm / discord_dm / telegram / email and is tried first, then the other chat channels they have an id for in the order slack_dm → discord_dm → telegram. Email goes through the active MCP gateway when it runs the Google Workspace server (`runner.email_ready()`: another MCP server alone does not make email ready) (`google_workspace__send_gmail_message`, `user_google_email` = the Executive's own address, `to` = the principal's email, subject `<workflow title> — <local date>` in the user's zone, e.g. 'Morning Brief — Fri 25 Sep' (`_email_subject`; a UTC date put tomorrow's date on an evening digest west of UTC); body_format html, the Markdown rendered by `utils.markdown_email` (markdown-it-py: raw HTML off, so quoted outside text shows as text; images off, so opening the email loads nothing remote; javascript:/vbscript:/file:/data: links dropped); an in-band error counts as failed, `workflows.action_step.looks_like_error`). Email is tried first when the preference is `email`, and otherwise last, as the backup after every chat channel: delivery stops at the first channel that sends, so an owner linked by email at setup (`any`) with a working Slack still gets no email — only when every chat channel is missing or fails. Email is not a DM, so the per-Person outbound guard does not apply; the gateway's roster egress gate does. `_deliver_to_principal` returns a `PrincipalDelivery(ok, detail, reason, channel)`; reason is delivered | no_owner | no_channel | send_failed. The order comes from `runner.delivery_order` via `runner.principal_delivery_plan()` — public, because the Briefing notice and the Setup status light use them too. When no channel can deliver (e.g. a web-only principal, or email-only with no gateway) the brief is still generated and stored as a run with its artifact, exactly as before; it is not delivered (audited `delivery_failed`), so the window and fingerprint do not advance, and the next occurrence is chained. Every run's outcome is recorded (`brief_state.record_delivery_outcome`, scope `brief_delivery:<kind>`: the reason, and the channel that sent it — a channel name, never an address), including `not_written` when the workflow raised, emitted an error or produced no artifact (then nothing is sent), and `send_failed` when delivery itself raised. `last_delivery_outcome()` returns the latest of the two briefs. `current_problem(outcome, has_owner, can_deliver)` says what still keeps it from the owner: send_failed and not_written stay reported until the next brief records a new outcome; having nowhere to send it is judged from now, so a fix clears it and a partial fix reports what is left (an owner added but still no channel reads no_channel). `GET /today/brief-delivery` (the Briefing's notice, owner only, null while the scheduler is off) and the Setup status 'Daily brief' light read it; brief names come from `scheduler.action_phrasing.KIND_LABEL` (`brief_state.brief_name`). SOLO: with effective_workspace_mode solo it uses STANDALONE_BRIEF_SOLO_SYSTEM (top call → what changed → handled overnight → needs you → goals at risk, named by area; no waiting-on or department sections) over the solo context render, and the fingerprint carries the mode and drops the people-awaiting set."
+    - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 in the user's zone; an explicit PRINCIPAL_BRIEF_MORNING_TIME env var is read as UTC). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Delivery (`scheduler.runner._deliver_to_principal`, also used for the client-rotation digest): the principal's `preferred_channel` (slack / discord / telegram / email / any) maps to slack_dm / discord_dm / telegram / email and is tried first, then the other chat channels they have an id for in the order slack_dm → discord_dm → telegram. Email goes through the active MCP gateway when it runs the Google Workspace server (`runner.email_ready()`: another MCP server alone does not make email ready) (`google_workspace__send_gmail_message`, `user_google_email` = the Executive's own address, `to` = the principal's email, subject `<workflow title> — <local date>` in the user's zone, e.g. 'Morning Brief — Fri 25 Sep' (`_email_subject`; a UTC date put tomorrow's date on an evening digest west of UTC); body_format html, the Markdown rendered by `utils.markdown_email` (markdown-it-py: raw HTML off, so quoted outside text shows as text; images off, so opening the email loads nothing remote; javascript:/vbscript:/file:/data: links dropped); an in-band error counts as failed, `workflows.action_step.looks_like_error`). Email is tried first when the preference is `email`, and otherwise last, as the backup after every chat channel: delivery stops at the first channel that sends, so an owner linked by email at setup (`any`) with a working Slack still gets no email — only when every chat channel is missing or fails. Email is not a DM, so the per-Person outbound guard does not apply; the gateway's roster egress gate does. `_deliver_to_principal` returns a `PrincipalDelivery(ok, detail, reason, channel)`; reason is delivered | no_owner | no_channel | send_failed. The order comes from `runner.delivery_order` via `runner.principal_delivery_plan()` — public, because the Briefing notice and the Setup status light use them too. When no channel can deliver (e.g. a web-only principal, or email-only with no gateway) the brief is still generated and stored as a run with its artifact, exactly as before; it is not delivered (audited `delivery_failed`), so the window and fingerprint do not advance, and the next occurrence is chained. Every run's outcome is recorded (`brief_state.record_delivery_outcome`, scope `brief_delivery:<kind>`: the reason, and the channel that sent it — a channel name, never an address), including `not_written` when the workflow raised, emitted an error or produced no artifact (then nothing is sent), and `send_failed` when delivery itself raised. `last_delivery_outcome()` returns the latest of the two briefs. `current_problem(outcome, has_owner, can_deliver)` says what still keeps it from the owner: send_failed and not_written stay reported until the next brief records a new outcome; having nowhere to send it is judged from now, so a fix clears it and a partial fix reports what is left (an owner added but still no channel reads no_channel). `GET /today/brief-delivery` (the Briefing's notice, owner only, null while the scheduler is off) and the Setup status 'Daily brief' light read it; brief names come from `scheduler.action_phrasing.KIND_LABEL` (`brief_state.brief_name`). SOLO: with effective_workspace_mode solo it uses STANDALONE_BRIEF_SOLO_SYSTEM (top call → what changed → handled overnight → needs you → due this week → goals at risk, named by area; no waiting-on or department sections) over the solo context render, which adds today_data['due_soon'] (open_loops.principal_due_soon: the principal's open loops overdue or due within 7 days) as a DUE THIS WEEK block, and the fingerprint carries the mode, drops the people-awaiting set and, when there are due items, carries them as (loop_id, state) pairs."
     - "end_of_day_digest — Shift 3 recurring workflow. Fires once per day from the scheduler (default 18:00 in the user's zone; an explicit PRINCIPAL_BRIEF_EOD_TIME is read as UTC). Same shape as morning_brief but framed as a recap since the last DELIVERED digest (`brief_state.since_for`, 24 h on a cold store): what OE did today (activity since), alerts it handled today (completed moves only; rewritten-but-open items render as a REWRITTEN block under still pending), what's still pending (NEW SINCE LAST BRIEF, action category only, carried-over as one line), what's at risk for tomorrow, one optional 'sleep on this' question. Same fingerprint / one-liner suppression and `force_full` as morning_brief, under scope `brief:principal_brief_eod`. SOLO: _EOD_DIGEST_SOLO_SYSTEM (what I did today → open decisions → goals at risk tomorrow by area → sleep on this) over a context with GOALS AT RISK BY AREA and no people-waiting block."
     - "executive_reflection — Shift 5 recurring workflow. Fires once per day ~30 minutes before the morning brief (default 07:30 in the user's zone; an explicit PRINCIPAL_REFLECTION_TIME is read as UTC). The first workflow OE runs ON ITSELF — not for a department, not for the principal, but for its own org-coordination judgment. Three steps: (1) gather /today + /today/activity + recent open alerts, (2) single LLM call with the full outbound toolkit (schedule_followup, send_*_dm, send_department_message, send_company_broadcast, suggest_workflow, create_alert, etc.) bounded to ≤4 iterations — the model decides per signal whether to act now, notify the right audience via the persona's 'Choosing Who to Tell' rule, raise it for the morning brief, or ignore, (3) emit a short Markdown summary with a structured tool-call log. MEMORY: the context carries a YESTERDAY'S STANDUP block (the previous done run's artifact, capped at 1500 chars) and the prompt forbids re-acting on or re-notifying about anything listed there unless it changed; open alerts render with `alert_id`, the review verdict, note and recommended move. Reflection never closes alerts (the alert review does, with evidence) — the prompt does not instruct `ack_alert`. The artifact is stored via complete_run but NOT DM'd — the morning brief surfaces what was decided via /today/activity. This operationalizes the 'When You Notice Something on Your Own' persona section (Shift 1). SOLO: the role-neutral solo prompt, no team tools, a YOUR PRINCIPAL line instead of the roster — see routing.reflection_then_decide."
 
@@ -5451,10 +5547,11 @@ company_onboarding:
     DELETEs every department and goal before inserting — correct when swapping
     in a demo company, destructive here: it would drop the eight defaults from
     seed_default_departments along with their specialist_key wiring, and
-    create_department always writes specialist_key = NULL, so a wiped default
-    can never be recreated properly. onboarding/commit.reconcile_onboarding_departments
+    onboarding's create_department calls pass no specialist_key (NULL), so a
+    wiped default can never be recreated properly. onboarding/commit.reconcile_onboarding_departments
     instead matches each drafted department onto an existing one by slug or
-    case-insensitive title, UPDATEs matches in place (preserving charter scope
+    case-insensitive title (`departments.store.match_department`, shared with
+    the create_goal chat tool), UPDATEs matches in place (preserving charter scope
     and specialist_key), CREATEs only what is unmatched, and never deletes. An
     empty drafted mission or head leaves the existing value alone rather than
     clearing it.

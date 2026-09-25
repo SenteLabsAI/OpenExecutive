@@ -56,6 +56,12 @@ class Session:
     # the committee path) so the tool handlers use the same mode as the
     # persona and tool list. Re-resolved every turn; never an override.
     turn_workspace_mode: str | None = None
+    # True for a run nobody is watching that goes through the chat loop (the
+    # scheduler's PROACTIVE TRIGGER dispatch). Its prompt quotes stored intent
+    # text, so the loop neither offers nor runs the tools in
+    # `schedule_tools.UNATTENDED_WITHHELD_TOOLS` — things only the principal
+    # decides, such as starting to track a goal.
+    unattended: bool = False
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})

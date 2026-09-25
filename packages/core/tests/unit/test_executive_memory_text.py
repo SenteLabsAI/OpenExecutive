@@ -156,3 +156,101 @@ def test_briefing_approve_line_passes_the_quote_gate_with_a_question_headline() 
     assert not _is_valid_user_commitment(
         "I approve the proposal", 'I approve the proposal "Should we renew Acme at 3%?".'
     )
+
+
+@pytest.mark.parametrize("entry", ["stream_chat", "stream_chat_with_committee"])
+@pytest.mark.parametrize("mode", ["solo", "team"])
+def test_open_loop_pass_gets_the_turns_pinned_mode(
+    entry: str, mode: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Solo opens the principal's own dated commitments and team does not, so
+    the pass must judge the turn in the mode the turn ran in."""
+    from openexecutive.audit import AuditLogger, set_audit_logger
+    from openexecutive.memory import episodic
+    from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.session import Session
+
+    # Keep this turn's audit and memory rows out of ./episodic_memory.db.
+    monkeypatch.setattr(episodic, "DB_PATH", tmp_path / "turn.db")
+    set_audit_logger(AuditLogger(db_path=tmp_path / "turn.db"))
+
+    modes: list[str | None] = []
+    verified: list[bool] = []
+
+    def _loops(*_a: Any, **k: Any) -> None:
+        modes.append(k.get("workspace_mode"))
+        verified.append(k.get("principal_verified"))
+
+    async def _run() -> None:
+        session = Session(session_id=f"t-mode-{entry}-{mode}", workspace_mode=mode)
+        async for _ in getattr(Executive(), entry)(
+            PROMPT, session, person_id=42, peer_memory_context=""
+        ):
+            pass
+
+    with (
+        patch("openexecutive.orchestrator.executive.get_provider", return_value=_provider()),
+        patch("openexecutive.memory.honcho_client.sync_turn", new=lambda *a, **k: None),
+        patch(
+            "openexecutive.orchestrator.executive._sync_consulted_departments_to_honcho",
+            new=lambda *a, **k: None,
+        ),
+        patch("openexecutive.memory.episodic.schedule_extraction", new=lambda *a, **k: None),
+        patch("openexecutive.attunement.open_loops.schedule_open_loop_pass", new=_loops),
+    ):
+        try:
+            asyncio.run(_run())
+        finally:
+            set_audit_logger(None)
+    assert modes == [mode]
+    # A bare Session (no verified surface, no caller) is not the principal.
+    assert verified == [False]
+
+
+def test_open_loop_pass_is_told_when_the_principal_is_verified(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The web chat with the principal as caller is a verified surface, so
+    the pass may open the principal's own dated commitments in solo."""
+    from openexecutive.audit import AuditLogger, set_audit_logger
+    from openexecutive.memory import episodic
+    from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.session import Session
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    db = tmp_path / "turn.db"
+    monkeypatch.setattr(episodic, "DB_PATH", db)
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    people_registry.invalidate()
+    principal = people_store.upsert_person(full_name="Pat Lee", is_principal=True)
+    set_audit_logger(AuditLogger(db_path=db))
+    seen: list[Any] = []
+
+    async def _run() -> None:
+        session = Session(session_id="t-verified", workspace_mode="solo", from_web_chat=True)
+        async for _ in Executive().stream_chat(
+            PROMPT, session, person_id=principal, peer_memory_context=""
+        ):
+            pass
+
+    try:
+        with (
+            patch("openexecutive.orchestrator.executive.get_provider", return_value=_provider()),
+            patch("openexecutive.memory.honcho_client.sync_turn", new=lambda *a, **k: None),
+            patch(
+                "openexecutive.orchestrator.executive._sync_consulted_departments_to_honcho",
+                new=lambda *a, **k: None,
+            ),
+            patch("openexecutive.memory.episodic.schedule_extraction", new=lambda *a, **k: None),
+            patch(
+                "openexecutive.attunement.open_loops.schedule_open_loop_pass",
+                new=lambda *a, **k: seen.append(k.get("principal_verified")),
+            ),
+        ):
+            asyncio.run(_run())
+    finally:
+        set_audit_logger(None)
+        people_registry.invalidate()
+    assert seen == [True]
