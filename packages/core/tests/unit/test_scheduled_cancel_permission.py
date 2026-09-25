@@ -34,7 +34,9 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "episodic.db"
     initialize_db(db_path)
     monkeypatch.setattr("openexecutive.memory.episodic.DB_PATH", db_path)
-    monkeypatch.delenv("SCHEDULED_ADMIN_TOKEN", raising=False)
+    # Empty rather than deleted: Settings also reads the repo .env (a
+    # developer's may set the token) and the process env wins over it.
+    monkeypatch.setenv("SCHEDULED_ADMIN_TOKEN", "")
     monkeypatch.delenv("BACKEND_SHARED_SECRET", raising=False)
 
 

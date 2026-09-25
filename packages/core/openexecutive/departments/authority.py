@@ -18,6 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from openexecutive.alerts.models import AlertSeverity
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments.models import AuthorityLevel
 from openexecutive.people.models import AuthorityScope
@@ -176,35 +177,35 @@ def propose_via_alert(
     extra_tags: list[str] | None = None,
     *,
     external_id_suffix: str = "",
-    severity: str = "medium",
+    severity: AlertSeverity = AlertSeverity.MEDIUM,
     dedup_on: str | None = None,
     raise_errors: bool = False,
 ) -> int | None:
     """Persist a proposal as an alert routed to a specific Person.
 
     Returns the alert id, or None if a duplicate was suppressed. A store
-    failure is logged and also returns None, unless ``raise_errors`` — for a
-    caller whose card is the only trace of the work and must not be lost.
+    failure is logged and also returns None, unless ``raise_errors``.
 
     topic_tags carries both department and person identifiers so the UI
     and future resolvers can filter/match without parsing the body;
     ``extra_tags`` lets a caller carry the originating alert's tags (e.g.
     a ``comp`` / ``legal`` marker) onto the proposal.
 
-    ``external_id_suffix`` turns the card into a recurring one: an open
-    (unread) card with the same dedup key is refreshed in place with the new
-    body — whatever its suffix, so one situation never has two open cards —
-    and once the person has acted on it a fresh card is minted only when
-    the suffix changes (callers pass e.g. the ISO week). Without a suffix
-    the proposal is one-shot and a repeat with the same summary is
-    suppressed for good. Coalescing keeps the open card's routing: a head
-    change re-routes it only once the current card has been handled.
+    ``external_id_suffix`` makes the card recurring. An open (unread) card
+    with the same dedup key is refreshed in place with the new body —
+    whatever its suffix, so one situation never has two open cards.
+    Otherwise a new card is inserted under ``{dedup_key}:{suffix}``: after
+    the person has acted on a card, the next one lands only if its suffix
+    differs from the handled card's (a period such as the ISO week gives
+    one per period; a per-occurrence id gives one per occurrence). Without
+    a suffix the proposal is one-shot and a repeat is suppressed for good.
+    Coalescing keeps the open card's routing: a head change re-routes it
+    only once the current card has been handled.
 
     ``person_id=None`` files the card unrouted: the Briefing lists every
-    unread card, so a held action with nobody to route to still reaches a
-    person. ``dedup_on`` keys the dedup on that text instead of the summary's
-    first 60 characters, so two proposals that merely share an opening stay
-    two cards while an identical repeat is still suppressed.
+    unread card, so work with nobody to route to still reaches a person.
+    ``dedup_on`` keys the dedup on that text (hashed) instead of the
+    summary's first 60 characters.
     """
     from openexecutive.alerts.store import coalesce_alert, insert_alert
 
@@ -246,6 +247,47 @@ def propose_via_alert(
             department_slug, person_id,
         )
         return None
+
+
+def escalate_via_alert(
+    department_slug: str,
+    person_id: int | None,
+    summary: str,
+    body: str,
+    suggested_action: str,
+    *,
+    action_key: str,
+    occurrence_id: str,
+) -> int | None:
+    """File the urgent card that holds an escalated action until a person
+    approves it.
+
+    Nothing is sent before approval, so this card is the action's only
+    trace and must never be silently lost:
+
+    - severity HIGH, so it ranks above routine proposals;
+    - keyed on ``action_key`` — the whole action (what, how, to whom) — so
+      another escalation that shares an opening, or the same text for someone
+      else, is a card of its own;
+    - an identical action whose card is still unread folds into that card;
+      once that card has been handled, ``occurrence_id`` (unique per
+      scheduled row) lets the next one land instead of colliding with the
+      handled card's external id;
+    - ``person_id=None`` files it unrouted rather than dropping it;
+    - a store failure raises, so the caller can retry rather than mark the
+      action done.
+    """
+    return propose_via_alert(
+        department_slug,
+        person_id,
+        summary,
+        body,
+        suggested_action,
+        severity=AlertSeverity.HIGH,
+        dedup_on=action_key,
+        external_id_suffix=occurrence_id,
+        raise_errors=True,
+    )
 
 
 def cast_action(a: str) -> Literal["propose", "escalate"]:

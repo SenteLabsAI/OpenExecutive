@@ -2190,16 +2190,18 @@ scheduler:
     they are outside it) or `escalate` (an urgent "[ESCALATION]" alert to
     the approver right away, never deferred, and NOT dispatched — the row
     is marked done and the card's "If you approve: … right away" line is
-    what sends it). Because that card is the action's only trace, it
-    always lands: severity high, filed unrouted when nobody holds the
-    scope and no principal is set (the Briefing lists every unread card),
-    and deduped on the full intent (`propose_via_alert(dedup_on=...)`)
-    rather than the summary's first 60 characters, so another escalation
-    that shares an opening cannot swallow it. An identical escalation folds
-    into a still-open card and gets a fresh one once that card was handled
-    (the action id is the external-id suffix), and a card that cannot be
-    written (`raise_errors=True`) retries the row with backoff instead of
-    marking it done. `escalate` used to raise the alert AND dispatch, which
+    what sends it). Because that card is the action's only trace, it is
+    never silently lost: severity high, filed unrouted when nobody holds
+    the scope and no principal is set (the Briefing lists every unread
+    card), and deduped on the whole action — kind, channel, recipient and
+    intent (`escalate_via_alert` → `propose_via_alert(dedup_on=...)`) — rather than the summary's
+    first 60 characters, so another escalation that shares an opening, or
+    the same text for someone else, cannot swallow it. An identical
+    escalation folds into a still-open card and gets a fresh one once that
+    card was handled (the action id is the external-id suffix), and a card
+    that cannot be written (`raise_errors=True`) retries the row with
+    backoff and, once the retries are spent, marks it `failed` (logged as
+    an error) — never `done`. `escalate` used to raise the alert AND dispatch, which
     contradicted the UI's "the specialist will not act" and sent the
     action twice once the card was approved. A gated `dept_cadence` row
     becomes a card and does not chain its next occurrence (re-bootstrapped

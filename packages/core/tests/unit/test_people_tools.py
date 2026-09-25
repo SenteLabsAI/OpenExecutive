@@ -396,10 +396,9 @@ def test_owner_in_a_private_telegram_chat_can_change_the_roster(
 def test_unverifiable_telegram_cannot_change_the_roster(
     owner_id: int, monkeypatch: pytest.MonkeyPatch, secret: str | None, chat_ref: str
 ) -> None:
-    if secret is None:
-        monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
-    else:
-        monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", secret)
+    # An empty value, not delenv: Settings also reads the repo .env, which a
+    # developer may have filled in; the process env wins over it.
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", secret or "")
     session = Session(origin_channel="telegram", origin_channel_ref=chat_ref,
                       caller_person_id=owner_id)
     with _turn(session):

@@ -297,11 +297,11 @@ def test_escalate_with_nobody_to_ask_files_an_unrouted_card() -> None:
     assert updated.status == "done"
 
 
-def _escalate(intent_text: str) -> None:
+def _escalate(intent_text: str, channel_ref: str = "U123") -> None:
     episodic.insert_scheduled_action(
         run_at=(_now() - timedelta(seconds=10)).isoformat(),
         channel="slack_dm",
-        channel_ref="U123",
+        channel_ref=channel_ref,
         intent_text=intent_text,
         department="legal",
     )
@@ -331,6 +331,23 @@ def test_escalations_sharing_an_opening_are_separate_cards() -> None:
 
     bodies = sorted(a.body for a in alert_store.list_alerts())
     assert bodies == [opening + "4", opening + "7"]
+
+
+def test_same_text_for_different_recipients_is_two_cards() -> None:
+    """Who an action goes to lives outside its intent text, so it must be part
+    of the dedup — else the second recipient's action merges into the first
+    card and is marked done with no trace."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    _escalate("Send the weekly status reminder", channel_ref="U1")
+    _escalate("Send the weekly status reminder", channel_ref="U2")
+
+    assert len(alert_store.list_alerts()) == 2
 
 
 def test_repeat_escalation_after_its_card_was_handled_gets_a_new_card() -> None:
