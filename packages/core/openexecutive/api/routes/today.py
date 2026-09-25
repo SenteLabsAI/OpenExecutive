@@ -1297,7 +1297,8 @@ def _nothing_needs_attention(today_data: dict[str, Any], mode: str = "team") -> 
     nothing to synthesize — and handing the model only the history rail makes
     it manufacture urgency out of settled items. Callers emit a fixed quiet
     line instead of spending a model call. Solo never renders who is
-    awaiting (one founder, no team), so it does not count here either.
+    awaiting (the Executive coordinates nobody but the principal there), so
+    it does not count here either.
     """
     if today_data.get("proposals"):
         return False
@@ -1505,6 +1506,64 @@ def get_today_activity_daily(
     if days < 1 or days > 365:
         raise HTTPException(status_code=400, detail="days must be in [1, 365]")
     return _build_daily_activity(days)
+
+
+class BriefDeliveryNotice(BaseModel):
+    """The latest brief that didn't reach the owner, for the notice above the
+    Briefing."""
+
+    brief: str  # "morning brief" or "end-of-day digest"
+    at: str  # when it ran (ISO)
+    problem: str
+    fix: str
+    # Whether it was written, so it can still be read on the Artifacts page.
+    readable: bool
+
+
+def _brief_delivery_notice() -> BriefDeliveryNotice | None:
+    from openexecutive.briefing.brief_state import (
+        DELIVERY_PROBLEMS,
+        brief_name,
+        current_problem,
+        last_delivery_outcome,
+    )
+    from openexecutive.config import get_settings
+    from openexecutive.scheduler.runner import principal_delivery_plan
+
+    # With the scheduler off no brief is coming; the Setup status page says so.
+    if not get_settings().scheduler_enabled:
+        return None
+    last = last_delivery_outcome()
+    if last is None:
+        return None
+    principal, plan = principal_delivery_plan()
+    reason = current_problem(last, has_owner=principal is not None, can_deliver=bool(plan))
+    if reason is None:
+        return None
+    problem, fix = DELIVERY_PROBLEMS[reason]
+    return BriefDeliveryNotice(
+        brief=brief_name(last.kind),
+        at=last.at.isoformat(),
+        problem=problem,
+        fix=fix,
+        readable=last.reason != "not_written",
+    )
+
+
+@router.get(
+    "/today/brief-delivery",
+    response_model=BriefDeliveryNotice | None,
+    tags=["today"],
+)
+async def get_brief_delivery(request: Request) -> BriefDeliveryNotice | None:
+    """The latest morning brief or end-of-day digest that didn't reach the
+    owner and still has a problem to fix, or null. Only the owner is told:
+    anyone else gets null, since it is about the owner's channels."""
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    if not await asyncio.to_thread(_caller_is_principal_or_unclaimed, request):
+        return None
+    return await asyncio.to_thread(_brief_delivery_notice)
 
 
 @router.get(

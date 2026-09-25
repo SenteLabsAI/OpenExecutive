@@ -136,7 +136,7 @@ caching:
         company_profile.to_prompt_block() rendering of profile.yaml +
         render_org_block(mode=workspace_mode) from
         departments/prompt_block.py — team: departments, heads, principals,
-        charters, the People roster; solo: a "## The Founder" line
+        charters, the People roster; solo: a "## Your Principal" line
         (name, person_id, reachable channels) and "## Your Goals" grouped by
         area (a department row), with no authority levels, heads, cadences,
         channels or roster. Same 4000-char cap and sanitizing either way.
@@ -877,10 +877,15 @@ routing:
     channel → DM the head instead). Every successful call surfaces
     an `action_taken` SSE chip in the live chat (see `chat:` section).
 
-    Solo mode has no audience to choose. The solo persona replaces
-    "Choosing Who to Tell" with "Who Hears From You": everything goes to
-    the founder, and clients / contractors / vendors are contacted only
-    when the founder asks and only if they are a contact. Tiers 2 and 3
+    Solo mode has no audience to choose: only one person — the principal —
+    uses Open Executive. The principal's role is not assumed (an owner, an
+    executive inside a larger organisation, or an independent); the people
+    in their world (manager, direct reports, peers, clients, investors,
+    board) are contacts the Executive helps them work with, not a team it
+    coordinates. The solo persona replaces "Choosing Who to Tell" with
+    "The People in Their World" and "Who Hears From You": everything goes
+    to the principal, and contacts are messaged only when the principal
+    asks and only if they are a contact. Tiers 2 and 3
     are not offered at all: filter_tools_for_workspace_mode withholds
     send_department_message, send_company_broadcast and
     set_department_head from the chat loop, the reflection and the
@@ -954,24 +959,26 @@ routing:
     was done and what was deferred to the morning brief.
 
     Solo: the system prompt is `_build_reflection_system_solo` (the
-    founder is the only human and decision-maker; prefer create_alert and
-    schedule_followup to the founder; never message anyone else from an
-    unattended pass), the roster block is replaced by a single THE FOUNDER
-    line (person_id + follow-up channel refs), the seen-refs guard is
-    seeded from the founder only, at-risk departments render as AREAS WITH
-    GOALS AT RISK and the people-waiting block is dropped. The research
-    synthesis follows the same rule (`_build_synthesis_system(mode="solo")`
-    routes only to the founder; its roster lists only the founder). In both,
-    message_person is wrapped by schedule_tools.founder_only_handlers, which
-    refuses any person_id but the principal's (fails closed on a roster
-    read error) — the "contacts only when the founder asks" rule is code,
+    principal — whatever their role — is the only person who uses Open
+    Executive and the only one it takes direction from; prefer create_alert
+    and schedule_followup to the principal; never message anyone else from
+    an unattended pass — flag it for the principal to raise), the roster
+    block is replaced by a single YOUR PRINCIPAL line (person_id +
+    follow-up channel refs), the seen-refs guard is seeded from the
+    principal only, at-risk departments render as AREAS WITH GOALS AT RISK
+    and the people-waiting block is dropped. The research synthesis follows
+    the same rule (`_build_synthesis_system(mode="solo")` routes only to the
+    principal; its roster lists only the principal). In both,
+    message_person is wrapped by schedule_tools.principal_only_handlers,
+    which refuses any person_id but the principal's (fails closed on a
+    roster read error) — the "contacts only when the principal asks" rule is code,
     not just prompt, on the passes that run unattended with inbound text in
     context. Solo's unattended passes also never get create_calendar_event,
     create_instant_meeting or run_workflow
     (schedule_tools.SOLO_UNATTENDED_WITHHELD_TOOLS): a booking reaches its
     attendees and a workflow can do anything its steps do, so injected text
-    ("book a sync with X") must not reach a contact — the founder books and
-    starts workflows from chat. Both read the mode through
+    ("book a sync with X") must not reach a contact — the principal books
+    and starts workflows from chat. Both read the mode through
     effective_workspace_mode(current_session) before binding their own
     session, and pin that mode on their own session (turn_workspace_mode)
     so their tool handlers use it too.
@@ -2371,17 +2378,21 @@ departments:
   prompt_block: |
     openexecutive.departments.prompt_block.render_org_block(mode="team") —
     produces the cached org block in system block 1. mode="solo" renders
-    "## The Founder" (the principal's name, person_id, reachable channels and
-    preferred channel) then "## Your Goals" grouped by area (area title +
+    "## Your Principal" (the principal's name, person_id, reachable channels
+    and preferred channel) then "## Your Principal's Goals" grouped by area
+    (area title +
     slug, each goal's period, key result, target, current, status and
     goal_id); areas with no goals are skipped; no authority levels, heads,
-    cadences, channels or People roster. The founder is
+    cadences, channels or People roster. The principal is
     people.store.find_principal_person (the oldest non-archived principal),
-    the same rule every solo check uses (founder_only_handlers, the
-    follow-up rule, the meeting gate, reflection's founder line, research's
-    founder roster), so the person named is the person those checks let
-    through; a failed lookup drops the line, never the goals. Deterministic,
-    sanitized, and held to the same 4000-char cap (the founder's line comes
+    the same rule every solo check uses (principal_only_handlers, the
+    follow-up rule, the meeting gate, reflection's principal line,
+    research's principal roster), so the person named is the person those
+    checks let through; a failed lookup drops the line, never the goals.
+    Headings name the principal from the Executive's side ("Your
+    Principal"), never "## You", which it could read as its own identity.
+    Deterministic, sanitized, and held to the same 4000-char cap (the
+    principal's line comes
     first so the cap only ever cuts goals).
   charters_dir: openexecutive.departments.charters — per-department playbooks loaded into the head persona.
   watched_entities: |
@@ -4348,9 +4359,9 @@ workflows:
     - inbound_resolver — matches human replies back to paused workflow runs.
     - crisis_comms — drafts incident response messaging.
     - churn_deep_dive — structured customer-loss analysis.
-    - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 in the user's zone; an explicit PRINCIPAL_BRIEF_MORNING_TIME env var is read as UTC). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Delivery (`scheduler.runner._deliver_to_principal`, also used for the client-rotation digest): the principal's `preferred_channel` (slack / discord / telegram / email / any) maps to slack_dm / discord_dm / telegram / email and is tried first, then the other chat channels they have an id for in the order slack_dm → discord_dm → telegram. Email goes through the active MCP gateway (`google_workspace__send_gmail_message`, `user_google_email` = the Executive's own address, `to` = the principal's email, subject `<workflow title> — <date>`; an in-band error counts as failed, `workflows.action_step.looks_like_error`) and is used only when the preference is `email` (tried first) or `any` with no chat channel (tried last) — an owner linked by email at setup has `any` and keeps their chat delivery without extra emails. Email is not a DM, so the per-Person outbound guard does not apply; the gateway's roster egress gate does. When no channel can deliver (e.g. a web-only principal, or email-only with no gateway) the brief is still generated and stored as a run with its artifact, exactly as before; it is not delivered (audited `delivery_failed`), so the window and fingerprint do not advance, and the next occurrence is chained. SOLO: with effective_workspace_mode solo it uses STANDALONE_BRIEF_SOLO_SYSTEM (top call → what changed → handled overnight → needs you → due this week → goals at risk, named by area; no waiting-on or department sections) over the solo context render, which adds today_data['due_soon'] (open_loops.principal_due_soon: the principal's open loops overdue or due within 7 days) as a DUE THIS WEEK block, and the fingerprint carries the mode, drops the people-awaiting set and, when there are due items, carries them as (loop_id, state) pairs."
+    - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 in the user's zone; an explicit PRINCIPAL_BRIEF_MORNING_TIME env var is read as UTC). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Delivery (`scheduler.runner._deliver_to_principal`, also used for the client-rotation digest): the principal's `preferred_channel` (slack / discord / telegram / email / any) maps to slack_dm / discord_dm / telegram / email and is tried first, then the other chat channels they have an id for in the order slack_dm → discord_dm → telegram. Email goes through the active MCP gateway when it runs the Google Workspace server (`runner.email_ready()`: another MCP server alone does not make email ready) (`google_workspace__send_gmail_message`, `user_google_email` = the Executive's own address, `to` = the principal's email, subject `<workflow title> — <local date>` in the user's zone, e.g. 'Morning Brief — Fri 25 Sep' (`_email_subject`; a UTC date put tomorrow's date on an evening digest west of UTC); body_format html, the Markdown rendered by `utils.markdown_email` (markdown-it-py: raw HTML off, so quoted outside text shows as text; images off, so opening the email loads nothing remote; javascript:/vbscript:/file:/data: links dropped); an in-band error counts as failed, `workflows.action_step.looks_like_error`). Email is tried first when the preference is `email`, and otherwise last, as the backup after every chat channel: delivery stops at the first channel that sends, so an owner linked by email at setup (`any`) with a working Slack still gets no email — only when every chat channel is missing or fails. Email is not a DM, so the per-Person outbound guard does not apply; the gateway's roster egress gate does. `_deliver_to_principal` returns a `PrincipalDelivery(ok, detail, reason, channel)`; reason is delivered | no_owner | no_channel | send_failed. The order comes from `runner.delivery_order` via `runner.principal_delivery_plan()` — public, because the Briefing notice and the Setup status light use them too. When no channel can deliver (e.g. a web-only principal, or email-only with no gateway) the brief is still generated and stored as a run with its artifact, exactly as before; it is not delivered (audited `delivery_failed`), so the window and fingerprint do not advance, and the next occurrence is chained. Every run's outcome is recorded (`brief_state.record_delivery_outcome`, scope `brief_delivery:<kind>`: the reason, and the channel that sent it — a channel name, never an address), including `not_written` when the workflow raised, emitted an error or produced no artifact (then nothing is sent), and `send_failed` when delivery itself raised. `last_delivery_outcome()` returns the latest of the two briefs. `current_problem(outcome, has_owner, can_deliver)` says what still keeps it from the owner: send_failed and not_written stay reported until the next brief records a new outcome; having nowhere to send it is judged from now, so a fix clears it and a partial fix reports what is left (an owner added but still no channel reads no_channel). `GET /today/brief-delivery` (the Briefing's notice, owner only, null while the scheduler is off) and the Setup status 'Daily brief' light read it; brief names come from `scheduler.action_phrasing.KIND_LABEL` (`brief_state.brief_name`). SOLO: with effective_workspace_mode solo it uses STANDALONE_BRIEF_SOLO_SYSTEM (top call → what changed → handled overnight → needs you → due this week → goals at risk, named by area; no waiting-on or department sections) over the solo context render, which adds today_data['due_soon'] (open_loops.principal_due_soon: the principal's open loops overdue or due within 7 days) as a DUE THIS WEEK block, and the fingerprint carries the mode, drops the people-awaiting set and, when there are due items, carries them as (loop_id, state) pairs."
     - "end_of_day_digest — Shift 3 recurring workflow. Fires once per day from the scheduler (default 18:00 in the user's zone; an explicit PRINCIPAL_BRIEF_EOD_TIME is read as UTC). Same shape as morning_brief but framed as a recap since the last DELIVERED digest (`brief_state.since_for`, 24 h on a cold store): what OE did today (activity since), alerts it handled today (completed moves only; rewritten-but-open items render as a REWRITTEN block under still pending), what's still pending (NEW SINCE LAST BRIEF, action category only, carried-over as one line), what's at risk for tomorrow, one optional 'sleep on this' question. Same fingerprint / one-liner suppression and `force_full` as morning_brief, under scope `brief:principal_brief_eod`. SOLO: _EOD_DIGEST_SOLO_SYSTEM (what I did today → open decisions → goals at risk tomorrow by area → sleep on this) over a context with GOALS AT RISK BY AREA and no people-waiting block."
-    - "executive_reflection — Shift 5 recurring workflow. Fires once per day ~30 minutes before the morning brief (default 07:30 in the user's zone; an explicit PRINCIPAL_REFLECTION_TIME is read as UTC). The first workflow OE runs ON ITSELF — not for a department, not for the principal, but for its own org-coordination judgment. Three steps: (1) gather /today + /today/activity + recent open alerts, (2) single LLM call with the full outbound toolkit (schedule_followup, send_*_dm, send_department_message, send_company_broadcast, suggest_workflow, create_alert, etc.) bounded to ≤4 iterations — the model decides per signal whether to act now, notify the right audience via the persona's 'Choosing Who to Tell' rule, raise it for the morning brief, or ignore, (3) emit a short Markdown summary with a structured tool-call log. MEMORY: the context carries a YESTERDAY'S STANDUP block (the previous done run's artifact, capped at 1500 chars) and the prompt forbids re-acting on or re-notifying about anything listed there unless it changed; open alerts render with `alert_id`, the review verdict, note and recommended move. Reflection never closes alerts (the alert review does, with evidence) — the prompt does not instruct `ack_alert`. The artifact is stored via complete_run but NOT DM'd — the morning brief surfaces what was decided via /today/activity. This operationalizes the 'When You Notice Something on Your Own' persona section (Shift 1). SOLO: the solo-framed prompt, no team tools, a founder line instead of the roster — see routing.reflection_then_decide."
+    - "executive_reflection — Shift 5 recurring workflow. Fires once per day ~30 minutes before the morning brief (default 07:30 in the user's zone; an explicit PRINCIPAL_REFLECTION_TIME is read as UTC). The first workflow OE runs ON ITSELF — not for a department, not for the principal, but for its own org-coordination judgment. Three steps: (1) gather /today + /today/activity + recent open alerts, (2) single LLM call with the full outbound toolkit (schedule_followup, send_*_dm, send_department_message, send_company_broadcast, suggest_workflow, create_alert, etc.) bounded to ≤4 iterations — the model decides per signal whether to act now, notify the right audience via the persona's 'Choosing Who to Tell' rule, raise it for the morning brief, or ignore, (3) emit a short Markdown summary with a structured tool-call log. MEMORY: the context carries a YESTERDAY'S STANDUP block (the previous done run's artifact, capped at 1500 chars) and the prompt forbids re-acting on or re-notifying about anything listed there unless it changed; open alerts render with `alert_id`, the review verdict, note and recommended move. Reflection never closes alerts (the alert review does, with evidence) — the prompt does not instruct `ack_alert`. The artifact is stored via complete_run but NOT DM'd — the morning brief surfaces what was decided via /today/activity. This operationalizes the 'When You Notice Something on Your Own' persona section (Shift 1). SOLO: the role-neutral solo prompt, no team tools, a YOUR PRINCIPAL line instead of the roster — see routing.reflection_then_decide."
 
 artifacts:
   summary: |
@@ -4867,7 +4878,19 @@ integrations:
     code, a Slack error code matching [a-z_]{1,40}, or an exception class
     name; _fetch never logs a URL (Telegram's carries the token), and the
     Telegram token must match \d+:[A-Za-z0-9_-]{30,} before it is put in
-    one. Sample values from .env.example (setup_checks.EXAMPLE_VALUES,
+    one. Daily brief (check_brief, id "brief", after the scheduler): off
+    with the scheduler; amber with no owner (link /people) or nowhere to
+    send it (runner.delivery_order empty — link /people/<owner id>); red
+    when the latest brief's send failed or it couldn't be written
+    (brief_state.current_problem); amber when the last brief got through
+    on a later channel than the first one tried (that channel is broken:
+    names it and points at its light); amber when nobody chose a time
+    zone (no workspace zone and USER_TIMEZONE unset or UTC), saying the
+    briefs run on UTC (link /settings); else ok, naming the first channel
+    and each brief's next time in the user's zone. gather_snapshot reads
+    the outcome, runner.email_ready(), runner.next_brief_runs() and the
+    zone, so the check itself does no I/O.
+    Sample values from .env.example (setup_checks.EXAMPLE_VALUES,
     RFC 2606 example domains for emails) are named as samples and never
     sent; test_setup_checks.py fails if .env.example ships a sample the
     set doesn't know, and scripts/setupStatus.test.mjs keeps the UI's
@@ -5299,9 +5322,9 @@ integrations:
     client-rotation digest use `_deliver_to_principal` instead: Slack /
     Discord / Telegram through the DM handlers, and email through the
     active MCP gateway's `google_workspace__send_gmail_message` (from the
-    Executive's own mailbox to the principal's address) when the principal
-    prefers email, or prefers "any" and has no chat channel — see
-    `workflows` → morning_brief.
+    Executive's own mailbox to the principal's address, formatted as
+    HTML) — first when the principal prefers email, otherwise as the backup
+    after every chat channel — see `workflows` → morning_brief.
   outbound_reply_context: |
     Cross-session DM context linkage — fixes the failure where the
     principal tells OE "DM Alex about X" in one session, OE sends the
@@ -5374,12 +5397,21 @@ evals:
     Session.workspace_mode; a workflow scenario runs with a Session carrying
     it bound as current_session (only when the key is set, so unkeyed
     workflow scenarios keep running with no session). The chat judge adds
-    a solo section (team framing is a failure, and the scenario's
-    quality_criteria are listed) only for solo scenarios; every other judge
-    prompt is unchanged. solo_001..003 cover "who should I loop in"
-    (sole decision-maker, no team language), a goal update (area, one goal,
-    rationale) and a status question (no department / people-waiting
-    sections). The standalone evals/run_evals.py passes the key through too.
+    a role-neutral solo section (the asker may be an owner, an in-house
+    executive or an independent — do not reward assuming which; helping
+    them work with the people in their world is good, coordinating or
+    messaging those people unasked, broadcasting, or offering to loop the
+    asker in is a failure; the scenario's quality_criteria are listed) only
+    for solo scenarios; every other judge prompt is unchanged. solo_001..003
+    run against the solo_studio fixture (an owner): "who should I loop in"
+    (the principal decides; affected clients are people they tell), a goal
+    update (area, one goal, rationale) and a status question (no department
+    / people-waiting sections). solo_004 is an in-house executive (a VP of
+    Marketing at an ~800-person company preparing a budget case for their
+    CFO and a hard conversation with a direct report): the boss and the
+    report are people the principal works with, not a team to message, and
+    no business owner is assumed. The standalone evals/run_evals.py passes
+    the key through too.
 
 company_onboarding:
   module: openexecutive.onboarding (interview.py, commit.py, wizard.py) + api.routes.onboarding
@@ -5620,13 +5652,16 @@ fixtures:
     of inheriting the previous company's monitors.
   packaging: Fixtures are copied into the API Docker image so demos work in deployed environments.
   solo_fixture: |
-    fixtures/companies/solo_founder (Tallgrass Studio, a one-person design
-    studio) is the reference fixture for solo mode: people.yaml holds only
-    the founder (principal, wildcard), departments.yaml four areas
-    (strategy, finance, marketing, product) headed by the founder with one
-    or two goals each and no cadences, workspace.yaml sets mode: solo, and
-    memory.json seeds decisions and initiatives with no scheduled actions.
-    Its evals are the built-in solo_* scenarios.
+    fixtures/companies/solo_studio (Tallgrass Studio, a one-person design
+    studio) is one example of a solo principal — an owner; solo principals
+    can equally be executives inside larger organisations or independents.
+    people.yaml holds only the principal (its owner, wildcard),
+    departments.yaml four areas (strategy, finance, marketing, product)
+    headed by the principal with one or two goals each and no cadences,
+    workspace.yaml sets mode: solo, and memory.json seeds decisions and
+    initiatives with no scheduled actions. Its evals are the built-in
+    solo_001..003 scenarios (solo_004, an in-house executive, needs no
+    fixture).
   client_interplay: |
     Loading a fixture while a client slot is active first saves that client
     back to its slot and clears the active-client sentinel (leaving client
@@ -6032,6 +6067,7 @@ trust_ledger: |
   (people_tools.is_principal_on_verified_surface — the roster-write rule:
   web chat, their own Slack/Discord, private Telegram with a valid webhook
   secret; fails closed); an inbound email, a contact's turn or an
-  unattended run gets a proposal to the founder instead, so injected text
-  cannot book a meeting. propose always proposes to the founder. Team is
+  unattended run gets a proposal to the principal instead, so injected
+  text cannot book a meeting. propose always proposes to the principal.
+  Team is
   unchanged (department gate AND class mode).

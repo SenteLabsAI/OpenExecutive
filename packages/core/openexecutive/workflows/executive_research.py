@@ -187,29 +187,32 @@ def _routing_option_a(configured: set[str], has_roster: bool = True) -> str:
 
 
 def _solo_routing_options(configured: set[str]) -> str:
-    """The ROUTING OPTIONS section in solo mode: the founder is the only
+    """The ROUTING OPTIONS section in solo mode: the principal is the only
     person this pass routes to. Nobody else is contacted unattended."""
     if configured & {"slack", "discord", "telegram"}:
         option_a = (
-            "  (a) **DM the founder** via message_person(person_id, text), "
-            "with the person_id under THE FOUNDER in the findings turn — only "
-            "for something they should see today, before the morning brief.\n"
+            "  (a) **DM your principal** via message_person(person_id, text), "
+            "with the person_id under YOUR PRINCIPAL in the findings turn — "
+            "only for something they should see today, before the morning "
+            "brief.\n"
         )
     else:
         option_a = (
-            "  (a) **DM the founder** — UNAVAILABLE: no direct-message channel "
-            "is configured. Use a briefing card (b) instead.\n"
+            "  (a) **DM your principal** — UNAVAILABLE: no direct-message "
+            "channel is configured. Use a briefing card (b) instead.\n"
         )
     return (
         "## ROUTING OPTIONS\n\n"
-        "The founder runs this business on their own and is the only person "
-        "you route to. There is no team, no department channel and no company "
-        "broadcast. Never message anyone else from this pass — clients, "
-        "contractors and vendors hear from you only when the founder asks.\n\n"
+        "Only one person uses Open Executive — your principal — and they are "
+        "the only person you route to. You have no department channel and no "
+        "company broadcast. Never message anyone else from this pass: the "
+        "people in the principal's world (their manager, team, clients, "
+        "vendors) hear from you only when the principal asks. If one of them "
+        "should know about a finding, flag it for the principal to raise.\n\n"
         + option_a
         + "  (b) **Surface as briefing card** via create_alert — when the "
-        "founder must decide or react.\n"
-        "  (c) **Schedule a follow-up** to the founder via schedule_followup "
+        "principal must decide or react.\n"
+        "  (c) **Schedule a follow-up** to the principal via schedule_followup "
         "for time-shifted chases.\n"
         "  (d) **Suggest a deeper workflow** via suggest_workflow only "
         "for major events (M&A, fundraising, crisis comms).\n"
@@ -225,7 +228,7 @@ def _build_synthesis_system(
     configured, so option (a) never names an unavailable DM channel.
     ``has_roster`` controls whether option (a) tells the model to take a
     person_id from the in-turn roster or to fall back to lookup_person.
-    ``mode="solo"`` swaps the routing menu for the founder-only one."""
+    ``mode="solo"`` swaps the routing menu for the principal-only one."""
     if mode == "solo":
         routing = _solo_routing_options(configured)
     else:
@@ -834,7 +837,7 @@ async def _executive_synthesis_loop(
     outer_session = current_session.get()
     mode = effective_workspace_mode(outer_session)
     solo = mode == "solo"
-    roster_people = _founder_only(people) if solo else people
+    roster_people = _principal_only(people) if solo else people
     has_roster = bool(_render_team_roster(roster_people))
     user_content = _render_synthesis_turn(findings, people, mode=mode)
 
@@ -872,7 +875,7 @@ async def _executive_synthesis_loop(
     # Dispatch only what was offered: _SYNTHESIS_EXCLUDED_TOOLS (watchlist
     # writes, raw DMs, ack_alert, run_workflow) used to stay runnable here if
     # the model emitted them anyway. Solo also withholds the team tools and
-    # meeting booking, and messages only the founder.
+    # meeting booking, and messages only the principal.
     tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
     # Build the system prompt for the SAME configured set, so the routing
     # menu never names a DM channel the model can't actually use.
@@ -1374,8 +1377,8 @@ def _render_team_roster(people: list[Any], heading: str = "YOUR TEAM") -> str:
     )
 
 
-def _founder_only(people: list[Any]) -> list[Any]:
-    """Solo: just the founder from ``people`` — the person
+def _principal_only(people: list[Any]) -> list[Any]:
+    """Solo: just the principal from ``people`` — the person
     ``people.store.find_principal_person`` names (the oldest non-archived
     principal), the same rule as every other solo check. Empty when there is
     none or the roster cannot be read."""
@@ -1395,12 +1398,12 @@ def _render_synthesis_turn(
     findings: list[ResearchFinding], people: list[Any], mode: str = "team"
 ) -> str:
     """Pack the deduped findings + the active roster into a single user-turn
-    for the Executive's synthesis pass. Solo lists only the founder."""
+    for the Executive's synthesis pass. Solo lists only the principal."""
     parts: list[str] = []
     solo = mode == "solo"
-    roster_heading = "THE FOUNDER" if solo else "YOUR TEAM"
+    roster_heading = "YOUR PRINCIPAL" if solo else "YOUR TEAM"
     if solo:
-        people = _founder_only(people)
+        people = _principal_only(people)
     roster = _render_team_roster(people, heading=roster_heading)
     if roster:
         parts.append(roster)

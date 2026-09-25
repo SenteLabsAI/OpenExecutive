@@ -1,28 +1,29 @@
 id: solo_001
 domain: strategy
 workspace_mode: solo
-description: "Solo mode: a founder who runs the business alone asks who to loop in on a pricing change. The Executive treats them as the only decision-maker — no team, department or broadcast language, and no offer to loop in the founder."
+description: "Solo mode, an owner-principal (a one-person studio): who should I loop in on a pricing change? The Executive treats the principal as the decision-maker and the clients and leads it affects as people for the principal to tell — no department or broadcast language, and no offer to loop in the principal."
 # Runs as solo mode via the `workspace_mode` key (Session.workspace_mode), so
-# the solo persona, org block and toolkit apply. Load the solo_founder fixture
+# the solo persona, org block and toolkit apply. Load the solo_studio fixture
 # for the matching goals and memory; the company context below mirrors it.
 company_context:
   name: Tallgrass Studio
   industry: Independent Brand & Product Design Studio
-  stage: Bootstrapped / founder-run
+  stage: Bootstrapped, owner-run
   headcount: 1
   arr: 310000
   monthly_burn: 6500
   runway_months: 2.1
 query: "I'm moving new clients from hourly billing to fixed-fee sprint packages next month. Who should I loop in on the pricing change before it goes out?"
 expected_topics:
-  - the_founder_is_the_decision_maker
-  - no_team_to_route_to
+  - the_principal_is_the_decision_maker
+  - no_department_channel_or_broadcast
   - clients_and_leads_affected_by_the_change
 forbidden_tool_calls:
   - send_department_message
   - send_company_broadcast
 quality_criteria:
-  treats_the_founder_as_the_sole_decision_maker: true
-  no_team_department_or_broadcast_language: true
-  does_not_offer_to_loop_in_the_founder: true
+  treats_the_principal_as_the_decision_maker: true
+  affected_clients_are_people_the_principal_tells_not_a_team_to_route_to: true
+  no_department_channel_or_broadcast_offer: true
+  does_not_offer_to_loop_in_the_principal: true
   brief: true

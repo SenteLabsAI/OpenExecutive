@@ -1,6 +1,6 @@
-# Solo fixture: only the founder. Placeholder email (example.com) — nothing
-# here maps to a real person. Clients and contractors are added as contacts
-# later, when the founder asks.
+# Solo fixture: only the principal, who owns this one-person studio.
+# Placeholder email (example.com) — nothing here maps to a real person.
+# Clients and contractors are added as contacts later, when the principal asks.
 people:
   - full_name: Maya Lindqvist
     role: Founder & Principal Designer

@@ -179,37 +179,43 @@ def _build_reflection_system(configured: set[str], has_roster: bool = True) -> s
 
 
 def _build_reflection_system_solo() -> str:
-    """The reflection system prompt in solo mode: one founder running the
-    business alone, so there is no audience to choose — everything is for the
-    founder, and nobody else hears from this unattended pass."""
+    """The reflection system prompt in solo mode: one person (the principal)
+    uses Open Executive, so there is no audience to choose — everything is
+    for the principal, and nobody else hears from this unattended pass."""
     return (
-        "You are the founder's Executive on your morning solo standup. The "
-        "founder runs this business on their own: they are the only human you "
-        "work with and the only decision-maker. You are reviewing the state of "
-        "the business — goals at risk in each area, decisions waiting on the "
-        "founder, commitments coming due, open alerts, and what moved outside "
-        "(stock, news, vendor status, competitor changelogs) — and deciding "
-        "what to act on BEFORE the founder opens their morning brief.\n\n"
-        "Audience rule: everything is for the founder. There is no team, no "
+        "You are the principal's Executive on your morning solo standup. The "
+        "principal is the one person you work for — they may run their own "
+        "business, lead a function inside a larger organisation, or work "
+        "independently; their role is in the context, so never assume it. "
+        "They are the only person who uses Open Executive and the only one "
+        "you take direction from. The people in their world — their manager, "
+        "their team, peers, clients, vendors — are contacts you never message "
+        "from this standup. You are reviewing the principal's work — goals "
+        "at risk in each area, decisions waiting on them, commitments coming "
+        "due, open alerts, and what moved outside (stock, news, vendor "
+        "status, competitor changelogs) — and deciding what to act on BEFORE "
+        "the principal opens their morning brief.\n\n"
+        "Audience rule: everything is for the principal. You have no "
         "department channel and no company broadcast.\n"
-        "  • Something the founder must decide or act on → `create_alert`, "
-        "assigned to the founder's person_id from THE FOUNDER line in the turn "
-        "— it lands in the brief's Needs you list. Prefer this.\n"
+        "  • Something the principal must decide or act on → `create_alert`, "
+        "assigned to the person_id on the YOUR PRINCIPAL line in the turn — "
+        "it lands in the brief's Needs you list. Prefer this.\n"
         "  • Something to chase at a set time → `schedule_followup` to the "
-        "founder, on a channel and ref from THE FOUNDER line.\n"
-        "  • Never message anyone else. Clients, contractors and vendors hear "
-        "from you only when the founder asks in conversation — never from "
-        "this standup.\n\n"
+        "principal, on a channel and ref from the YOUR PRINCIPAL line.\n"
+        "  • Never message anyone else. Their contacts hear from you only "
+        "when the principal asks in conversation — never from this standup. "
+        "If someone else needs to hear something, flag it for the principal "
+        "to raise with them.\n\n"
         "Decision rule (from `## When You Notice Something on Your "
         "Own`): act on small things; put anything that commits money, speaks "
-        "for the business, or cannot be undone in front of the founder; say so "
-        "plainly when you don't know.\n\n"
+        "for the principal to someone else, or cannot be undone in front of "
+        "them; say so plainly when you don't know.\n\n"
         "Cross-signal synthesis: look for patterns that connect signals "
         "from different sources before flagging. A competitor "
         "announcement + a stock move + a support-ticket spike likely "
         "tell ONE story, not three — synthesize first, then raise one "
         "alert rather than three. When you cite an EXTERNAL signal, "
-        "include the source's provenance_url so the founder can verify "
+        "include the source's provenance_url so the principal can verify "
         "in one click.\n\n"
         "Memory: the block YESTERDAY'S STANDUP lists what you already did "
         "on the previous run. Do NOT re-act on or re-raise a signal listed "
@@ -222,11 +228,11 @@ def _build_reflection_system_solo() -> str:
         "and its recommended move; you never close alerts here (that job "
         "does, with evidence).\n\n"
         "Per signal in the input, decide one of:\n"
-        "  (a) ACT NOW — call a tool: an alert for the founder, a follow-up "
-        "to the founder, a goal update backed by evidence in the input, or a "
-        "workflow suggestion.\n"
+        "  (a) ACT NOW — call a tool: an alert for the principal, a "
+        "follow-up to the principal, a goal update backed by evidence in the "
+        "input, or a workflow suggestion.\n"
         "  (b) RAISE IN MORNING BRIEF — passive: don't call a tool, just note "
-        "in your final summary that the founder should see this.\n"
+        "in your final summary that the principal should see this.\n"
         "  (c) IGNORE — quiet signals don't need action.\n\n"
         "When you're done calling tools, emit a SHORT Markdown summary "
         "(≤200 words) of what you did and what you flagged for the "
@@ -241,8 +247,8 @@ def _build_reflection_system_solo() -> str:
     )
 
 
-def _find_founder() -> Any:
-    """The founder: ``people.store.find_principal_person`` (the oldest
+def _find_principal() -> Any:
+    """The principal: ``people.store.find_principal_person`` (the oldest
     non-archived principal), the same rule as every other solo check. None
     when there is none or the roster cannot be read."""
     from openexecutive.people.store import find_principal_person
@@ -254,10 +260,10 @@ def _find_founder() -> Any:
         return None
 
 
-def _render_founder_line(principal: Any) -> str:
-    """Solo: the founder's person_id and follow-up refs, in place of the team
-    roster — the model needs them for create_alert / schedule_followup and
-    has nobody else to address."""
+def _render_principal_line(principal: Any) -> str:
+    """Solo: the principal's person_id and follow-up refs, in place of the
+    team roster — the model needs them for create_alert / schedule_followup,
+    and this pass addresses nobody else."""
     if principal is None or getattr(principal, "id", None) is None:
         return ""
     refs: list[str] = []
@@ -267,7 +273,7 @@ def _render_founder_line(principal: Any) -> str:
         refs.append(f"slack_dm={principal.slack_user_id}")
     if getattr(principal, "telegram_chat_id", None):
         refs.append(f"telegram={principal.telegram_chat_id}")
-    line = f"THE FOUNDER: person_id={principal.id} — {_one_line(principal.full_name)}"
+    line = f"YOUR PRINCIPAL: person_id={principal.id} — {_one_line(principal.full_name)}"
     if refs:
         line += " — follow-up channel refs: " + ", ".join(_one_line(r) for r in refs)
     return line + "\n"
@@ -307,7 +313,7 @@ def _render_reflection_context(
     depts = today_data.get("departments", [])
     at_risk = [d for d in depts if d.get("at_risk_count", 0) or d.get("off_track_count", 0)]
     if at_risk and solo:
-        # Solo: a department row is one of the founder's areas; no authority
+        # Solo: a department row is one of the principal's areas; no authority
         # levels and nobody else awaiting.
         parts.append("AREAS WITH GOALS AT RISK:")
         for d in at_risk:
@@ -337,8 +343,9 @@ def _render_reflection_context(
         parts.append("")
 
     people = today_data.get("people", [])
-    # Solo has no team waiting on anyone: every proposal is the founder's and
-    # is already listed above.
+    # Solo: the Executive coordinates nobody but the principal, so there is
+    # no one-to-one "waiting on" roster — every proposal is the principal's
+    # and is already listed above.
     awaiting = [] if solo else [p for p in people if p.get("awaiting_count", 0)]
     if awaiting:
         parts.append("PEOPLE WAITING ON SOMEONE:")
@@ -657,9 +664,9 @@ class ExecutiveReflectionWorkflow(Workflow):
             outreach=_outreach_lines(),
             mode=mode,
         )
-        # Solo has no team roster: only the founder's own line.
-        founder = _find_founder() if solo else None
-        roster = _render_founder_line(founder) if solo else _render_team_roster(people)
+        # Solo has no team roster: only the principal's own line.
+        principal = _find_principal() if solo else None
+        roster = _render_principal_line(principal) if solo else _render_team_roster(people)
         if roster:
             user_content = roster + "\n" + user_content
 
@@ -670,10 +677,10 @@ class ExecutiveReflectionWorkflow(Workflow):
         # People roster means reflection can only schedule follow-ups to
         # channels that correspond to a real Person — same invariant the
         # chat path enforces via session.seen_channel_refs.
-        # Solo seeds only the founder's refs: this unattended pass never
+        # Solo seeds only the principal's refs: this unattended pass never
         # schedules anything to a contact.
         seen: set[tuple[str, str]] = set()
-        for person in ([founder] if founder is not None else []) if solo else people:
+        for person in ([principal] if principal is not None else []) if solo else people:
             if person.slack_user_id:
                 seen.add(("slack_dm", person.slack_user_id))
             if person.discord_user_id:
@@ -725,7 +732,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         tools = filter_tools_for_configured_channels(tools, settings)
         # Dispatch only what was offered (a withheld name the model emits
         # anyway is skipped as unknown). Solo also withholds the team tools,
-        # meeting booking and run_workflow, and messages only the founder.
+        # meeting booking and run_workflow, and messages only the principal.
         tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
         # Build the system prompt for the SAME configured set, so the
         # audience rule never names a DM channel the model can't use.

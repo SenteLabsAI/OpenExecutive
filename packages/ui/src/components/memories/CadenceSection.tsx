@@ -98,7 +98,7 @@ export default function CadenceSection() {
           <div className="max-h-[32rem] overflow-y-auto pr-1 space-y-6">
             <RhythmBlock
               title="Daily rhythm"
-              subtitle="Your daily briefing cycle — the morning brief and end-of-day digest land in your inbox; the reflection sets up the morning brief."
+              subtitle="Your daily briefing cycle — the morning brief and end-of-day digest are sent to you by email or chat (Settings → Setup status shows where); the reflection sets up the morning brief."
               icon="clipboard"
               tag="Once a day · for you"
               tagTone="info"

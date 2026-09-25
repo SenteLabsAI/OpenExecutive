@@ -40,8 +40,10 @@ def _peer_memory_section(scenario: dict[str, Any]) -> str:
 
 
 def _solo_section(scenario: dict[str, Any]) -> str:
-    """Judge context for ``workspace_mode: solo`` scenarios: the asker runs
-    the business alone, so team framing is a failure, not style.
+    """Judge context for ``workspace_mode: solo`` scenarios: only the asker
+    uses Open Executive, whatever their role, so coordinating other people
+    through it — or assuming what kind of principal the asker is — is a
+    failure, not style.
 
     Only rendered for solo scenarios — every other chat judge prompt stays
     byte-identical. Lists the scenario's ``quality_criteria`` unless the
@@ -50,11 +52,16 @@ def _solo_section(scenario: dict[str, Any]) -> str:
     if scenario.get("workspace_mode") != "solo":
         return ""
     section = (
-        "\nTHE ASKER runs this business on their own (solo mode): there is no "
-        "team, no departments and nobody else to route to. Goals are grouped "
-        "by area. Referring to a team, a department, a department or company "
-        "channel, or offering to loop the asker in on their own matter is a "
-        "failure.\n"
+        "\nTHE ASKER is the only person who uses this assistant (solo mode). "
+        "They may run their own business, lead a function inside a larger "
+        "organisation, or work independently — judge from the question and "
+        "the company context, and do not reward assuming which. The people "
+        "in their world (a manager, their own team, peers, clients, a board) "
+        "are real: helping the asker work with them is good. Coordinating "
+        "them directly, messaging them unasked, offering to post to a "
+        "department or company channel or to broadcast, or offering to loop "
+        "the asker in on their own matter is a failure. Goals are grouped by "
+        "area, not department.\n"
     )
     criteria = [k.replace("_", " ") for k, v in (scenario.get("quality_criteria") or {}).items() if v]
     if criteria and not scenario.get("peer_memory_context"):

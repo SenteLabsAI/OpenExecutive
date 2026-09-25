@@ -120,7 +120,7 @@ class MorningBriefWorkflow(Workflow):
         # The window is "since the last brief I actually delivered" (24 h on
         # a cold store), so "what changed" is a real delta, not the latest N.
         since = brief_state.since_for(BRIEF_KIND)
-        # Solo / team: the solo brief speaks to one founder (goals by area,
+        # Solo / team: the solo brief speaks to the principal (goals by area,
         # no people waiting). A caller's session override (evals) wins.
         mode = effective_workspace_mode(current_session.get())
 

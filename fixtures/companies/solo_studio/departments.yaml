@@ -1,5 +1,5 @@
-# In solo mode each "department" is one of the founder's areas: a place to
-# group goals, headed by the founder. No cadences, no channels.
+# In solo mode each "department" is one of the principal's areas: a place to
+# group their goals, headed by the principal. No cadences, no channels.
 departments:
   - slug: strategy
     title: Strategy
