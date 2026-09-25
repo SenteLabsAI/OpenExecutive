@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   getDecisionClassMode,
@@ -11,11 +12,13 @@ import {
   type DecisionClassMode,
   type WorkspaceMode,
 } from "@/lib/api";
+import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/principalRole";
 
 // Settings → Workspace: who Open Executive is for (just you, or you and your
-// team), the time zone its briefs run in, and whether it books meetings
-// without asking. Mode and zone go through PUT /workspace and then the
-// app-wide WorkspaceProvider is refreshed so the nav and pages follow.
+// team), your role when it's just you, the time zone its briefs run in, and
+// whether it books meetings without asking. Mode, role and zone go through
+// PUT /workspace and then the app-wide WorkspaceProvider is refreshed so the
+// nav and pages follow.
 
 const MODE_LABEL: Record<WorkspaceMode, string> = {
   solo: "Just me",
@@ -143,6 +146,8 @@ export default function WorkspaceCard() {
           )}
         </div>
 
+        {mode === "solo" && <RoleSection />}
+
         {/* Time zone */}
         <div>
           <label htmlFor="ws-timezone" className="text-xs font-medium text-fg">
@@ -195,6 +200,88 @@ export default function WorkspaceCard() {
         A persona you customised in Council stays in place in either mode.
       </p>
     </section>
+  );
+}
+
+// "Your role" (solo only): what kind of principal you are and what you do.
+// The Executive and its specialists use it to fit their advice to your job.
+// Edits stay local until saved; Save sends only the fields that changed.
+function RoleSection() {
+  const { role, loading, refresh } = useWorkspace();
+  const [form, setForm] = useState<RoleForm>(() => roleFormFrom(role));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Follow the saved role when it (re)loads — unless there are local edits.
+  const [synced, setSynced] = useState(role);
+  if (synced !== role) {
+    setSynced(role);
+    if (Object.keys(roleUpdate(form, synced)).length === 0) setForm(roleFormFrom(role));
+  }
+
+  const update = roleUpdate(form, role);
+  const dirty = Object.keys(update).length > 0;
+  const problems = roleFormErrors(form);
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await updateWorkspace(update);
+      await refresh();
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save your role.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="text-xs font-medium text-fg">Your role</div>
+      <p className="text-xs text-fg-muted mt-0.5 mb-2 leading-relaxed">
+        So the Executive&apos;s advice fits your job — whether it&apos;s your own business or you
+        lead a function inside someone else&apos;s.
+      </p>
+      <RoleFields
+        value={form}
+        onChange={(next) => {
+          setSaved(false);
+          setForm(next);
+        }}
+        disabled={loading || busy}
+        idPrefix="ws-role"
+      />
+      {problems.map((p) => (
+        <p key={p} className="mt-1.5 text-xs text-red-400">
+          {p}
+        </p>
+      ))}
+      {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!dirty || busy || problems.length > 0}
+          onClick={() => void save()}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500 hover:bg-indigo-600 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {busy ? "Saving…" : "Save role"}
+        </button>
+        {dirty && !busy && (
+          <button
+            type="button"
+            onClick={() => setForm(roleFormFrom(role))}
+            className="px-3 py-1.5 rounded-lg text-xs text-fg-muted hover:text-fg transition-colors cursor-pointer"
+          >
+            Discard changes
+          </button>
+        )}
+        {saved && !dirty && <span className="text-xs text-fg-muted">Saved.</span>}
+      </div>
+    </div>
   );
 }
 

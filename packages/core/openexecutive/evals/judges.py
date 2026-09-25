@@ -63,6 +63,18 @@ def _solo_section(scenario: dict[str, Any]) -> str:
         "the asker in on their own matter is a failure. Goals are grouped by "
         "area, not department.\n"
     )
+    role = scenario.get("principal_role")
+    if isinstance(role, dict):
+        # The role the assistant was given from the asker's settings, which
+        # the question itself may not repeat.
+        facts = "; ".join(
+            f"{k.replace('_', ' ')}: {v}" for k, v in role.items() if isinstance(v, str) and v.strip()
+        )
+        if facts:
+            section += (
+                f"\nTHE ASKER'S ROLE, from their own settings (the assistant was given it): "
+                f"{facts}. Advice should fit that role.\n"
+            )
     criteria = [k.replace("_", " ") for k, v in (scenario.get("quality_criteria") or {}).items() if v]
     if criteria and not scenario.get("peer_memory_context"):
         section += (

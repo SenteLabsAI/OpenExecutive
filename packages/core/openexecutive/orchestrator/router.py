@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from openexecutive.agents.base import BaseAgent
 
 if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import PrincipalRole
     from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.agents.board_comms import BoardCommsAgent
 from openexecutive.agents.finance import FinanceAgent
@@ -99,6 +100,75 @@ def load_company_stage() -> str:
         return ""
 
 
+# Caps for the <principal_role> tag's fields (the stored caps are larger:
+# the tag is a calibration hint, not the full record — the Executive's org
+# block carries the rest).
+_ROLE_TAG_TITLE_CAP = 120
+_ROLE_TAG_REMIT_CAP = 300
+
+
+def _one_line(text: str, cap: int) -> str:
+    """Whitespace collapsed, angle brackets defanged (so the text cannot
+    close the tag it sits in, or open another), capped."""
+    line = " ".join(text.split()).replace("<", "‹").replace(">", "›")
+    return line if len(line) <= cap else line[: cap - 1] + "…"
+
+
+def principal_role_context(role: PrincipalRole | None) -> str:
+    """The body of a specialist's ``<principal_role>`` tag: what kind of
+    principal the advice is for (in plain words), their title and their
+    remit — or "" when none of the three is set. Reports-to and measured-on
+    stay in the Executive's org block: they matter to the answer's framing,
+    which the Executive owns, not to a specialist's analysis.
+
+    Solo mode only (callers decide). Specialists never see the Executive's
+    org block, and the kind changes which advice fits: a VP inside a large
+    company makes the case to their CFO rather than raising a round. Each
+    value is collapsed to one line and capped; the body rides in the USER
+    turn, so the specialist's cached system prompt never changes.
+    """
+    if role is None:
+        return ""
+    from openexecutive.memory.workspace_settings import ROLE_KIND_PHRASE
+
+    lines: list[str] = []
+    kind = ROLE_KIND_PHRASE.get(role.role_kind or "", "")
+    title = _one_line(role.role_title or "", _ROLE_TAG_TITLE_CAP)
+    if title and kind:
+        lines.append(f"The person you are advising: {title}, {kind}.")
+    elif title:
+        lines.append(f"The person you are advising: {title}.")
+    elif kind:
+        lines.append(f"The person you are advising is {kind}.")
+    remit = _one_line(role.remit or "", _ROLE_TAG_REMIT_CAP)
+    if remit:
+        lines.append(f"Responsible for: {remit}")
+    return "\n".join(lines)
+
+
+def load_principal_role() -> str:
+    """The ``<principal_role>`` body for callers with no chat turn —
+    workflow steps, the MCP server's ``consult_specialist`` — read fresh:
+    the current session's role override else the workspace's, and only
+    when the effective mode (the current session's, else the workspace's)
+    is solo. A chat turn resolves it itself (see ``route_parallel``).
+    Never raises: any failure means no tag, not a failed consult."""
+    try:
+        from openexecutive.memory.workspace_settings import (
+            effective_principal_role,
+            effective_workspace_mode,
+        )
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        session = current_session.get()
+        if effective_workspace_mode(session) != "solo":
+            return ""
+        return principal_role_context(effective_principal_role(session))
+    except Exception as exc:
+        logger.warning("principal role unavailable for specialists (%s)", type(exc).__name__)
+        return ""
+
+
 async def route_to_specialist(
     specialist_name: str,
     query: str,
@@ -109,6 +179,7 @@ async def route_to_specialist(
     department_memory: str = "",
     actor: str = "specialist_workflow",
     company_stage: str | None = None,
+    principal_role: str | None = None,
 ) -> str:
     """Run one specialist and return its prose analysis.
 
@@ -121,12 +192,18 @@ async def route_to_specialist(
     ``company_stage`` becomes the specialist's ``<company_stage>`` user-turn
     tag (skipped when empty). ``None`` means "not supplied": it is read
     fresh from the profile on disk.
+
+    ``principal_role`` is the ``<principal_role>`` tag body the same way:
+    "" sends none, ``None`` reads it fresh (``load_principal_role`` — solo
+    only).
     """
     agent = SPECIALIST_REGISTRY.get(specialist_name)
     if agent is None:
         return f"Unknown specialist: {specialist_name}"
     if company_stage is None:
         company_stage = await asyncio.to_thread(load_company_stage)
+    if principal_role is None:
+        principal_role = await asyncio.to_thread(load_principal_role)
     return await agent.analyze(
         query=query,
         context=context,
@@ -135,6 +212,7 @@ async def route_to_specialist(
         failure_cases=failure_cases,
         department_memory=department_memory,
         company_stage=company_stage,
+        principal_role=principal_role,
         actor=actor,
     )
 
@@ -286,6 +364,7 @@ async def route_parallel(
     debug_collector: DebugCollector | None = None,
     company_stage: str | None = None,
     *,
+    principal_role: str | None = None,
     record_source: Callable[..., None] | None = None,
     failed_calls_out: list[int] | None = None,
     tell_user_when_unavailable: bool = True,
@@ -314,6 +393,11 @@ async def route_parallel(
     itself reasons over, and the one an eval scenario injects — and ``None``
     (no session profile) reads it once from disk for the whole batch.
 
+    ``principal_role`` is per-turn too: every specialist gets the same
+    ``<principal_role>`` tag. The chat turn passes the body it resolved in
+    the turn's mode ("" in team, so no tag); ``None`` reads it once for the
+    batch (``load_principal_role``).
+
     Returns results in the same order as ``calls`` so callers can zip
     with tool_use_ids.
 
@@ -329,6 +413,8 @@ async def route_parallel(
     """
     if company_stage is None:
         company_stage = await asyncio.to_thread(load_company_stage)
+    if principal_role is None:
+        principal_role = await asyncio.to_thread(load_principal_role)
 
     # Each call's documents wait here until the batch is done.
     held_sources: list[list[tuple[tuple[Any, ...], dict[str, Any]]]] = [[] for _ in calls]
@@ -397,6 +483,7 @@ async def route_parallel(
                 department_memory=dept_memory_per_call[idx],
                 actor="specialist",
                 company_stage=company_stage,
+                principal_role=principal_role,
             )
         except Exception as exc:
             logger.warning(

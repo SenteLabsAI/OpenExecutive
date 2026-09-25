@@ -799,7 +799,10 @@ async def _executive_synthesis_loop(
     orchestrator stack into anywhere it's referenced at import time.
     """
     from openexecutive.config import get_settings
-    from openexecutive.memory.workspace_settings import effective_workspace_mode
+    from openexecutive.memory.workspace_settings import (
+        effective_principal_role,
+        effective_workspace_mode,
+    )
     from openexecutive.orchestrator.executive import (
         _ALL_SKILL_HANDLERS,
         _ALL_SKILL_TOOLS,
@@ -857,7 +860,13 @@ async def _executive_synthesis_loop(
             seen.add(("email", person.email))
 
     # Pin the run's mode so its tool handlers agree with its toolkit.
-    synth_session = Session(seen_channel_refs=seen, turn_workspace_mode=mode)
+    # ...and its principal's role, so a specialist it consults (or a workflow
+    # it starts) sees the role of the turn that started it, not a fresh read.
+    synth_session = Session(
+        seen_channel_refs=seen,
+        turn_workspace_mode=mode,
+        turn_principal_role=effective_principal_role(outer_session),
+    )
     ctx_token = current_session.set(synth_session)
 
     # Synthesis tools = full toolkit MINUS the research tools themselves.

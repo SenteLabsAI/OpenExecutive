@@ -2,3 +2,10 @@
 # department check-ins. Goals are grouped by area.
 mode: solo
 timezone: Europe/Stockholm
+# The principal's role (every key optional): what kind of principal they are
+# (owner | in_house | independent | other) and what they do. Solo mode puts it
+# in the Executive's context and tells the specialists who they are advising.
+role_kind: owner
+role_title: Founder & Principal Designer
+remit: The whole studio — client work, sales and pricing, and the books.
+measured_on: Profit after owner pay, a three-month cash buffer, and referral clients.

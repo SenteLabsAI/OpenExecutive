@@ -29,6 +29,7 @@ def stub_agents(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any
             department_memory: str = "",
             *,
             company_stage: str = "",
+            principal_role: str = "",
             actor: str = "specialist",
         ) -> str:
             received.setdefault(self.name, []).append(

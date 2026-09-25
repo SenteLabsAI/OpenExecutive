@@ -37,11 +37,13 @@ export default function OnboardDraftReview({
   // Solo (one person, just for themselves): only "you" is shown and saved —
   // the drafted principal, else the first person drafted, else a blank row —
   // and no departments; the existing areas stay as they are.
-  const { mode } = useWorkspace();
+  const { mode, role: workspaceRole } = useWorkspace();
   const solo = mode === "solo";
   const [me, setMe] = useState<OnboardPersonDraft>(() => {
     const drafted = turn.draft_people.find((p) => p.is_principal) ?? turn.draft_people[0];
-    return { full_name: drafted?.full_name ?? "", role: drafted?.role ?? "", is_principal: true };
+    // The title from the role step, when the draft has none.
+    const role = drafted?.role || workspaceRole.role_title || "";
+    return { full_name: drafted?.full_name ?? "", role, is_principal: true };
   });
   const [existingTitles, setExistingTitles] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -95,7 +97,9 @@ export default function OnboardDraftReview({
   // rejection comes back as the error below and leaves the draft editable.
   const blocker = !profile.name.trim()
     ? solo
-      ? "Your business needs a name."
+      ? workspaceRole.role_kind === "owner"
+        ? "Your business needs a name."
+        : "Add the name of the business or organisation you work in."
       : "Your company needs a name."
     : namedPeople.length === 0
       ? solo
@@ -182,7 +186,7 @@ export default function OnboardDraftReview({
             <input
               value={me.role}
               onChange={(e) => setMe((m) => ({ ...m, role: e.target.value }))}
-              placeholder="Your role, e.g. Founder"
+              placeholder="Your title, e.g. Owner or Director of Operations"
               aria-label="Your role"
               className="flex-1 rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-colors"
             />
