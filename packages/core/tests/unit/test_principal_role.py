@@ -11,6 +11,7 @@ byte-identical whether a role is stored or not.
 from __future__ import annotations
 
 import asyncio
+import functools
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -791,13 +792,24 @@ class _FakeStore:
 
 
 def test_fixture_load_and_unload_responses_carry_no_role(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolated: Path
 ) -> None:
     """POST /fixtures/{name}/load and /fixtures/unload return the applied
     workspace settings to whoever calls them; the principal's role (shown by
     GET /workspace to the principal only) must not ride along."""
     from openexecutive.api.routes import fixtures as fixtures_route
     from openexecutive.memory import honcho_client
+
+    # The load's snapshot reads these three through a ``db_path`` default
+    # bound to the shared ./episodic_memory.db at import, which the
+    # DB_PATH patch in ``_isolated`` never reaches. Another test on the same
+    # worker can leave that file without their tables; the snapshot then
+    # fails (swallowed) before it backs up workspace.yaml, and the unload
+    # keeps the fixture's role. Point them at this test's database.
+    for name in ("list_decisions", "list_initiatives", "list_advice"):
+        monkeypatch.setattr(
+            episodic, name, functools.partial(getattr(episodic, name), db_path=_isolated)
+        )
 
     monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", _FakeStore)
     monkeypatch.setattr("openexecutive.knowledge.notion_sync.reset_local_state", lambda **_kw: None)
