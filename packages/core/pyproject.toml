@@ -36,6 +36,8 @@ dependencies = [
     "defusedxml>=0.7.1",
     "feedparser>=6.0.11",
     "tzdata>=2026.4",
+    # Renders the briefs the scheduler emails (utils/markdown_email.py).
+    "markdown-it-py>=3.0",
 ]
 
 [project.urls]

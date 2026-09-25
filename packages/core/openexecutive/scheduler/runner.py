@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ from openexecutive.scheduler.pause import is_paused
 from openexecutive.workflows.gate import ensure_workflow_event
 
 if TYPE_CHECKING:
+    from openexecutive.briefing.brief_state import DeliveryReason
     from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
@@ -1398,8 +1400,8 @@ _PREFERRED_TO_DELIVERY: dict[str, str] = {
     "telegram": "telegram",
     "email": "email",
 }
-# Chat fallback order after the preferred channel. Email is never a fallback
-# for a chat preference — see `_delivery_order`.
+# Chat fallback order after the preferred channel. Email comes after all of
+# them unless it is the preference — see `_delivery_order`.
 _CHAT_DELIVERY_ORDER: tuple[str, ...] = ("slack_dm", "discord_dm", "telegram")
 
 
@@ -1408,10 +1410,11 @@ def _delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]
 
     Chat channels the principal has an id for come first — the preferred one
     ahead of the rest (slack, discord, telegram). Email (it needs the MCP
-    gateway, ``email_ready``) is used only when the preference is ``email``
-    (tried first), or when it is ``any`` and no chat channel resolves (tried
-    last): an owner linked by email at setup has preference ``any``, and must
-    not start getting two extra emails a day on top of a working Slack.
+    gateway, ``email_ready``) is tried first when it is the preference, and
+    otherwise last, as the backup: delivery stops at the first channel that
+    sends, so an owner linked by email at setup (preference ``any``) with a
+    working Slack still never gets the briefs by email too — only when every
+    chat channel is missing or fails.
     Empty when nothing can deliver — e.g. a principal who only uses the web UI.
     """
     if principal is None:
@@ -1428,7 +1431,7 @@ def _delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]
     if email_ready and principal.email:
         if pref == "email":
             order.insert(0, "email")
-        elif pref == "any" and not chat:
+        else:
             order.append("email")
     return order
 
@@ -1444,8 +1447,19 @@ def _principal_delivery_plan() -> tuple[Person | None, list[str]]:
     )
 
 
+def _email_subject(label: str, now: datetime | None = None) -> str:
+    """``label`` and today's date where the user is ("Morning Brief — Fri 25
+    Sep"): an evening digest sent from UTC would otherwise carry tomorrow's
+    date for anyone west of it."""
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    local = (now or datetime.now(UTC)).astimezone(get_user_timezone())
+    return f"{label} — {local:%a} {local.day} {local:%b}"
+
+
 async def _email_principal(principal: Person, text: str, label: str) -> bool:
-    """Send ``text`` to the principal's address through the active MCP gateway.
+    """Send ``text`` (Markdown) to the principal's address through the active
+    MCP gateway, formatted as HTML (``utils.markdown_email``).
 
     Sent as the Executive's own mailbox (the principal is on the roster, so
     the gateway's egress gate allows it). False when there is no gateway or
@@ -1453,6 +1467,7 @@ async def _email_principal(principal: Person, text: str, label: str) -> bool:
     """
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.utils.markdown_email import markdown_to_email_html
     from openexecutive.workflows.action_step import looks_like_error
 
     gateway = get_active_gateway()
@@ -1463,8 +1478,9 @@ async def _email_principal(principal: Person, text: str, label: str) -> bool:
         "arguments": {
             "user_google_email": get_settings().exec_email_address,
             "to": principal.email,
-            "subject": f"{label} — {datetime.now(UTC).strftime('%Y-%m-%d')}",
-            "body": text,
+            "subject": _email_subject(label),
+            "body": markdown_to_email_html(text),
+            "body_format": "html",
         },
     })
     if looks_like_error(result):
@@ -1473,20 +1489,34 @@ async def _email_principal(principal: Person, text: str, label: str) -> bool:
     return True
 
 
-async def _deliver_to_principal(text: str, *, label: str = "Update") -> tuple[bool, str]:
+@dataclass(frozen=True)
+class PrincipalDelivery:
+    """How one message to the principal went."""
+
+    ok: bool
+    # For the log and the audit row; carries the address or id it went to.
+    detail: str
+    reason: DeliveryReason
+    # The delivery channel that sent it ("email", "slack_dm", ...), if one did.
+    channel: str | None = None
+
+
+async def _deliver_to_principal(text: str, *, label: str = "Update") -> PrincipalDelivery:
     """Send ``text`` to the principal on their preferred channel.
 
-    Returns (ok, detail). Tries the channels from ``_principal_delivery_plan``
-    in order until one sends; ``label`` names the message in the email
-    subject. Returns (False, ...) when no channel is configured or every
-    send failed — the caller still marks the action done (no point retrying
-    the same misconfiguration) but audits the failure.
+    Tries the channels from ``_principal_delivery_plan`` in order until one
+    sends; ``label`` names the message in the email subject. Not ok when no
+    channel is configured or every send failed — the caller still marks the
+    action done (no point retrying the same misconfiguration) but audits the
+    failure.
     """
     principal, plan = _principal_delivery_plan()
     if principal is None:
-        return False, "no principal Person row found"
+        return PrincipalDelivery(False, "no principal Person row found", "no_owner")
     if not plan:
-        return False, "no deliverable channel configured for principal"
+        return PrincipalDelivery(
+            False, "no deliverable channel configured for principal", "no_channel"
+        )
 
     for channel in plan:
         try:
@@ -1496,14 +1526,14 @@ async def _deliver_to_principal(text: str, *, label: str = "Update") -> tuple[bo
                     "user_id": principal.slack_user_id, "text": text,
                 })
                 if _delivered_ok(result):
-                    return True, f"slack_dm → {principal.slack_user_id}"
+                    return _sent(channel, principal.slack_user_id)
             elif channel == "discord_dm" and principal.discord_user_id:
                 from openexecutive.orchestrator.schedule_tools import handle_send_discord_dm
                 result = await handle_send_discord_dm({
                     "discord_user_id": principal.discord_user_id, "text": text,
                 })
                 if _delivered_ok(result):
-                    return True, f"discord_dm → {principal.discord_user_id}"
+                    return _sent(channel, principal.discord_user_id)
             elif channel == "telegram" and principal.telegram_chat_id:
                 from openexecutive.orchestrator.schedule_tools import (
                     handle_send_telegram_message,
@@ -1512,13 +1542,19 @@ async def _deliver_to_principal(text: str, *, label: str = "Update") -> tuple[bo
                     "chat_id": int(principal.telegram_chat_id), "text": text,
                 })
                 if _delivered_ok(result):
-                    return True, f"telegram → {principal.telegram_chat_id}"
+                    return _sent(channel, principal.telegram_chat_id)
             elif channel == "email" and await _email_principal(principal, text, label):
-                return True, f"email → {principal.email}"
+                return _sent(channel, principal.email)
         except Exception:
             logger.exception("scheduler: delivery via %s failed", channel)
 
-    return False, f"delivery failed on every channel ({', '.join(plan)})"
+    return PrincipalDelivery(
+        False, f"delivery failed on every channel ({', '.join(plan)})", "send_failed"
+    )
+
+
+def _sent(channel: str, to: str | None) -> PrincipalDelivery:
+    return PrincipalDelivery(True, f"{channel} → {to}", "delivered", channel)
 
 
 async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
@@ -1684,7 +1720,13 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         complete_run(run_id, artifact or "(no artifact)")
 
         if artifact:
-            ok, detail = await _deliver_to_principal(artifact, label=workflow.title)
+            from openexecutive.briefing import brief_state
+
+            delivery = await _deliver_to_principal(artifact, label=workflow.title)
+            ok, detail = delivery.ok, delivery.detail
+            brief_state.record_delivery_outcome(
+                kind, reason=delivery.reason, channel=delivery.channel
+            )
             if ok:
                 logger.info("scheduler: %s delivered (%s)", kind, detail)
                 audit_log(
@@ -1699,8 +1741,6 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 # Only a delivered brief advances the "since last brief"
                 # window and the unchanged-detection fingerprint.
                 if fingerprint:
-                    from openexecutive.briefing import brief_state
-
                     brief_state.record_delivered(kind, fingerprint, artifact)
             else:
                 logger.warning("scheduler: %s NOT delivered — %s", kind, detail)

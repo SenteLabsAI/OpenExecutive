@@ -226,8 +226,10 @@ def _run_brief(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deliver_ok: b
     monkeypatch.setattr(wf_persistence, "DB_PATH", db)
     monkeypatch.setitem(WORKFLOW_REGISTRY, "morning_brief", _fake_brief_workflow("fp-123"))
 
-    async def _deliver(text: str, **_kw: object) -> tuple[bool, str]:
-        return deliver_ok, "discord_dm → 1"
+    async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        if deliver_ok:
+            return runner.PrincipalDelivery(True, "discord_dm → 1", "delivered", "discord_dm")
+        return runner.PrincipalDelivery(False, "delivery failed", "send_failed")
 
     monkeypatch.setattr(runner, "_deliver_to_principal", _deliver)
     monkeypatch.setattr(runner, "_enqueue_next_principal_brief", lambda kind, after: None)
@@ -256,6 +258,11 @@ def test_run_principal_brief_records_fingerprint_after_delivery(
     _run_brief(tmp_path, monkeypatch, deliver_ok=True)
     last = brief_state.last_delivered("principal_brief_morning")
     assert last is not None and last.input_hash == "fp-123" and last.narrative_text == "BRIEF"
+    outcome = brief_state.last_delivery_outcome()
+    assert outcome is not None
+    assert (outcome.kind, outcome.reason, outcome.channel) == (
+        "principal_brief_morning", "delivered", "discord_dm",
+    )
 
 
 def test_run_principal_brief_does_not_record_on_delivery_failure(
@@ -265,6 +272,9 @@ def test_run_principal_brief_does_not_record_on_delivery_failure(
 
     _run_brief(tmp_path, monkeypatch, deliver_ok=False)
     assert brief_state.last_delivered("principal_brief_morning") is None
+    # The failure is still recorded, for the Briefing's "not sent" notice.
+    outcome = brief_state.last_delivery_outcome()
+    assert outcome is not None and (outcome.reason, outcome.channel) == ("send_failed", None)
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +345,8 @@ def _with_gateway(monkeypatch: pytest.MonkeyPatch, sent: _Sent, **kw: str) -> No
 def _deliver(text: str = "BRIEF", label: str = "Morning Brief") -> tuple[bool, str]:
     import asyncio
 
-    return asyncio.run(runner._deliver_to_principal(text, label=label))
+    result = asyncio.run(runner._deliver_to_principal(text, label=label))
+    return result.ok, result.detail
 
 
 def test_preferred_slack_is_honoured(sent: _Sent) -> None:
@@ -364,7 +375,7 @@ def test_preferred_email_sends_through_the_gateway(
     _principal(preferred_channel="email", email="owner@example.com", slack_user_id="U1")
     _with_gateway(monkeypatch, sent)
 
-    ok, detail = _deliver("the brief", label="Morning Brief")
+    ok, detail = _deliver("**the** brief", label="Morning Brief")
 
     assert ok and detail == "email → owner@example.com"
     ((name, call),) = sent.calls
@@ -373,8 +384,10 @@ def test_preferred_email_sends_through_the_gateway(
     args = call["arguments"]
     assert args["user_google_email"] == get_settings().exec_email_address
     assert args["to"] == "owner@example.com"
-    assert args["subject"] == f"Morning Brief — {datetime.now(UTC).strftime('%Y-%m-%d')}"
-    assert args["body"] == "the brief"
+    assert args["subject"] == runner._email_subject("Morning Brief")
+    # Formatted, not the raw Markdown.
+    assert args["body_format"] == "html"
+    assert "<strong>the</strong> brief" in args["body"] and "**" not in args["body"]
 
 
 def test_email_error_falls_back_to_chat(sent: _Sent, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -400,7 +413,7 @@ def test_any_with_a_chat_channel_never_emails(
     sent: _Sent, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An owner linked by email at setup (preference "any") who also has Slack
-    must not start getting the briefs by email too."""
+    must not get the briefs by email too while Slack works."""
     _principal(email="owner@example.com", slack_user_id="U1")
     _with_gateway(monkeypatch, sent)
 
@@ -408,6 +421,81 @@ def test_any_with_a_chat_channel_never_emails(
 
     assert ok and detail == "slack_dm → U1"
     assert [name for name, _ in sent.calls] == ["slack"]
+
+
+def test_email_is_the_backup_when_the_preferred_chat_is_not_connected(
+    sent: _Sent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _principal(preferred_channel="slack", email="owner@example.com")  # no Slack id
+    _with_gateway(monkeypatch, sent)
+
+    ok, detail = _deliver()
+
+    assert ok and detail == "email → owner@example.com"
+    assert [name for name, _ in sent.calls] == ["gmail"]
+
+
+def test_email_is_the_backup_when_every_chat_send_fails(
+    sent: _Sent, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from openexecutive.orchestrator import schedule_tools
+
+    _principal(preferred_channel="slack", slack_user_id="U1", email="owner@example.com")
+    _with_gateway(monkeypatch, sent)
+
+    async def _slack_down(args: dict) -> str:  # type: ignore[type-arg]
+        sent.calls.append(("slack", args))
+        return json.dumps({"error": "token revoked"})
+
+    monkeypatch.setattr(schedule_tools, "handle_send_slack_dm", _slack_down)
+
+    ok, detail = _deliver()
+
+    assert ok and detail == "email → owner@example.com"
+    assert [name for name, _ in sent.calls] == ["slack", "gmail"]
+
+
+def _deliver_result() -> runner.PrincipalDelivery:
+    import asyncio
+
+    return asyncio.run(runner._deliver_to_principal("BRIEF"))
+
+
+def test_no_owner_is_its_own_reason(sent: _Sent) -> None:
+    assert _deliver_result().reason == "no_owner"
+
+
+def test_nothing_connected_is_its_own_reason(sent: _Sent) -> None:
+    _principal(email="owner@example.com")  # no gateway, no chat
+    result = _deliver_result()
+    assert (result.ok, result.reason) == (False, "no_channel")
+
+
+def test_a_failed_send_is_its_own_reason(sent: _Sent, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import schedule_tools
+
+    async def _broken(args: dict) -> str:  # type: ignore[type-arg]
+        raise RuntimeError("telegram down")
+
+    _principal(telegram_chat_id="42")
+    monkeypatch.setattr(schedule_tools, "handle_send_telegram_message", _broken)
+    result = _deliver_result()
+    assert (result.ok, result.reason, result.channel) == (False, "send_failed", None)
+
+
+def test_the_email_subject_carries_the_users_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zoneinfo import ZoneInfo
+
+    from openexecutive.memory import workspace_settings
+
+    monkeypatch.setattr(
+        workspace_settings, "get_user_timezone", lambda *_a: ZoneInfo("America/Los_Angeles")
+    )
+    # 02:00 UTC on Saturday is still Friday evening in California.
+    evening = datetime(2026, 9, 26, 2, 0, tzinfo=UTC)
+    assert runner._email_subject("End-of-Day Digest", evening) == "End-of-Day Digest — Fri 25 Sep"
 
 
 def test_email_without_a_gateway_is_not_delivered(sent: _Sent) -> None:
@@ -443,7 +531,7 @@ def test_client_digest_still_delivers(sent: _Sent, monkeypatch: pytest.MonkeyPat
 
     ((_, call),) = sent.calls
     assert call["arguments"]["subject"].startswith("Across your clients — ")
-    assert call["arguments"]["body"] == "# Across your clients"
+    assert "<h1>Across your clients</h1>" in call["arguments"]["body"]
 
 
 def test_brief_with_no_deliverable_channel_is_still_generated_and_stored(
@@ -505,6 +593,9 @@ def test_brief_with_no_deliverable_channel_is_still_generated_and_stored(
     assert stored is not None and stored["artifact"] == "BRIEF"
     # Only a delivered brief advances the window.
     assert brief_state.last_delivered("principal_brief_morning") is None
+    # Why it wasn't sent is kept for the Briefing's notice.
+    outcome = brief_state.last_delivery_outcome()
+    assert outcome is not None and outcome.reason == "no_channel"
     row = episodic.get_scheduled_action(action_id)
     assert row is not None and row.status == "done"
     assert chained == ["principal_brief_morning"]

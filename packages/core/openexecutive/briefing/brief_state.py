@@ -18,6 +18,11 @@ time. Scopes are only ever read by exact key, so the namespace cannot
 collide with the per-viewer header cache. Only the scheduler records a
 delivery (after a successful send), so manual workflow runs never advance
 the window.
+
+Each send's outcome, delivered or not, goes under ``brief_delivery:<kind>``
+(``record_delivery_outcome``): the reason in ``input_hash`` and the channel
+that sent it in ``narrative_text`` — a channel name, never an address. The
+Briefing's "not sent" notice and the Setup status page read it back.
 """
 from __future__ import annotations
 
@@ -25,8 +30,9 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast, get_args
 
 from openexecutive.alerts.lifecycle import parse_aware
 from openexecutive.briefing import narrative_cache
@@ -118,6 +124,97 @@ def record_delivered(kind: str, fingerprint: str, text: str) -> None:
         ))
     except Exception:
         logger.exception("brief_state: write failed for %s", kind)
+
+
+# How a brief's last send went (scheduler.runner.PrincipalDelivery.reason).
+DeliveryReason = Literal["delivered", "no_owner", "no_channel", "send_failed"]
+_DELIVERY_REASONS: frozenset[str] = frozenset(get_args(DeliveryReason))
+DELIVERY_SCOPE_PREFIX = "brief_delivery:"
+# The recurring briefs whose sends are recorded, and their names in the app.
+BRIEF_NAMES: dict[str, str] = {
+    "principal_brief_morning": "morning brief",
+    "principal_brief_eod": "end-of-day digest",
+}
+# Delivery channels (scheduler.runner._delivery_order), as in "sent to you
+# by email".
+CHANNEL_PHRASES: dict[str, str] = {
+    "email": "by email",
+    "slack_dm": "on Slack",
+    "discord_dm": "on Discord",
+    "telegram": "on Telegram",
+}
+# Why a brief wasn't sent, and what to do about it, in the user's words.
+DELIVERY_PROBLEMS: dict[str, tuple[str, str]] = {
+    "no_owner": (
+        "there's no owner on the People list to send it to",
+        "Finish setup so you're on the People list as the owner.",
+    ),
+    "no_channel": (
+        "nothing is set up to send it to you",
+        "Connect Gmail, or add your Slack, Telegram or Discord to your People profile.",
+    ),
+    "send_failed": (
+        "every way of sending it failed",
+        "The Setup status page shows which connection needs attention.",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    kind: str
+    reason: DeliveryReason
+    # The delivery channel that sent it ("email", "slack_dm", ...), if one did.
+    channel: str | None
+    at: datetime
+
+
+def record_delivery_outcome(
+    kind: str, *, reason: DeliveryReason, channel: str | None
+) -> None:
+    """Remember how this brief's latest send went. Never raises."""
+    try:
+        narrative_cache.put(narrative_cache.BriefingNarrative(
+            scope=f"{DELIVERY_SCOPE_PREFIX}{kind}",
+            input_hash=reason,
+            narrative_text=channel or "",
+            generated_at=narrative_cache.utc_now_iso(),
+        ))
+    except Exception:
+        logger.exception("brief_state: delivery outcome write failed for %s", kind)
+
+
+def last_delivery_outcome() -> DeliveryOutcome | None:
+    """The latest send of either recurring brief, or None when neither has
+    been sent yet (or the store can't be read). Never raises."""
+    latest: DeliveryOutcome | None = None
+    for kind in BRIEF_NAMES:
+        try:
+            row = narrative_cache.get(f"{DELIVERY_SCOPE_PREFIX}{kind}")
+        except Exception:
+            logger.exception("brief_state: delivery outcome read failed for %s", kind)
+            continue
+        at = parse_aware(row.generated_at) if row is not None else None
+        if row is None or at is None or row.input_hash not in _DELIVERY_REASONS:
+            continue
+        outcome = DeliveryOutcome(
+            kind=kind,
+            reason=cast(DeliveryReason, row.input_hash),  # checked above
+            channel=row.narrative_text or None,
+            at=at,
+        )
+        if latest is None or outcome.at > latest.at:
+            latest = outcome
+    return latest
+
+
+def still_unsent(outcome: DeliveryOutcome | None, *, can_deliver: bool) -> bool:
+    """Whether ``outcome`` is a failure the user still needs to hear about: a
+    send that failed, or a brief that had nowhere to go while that is still
+    true (``can_deliver``: a channel exists now, so the next one will go)."""
+    if outcome is None or outcome.reason == "delivered":
+        return False
+    return outcome.reason == "send_failed" or not can_deliver
 
 
 def split_proposals(

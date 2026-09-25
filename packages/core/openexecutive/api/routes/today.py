@@ -1480,6 +1480,52 @@ def get_today_activity_daily(
     return _build_daily_activity(days)
 
 
+class BriefDeliveryNotice(BaseModel):
+    """The latest brief that wasn't sent, for the notice above the Briefing."""
+
+    brief: str  # "morning brief" or "end-of-day digest"
+    at: str  # when it was sent for (ISO)
+    problem: str
+    fix: str
+
+
+def _brief_delivery_notice() -> BriefDeliveryNotice | None:
+    from openexecutive.briefing.brief_state import (
+        BRIEF_NAMES,
+        DELIVERY_PROBLEMS,
+        last_delivery_outcome,
+        still_unsent,
+    )
+    from openexecutive.scheduler.runner import _principal_delivery_plan
+
+    last = last_delivery_outcome()
+    if last is None:
+        return None
+    _, plan = _principal_delivery_plan()
+    if not still_unsent(last, can_deliver=bool(plan)):
+        return None
+    problem, fix = DELIVERY_PROBLEMS[last.reason]
+    return BriefDeliveryNotice(
+        brief=BRIEF_NAMES[last.kind], at=last.at.isoformat(), problem=problem, fix=fix
+    )
+
+
+@router.get(
+    "/today/brief-delivery",
+    response_model=BriefDeliveryNotice | None,
+    tags=["today"],
+)
+async def get_brief_delivery(request: Request) -> BriefDeliveryNotice | None:
+    """The latest morning brief or end-of-day digest that wasn't sent and
+    still has a problem to fix, or null. Only the owner is told: anyone else
+    gets null, since it is about the owner's channels."""
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    if not await asyncio.to_thread(_caller_is_principal_or_unclaimed, request):
+        return None
+    return await asyncio.to_thread(_brief_delivery_notice)
+
+
 @router.get(
     "/morning-brief",
     response_model=TodayResponse,

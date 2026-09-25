@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
+import BriefDeliveryNotice from "@/components/BriefDeliveryNotice";
 import Briefing from "@/components/Briefing";
 import Chat from "@/components/Chat";
 import DebugPanel from "@/components/DebugPanel";
@@ -277,6 +278,8 @@ export default function HomePage() {
             </Link>
           </div>
         )}
+
+        {mode === "briefing" && <BriefDeliveryNotice />}
 
         <div className="flex-1 min-h-0">
           {mode === "briefing" ? (

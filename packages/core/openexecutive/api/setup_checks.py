@@ -22,7 +22,7 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from openexecutive.audit import AuditEvent
+    from openexecutive.briefing.brief_state import DeliveryOutcome
     from openexecutive.config import Settings
     from openexecutive.people.models import Person
 
@@ -105,6 +106,7 @@ LABELS: dict[str, str] = {
     "telegram": "Telegram",
     "google_chat": "Google Chat",
     "scheduler": "Daily schedule",
+    "brief": "Daily brief",
     "memory": "Long-term memory (Honcho)",
 }
 
@@ -144,6 +146,11 @@ class Snapshot:
     discord_bot_task: asyncio.Task[None] | None = None
     slack_handler: Any = None
     mcp_gateway: Any = None
+    # The daily brief: its latest send, when each brief next goes out, and the
+    # zone the user chose for those times (None: nobody chose one, so UTC).
+    brief_delivery: DeliveryOutcome | None = None
+    brief_next_runs: dict[str, datetime] = field(default_factory=dict)
+    brief_zone: str | None = None
 
 
 def _clip(text: str) -> str:
@@ -864,6 +871,60 @@ def check_scheduler(snap: Snapshot) -> SetupCheck:
     return _result("scheduler", "ok", "Running.")
 
 
+def check_brief(snap: Snapshot) -> SetupCheck:
+    """When the morning brief and end-of-day digest go out, and where."""
+    from zoneinfo import ZoneInfo
+
+    from openexecutive.briefing.brief_state import (
+        BRIEF_NAMES,
+        CHANNEL_PHRASES,
+        DELIVERY_PROBLEMS,
+        still_unsent,
+    )
+    from openexecutive.scheduler.runner import _delivery_order
+
+    if not snap.settings.scheduler_enabled:
+        return _result("brief", "off", "Off, because the scheduler is turned off.")
+    principal = snap.principal
+    if principal is None:
+        problem, fix = DELIVERY_PROBLEMS["no_owner"]
+        return _result("brief", "warn", f"Not sent: {problem}.", fix, link="/people")
+    plan = _delivery_order(principal, email_ready=snap.mcp_gateway is not None)
+    if not plan:
+        problem, fix = DELIVERY_PROBLEMS["no_channel"]
+        return _result(
+            "brief",
+            "warn",
+            f"Kept in the app only: {problem}.",
+            fix,
+            link=f"/people/{principal.id}",
+        )
+    last = snap.brief_delivery
+    if last is not None and still_unsent(last, can_deliver=True):
+        problem, fix = DELIVERY_PROBLEMS[last.reason]
+        return _result(
+            "brief", "error", f"Your last {BRIEF_NAMES[last.kind]} wasn't sent: {problem}.", fix
+        )
+    zone = ZoneInfo(snap.brief_zone or "UTC")
+    times = [
+        f"the {BRIEF_NAMES[kind]} at {snap.brief_next_runs[kind].astimezone(zone):%H:%M}"
+        for kind in BRIEF_NAMES
+        if kind in snap.brief_next_runs
+    ]
+    when = f": {' and '.join(times)}" if times else ""
+    if snap.brief_zone is None:
+        return _result(
+            "brief",
+            "warn",
+            f"Sent to you {CHANNEL_PHRASES[plan[0]]}{when}, in UTC because no time zone is set.",
+            "Set your time zone in Settings.",
+            link="/settings",
+        )
+    return _result(
+        "brief", "ok", f"Sent to you {CHANNEL_PHRASES[plan[0]]}{when} ({snap.brief_zone})."
+    )
+
+
 async def check_memory(snap: Snapshot) -> SetupCheck:
     from openexecutive.api.routes.health import honcho_health
 
@@ -906,11 +967,20 @@ def _latest_inbound() -> dict[str, AuditEvent | None]:
 
 def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) -> Snapshot:
     """Read everything the checks need. Blocking (SQLite): run it off the loop."""
+    from openexecutive.briefing.brief_state import BRIEF_NAMES, last_delivery_outcome
+    from openexecutive.memory.workspace_settings import get_user_timezone, get_workspace
     from openexecutive.people.store import find_principal_person, list_people
+    from openexecutive.scheduler.runner import _next_principal_run_at
 
+    now = datetime.now(UTC)
+    zone_chosen = (
+        get_workspace().timezone is not None
+        or settings.user_timezone.strip() not in ("", "UTC")
+    )
+    next_runs = {kind: _next_principal_run_at(kind, now) for kind in BRIEF_NAMES}
     return Snapshot(
         settings=settings,
-        now=datetime.now(UTC),
+        now=now,
         local_login=local_login,
         people=list_people(),
         principal=find_principal_person(),
@@ -919,6 +989,9 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
         discord_bot_task=getattr(app_state, "discord_bot_task", None),
         slack_handler=getattr(app_state, "slack_handler", None),
         mcp_gateway=getattr(app_state, "mcp_gateway", None),
+        brief_delivery=last_delivery_outcome(),
+        brief_next_runs={kind: at for kind, at in next_runs.items() if at is not None},
+        brief_zone=get_user_timezone().key if zone_chosen else None,
     )
 
 
@@ -941,6 +1014,7 @@ def _check_runners(
         "telegram": lambda: check_telegram(snap, http),
         "google_chat": off_loop(check_google_chat),
         "scheduler": off_loop(check_scheduler),
+        "brief": off_loop(check_brief),
         "memory": lambda: check_memory(snap),
     }
 
