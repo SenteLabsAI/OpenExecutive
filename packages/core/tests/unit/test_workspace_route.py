@@ -56,17 +56,22 @@ def _roster_principal_and_teammate() -> None:
 
 PRINCIPAL = {"x-caller-email": "ceo@example.com"}
 
+# The role fields every response carries (null until set).
+NO_ROLE: dict[str, Any] = dict.fromkeys(ws.ROLE_FIELDS)
+
 
 def test_get_defaults_before_onboarding(client: TestClient) -> None:
     resp = client.get("/workspace")
     assert resp.status_code == 200
-    assert resp.json() == {"mode": "team", "timezone": None, "effective_timezone": "UTC"}
+    assert resp.json() == {
+        "mode": "team", "timezone": None, "effective_timezone": "UTC", **NO_ROLE,
+    }
 
 
 def test_get_reports_the_fallback_zone(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ws, "_configured_timezone", lambda: ws.ZoneInfo("Europe/Madrid"))
     assert client.get("/workspace").json() == {
-        "mode": "team", "timezone": None, "effective_timezone": "Europe/Madrid",
+        "mode": "team", "timezone": None, "effective_timezone": "Europe/Madrid", **NO_ROLE,
     }
 
 
@@ -87,6 +92,7 @@ def test_put_timezone_and_mode(
     assert resp.status_code == 200
     assert resp.json() == {
         "mode": "team", "timezone": "America/Denver", "effective_timezone": "America/Denver",
+        **NO_ROLE,
     }
     # The zone change re-timed the principal's rhythm in place: same rows,
     # still pending, nothing inserted or cancelled.
@@ -147,7 +153,7 @@ def test_put_rejects_bad_input(client: TestClient, body: dict[str, Any]) -> None
     resp = client.put("/workspace", json=body)
     assert resp.status_code == 422
     assert client.get("/workspace").json() == {
-        "mode": "team", "timezone": None, "effective_timezone": "UTC",
+        "mode": "team", "timezone": None, "effective_timezone": "UTC", **NO_ROLE,
     }
 
 
@@ -179,6 +185,7 @@ def test_anyone_may_set_it_before_a_principal_exists(client: TestClient) -> None
     assert resp.status_code == 200
     assert resp.json() == {
         "mode": "solo", "timezone": "Europe/Rome", "effective_timezone": "Europe/Rome",
+        **NO_ROLE,
     }
 
 

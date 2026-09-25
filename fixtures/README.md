@@ -51,13 +51,16 @@ Discord IDs — so nothing in these fixtures maps to a real person.
 > one example: Tallgrass Studio, a fictional one-person design studio. `people.yaml`
 > holds only the principal (its owner, wildcard authority), `departments.yaml` holds
 > four *areas* (strategy, finance, marketing, product) headed by the principal with one
-> or two goals each, and `workspace.yaml` sets `mode: solo`. Loaded, the Executive works
+> or two goals each, and `workspace.yaml` sets `mode: solo` and the principal's role
+> (`role_kind: owner`, plus `role_title`, `remit` and `measured_on` — every role key is
+> optional in any fixture's `workspace.yaml`, as is `reports_to`). Loaded, the Executive works
 > for that one person: no department check-ins or channels, goals grouped by area, and
 > nobody else contacted unless the principal asks. Its eval scenarios are the built-in
 > `solo_001`–`solo_003` (`packages/core/openexecutive/evals/_scenarios/`), which run as
 > solo mode through their `workspace_mode: solo` key; load this fixture first for the
-> matching goals and memory. `solo_004` covers an in-house executive and needs no
-> fixture. It stages no scheduled actions, so nothing fires on load.
+> matching goals and memory. `solo_004` and `solo_005` cover in-house executives and need
+> no fixture (`solo_005` plays its principal's role through the scenario's own
+> `principal_role` block). It stages no scheduled actions, so nothing fires on load.
 
 ## Loading a Fixture
 

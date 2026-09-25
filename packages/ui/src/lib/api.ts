@@ -1270,14 +1270,30 @@ export async function resumeExecutive(): Promise<ExecutiveStatus> {
 }
 
 // ----------------------------------------------------------------------------
-// Workspace settings — solo / team mode and the user's time zone.
+// Workspace settings — solo / team mode, the user's time zone, and the
+// principal's role.
 // ----------------------------------------------------------------------------
 
 // "solo": one person using Open Executive just for themselves (no department
 // check-ins). "team": a company with departments and people (the default).
 export type WorkspaceMode = "solo" | "team";
 
-export interface WorkspaceSettings {
+// How the principal relates to the organisation in their profile: they own
+// it, they work inside one they don't own, they serve clients independently,
+// or something else.
+export type RoleKind = "owner" | "in_house" | "independent" | "other";
+
+// What the principal does. Solo mode tells the Executive and its specialists;
+// every field is null until set.
+export interface PrincipalRole {
+  role_kind: RoleKind | null;
+  role_title: string | null;
+  reports_to: string | null;
+  remit: string | null;
+  measured_on: string | null;
+}
+
+export interface WorkspaceSettings extends PrincipalRole {
   mode: WorkspaceMode;
   // IANA zone the user set, or null when none is set.
   timezone: string | null;
@@ -1286,8 +1302,8 @@ export interface WorkspaceSettings {
 }
 
 // Partial update: only the fields present change. `timezone: null` (or "")
-// clears the stored zone.
-export interface WorkspaceUpdate {
+// clears the stored zone; the role fields clear the same way.
+export interface WorkspaceUpdate extends Partial<PrincipalRole> {
   mode?: WorkspaceMode;
   timezone?: string | null;
 }
@@ -1307,7 +1323,8 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
   if (res.status === 403) throw new Error("Only the principal can change workspace settings.");
   if (res.status === 422) {
     // FastAPI validation errors: `detail` is a list of {msg}; surface the
-    // first one ("timezone 'Mars/Base' is not a known IANA zone").
+    // first one ("timezone 'Mars/Base' is not a known IANA zone",
+    // "remit must be at most 500 characters").
     const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
     const first = Array.isArray(body.detail) ? (body.detail[0] as { msg?: unknown }) : undefined;
     const msg = typeof first?.msg === "string" ? first.msg.replace(/^Value error, /, "") : null;

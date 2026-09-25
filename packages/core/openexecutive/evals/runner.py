@@ -22,6 +22,12 @@ A chat, mcp or workflow scenario may set ``workspace_mode: solo`` (or
 setting — scenarios run concurrently on one Executive. Chat puts it on the
 scenario's ``Session.workspace_mode``; a workflow runs with a session carrying
 it bound as the current session, which is where workflows read the mode.
+
+A scenario may likewise set a ``principal_role`` mapping (``role_kind``,
+``role_title``, ``reports_to``, ``remit``, ``measured_on`` — the workspace
+settings' role fields) to play a principal with that role. It goes on the
+session (``Session.principal_role``) the same way, never into the
+install-wide settings row, which concurrent scenarios would share.
 """
 from __future__ import annotations
 
@@ -33,7 +39,7 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from typing import Any
 
 from openexecutive.evals.judges import judge_chat, judge_triage, judge_workflow
-from openexecutive.evals.scenarios import load_scenarios
+from openexecutive.evals.scenarios import load_scenarios, scenario_principal_role
 from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
@@ -278,9 +284,10 @@ def _make_workflow_runner(
                     # also arms schedule_followup's seen-refs guard, which a
                     # workflow that binds no session of its own would then hit.
                     mode = scenario_workspace_mode(scenario)
+                    role = scenario_principal_role(scenario)
                     binding = (
-                        set_session(Session(workspace_mode=mode))
-                        if mode is not None
+                        set_session(Session(workspace_mode=mode, principal_role=role))
+                        if mode is not None or role is not None
                         else contextlib.nullcontext()
                     )
                     with binding:
@@ -371,6 +378,7 @@ def _make_chat_runner(
                     session = Session(
                         company_profile=profile,
                         workspace_mode=scenario_workspace_mode(scenario),
+                        principal_role=scenario_principal_role(scenario),
                     )
                     query = scenario["query"]
                     response = await executive.chat(

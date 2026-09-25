@@ -3,9 +3,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.memory.company_profile import CompanyProfile
+
+if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import PrincipalRole
 
 
 @dataclass
@@ -51,11 +54,22 @@ class Session:
     # one Executive, so they set it here instead of flipping the global. Read
     # it through `memory.workspace_settings.effective_workspace_mode`.
     workspace_mode: str | None = None
+    # Per-session override of the principal's role (None = use the
+    # workspace's), for the same reason: an eval scenario supplies the role
+    # of the principal it plays without writing the install-wide row. Read
+    # it through `memory.workspace_settings.effective_principal_role`.
+    principal_role: PrincipalRole | None = None
     # The mode resolved for the turn in progress, pinned at its start by
     # `workspace_settings.pin_turn_workspace_mode` (Executive.stream_chat and
     # the committee path) so the tool handlers use the same mode as the
     # persona and tool list. Re-resolved every turn; never an override.
     turn_workspace_mode: str | None = None
+    # The principal's role resolved for the turn in progress, pinned with the
+    # mode by `workspace_settings.pin_turn_principal_role` (an empty role in
+    # team), so the org block, the specialists' <principal_role> tag and any
+    # workflow the turn starts agree even if the role is edited mid-turn.
+    # Re-resolved every turn; never an override.
+    turn_principal_role: PrincipalRole | None = None
     # True for a run nobody is watching that goes through the chat loop (the
     # scheduler's PROACTIVE TRIGGER dispatch). Its prompt quotes stored intent
     # text, so the loop neither offers nor runs the tools in

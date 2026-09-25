@@ -57,6 +57,7 @@ class BaseAgent(ABC):
         department_memory: str = "",
         *,
         company_stage: str = "",
+        principal_role: str = "",
         system_prompt_override: str | None = None,
         model_override: str | None = None,
         deep_reasoning_override: bool | None = None,
@@ -117,6 +118,14 @@ class BaseAgent(ABC):
             user_content = (
                 f"<department_memory>\n{department_memory}\n</department_memory>\n\n{user_content}"
             )
+        # Solo mode: what the principal does (kind, title, remit —
+        # router.principal_role_context). A VP inside a large company and a
+        # business owner need different advice for the same question; the
+        # tag rides in the USER turn for the same cache reason as the stage
+        # below, which sits just outside it.
+        role = principal_role.strip()
+        if role:
+            user_content = f"<principal_role>\n{role}\n</principal_role>\n\n{user_content}"
         # The company's stage, from the profile. Specialists never see the
         # company profile — it lives in the Executive's cached system block —
         # and stage changes which benchmarks apply (venture metrics mislead a

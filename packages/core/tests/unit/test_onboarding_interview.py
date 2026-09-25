@@ -306,10 +306,12 @@ async def test_empty_existing_profile_is_not_prepended(
     assert provider.calls[0]["messages"][0]["content"] == "We sell industrial tools."
 
 
-def _set_mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+def _set_mode(monkeypatch: pytest.MonkeyPatch, mode: str, **role: Any) -> None:
     from openexecutive.memory import workspace_settings as ws
 
-    monkeypatch.setattr(ws, "get_workspace", lambda *a, **k: ws.WorkspaceSettings(mode=mode))
+    monkeypatch.setattr(
+        ws, "get_workspace", lambda *a, **k: ws.WorkspaceSettings(mode=mode, **role)
+    )
 
 
 @pytest.mark.asyncio
@@ -345,9 +347,77 @@ async def test_solo_hint_goes_in_the_first_user_turn_only(
     assert "Acme Widgets" in provider.calls[0]["messages"][0]["content"]
 
 
+@pytest.mark.parametrize(
+    ("role_kind", "expected"),
+    [
+        (None, "SOLO_HINT"),
+        ("other", "SOLO_HINT"),
+        ("owner", "owner"),
+        ("in_house", "in_house"),
+        ("independent", "independent"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_solo_hint_follows_the_role_kind(
+    monkeypatch: pytest.MonkeyPatch, role_kind: str | None, expected: str
+) -> None:
+    """The role step's kind picks one static hint; the principal's own words
+    (title, remit…) never reach the prompt, and the system block is the same
+    constant whatever the kind."""
+    _set_mode(
+        monkeypatch, "solo", role_kind=role_kind,
+        role_title="Director of Operations SECRET-TITLE", remit="Carrier contracts SECRET-REMIT",
+    )
+    provider = _ScriptedProvider([_tool_response(iv.EMIT_TOOL_NAME, _draft_dict())])
+    _install(monkeypatch, provider)
+    await iv.advance(_opening())
+
+    call = provider.calls[0]
+    hint = iv.SOLO_HINT if expected == "SOLO_HINT" else iv.SOLO_ROLE_HINTS[expected]
+    assert call["system"][0]["text"] == ONBOARDING_INTERVIEWER_SYSTEM
+    assert call["messages"][0]["content"] == f"{hint}\n\n---\n\nWe sell industrial tools."
+    assert "SECRET" not in str(call)
+
+
+def test_solo_hints_are_role_neutral_where_they_should_be() -> None:
+    """Only the owner hint asks about cash and runway; the neutral and the
+    in-house hints ask about the role; every hint keeps the one-person,
+    no-departments draft rule."""
+    neutral = iv.SOLO_HINT.lower()
+    assert "run the business alone" not in neutral
+    assert "cash" not in neutral and "runway" not in neutral
+    for word in ("own business", "organisation", "independently", "role", "ask"):
+        assert word in neutral, word
+
+    owner = iv.SOLO_ROLE_HINTS["owner"].lower()
+    for word in ("offer", "customers", "pricing", "cash and runway", "top goals"):
+        assert word in owner, word
+
+    in_house = iv.SOLO_ROLE_HINTS["in_house"].lower()
+    assert "employer" in in_house
+    for word in ("report to", "measured on", "team", "responsible for", "top goals"):
+        assert word in in_house, word
+
+    independent = iv.SOLO_ROLE_HINTS["independent"].lower()
+    for word in ("practice", "clients", "top goals"):
+        assert word in independent, word
+
+    for hint in (iv.SOLO_HINT, *iv.SOLO_ROLE_HINTS.values()):
+        assert "exactly one person, with is_principal true" in hint
+        assert "`departments` must be empty" in hint
+        assert "{" not in hint and "}" not in hint, "static constant: no template slots"
+
+
+def test_solo_hint_falls_back_to_neutral() -> None:
+    assert iv.solo_hint(None) == iv.SOLO_HINT
+    assert iv.solo_hint("other") == iv.SOLO_HINT
+    assert iv.solo_hint("in_house") == iv.SOLO_ROLE_HINTS["in_house"]
+
+
 @pytest.mark.asyncio
 async def test_team_mode_sends_no_solo_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_mode(monkeypatch, "team")
+    # A stored role is ignored in team mode.
+    _set_mode(monkeypatch, "team", role_kind="in_house")
     provider = _ScriptedProvider([_tool_response(iv.EMIT_TOOL_NAME, _draft_dict())])
     _install(monkeypatch, provider)
     await iv.advance(_opening())

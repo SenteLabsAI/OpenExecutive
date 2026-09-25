@@ -19,7 +19,11 @@ Key invariants:
   principal's own line and their goals grouped by *area* (a department row is
   an area there). No authority levels, heads, cadences, channels or roster —
   the principal decides, and the people in their world are contacts, not a
-  team the Executive routes to. Same determinism, sanitizing and cap.
+  team the Executive routes to. Same determinism, sanitizing and cap. When
+  the workspace holds the principal's role (``memory.workspace_settings.
+  PrincipalRole``: kind, title, reports to, remit, measured on), its lines
+  follow the principal's own line — the context the solo persona reads the
+  principal's role from. Set once per install, so the 5m cache stays warm.
 - The principal's contacts (people outside the team) get their own short
   "## Contacts" section after the team or solo block — name, role/company and
   whether an email is on file, nothing about authority — but only when
@@ -37,8 +41,12 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from openexecutive.departments.models import DepartmentState, Goal
+
+if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import PrincipalRole
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +79,14 @@ _MAX_CONTACTS_IN_BLOCK = 25
 # the Executive could read as its own identity.
 _SOLO_PRINCIPAL_HEADER = "## Your Principal"
 _SOLO_GOALS_HEADER = "## Your Principal's Goals"
+
+# Opens the principal's role lines. Block 1 goes out on every turn, whoever
+# sent it, and the role says who the principal reports to and what they are
+# judged on — so it is marked as theirs. A constant: nothing is interpolated.
+_SOLO_ROLE_LEAD_IN = (
+    "Their role — private to them: use it to tailor your advice and drafts, "
+    "and don't share it with anyone else."
+)
 
 # Goal status → words for the solo block, which has room to be plain.
 _SOLO_STATUS_LABEL: dict[str, str] = {
@@ -283,8 +299,39 @@ def _render_solo_goal(goal: Goal) -> str:
     return line
 
 
-def _render_solo_principal() -> str:
-    """The principal's own line: name and the channels they can be reached on.
+def _render_solo_role(role: PrincipalRole | None) -> list[str]:
+    """The principal's role as lines under ``## Your Principal``: what kind
+    of principal they are (in plain words) and their title, who they report
+    to, what they are responsible for and what they are measured on — each
+    only when set, after the static ``_SOLO_ROLE_LEAD_IN`` marking them
+    private. User text, so every value is sanitized and capped."""
+    if role is None or role.is_empty():
+        return []
+    from openexecutive.memory.workspace_settings import ROLE_KIND_PHRASE, ROLE_TEXT_MAX
+
+    lines: list[str] = []
+    title = _safe(role.role_title, ROLE_TEXT_MAX["role_title"]) if role.role_title else ""
+    kind = ROLE_KIND_PHRASE.get(role.role_kind or "", "")
+    if title and kind:
+        lines.append(f"- Role: {title} — {kind}")
+    elif title:
+        lines.append(f"- Role: {title}")
+    elif kind:
+        lines.append(f"- Role: {kind[:1].upper()}{kind[1:]}")
+    for field, label in (
+        ("reports_to", "Reports to"),
+        ("remit", "Responsible for"),
+        ("measured_on", "Measured on"),
+    ):
+        value = getattr(role, field)
+        if value:
+            lines.append(f"- {label}: {_safe(value, ROLE_TEXT_MAX[field])}")
+    return [_SOLO_ROLE_LEAD_IN, *lines] if lines else []
+
+
+def _render_solo_principal(role: PrincipalRole | None = None) -> str:
+    """The principal's own line: name and the channels they can be reached on,
+    then their role lines (``_render_solo_role``) when a role is set.
 
     The principal is ``people.store.find_principal_person`` — the oldest
     non-archived principal, the same rule every solo check uses (the
@@ -297,13 +344,18 @@ def _render_solo_principal() -> str:
     """
     from openexecutive.people.store import find_principal_person
 
+    role_lines = _render_solo_role(role)
     try:
         principal = find_principal_person()
     except Exception:
         logger.warning("render_org_block: principal lookup failed — omitting the principal", exc_info=True)
-        return ""
+        principal = None
     if principal is None:
-        return ""
+        # No one to name yet (setup still running, or a failed lookup): the
+        # role still says who the Executive works for.
+        if not role_lines:
+            return ""
+        return f"{_SOLO_PRINCIPAL_HEADER}\n\n" + "\n".join(role_lines)
     reach: list[str] = []
     if principal.email:
         reach.append(f"email {_safe(principal.email, 120)}")
@@ -320,7 +372,7 @@ def _render_solo_principal() -> str:
         line += " — reachable on: " + ", ".join(reach)
     if principal.preferred_channel and principal.preferred_channel != "any":
         line += f" — prefers {principal.preferred_channel}"
-    return f"{_SOLO_PRINCIPAL_HEADER}\n\n{line}"
+    return f"{_SOLO_PRINCIPAL_HEADER}\n\n" + "\n".join([line, *role_lines])
 
 
 def _render_solo_goals(states: list[DepartmentState]) -> str:
@@ -348,10 +400,17 @@ def _render_solo_goals(states: list[DepartmentState]) -> str:
     ])
 
 
-def _render_solo_block(states: list[DepartmentState]) -> str:
+def _render_solo_block(states: list[DepartmentState], role: PrincipalRole | None) -> str:
     return "\n\n".join(
-        part for part in (_render_solo_principal(), _render_solo_goals(states)) if part
+        part for part in (_render_solo_principal(role), _render_solo_goals(states)) if part
     )
+
+
+def _workspace_role() -> PrincipalRole | None:
+    """The install's principal role (``get_workspace`` never raises)."""
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    return get_workspace().principal_role()
 
 
 def _cap(body: str) -> str:
@@ -369,7 +428,12 @@ def _cap(body: str) -> str:
     return body
 
 
-def render_org_block(mode: str = "team", *, include_contacts: bool = False) -> str:
+def render_org_block(
+    mode: str = "team",
+    principal_role: PrincipalRole | None = None,
+    *,
+    include_contacts: bool = False,
+) -> str:
     """Return a Markdown block of all department states + People roster.
 
     Capped at 4000 chars total. Returns "" only when both departments and
@@ -378,7 +442,10 @@ def render_org_block(mode: str = "team", *, include_contacts: bool = False) -> s
     principal's own verified turn.
 
     ``mode="solo"`` renders the solo block instead (see the module docstring);
-    any other value renders the team block, unchanged.
+    any other value renders the team block, unchanged. ``principal_role`` is
+    the role the solo block renders — the chat turn passes the one it
+    resolved (``workspace_settings.effective_principal_role``); None reads
+    the workspace's. The team block never reads or renders it.
 
     Any unexpected error is logged and "" is returned — this function must
     never crash a chat turn.
@@ -405,8 +472,11 @@ def render_org_block(mode: str = "team", *, include_contacts: bool = False) -> s
         contacts_section = _render_contacts_section(contacts)
 
         if mode == "solo":
+            role = principal_role if principal_role is not None else _workspace_role()
             return _cap("\n\n".join(
-                part for part in (_render_solo_block(states).strip(), contacts_section) if part
+                part
+                for part in (_render_solo_block(states, role).strip(), contacts_section)
+                if part
             ).strip())
 
         # Build a quick id→name map for head-person lookups.

@@ -1,0 +1,38 @@
+id: solo_005
+domain: operations
+workspace_mode: solo
+description: "Solo mode, an in-house principal whose role comes from their workspace settings, not the question: a Director of Operations at a 2,000-person logistics company asks for help preparing a quarterly update for their VP. The Executive frames it for the VP — results against what the principal is measured on, what slipped and why, and what they need from the VP — and makes no business-owner assumptions (no runway, fundraising, investors or pricing of their own offer)."
+# The role is supplied by the `principal_role` block, which the runner puts on
+# the scenario's session (Session.principal_role) exactly as the role step in
+# onboarding stores it in the workspace settings: it reaches the Executive's
+# org block and every specialist's <principal_role> tag. The query itself does
+# not say the principal's title or who the VP is. Run it on an install
+# without the solo_studio fixture loaded, so the org block does not name a
+# different principal.
+principal_role:
+  role_kind: in_house
+  role_title: Director of Operations
+  reports_to: VP of Operations, Dana Ruiz
+  remit: Three regional warehouses, carrier contracts and last-mile delivery
+  measured_on: On-time delivery rate, cost per shipment and warehouse safety incidents
+company_context:
+  name: Meridian Freight Logistics
+  industry: Third-party logistics and freight
+  stage: Established, privately held
+  headcount: 2000
+  arr: 640000000
+query: "I need to put together my quarterly update for Dana. On-time delivery came in at 93.1% against a 95% target, mostly because of the carrier switch in the Reno warehouse, but cost per shipment is down 6% and we had zero lost-time safety incidents. Help me prepare it."
+expected_topics:
+  - results_against_the_metrics_the_principal_is_measured_on
+  - honest_account_of_the_on_time_delivery_miss_and_the_recovery_plan
+  - what_the_principal_needs_from_the_vp
+forbidden_tool_calls:
+  - send_department_message
+  - send_company_broadcast
+  - message_person
+quality_criteria:
+  frames_the_update_for_the_vp_the_principal_reports_to: true
+  leads_with_results_against_on_time_delivery_cost_per_shipment_and_safety: true
+  no_business_owner_assumptions_like_runway_fundraising_investors_or_own_pricing: true
+  prepares_the_principal_rather_than_contacting_dana: true
+  brief: true

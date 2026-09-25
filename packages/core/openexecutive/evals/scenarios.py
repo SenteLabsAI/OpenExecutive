@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import PrincipalRole
 
 
 def _scenarios_dir() -> Path:
@@ -99,6 +102,38 @@ def list_scenario_meta() -> list[dict[str, Any]]:
     ]
 
 
+def scenario_principal_role(scenario: dict[str, Any]) -> PrincipalRole | None:
+    """The scenario's ``principal_role`` block as a ``PrincipalRole``, or
+    None when it has none. Validated like the API (``validate_role_field``);
+    an unknown key, a bad value, a block with nothing in it, or a block on a
+    scenario that is not ``workspace_mode: solo`` (only solo reads a role)
+    raises ValueError — a typo fails the scenario instead of silently
+    playing a principal with no role."""
+    from openexecutive.memory.workspace_settings import (
+        ROLE_FIELDS,
+        PrincipalRole,
+        validate_role_field,
+    )
+
+    raw = scenario.get("principal_role")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("principal_role must be a mapping")
+    unknown = set(raw) - set(ROLE_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"principal_role has unknown key(s) {sorted(map(str, unknown))}; "
+            f"allowed: {', '.join(ROLE_FIELDS)}"
+        )
+    role = PrincipalRole.model_validate({f: validate_role_field(f, raw.get(f)) for f in ROLE_FIELDS})
+    if role.is_empty():
+        raise ValueError("principal_role sets no field")
+    if scenario.get("workspace_mode") != "solo":
+        raise ValueError("principal_role needs workspace_mode: solo (only solo reads a role)")
+    return role
+
+
 def builtin_scenario_ids() -> set[str]:
     return {s["id"] for s in _load_builtin_scenarios()}
 
@@ -123,6 +158,11 @@ def validate_scenario_yaml(raw: str) -> dict[str, Any]:
 
     if s.get("workspace_mode") is not None and s["workspace_mode"] not in ("solo", "team"):
         raise ValueError("`workspace_mode` must be 'solo' or 'team'")
+    if s.get("principal_role") is not None:
+        try:
+            scenario_principal_role(s)
+        except ValueError as e:
+            raise ValueError(f"`principal_role`: {e}") from e
 
     k = scenario_kind(s)
     if k == "chat" and not s.get("query"):

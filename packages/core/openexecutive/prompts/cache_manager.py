@@ -10,6 +10,7 @@ from openexecutive.prompts.executive_persona import (
 
 if TYPE_CHECKING:
     from openexecutive.memory.company_profile import CompanyProfile
+    from openexecutive.memory.workspace_settings import PrincipalRole
 
 KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base covering executive frameworks across strategy, finance, HR, legal, operations, marketing, product, sales, and board communications. When relevant, you retrieve specific frameworks and best practices to ground your analysis. This knowledge base reflects MBA-level and practitioner-level expertise across all core business domains."""
 
@@ -22,6 +23,7 @@ def build_system_blocks(
     persona_override: str | None = None,
     voice_persona_body: str | None = None,
     workspace_mode: str = "team",
+    principal_role: PrincipalRole | None = None,
     *,
     include_contacts: bool = False,
 ) -> list[dict[str, Any]]:
@@ -42,6 +44,11 @@ def build_system_blocks(
     EXECUTIVE_PERSONA_SOLO_PROMPT, both constants — and the org block variant.
     An override still wins as-is in either mode. The mode is stable per
     install, so each mode keeps its own warm cache; a switch misses once.
+
+    principal_role is the role the solo org block renders in block 1 (the
+    turn's ``effective_principal_role``; None reads the workspace's). It is
+    set once per install, so it is as stable as the rest of block 1. Team
+    mode ignores it.
 
     voice_persona_body is substituted into the {VOICE_PERSONA} placeholder in
     the assembled base prompt. If the placeholder is absent (user removed it),
@@ -138,7 +145,11 @@ def build_system_blocks(
 
     from openexecutive.departments.prompt_block import render_org_block
 
-    org_text = render_org_block(mode=workspace_mode, include_contacts=include_contacts)
+    org_text = render_org_block(
+        mode=workspace_mode,
+        principal_role=principal_role,
+        include_contacts=include_contacts,
+    )
     if org_text:
         context_parts.append(org_text)
 
