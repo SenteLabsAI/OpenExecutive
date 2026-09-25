@@ -133,6 +133,10 @@ in both files the root `.env` takes precedence.
 
 Open http://localhost:3000 to start chatting with your executive. The API runs on port 8000 and the UI on 3000.
 
+To check everything is working, open **Settings → Setup status**. It tests
+the AI key and each chat app's token, then shows a green, amber or red light
+for each part of your setup, with what to do about anything that isn't green.
+
 > **First run:** requires Python 3.11+ and Node 22.6+. The initial `uv sync` pulls heavy
 > ML dependencies (ChromaDB + sentence-transformers/PyTorch), and the first boot
 > downloads a small embedding model (~90 MB) to build the local vector index — so the

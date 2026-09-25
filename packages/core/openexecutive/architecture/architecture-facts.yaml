@@ -2112,6 +2112,21 @@ scheduler:
     cross-client digest via _deliver_to_principal after the original
     client is restored, then chains the next nightly occurrence via
     seed_client_rotation (idempotent).
+  heartbeat: |
+    Liveness for Settings → Setup status. run_scheduler stamps
+    runner._started_at on entry, and every tick ends with _beat(outcome)
+    storing (finished_at, outcome) in runner._last_tick — outcome is ran,
+    paused, waiting_for_company, rotating, or failed (the tick raised;
+    the beat is in the except branch, after the log). In process memory
+    only: scheduler_heartbeat() returns (started_at, last_tick), None for
+    what hasn't happened. api/setup_checks.check_scheduler reads it: no
+    start = the task isn't running (red); no tick
+    _SCHEDULER_STARTUP_GRACE_S (300 s) after start = stuck (red, amber
+    before that); last tick older than max(3 × poll interval, 90 s) =
+    stopped (red); failed = red; waiting_for_company = amber with a link
+    to /onboard. The pause switch is checked first, from its own row.
+    Due actions run as their own tasks (_inflight), so a slow action
+    never ages the heartbeat — only a stuck or dead loop does.
   module: openexecutive.scheduler
   pause: |
     Operator pause switch — openexecutive.scheduler.pause. One row
@@ -4370,6 +4385,61 @@ integrations:
     naturally small blast radius).
   telegram: Webhook gating + per-chat conversation history. Roster-gated per `channel_access`.
   google_chat: Webhook + service-account auth.
+  setup_status: |
+    GET /setup/status (api/routes/setup_status.py; checks in
+    api/setup_checks.py) backs the UI's Settings → Setup status page:
+    one light per part of the install, state ok | warn | error | off,
+    with a plain-language summary and fix, an optional in-app link
+    (/people, /onboard) and last_activity (latest integration_inbound
+    audit ts for the channel's actor). Order = setup_checks.LABELS. The
+    UI adds its own sign-in light (lib/setupStatus.ts signInCheck, from
+    the UI's env) and sorts worst-first.
+    Probes — at most one free read-only call per service, each bounded
+    by PROBE_TIMEOUT_S (5 s), via one shared httpx client per run:
+    Anthropic models.list(limit=1) through configured_async_client
+    (max_retries=0; so a missing ANTHROPIC_WORKSPACE_ID on an org key
+    surfaces as a 400/403); Slack POST auth.test (Bearer bot token);
+    Telegram getMe then getWebhookInfo (empty url, a url whose path isn't
+    …/webhook/telegram, or a last_error_date within 24 h = amber);
+    Discord GET /users/@me only while the bot is not ready and its task
+    hasn't died. Liveness from app.state, which the lifespan sets:
+    slack_handler (client.is_connected()), discord_bot (is_ready(),
+    user) + discord_bot_task (exception class LoginFailure /
+    PrivilegedIntentsRequired mapped to fixes), mcp_gateway.
+    Roster: a connected Slack/Discord/Telegram is amber while no
+    non-archived Person has its id field, or when the latest inbound row
+    is "Rejected: …" (the sender id is extracted; message text from
+    inbound summaries is never echoed). Local login without
+    TELEGRAM_WEBHOOK_SECRET is red (the local-login gate refuses the
+    webhook). Google Chat: numeric project number, one of the SA
+    settings, and a readable SA key file (≤64 KiB JSON with
+    client_email). Gmail: google_workspace in configured_server_names,
+    gateway up, and the workspace-mcp credentials present in this
+    process's env (GOOGLE_OAUTH_CLIENT_ID + _SECRET, or a
+    GOOGLE_SERVICE_ACCOUNT_KEY_* with GWORKSPACE_AUTH_MODE=
+    service_account) — that env is what the gateway forwards.
+    Secrets: no token in a response or log line — probes report a status
+    code, a Slack error code matching [a-z_]{1,40}, or an exception class
+    name; _fetch never logs a URL (Telegram's carries the token), and the
+    Telegram token must match \d+:[A-Za-z0-9_-]{30,} before it is put in
+    one. Sample values from .env.example (setup_checks.EXAMPLE_VALUES,
+    RFC 2606 example domains for emails) are named as samples and never
+    sent; test_setup_checks.py fails if .env.example ships a sample the
+    set doesn't know, and scripts/setupStatus.test.mjs keeps the UI's
+    example-domain set equal to the API's.
+    Each check runs guarded: one that raises becomes a red "couldn't
+    run" light (class name logged), not a 500. Runs are shared: a
+    request within _REUSE_FOR_S (5 s) of the last run gets its answer,
+    and concurrent requests await one shielded task — so "Check again"
+    can't become a stream of calls to those services. Same auth as
+    every route (shared secret; local-login host gate).
+    Comment-as-value: python-dotenv reads `KEY=   # note` as "# note"
+    (it strips only a comment that follows a value). Settings maps such
+    values to None for the Slack, Telegram, Discord and Google Chat
+    credentials (config._unset_if_comment → _blank_or_comment), so a
+    copied .env.example no longer switches Telegram and Google Chat on
+    with their comments as tokens; the example's notes now sit on their
+    own lines.
   attachments: |
     openexecutive.integrations.attachments — cross-platform attachment
     handling for the web chat, Discord, and Telegram. Inbound images are

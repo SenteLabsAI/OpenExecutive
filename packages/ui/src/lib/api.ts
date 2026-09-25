@@ -1,3 +1,5 @@
+import type { SetupStatus } from "@/lib/setupStatus";
+
 const API_BASE = "/api/backend";
 
 export type CommitteePhase = "drafting" | "reviewing" | "finalizing";
@@ -1221,6 +1223,14 @@ export interface ExecutiveStatus {
 export async function getExecutiveStatus(signal?: AbortSignal): Promise<ExecutiveStatus> {
   const res = await fetch(`${API_BASE}/executive/status`, { signal });
   if (!res.ok) throw new Error("Failed to load executive status");
+  return res.json();
+}
+
+// Settings → Setup status. The API tests each part of the install live, so
+// this can take a few seconds; see api/setup_checks.py.
+export async function getSetupStatus(signal?: AbortSignal): Promise<SetupStatus> {
+  const res = await fetch(`${API_BASE}/setup/status`, { signal, cache: "no-store" });
+  if (!res.ok) throw new Error(`Setup status request failed (HTTP ${res.status})`);
   return res.json();
 }
 

@@ -41,6 +41,7 @@ from openexecutive.api.routes import (
     review,
     scheduled,
     sessions,
+    setup_status,
     skill_drafts,
     skills,
     today,
@@ -539,6 +540,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     discord_bot_task: asyncio.Task[None] | None = None
     slack_handler: Any = None
     slack_connect_task: asyncio.Task[None] | None = None
+    # Read by the Setup status page (onboarding/setup_checks.py) to tell a
+    # connected bot from one that is still trying or has given up.
+    app.state.discord_bot = None
+    app.state.discord_bot_task = None
+    app.state.slack_handler = None
 
     email_poller_task = await _start_mcp_gateway(app, settings)
 
@@ -588,6 +594,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         )
 
                 discord_bot_task.add_done_callback(_on_discord_done)
+                app.state.discord_bot = discord_bot
+                app.state.discord_bot_task = discord_bot_task
             except Exception:
                 _discord_log.exception(
                     "Failed to start Discord bot; continuing without it"
@@ -639,6 +647,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     _slack_log.info("Slack socket mode listener connected")
 
             slack_connect_task.add_done_callback(_on_slack_connect_done)
+            app.state.slack_handler = slack_handler
         except Exception:
             # Covers a missing slack_bolt, a malformed token, and any
             # failure building the app. Nothing to release here: the
@@ -913,6 +922,7 @@ def create_app() -> FastAPI:
     app.include_router(architecture.router, tags=["architecture"])
     app.include_router(guide.router, tags=["guide"])
     app.include_router(health.router, tags=["health"])
+    app.include_router(setup_status.router, tags=["setup"])
 
     # Expose Open Executive as an MCP server at /mcp (Streamable-HTTP). Gated
     # by the same shared-secret middleware as every other route — clients pass

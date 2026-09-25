@@ -500,6 +500,19 @@ class Settings(BaseSettings):
     )
     google_chat_project_number: str | None = Field(None, alias="GOOGLE_CHAT_PROJECT_NUMBER")
 
+    @field_validator(
+        "slack_bot_token", "slack_app_token", "telegram_bot_token",
+        "telegram_webhook_secret", "discord_bot_token", "discord_app_id",
+        "google_chat_project_number", "google_chat_service_account_file",
+        "google_chat_service_account_email", mode="before",
+    )
+    @classmethod
+    def _unset_if_comment(cls, v: Any) -> Any:
+        # `KEY=   # note` reaches us as "# note": python-dotenv only strips a
+        # comment that follows a value. Left alone, that note would count as
+        # a token and switch the channel on with it.
+        return None if _blank_or_comment(v) else v
+
     # ---- Tool results ----
     # Upper bound on a single tool result's characters before it enters the
     # prompt. A circuit breaker against an unbounded result (a large document

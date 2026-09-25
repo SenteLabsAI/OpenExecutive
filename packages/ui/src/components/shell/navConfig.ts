@@ -147,6 +147,13 @@ export const BRIEFING_DESCRIPTION =
 // in the primary nav — they aren't part of the day-to-day loop.
 export const ADVANCED_ITEMS: NavItem[] = [
   {
+    href: "/settings/status",
+    label: "Setup status",
+    icon: "check-circle",
+    description:
+      "A light for each part of your setup — AI key, sign-in, channels, schedule — and what to do about anything that isn't working.",
+  },
+  {
     href: "/council",
     label: "Agent Council",
     icon: "users",

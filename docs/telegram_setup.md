@@ -90,6 +90,8 @@ The same rejection is recorded in the audit log as an `integration_inbound` even
 
 Send the bot a direct message. It should reply within a few seconds. `/start`, `/help` and `/ask` prefixes are stripped before the text reaches the Executive; photos and documents are passed along as attachments.
 
+If it doesn't reply, open **Settings → Setup status** in the web app. The Telegram light says whether the token works, whether the webhook is registered at this app's address, what went wrong with Telegram's last delivery, and whether anyone on the team list has a Telegram chat ID.
+
 ---
 
 ## Troubleshooting

@@ -30,6 +30,24 @@ logger = logging.getLogger(__name__)
 # Strong refs so GC cannot cancel in-flight tasks mid-execution.
 _inflight: set[asyncio.Task[None]] = set()
 
+# Liveness for the Setup status page (onboarding/setup_checks.py): when this
+# loop started, and when its last tick finished and how. Every tick ends by
+# recording itself, so an old value means the loop has stopped or is stuck.
+_started_at: datetime | None = None
+_last_tick: tuple[datetime, str] | None = None
+
+
+def scheduler_heartbeat() -> tuple[datetime | None, tuple[datetime, str] | None]:
+    """``(started_at, (finished_at, outcome))`` — ``None`` for what hasn't
+    happened yet. Outcomes: ``ran``, ``paused``, ``waiting_for_company``,
+    ``rotating``, ``failed``."""
+    return _started_at, _last_tick
+
+
+def _beat(outcome: str) -> None:
+    global _last_tick
+    _last_tick = (datetime.now(UTC), outcome)
+
 
 def _company_profile_active() -> bool:
     """True when a company profile with a name is configured.
@@ -98,6 +116,8 @@ async def run_scheduler(
     poll_interval_seconds: int = 30,
 ) -> None:
     """Poll for due scheduled actions and dispatch them through the Executive."""
+    global _started_at
+    _started_at = datetime.now(UTC)
     # Sweep any rows left in 'running' by a previous crash back to 'pending'
     # so they can be re-tried. Without this they would stay stuck forever.
     try:
@@ -168,6 +188,7 @@ async def run_scheduler(
                         "scheduler: executive paused — holding all scheduled work"
                     )
                     holding_for_pause = True
+                _beat("paused")
                 await asyncio.sleep(poll_interval_seconds)
                 continue
             if holding_for_pause:
@@ -185,6 +206,7 @@ async def run_scheduler(
                         "scheduled actions until one is configured"
                     )
                     holding_for_profile = True
+                _beat("waiting_for_company")
                 await asyncio.sleep(poll_interval_seconds)
                 continue
             if holding_for_profile:
@@ -197,6 +219,7 @@ async def run_scheduler(
                 # context — claiming now would fire the just-activated
                 # client's overdue outbound backlog at 3am. Everything due
                 # fires on the first tick after the original client is back.
+                _beat("rotating")
                 await asyncio.sleep(poll_interval_seconds)
                 continue
             due = claim_due_actions(now)
@@ -206,10 +229,12 @@ async def run_scheduler(
                 task = asyncio.create_task(_execute_action(row, gateway))
                 _inflight.add(task)
                 task.add_done_callback(_inflight.discard)
+            _beat("ran")
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("scheduler tick failed")
+            _beat("failed")
         try:
             await asyncio.sleep(poll_interval_seconds)
         except asyncio.CancelledError:

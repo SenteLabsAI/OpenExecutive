@@ -141,6 +141,7 @@ The webhook endpoint is now active at `POST /webhook/google-chat`. Google Chat w
 1. In Google Chat, find your app (search by name in the **+ New chat** dialog).
 2. Send it a direct message.
 3. It should reply within a few seconds.
+   If it doesn't, open **Settings → Setup status** in the web app: the Google Chat light checks the project number and the service-account settings.
 4. To watch logs:
    ```bash
    # Docker
