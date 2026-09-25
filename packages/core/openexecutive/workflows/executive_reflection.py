@@ -672,10 +672,8 @@ class ExecutiveReflectionWorkflow(Workflow):
             if person.email:
                 seen.add(("email", person.email))
 
-        reflection_session = Session(
-            seen_channel_refs=seen,
-            workspace_mode=getattr(outer_session, "workspace_mode", None),
-        )
+        # Pin the run's mode so its tool handlers agree with its toolkit.
+        reflection_session = Session(seen_channel_refs=seen, turn_workspace_mode=mode)
         ctx_token = current_session.set(reflection_session)
 
         # Sort tools by name for prompt-cache stability (same convention

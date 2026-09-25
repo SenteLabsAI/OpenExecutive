@@ -448,3 +448,67 @@ def test_stream_chat_threads_the_session_mode_into_blocks_and_loop() -> None:
     ):
         asyncio.run(_drain())
     assert seen == {"blocks_mode": "solo", "loop_mode": "solo"}
+
+
+# --------------------------------------------------------------------------- #
+# One mode per turn, pinned on the session
+# --------------------------------------------------------------------------- #
+
+
+def test_pinned_turn_mode_survives_a_mid_turn_flip() -> None:
+    session = Session()
+    _solo()
+    assert ws.pin_turn_workspace_mode(session) == "solo"
+    assert session.turn_workspace_mode == "solo"
+    # The setting flips mid-turn: the turn keeps the mode it started with.
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="team"))
+    assert ws.effective_workspace_mode(session) == "solo"
+    # The next turn re-resolves from the workspace, not the old pin.
+    assert ws.pin_turn_workspace_mode(session) == "team"
+    assert ws.effective_workspace_mode(session) == "team"
+
+
+def test_session_override_beats_the_pin_and_the_workspace() -> None:
+    _solo()
+    session = Session(workspace_mode="team")
+    assert ws.pin_turn_workspace_mode(session) == "team"
+    session.turn_workspace_mode = "solo"
+    assert ws.effective_workspace_mode(session) == "team"
+    # A session with neither reads the workspace.
+    assert ws.effective_workspace_mode(Session()) == "solo"
+    assert ws.effective_workspace_mode(None) == "solo"
+
+
+def test_stream_chat_pins_the_mode_for_the_tool_handlers() -> None:
+    """The workspace flips to team while the turn's tools run: the handlers
+    (which read the mode through the turn's session) still see solo, the
+    mode the persona and tool list were built in. The next turn sees team."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    seen: list[str] = []
+
+    async def _loop(*_a: Any, **kw: Any):  # type: ignore[no-untyped-def]
+        ws.restore_workspace_settings(ws.WorkspaceSettings(mode="team"))
+        seen.append(kw.get("workspace_mode"))
+        seen.append(ws.effective_workspace_mode(current_session.get()))
+        yield "ok"
+
+    session = Session()
+
+    async def _drain() -> None:
+        async for _ in Executive().stream_chat(user_message="hi", session=session):
+            pass
+
+    _solo()
+    with (
+        patch(
+            "openexecutive.orchestrator.executive.build_system_blocks",
+            new=lambda *a, **k: [{"type": "text", "text": "persona"}],
+        ),
+        patch.object(Executive, "_stream_agent_loop", new=_loop),
+        patch("openexecutive.orchestrator.executive.audit_log", lambda *a, **k: None),
+    ):
+        asyncio.run(_drain())
+        assert seen == ["solo", "solo"]
+        asyncio.run(_drain())
+    assert seen[2:] == ["team", "team"]

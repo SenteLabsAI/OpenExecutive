@@ -21,7 +21,10 @@ from openexecutive.audit.redaction import (
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
-from openexecutive.memory.workspace_settings import effective_workspace_mode
+from openexecutive.memory.workspace_settings import (
+    effective_workspace_mode,
+    pin_turn_workspace_mode,
+)
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -730,9 +733,11 @@ class Executive:
             voice_persona_body = _get_voice_body(_ov.voice_persona_slug if _ov else None)
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
-        # Solo / team, resolved once per turn so the persona, the org block and
-        # the toolkit the loop offers all agree (Session override → workspace).
-        workspace_mode = effective_workspace_mode(session)
+        # Solo / team, resolved once per turn and pinned on the session, so the
+        # persona, the org block, the toolkit the loop offers and every tool
+        # handler agree even if the setting flips mid-turn (Session override →
+        # workspace).
+        workspace_mode = pin_turn_workspace_mode(session)
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -999,7 +1004,7 @@ class Executive:
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
 
-        workspace_mode = effective_workspace_mode(session)
+        workspace_mode = pin_turn_workspace_mode(session)
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,

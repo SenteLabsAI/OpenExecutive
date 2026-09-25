@@ -146,9 +146,13 @@ caching:
         non-empty.
   per_mode_prefix: |
     Solo mode (one person using Open Executive for themselves) changes three
-    cached parts, all resolved ONCE per turn from
-    memory.workspace_settings.effective_workspace_mode(session) (the
-    Session.workspace_mode override, else the workspace) so they agree:
+    cached parts, all resolved ONCE per turn by
+    memory.workspace_settings.pin_turn_workspace_mode(session) (the
+    Session.workspace_mode override, else the workspace read fresh), which
+    also pins the result on Session.turn_workspace_mode so every tool
+    handler in the turn (schedule_followup, create_calendar_event, the
+    dispatch guard) reads the same mode through effective_workspace_mode —
+    a switch made mid-turn applies from the next turn. They agree on:
     the block-0 persona (the solo constant), the block-1 org block (the solo
     render), and the tool prefix (orchestrator.schedule_tools.
     filter_tools_for_workspace_mode drops send_company_broadcast,
@@ -938,7 +942,8 @@ routing:
     ("book a sync with X") must not reach a contact — the founder books and
     starts workflows from chat. Both read the mode through
     effective_workspace_mode(current_session) before binding their own
-    session, and carry a caller's override onto it.
+    session, and pin that mode on their own session (turn_workspace_mode)
+    so their tool handlers use it too.
 
     Offered means runnable, in BOTH modes: schedule_tools.unattended_toolkit
     builds each pass's handler map from exactly the tool list it offers
@@ -2287,7 +2292,11 @@ departments:
     moves), set_workspace_mode(mode) (solo cancels pending dept_cadence
     rows; team re-runs bootstrap_cadences; department rows stay),
     effective_workspace_mode(session) (Session.workspace_mode override,
-    else the workspace). HTTP: GET /workspace, PUT /workspace
+    else the mode pinned for the session's turn, else the workspace),
+    pin_turn_workspace_mode(session) (resolves override-else-workspace at
+    the start of a turn and pins it on Session.turn_workspace_mode;
+    Executive.stream_chat and the committee path call it, reflection and
+    research pin their own run's mode on their synthetic sessions). HTTP: GET /workspace, PUT /workspace
     (principal-only, open before a principal exists). Per company: blank
     client slots wipe it (clients.slots._BLANK_WIPE_TABLES), saved slots
     carry it in state.db, and the factory reset returns it to the defaults

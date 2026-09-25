@@ -853,10 +853,8 @@ async def _executive_synthesis_loop(
         if person.email:
             seen.add(("email", person.email))
 
-    synth_session = Session(
-        seen_channel_refs=seen,
-        workspace_mode=getattr(outer_session, "workspace_mode", None),
-    )
+    # Pin the run's mode so its tool handlers agree with its toolkit.
+    synth_session = Session(seen_channel_refs=seen, turn_workspace_mode=mode)
     ctx_token = current_session.set(synth_session)
 
     # Synthesis tools = full toolkit MINUS the research tools themselves.

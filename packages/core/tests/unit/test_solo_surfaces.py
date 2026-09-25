@@ -905,6 +905,55 @@ def test_team_followup_to_the_founder_keeps_the_gate() -> None:
     assert row.required_scope == "wildcard"
 
 
+def test_followup_uses_the_turns_pinned_mode_not_a_mid_turn_flip() -> None:
+    from openexecutive.memory.workspace_settings import pin_turn_workspace_mode
+
+    _solo()
+    _founder()
+    session = Session()
+    pin_turn_workspace_mode(session)
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="team"))
+    row = _schedule("telegram", "555", session=session)
+    assert row.department == ""  # still the solo rule, as the turn began
+
+
+def test_calendar_uses_the_turns_pinned_mode_not_a_mid_turn_flip() -> None:
+    from openexecutive.memory.workspace_settings import pin_turn_workspace_mode
+
+    _solo()
+    pid = _founder()
+    session = Session(from_web_chat=True, caller_person_id=pid)
+    pin_turn_workspace_mode(session)
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="team"))
+    # _book fails the test if the team department gate is consulted.
+    result, _gw = _book("auto_execute", session)
+    assert result["status"] == "created"
+
+
+def test_reflection_pins_its_mode_for_its_tool_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
+    from openexecutive.orchestrator import executive
+
+    _solo()
+    _founder()
+    seen: list[str] = []
+
+    async def _alert(_payload: dict[str, Any]) -> str:
+        ws.restore_workspace_settings(ws.WorkspaceSettings(mode="team"))
+        seen.append(effective_workspace_mode(current_session.get()))
+        return json.dumps({"alert_id": 1})
+
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "create_alert", _alert)
+    provider = _CapturingProvider([
+        _Resp([_ToolUse("create_alert", {"headline": "x"})], "tool_use"),
+        _Resp([_Text("done")], "end_turn"),
+    ])
+    _run_reflection(provider, monkeypatch)
+    assert seen == ["solo"]
+
+
 def test_session_override_drives_the_followup_rule() -> None:
     _founder()
     row = _schedule("telegram", "555", session=Session(workspace_mode="solo"))
