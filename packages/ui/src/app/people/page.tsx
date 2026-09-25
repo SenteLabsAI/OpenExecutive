@@ -4,7 +4,27 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
-import { createPerson, listPeople, type PageFormField, type Person } from "@/lib/api";
+import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import {
+  createPerson,
+  getPeopleViewer,
+  listPeople,
+  type PageFormField,
+  type Person,
+  type PersonKind,
+} from "@/lib/api";
+import {
+  defaultKindForTab,
+  defaultPeopleTab,
+  effectiveKind,
+  hiddenTeamCount,
+  isContact,
+  peopleForTab,
+  shouldOfferTeamMode,
+  tabsFor,
+  type PeopleTab,
+} from "@/lib/peopleKinds";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -19,10 +39,11 @@ const ALL_SCOPES = [
   { value: "customer_credit", label: "Credit", hint: "Receives proposals involving credit or debt." },
   { value: "legal_sign", label: "Legal", hint: "Receives proposals with legal implications." },
   { value: "board_comms", label: "Board", hint: "Receives proposals before board communications." },
-  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the founder." },
+  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
 ];
 
 const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
+const KINDS: PersonKind[] = ["team", "contact"];
 
 // ---------------------------------------------------------------------------
 // PersonCard (unchanged from read-only)
@@ -46,6 +67,7 @@ function ScopePill({ scope }: { scope: string }) {
 }
 
 function PersonCard({ person }: { person: Person }) {
+  const contact = isContact(person);
   return (
     <Link
       href={`/people/${person.id}`}
@@ -63,10 +85,14 @@ function PersonCard({ person }: { person: Person }) {
           </div>
           <div className="text-xs text-fg-muted mt-0.5">{person.role || "—"}</div>
         </div>
-        <div className="flex-shrink-0 text-xs text-fg-muted capitalize">{person.preferred_channel}</div>
+        {contact ? (
+          <div className="flex-shrink-0 text-xs text-fg-muted">{person.email ? "Email on file" : "No email"}</div>
+        ) : (
+          <div className="flex-shrink-0 text-xs text-fg-muted capitalize">{person.preferred_channel}</div>
+        )}
       </div>
-      <div className="text-xs text-fg-muted mb-2">SLA: {person.response_sla_hours}h</div>
-      {person.authority_scope.length > 0 && (
+      {!contact && <div className="text-xs text-fg-muted mb-2">SLA: {person.response_sla_hours}h</div>}
+      {!contact && person.authority_scope.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {person.authority_scope.map((s) => (
             <ScopePill key={s} scope={s} />
@@ -82,6 +108,9 @@ function PersonCard({ person }: { person: Person }) {
 // ---------------------------------------------------------------------------
 
 interface AddPersonModalProps {
+  initialKind: PersonKind;
+  /** Contacts are the principal's alone: nobody else is offered the choice. */
+  canAddContacts: boolean;
   onCreated: (p: Person) => void;
   onClose: () => void;
 }
@@ -89,6 +118,7 @@ interface AddPersonModalProps {
 const BLANK_FORM = {
   full_name: "",
   role: "",
+  kind: "team" as PersonKind,
   is_principal: false,
   email: "",
   slack_user_id: "",
@@ -128,8 +158,10 @@ function DisclosureSection({
 
 const SCOPE_VALUES = ALL_SCOPES.map((s) => s.value);
 
-function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
-  const [form, setForm] = useState(BLANK_FORM);
+function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: AddPersonModalProps) {
+  const [form, setForm] = useState({ ...BLANK_FORM, kind: canAddContacts ? initialKind : "team" });
+  const kind = effectiveKind(form.kind, form.is_principal);
+  const contact = kind === "contact";
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showContact, setShowContact] = useState(false);
@@ -146,10 +178,20 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
     formId: "add_person",
     title: "Add person",
     description:
-      "Adds a human the Executive coordinates with. Authority scopes determine which proposals route to them for approval.",
+      "Adds a human the Executive coordinates with — a team member (can sign in, approve and be chased) or a contact (someone outside the team the Executive emails only when you ask). Authority scopes determine which proposals route to a team member for approval.",
     getFields: (): PageFormField[] => [
       { name: "full_name", label: "Full name", type: "text", value: form.full_name, required: true },
-      { name: "role", label: "Role", type: "text", value: form.role },
+      ...(canAddContacts
+        ? [{
+            name: "kind",
+            label: "Team member or contact",
+            type: "select" as const,
+            options: KINDS,
+            value: form.kind,
+            description: "team: works with you. contact: a client, contractor or advisor outside the team, private to you.",
+          }]
+        : []),
+      { name: "role", label: contact ? "Role and company" : "Role", type: "text", value: form.role },
       {
         name: "is_principal",
         label: "This is me — Primary",
@@ -190,6 +232,10 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
           case "is_principal":
             if (typeof raw !== "boolean") skipped.push(key);
             else { next.is_principal = raw; applied.push(key); }
+            break;
+          case "kind":
+            if (canAddContacts && (raw === "team" || raw === "contact")) { next.kind = raw; applied.push(key); }
+            else skipped.push(key);
             break;
           case "preferred_channel":
             if (typeof raw === "string" && CHANNELS.includes(raw)) {
@@ -253,6 +299,7 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
       const person = await createPerson({
         full_name: form.full_name.trim(),
         role: form.role.trim(),
+        kind,
         is_principal: form.is_principal,
         email: form.email.trim() || null,
         slack_user_id: form.slack_user_id.trim() || null,
@@ -260,7 +307,8 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
         discord_user_id: form.discord_user_id.trim() || null,
         preferred_channel: form.preferred_channel,
         response_sla_hours: Number(form.response_sla_hours) || 24,
-        authority_scope: form.authority_scope,
+        // A contact approves nothing; don't send scopes picked before switching.
+        authority_scope: contact ? [] : form.authority_scope,
       });
       onCreated(person);
     } catch (e) {
@@ -276,9 +324,35 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
         className="w-full max-w-lg bg-surface border border-line rounded-2xl shadow-2xl p-6 mx-4 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-base font-semibold text-fg mb-4">Add person</h2>
+        <h2 className="text-base font-semibold text-fg mb-4">{contact ? "Add contact" : "Add person"}</h2>
 
         <div className="space-y-3">
+          {canAddContacts && !form.is_principal && (
+            <div role="radiogroup" aria-label="Team member or contact" className="grid grid-cols-2 gap-2">
+              {KINDS.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="radio"
+                  aria-checked={form.kind === k}
+                  onClick={() => { setForm((f) => ({ ...f, kind: k })); clearSuggested("kind"); }}
+                  className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+                    form.kind === k
+                      ? "bg-indigo-600/30 border-indigo-500/50 text-indigo-300"
+                      : "bg-surface-input border-line text-fg-muted hover:border-indigo-500/40"
+                  } ${suggestedCls("kind")}`}
+                >
+                  <div className="text-sm font-medium">{k === "team" ? "Team member" : "Contact"}</div>
+                  <div className="text-[10px] leading-tight mt-0.5 opacity-80">
+                    {k === "team"
+                      ? "Works with you: can sign in, message the Executive and approve."
+                      : "Outside the team and private to you: emailed or invited only when you ask."}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Always-visible: the 10-second path */}
           <label className="text-xs text-fg-muted flex flex-col gap-1">
             Full name *
@@ -292,15 +366,28 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
           </label>
 
           <label className="text-xs text-fg-muted flex flex-col gap-1">
-            Role
+            {contact ? "Role and company" : "Role"}
             <input
               value={form.role}
               onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, role: v })); clearSuggested("role"); }}
               className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("role")}`}
-              placeholder="CFO (fractional)"
+              placeholder={contact ? "Head of Procurement, Acme" : "CFO (fractional)"}
             />
           </label>
 
+          {contact && (
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Email
+              <input
+                value={form.email}
+                onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, email: v })); clearSuggested("email"); }}
+                className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("email")}`}
+                placeholder="jordan@acme.example"
+              />
+            </label>
+          )}
+
+          {!contact && (
           <label className="flex items-center gap-2.5 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -315,13 +402,15 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
             <span className="text-sm text-fg">This is me — Primary</span>
             <span className="text-xs text-fg-muted">— marks you as the primary decision-maker</span>
           </label>
+          )}
 
           {/* Contact & routing */}
           <DisclosureSection
-            label="Contact & routing"
+            label={contact ? "Chat IDs" : "Contact & routing"}
             open={showContact}
             onToggle={() => setShowContact((v) => !v)}
           >
+            {!contact && (
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-fg-muted flex flex-col gap-1">
@@ -359,7 +448,9 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
                 </p>
               </div>
             </div>
+            )}
 
+            {!contact && (
             <label className="text-xs text-fg-muted flex flex-col gap-1">
               Email
               <input
@@ -369,6 +460,7 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
                 placeholder="sarah@example.com"
               />
             </label>
+            )}
 
             <label className="text-xs text-fg-muted flex flex-col gap-1">
               Slack user ID
@@ -404,7 +496,8 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
             </label>
           </DisclosureSection>
 
-          {/* Approval authority */}
+          {/* Approval authority — a contact approves nothing */}
+          {!contact && (
           <DisclosureSection
             label="Approval authority"
             open={showAuthority}
@@ -433,6 +526,7 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
               })}
             </div>
           </DisclosureSection>
+          )}
 
         </div>
 
@@ -444,7 +538,7 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
             onClick={submit}
             className="flex-1 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 font-medium"
           >
-            {saving ? "Creating…" : "Add person"}
+            {saving ? "Creating…" : contact ? "Add contact" : "Add person"}
           </button>
           <button
             disabled={saving}
@@ -463,49 +557,117 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
 // Page
 // ---------------------------------------------------------------------------
 
+const TAB_COPY: Record<PeopleTab, { label: string; blurb: string; empty: string; add: string }> = {
+  team: {
+    label: "Team",
+    blurb: "People who work with you. They can sign in, message the Executive and approve what their authority covers.",
+    empty: "No team members yet.",
+    add: "+ Add person",
+  },
+  contacts: {
+    label: "Contacts",
+    blurb: "Clients, contractors and advisors outside the team — private to you. The Executive emails or invites them only when you ask it to; they can't sign in or message it, and nobody else on the team sees them.",
+    empty: "No contacts yet.",
+    add: "+ Add contact",
+  },
+};
+
 export default function PeoplePage() {
+  const { mode, loading: workspaceLoading } = useWorkspace();
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [tab, setTab] = useState<PeopleTab | null>(null);
+  const [offerFor, setOfferFor] = useState<string | null>(null);
+  // Contacts are private to the principal. Until the viewer is known (or if
+  // the check fails) nobody is offered them; the API enforces it regardless.
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
+  const [viewerLoading, setViewerLoading] = useState(true);
+
+  const tabs = tabsFor(viewerIsPrincipal);
+  // Open on the mode's default tab once the mode is known; a tab the user
+  // picked is kept from then on (and never one this viewer is not offered).
+  const activeTab: PeopleTab =
+    tab !== null && tabs.includes(tab) ? tab : defaultPeopleTab(mode, viewerIsPrincipal);
 
   function refresh() {
     setLoading(true);
-    listPeople()
+    listPeople({ includeContacts: true })
       .then(setPeople)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+    getPeopleViewer()
+      .then((v) => setViewerIsPrincipal(v.is_principal))
+      .catch(() => setViewerIsPrincipal(false))
+      .finally(() => setViewerLoading(false));
+  }, []);
+
+  const shown = peopleForTab(people, activeTab, mode);
+  const hidden = activeTab === "team" ? hiddenTeamCount(people, mode) : 0;
+  const copy = TAB_COPY[activeTab];
 
   return (
     <div className="flex flex-col h-full bg-surface">
       {showAdd && (
         <AddPersonModal
+          initialKind={defaultKindForTab(activeTab)}
+          canAddContacts={viewerIsPrincipal}
           onCreated={(p) => {
             setPeople((prev) => [...prev, p]);
             setShowAdd(false);
+            // Show the new row where it lives.
+            setTab(isContact(p) ? "contacts" : "team");
+            if (shouldOfferTeamMode(mode, p.kind ?? "team", p.is_principal)) setOfferFor(p.full_name);
           }}
           onClose={() => setShowAdd(false)}
         />
       )}
+      {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-6 py-6">
-          <div className="flex items-baseline justify-between mb-6">
+          <div className="flex items-baseline justify-between mb-4">
             <div>
               <h1 className="text-xl font-semibold text-fg">People</h1>
-              <p className="text-sm text-fg-muted mt-0.5">
-                Humans the Executive coordinates with. Authority scopes determine who approves what.
-              </p>
+              <p className="text-sm text-fg-muted mt-0.5">{copy.blurb}</p>
             </div>
             <button
               onClick={() => setShowAdd(true)}
               className="flex-shrink-0 px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
             >
-              + Add person
+              {copy.add}
             </button>
           </div>
+
+          {tabs.length > 1 && (
+          <div role="tablist" aria-label="Team or contacts" className="flex gap-1 border-b border-line mb-6">
+            {tabs.map((t) => {
+              const count = peopleForTab(people, t, mode).length;
+              const selected = activeTab === t;
+              return (
+                <button
+                  key={t}
+                  role="tab"
+                  aria-selected={selected}
+                  disabled={(workspaceLoading || viewerLoading) && tab === null}
+                  onClick={() => setTab(t)}
+                  className={`px-3 py-2 text-sm -mb-px border-b-2 transition-colors ${
+                    selected
+                      ? "border-indigo-500 text-fg font-medium"
+                      : "border-transparent text-fg-muted hover:text-fg"
+                  }`}
+                >
+                  {TAB_COPY[t].label}
+                  {!loading && <span className="ml-1.5 text-xs text-fg-subtle">{count}</span>}
+                </button>
+              );
+            })}
+          </div>
+          )}
 
           {loading && <p className="text-fg-muted text-sm">Loading…</p>}
           {error && (
@@ -513,23 +675,30 @@ export default function PeoplePage() {
               {error}
             </div>
           )}
-          {!loading && !error && people.length === 0 && (
+          {!loading && !error && shown.length === 0 && (
             <div className="rounded-xl border border-line bg-surface-elevated p-8 text-center">
-              <p className="text-fg-muted text-sm mb-3">No people configured yet.</p>
+              <p className="text-fg-muted text-sm mb-3">{copy.empty}</p>
               <button
                 onClick={() => setShowAdd(true)}
                 className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
               >
-                Add your first person →
+                {activeTab === "contacts" ? "Add your first contact →" : "Add your first person →"}
               </button>
             </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {people.map((person) => (
+            {shown.map((person) => (
               <PersonCard key={person.id} person={person} />
             ))}
           </div>
+
+          {hidden > 0 && (
+            <p className="text-xs text-fg-muted mt-4">
+              {hidden === 1 ? "1 other team member is" : `${hidden} other team members are`} hidden while you
+              use Open Executive just for yourself. Switch to team mode in Settings to see them.
+            </p>
+          )}
         </div>
       </main>
     </div>

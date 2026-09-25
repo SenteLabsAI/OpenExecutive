@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Literal, NamedTuple
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -15,6 +16,7 @@ from fastapi.responses import StreamingResponse
 
 from openexecutive.api.models import ChatRequest, PageContext, StopChatRequest
 from openexecutive.audit import log_event as audit_log
+from openexecutive.audit import principal_turn_rows
 from openexecutive.integrations.attachments import build_attachment_output
 from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
@@ -663,6 +665,7 @@ async def _run_chat_turn(
     from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import create_session
     from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
     t0 = time.monotonic()
     # Same shape every other entry point mints (Executive.stream_chat), so
@@ -684,6 +687,13 @@ async def _run_chat_turn(
     # by signed-in user); see its docstring for the precedence rule that
     # protects against cross-identity leakage.
     caller_person_id = _resolve_caller_person_id(request)
+    # The rows written before the Executive binds this caller to the session
+    # (the "User:" row, the knowledge retrieval, the start of the stream) are
+    # private, as the rest of the turn's are, when the principal sent the
+    # message and they name one of their contacts.
+    principal_turn = is_principal_on_verified_surface(
+        SimpleNamespace(from_web_chat=True, caller_person_id=caller_person_id)
+    )
     # A client-supplied id must be the caller's own chat; any other id the
     # turn can't use is swapped for a fresh chat before the stop switch arms.
     requested_id = _clean_session_id(session_id)
@@ -763,23 +773,24 @@ async def _run_chat_turn(
         turn_id, session.session_id, is_first_turn, len(message),
         len(attachment_blocks or []),
     )
-    audit_log(
-        "chat_turn",
-        f"User: {message[:200]}",
-        session_id=session.session_id,
-        turn_id=turn_id,
-        actor="user",
-        details={
-            "direction": "in",
-            "msg_len": len(message),
-            "is_first_turn": is_first_turn,
-            "attachment_count": len(attachment_blocks or []),
-        },
-        # memory_text reaches the caller's peer AND every consulted
-        # department's shared memory, but never the transcript: keep it
-        # auditable next to the message it stood in for.
-        full={"message": message, "memory_text": memory_text},
-    )
+    with principal_turn_rows(principal_turn):
+        audit_log(
+            "chat_turn",
+            f"User: {message[:200]}",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            actor="user",
+            details={
+                "direction": "in",
+                "msg_len": len(message),
+                "is_first_turn": is_first_turn,
+                "attachment_count": len(attachment_blocks or []),
+            },
+            # memory_text reaches the caller's peer AND every consulted
+            # department's shared memory, but never the transcript: keep it
+            # auditable next to the message it stood in for.
+            full={"message": message, "memory_text": memory_text},
+        )
 
     # Let the caller schedule to their own addresses. Runs per turn rather than
     # only on session creation so a newly-added address works without a fresh
@@ -894,18 +905,21 @@ async def _run_chat_turn(
     # all raise, and the entry would otherwise be stranded until the registry
     # cap evicted it.
     try:
-        retrieved_context, episodic_context, peer_memory_context, briefing_context = await asyncio.gather(
-            asyncio.to_thread(
-                retrieve,
-                query=message,
-                specialist_name=None,
-                store=request.app.state.store if hasattr(request.app.state, "store") else None,
-                record_source=turn_sources.add,
-            ),
-            _do_episodic(),
-            _do_prefetch(),
-            _do_briefing(),
-        )
+        with principal_turn_rows(principal_turn):
+            (
+                retrieved_context, episodic_context, peer_memory_context, briefing_context,
+            ) = await asyncio.gather(
+                asyncio.to_thread(
+                    retrieve,
+                    query=message,
+                    specialist_name=None,
+                    store=request.app.state.store if hasattr(request.app.state, "store") else None,
+                    record_source=turn_sources.add,
+                ),
+                _do_episodic(),
+                _do_prefetch(),
+                _do_briefing(),
+            )
         sources = _extract_sources(retrieved_context)
         collector.emit("knowledge_retrieved", {
             "query": message,
@@ -958,6 +972,7 @@ async def _run_chat_turn(
         with (
             set_turn(session_id=session.session_id, turn_id=turn_id),
             set_session(session),
+            principal_turn_rows(principal_turn),
         ):
             async with contextlib.aclosing(_sse_body()) as body:
                 async for evt in body:

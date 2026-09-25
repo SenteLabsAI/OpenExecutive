@@ -282,7 +282,7 @@ def _run(find_person: Any) -> dict[str, Any]:
 
 def test_run_executive_passes_memory_text_and_keeps_the_full_prompt() -> None:
     sam = SimpleNamespace(id=7)
-    captured = _run(lambda addr: sam if addr == "sam@example.com" else None)
+    captured = _run(lambda addr, **_kw: sam if addr == "sam@example.com" else None)
     assert captured["person_id"] == 7
     assert captured["memory_text"] == _email_memory_text(REPLY)
     # The Executive still sees the whole email, framing included.
@@ -293,7 +293,7 @@ def test_run_executive_passes_memory_text_and_keeps_the_full_prompt() -> None:
 def test_run_executive_skips_the_parse_for_an_unrostered_sender() -> None:
     """No peer to record into, so attacker-shaped mail from a stranger is
     never parsed for memory at all."""
-    captured = _run(lambda _addr: None)
+    captured = _run(lambda _addr, **_kw: None)
     assert captured["person_id"] is None
     assert captured["memory_text"] is None
 

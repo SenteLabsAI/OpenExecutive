@@ -151,12 +151,18 @@ def select_candidates(
 ) -> list[Alert]:
     """Live alerts worth a second look: old enough, not recently reviewed,
     not an exempt source. Oldest first, capped at ``max_per_scan``."""
+    from openexecutive.alerts.models import is_private_alert
+
     live = lifecycle.list_live_alerts(limit=500, db_path=db_path, now=now)
     min_age = timedelta(hours=max(0, settings.min_age_hours))
     interval = timedelta(hours=max(0, settings.interval_hours))
     out: list[Alert] = []
     for a in live:
         if a.source in TTL_EXEMPT_SOURCES:
+            continue
+        # Private to the principal: the review routes, nudges and drafts for
+        # the team, so it never touches one — the principal handles it.
+        if is_private_alert(a):
             continue
         created = parse_aware(a.created_at)
         if created is None or now - created < min_age:
@@ -229,7 +235,8 @@ def _roster_slice(alert: Alert, sensitive: bool) -> list[dict[str, Any]]:
             and alert.routed_to_person_id not in people
         ):
             routed = get_person(alert.routed_to_person_id)
-            if routed is not None and not routed.archived:
+            # Team only: a contact is never routed to, nudged or chased.
+            if routed is not None and not routed.archived and routed.kind == "team":
                 people[alert.routed_to_person_id] = routed
         if sensitive:
             for p in list_people():
@@ -359,10 +366,15 @@ def gather_evidence(
         except Exception:
             logger.debug("alert_review: watch evidence failed", exc_info=True)
 
+    from openexecutive.alerts.models import is_private_alert
+
     pool = all_live if all_live is not None else lifecycle.list_live_alerts(limit=200, db_path=db_path, now=now)
     tags = set(alert.topic_tags or [])
     for other in pool:
         if other.id == alert.id:
+            continue
+        # A private alert is never evidence for one the team may act on.
+        if is_private_alert(other):
             continue
         other_created = parse_aware(other.created_at)
         if other_created is None or other_created <= created:

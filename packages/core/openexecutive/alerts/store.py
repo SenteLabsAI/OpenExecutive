@@ -349,9 +349,13 @@ def bulk_set_status(
     category: str | None = None,
     only_status: str | None = "unread",
     exclude_sources: tuple[str, ...] = (),
+    exclude_private: bool = False,
     db_path: Path | None = None,
 ) -> list[int]:
     """Set ``status`` on many alerts at once. Returns the ids updated.
+
+    ``exclude_private`` leaves alerts private to the principal
+    (``models.PRIVATE_ALERT_TAG``) untouched — for a caller who is not them.
 
     Selects candidates by explicit ``alert_ids`` and/or ``created_at <
     before`` (ISO), restricted to ``only_status`` (default ``unread``; pass
@@ -390,6 +394,10 @@ def bulk_set_status(
         conn.execute("BEGIN IMMEDIATE")  # select + update under one write lock
         rows = conn.execute(f"SELECT * FROM alerts WHERE {where}", params).fetchall()
         targets = [_row_to_alert(r) for r in rows]
+        if exclude_private:
+            from openexecutive.alerts.models import is_private_alert
+
+            targets = [a for a in targets if not is_private_alert(a)]
         if category:
             from openexecutive.briefing.ranking import categorize
 

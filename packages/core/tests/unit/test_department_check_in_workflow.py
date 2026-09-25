@@ -669,3 +669,43 @@ def test_needs_check_in_uses_the_oldest_review(audit_db: AuditLogger) -> None:
         second.id, status="on_track", last_reviewed_at=(now + timedelta(seconds=1)).isoformat(),
     )
     assert needs_check_in(_finance(), now) is None
+
+
+def test_check_in_never_reads_a_row_private_to_the_principal(audit_db: AuditLogger) -> None:
+    """The check-in reports to the department, so the recent activity it
+    hands the specialist leaves out rows only the principal may read."""
+    _add_goal()
+    audit_db.log("tool_invocation", "finance note: runway review booked",
+                 actor="executive", department="finance")
+    audit_db.log("tool_invocation", "finance note: Jordan Client asked for a discount",
+                 actor="executive", department="finance", private=True)
+    specialist = AsyncMock(return_value=_FAKE_SPECIALIST_RESPONSE)
+
+    async def _collect() -> None:
+        workflow = DepartmentCheckInWorkflow()
+        inputs = DepartmentCheckInInput(department_slug="finance", period_label="2026-05-21")
+        async for _event in workflow.run(inputs=inputs, store=MagicMock()):
+            pass
+
+    with (
+        patch("openexecutive.orchestrator.router.route_to_specialist", specialist),
+        patch("openexecutive.knowledge.retriever.retrieve", return_value=""),
+    ):
+        asyncio.run(_collect())
+
+    queries = " ".join(str(c.kwargs.get("query", "")) for c in specialist.call_args_list)
+    assert "runway review booked" in queries
+    assert "Jordan Client" not in queries
+
+
+def test_needs_check_in_ignores_a_row_private_to_the_principal(audit_db: AuditLogger) -> None:
+    """Whether the check-in runs is seen by the department, so a row only the
+    principal may read must not decide it."""
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    audit_db.log("tool_invocation", "finance note: Jordan Client asked for a discount",
+                 actor="executive", department="finance", private=True)
+    assert needs_check_in(_finance(), datetime.now(UTC)) is not None
+    audit_db.log("tool_invocation", "finance note: runway review booked",
+                 actor="executive", department="finance")
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None

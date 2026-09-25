@@ -226,7 +226,17 @@ def _resolve_attendees(
     max-attendees, roster membership, non-archived, present email, and
     principal-protection (the principal is only allowed when ``include_principal``
     is set). Shared by both the scheduled and instant booking handlers.
+
+    A contact is a valid attendee only on a turn the principal started on a
+    verified surface (``people_tools.contacts_reachable_now``) — the same rule
+    the gateway's calendar gate applies when the event is created. On any
+    other turn a contact's id reads as "not found", like an unknown one.
     """
+    from openexecutive.orchestrator.people_tools import (
+        PRIVATE_TURN_REFUSAL,
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
     from openexecutive.people.store import list_people
 
     if not attendee_person_ids:
@@ -234,7 +244,11 @@ def _resolve_attendees(
     if len(attendee_person_ids) > max_attendees:
         return {"error": f"too many attendees (max {max_attendees})"}
 
-    all_people = {p.id: p for p in list_people() if p.id is not None}
+    all_people = {
+        p.id: p
+        for p in list_people(include_contacts=contacts_reachable_now())
+        if p.id is not None
+    }
     attendee_emails: list[str] = []
     int_ids: list[int] = []
     for pid in attendee_person_ids:
@@ -249,6 +263,8 @@ def _resolve_attendees(
             return {"error": f"person {person.full_name!r} (id={person_id}) has no email"}
         if getattr(person, "archived", False):
             return {"error": f"person {person.full_name!r} (id={person_id}) is archived"}
+        if turn_is_private_to_principal() and not person.is_principal:
+            return {"error": PRIVATE_TURN_REFUSAL}
         if getattr(person, "is_principal", False) and not include_principal:
             return {"error": (
                 f"{person.full_name!r} is the principal. Set include_principal=true "
@@ -257,6 +273,26 @@ def _resolve_attendees(
         attendee_emails.append(person.email)
         int_ids.append(person_id)
     return attendee_emails, int_ids
+
+
+def _has_contact(person_ids: list[int]) -> bool:
+    """Whether any of these (already validated) attendees is one of the
+    principal's contacts. Such a booking is private to the principal: its
+    proposal is theirs to approve and hidden from everyone else."""
+    from openexecutive.people.store import get_person
+
+    for pid in person_ids:
+        person = get_person(pid)
+        if person is not None and person.kind != "team":
+            return True
+    return False
+
+
+def _principal_id() -> int | None:
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
+    return principal.id if principal is not None else None
 
 
 def _daily_cap_reached(now: datetime, max_per_day: int) -> bool:
@@ -317,7 +353,9 @@ def _pick_recap_target(
             continue
         if person is None or getattr(person, "archived", False):
             continue
-        if getattr(person, "is_principal", False):
+        # The recap ask is a chase that fires later, unattended: never a
+        # contact (they cannot answer the bot anyway).
+        if getattr(person, "is_principal", False) or getattr(person, "kind", "team") != "team":
             continue
         resolved = resolve_person_scheduled_dm(person, configured)
         if resolved is not None:
@@ -401,6 +439,8 @@ def _propose_via_decision_alert(
     proposed_payload: dict[str, Any],
     approver_person_id: int | None,
     severity: str,
+    *,
+    private: bool = False,
 ) -> None:
     """Surface a proposed meeting as a routed briefing alert.
 
@@ -412,6 +452,7 @@ def _propose_via_decision_alert(
     proposal (the ledger row is the source of truth); mirrors the exception
     handling in authority.propose_via_alert.
     """
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG
     from openexecutive.alerts.store import insert_alert
     from openexecutive.memory.decision_ledger import (
         DECISION_ALERT_SOURCE,
@@ -446,6 +487,9 @@ def _propose_via_decision_alert(
             topic_tags=[
                 decision_instance_tag(instance_id),
                 "decision_class:meeting_scheduling",
+                # A booking with one of the principal's contacts: the card
+                # (which lists their address) is the principal's alone.
+                *([PRIVATE_ALERT_TAG] if private else []),
             ],
             dedup_key=external_id,
             routed_to_person_id=approver_person_id,
@@ -621,6 +665,11 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
             required_scope=AuthorityScope.MEETING_SCHEDULING,
             now=now,
         )
+    # With a contact on the invite the booking is private to the principal:
+    # they approve it (only they may reach a contact at approval time) and
+    # nobody else sees the proposal.
+    private = _has_contact(attendee_int_ids)
+    approver_person_id = _principal_id() if private else gate_decision.assignee_person_id
 
     # A Google Meet link is requested by default; the model can opt out for an
     # in-person meeting via add_google_meet=false.
@@ -637,6 +686,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         "attendee_person_ids": attendee_int_ids,
         "description": description,
         "add_google_meet": add_google_meet,
+        **({"private": True} if private else {}),
     }
 
     # 11. Record in the ledger.
@@ -648,7 +698,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
             proposed_payload=proposed_payload,
             idempotency_key=idem,
             gate_mode=gate_decision.action,
-            approver_person_id=gate_decision.assignee_person_id,
+            approver_person_id=approver_person_id,
             confidence=confidence,
         )
     except Exception:
@@ -689,8 +739,9 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     _propose_via_decision_alert(
         instance_id,
         proposed_payload,
-        gate_decision.assignee_person_id,
+        approver_person_id,
         severity="high" if gate_decision.action == "escalate" else "medium",
+        private=private,
     )
     return json.dumps({
         "status": "proposed",
@@ -785,6 +836,7 @@ async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
         "attendee_person_ids": attendee_int_ids,
         "description": description,
         "add_google_meet": True,  # instant meetings always get a Meet link
+        **({"private": True} if _has_contact(attendee_int_ids) else {}),
     }
 
     session = current_session.get()

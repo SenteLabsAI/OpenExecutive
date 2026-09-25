@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from openexecutive.alerts import lifecycle, store
-from openexecutive.alerts.models import Alert
+from openexecutive.alerts.models import Alert, is_private_alert
 
 # The standalone alerts UI (panel, live toast stream, mute/severity settings,
 # feedback) was removed — those items now surface only through the briefing
@@ -18,6 +18,21 @@ from openexecutive.alerts.models import Alert
 router = APIRouter()
 
 
+def _visible_alert(alert_id: int, request: Request) -> Alert:
+    """The alert, or 404 — also for one private to the principal when the
+    caller is someone else, so its existence is not revealed either."""
+    existing = store.get_alert(alert_id)
+    if existing is None or (is_private_alert(existing) and not _caller_is_principal(request)):
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return existing
+
+
+def _caller_is_principal(request: Request) -> bool:
+    from openexecutive.api.routes.people import caller_is_principal
+
+    return caller_is_principal(request)
+
+
 class AckBody(BaseModel):
     status: str = Field(..., pattern="^(read|ack|dismissed)$")
     # Optional on a dismiss: a topic pattern to mute (see alerts/preferences
@@ -27,10 +42,8 @@ class AckBody(BaseModel):
 
 
 @router.post("/alerts/{alert_id}/ack", response_model=Alert)
-def ack_alert(alert_id: int, body: AckBody) -> Alert:
-    existing = store.get_alert(alert_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Alert not found")
+def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
+    existing = _visible_alert(alert_id, request)
     if not store.set_status(alert_id, body.status):
         raise HTTPException(status_code=404, detail="Alert not found")
     # Feedback loop: a dismiss on a watch-sourced alert lowers that watch's
@@ -62,11 +75,12 @@ class BulkAckResponse(BaseModel):
 
 
 @router.post("/alerts/bulk-ack", response_model=BulkAckResponse)
-def bulk_ack_alerts(body: BulkAckBody) -> BulkAckResponse:
+def bulk_ack_alerts(body: BulkAckBody, request: Request) -> BulkAckResponse:
     if body.alert_ids is None and body.older_than_days is None:
         raise HTTPException(
             status_code=400, detail="alert_ids or older_than_days is required"
         )
+
     before: str | None = None
     if body.older_than_days is not None:
         from datetime import UTC, datetime, timedelta
@@ -83,6 +97,8 @@ def bulk_ack_alerts(body: BulkAckBody) -> BulkAckResponse:
         before=before,
         category=body.category,
         exclude_sources=tuple(lifecycle.TTL_EXEMPT_SOURCES),
+        # Someone else's sweep never closes a card private to the principal.
+        exclude_private=not _caller_is_principal(request),
     )
     count = len(updated_ids)
     # Same feedback loop as a single ack, for the rows we can attribute.
@@ -109,11 +125,9 @@ def bulk_ack_alerts(body: BulkAckBody) -> BulkAckResponse:
 
 
 @router.post("/alerts/{alert_id}/reopen", response_model=Alert)
-def reopen_alert(alert_id: int) -> Alert:
+def reopen_alert(alert_id: int, request: Request) -> Alert:
     """Undo for a close / dismiss / expiry: back to ``unread``, verdict cleared."""
-    existing = store.get_alert(alert_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Alert not found")
+    existing = _visible_alert(alert_id, request)
     prior = existing.status
     if not store.reopen_alert(
         alert_id, exclude_sources=tuple(lifecycle.TTL_EXEMPT_SOURCES)

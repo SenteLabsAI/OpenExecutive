@@ -348,11 +348,12 @@ def _normalize(text: str) -> str:
 
 
 def _roster_names() -> list[str]:
-    """Full names of everyone on the roster."""
+    """Full names of everyone on the roster, contacts included — this is a
+    deny-list (a rule must not name a person), so more names is stricter."""
     try:
         from openexecutive.people.store import list_people
 
-        return [p.full_name for p in list_people() if p.full_name]
+        return [p.full_name for p in list_people(include_contacts=True) if p.full_name]
     except Exception:
         logger.debug("style: roster lookup failed", exc_info=True)
         return []

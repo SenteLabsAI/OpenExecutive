@@ -248,6 +248,31 @@ def parse_search_results(text: str) -> list[ToolInfo]:
     return tools
 
 
+# extensible-mcp's answer when nothing matches.
+_NO_MATCHING_TOOLS = "No matching tools found. Try a different search query."
+
+
+def filter_search_results(text: str, keep: Callable[[str], bool]) -> str:
+    """``search_tools`` output cut down to the tool blocks whose name ``keep``
+    accepts, in order, or the no-match answer when none is left. The "Found
+    N" header goes (its count would be wrong).
+
+    Fails closed: output with no block this parser knows (another format, an
+    error) comes back as no match, since it could name any tool. A block
+    header forged inside another tool's description can still carry that
+    text through, so this only decides what is shown: refusing the call is
+    what keeps a tool from running."""
+    if not isinstance(text, str):
+        return _NO_MATCHING_TOOLS
+    matches = list(_BLOCK_RE.finditer(text))
+    kept = [
+        text[m.start():matches[i + 1].start() if i + 1 < len(matches) else len(text)]
+        for i, m in enumerate(matches)
+        if keep(m.group("name"))
+    ]
+    return "".join(kept) if kept else _NO_MATCHING_TOOLS
+
+
 def _gateway() -> MCPGateway | None:
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 

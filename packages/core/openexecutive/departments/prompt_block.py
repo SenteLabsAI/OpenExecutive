@@ -24,6 +24,13 @@ Key invariants:
   PrincipalRole``: kind, title, reports to, remit, measured on), its lines
   follow the principal's own line — the context the solo persona reads the
   principal's role from. Set once per install, so the 5m cache stays warm.
+- The principal's contacts (people outside the team) get their own short
+  "## Contacts" section after the team or solo block — name, role/company and
+  whether an email is on file, nothing about authority — but only when
+  ``include_contacts`` is set, i.e. on the principal's own verified turn:
+  contacts are private to the principal. Every other turn gets the block
+  byte-identical to one with no contacts at all, so per mode the 5m cache
+  holds at most two stable variants, never a per-request one.
 
 Security note: Goal text fields (key_result, current, target, mission) are
 user-controlled strings that land inside the system prompt. All values are
@@ -55,6 +62,17 @@ _PERIOD_VALUE_CHAR_CAP = 64  # matches the API GoalCreate.period_value max_lengt
 
 # Header string for the org block — constant so Phase 3 can reliably locate it.
 _ORG_BLOCK_HEADER = "## Departments You Manage"
+
+# Contacts section: header, the one-line rule the Executive needs, and a cap
+# on how many are listed (the rest are a list_people call away).
+_CONTACTS_HEADER = "## Contacts"
+_CONTACTS_NOTE = (
+    "The principal's contacts, private to them. You may email, invite or "
+    "message a contact only when the principal asks you to directly; they "
+    "cannot sign in, message you, or approve anything. Call list_people for "
+    "their person_id."
+)
+_MAX_CONTACTS_IN_BLOCK = 25
 
 # Solo-mode headers (see `_render_solo_block`). "You" in this prompt is the
 # Executive, so both name the principal from its side — never "## You", which
@@ -232,6 +250,31 @@ def _render_people_section(people: list | None = None) -> str:
         return ""
 
 
+def _render_contacts_section(contacts: list) -> str:
+    """Render the compact ## Contacts section, or "" when there are none.
+
+    One line each: name, role/company, and whether an email is on file (the
+    address itself is not needed to decide anything; list_people has it).
+    Capped at ``_MAX_CONTACTS_IN_BLOCK`` lines plus a count of the rest.
+    """
+    try:
+        if not contacts:
+            return ""
+        lines = [f"{_CONTACTS_HEADER}\n", _CONTACTS_NOTE]
+        for person in contacts[:_MAX_CONTACTS_IN_BLOCK]:
+            name = _safe(person.full_name, 80)
+            role = _safe(person.role, 80) if person.role else "—"
+            email = "email on file" if person.email else "no email"
+            lines.append(f"- {name} — {role} — {email}")
+        extra = len(contacts) - _MAX_CONTACTS_IN_BLOCK
+        if extra > 0:
+            lines.append(f"- …and {extra} more (list_people)")
+        return "\n".join(lines)
+    except Exception:
+        logger.warning("render_contacts_section failed — omitting contacts", exc_info=True)
+        return ""
+
+
 def _period_label(period_type: str, period_value: str) -> str:
     """A goal's period, e.g. ``Quarter Q3 2026`` — the same rule as the team
     block's period headers. period_value is user text, so it is sanitized."""
@@ -295,8 +338,9 @@ def _render_solo_principal(role: PrincipalRole | None = None) -> str:
     principal-only messaging guard, follow-ups, the meeting gate) — so the
     person this block names is the person those checks let through. The
     identifiers are there so a follow-up to the principal can name its
-    channel_ref without a lookup. Contacts are not listed — they are reached
-    only when the principal asks, via list_people.
+    channel_ref without a lookup. Contacts are not part of this line — they
+    get their own section on the principal's own verified turn only
+    (``_render_contacts_section``), and list_people has their ids.
     """
     from openexecutive.people.store import find_principal_person
 
@@ -384,11 +428,18 @@ def _cap(body: str) -> str:
     return body
 
 
-def render_org_block(mode: str = "team", principal_role: PrincipalRole | None = None) -> str:
+def render_org_block(
+    mode: str = "team",
+    principal_role: PrincipalRole | None = None,
+    *,
+    include_contacts: bool = False,
+) -> str:
     """Return a Markdown block of all department states + People roster.
 
     Capped at 4000 chars total. Returns "" only when both departments and
-    people are absent (fresh install / test env).
+    people are absent (fresh install / test env). ``include_contacts`` adds
+    the principal's private ``## Contacts`` section — pass it only for the
+    principal's own verified turn.
 
     ``mode="solo"`` renders the solo block instead (see the module docstring);
     any other value renders the team block, unchanged. ``principal_role`` is
@@ -406,15 +457,27 @@ def render_org_block(mode: str = "team", principal_role: PrincipalRole | None = 
         states = list_states()
 
         # Fetch people once — used both for the head-name lookup per
-        # department and for the People section below.
+        # department and for the People section below. Team only; contacts
+        # get their own section and never head a department.
         try:
-            people = list_people()
+            everyone = list_people(include_contacts=include_contacts)
         except Exception:
-            people = []
+            everyone = []
+        people = [p for p in everyone if p.kind == "team"]
+        contacts = [p for p in everyone if p.kind != "team"] if include_contacts else []
+
+        # The principal's private contacts: only on their own verified turn
+        # (the caller decides), after the team or solo block. Without it the
+        # block is byte-identical to one with no contacts at all.
+        contacts_section = _render_contacts_section(contacts)
 
         if mode == "solo":
             role = principal_role if principal_role is not None else _workspace_role()
-            return _cap(_render_solo_block(states, role).strip())
+            return _cap("\n\n".join(
+                part
+                for part in (_render_solo_block(states, role).strip(), contacts_section)
+                if part
+            ).strip())
 
         # Build a quick id→name map for head-person lookups.
         head_name_by_id: dict[int, str] = {
@@ -437,7 +500,7 @@ def render_org_block(mode: str = "team", principal_role: PrincipalRole | None = 
         # second DB call.
         people_section = _render_people_section(people)
 
-        if not dept_sections and not people_section:
+        if not dept_sections and not people_section and not contacts_section:
             return ""
 
         parts: list[str] = []
@@ -445,6 +508,8 @@ def render_org_block(mode: str = "team", principal_role: PrincipalRole | None = 
             parts.append("\n\n".join(dept_sections))
         if people_section:
             parts.append(people_section)
+        if contacts_section:
+            parts.append(contacts_section)
 
         return _cap("\n\n".join(parts).strip())
 

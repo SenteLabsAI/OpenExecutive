@@ -6,6 +6,7 @@ import logging
 import re
 
 from openexecutive.audit.redaction import ERROR_DETAIL_LEN
+from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,12 @@ def _persist_turn(
             update_session_timestamp(sid)
         except Exception:
             logger.exception("Slack: failed to persist turn for session %s", sid)
+
+
+def _find_slack_sender(slack_user_id: str) -> object:
+    from openexecutive.people.store import find_person_by_slack_id
+
+    return find_person_by_slack_id(slack_user_id)
 
 
 def _thread_root_author(thread_replies: list[dict] | None) -> str:
@@ -303,6 +310,14 @@ async def create_slack_app():
         text = re.sub(r"<@\w+>", "", text)
         return text.strip()
 
+    # The rows this handler writes before the turn binds its session (the
+    # inbound row, the knowledge retrieval, alert triage) are private when
+    # the principal sent the message and they name one of their contacts.
+    @audit_rows_on_senders_turn(
+        "slack",
+        sender_ref=lambda args: str(args["event"].get("user") or ""),
+        find_sender=_find_slack_sender,
+    )
     async def _handle_message(
         event: dict, say, client=None, mode: str = "mention"
     ) -> None:

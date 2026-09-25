@@ -126,15 +126,51 @@ def _clear_decision_alert(instance_id: int, status: str) -> None:
 async def _execute_booking(
     instance: DecisionInstance,
     final_payload: dict[str, Any],
+    *,
+    by_principal: bool = False,
 ) -> dict[str, Any]:
-    """Call the MCP to create the calendar event. Returns the gateway response."""
+    """Call the MCP to create the calendar event. Returns the gateway response.
+
+    ``by_principal``: the approver is the principal, acting in the web app. An
+    approval runs outside any chat turn, so without this the gateway would
+    refuse a contact on the invite even though the principal asked for it.
+    """
     from openexecutive.orchestrator.calendar_tools import _do_create_event
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.orchestrator.people_tools import grant_contact_egress
 
     gateway = get_active_gateway()
     if gateway is None:
         return {"error": "MCP gateway not running — cannot create calendar event"}
+    if by_principal:
+        with grant_contact_egress():
+            return await _do_create_event(gateway, final_payload)
     return await _do_create_event(gateway, final_payload)
+
+
+def _approver_is_principal(request: Request) -> bool:
+    """Whether the caller resolves to the principal (a request with no
+    ``x-caller-email`` does — the CLI, direct curl, local login). Fails
+    closed."""
+    from openexecutive.api.routes.people import caller_is_principal
+
+    return caller_is_principal(request)
+
+
+def _is_private(instance: DecisionInstance) -> bool:
+    """A booking with one of the principal's contacts (``calendar_tools``
+    marks its payload ``private``): the principal's alone to see and act on."""
+    payload = _parse_payload(instance)
+    return payload.get("private") is True
+
+
+def _visible_instance(instance_id: int, request: Request) -> DecisionInstance:
+    """The instance, or 404 — also for a private one when the caller is not
+    the principal, so its existence (and the contact on it) is not revealed."""
+    instance = get_decision_instance(instance_id)
+    if instance is None or (_is_private(instance) and not _approver_is_principal(request)):
+        raise HTTPException(status_code=404, detail="Decision instance not found")
+    return instance
 
 
 # ---------------------------------------------------------------------------
@@ -143,28 +179,29 @@ async def _execute_booking(
 
 @router.get("/decisions", response_model=list[DecisionInstance])
 def get_decisions(
+    request: Request,
     decision_class: str = _CALENDAR_CLASS,
     status: str | None = None,
     limit: int = 50,
 ) -> list[DecisionInstance]:
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=400, detail="limit must be 1–500")
-    return list_instances(decision_class, status=status, limit=limit)
+    instances = list_instances(decision_class, status=status, limit=limit)
+    if _approver_is_principal(request):
+        return instances
+    return [i for i in instances if not _is_private(i)]
 
 
 @router.get("/decisions/{instance_id}", response_model=DecisionInstance)
-def get_decision(instance_id: int) -> DecisionInstance:
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
-    return instance
+def get_decision(instance_id: int, request: Request) -> DecisionInstance:
+    return _visible_instance(instance_id, request)
 
 
 @router.post("/decisions/{instance_id}/approve", response_model=DecisionInstance)
-async def approve_decision(instance_id: int, body: ApproveBody) -> DecisionInstance:
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
+async def approve_decision(
+    instance_id: int, body: ApproveBody, request: Request
+) -> DecisionInstance:
+    instance = _visible_instance(instance_id, request)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
@@ -205,8 +242,11 @@ async def approve_decision(instance_id: int, body: ApproveBody) -> DecisionInsta
     except Exception:
         logger.debug("decisions/approve: freebusy check skipped", exc_info=True)
 
-    # Create the actual calendar event.
-    result = await _execute_booking(instance, final_payload)
+    # Create the actual calendar event. Contacts on the invite only when the
+    # principal is the one approving.
+    result = await _execute_booking(
+        instance, final_payload, by_principal=_approver_is_principal(request)
+    )
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 
@@ -255,10 +295,8 @@ async def approve_decision(instance_id: int, body: ApproveBody) -> DecisionInsta
 
 
 @router.post("/decisions/{instance_id}/reject", response_model=DecisionInstance)
-def reject_decision(instance_id: int, body: RejectBody) -> DecisionInstance:
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
+def reject_decision(instance_id: int, body: RejectBody, request: Request) -> DecisionInstance:
+    instance = _visible_instance(instance_id, request)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
@@ -273,11 +311,9 @@ def reject_decision(instance_id: int, body: RejectBody) -> DecisionInstance:
 
 
 @router.post("/decisions/{instance_id}/cancel", response_model=DecisionInstance)
-async def cancel_decision(instance_id: int) -> DecisionInstance:
+async def cancel_decision(instance_id: int, request: Request) -> DecisionInstance:
     """Cancel an approved/executed event (reverse it)."""
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
+    instance = _visible_instance(instance_id, request)
     if instance.status not in (
         STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT, STATUS_PROPOSED,
     ):

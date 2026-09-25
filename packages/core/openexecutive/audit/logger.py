@@ -9,6 +9,13 @@ Design notes:
   fields (token counts, durations, channel refs) and is not searched.
 - Writes swallow exceptions: an audit failure must never break a chat turn or
   a tool call. We log a warning and move on.
+- A row can be private to the principal (`private_to_principal`): every row
+  a turn about their private mail writes, and a row on their own turn that
+  names one of their contacts (`people_tools.audit_row_private_to_principal`,
+  decided at write time — the `audit.context` scopes included, for rows
+  written before a turn binds its session), plus any row a caller marks
+  `private=True`. The read API (`api.routes.audit`) leaves those rows out
+  for anyone else.
 """
 from __future__ import annotations
 
@@ -87,6 +94,8 @@ class AuditEvent:
     # Department slug owning this event. Added by the Departments feature
     # (Phase 1) so per-department check-ins can filter audit history.
     department: str | None = None
+    # Readable by the principal alone (see the module docstring).
+    private: bool = False
 
 
 @contextmanager
@@ -136,6 +145,10 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
         department: str | None = row["department"]
     except (IndexError, KeyError):
         department = None
+    try:
+        private = bool(row["private_to_principal"])
+    except (IndexError, KeyError):
+        private = False
     return AuditEvent(
         id=int(row["id"]),
         ts=str(row["ts"]),
@@ -146,7 +159,24 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
         summary=str(row["summary"]),
         details=details,
         department=department,
+        private=private,
     )
+
+
+def _private_to_principal(
+    summary: str, details: dict[str, Any] | None, full: dict[str, Any] | None
+) -> bool:
+    """Whether the row being written is the principal's alone — see
+    ``people_tools.audit_row_private_to_principal``. Fails closed: a check
+    that cannot run keeps the row to the principal rather than show it to
+    everyone."""
+    try:
+        from openexecutive.orchestrator.people_tools import audit_row_private_to_principal
+
+        return audit_row_private_to_principal(summary, details, full)
+    except Exception:
+        logger.warning("audit.private_check_failed — row kept to the principal", exc_info=True)
+        return True
 
 
 # Token + cost fields summed by usage_summary(). Tokens are integer counts;
@@ -226,6 +256,12 @@ class AuditLogger:
                 ("full_json", "ALTER TABLE audit_log ADD COLUMN full_json TEXT"),
                 # Department tag — added by the Departments feature (Phase 1).
                 ("department", "ALTER TABLE audit_log ADD COLUMN department TEXT"),
+                # 1 = readable by the principal alone (see the module docstring).
+                (
+                    "private_to_principal",
+                    "ALTER TABLE audit_log ADD COLUMN private_to_principal "
+                    "INTEGER NOT NULL DEFAULT 0",
+                ),
             ):
                 if column in cols:
                     continue
@@ -246,6 +282,7 @@ class AuditLogger:
         details: dict[str, Any] | None = None,
         full: dict[str, Any] | None = None,
         department: str | None = None,
+        private: bool = False,
     ) -> int | None:
         """Insert one audit row. Returns row id, or None on failure.
 
@@ -255,8 +292,13 @@ class AuditLogger:
 
         `department` tags the row with the owning department slug so
         per-department check-ins can filter audit history by `department=`.
+
+        `private=True` marks the row the principal's alone. Without it the
+        row is still private when the turn writing it is (see
+        `_private_to_principal`) — a caller can add privacy, never remove it.
         """
         try:
+            is_private = bool(private) or _private_to_principal(summary, details, full)
             safe_summary = _truncate(str(summary), _SUMMARY_MAX_LEN)
             details_json: str | None = None
             if details:
@@ -295,8 +337,9 @@ class AuditLogger:
                 cur = conn.execute(
                     """
                     INSERT INTO audit_log
-                        (ts, event_type, session_id, turn_id, actor, summary, details_json, full_json, department)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (ts, event_type, session_id, turn_id, actor, summary, details_json,
+                         full_json, department, private_to_principal)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ts_value,
@@ -308,6 +351,7 @@ class AuditLogger:
                         details_json,
                         full_json,
                         department,
+                        1 if is_private else 0,
                     ),
                 )
                 row_id = int(cur.lastrowid or 0)
@@ -324,7 +368,8 @@ class AuditLogger:
             with _get_conn(self._db_path) as conn:
                 row = conn.execute(
                     "SELECT id, ts, event_type, session_id, turn_id, actor, summary, "
-                    "details_json, full_json, department FROM audit_log WHERE id = ?",
+                    "details_json, full_json, department, private_to_principal "
+                    "FROM audit_log WHERE id = ?",
                     (event_id,),
                 ).fetchone()
         except Exception:
@@ -354,12 +399,18 @@ class AuditLogger:
         limit: int = 100,
         offset: int = 0,
         department: str | None = None,
+        include_private: bool = True,
     ) -> list[AuditEvent]:
+        """Rows matching every filter given, newest first. ``include_private``
+        False leaves out the rows private to the principal — filtered in SQL,
+        so a page is still full and ``count`` agrees with it."""
         limit = max(1, min(limit, 1000))
         offset = max(0, offset)
 
         clauses: list[str] = []
         params: list[Any] = []
+        if not include_private:
+            clauses.append("private_to_principal = 0")
         if event_type:
             clauses.append("event_type = ?")
             params.append(event_type)
@@ -387,8 +438,9 @@ class AuditLogger:
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
-            f"SELECT id, ts, event_type, session_id, turn_id, actor, summary, details_json, department "
-            f"FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?"
+            "SELECT id, ts, event_type, session_id, turn_id, actor, summary, details_json, "
+            f"department, private_to_principal FROM audit_log {where} "
+            "ORDER BY id DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
 
@@ -407,9 +459,12 @@ class AuditLogger:
         q: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        include_private: bool = True,
     ) -> int:
         clauses: list[str] = []
         params: list[Any] = []
+        if not include_private:
+            clauses.append("private_to_principal = 0")
         if event_type:
             clauses.append("event_type = ?")
             params.append(event_type)
@@ -443,6 +498,7 @@ class AuditLogger:
         *,
         since: str | None = None,
         until: str | None = None,
+        include_private: bool = True,
     ) -> dict[str, Any]:
         """Aggregate token usage + cost from `cache_event` rows over an optional
         time window. Grouping is done in SQL (`json_extract`) so this scales past
@@ -455,7 +511,8 @@ class AuditLogger:
         OpenRouter calls) the actual `cost_usd`; missing/garbled fields coalesce
         to 0, and rows that predate cost capture contribute 0 cost. `since`/
         `until` bound the ISO `ts` column with the same string comparison used by
-        `query()`/`count()`.
+        `query()`/`count()`, and ``include_private`` False leaves out the rows
+        private to the principal, as there.
         """
         empty: dict[str, Any] = {
             "totals": _zero_usage(), "by_day": [], "by_model": [], "by_source": [],
@@ -465,6 +522,8 @@ class AuditLogger:
 
         clauses = ["event_type = 'cache_event'"]
         params: list[Any] = []
+        if not include_private:
+            clauses.append("private_to_principal = 0")
         if since:
             clauses.append("ts >= ?")
             params.append(since)
@@ -535,6 +594,7 @@ def log_event(
     details: dict[str, Any] | None = None,
     full: dict[str, Any] | None = None,
     department: str | None = None,
+    private: bool = False,
 ) -> None:
     """Fire-and-forget convenience wrapper around the default logger.
 
@@ -562,6 +622,7 @@ def log_event(
             details=details,
             full=full,
             department=department,
+            private=private,
         )
     except Exception:
         logger.warning("audit.log_event_failed event_type=%s", event_type, exc_info=True)

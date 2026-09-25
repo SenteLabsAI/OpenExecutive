@@ -10,7 +10,10 @@ from openexecutive.audit.context import (
     get_active_ids,
     get_active_session_id,
     get_active_turn_id,
+    principal_turn_rows,
+    private_rows,
     set_turn,
+    unscoped_audit_rows,
 )
 from openexecutive.audit.logger import (
     AuditEvent,
@@ -30,6 +33,9 @@ __all__ = [
     "get_active_turn_id",
     "get_audit_logger",
     "log_event",
+    "principal_turn_rows",
+    "private_rows",
     "set_audit_logger",
     "set_turn",
+    "unscoped_audit_rows",
 ]

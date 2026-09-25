@@ -253,11 +253,26 @@ def _roster_allow_set() -> set[str]:
     egress allow-list shared by the Gmail, Calendar, and Drive gates so they
     can't drift apart. Reads the live roster on each call (channel access is
     roster-driven and changes at runtime).
+
+    Team members and the Executive's own address are always in it. The
+    principal's contacts are in it only when
+    ``people_tools.contacts_reachable_now()`` — a turn the principal started on
+    a verified surface, or ``grant_contact_egress``. On any other turn a
+    contact's address is refused exactly like a stranger's, so the refusal
+    cannot reveal that the address belongs to a contact.
     """
+    from openexecutive.orchestrator.people_tools import (
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
     from openexecutive.people.store import list_people
 
     settings = get_settings()
-    allow = {p.email.lower() for p in list_people() if p.email}
+    everyone = list_people(include_contacts=contacts_reachable_now())
+    if turn_is_private_to_principal():
+        # A turn about the principal's private mail reaches the principal only.
+        everyone = [p for p in everyone if p.is_principal]
+    allow = {p.email.lower() for p in everyone if p.email}
     allow.add(settings.exec_email_address.lower())
     return allow
 
@@ -452,7 +467,7 @@ def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
     # Egress gate: the Executive may only send mail to addresses on the
     # People roster or to its own exec address. Used to be a static env
     # allowlist; now derived from the People table so it stays in sync
-    # with channel access.
+    # with channel access. Contacts only on the principal's own turns.
     allow = _roster_allow_set()
 
     for field in _GMAIL_RECIPIENT_FIELDS:

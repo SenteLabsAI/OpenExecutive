@@ -75,6 +75,25 @@ def set_session(session: Any) -> Iterator[None]:
         current_session.set(prior)
 
 
+def _is_contact_ref(channel: str, channel_ref: str, finder: Callable[..., Any]) -> bool:
+    """Whether a DM recipient is one of the principal's contacts (a team
+    member never is). A roster that cannot be read at all (no people table
+    yet) holds no contacts; once the team lookup has worked, a failing
+    contact lookup counts as a contact, so nothing private lands on the
+    team-visible activity rail."""
+    try:
+        if finder(channel, channel_ref) is not None:
+            return False
+    except Exception:
+        return False
+    try:
+        person = finder(channel, channel_ref, include_contacts=True)
+    except Exception:
+        logger.warning("record_send_to_activity: contact lookup failed — not recorded")
+        return True
+    return person is not None and getattr(person, "kind", "team") != "team"
+
+
 def _record_send_to_activity(
     *,
     channel: str,
@@ -102,6 +121,12 @@ def _record_send_to_activity(
     """
     try:
         from openexecutive.memory.episodic import insert_scheduled_action
+        from openexecutive.people.store import find_person_by_channel_ref
+
+        # The activity rail is shown to everyone; a message to one of the
+        # principal's contacts is theirs alone (the audit row still records it).
+        if _is_contact_ref(channel, channel_ref, find_person_by_channel_ref):
+            return
 
         session = current_session.get()
         session_id = getattr(session, "session_id", None) if session is not None else None
@@ -185,6 +210,24 @@ def _resolve_recipient_person_id(channel: str, channel_ref: str) -> int | None:
         return None
 
 
+def _dm_recipient_on_roster(finder: Callable[..., Any], ref: str) -> bool:
+    """Whether a raw DM tool may send to ``ref``: a team member always, a
+    contact only when the principal asked on a verified surface (see
+    ``people_tools.contacts_reachable_now``)."""
+    from openexecutive.orchestrator.people_tools import (
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
+
+    person = finder(ref)
+    if person is None and contacts_reachable_now():
+        person = finder(ref, include_contacts=True)
+    if person is None:
+        return False
+    # A turn about the principal's private mail reaches the principal only.
+    return not turn_is_private_to_principal() or getattr(person, "is_principal", False) is True
+
+
 def _record_outbound_context(
     *,
     channel: str,
@@ -232,6 +275,15 @@ def _record_outbound_context(
         # and silently dropping linkage is the worse failure direction — a
         # lost reply thread is invisible, an extra row is not.
         if getattr(session, "from_web_chat", False) is True:
+            return
+        # Never for one of the principal's contacts. They cannot message the
+        # bot, and hydrating their email reply with this backstory would quote
+        # the principal's conversation into an unattended turn — whose opening
+        # the audit log (readable by everyone) records — and set that turn
+        # apart from any other outside sender's.
+        from openexecutive.people.store import find_person_by_channel_ref
+
+        if _is_contact_ref(channel, channel_ref, find_person_by_channel_ref):
             return
         originating_session_id = getattr(session, "session_id", None)
         recipient_person_id = _resolve_recipient_person_id(channel, channel_ref)
@@ -737,7 +789,7 @@ async def handle_send_telegram_message(tool_input: dict[str, Any]) -> str:
     # non-archived Person row. Prevents prompt-injection from coaxing the
     # Executive into DMing arbitrary Telegram users.
     from openexecutive.people.store import find_person_by_telegram_chat_id
-    if find_person_by_telegram_chat_id(str(chat_id)) is None:
+    if not _dm_recipient_on_roster(find_person_by_telegram_chat_id, str(chat_id)):
         # The Executive frequently passes a Person id (== its Honcho peer id)
         # here instead of the Telegram chat_id. If it resolves to a rostered
         # person who has a Telegram chat id, route to that real chat id.
@@ -814,6 +866,19 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
 
     if not user_id or not text.strip():
         return json.dumps({"error": "user_id and text are required"})
+
+    # A turn about the principal's private mail reaches the principal only.
+    from openexecutive.orchestrator.people_tools import (
+        PRIVATE_TURN_REFUSAL,
+        turn_is_private_to_principal,
+    )
+
+    if turn_is_private_to_principal():
+        from openexecutive.people.store import find_person_by_slack_id
+
+        recipient = find_person_by_slack_id(user_id)
+        if recipient is None or not recipient.is_principal:
+            return json.dumps({"error": PRIVATE_TURN_REFUSAL})
 
     settings = get_settings()
     if not settings.slack_bot_token:
@@ -901,6 +966,15 @@ def _recover_channel_id_from_person_id(value: str, channel: str) -> str | None:
     person = get_person(int(value))
     if person is None or person.archived:
         return None
+    from openexecutive.orchestrator.people_tools import (
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
+
+    if person.kind != "team" and not contacts_reachable_now():
+        return None
+    if turn_is_private_to_principal() and not person.is_principal:
+        return None
     if channel == "discord":
         # Discord user ids are positive numeric snowflakes; reject a malformed
         # or empty stored value rather than handing garbage to the API.
@@ -934,7 +1008,7 @@ async def handle_send_discord_dm(tool_input: dict[str, Any]) -> str:
     # a non-archived Person row. Prevents prompt-injection from coaxing
     # the Executive into DMing arbitrary Discord users.
     from openexecutive.people.store import find_person_by_discord_id
-    if find_person_by_discord_id(discord_user_id) is None:
+    if not _dm_recipient_on_roster(find_person_by_discord_id, discord_user_id):
         # The Executive frequently passes a Person id (== its Honcho peer id)
         # here instead of the Discord snowflake. If the value resolves to a
         # rostered person who has a Discord id, that person IS the intended
@@ -1030,7 +1104,10 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
     # Truncate before any logging so an oversized query can't bloat the audit
     # log or DoS the substring scan via huge memory.
     query = query[:_LOOKUP_PERSON_MAX_QUERY_CHARS]
-    hint = "No person matched the query. The principal can add or edit people at /people."
+    hint = (
+        "No person matched the query. Try list_people. The principal can add "
+        "or edit people at /people."
+    )
 
     def _audit(ok: bool, matches_count: int, reason: str | None = None) -> None:
         msg = f"lookup_person query={query!r} matched {matches_count}"
@@ -1242,6 +1319,22 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
             f"person_id {person_id} is not on the People roster. Call "
             "lookup_person to get a valid person_id."
         )})
+    from openexecutive.orchestrator.people_tools import (
+        PRIVATE_TURN_REFUSAL,
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
+
+    if turn_is_private_to_principal() and not person.is_principal:
+        return json.dumps({"error": PRIVATE_TURN_REFUSAL})
+    is_contact = person.kind != "team"
+    if is_contact and not contacts_reachable_now():
+        # Contacts are private to the principal: off the principal's own
+        # turn, a contact's id reads exactly like an unknown one.
+        return json.dumps({"error": (
+            f"person_id {person_id} is not on the People roster. Call "
+            "lookup_person to get a valid person_id."
+        )})
 
     configured = configured_integrations(get_settings())
 
@@ -1295,6 +1388,16 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
         if parsed.get("status") == "sent":
             return result
         last_error = parsed.get("error") or last_error
+
+    if is_contact:
+        # A contact cannot sign in, so an alert routed to them reaches no one.
+        # The text names neither them nor their kind: tool results land in
+        # the audit log, which every signed-in user can read.
+        return json.dumps({"error": (
+            f"could not deliver to person_id {person_id} on any configured chat "
+            f"channel ({last_error or 'no reachable channel'}). Email them "
+            "instead if they have an address."
+        )})
 
     # No channel delivered (none usable, or every attempt failed). Don't drop
     # the finding — surface it as a briefing alert routed to that person so it
@@ -1543,6 +1646,124 @@ def unattended_withheld_error(tool_name: str) -> str:
             f"{tool_name} is not available in an unattended run: only the "
             "principal can do this, from a conversation. Do not retry."
         )
+    })
+
+
+# What a turn private to the principal (`Session.private_to_principal`: mail
+# from one of their contacts, mail they forwarded — set by the email poller)
+# is never offered. Such a turn may reach the principal and nobody else, and
+# each of these reaches someone else, publishes where others read it, or
+# starts work that runs outside the turn without its privacy:
+# - send_company_broadcast, send_department_message: post to the team.
+# - cancel_calendar_event: notifies every attendee.
+# - create_calendar_event, create_instant_meeting: the booking is listed on
+#   everyone's /decisions (in team mode proposed to the meeting approver) and
+#   schedules a post-meeting recap run.
+# - run_workflow, run_executive_research: start a workflow, whose steps (and
+#   the research synthesis) can message people and department channels.
+# - schedule_followup, suggest_workflow: queue a later run that is not
+#   private (it can go through a department approver), shown on the team's
+#   activity list.
+# - add_watchlist_entry: starts monitoring whose alerts are not private, and
+#   the entry is on everyone's /watchlist.
+# - draft_artifact: artifacts are visible to the whole team (the handler also
+#   refuses on a private turn).
+# - update_department_goal: goal status and progress text render in every
+#   turn's org block and on /today.
+# - save_workflow: the definition is listed on everyone's /jobs.
+# - create_skill, update_skill, delete_skill: the draft goes on the shared
+#   skill review list.
+# - load_mcp_server: connects to any HTTPS URL the model names — the URL
+#   itself can carry the turn's content to a stranger.
+# Still offered: the email, DM and invite paths reach the principal and
+# refuse anyone else (`people_tools.PRIVATE_TURN_REFUSAL`, the gateway's
+# allow-list), and an alert the turn raises is private to the principal. The
+# roster tools and create_goal already refuse every private turn (they run
+# only for the principal on a verified surface, and these turns come from
+# email). search_tools and call_tool stay offered, for
+# `PRIVATE_TURN_MCP_TOOLS` only (`private_turn_allows_mcp_tool`). The chat loop drops
+# this set from the offered list before the sort, so a private turn has a
+# stable tool prefix of its own, and refuses a call the model emits anyway
+# (`private_turn_withholds`, `private_turn_withheld_error`), MCP tools
+# included.
+PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "add_watchlist_entry",
+    "cancel_calendar_event",
+    "create_calendar_event",
+    "create_instant_meeting",
+    "create_skill",
+    "delete_skill",
+    "draft_artifact",
+    "load_mcp_server",
+    "run_executive_research",
+    "run_workflow",
+    "save_workflow",
+    "schedule_followup",
+    "send_company_broadcast",
+    "send_department_message",
+    "suggest_workflow",
+    "update_department_goal",
+    "update_skill",
+})
+
+
+# The only MCP tools a turn private to the principal may call through the
+# gateway: Google Workspace reads, and the two Gmail tools whose recipients
+# the gateway narrows to the principal on such a turn
+# (`mcp_gateway._GATED_GMAIL_TOOLS`, `_roster_allow_set`). An allow-list, not
+# a server prefix: workspace-mcp runs at the `complete` tier, where much of
+# Google Workspace reaches people with no recipient check — a Chat message to
+# a space, Docs / Sheets / Drive writes into files already shared with
+# others, `manage_event` on a shared calendar (its gate checks attendees
+# only), a Drive file created from a URL the server fetches. Every other
+# server has no check at all: a Slack or Notion server posts where it is
+# told, the default `fetch` server requests any URL (which can carry the
+# turn's content), a server loaded at runtime can do anything. So on such a
+# turn the chat loop passes on only these tools from `search_tools` and
+# refuses a `call_tool` naming anything else. Names are exact, as the
+# gateway's own gates match them; each is one the code already calls or
+# documents: the poller's Gmail reads (`email_poller`), the calendar reads in
+# the gateway notes and `decisions` (free/busy), and the Drive search the
+# Drive gate's tests treat as a read. Add a name only for a tool that reads,
+# or whose every recipient the gateway checks.
+PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
+    "google_workspace__draft_gmail_message",
+    "google_workspace__get_events",
+    "google_workspace__get_gmail_message_content",
+    "google_workspace__list_calendars",
+    "google_workspace__query_freebusy",
+    "google_workspace__search_drive_files",
+    "google_workspace__search_gmail_messages",
+    "google_workspace__send_gmail_message",
+})
+
+
+def private_turn_allows_mcp_tool(tool_name: object) -> bool:
+    """Whether a turn private to the principal may call the gateway tool
+    ``tool_name``: one of ``PRIVATE_TURN_MCP_TOOLS``, and nothing else. A
+    missing or non-string name is refused too."""
+    return isinstance(tool_name, str) and tool_name in PRIVATE_TURN_MCP_TOOLS
+
+
+def private_turn_withholds(tool_name: str, tool_input: Any) -> bool:
+    """Whether a turn private to the principal may not run this tool use: a
+    tool in ``PRIVATE_TURN_WITHHELD_TOOLS``, or a gateway ``call_tool`` that
+    names a tool outside ``PRIVATE_TURN_MCP_TOOLS``."""
+    if tool_name in PRIVATE_TURN_WITHHELD_TOOLS:
+        return True
+    if tool_name != "call_tool":
+        return False
+    named = tool_input.get("name") if isinstance(tool_input, dict) else None
+    return not private_turn_allows_mcp_tool(named)
+
+
+def private_turn_withheld_error(tool_name: str) -> str:
+    """The JSON error tool_result for a call a turn private to the principal
+    may not make."""
+    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
+
+    return json.dumps({
+        "error": f"{tool_name} is not available on this turn. {PRIVATE_TURN_REFUSAL} Do not retry."
     })
 
 

@@ -250,16 +250,28 @@ def _kick_resume(run_id: str, db_path: Path | None = None) -> None:
         return
 
     async def _run() -> None:
-        try:
-            claim = _wf_persistence.claim_run_for_resume(run_id, db_path=db_path)
-            if claim is None:
-                return
-            row = _load_resumable_row(run_id, db_path=db_path)
-            if row is not None:
-                await _execute_resume(row, claim, db_path=db_path)
-        except Exception:
-            logger.exception("resumer: kicked resume failed for run_id=%s", run_id)
-            _abandon_resume(run_id, "resume failed unexpectedly", db_path=db_path)
+        from openexecutive.audit.context import unscoped_audit_rows
+        from openexecutive.orchestrator.schedule_tools import set_session
+
+        # The task copies the caller's context, which on an inbound handler
+        # holds that person's live chat session. A resumed run is unattended —
+        # the poll loop runs it with no session — so run it the same way here,
+        # or it would act with the approver's identity (e.g. reach the
+        # principal's contacts because the principal answered on Slack). The
+        # handler's audit scope goes too: inherited, the principal's scope
+        # would hide every row of the run that names a contact from whoever
+        # started it, and so tell them that name is a contact.
+        with set_session(None), unscoped_audit_rows():
+            try:
+                claim = _wf_persistence.claim_run_for_resume(run_id, db_path=db_path)
+                if claim is None:
+                    return
+                row = _load_resumable_row(run_id, db_path=db_path)
+                if row is not None:
+                    await _execute_resume(row, claim, db_path=db_path)
+            except Exception:
+                logger.exception("resumer: kicked resume failed for run_id=%s", run_id)
+                _abandon_resume(run_id, "resume failed unexpectedly", db_path=db_path)
 
     task = loop.create_task(_run())
     _KICK_TASKS.add(task)

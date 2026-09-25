@@ -2965,11 +2965,17 @@ export interface AvailabilityWindow {
   timezone: string;
 }
 
+// "team": works with the principal — can sign in, talk to the bot, approve and
+// be chased. "contact": someone outside the team (a client, a contractor) the
+// Executive emails or invites only when the principal asks it to directly.
+export type PersonKind = "team" | "contact";
+
 export interface Person {
   id: number;
   full_name: string;
   role: string;
   is_principal: boolean;
+  kind: PersonKind;
   department_slugs: string[];
   email: string | null;
   slack_user_id: string | null;
@@ -2984,9 +2990,26 @@ export interface Person {
   archived: boolean;
 }
 
-export async function listPeople(): Promise<Person[]> {
-  const res = await fetch(`${API_BASE}/people`);
+// Team members only by default — the pickers (department head, workflow
+// approver, …) must never offer a contact. The People page asks for both;
+// the server honours that only for the principal (contacts are theirs alone).
+export async function listPeople(opts: { includeContacts?: boolean } = {}): Promise<Person[]> {
+  const query = opts.includeContacts ? "?include_contacts=true" : "";
+  const res = await fetch(`${API_BASE}/people${query}`);
   if (!res.ok) throw new Error(`Failed to load people: ${res.statusText}`);
+  return res.json();
+}
+
+// Who the signed-in viewer is on the roster. Contacts are private to the
+// principal, so the People page offers them only when `is_principal`.
+export interface PeopleViewer {
+  person_id: number | null;
+  is_principal: boolean;
+}
+
+export async function getPeopleViewer(): Promise<PeopleViewer> {
+  const res = await fetch(`${API_BASE}/people/me`);
+  if (!res.ok) throw new Error(`Failed to load viewer: ${res.statusText}`);
   return res.json();
 }
 
@@ -3000,6 +3023,7 @@ export interface PersonCreate {
   full_name: string;
   role?: string;
   is_principal?: boolean;
+  kind?: PersonKind;
   department_slugs?: string[];
   email?: string | null;
   slack_user_id?: string | null;
@@ -3030,6 +3054,7 @@ export async function createPerson(body: PersonCreate): Promise<Person> {
 export interface PersonPatch {
   full_name?: string;
   role?: string;
+  kind?: PersonKind;
   email?: string | null;
   slack_user_id?: string | null;
   telegram_chat_id?: string | null;

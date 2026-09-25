@@ -63,6 +63,14 @@ class AvailabilityWindow(BaseModel):
 
 PreferredChannel = Literal["email", "slack", "telegram", "discord", "any"]
 
+# "team": someone the Executive works with — they can sign in to the web app,
+# talk to the bot on Slack / Telegram / Discord, approve things and be chased.
+# "contact": someone outside the team (a client, a contractor, an advisor) the
+# Executive may email or invite only when the principal asks it to directly.
+# Every roster read is team-only unless it opts in (see ``people.store``).
+PersonKind = Literal["team", "contact"]
+PERSON_KINDS: tuple[str, ...] = ("team", "contact")
+
 
 class Person(BaseModel):
     """A real human who can receive work, approve actions, and respond.
@@ -75,12 +83,17 @@ class Person(BaseModel):
 
     `department_slugs` is advisory — it tells the Executive which department
     contexts this person participates in. FK enforcement deferred to Phase 4.
+
+    `kind` separates the team from contacts (see ``PersonKind``). The
+    principal is always ``"team"``: the store refuses to write a principal
+    contact.
     """
 
     id: int | None = None
     full_name: str
     role: str = ""
     is_principal: bool = False
+    kind: PersonKind = "team"
     department_slugs: list[str] = Field(default_factory=list)
     email: str | None = None
     slack_user_id: str | None = None

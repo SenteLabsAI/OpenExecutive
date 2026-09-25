@@ -73,6 +73,7 @@ from openexecutive.orchestrator.people_tools import (
     PEOPLE_TOOL_HANDLERS,
     PEOPLE_TOOLS,
     is_principal_on_verified_surface,
+    turn_is_private_to_principal,
 )
 from openexecutive.orchestrator.research_tools import (
     RESEARCH_TOOL_HANDLERS,
@@ -85,11 +86,15 @@ from openexecutive.orchestrator.router import (
     route_parallel,
 )
 from openexecutive.orchestrator.schedule_tools import (
+    PRIVATE_TURN_WITHHELD_TOOLS,
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
     UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
+    private_turn_allows_mcp_tool,
+    private_turn_withheld_error,
+    private_turn_withholds,
     tools_withheld_in_mode,
     unattended_withheld_error,
     withheld_tool_error,
@@ -115,8 +120,32 @@ from openexecutive.orchestrator.workflow_run_tools import (
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
 from openexecutive.providers.translator import reasoning_replay_block
+from openexecutive.workflows.tool_catalog import filter_search_results
 
 logger = logging.getLogger(__name__)
+
+
+def _private_to_principal(session: Any) -> bool:
+    """Whether this turn is about the principal's private mail (set by the
+    email poller for mail from a contact and mail the principal forwarded)."""
+    return getattr(session, "private_to_principal", False) is True
+
+
+def _contacts_in_prompt(session: Any) -> bool:
+    """Whether this turn's system prompt lists the principal's contacts.
+
+    Contacts are private to the principal, so only a turn the principal
+    started on a verified surface sees them (the same rule as reaching them:
+    ``people_tools.is_principal_on_verified_surface``). Every other turn gets the
+    team-only org block. Fails closed.
+    """
+    try:
+        from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+        return is_principal_on_verified_surface(session)
+    except Exception:
+        logger.exception("contacts_in_prompt: check failed — contacts left out")
+        return False
 
 
 def _trunc(value: Any, limit: int = 200) -> str:
@@ -763,6 +792,7 @@ class Executive:
             voice_persona_body=voice_persona_body,
             workspace_mode=workspace_mode,
             principal_role=principal_role if workspace_mode == "solo" else None,
+            include_contacts=_contacts_in_prompt(session),
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -940,25 +970,31 @@ class Executive:
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
             # wrapper no-ops when person_id is None or Honcho is disabled.
-            from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
-            _honcho_sync(
-                speaker_text,
-                full_response,
-                person_id=person_id,
-                session_id=session.session_id,
-                co_present_person_ids=co_present_person_ids,
-            )
-            # Per-dept mirror for every department whose specialist contributed
-            # this turn. Runs after the person-side sync so dept and person
-            # syncs are visible in the audit log as a related pair.
-            _sync_consulted_departments_to_honcho(
-                consulted,
-                speaker_text,
-                full_response,
-                person_id=person_id,
-                session_id=session.session_id,
-                co_present_person_ids=co_present_person_ids,
-            )
+            # Never for a turn private to the principal (mail from one of
+            # their contacts, mail they forwarded): the reply summarises that
+            # mail, and peer and department memory are read on other people's
+            # turns.
+            if not _private_to_principal(session):
+                from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+                _honcho_sync(
+                    speaker_text,
+                    full_response,
+                    person_id=person_id,
+                    session_id=session.session_id,
+                    co_present_person_ids=co_present_person_ids,
+                )
+                # Per-dept mirror for every department whose specialist
+                # contributed this turn. Runs after the person-side sync so
+                # dept and person syncs are visible in the audit log as a
+                # related pair.
+                _sync_consulted_departments_to_honcho(
+                    consulted,
+                    speaker_text,
+                    full_response,
+                    person_id=person_id,
+                    session_id=session.session_id,
+                    co_present_person_ids=co_present_person_ids,
+                )
 
     async def stream_chat_with_committee(
         self,
@@ -1038,6 +1074,7 @@ class Executive:
             voice_persona_body=voice_persona_body,
             workspace_mode=workspace_mode,
             principal_role=principal_role if workspace_mode == "solo" else None,
+            include_contacts=_contacts_in_prompt(session),
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.
@@ -1393,23 +1430,24 @@ class Executive:
         schedule_style_pass(person_id, session_id=session.session_id)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
-        # rationale). Fire-and-forget; no-ops when person_id is None.
-        from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
-        _honcho_sync(
-            speaker_text,
-            final_response,
-            person_id=person_id,
-            session_id=session.session_id,
-            co_present_person_ids=co_present_person_ids,
-        )
-        _sync_consulted_departments_to_honcho(
-            consulted,
-            speaker_text,
-            final_response,
-            person_id=person_id,
-            session_id=session.session_id,
-            co_present_person_ids=co_present_person_ids,
-        )
+        # rationale, and for why a turn private to the principal is not).
+        if not _private_to_principal(session):
+            from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+            _honcho_sync(
+                speaker_text,
+                final_response,
+                person_id=person_id,
+                session_id=session.session_id,
+                co_present_person_ids=co_present_person_ids,
+            )
+            _sync_consulted_departments_to_honcho(
+                consulted,
+                speaker_text,
+                final_response,
+                person_id=person_id,
+                session_id=session.session_id,
+                co_present_person_ids=co_present_person_ids,
+            )
 
         # Reset audit ContextVars at normal completion. The abandoned-stream
         # case (SSE client drop mid-yield) doesn't reach here — accept that
@@ -1466,7 +1504,16 @@ class Executive:
             if bool(getattr(current_session.get(), "unattended", False))
             else frozenset()
         )
-        withheld_tools = tools_withheld_in_mode(workspace_mode) | unattended_withheld
+        # A turn private to the principal (mail from one of their contacts,
+        # mail they forwarded) may reach the principal and nobody else: it is
+        # not offered the tools that post to other people, publish where they
+        # read, or start work outside the turn — again a stable list of its
+        # own — and of the MCP tools, only Google Workspace reads and the
+        # recipient-gated Gmail send (`PRIVATE_TURN_MCP_TOOLS`).
+        private_turn = turn_is_private_to_principal()
+        private_withheld = PRIVATE_TURN_WITHHELD_TOOLS if private_turn else frozenset()
+        not_offered = unattended_withheld | private_withheld
+        withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
@@ -1496,14 +1543,15 @@ class Executive:
             # tools (e.g. web_search) are appended after — they use a `type`
             # field instead of input_schema and cannot accept cache_control.
             # Solo withholds the team-only tools before the sort, so each mode
-            # has its own stable, sorted tool prefix.
+            # has its own stable, sorted tool prefix (as do an unattended run
+            # and a turn private to the principal).
             client_tools = sorted(
                 (
                     t for t in filter_tools_for_workspace_mode(
                         [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
                         workspace_mode,
                     )
-                    if t["name"] not in unattended_withheld
+                    if t["name"] not in not_offered
                 ),
                 key=lambda t: t["name"],
             )
@@ -1616,6 +1664,18 @@ class Executive:
                     tu for tu in skill_tool_uses if tu["name"] not in withheld_tools
                 ]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
+            # A private turn is not offered load_mcp_server either (it
+            # reaches any URL), nor any MCP tool through call_tool but those
+            # in PRIVATE_TURN_MCP_TOOLS (Google Workspace reads, and the Gmail
+            # send the gateway narrows to the principal), and the same guard
+            # refuses them.
+            withheld_mcp_uses = [
+                tu for tu in mcp_tool_uses
+                if private_turn and private_turn_withholds(tu["name"], tu["input"])
+            ]
+            if withheld_mcp_uses:
+                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
+                withheld_uses = [*withheld_uses, *withheld_mcp_uses]
 
             specialist_calls = [
                 {
@@ -1700,6 +1760,35 @@ class Executive:
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
             for tu in withheld_uses:
+                if private_turn and private_turn_withholds(tu["name"], tu["input"]):
+                    # Fail closed: never run, and leave a trace — private to
+                    # the principal like every row this turn writes. A
+                    # call_tool is named by the tool it asked for.
+                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                    label = tu["name"]
+                    if label == "call_tool" and isinstance(tu["input"], dict):
+                        named = tu["input"].get("name")
+                        label = named[:200] if isinstance(named, str) and named else label
+                    logger.warning(
+                        "%s:%s refused — the turn is private to the principal", kind, label
+                    )
+                    audit_log(
+                        "tool_invocation",
+                        f"{kind}:{label} refused: the turn is private to the principal",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor="executive",
+                        details={
+                            "tool": label,
+                            "kind": kind,
+                            "iteration": iteration,
+                            "ok": False,
+                            "refused": "private_turn",
+                        },
+                        private=True,
+                    )
+                    results_by_id[tu["id"]] = private_turn_withheld_error(label)
+                    continue
                 if tu["name"] in unattended_withheld:
                     logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
                     results_by_id[tu["id"]] = unattended_withheld_error(tu["name"])
@@ -1943,6 +2032,9 @@ class Executive:
                         results_by_id[tu["id"]] = _tool_error_result(tool_label, raw)
                         continue
                     result = raw
+                    if private_turn and tu["name"] == "search_tools":
+                        # Offer a private turn PRIVATE_TURN_MCP_TOOLS only.
+                        result = filter_search_results(result, private_turn_allows_mcp_tool)
                     logger.info("← %s  result=%s", tool_label, _trunc(result))
                     results_by_id[tu["id"]] = result
                     # MCP chip emission. search_tools is read-only (gets

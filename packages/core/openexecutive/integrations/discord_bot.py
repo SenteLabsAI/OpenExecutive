@@ -26,6 +26,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
+
 if TYPE_CHECKING:
     pass
 
@@ -577,6 +579,20 @@ def _is_rostered(discord_user_id: str) -> bool:
         return False
 
 
+def _find_discord_sender(discord_user_id: str) -> object:
+    from openexecutive.people.store import find_person_by_discord_id
+
+    return find_person_by_discord_id(discord_user_id)
+
+
+# The rows this handler writes before the turn binds its session (the inbound
+# row, the knowledge retrieval, alert triage) are private when the principal
+# sent the message and they name one of their contacts.
+@audit_rows_on_senders_turn(
+    "discord",
+    sender_ref=lambda args: str(args["discord_user_id"] or ""),
+    find_sender=_find_discord_sender,
+)
 async def _handle_message(
     text: str,
     discord_user_id: str,

@@ -87,6 +87,10 @@ async def dispatch_email(alert: Alert) -> bool:
 # spelling triage might emit; new sensitive vocabulary must be added
 # here explicitly.
 _PRIVACY_SENSITIVE_TAGS: frozenset[str] = frozenset({
+    # models.PRIVATE_ALERT_TAG: an alert only the principal may see. The
+    # pipeline already keeps such an alert off every broadcast channel; this
+    # is the backstop.
+    "private:principal",
     "board",
     "comp",
     "compensation",

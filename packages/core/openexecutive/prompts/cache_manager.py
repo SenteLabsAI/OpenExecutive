@@ -24,6 +24,8 @@ def build_system_blocks(
     voice_persona_body: str | None = None,
     workspace_mode: str = "team",
     principal_role: PrincipalRole | None = None,
+    *,
+    include_contacts: bool = False,
 ) -> list[dict[str, Any]]:
     """Build system prompt blocks with correct cache_control ordering.
 
@@ -51,6 +53,11 @@ def build_system_blocks(
     voice_persona_body is substituted into the {VOICE_PERSONA} placeholder in
     the assembled base prompt. If the placeholder is absent (user removed it),
     the body is appended at the end of the prompt so it is never silently dropped.
+
+    include_contacts adds the principal's private Contacts section to block 1.
+    The caller passes it only for the principal's own verified turn, so per
+    mode block 1 has exactly two stable variants (with and without contacts)
+    — never anything per-request.
     """
     # Inject the user's zone so the Executive can resolve relative times
     # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup. Read
@@ -138,7 +145,11 @@ def build_system_blocks(
 
     from openexecutive.departments.prompt_block import render_org_block
 
-    org_text = render_org_block(mode=workspace_mode, principal_role=principal_role)
+    org_text = render_org_block(
+        mode=workspace_mode,
+        principal_role=principal_role,
+        include_contacts=include_contacts,
+    )
     if org_text:
         context_parts.append(org_text)
 

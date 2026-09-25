@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
+from openexecutive.audit.context import unscoped_audit_rows
 from openexecutive.memory.episodic import (
     ScheduledAction,
     claim_due_actions,
@@ -233,7 +234,11 @@ async def run_scheduler(
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))
             for row in due:
-                task = asyncio.create_task(_execute_action(row, gateway))
+                # A scheduled action is unattended, never part of a turn: its
+                # task starts with no audit scope (create_task copies the
+                # context as it is here).
+                with unscoped_audit_rows():
+                    task = asyncio.create_task(_execute_action(row, gateway))
                 _inflight.add(task)
                 task.add_done_callback(_inflight.discard)
             _beat("ran")

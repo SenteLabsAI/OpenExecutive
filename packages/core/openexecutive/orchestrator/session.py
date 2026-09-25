@@ -76,6 +76,11 @@ class Session:
     # `schedule_tools.UNATTENDED_WITHHELD_TOOLS` — things only the principal
     # decides, such as starting to track a goal.
     unattended: bool = False
+    # True for a turn about something private to the principal (mail from one
+    # of their contacts, mail they forwarded): an alert raised on it is
+    # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it
+    # may not draft a team-visible artifact. Set by the email poller.
+    private_to_principal: bool = False
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})

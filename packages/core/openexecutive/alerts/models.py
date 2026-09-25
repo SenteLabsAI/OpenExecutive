@@ -4,6 +4,21 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Topic tag on an alert only the principal may see: one raised on a turn
+# about mail from one of their contacts or mail they forwarded, or a meeting
+# proposal with a contact. Every surface that serves anyone else — /today for
+# a teammate, a teammate's chat digest, the alert review, the activity rail,
+# the unattended reflection — leaves it out (see ``is_private_alert``). A
+# namespaced token, so no tag the triage model invents can collide with it.
+PRIVATE_ALERT_TAG = "private:principal"
+
+
+def is_private_alert(alert: object) -> bool:
+    """Whether ``alert`` (an Alert, ProposalItem or anything with
+    ``topic_tags``) is private to the principal."""
+    tags = getattr(alert, "topic_tags", None) or []
+    return any(str(t).lower() == PRIVATE_ALERT_TAG for t in tags)
+
 
 class AlertSeverity(StrEnum):
     LOW = "low"
@@ -58,6 +73,10 @@ class AlertEvent(BaseModel):
     # ``channel``, which triage reads as the room a message came from and may
     # answer with a team-room broadcast.
     department: str = ""
+    # Private to the principal (see PRIVATE_ALERT_TAG): the pipeline tags it,
+    # routes it to the principal, keeps it out of every broadcast and live
+    # push, and never coalesces it into a card someone else can see.
+    private: bool = False
 
 
 class TriageDecision(BaseModel):

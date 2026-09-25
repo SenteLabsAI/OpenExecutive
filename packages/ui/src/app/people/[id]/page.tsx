@@ -3,9 +3,12 @@
 import { useParams, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   archivePerson,
   closeOpenLoop,
+  getPeopleViewer,
   getPerson,
   getPersonOpenLoops,
   getPersonOutreach,
@@ -17,8 +20,10 @@ import {
   type OpenLoop,
   type OutreachStat,
   type Person,
+  type PersonKind,
   type WorkingStyle,
 } from "@/lib/api";
+import { isContact, shouldOfferTeamMode } from "@/lib/peopleKinds";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,7 +38,7 @@ const ALL_SCOPES = [
   { value: "customer_credit", label: "Credit", hint: "Receives proposals involving credit or debt." },
   { value: "legal_sign", label: "Legal", hint: "Receives proposals with legal implications." },
   { value: "board_comms", label: "Board", hint: "Receives proposals before board communications." },
-  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the founder." },
+  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
 ];
 
 const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
@@ -422,6 +427,17 @@ function WindowRow({ win, onChange, onRemove }: WindowRowProps) {
 export default function PersonDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const { mode } = useWorkspace();
+  const [offerFor, setOfferFor] = useState<string | null>(null);
+  // Only the principal may move someone between team and contacts (contacts
+  // are theirs alone); for anyone else the API 404s a contact's page anyway.
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
+
+  useEffect(() => {
+    getPeopleViewer()
+      .then((v) => setViewerIsPrincipal(v.is_principal))
+      .catch(() => setViewerIsPrincipal(false));
+  }, []);
   const rawId = params?.id;
   const personId = rawId ? parseInt(String(rawId), 10) : NaN;
 
@@ -443,6 +459,7 @@ export default function PersonDetailPage() {
   const [form, setForm] = useState({
     full_name: "",
     role: "",
+    kind: "team" as PersonKind,
     email: "",
     slack_user_id: "",
     telegram_chat_id: "",
@@ -472,10 +489,16 @@ export default function PersonDetailPage() {
       .finally(() => setLoading(false));
   }, [personId]);
 
+  // Contacts are outside the team: no approvals, no reply SLA, no
+  // availability windows, no departments — and nothing to chase.
+  const contact = person ? isContact(person) : false;
+  const formContact = form.kind === "contact" && !person?.is_principal;
+
   function resetForm(p: Person) {
     setForm({
       full_name: p.full_name,
       role: p.role,
+      kind: p.kind ?? "team",
       email: p.email ?? "",
       slack_user_id: p.slack_user_id ?? "",
       telegram_chat_id: p.telegram_chat_id ?? "",
@@ -532,9 +555,13 @@ export default function PersonDetailPage() {
     setSaveErr(null);
     try {
       const slaNum = Number(form.response_sla_hours);
+      const wasContact = person ? isContact(person) : false;
       const updated = await updatePerson(personId, {
         full_name: trimmedName,
         role: form.role.trim(),
+        // The principal is always on the team, and only the principal may
+        // change anyone's kind; the server refuses otherwise.
+        ...(person?.is_principal || !viewerIsPrincipal ? {} : { kind: form.kind }),
         email: form.email.trim() || null,
         slack_user_id: form.slack_user_id.trim() || null,
         telegram_chat_id: form.telegram_chat_id.trim() || null,
@@ -544,12 +571,17 @@ export default function PersonDetailPage() {
         on_leave_until: form.on_leave_until || null,
         // The backend only clears the date on an explicit flag; null alone is ignored.
         clear_on_leave: !form.on_leave_until,
-        authority_scope: form.authority_scope,
+        // A contact approves nothing: drop scopes rather than leave them to
+        // come back if the contact is later moved onto the team.
+        authority_scope: formContact ? [] : form.authority_scope,
         availability: form.availability,
       });
       setPerson(updated);
       setEditing(false);
       setSaved(true);
+      if (wasContact && !isContact(updated) && shouldOfferTeamMode(mode, updated.kind, updated.is_principal)) {
+        setOfferFor(updated.full_name);
+      }
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
       setSaveErr(e instanceof Error ? e.message : "Save failed");
@@ -573,6 +605,7 @@ export default function PersonDetailPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface">
+      {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-6">
           {loading && <p className="text-fg-muted text-sm">Loading…</p>}
@@ -597,6 +630,11 @@ export default function PersonDetailPage() {
                     {person.is_principal && (
                       <span className="ml-2 inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/20 text-violet-300 border-violet-500/30 align-middle">
                         Principal
+                      </span>
+                    )}
+                    {contact && (
+                      <span className="ml-2 inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-sky-500/20 text-sky-300 border-sky-500/30 align-middle">
+                        Contact
                       </span>
                     )}
                     {person.archived && (
@@ -664,7 +702,7 @@ export default function PersonDetailPage() {
                         />
                       </label>
                       <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Role
+                        {formContact ? "Role and company" : "Role"}
                         <input
                           value={form.role}
                           onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
@@ -672,6 +710,20 @@ export default function PersonDetailPage() {
                         />
                       </label>
                     </div>
+
+                    {!person.is_principal && viewerIsPrincipal && (
+                      <label className="text-xs text-fg-muted flex flex-col gap-1">
+                        Team member or contact
+                        <select
+                          value={form.kind}
+                          onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value as PersonKind }))}
+                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                        >
+                          <option value="team">Team member — can sign in, message the Executive and approve</option>
+                          <option value="contact">Contact — outside the team and private to you, emailed only when you ask</option>
+                        </select>
+                      </label>
+                    )}
 
                     {/* Contact & routing */}
                     <DisclosureSection
@@ -697,6 +749,7 @@ export default function PersonDetailPage() {
                             Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : form.preferred_channel}.
                           </p>
                         </div>
+                        {!formContact && (
                         <div>
                           <label className="text-xs text-fg-muted flex flex-col gap-1">
                             Expected reply within
@@ -715,6 +768,7 @@ export default function PersonDetailPage() {
                             Items overdue in Today after {form.response_sla_hours || 24}h with no reply.
                           </p>
                         </div>
+                        )}
                       </div>
 
                       <label className="text-xs text-fg-muted flex flex-col gap-1">
@@ -781,8 +835,9 @@ export default function PersonDetailPage() {
                 ) : (
                   <div className="divide-y divide-line">
                     {[
+                      ["Kind", contact ? "Contact — outside the team" : "Team member"],
                       ["Preferred channel", person.preferred_channel],
-                      ["Expected reply within", `${person.response_sla_hours} hours`],
+                      ...(contact ? [] : [["Expected reply within", `${person.response_sla_hours} hours`]]),
                       ["Email", person.email ?? "—"],
                       ["Slack user ID", person.slack_user_id ?? "—"],
                       ["Discord user ID", person.discord_user_id ?? "—"],
@@ -798,7 +853,8 @@ export default function PersonDetailPage() {
                 )}
               </section>
 
-              {/* Authority scope */}
+              {/* Authority scope — a contact approves nothing */}
+              {!(editing ? formContact : contact) && (
               <section className="mb-6">
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-3">
                   What this person approves
@@ -850,7 +906,10 @@ export default function PersonDetailPage() {
                 )}
               </section>
 
-              {/* Availability windows */}
+              )}
+
+              {/* Availability windows — contacts are never chased */}
+              {!(editing ? formContact : contact) && (
               <section className="mb-6">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
@@ -916,9 +975,11 @@ export default function PersonDetailPage() {
                 )}
               </section>
 
-              {!person.archived && <OpenLoopsSection personId={personId} />}
-              {!person.archived && <OutreachSection personId={personId} />}
-              {!person.archived && <WorkingStyleSection personId={personId} />}
+              )}
+
+              {!person.archived && !contact && <OpenLoopsSection personId={personId} />}
+              {!person.archived && !contact && <OutreachSection personId={personId} />}
+              {!person.archived && !contact && <WorkingStyleSection personId={personId} />}
 
               {/* Archive */}
               {!person.is_principal && !person.archived && (
