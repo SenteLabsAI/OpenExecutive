@@ -2152,13 +2152,19 @@ export async function* runWorkflow(
 
   if (!response.ok) {
     let detail = response.statusText;
+    let refusal: string | null = null;
     try {
       const body = await response.json();
       detail = JSON.stringify(body.detail ?? body);
+      // A 403 ("Only the principal can run this workflow.") is a sentence
+      // for the person, so show it as is rather than as a request failure.
+      if (response.status === 403 && typeof body.detail === "string") {
+        refusal = body.detail;
+      }
     } catch {
       // body wasn't JSON
     }
-    throw new Error(`Workflow request failed: ${detail}`);
+    throw new Error(refusal ?? `Workflow request failed: ${detail}`);
   }
 
   const reader = response.body?.getReader();

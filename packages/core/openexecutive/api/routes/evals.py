@@ -237,6 +237,9 @@ async def start_eval_run(request: Request) -> StreamingResponse:
     Request body: {"kind": "chat"} or {"scenario_id": "finance_001"}
     (kind is inferred from scenario_id when omitted)
 
+    403 when a workflow scenario runs a workflow that is the principal's
+    alone (``_refuse_principal_only_scenarios``) and the caller is not.
+
     SSE event types:
       run_created   — run_id, kind, total, scenario_ids
       scenario_start — index, total, scenario_id, description
@@ -266,6 +269,8 @@ async def start_eval_run(request: Request) -> StreamingResponse:
                 + (f", scenario_id={scenario_id!r}" if scenario_id else "")
             ),
         )
+    if kind == "workflow":
+        _refuse_principal_only_scenarios(request, scenarios)
 
     run_id = uuid.uuid4().hex
     scenario_ids = [s["id"] for s in scenarios]
@@ -292,6 +297,9 @@ async def start_eval_run(request: Request) -> StreamingResponse:
                 scenario_id=scenario_id,
                 store=store,
                 cancel_event=cancel_event,
+                # The list checked above — not a fresh load, which could
+                # pick up a user scenario edited since.
+                scenarios=scenarios,
             ):
                 etype = event.get("type")
 
@@ -354,3 +362,43 @@ async def start_eval_run(request: Request) -> StreamingResponse:
 
 def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
+
+
+def _refuse_principal_only_scenarios(
+    request: Request, scenarios: list[dict[str, Any]]
+) -> None:
+    """403 when a workflow scenario runs a workflow that is the principal's
+    alone in the mode it would run in, and the caller is not the principal.
+
+    The workflow runner calls ``workflow.run`` directly on the install's live
+    data and returns the artifact, so ``weekly_review`` here would hand the
+    principal's decision log to anyone who can sign in. Same rule as
+    ``POST /workflows/{name}/runs`` (``refuse_principal_only_run``). The mode
+    is the scenario's ``workspace_mode``, else the workspace's; one that
+    cannot be read counts as principal-only.
+    """
+    from openexecutive.api.routes.workflows import refuse_principal_only_run
+    from openexecutive.evals.runner import scenario_workspace_mode
+    from openexecutive.memory.workspace_settings import read_stored_mode
+    from openexecutive.workflows import WORKFLOW_REGISTRY
+
+    for scenario in scenarios:
+        name = scenario.get("workflow")
+        # The runner resolves the same way and fails any other name.
+        workflow = WORKFLOW_REGISTRY.get(name) if isinstance(name, str) else None
+        if workflow is None:
+            continue
+        mode: str | None
+        try:
+            mode = scenario_workspace_mode(scenario) or read_stored_mode()
+        except ValueError:
+            mode = None
+        sid = str(scenario.get("id", ""))
+        refuse_principal_only_run(
+            request,
+            workflow,
+            mode,
+            surface="evals",
+            detail=f"Only the principal can run the {sid} eval.",
+            extra={"scenario_id": sid},
+        )

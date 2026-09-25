@@ -58,14 +58,20 @@ async def run_scenarios(
     scenario_id: str | None = None,
     store: Any = None,
     cancel_event: asyncio.Event | None = None,
+    scenarios: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Async generator that streams progress events as scenarios run in parallel.
 
     If ``cancel_event`` is provided and set during the run, all in-flight
     scenario tasks are cancelled and the generator yields ``suite_canceled``
     instead of ``suite_done``.
+
+    ``scenarios``, when given, is the list to run instead of loading it
+    again: ``POST /evals/runs`` passes the list it checked, so an edit to a
+    user scenario in between cannot swap in one that was not checked.
     """
-    scenarios = load_scenarios(kind=kind, scenario_id=scenario_id)
+    if scenarios is None:
+        scenarios = load_scenarios(kind=kind, scenario_id=scenario_id)
     total = len(scenarios)
     passed = [0]  # single-item list — safe under asyncio without locks
 

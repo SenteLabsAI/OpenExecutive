@@ -4,6 +4,7 @@ Endpoints:
 - GET    /workflows                       List available workflows with metadata
 - GET    /workflows/{name}                Get one workflow's metadata + input schema
 - POST   /workflows/{name}/runs           Start a run; streams progress as SSE
+                                          (403 for a principal-only one unless the principal)
 - GET    /workflows/runs                  List recent runs across all workflows
 - GET    /workflows/runs/{run_id}         Get a specific past run (with artifact)
 - DELETE /workflows/runs/{run_id}         Delete a past run
@@ -382,12 +383,18 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
     """Start a workflow run. Streams progress events as Server-Sent Events.
 
     Each SSE event is a JSON-encoded `WorkflowEvent`. The final event in
-    a successful run is `{"type": "done", "run_id": "..."}`.
+    a successful run is `{"type": "done", "run_id": "..."}`. A workflow that
+    is the principal's alone in the workspace's mode is a 403 for anyone
+    else (`refuse_principal_only_run`), before any run row is created.
     """
     try:
         workflow = get_workflow(name)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+    from openexecutive.memory.workspace_settings import read_stored_mode
+
+    refuse_principal_only_run(request, workflow, read_stored_mode(), surface="jobs")
 
     try:
         payload = await request.json()
@@ -512,6 +519,69 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+
+
+PRINCIPAL_ONLY_DETAIL = "Only the principal can run this workflow."
+
+
+def refuse_principal_only_run(
+    request: Request,
+    workflow: Any,
+    mode: str | None,
+    *,
+    surface: str,
+    detail: str = PRINCIPAL_ONLY_DETAIL,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Raise 403 unless this web caller may start ``workflow`` in ``mode``.
+
+    A workflow whose ``principal_only_modes`` holds the mode it would run in
+    (the weekly review in both modes, the morning brief in solo) carries the
+    principal's own data, so over HTTP only the principal may start it — the
+    rule ``run_workflow`` applies in chat. The caller check is the workspace
+    settings' (``chat._caller_is_principal_or_unclaimed``): the principal (a
+    request with no ``x-caller-email`` — the CLI, local login — counts), or
+    anyone while no principal is on the roster. ``mode`` None (unreadable)
+    counts as principal-only, and a roster that cannot be read refuses. The
+    refusal is audited like the chat tool's, and ``detail`` does not spell
+    out the rule.
+    """
+    from openexecutive.workflows.base import principal_only_in
+
+    if not principal_only_in(workflow, mode):
+        return
+    from openexecutive.api.routes.chat import (
+        _caller_is_principal_or_unclaimed,
+        _resolve_caller_person_id,
+    )
+
+    if _caller_is_principal_or_unclaimed(request):
+        return
+    from openexecutive.audit import log_event as audit_log
+
+    name = str(getattr(workflow, "name", "") or "")
+    try:
+        # For the audit row only; the refusal stands whatever this reads.
+        caller_person_id = _resolve_caller_person_id(request)
+    except Exception:
+        caller_person_id = None
+    audit_log(
+        "tool_invocation",
+        f"run_workflow {name} refused over HTTP ({surface}): not the principal",
+        actor=(request.headers.get("x-caller-email") or "").strip()[:200] or "api",
+        details={
+            "tool": "run_workflow",
+            "kind": "write",
+            "ok": False,
+            "workflow": name,
+            "refused": True,
+            "workspace_mode": mode or "unknown",
+            "caller_person_id": caller_person_id,
+            "surface": surface,
+            **(extra or {}),
+        },
+    )
+    raise HTTPException(status_code=403, detail=detail)
 
 
 def _resume_progress(resume_state_json: str | None) -> dict[str, Any] | None:
