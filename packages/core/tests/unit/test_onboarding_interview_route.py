@@ -14,6 +14,7 @@ must not behave like the fixture loader.
 """
 from __future__ import annotations
 
+import sqlite3
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -896,6 +897,9 @@ def test_local_login_and_the_cli_count_as_the_owner(
 # that has none becomes a way to sign in as the owner.
 
 
+OWNER_EMAIL_REFUSAL = "Only the owner can put another address on the owner's entry."
+
+
 def _seed_owner_without_email_and_teammate() -> None:
     from openexecutive.people import store as people_store
 
@@ -923,6 +927,7 @@ def test_a_teammate_cannot_put_an_address_of_their_own_on_the_owners_entry(
     # An address Bob controls that is on nobody's entry yet.
     resp = _commit_with_owner_email(client, "bob.private@example.com", caller="bob@example.com")
     assert resp.status_code == 403
+    assert resp.json()["detail"].startswith(OWNER_EMAIL_REFUSAL)
     assert not profile_path.exists()
     dana = people_store.find_principal_person(db_path=people_db)
     assert dana is not None and dana.email is None
@@ -930,13 +935,51 @@ def test_a_teammate_cannot_put_an_address_of_their_own_on_the_owners_entry(
 
 
 def test_someone_signed_in_elsewhere_cannot_link_another_address(
-    client: TestClient, seeded: list[Any], people_db: Path
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
 ) -> None:
     # Let in by ALLOWED_EMAILS, on no entry: only their own address may go on.
+    from openexecutive.people import store as people_store
+
     _seed_owner_without_email_and_teammate()
     seeded.append(_draft())
     resp = _commit_with_owner_email(client, "someone@example.com", caller="dana@example.com")
     assert resp.status_code == 403
+    assert resp.json()["detail"].startswith(OWNER_EMAIL_REFUSAL)
+    assert not profile_path.exists()
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email is None
+
+
+def test_a_teammates_own_address_is_refused_too(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    # What makes allowing the caller's own address safe: a rostered teammate's
+    # is already on their own entry. What the review screen pre-fills for Bob
+    # when the owner has none — and the message says what works.
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    resp = _commit_with_owner_email(client, "bob@example.com", caller="bob@example.com")
+    assert resp.status_code == 422
+    assert "leave it blank" in resp.json()["detail"]
+    assert not profile_path.exists()
+
+
+def test_an_unreadable_roster_refuses_to_link_the_owner_email(
+    client: TestClient,
+    seeded: list[Any],
+    people_db: Path,
+    profile_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def locked(*_args: Any, **_kwargs: Any) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    monkeypatch.setattr("openexecutive.onboarding.commit.owner_email_blocked", locked)
+    resp = _commit_with_owner_email(client, "dana@example.com", caller="dana@example.com")
+    assert resp.status_code == 503
+    assert not profile_path.exists()
 
 
 def test_the_owner_can_still_link_the_email_they_signed_in_with(

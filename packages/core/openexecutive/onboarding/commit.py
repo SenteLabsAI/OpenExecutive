@@ -189,9 +189,10 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     principal's own row already has a different email (replacing it would
     sign the owner out — web sign-in and caller resolution both key on it —
     so the owner changes it on the People page, signed in with the current
-    one); or when the roster can't be read. "The drafted principal's row" is the one save_onboarding_people's
-    name-keyed upsert will update — compared by id, because two rows can
-    share a name and the upsert then takes the last one.
+    one); or when the roster can't be read. "The drafted principal's row" is
+    the one save_onboarding_people's name-keyed upsert will update — compared
+    by id, because two rows can share a name and the upsert then takes the
+    last one.
     """
     email = (raw or "").strip().lower()
     if not email:
@@ -218,7 +219,7 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
             )
         raise OwnerEmailError(
             "That email already belongs to someone else on the People page. "
-            "Use a different one, or change theirs there first."
+            "Use the owner's own email, or leave it blank."
         )
     if own_row is not None and own_row.email and own_row.email.strip().lower() != email:
         raise OwnerEmailError(
@@ -260,20 +261,11 @@ def owner_email_blocked(email: str | None, caller_person_id: int | None, caller_
     """Whether someone who isn't the owner is filling in the owner's missing
     email with an address other than the one they signed in with.
 
-    Re-running setup that keeps the owner is open to everyone signed in, and
-    the commit fills in a missing owner email (check_owner_email, then
-    link_owner_email). The roster is the web sign-in allow-list, so an
-    address of the caller's choosing would let them sign in with it and be
-    resolved as the owner. Their own sign-in address is allowed: that is how
-    an owner the app can't recognise yet (their entry has no email; the
-    review screen pre-fills the one they signed in with) links it — and a
-    rostered teammate's own address is already on their own entry, which
-    check_owner_email refuses. Never blocked: nothing to link, a first
-    setup, the owner (no x-caller-email — the CLI, local login — counts),
-    and the owner's current email, which links nothing. ``email`` is
-    check_owner_email's normalised result; ``caller_email`` the lowercased
-    x-caller-email. Lookup errors propagate: the route turns them into a
-    retryable 503.
+    The roster is the web sign-in allow-list, so an address of their choosing
+    would let them sign in with it as the owner. Their own is allowed: it is
+    how an owner the app can't recognise yet links theirs, and a rostered
+    teammate's own is already on their entry, which check_owner_email
+    refuses. Lookup errors propagate (the route answers 503).
     """
     from openexecutive.people.store import find_principal_person, is_principal_or_self
 

@@ -625,8 +625,8 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
         raise HTTPException(
             status_code=403,
             detail=(
-                "Only the owner can add a different email to the owner's entry. Use the "
-                "email you're signed in with, or leave it blank."
+                "Only the owner can put another address on the owner's entry. If you "
+                "are the owner, use the email you signed in with; if not, leave it blank."
             ),
         )
 
