@@ -469,7 +469,8 @@ def _fake_review(artifact: str = "REVIEW") -> Any:
 
 
 def _fire(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deliver_ok: bool = True
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deliver_ok: bool = True,
+    real_chain: bool = False,
 ) -> tuple[int, list[tuple[str, str]], list[str]]:
     from openexecutive.briefing import narrative_cache
     from openexecutive.workflows import persistence as wf_persistence
@@ -487,9 +488,10 @@ def _fire(
 
     chained: list[str] = []
     monkeypatch.setattr(runner, "_deliver_to_principal", _deliver)
-    monkeypatch.setattr(
-        runner, "_enqueue_next_principal_brief", lambda kind, after: chained.append(kind)
-    )
+    if not real_chain:
+        monkeypatch.setattr(
+            runner, "_enqueue_next_principal_brief", lambda kind, after: chained.append(kind)
+        )
 
     class _Store:
         def __init__(self, **kw: Any) -> None: ...
@@ -544,3 +546,65 @@ def test_runner_retires_a_review_that_fires_in_team(
     assert sent == [] and chained == []
     row = episodic.get_scheduled_action(action_id)
     assert row is not None and row.status == "cancelled" and "solo" in row.last_error
+
+
+def _locked_workspace_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every workspace read fails as a locked DB would: get_workspace falls
+    back to team, read_stored_mode says it could not tell."""
+
+    def _locked(_db_path: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ws, "_read_row", _locked)
+
+
+def test_a_failed_mode_read_neither_retires_the_review_nor_breaks_the_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _solo()
+    _locked_workspace_reads(monkeypatch)
+    assert ws.get_workspace().mode == "team"  # the lenient read's fallback
+    assert ws.read_stored_mode() is None
+    action_id, sent, chained = _fire(tmp_path, monkeypatch)
+    assert sent == [("REVIEW", "Weekly Review")] and chained == [KIND]
+    row = episodic.get_scheduled_action(action_id)
+    assert row is not None and row.status == "done"
+
+
+def test_read_stored_mode_tells_a_stored_team_from_a_failed_read() -> None:
+    assert ws.read_stored_mode() == "team"  # nothing stored: the default
+    _solo()
+    assert ws.read_stored_mode() == "solo"
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="team"))
+    assert ws.read_stored_mode() == "team"
+    with sqlite3.connect(str(episodic.DB_PATH)) as conn:
+        conn.execute("UPDATE workspace_settings SET mode = 'duo'")
+    assert ws.read_stored_mode() is None
+    assert ws.get_workspace().mode == "team"
+
+
+def test_a_switch_to_solo_during_a_run_leaves_one_pending_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """set_workspace_mode('solo') seeds the next review while a weekly run is
+    finishing; the run's own chain must not add a second."""
+    _solo()
+    assert runner.seed_weekly_review() == 1  # the switch's seed
+    action_id, sent, _ = _fire(tmp_path, monkeypatch, real_chain=True)
+    assert sent
+    assert len(_pending()) == 1
+    row = episodic.get_scheduled_action(action_id)
+    assert row is not None and row.status == "done"
+    # With nothing pending, the chain does add the next one.
+    (seeded,) = _pending()
+    with sqlite3.connect(str(episodic.DB_PATH)) as conn:
+        conn.execute("UPDATE scheduled_actions SET status = 'cancelled' WHERE id = ?", (seeded.id,))
+    _fire(tmp_path, monkeypatch, real_chain=True)
+    assert len(_pending()) == 1
+
+
+def test_the_daily_chain_is_unchanged_by_the_weekly_dedupe() -> None:
+    after = datetime(2026, 9, 25, 8, 5, tzinfo=UTC)
+    first = runner._enqueue_next_principal_brief("principal_brief_morning", after)
+    second = runner._enqueue_next_principal_brief("principal_brief_morning", after)
+    assert first is not None and second is not None and first != second

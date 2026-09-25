@@ -271,6 +271,53 @@ async def handle_list_workflows(tool_input: dict[str, Any]) -> str:
     return json.dumps({"workflows": out, "count": len(out)})
 
 
+def _principal_only_refusal(name: str, workflow: Any) -> str | None:
+    """The refusal tool result when this turn may not run ``workflow``, else
+    None.
+
+    A workflow whose ``principal_only_modes`` holds the turn's workspace mode
+    (the weekly review in both modes, the morning brief in solo) carries the
+    principal's own data — decisions, commitments, goals, calendar — or
+    writes to it, and this tool is offered on every attended turn, including
+    ones an inbound email, an unverified surface or a teammate started. So
+    only the principal on a surface that verified it is them may run it —
+    ``create_goal``'s rule. Checked at dispatch time and fails closed: a
+    check that cannot be made refuses. The error does not name the rule.
+    """
+    modes: frozenset[str] = getattr(workflow, "principal_only_modes", frozenset())
+    if not modes:
+        return None
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    mode: str = "unknown"
+    try:
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
+        from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+        mode = effective_workspace_mode(session)
+        if mode not in modes or is_principal_on_verified_surface(session):
+            return None
+    except Exception:
+        logger.exception("run_workflow: principal check failed for %s — refusing", name)
+    _audit(
+        "run_workflow", "write", False,
+        f"run_workflow {name} refused: not the principal on a verified surface",
+        {
+            "workflow": name,
+            "refused": True,
+            "workspace_mode": mode,
+            "caller_person_id": getattr(session, "caller_person_id", None),
+            "origin_channel": getattr(session, "origin_channel", "") or None,
+            "from_web_chat": bool(getattr(session, "from_web_chat", False)),
+            "unattended": bool(getattr(session, "unattended", False)),
+        },
+    )
+    return json.dumps({
+        "error": f"{name!r} can't be run from this conversation. Don't retry it here."
+    })
+
+
 async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
     from openexecutive.knowledge.store import ChromaDBStore
@@ -301,6 +348,10 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
             f"unknown workflow: {name!r}. Call list_workflows to see what's available.",
             kind="write",
         )
+
+    refusal = _principal_only_refusal(name, workflow)
+    if refusal is not None:
+        return refusal
 
     raw_inputs = tool_input.get("inputs")
     if raw_inputs is None:

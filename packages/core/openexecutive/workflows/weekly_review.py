@@ -34,7 +34,7 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -111,6 +111,9 @@ class WeeklyReviewWorkflow(Workflow):
     estimated_minutes = 3
     background = True
     playbooks = ("weekly-review",)
+    # The principal's decision log, commitments and goals — and it re-grades
+    # the goals — so in either mode only they may run it from chat.
+    principal_only_modes: ClassVar[frozenset[str]] = frozenset({"solo", "team"})
 
     def input_model(self) -> type[BaseModel]:
         return WeeklyReviewInput

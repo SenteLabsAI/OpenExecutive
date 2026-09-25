@@ -505,3 +505,157 @@ def test_an_undelivered_resumable_gate_says_both_things(
     hint = out["presentation_hint"]
     assert "could not be delivered" in hint
     assert "picks up where it left off" in hint
+
+
+# --------------------------------------------------------------------------- #
+# Principal-only workflows: the weekly review (both modes) and the solo
+# morning brief carry the principal's own data, so only they may run one.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def principal_roster(
+    tmp_path: Path, run_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> Any:
+    from types import SimpleNamespace
+
+    from openexecutive import workflows as wf_pkg
+    from openexecutive.memory import episodic
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+    from openexecutive.workflows.morning_brief import MorningBriefWorkflow
+    from openexecutive.workflows.weekly_review import WeeklyReviewWorkflow
+
+    db = tmp_path / "roster.db"
+    monkeypatch.setattr(episodic, "DB_PATH", db)
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    episodic.initialize_db(db)
+    people_store.initialize_db(db)
+    people_registry.invalidate()
+
+    # Real classes (so the real principal_only_modes apply) with a stub run.
+    class _Weekly(WeeklyReviewWorkflow):
+        async def run(self, inputs: Any, store: Any):  # type: ignore[override]
+            yield WorkflowEvent(type="artifact", content="# Weekly review")
+
+    class _Morning(MorningBriefWorkflow):
+        async def run(self, inputs: Any, store: Any):  # type: ignore[override]
+            yield WorkflowEvent(type="artifact", content="# Morning brief")
+
+    stubs = {"weekly_review": _Weekly(), "morning_brief": _Morning()}
+    monkeypatch.setattr(wf_pkg, "get_workflow", lambda name: stubs[name])
+    yield SimpleNamespace(
+        principal=people_store.upsert_person(full_name="Pat Lee", is_principal=True),
+        teammate=people_store.upsert_person(full_name="Sam Ortiz"),
+    )
+    people_registry.invalidate()
+
+
+def _unverified(principal: int, teammate: int) -> dict[str, Any]:
+    from openexecutive.orchestrator.session import Session
+
+    return {
+        "no session": None,
+        "email from the principal's address": Session(caller_person_id=principal),
+        "Google Chat": Session(origin_channel="google_chat", origin_channel_ref="spaces/x",
+                               caller_person_id=principal),
+        "Telegram without a webhook secret": Session(origin_channel="telegram",
+                                                     origin_channel_ref="555",
+                                                     caller_person_id=principal),
+        "a teammate in the web chat": Session(from_web_chat=True, caller_person_id=teammate),
+        "a teammate on Slack": Session(origin_channel="slack", origin_channel_ref="U2",
+                                       caller_person_id=teammate),
+        "an unattended run": Session(unattended=True),
+    }
+
+
+def _run_as(session: Any, workflow: str, mode: str) -> dict[str, Any]:
+    from openexecutive.memory import workspace_settings as ws
+    from openexecutive.orchestrator.schedule_tools import set_session
+
+    # The install-wide mode (what a session-less turn sees).
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode=mode))  # type: ignore[arg-type]
+    with set_session(session):
+        return _call(handle_run_workflow, {"workflow": workflow, "inputs": {}})
+
+
+@pytest.mark.parametrize(("workflow", "mode"), [
+    ("weekly_review", "solo"), ("weekly_review", "team"), ("morning_brief", "solo"),
+])
+def test_principal_only_workflows_refuse_everyone_else(
+    principal_roster: Any, monkeypatch: pytest.MonkeyPatch, workflow: str, mode: str
+) -> None:
+    from unittest.mock import MagicMock
+
+    from openexecutive.config import get_settings
+    from openexecutive.workflows.persistence import list_runs
+
+    monkeypatch.setattr(type(get_settings()), "telegram_webhook_secret_valid", False,
+                        raising=False)
+    fake_audit = MagicMock()
+    monkeypatch.setattr("openexecutive.orchestrator.workflow_run_tools.audit_log", fake_audit)
+    sessions = _unverified(principal_roster.principal, principal_roster.teammate)
+    for label, session in sessions.items():
+        out = _run_as(session, workflow, mode)
+        assert "error" in out, (label, out)
+        # A plain refusal that does not spell out the rule.
+        assert "principal" not in out["error"] and "verified" not in out["error"]
+        assert "artifact" not in out
+    assert list_runs(workflow_name=workflow) == []
+    refusals = [c.kwargs["details"] for c in fake_audit.call_args_list
+                if c.kwargs.get("details", {}).get("refused") is True]
+    assert len(refusals) == len(sessions)
+    assert refusals[0]["workflow"] == workflow and refusals[0]["workspace_mode"] == mode
+
+
+@pytest.mark.parametrize(("workflow", "mode"), [
+    ("weekly_review", "solo"), ("weekly_review", "team"), ("morning_brief", "solo"),
+])
+def test_the_principal_on_a_verified_surface_may_run_them(
+    principal_roster: Any, workflow: str, mode: str
+) -> None:
+    from openexecutive.orchestrator.session import Session
+
+    web = _run_as(Session(from_web_chat=True, caller_person_id=principal_roster.principal),
+                  workflow, mode)
+    assert web.get("ok") is True and web["artifact"].startswith("#"), web
+    slack = _run_as(Session(origin_channel="slack", origin_channel_ref="U1",
+                            caller_person_id=principal_roster.principal), workflow, mode)
+    assert slack.get("ok") is True, slack
+
+
+def test_the_team_morning_brief_is_unchanged(principal_roster: Any) -> None:
+    """In team mode anyone who can chat may still run the morning brief."""
+    from openexecutive.orchestrator.session import Session
+
+    for session in (
+        Session(from_web_chat=True, caller_person_id=principal_roster.teammate),
+        Session(caller_person_id=principal_roster.principal),  # email
+        None,
+    ):
+        out = _run_as(session, "morning_brief", "team")
+        assert out.get("ok") is True and out["artifact"] == "# Morning brief", out
+
+
+def test_a_failing_principal_check_refuses(
+    principal_roster: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.session import Session
+
+    def _boom(_session: Any) -> bool:
+        raise RuntimeError("roster unreadable")
+
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.people_tools.is_principal_on_verified_surface", _boom
+    )
+    out = _run_as(Session(from_web_chat=True, caller_person_id=principal_roster.principal),
+                  "weekly_review", "solo")
+    assert "error" in out
+
+
+def test_only_the_weekly_review_and_solo_brief_are_principal_only() -> None:
+    from openexecutive.workflows import WORKFLOW_REGISTRY
+
+    gated = {n: set(wf.principal_only_modes) for n, wf in WORKFLOW_REGISTRY.items()
+             if wf.principal_only_modes}
+    assert gated == {"weekly_review": {"solo", "team"}, "morning_brief": {"solo"}}

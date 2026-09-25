@@ -12,11 +12,14 @@ When the Executive can read a calendar (the MCP gateway is up and the Google
 Workspace server is one it runs), one ``get_events`` call lists today's events
 on the principal's calendar — their address as the calendar id, read with the
 Executive's account, so it works when the principal shared their calendar with
-it or signed the Executive in as themselves. Each item then gets a free block
+it or signed the Executive in as themselves. On a business day (Monday to
+Friday, ``calendar_tools.is_business_day``) each item then gets a free block
 inside working hours (``CALENDAR_BUSINESS_HOURS_START`` / ``_END``). Without a
-calendar there are no slot suggestions. The read has a short timeout, and any
-failure (no gateway, no principal address, an error, a timeout, a reply it
-cannot read) reads as "no calendar": the brief never fails because of it.
+calendar, or at the weekend, there are no slot suggestions (a weekend still
+lists the day's events). The read has a short timeout, and any failure (no
+gateway, no principal address, an error, a timeout, a reply it cannot read)
+reads as "no calendar": the brief never fails because of it. The log carries
+only a reply's length or an error's type, never calendar text.
 
 The brief's fingerprint carries the items' keys and only a coarse hash of the
 day's calendar (``calendar_hash``: busy blocks rounded to 15 minutes, no
@@ -30,7 +33,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,13 +62,12 @@ _TIER_PROJECT = 5
 @dataclass(frozen=True)
 class CalendarEvent:
     title: str
-    # Aware datetimes; None for an all-day event.
+    # Aware datetimes for a timed event (equal for a zero-length one); None
+    # for an all-day event.
     start: datetime | None
     end: datetime | None
-
-    @property
-    def all_day(self) -> bool:
-        return self.start is None or self.end is None
+    # Only an event given as a date (no time) is all day.
+    all_day: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -199,25 +201,55 @@ def _parse(raw: object) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def _event_time(raw: object, tz: tzinfo) -> datetime | None:
-    """A timed event's start or end, aware; None for an all-day date."""
-    if isinstance(raw, dict):
-        raw = raw.get("dateTime") or raw.get("date_time")
-    text = str(raw or "").strip()
-    if len(text) <= 10:  # "2026-09-25" — a date, i.e. all day
-        return None
+def _as_date(raw: object) -> tuple[str, datetime | None]:
     try:
-        dt = datetime.fromisoformat(text)
+        date.fromisoformat(str(raw).strip())
     except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=tz)
+        return "bad", None
+    return "date", None
 
 
-def _event(title: object, start: object, end: object, tz: tzinfo) -> CalendarEvent:
-    s, e = _event_time(start, tz), _event_time(end, tz)
-    if s is None or e is None or e <= s:
-        s = e = None
-    return CalendarEvent(title=_clean(title, _TITLE_MAX) or "(untitled)", start=s, end=e)
+def _as_datetime(raw: object, tz: tzinfo) -> tuple[str, datetime | None]:
+    try:
+        dt = datetime.fromisoformat(str(raw).strip())
+    except ValueError:
+        return "bad", None
+    return "datetime", dt if dt.tzinfo else dt.replace(tzinfo=tz)
+
+
+def _event_time(raw: object, tz: tzinfo) -> tuple[str, datetime | None]:
+    """How an event's start or end is given: ``("date", None)`` for a date
+    with no time (Google's all-day form), ``("datetime", aware)`` for a time,
+    ``("missing", None)`` when absent, ``("bad", None)`` when unreadable."""
+    if isinstance(raw, dict):
+        # The API's form: ``dateTime`` for a timed event, ``date`` alone for
+        # an all-day one.
+        timed = raw.get("dateTime") or raw.get("date_time")
+        if timed:
+            return _as_datetime(timed, tz)
+        day = raw.get("date")
+        return _as_date(day) if day else ("missing", None)
+    text = str(raw or "").strip()
+    if not text:
+        return "missing", None
+    if len(text) == 10:  # the text listing prints an all-day event's date alone
+        return _as_date(text)
+    return _as_datetime(text, tz)
+
+
+def _event(title: object, start: object, end: object, tz: tzinfo) -> CalendarEvent | None:
+    """One event, or None when its times cannot be read (it is then left out
+    of the listing, the busy time and the all-day count). Only a date-only
+    start makes it all day; a zero-length timed event is timed and blocks
+    nothing."""
+    name = _clean(title, _TITLE_MAX) or "(untitled)"
+    s_kind, s = _event_time(start, tz)
+    e_kind, e = _event_time(end, tz)
+    if s_kind == "date" and e_kind in ("date", "missing"):
+        return CalendarEvent(title=name, start=None, end=None, all_day=True)
+    if s is not None and e is not None and e >= s:
+        return CalendarEvent(title=name, start=s, end=e)
+    return None
 
 
 # workspace-mcp's text listing: `- "Title" (Starts: <iso>, Ends: <iso>) ID: …`
@@ -229,7 +261,8 @@ _LISTED_RE = re.compile(r"^\s*Successfully retrieved \d+ events?", re.IGNORECASE
 def parse_events(text: str, tz: tzinfo) -> list[CalendarEvent] | None:
     """Events from a ``get_events`` reply, [] for an empty day, or None when
     the reply is an error or a shape this does not know — read as "no
-    calendar", never as a free day."""
+    calendar", never as a free day. An event whose times cannot be read is
+    left out; a reply that lists events but none readable is None too."""
     from openexecutive.workflows.action_step import looks_like_error
 
     if not isinstance(text, str) or not text.strip() or looks_like_error(text):
@@ -242,21 +275,25 @@ def parse_events(text: str, tz: tzinfo) -> list[CalendarEvent] | None:
         items = parsed.get("events", parsed.get("items")) if isinstance(parsed, dict) else parsed
         if not isinstance(items, list):
             return None
-        return [
+        listed = [
             _event(i.get("summary") or i.get("title"), i.get("start"), i.get("end"), tz)
             for i in items[:_MAX_EVENTS]
             if isinstance(i, dict)
         ]
-    if _EMPTY_RE.search(text):
-        return []
-    events = [
-        _event(m["title"], m["start"].strip(), m["end"].strip(), tz)
-        for m in (_LINE_RE.match(line) for line in text.splitlines())
-        if m is not None
-    ]
-    if events or _LISTED_RE.search(text):
-        return events[:_MAX_EVENTS]
-    return None
+    else:
+        if _EMPTY_RE.search(text):
+            return []
+        matches = [
+            m for m in (_LINE_RE.match(line) for line in text.splitlines()) if m is not None
+        ]
+        if not matches and not _LISTED_RE.search(text):
+            return None
+        listed = [
+            _event(m["title"], m["start"].strip(), m["end"].strip(), tz)
+            for m in matches[:_MAX_EVENTS]
+        ]
+    events = [ev for ev in listed if ev is not None]
+    return None if listed and not events else events
 
 
 def _calendar_id(principal_email: str) -> str:
@@ -303,13 +340,15 @@ async def read_todays_calendar(now: datetime, tz: tzinfo) -> list[CalendarEvent]
             }),
             timeout=CALENDAR_TIMEOUT_SECONDS,
         )
-    except Exception:
+    except Exception as exc:
         # TimeoutError included: a slow calendar never holds the brief up.
-        logger.info("top_three: calendar unavailable for the brief", exc_info=True)
+        # The type only — a calendar error can carry event text or addresses.
+        logger.info("top_three: calendar unavailable for the brief (%s)", type(exc).__name__)
         return None
     events = parse_events(raw, tz)
     if events is None:
-        logger.info("top_three: calendar reply not readable: %s", str(raw)[:200])
+        # Never the reply itself: it holds the principal's event titles.
+        logger.info("top_three: calendar reply not readable (%d chars)", len(str(raw)))
     return events
 
 
@@ -347,8 +386,14 @@ def free_gaps(
     work: tuple[time, time],
 ) -> list[tuple[datetime, datetime]]:
     """Free stretches of at least half an hour left today inside working
-    hours, in order. All-day events do not block time."""
+    hours, in order. None on a weekend — the calendar tools' business-day
+    rule (``calendar_tools.is_business_day``), which also refuses to book
+    then. All-day and zero-length events do not block time."""
+    from openexecutive.orchestrator.calendar_tools import is_business_day
+
     day = now.astimezone(tz).date()
+    if not is_business_day(day):
+        return []
     window_start = datetime.combine(day, work[0], tzinfo=tz)
     window_end = datetime.combine(day, work[1], tzinfo=tz)
     # Not before now, rounded up to the next quarter hour.
@@ -360,7 +405,7 @@ def free_gaps(
     cursor = max(window_start, rounded)
     busy = sorted(
         (e.start, e.end) for e in events
-        if e.start is not None and e.end is not None
+        if e.start is not None and e.end is not None and e.end > e.start
     )
     gaps: list[tuple[datetime, datetime]] = []
     for b_start, b_end in busy:
@@ -408,7 +453,8 @@ def calendar_hash(events: list[CalendarEvent], tz: tzinfo) -> str:
         return f"{local.hour:02d}:{local.minute // 15 * 15:02d}"
 
     blocks = sorted(
-        f"{_q(e.start)}-{_q(e.end)}" for e in events if e.start is not None and e.end is not None
+        f"{_q(e.start)}-{_q(e.end)}" for e in events
+        if e.start is not None and e.end is not None and e.end > e.start
     )
     all_day = sum(1 for e in events if e.all_day)
     blob = json.dumps({"blocks": blocks, "all_day": all_day}, sort_keys=True)
@@ -422,10 +468,10 @@ def render_events(events: list[CalendarEvent], tz: tzinfo) -> list[dict[str, str
         (e.start, e.end, e.title) for e in events if e.start is not None and e.end is not None
     )
     for start, end, title in timed:
-        rows.append({
-            "time": f"{start.astimezone(tz):%H:%M}–{end.astimezone(tz):%H:%M}",
-            "title": title,
-        })
+        when = f"{start.astimezone(tz):%H:%M}"
+        if end > start:
+            when += f"–{end.astimezone(tz):%H:%M}"
+        rows.append({"time": when, "title": title})
     return rows
 
 
@@ -440,9 +486,10 @@ async def build_top_three(
     """``(items, calendar)`` for the solo morning brief. Never raises.
 
     ``items``: up to three ``{key, kind, text, why, slot}`` — ``slot`` is set
-    only when a calendar was read. ``calendar``: ``{"events": [...], "hash":
-    str}`` when one was read, else None. The calendar is read only when there
-    is something to place.
+    only when a calendar was read on a business day. ``calendar``:
+    ``{"events": [...], "hash": str}`` when one was read (at the weekend
+    too), else None. The calendar is read only when there is something to
+    place.
     """
     try:
         from openexecutive.memory.workspace_settings import get_user_timezone
@@ -462,7 +509,14 @@ async def build_top_three(
     if events is None:
         return items, None
     try:
-        items = assign_slots(items, free_gaps(events, now=now, tz=tz, work=working_hours()), tz)
+        from openexecutive.orchestrator.calendar_tools import is_business_day
+
+        # No slot suggestions on a weekend (the calendar tools will not book
+        # one then either); the day's events are still listed.
+        if is_business_day(now.astimezone(tz).date()):
+            items = assign_slots(
+                items, free_gaps(events, now=now, tz=tz, work=working_hours()), tz
+            )
         calendar = {"events": render_events(events, tz), "hash": calendar_hash(events, tz)}
     except Exception:
         logger.exception("top_three: slot planning failed — no slots in this brief")

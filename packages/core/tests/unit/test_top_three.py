@@ -16,6 +16,7 @@ import pytest
 
 from openexecutive.api.routes import today as today_route
 from openexecutive.api.routes.today import ActivityResponse, TodayResponse
+from openexecutive.audit import AuditLogger, set_audit_logger
 from openexecutive.briefing import brief_state, narrative_cache, top_three
 from openexecutive.briefing.narrative import (
     STANDALONE_BRIEF_SOLO_SYSTEM,
@@ -44,12 +45,17 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(ws, "_configured_timezone", lambda: UTC_ZONE)
     monkeypatch.setattr(brief_state, "handled_since", lambda since, limit=20: [])
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    # Modules that bound log_event at import (honcho_client, via a goal
+    # write) still reach the shared logger: point it at the temp DB, never
+    # ./episodic_memory.db.
+    set_audit_logger(AuditLogger(db_path=db))
     episodic.initialize_db(db)
     dept_store.initialize_db(db)
     people_store.initialize_db(db)
     dept_registry.invalidate()
     people_registry.invalidate()
     yield db
+    set_audit_logger(None)
     dept_registry.invalidate()
     people_registry.invalidate()
 
@@ -140,6 +146,48 @@ def test_parses_json_and_an_empty_day() -> None:
     assert top_three.parse_events(empty, UTC_ZONE) == []
 
 
+def test_only_a_date_is_all_day_and_unreadable_times_are_dropped() -> None:
+    reply = json.dumps({"events": [
+        {"summary": "Reminder", "start": {"dateTime": "2026-09-25T09:00:00Z"},
+         "end": {"dateTime": "2026-09-25T09:00:00Z"}},
+        {"summary": "Garbled", "start": {"dateTime": "not a time"},
+         "end": {"dateTime": "2026-09-25T10:00:00Z"}},
+        {"summary": "Backwards", "start": {"dateTime": "2026-09-25T11:00:00Z"},
+         "end": {"dateTime": "2026-09-25T10:00:00Z"}},
+        {"summary": "No times"},
+        {"summary": "Bad date", "start": {"date": "2026-13-45"}, "end": {"date": "2026-13-46"}},
+        {"summary": "Holiday", "start": {"date": "2026-09-25"}, "end": {"date": "2026-09-26"}},
+    ]})
+    events = top_three.parse_events(reply, UTC_ZONE)
+    assert events is not None
+    # The zero-length event is timed, not all day; unreadable ones are gone.
+    assert [(e.title, e.all_day) for e in events] == [("Reminder", False), ("Holiday", True)]
+    zero = events[0]
+    assert zero.start == zero.end == datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
+    # It blocks nothing (no split at 09:00) and is not counted as all day.
+    gaps = top_three.free_gaps(events, now=NOW, tz=UTC_ZONE, work=(time(9), time(18)))
+    assert [(f"{a:%H:%M}", f"{b:%H:%M}") for a, b in gaps] == [("09:00", "18:00")]
+    assert top_three.calendar_hash(events, UTC_ZONE) == top_three.calendar_hash(
+        [CalendarEvent("x", None, None, all_day=True)], UTC_ZONE
+    )
+    assert top_three.render_events(events, UTC_ZONE) == [
+        {"time": "all day", "title": "Holiday"}, {"time": "09:00", "title": "Reminder"},
+    ]
+    text = (
+        "Successfully retrieved 2 events from calendar 'primary' for x@example.com:\n"
+        '- "Broken" (Starts: soon, Ends: later) ID: b | Link: https://x\n'
+        '- "Lunch" (Starts: 2026-09-25T12:00:00Z, Ends: 2026-09-25T13:00:00Z) ID: c | Link: https://x'
+    )
+    parsed = top_three.parse_events(text, UTC_ZONE)
+    assert parsed is not None and [e.title for e in parsed] == ["Lunch"]
+    # Events listed but none readable: no calendar, never a free day.
+    garbled = json.dumps({"events": [
+        {"summary": "Garbled", "start": {"dateTime": "soon"}, "end": {"dateTime": "later"}},
+    ]})
+    assert top_three.parse_events(garbled, UTC_ZONE) is None
+    assert top_three.parse_events(text.rsplit("\n", 1)[0], UTC_ZONE) is None
+
+
 @pytest.mark.parametrize("reply", [
     json.dumps({"error": "calendar not shared"}),
     "Error calling tool 'get_events': 404 Not Found",
@@ -162,7 +210,7 @@ def _ev(title: str, start: str, end: str) -> CalendarEvent:
 _DAY = [
     _ev("Call", "2026-09-25T09:30:00+00:00", "2026-09-25T10:00:00+00:00"),
     _ev("Review", "2026-09-25T10:20:00+00:00", "2026-09-25T12:00:00+00:00"),
-    CalendarEvent("Offsite", None, None),
+    CalendarEvent("Offsite", None, None, all_day=True),
 ]
 
 
@@ -174,6 +222,11 @@ def test_free_gaps_skip_meetings_short_gaps_and_the_past() -> None:
     later = top_three.free_gaps(_DAY, now=NOW.replace(hour=12, minute=7), tz=UTC_ZONE,
                                 work=(time(9), time(18)))
     assert [(f"{a:%H:%M}", f"{b:%H:%M}") for a, b in later] == [("12:15", "18:00")]
+
+
+def test_no_slots_at_the_weekend() -> None:
+    saturday = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    assert top_three.free_gaps([], now=saturday, tz=UTC_ZONE, work=(time(9), time(18))) == []
 
 
 def test_each_item_gets_its_own_block_until_the_day_runs_out() -> None:
@@ -261,6 +314,29 @@ def test_uses_primary_when_the_executive_is_signed_in_as_the_principal(
     assert gw.calls[0]["arguments"]["calendar_id"] == "primary"
 
 
+def test_the_log_never_carries_calendar_text(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    _principal()
+    # api.main's logging setup turns propagation off on "openexecutive" when
+    # any earlier test on this worker imported the app; caplog listens on the
+    # root logger, so turn it back on for this test.
+    monkeypatch.setattr(logging.getLogger("openexecutive"), "propagate", True)
+    caplog.set_level(logging.DEBUG, logger="openexecutive.briefing.top_three")
+    _connect(monkeypatch, _Gateway("Board dinner with Dana at Nopa — confidential"))
+    assert asyncio.run(top_three.read_todays_calendar(NOW, UTC_ZONE)) is None
+    _connect(monkeypatch, _Gateway(RuntimeError("event 'Board dinner' for maya@example.com")))
+    assert asyncio.run(top_three.read_todays_calendar(NOW, UTC_ZONE)) is None
+    logged = " ".join(
+        r.getMessage() + (str(r.exc_info[1]) if r.exc_info else "") for r in caplog.records
+    )
+    assert "Board dinner" not in logged and "maya@example.com" not in logged
+    assert all(r.exc_info is None for r in caplog.records)
+    assert "chars" in logged and "RuntimeError" in logged
+
+
 @pytest.mark.parametrize("case", ["no_gateway", "no_email", "raises", "slow", "error"])
 def test_no_calendar_in_every_failure(case: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(top_three, "CALENDAR_TIMEOUT_SECONDS", 0.05)
@@ -344,6 +420,27 @@ def test_solo_brief_without_a_calendar_has_no_slots(monkeypatch: pytest.MonkeyPa
     assert "TOP THREE TODAY" in context
     assert "suggested slot" not in context and "no free block" not in context
     assert "TODAY'S CALENDAR" not in context
+
+
+def test_a_weekend_brief_lists_the_day_but_suggests_no_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_solo_state()
+    _stub_brief(monkeypatch)
+    _connect(monkeypatch, _Gateway(_TEXT_REPLY))
+    saturday = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    items, calendar = asyncio.run(top_three.build_top_three(
+        [_due(4, "overdue", "2026-09-23", "Send the revised invoice")], now=saturday,
+    ))
+    assert items and all("slot" not in i for i in items)
+    assert calendar is not None and calendar["events"]
+    context = render_briefing_context(
+        period_label="p", activity=[], mode="solo",
+        today_data={"departments": [], "people": [], "proposals": [],
+                    "top_three": items, "today_calendar": calendar},
+    )
+    assert "suggested slot" not in context and "no free block" not in context
+    assert "TODAY'S CALENDAR" in context
 
 
 def test_a_broken_calendar_never_fails_the_brief(monkeypatch: pytest.MonkeyPatch) -> None:

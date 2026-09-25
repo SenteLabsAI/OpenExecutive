@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -195,6 +195,12 @@ def _parse_iso(raw: str) -> datetime | None:
         return None
 
 
+def is_business_day(day: date) -> bool:
+    """Monday to Friday. Shared with the morning brief's slot suggestions
+    (``briefing.top_three``), so it never suggests a day this refuses."""
+    return day.weekday() < 5  # Saturday=5, Sunday=6
+
+
 def _check_business_hours(dt: datetime, start_hhmm: str, end_hhmm: str) -> bool:
     """Return True if dt falls within business hours (single-tz, v1 limitation)."""
     try:
@@ -202,7 +208,7 @@ def _check_business_hours(dt: datetime, start_hhmm: str, end_hhmm: str) -> bool:
         eh, em = (int(x) for x in end_hhmm.split(":"))
     except (ValueError, AttributeError):
         return True  # misconfigured cap → don't block
-    if dt.weekday() >= 5:  # Saturday=5, Sunday=6
+    if not is_business_day(dt.date()):
         return False
     t_minutes = dt.hour * 60 + dt.minute
     return (sh * 60 + sm) <= t_minutes < (eh * 60 + em)

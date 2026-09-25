@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -80,6 +80,9 @@ class MorningBriefWorkflow(Workflow):
     section = WorkflowSection.OPERATING
     estimated_minutes = 1
     background = True
+    # Solo reads the principal's commitments and calendar (top three today),
+    # so only they may run it from chat there. Team is unchanged.
+    principal_only_modes: ClassVar[frozenset[str]] = frozenset({"solo"})
 
     def input_model(self) -> type[BaseModel]:
         return MorningBriefInput

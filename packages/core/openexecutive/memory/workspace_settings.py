@@ -263,6 +263,48 @@ def _stored_zone(raw: object) -> str | None:
         return None
 
 
+def _read_row(db_path: Path | None) -> sqlite3.Row | None:
+    """The stored row, or None when there is none to read (no file, no
+    table, no row). Raises on a real read failure (a locked or corrupt DB)."""
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return None
+    try:
+        conn = _connect(path)
+        try:
+            # SELECT *: a table created before the role columns existed has
+            # none of them, and a read never migrates (_stored_role).
+            row: sqlite3.Row | None = conn.execute(
+                f"SELECT * FROM {TABLE} WHERE id = 1"  # noqa: S608 — constant table name
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return None
+        raise
+    return row
+
+
+def read_stored_mode(db_path: Path | None = None) -> WorkspaceMode | None:
+    """The mode as stored — the default (team) when nothing is stored — or
+    None when it could not be read: a read error, or a stored value that is
+    not a mode. Unlike ``get_workspace`` this does not turn a failure into
+    team, for callers that must not act on a mode they could not read (the
+    scheduler retiring the solo-only weekly review). Never raises."""
+    try:
+        row = _read_row(db_path)
+    except Exception as exc:
+        logger.warning(
+            "workspace: could not read the stored mode (%s: %s) — reporting it unknown",
+            type(exc).__name__, exc,
+        )
+        return None
+    if row is None:
+        return DEFAULT_MODE
+    return _valid_mode(row["mode"])
+
+
 def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
     """The stored settings, or the defaults when nothing is stored.
 
@@ -271,25 +313,10 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
     locked or corrupt DB, say) also reads as the defaults but is logged as
     a warning so it can be diagnosed; and a stored value that no longer
     validates (a hand-edited mode, a zone this Python cannot load) is
-    ignored field by field.
+    ignored field by field. ``read_stored_mode`` tells a failed read apart.
     """
     try:
-        path = _resolve_db_path(db_path)
-        if not path.exists():
-            return WorkspaceSettings()
-        conn = _connect(path)
-        try:
-            # SELECT *: a table created before the role columns existed has
-            # none of them, and a read never migrates (_stored_role).
-            row = conn.execute(
-                f"SELECT * FROM {TABLE} WHERE id = 1"  # noqa: S608 — constant table name
-            ).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc):
-            _log_read_failure(exc)
-        return WorkspaceSettings()
+        row = _read_row(db_path)
     except Exception as exc:
         _log_read_failure(exc)
         return WorkspaceSettings()

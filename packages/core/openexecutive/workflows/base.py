@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -116,6 +116,11 @@ class Workflow(ABC):
     # See WorkflowMeta.playbooks. Declare every playbook `run` loads via
     # workflows.playbooks.load_playbook (a test holds the two in sync).
     playbooks: tuple[str, ...] = ()
+    # Workspace modes in which only the principal, on a surface that verified
+    # it is them, may run this workflow from chat (`run_workflow`): its
+    # artifact carries the principal's own data (their decisions, commitments,
+    # goals, calendar) or it writes to them. Empty = anyone who can chat.
+    principal_only_modes: ClassVar[frozenset[str]] = frozenset()
 
     @abstractmethod
     def input_model(self) -> type[BaseModel]:

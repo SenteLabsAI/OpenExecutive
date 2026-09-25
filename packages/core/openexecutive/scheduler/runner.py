@@ -1200,6 +1200,19 @@ def _workspace_mode() -> str:
     return get_workspace().mode
 
 
+def _team_for_sure(kind: str) -> bool:
+    """Whether a solo-only ``kind`` must stop because the workspace really is
+    in team mode. Fails open: a mode that could not be read
+    (``read_stored_mode`` → None — a locked DB, say) is not team, so one bad
+    read never retires the weekly review or breaks its chain; the next run
+    checks again. Always False for a kind that runs in both modes."""
+    if kind not in _SOLO_ONLY_KINDS:
+        return False
+    from openexecutive.memory.workspace_settings import read_stored_mode
+
+    return read_stored_mode() == "team"
+
+
 def _pinned_spec(kind: str, raw: str) -> str | None:
     """The cadence spec an operator's env value pins, or None if it is not
     a valid one: ``HH:MM`` for a daily kind, ``weekly@DOW@HH:MM`` for a
@@ -1466,6 +1479,18 @@ def _enqueue_next_principal_brief(kind: str, after: datetime) -> int | None:
     """
     from openexecutive.memory.episodic import insert_scheduled_action
 
+    if kind in _WEEKLY_KINDS:
+        # A switch to solo while this run finished already seeded the next
+        # one (seed_weekly_review); a second would send two reviews. A check
+        # that fails chains anyway — a missed review is worse than a double.
+        try:
+            already = _has_pending_brief(kind)
+        except Exception:
+            logger.exception("scheduler: pending check for %s failed — chaining", kind)
+            already = False
+        if already:
+            logger.info("scheduler: %s already pending — not chaining another", kind)
+            return None
     run_at = _next_principal_run_at(kind, after)
     if run_at is None:
         logger.warning("scheduler: unknown recurring kind %r — no chain", kind)
@@ -1804,8 +1829,11 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
     Chains the next occurrence regardless of delivery outcome — a single
     failed brief shouldn't break the recurring rhythm. Mirrors the
     dept_cadence handler's pattern. A solo-only kind (the weekly review)
-    that fires in a team workspace is retired without running and without
-    chaining — the backstop for a row the switch to team did not cancel.
+    that fires in a workspace whose stored mode is team is retired without
+    running and without chaining — the backstop for a row the switch to
+    team did not cancel. A mode that cannot be read counts as not team
+    (``_team_for_sure``), so a transient read error neither retires the row
+    nor breaks the chain.
     """
     import uuid
 
@@ -1822,7 +1850,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
 
     assert action.id is not None
     kind = action.kind
-    if not _kind_runs_in(kind, _workspace_mode()):
+    if _team_for_sure(kind):
         from openexecutive.memory.episodic import mark_action_cancelled
 
         mark_action_cancelled(action.id, "team workspace: the weekly review runs in solo mode")
@@ -1916,10 +1944,10 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
     # tick re-attempts on the same shape of input. A solo-only kind whose
     # workspace switched to team while it ran does not chain.
     mark_action_done(action.id)
-    if _kind_runs_in(kind, _workspace_mode()):
-        _enqueue_next_principal_brief(kind, after=_chain_after(action))
-    else:
+    if _team_for_sure(kind):
         logger.info("scheduler: %s not chained — the workspace is now in team mode", kind)
+    else:
+        _enqueue_next_principal_brief(kind, after=_chain_after(action))
 
 
 def _outreach_source(action: ScheduledAction) -> tuple[str, str]:
