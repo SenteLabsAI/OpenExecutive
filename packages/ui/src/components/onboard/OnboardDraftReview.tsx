@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { ProfileSections } from "@/components/company-profile/ProfileSections";
 import OnboardDepartmentsDraft from "@/components/onboard/OnboardDepartmentsDraft";
 import OnboardPeopleDraft from "@/components/onboard/OnboardPeopleDraft";
+import { profileWording } from "@/components/shell/navConfig";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   commitOnboardDraft,
@@ -39,6 +40,8 @@ export default function OnboardDraftReview({
   // and no departments; the existing areas stay as they are.
   const { mode, role: workspaceRole } = useWorkspace();
   const solo = mode === "solo";
+  // The profile's headings follow the role, as on /company-profile.
+  const wording = profileWording(mode, workspaceRole.role_kind);
   const [me, setMe] = useState<OnboardPersonDraft>(() => {
     const drafted = turn.draft_people.find((p) => p.is_principal) ?? turn.draft_people[0];
     // The title from the role step, when the draft has none.
@@ -165,6 +168,7 @@ export default function OnboardDraftReview({
         saving={false}
         onSave={mergeIntoDraft}
         omit={["org"]}
+        wording={wording}
       />
 
       {solo ? (
@@ -225,7 +229,7 @@ export default function OnboardDraftReview({
         </label>
         <p className="text-xs text-fg-muted mt-1 mb-3">
           {solo ? (
-            "Links you to this login, so your chats and owner rights work straight away."
+            "Links you to this login, so your chats and full access work straight away."
           ) : (
             <>
               Links the person marked &ldquo;This is me&rdquo; to this login, so your chats and

@@ -153,16 +153,19 @@ function OnboardFlow() {
   );
 }
 
+// Solo is for anyone using Open Executive just for themselves, whatever
+// their role — not only someone running a business. The two bodies are kept
+// the same shape and about the same length, so they read as a pair.
 const CHOICES: { mode: WorkspaceMode; title: string; body: string }[] = [
   {
     mode: "solo",
     title: "Just me",
-    body: "Only you use Open Executive. Goals are grouped by area; the people you work with are your contacts.",
+    body: "An executive that works for you, whatever your role: your own business, a team you lead, or clients you advise. It keeps track of your goals and promises, briefs you each morning and reviews your week with you. The people you work with stay your private contacts.",
   },
   {
     mode: "team",
     title: "Me and my team",
-    body: "The Executive works with your team too. Departments and people, each department checking in daily.",
+    body: "An executive that works for you and your team. It organises your company into departments, each with its own goals and a lead, checks in with every department daily and briefs you each morning. Your teammates can sign in and message it too.",
   },
 ];
 
@@ -215,7 +218,7 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
     <div className="max-w-2xl mx-auto px-6 py-16 w-full">
       <h1 className="text-xl font-semibold text-fg">Who is Open Executive for?</h1>
       <p className="text-sm text-fg-muted mt-1">
-        This decides what setup asks about and what you see afterwards. You can change it
+        Your answer decides what setup asks and what you see afterwards. You can change it
         later in Settings.
       </p>
 

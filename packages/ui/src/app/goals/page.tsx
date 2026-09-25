@@ -95,8 +95,8 @@ export default function GoalsPage() {
 
               {grouped.all.length === 0 ? (
                 <p className="text-sm text-fg-muted">
-                  There are no areas to put goals in yet. Areas come with your business
-                  profile — finish setup first.
+                  There are no areas to put goals in yet. Areas come with your profile —
+                  finish setup first.
                 </p>
               ) : total === 0 && addingTo === null ? (
                 <div className="rounded-xl border border-line bg-surface-elevated p-6 text-center">

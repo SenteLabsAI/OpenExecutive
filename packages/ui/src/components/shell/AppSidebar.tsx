@@ -69,7 +69,7 @@ export default function AppSidebar({
   home,
 }: AppSidebarProps) {
   const { sessions } = useSessions();
-  const { mode } = useWorkspace();
+  const { mode, role } = useWorkspace();
   const [reviewBadge, setReviewBadge] = useState(0);
 
   // Knowledge base badge: items waiting in its review queue. Refetched on
@@ -81,7 +81,7 @@ export default function AppSidebar({
       .catch(() => {});
   }, [pathname]);
 
-  const groups = buildPrimaryNav({ isOnboarded, reviewBadge, mode });
+  const groups = buildPrimaryNav({ isOnboarded, reviewBadge, mode, roleKind: role.role_kind });
   const recent = recentWebChats(sessions, RECENT_LIMIT);
 
   const briefingActive = home ? home.mode === "briefing" : isNavActive("/", pathname);

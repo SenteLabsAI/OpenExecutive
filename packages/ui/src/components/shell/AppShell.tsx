@@ -9,7 +9,12 @@ import AskOEPanel from "@/components/askoe/AskOEPanel";
 import Icon from "@/components/Icon";
 import PausedBanner from "@/components/executive/PausedBanner";
 import AppSidebar from "@/components/shell/AppSidebar";
-import { buildMobilePrimary, isNavActive } from "@/components/shell/navConfig";
+import {
+  buildMobilePrimary,
+  isNavActive,
+  PROFILE_NAV,
+  profileWording,
+} from "@/components/shell/navConfig";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
 // Routes that own their full layout and should not be wrapped by the
@@ -21,6 +26,8 @@ const EXEMPT_EXACT = new Set(["/"]);
 
 // Human-readable labels for path segments shown in the breadcrumb.
 // Dynamic segments (slugs / ids) are rendered raw and truncated by CSS.
+// `company-profile` is the team label; TopBar names it for the mode and
+// role, as the sidebar does.
 const SEGMENT_LABELS: Record<string, string> = {
   today: "Today",
   review: "Review",
@@ -122,6 +129,8 @@ function TopBar({
   segments: string[];
   onOpenDrawer: () => void;
 }) {
+  const { mode, role } = useWorkspace();
+  const profileLabel = PROFILE_NAV[profileWording(mode, role.role_kind)].label;
   // Breadcrumb chain. Only the top-level section (segment[0]) is a real
   // route in this app — intermediate segments like `runs` in
   // `/jobs/runs/<id>` or `session` in `/audit/session/<id>` are not
@@ -131,7 +140,10 @@ function TopBar({
   const crumbs = segments.map((segment, idx) => {
     const linkable = idx === 0;
     const href = linkable ? "/" + segment : null;
-    return { href, label: labelFor(segment) };
+    return {
+      href,
+      label: idx === 0 && segment === "company-profile" ? profileLabel : labelFor(segment),
+    };
   });
 
   return (

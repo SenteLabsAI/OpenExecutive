@@ -9,6 +9,8 @@
 // differs, so there is only ever one implementation of these nine sections.
 
 import { useEffect, useState, useRef } from "react";
+import { PROFILE_COPY, type ProfileCopy } from "@/components/company-profile/profileCopy";
+import type { ProfileWording } from "@/components/shell/navConfig";
 import { type CompanyProfile } from "@/lib/api";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -259,7 +261,7 @@ function usePendingSection(
 }
 // ── section components ────────────────────────────────────────────────────────
 
-function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [name, setName] = useState(profile.name);
   const [industry, setIndustry] = useState(profile.industry);
   const [stage, setStage] = useState(profile.stage);
@@ -285,7 +287,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionCompo
 
   return (
     <Section
-      title="Company Basics"
+      title={copy.basicsTitle}
       editing={editing}
       onEditingChange={setEditing}
       saving={saving}
@@ -319,7 +321,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionCompo
   );
 }
 
-function MissionSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function MissionSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [mission, setMission] = useState(profile.mission);
   const [vision, setVision] = useState(profile.vision);
   useEffect(() => { setMission(profile.mission); setVision(profile.vision); }, [profile]);
@@ -344,7 +346,7 @@ function MissionSection({ profile, saving, onSave, pending }: SectionComponentPr
       }
       editContent={
         <div className="space-y-3">
-          <div><FieldLabel>Mission</FieldLabel><Textarea value={mission} onChange={setMission} rows={2} placeholder="Why does this company exist?" /></div>
+          <div><FieldLabel>Mission</FieldLabel><Textarea value={mission} onChange={setMission} rows={2} placeholder={copy.missionPlaceholder} /></div>
           <div><FieldLabel>Vision</FieldLabel><Textarea value={vision} onChange={setVision} rows={2} placeholder="Where are you in 5 years?" /></div>
         </div>
       }
@@ -424,7 +426,7 @@ function CompetitiveSection({ profile, saving, onSave, pending }: SectionCompone
   );
 }
 
-function ExternalDependenciesSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function ExternalDependenciesSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [vendors, setVendors] = useState(listToText(profile.vendors ?? []));
   const [tickers, setTickers] = useState(listToText(profile.tickers ?? []));
   useEffect(() => {
@@ -446,11 +448,7 @@ function ExternalDependenciesSection({ profile, saving, onSave, pending }: Secti
       onSave={() => onSave({ vendors: textToList(vendors), tickers: textToList(tickers) })}
       viewContent={
         <div className="space-y-4">
-          <p className="text-xs text-fg-subtle">
-            Named here, a vendor or ticker counts as company data: the Executive
-            will start watching its status page or filings on its own instead of
-            asking you first.
-          </p>
+          <p className="text-xs text-fg-subtle">{copy.dependenciesNote}</p>
           <div><FieldLabel>Vendors &amp; dependencies</FieldLabel><Pills items={profile.vendors ?? []} /></div>
           <div><FieldLabel>Tracked tickers</FieldLabel><Pills items={profile.tickers ?? []} /></div>
         </div>
@@ -537,7 +535,7 @@ function CultureSection({ profile, saving, onSave, pending }: SectionComponentPr
   );
 }
 
-function OrgSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function OrgSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [departments, setDepartments] = useState(listToText(profile.org_structure.departments));
   const [leadership, setLeadership] = useState(listToText(profile.org_structure.leadership_team));
   useEffect(() => {
@@ -559,13 +557,13 @@ function OrgSection({ profile, saving, onSave, pending }: SectionComponentProps)
       onSave={() => onSave({ org_structure: { departments: textToList(departments), leadership_team: textToList(leadership) } })}
       viewContent={
         <div className="space-y-4">
-          <div><FieldLabel>Departments</FieldLabel><Pills items={profile.org_structure.departments} /></div>
+          <div><FieldLabel>{copy.departmentsLabel}</FieldLabel><Pills items={profile.org_structure.departments} /></div>
           <div><FieldLabel>Leadership Team</FieldLabel><Pills items={profile.org_structure.leadership_team} /></div>
         </div>
       }
       editContent={
         <div className="space-y-3">
-          <div><FieldLabel>Departments (one per line)</FieldLabel><Textarea value={departments} onChange={setDepartments} rows={3} placeholder={"Engineering\nProduct\nGTM"} /></div>
+          <div><FieldLabel>{copy.departmentsLabel} (one per line)</FieldLabel><Textarea value={departments} onChange={setDepartments} rows={3} placeholder={"Engineering\nProduct\nGTM"} /></div>
           <div><FieldLabel>Leadership Team (one per line)</FieldLabel><Textarea value={leadership} onChange={setLeadership} rows={3} placeholder={"Alice Chen, CEO\nBob Smith, CTO"} /></div>
         </div>
       }
@@ -622,6 +620,7 @@ interface SectionComponentProps {
   // Ask OE suggested values (flat keys) — sections merge their own keys
   // into draft state and flip into edit mode when one lands.
   pending: PendingValues | null;
+  copy: ProfileCopy;
 }
 
 // ── composed section list ────────────────────────────────────────────────────
@@ -663,6 +662,9 @@ export interface ProfileSectionsProps {
    * derived from its people and department tables at commit time — rendering
    * it here too would give the user two places to edit the same thing. */
   omit?: SectionId[];
+  /** What the profile is called: "company" (team, the default), or in solo
+   * "business" (an owner) or "work" (anyone else). Copy only. */
+  wording?: ProfileWording;
 }
 
 export function ProfileSections({
@@ -671,12 +673,21 @@ export function ProfileSections({
   onSave,
   pending = null,
   omit = [],
+  wording = "company",
 }: ProfileSectionsProps) {
   const hidden = new Set(omit);
+  const copy = PROFILE_COPY[wording];
   return (
     <div className="flex flex-col gap-4">
       {SECTION_ORDER.filter(({ id }) => !hidden.has(id)).map(({ id, Component }) => (
-        <Component key={id} profile={profile} saving={saving} onSave={onSave} pending={pending} />
+        <Component
+          key={id}
+          profile={profile}
+          saving={saving}
+          onSave={onSave}
+          pending={pending}
+          copy={copy}
+        />
       ))}
     </div>
   );
