@@ -373,13 +373,41 @@ def effective_principal_role(session: Session | None = None) -> PrincipalRole:
     """The principal's role for a turn: the session's override when it
     carries one (an eval scenario's ``principal_role`` — scenarios run
     concurrently on one Executive, so they cannot write the install-wide
-    row), else the workspace's, read fresh. Never raises; an empty role
-    means none was given."""
+    row), else the role pinned for the session's current turn
+    (``pin_turn_principal_role``), else the workspace's, read fresh. Never
+    raises; an empty role means none was given."""
     if session is not None:
         override = getattr(session, "principal_role", None)
         if isinstance(override, PrincipalRole):
             return override.principal_role()
+        pinned = getattr(session, "turn_principal_role", None)
+        if isinstance(pinned, PrincipalRole):
+            return pinned.principal_role()
     return get_workspace().principal_role()
+
+
+def pin_turn_principal_role(session: Session, mode: str) -> PrincipalRole:
+    """Resolve the principal's role for a NEW turn in ``mode`` and pin it on
+    the session, like ``pin_turn_workspace_mode``.
+
+    Solo: the override, else the workspace read fresh — never the previous
+    turn's pin, so an edit applies from the next turn. Team: an empty role
+    (team never renders one). Every later ``effective_principal_role(session)``
+    in the turn — the org block, the specialists' ``<principal_role>`` tag,
+    and a workflow the turn starts, whose specialists read it through
+    ``router.load_principal_role`` — then returns this same role, so a
+    ``PUT /workspace`` sent mid-turn cannot give them different roles.
+    """
+    role = PrincipalRole()
+    if mode == "solo":
+        override = getattr(session, "principal_role", None)
+        role = (
+            override.principal_role()
+            if isinstance(override, PrincipalRole)
+            else get_workspace().principal_role()
+        )
+    session.turn_principal_role = role
+    return role
 
 
 def _upsert(db_path: Path | None, **columns: str | None) -> None:

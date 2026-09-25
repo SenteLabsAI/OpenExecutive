@@ -521,9 +521,10 @@ routing:
     measured_on stay in the Executive's org block. Specialists never see
     that block, and the kind changes which advice fits: an executive inside
     a large company makes the case to their CFO or VP rather than raising a
-    round. The turn resolves the role ONCE, next to pin_turn_workspace_mode
-    (Executive.stream_chat and the committee path): effective_principal_role
-    (session) in solo, None in team; the same value goes to
+    round. The turn pins the role ONCE, next to pin_turn_workspace_mode
+    (Executive.stream_chat and the committee path):
+    pin_turn_principal_role(session, mode) — the role in solo, an empty
+    role in team; the same value goes to
     build_system_blocks and, as principal_role_context(...), to
     _stream_agent_loop(principal_role_tag=…) and so route_parallel — so the
     org block and every specialist tag in a turn describe the same role ("" in
@@ -2425,10 +2426,17 @@ departments:
     pin_turn_workspace_mode(session) (resolves override-else-workspace at
     the start of a turn and pins it on Session.turn_workspace_mode;
     Executive.stream_chat and the committee path call it, reflection and
-    research pin their own run's mode on their synthetic sessions),
+    research pin their own run's mode on their synthetic sessions — and the
+    caller's effective_principal_role as turn_principal_role),
     set_principal_role(**fields) (validates every field before writing; no
     side effects — the next turn reads it), effective_principal_role(session)
-    (Session.principal_role override, else the stored role).
+    (Session.principal_role override, else the role pinned for the turn,
+    else the stored role), pin_turn_principal_role(session, mode) (at the
+    start of a turn, with pin_turn_workspace_mode: solo pins the override
+    else a fresh read on Session.turn_principal_role, team pins an empty
+    role — so a workflow the turn starts, whose specialists read the role
+    via router.load_principal_role, sees the org block's role even after a
+    mid-turn PUT; the next turn re-resolves).
     HTTP: GET /workspace, PUT /workspace
     (principal-only, open before a principal exists; the role fields are
     optional in the PUT body like timezone, null/blank clears one). GET
@@ -2441,7 +2449,10 @@ departments:
     (bad values are logged and skipped, never abort the load); a fixture
     load resets to the defaults and applies it (optional role keys
     role_kind / role_title / reports_to / remit / measured_on, each skipped
-    with a warning naming only the field when invalid); the user snapshot
+    with a warning naming only the field when invalid; _apply_workspace
+    returns the mode and zone only — model_dump(exclude=ROLE_FIELDS) — since
+    it becomes the `workspace` key of the POST /fixtures/{name}/load and
+    /fixtures/unload responses, which do not check the caller); the user snapshot
     writes one (every field, so the role round-trips), and a load while the live state is the user's own (no fixture, no
     client active) rewrites `_user_backup/workspace.yaml` even when an
     older backup is reused — unload keeps `_user_backup`; an unload from a
@@ -2458,7 +2469,11 @@ departments:
     and preferred channel), followed — when a role is set — by role lines
     ("- Role: <title> — <kind in plain words>", "- Reports to:",
     "- Responsible for:", "- Measured on:", each only when set, _safe()
-    sanitized and capped at ROLE_TEXT_MAX), then "## Your Principal's Goals" grouped by area
+    sanitized and capped at ROLE_TEXT_MAX), opened by the static
+    _SOLO_ROLE_LEAD_IN ("Their role — private to them: use it to tailor your
+    advice and drafts, and don't share it with anyone else.") whenever any
+    role line renders — block 1 goes out on every turn whoever sent it, and
+    reports_to / measured_on are the principal's own; then "## Your Principal's Goals" grouped by area
     (area title +
     slug, each goal's period, key result, target, current, status and
     goal_id); areas with no goals are skipped; no authority levels, heads,

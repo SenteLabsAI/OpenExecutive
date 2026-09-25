@@ -24,6 +24,7 @@ from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoning
 from openexecutive.memory.workspace_settings import (
     effective_principal_role,
     effective_workspace_mode,
+    pin_turn_principal_role,
     pin_turn_workspace_mode,
 )
 from openexecutive.orchestrator.action_chips import summarize_action
@@ -744,19 +745,18 @@ class Executive:
         # workspace).
         workspace_mode = pin_turn_workspace_mode(session)
         # Solo: the principal's role (the session's override, else the
-        # workspace's), resolved once with the mode so the org block and every
-        # specialist's <principal_role> tag in the turn describe the same role.
-        # Team never renders one.
-        principal_role = (
-            effective_principal_role(session) if workspace_mode == "solo" else None
-        )
+        # workspace's), pinned for the turn with the mode so the org block,
+        # every specialist's <principal_role> tag and any workflow the turn
+        # starts describe the same role. Team pins an empty role and renders
+        # none.
+        principal_role = pin_turn_principal_role(session, workspace_mode)
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
             workspace_mode=workspace_mode,
-            principal_role=principal_role,
+            principal_role=principal_role if workspace_mode == "solo" else None,
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -1024,16 +1024,14 @@ class Executive:
             logger.exception("Failed to load executive override; using defaults")
 
         workspace_mode = pin_turn_workspace_mode(session)
-        principal_role = (
-            effective_principal_role(session) if workspace_mode == "solo" else None
-        )
+        principal_role = pin_turn_principal_role(session, workspace_mode)
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
             workspace_mode=workspace_mode,
-            principal_role=principal_role,
+            principal_role=principal_role if workspace_mode == "solo" else None,
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.

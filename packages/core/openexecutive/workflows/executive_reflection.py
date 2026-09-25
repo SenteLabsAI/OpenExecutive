@@ -622,7 +622,10 @@ class ExecutiveReflectionWorkflow(Workflow):
         # workflow doesn't analyse, it acts). We avoid an import-time
         # cycle by deferring this.
         from openexecutive.config import get_settings
-        from openexecutive.memory.workspace_settings import effective_workspace_mode
+        from openexecutive.memory.workspace_settings import (
+            effective_principal_role,
+            effective_workspace_mode,
+        )
         from openexecutive.orchestrator.executive import (
             _ALL_SKILL_HANDLERS,
             _ALL_SKILL_TOOLS,
@@ -691,7 +694,13 @@ class ExecutiveReflectionWorkflow(Workflow):
                 seen.add(("email", person.email))
 
         # Pin the run's mode so its tool handlers agree with its toolkit.
-        reflection_session = Session(seen_channel_refs=seen, turn_workspace_mode=mode)
+        # ...and its principal's role, so a specialist it consults (or a workflow
+        # it starts) sees the role of the turn that started it, not a fresh read.
+        reflection_session = Session(
+            seen_channel_refs=seen,
+            turn_workspace_mode=mode,
+            turn_principal_role=effective_principal_role(outer_session),
+        )
         ctx_token = current_session.set(reflection_session)
 
         # Sort tools by name for prompt-cache stability (same convention

@@ -1277,11 +1277,19 @@ def _apply_workspace(
     wanted: WorkspaceSettings | None, *, keep_when_missing: bool
 ) -> dict[str, Any]:
     """Make ``wanted`` (from ``_read_workspace_file``) the live settings and
-    return what is in effect. ``wanted is None`` (no file) means the
-    defaults — or, with ``keep_when_missing``, leave the settings as they
-    are. A write failure is logged rather than aborting a half-applied load.
+    return what is in effect — the mode and zone only. ``wanted is None`` (no
+    file) means the defaults — or, with ``keep_when_missing``, leave the
+    settings as they are. A write failure is logged rather than aborting a
+    half-applied load.
+
+    The returned dict becomes the ``workspace`` key of the load / unload
+    response, which any caller of those routes sees, so the principal's role
+    (who they report to, what they are measured on — shown by ``GET
+    /workspace`` to the principal only) is left out of it. It is still
+    applied.
     """
     from openexecutive.memory.workspace_settings import (
+        ROLE_FIELDS,
         WorkspaceSettings,
         get_workspace,
         reset_workspace_settings,
@@ -1297,7 +1305,7 @@ def _apply_workspace(
                 restore_workspace_settings(wanted)
         except Exception:
             logger.exception("fixture: applying the workspace settings failed")
-    return get_workspace().model_dump()
+    return get_workspace().model_dump(exclude=set(ROLE_FIELDS))
 
 
 def _dump_workspace(workspace_path: Path) -> None:

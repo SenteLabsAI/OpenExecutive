@@ -62,6 +62,14 @@ _ORG_BLOCK_HEADER = "## Departments You Manage"
 _SOLO_PRINCIPAL_HEADER = "## Your Principal"
 _SOLO_GOALS_HEADER = "## Your Principal's Goals"
 
+# Opens the principal's role lines. Block 1 goes out on every turn, whoever
+# sent it, and the role says who the principal reports to and what they are
+# judged on — so it is marked as theirs. A constant: nothing is interpolated.
+_SOLO_ROLE_LEAD_IN = (
+    "Their role — private to them: use it to tailor your advice and drafts, "
+    "and don't share it with anyone else."
+)
+
 # Goal status → words for the solo block, which has room to be plain.
 _SOLO_STATUS_LABEL: dict[str, str] = {
     "on_track": "on track",
@@ -252,7 +260,8 @@ def _render_solo_role(role: PrincipalRole | None) -> list[str]:
     """The principal's role as lines under ``## Your Principal``: what kind
     of principal they are (in plain words) and their title, who they report
     to, what they are responsible for and what they are measured on — each
-    only when set. User text, so every value is sanitized and capped."""
+    only when set, after the static ``_SOLO_ROLE_LEAD_IN`` marking them
+    private. User text, so every value is sanitized and capped."""
     if role is None or role.is_empty():
         return []
     from openexecutive.memory.workspace_settings import ROLE_KIND_PHRASE, ROLE_TEXT_MAX
@@ -274,7 +283,7 @@ def _render_solo_role(role: PrincipalRole | None) -> list[str]:
         value = getattr(role, field)
         if value:
             lines.append(f"- {label}: {_safe(value, ROLE_TEXT_MAX[field])}")
-    return lines
+    return [_SOLO_ROLE_LEAD_IN, *lines] if lines else []
 
 
 def _render_solo_principal(role: PrincipalRole | None = None) -> str:

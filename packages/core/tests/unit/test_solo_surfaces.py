@@ -270,6 +270,57 @@ def test_research_synthesis_in_solo_routes_only_to_the_principal(
     assert "YOUR TEAM" not in turn
 
 
+class _RoleSeeingProvider(_CapturingProvider):
+    """Records the principal role the current session resolves at call time —
+    what a specialist or workflow started from the pass would read."""
+
+    def __init__(self, responses: list[_Resp]) -> None:
+        super().__init__(responses)
+        self.roles: list[ws.PrincipalRole] = []
+
+    async def messages_create(self, **kwargs: Any) -> _Resp:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        self.roles.append(ws.effective_principal_role(current_session.get()))
+        return await super().messages_create(**kwargs)
+
+
+def test_reflection_and_research_carry_the_turns_pinned_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both passes bind a session of their own; it carries the role pinned
+    for the turn that started them, so an edit made mid-turn does not reach
+    what they start."""
+    from openexecutive import providers
+    from openexecutive.monitoring.research.models import ResearchFinding
+    from openexecutive.workflows import executive_research
+
+    _solo()
+    _principal()
+    ws.set_principal_role(role_kind="in_house", role_title="VP Sales")
+    outer = Session()
+    ws.pin_turn_workspace_mode(outer)
+    pinned = ws.pin_turn_principal_role(outer, "solo")
+    ws.set_principal_role(role_title="Chief Revenue Officer")  # mid-turn edit
+
+    reflection = _RoleSeeingProvider([_Resp([_Text("ok")], "end_turn")])
+    with set_session(outer):
+        _run_reflection(reflection, monkeypatch)
+    assert reflection.roles == [pinned]
+
+    research = _RoleSeeingProvider([_Resp([_Text("**Quiet:** 1 reviewed.")], "end_turn")])
+    monkeypatch.setattr(providers, "get_provider", lambda _model: research)
+    monkeypatch.setattr(executive_research, "log_model_usage", lambda *a, **k: None)
+    finding = ResearchFinding(
+        title="Rival cut prices", summary="Announced today.",
+        severity_hint="high", suggested_audience="principal", confidence="high",
+    )
+    with set_session(outer):
+        asyncio.run(executive_research._executive_synthesis_loop([finding]))
+    assert research.roles == [pinned]
+    assert pinned.role_title == "VP Sales"
+
+
 def test_research_synthesis_system_is_unchanged_in_team() -> None:
     from openexecutive.workflows.executive_research import _build_synthesis_system
 
@@ -1197,9 +1248,10 @@ def test_solo_studio_fixture_seeds_a_solo_workspace() -> None:
     dept_registry.invalidate()
     people_registry.invalidate()
 
-    assert applied == expected.model_dump()
-    assert applied["reports_to"] is None  # an owner reports to no one here
+    # The summary names the mode and zone only; the role is applied all the same.
+    assert applied == {"mode": "solo", "timezone": "Europe/Stockholm"}
     assert ws.get_workspace() == expected
+    assert ws.get_workspace().reports_to is None  # an owner reports to no one here
     principal = people_store.find_principal_person()
     assert principal is not None and principal.full_name == "Maya Lindqvist"
     states = dept_store.list_departments()

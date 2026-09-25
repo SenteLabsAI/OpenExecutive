@@ -28,7 +28,11 @@ from openexecutive.audit import AuditLogger, set_audit_logger
 from openexecutive.cli import fixture_loader
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
-from openexecutive.departments.prompt_block import _ORG_BLOCK_CHAR_CAP, render_org_block
+from openexecutive.departments.prompt_block import (
+    _ORG_BLOCK_CHAR_CAP,
+    _SOLO_ROLE_LEAD_IN,
+    render_org_block,
+)
 from openexecutive.evals import judges
 from openexecutive.evals.scenarios import scenario_principal_role, validate_scenario_yaml
 from openexecutive.memory import episodic
@@ -44,6 +48,7 @@ from openexecutive.prompts.cache_manager import build_system_blocks
 from ._agent_loop_fakes import FinalMsg, ScriptedProvider, TextBlock, ToolUseBlock
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+LEAD_IN = _SOLO_ROLE_LEAD_IN
 
 IN_HOUSE = {
     "role_kind": "in_house",
@@ -208,6 +213,45 @@ def test_effective_principal_role_prefers_the_session_override() -> None:
     assert type(ws.effective_principal_role()) is ws.PrincipalRole
 
 
+def test_pin_turn_principal_role_holds_for_the_turn() -> None:
+    """Pinned with the mode at the start of a turn: a PUT /workspace sent
+    mid-turn cannot give a workflow the turn starts (whose specialists read
+    the role through router.load_principal_role) a different role than the
+    org block; the next turn picks up the change."""
+    ws.set_workspace_mode("solo")
+    ws.set_principal_role(**IN_HOUSE)
+    session = Session()
+    pinned = ws.pin_turn_principal_role(session, "solo")
+    assert pinned == ws.PrincipalRole(**IN_HOUSE)
+    assert session.turn_principal_role == pinned
+
+    ws.set_principal_role(role_title="Chief Operating Officer", reports_to=None)  # mid-turn edit
+    assert ws.effective_principal_role(session) == pinned
+    with set_session(session):
+        assert router.load_principal_role() == router.principal_role_context(pinned)
+    # Without the pin (no session) it is a fresh read.
+    assert ws.effective_principal_role().role_title == "Chief Operating Officer"
+
+    # The next turn re-resolves from the workspace, never from the old pin.
+    fresh = ws.pin_turn_principal_role(session, "solo")
+    assert fresh.role_title == "Chief Operating Officer" and fresh.reports_to is None
+    with set_session(session):
+        assert "Chief Operating Officer" in router.load_principal_role()
+
+
+def test_pin_turn_principal_role_team_pins_nothing_and_override_wins() -> None:
+    ws.set_principal_role(**IN_HOUSE)
+    session = Session()
+    assert ws.pin_turn_principal_role(session, "team") == ws.PrincipalRole()
+    assert ws.effective_principal_role(session) == ws.PrincipalRole()
+
+    override = ws.PrincipalRole(role_kind="independent")
+    session = Session(principal_role=override)
+    assert ws.pin_turn_principal_role(session, "solo") == override
+    ws.set_principal_role(role_kind="owner")
+    assert ws.effective_principal_role(session) == override
+
+
 # --------------------------------------------------------------------------- #
 # GET / PUT /workspace
 # --------------------------------------------------------------------------- #
@@ -343,6 +387,7 @@ def test_solo_org_block_renders_the_role_lines_under_the_principal() -> None:
     assert block.startswith(
         "## Your Principal\n\n"
         f"- Priya Natarajan (principal) — person_id {pid} — reachable on: email priya@example.com\n"
+        f"{LEAD_IN}\n"
         "- Role: Director of Operations — an executive inside an organisation they do not own\n"
         "- Reports to: VP Operations, Dana Ruiz\n"
         "- Responsible for: Warehouses, carrier contracts and on-time delivery\n"
@@ -367,7 +412,8 @@ def test_role_line_variants(role: dict[str, str], line: str) -> None:
     _seed_principal_and_goal()
     ws.set_principal_role(**role)
     lines = render_org_block(mode="solo").splitlines()
-    assert lines[3] == line
+    assert lines[3] == LEAD_IN
+    assert lines[4] == line
     assert not any(ln.startswith(("- Reports to", "- Responsible", "- Measured")) for ln in lines)
 
 
@@ -379,6 +425,24 @@ def test_no_role_means_no_role_lines() -> None:
         "reachable on: email priya@example.com\n\n## Your Principal's Goals"
     )
     assert "- Role:" not in block
+    assert LEAD_IN not in block
+
+
+def test_the_private_lead_in_is_static_and_only_with_role_lines() -> None:
+    """The lead-in marks the role as the principal's own (block 1 goes out on
+    every turn, whoever sent it). It is a constant, and it appears only when
+    at least one role line does."""
+    assert "{" not in LEAD_IN and "}" not in LEAD_IN
+    assert "private" in LEAD_IN and "share" in LEAD_IN
+    _seed_principal_and_goal()
+    # role_kind "other" with no title renders no line, so no lead-in either.
+    ws.set_principal_role(role_kind="other")
+    assert LEAD_IN not in render_org_block(mode="solo")
+    ws.set_principal_role(measured_on="Safety incidents")
+    block = render_org_block(mode="solo")
+    assert f"{LEAD_IN}\n- Measured on: Safety incidents" in block
+    assert block.count(LEAD_IN) == 1
+    assert LEAD_IN not in render_org_block()  # team never renders it
 
 
 def test_role_lines_are_sanitized_and_capped() -> None:
@@ -399,7 +463,8 @@ def test_role_without_a_principal_still_renders() -> None:
     role still tells the Executive who it works for."""
     ws.set_principal_role(role_kind="owner", role_title="Founder")
     assert render_org_block(mode="solo") == (
-        "## Your Principal\n\n- Role: Founder — the owner or founder of their own business"
+        f"## Your Principal\n\n{LEAD_IN}\n"
+        "- Role: Founder — the owner or founder of their own business"
     )
 
 
@@ -467,6 +532,48 @@ def test_stream_chat_passes_the_role_to_the_blocks_in_solo_only() -> None:
         router.principal_role_context(ws.PrincipalRole(role_kind="owner")),
         router.principal_role_context(override),
         "",
+    ]
+
+
+class _StopTurn(Exception):
+    pass
+
+
+def test_both_turn_paths_pin_the_role_on_the_session() -> None:
+    """stream_chat and the committee path pin the role with the mode, so a
+    workflow the turn starts reads the same role as the org block."""
+    ws.set_principal_role(role_kind="owner", role_title="Founder")
+    blocks_role: list[Any] = []
+
+    def _blocks(*_a: Any, **kw: Any) -> list[dict[str, Any]]:
+        blocks_role.append(kw.get("principal_role"))
+        return [{"type": "text", "text": "persona"}]
+
+    async def _loop(*_a: Any, **_kw: Any):  # type: ignore[no-untyped-def]
+        raise _StopTurn
+        yield ""  # pragma: no cover — makes this an async generator
+
+    async def _run(turn: Any, session: Session) -> None:
+        with pytest.raises(_StopTurn):
+            async for _ in turn(user_message="hi", session=session):
+                pass
+
+    executive = Executive()
+    with (
+        patch("openexecutive.orchestrator.executive.build_system_blocks", new=_blocks),
+        patch.object(Executive, "_stream_agent_loop", new=_loop),
+        patch("openexecutive.orchestrator.executive.audit_log", lambda *a, **k: None),
+    ):
+        for turn in (executive.stream_chat, executive.stream_chat_with_committee):
+            session = Session(workspace_mode="solo")
+            asyncio.run(_run(turn, session))
+            assert session.turn_principal_role == ws.PrincipalRole(role_kind="owner", role_title="Founder")
+            team = Session(workspace_mode="team")
+            asyncio.run(_run(turn, team))
+            assert team.turn_principal_role == ws.PrincipalRole()
+    assert blocks_role == [
+        ws.PrincipalRole(role_kind="owner", role_title="Founder"), None,
+        ws.PrincipalRole(role_kind="owner", role_title="Founder"), None,
     ]
 
 
@@ -663,7 +770,79 @@ def test_workspace_file_role_keys_are_read_and_applied(tmp_path: Path) -> None:
     wanted = fixture_loader._read_workspace_file(f)
     assert wanted == ws.WorkspaceSettings(mode="solo", **IN_HOUSE)
     applied = fixture_loader._apply_workspace(wanted, keep_when_missing=False)
-    assert applied == ws.WorkspaceSettings(mode="solo", **IN_HOUSE).model_dump()
+    # Applied in full; reported as the mode and zone only.
+    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", **IN_HOUSE)
+    assert applied == {"mode": "solo", "timezone": None}
+
+
+class _FakeStore:
+    RESEARCH_COLLECTION = "recent_research"
+    COMPANY_COLLECTION = "company_docs"
+
+    def __init__(self, **_kw: object) -> None: ...
+
+    def delete_company_docs(self) -> None: ...
+
+    def delete_documents(self, **_kw: object) -> None: ...
+
+    def delete_notion_docs(self) -> None: ...
+
+    def delete_attachment_docs(self) -> None: ...
+
+
+def test_fixture_load_and_unload_responses_carry_no_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /fixtures/{name}/load and /fixtures/unload return the applied
+    workspace settings to whoever calls them; the principal's role (shown by
+    GET /workspace to the principal only) must not ride along."""
+    from openexecutive.api.routes import fixtures as fixtures_route
+    from openexecutive.memory import honcho_client
+
+    monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", _FakeStore)
+    monkeypatch.setattr("openexecutive.knowledge.notion_sync.reset_local_state", lambda **_kw: None)
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr(honcho_client, "delete_workspace_and_reset_client", _noop)
+    monkeypatch.setattr(honcho_client, "set_active_workspace_id", lambda *a, **k: None)
+    monkeypatch.setattr(honcho_client, "clear_active_workspace_id", lambda *a, **k: None)
+    monkeypatch.setattr(honcho_client, "get_active_workspace_id", lambda: "openexec")
+
+    profile = tmp_path / "company" / "profile.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("name: My Co\n")
+    fixture = tmp_path / "fixtures" / "demo"
+    fixture.mkdir(parents=True)
+    (fixture / "profile.yaml").write_text("name: Demo Co\n")
+    (fixture / "workspace.yaml").write_text(yaml.safe_dump({"mode": "solo", **IN_HOUSE}))
+    monkeypatch.setattr(fixture_loader, "FIXTURES_ROOT", tmp_path / "fixtures")
+    settings = type("S", (), {
+        "vector_store_path": tmp_path / "chroma",
+        "company_profile_path": profile,
+        "honcho_workspace_id": "openexec",
+    })()
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: settings)
+    # The user's own role, backed up by the load and restored by the unload.
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", role_kind="owner", remit="Mine"))
+
+    app = FastAPI()
+    app.include_router(fixtures_route.router)
+    client = TestClient(app)
+
+    loaded = client.post("/fixtures/demo/load")
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json()["workspace"] == {"mode": "solo", "timezone": None}
+    assert ws.get_workspace().principal_role() == ws.PrincipalRole(**IN_HOUSE)  # applied
+    assert "Dana Ruiz" not in loaded.text
+
+    unloaded = client.post("/fixtures/unload")
+    assert unloaded.status_code == 200, unloaded.text
+    assert unloaded.json()["workspace"] == {"mode": "solo", "timezone": None}
+    assert ws.get_workspace().principal_role() == ws.PrincipalRole(role_kind="owner", remit="Mine")
+    for resp in (loaded, unloaded):
+        assert not set(ws.ROLE_FIELDS) & set(resp.json()["workspace"])
 
 
 def test_bad_role_keys_in_a_workspace_file_are_skipped(tmp_path: Path) -> None:

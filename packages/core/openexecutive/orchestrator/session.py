@@ -64,6 +64,12 @@ class Session:
     # the committee path) so the tool handlers use the same mode as the
     # persona and tool list. Re-resolved every turn; never an override.
     turn_workspace_mode: str | None = None
+    # The principal's role resolved for the turn in progress, pinned with the
+    # mode by `workspace_settings.pin_turn_principal_role` (an empty role in
+    # team), so the org block, the specialists' <principal_role> tag and any
+    # workflow the turn starts agree even if the role is edited mid-turn.
+    # Re-resolved every turn; never an override.
+    turn_principal_role: PrincipalRole | None = None
     # True for a run nobody is watching that goes through the chat loop (the
     # scheduler's PROACTIVE TRIGGER dispatch). Its prompt quotes stored intent
     # text, so the loop neither offers nor runs the tools in
