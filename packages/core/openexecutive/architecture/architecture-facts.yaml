@@ -931,9 +931,24 @@ routing:
     refuses any person_id but the principal's (fails closed on a roster
     read error) — the "contacts only when the founder asks" rule is code,
     not just prompt, on the passes that run unattended with inbound text in
-    context. Both read the mode through
+    context. Solo's unattended passes also never get create_calendar_event,
+    create_instant_meeting or run_workflow
+    (schedule_tools.SOLO_UNATTENDED_WITHHELD_TOOLS): a booking reaches its
+    attendees and a workflow can do anything its steps do, so injected text
+    ("book a sync with X") must not reach a contact — the founder books and
+    starts workflows from chat. Both read the mode through
     effective_workspace_mode(current_session) before binding their own
     session, and carry a caller's override onto it.
+
+    Offered means runnable, in BOTH modes: schedule_tools.unattended_toolkit
+    builds each pass's handler map from exactly the tool list it offers
+    (handlers_for_offered_tools), so a name the model emits without being
+    offered it is skipped as "unknown tool". Before this, both passes
+    dispatched against the whole _ALL_SKILL_HANDLERS registry, so tools
+    they deliberately withhold still ran when emitted — the raw
+    send_*_dm tools (send_slack_dm has no roster check), ack_alert and
+    close_open_loop in reflection; the watchlist writes, run_workflow,
+    send_company_broadcast and ack_alert in research.
 
     Audit trail: every tool the reflection model invokes flows through
     the existing handler audit rows (`tool_invocation` with actor=

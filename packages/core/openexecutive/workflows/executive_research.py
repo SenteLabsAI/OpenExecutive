@@ -805,9 +805,7 @@ async def _executive_synthesis_loop(
         configured_integrations,
         current_session,
         filter_tools_for_configured_channels,
-        filter_tools_for_workspace_mode,
-        founder_only_handlers,
-        tools_withheld_in_mode,
+        unattended_toolkit,
     )
     from openexecutive.orchestrator.session import Session
     from openexecutive.people.store import list_people
@@ -873,15 +871,11 @@ async def _executive_synthesis_loop(
     # can't route a finding into e.g. send_slack_dm when Slack has no token.
     configured = configured_integrations(settings)
     tools = filter_tools_for_configured_channels(tools, settings)
-    # Solo withholds the team-only tools, and refuses them at dispatch.
-    tools = filter_tools_for_workspace_mode(tools, mode)
-    withheld = tools_withheld_in_mode(mode)
-    handlers = {
-        name: h for name, h in _ALL_SKILL_HANDLERS.items() if name not in withheld
-    }
-    if solo:
-        # Nobody but the founder hears from this unattended pass.
-        handlers = founder_only_handlers(handlers)
+    # Dispatch only what was offered: _SYNTHESIS_EXCLUDED_TOOLS (watchlist
+    # writes, raw DMs, ack_alert, run_workflow) used to stay runnable here if
+    # the model emitted them anyway. Solo also withholds the team tools and
+    # meeting booking, and messages only the founder.
+    tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
     # Build the system prompt for the SAME configured set, so the routing
     # menu never names a DM channel the model can't actually use.
     synthesis_system = _build_synthesis_system(configured, has_roster, mode=mode)

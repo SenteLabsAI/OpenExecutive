@@ -1509,6 +1509,53 @@ def founder_only_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
     return {**handlers, "message_person": _message_founder_only}
 
 
+# What a solo install's UNATTENDED passes (reflection, research) additionally
+# never get: booking a meeting reaches its attendees, and starting a workflow
+# can do anything its steps do. Those passes run with inbound mail and chat in
+# their context and nobody watching, so injected text ("book a sync with X")
+# must not be able to reach a contact. The founder books meetings and starts
+# workflows from chat, where they are in the room.
+SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "create_calendar_event",
+    "create_instant_meeting",
+    "run_workflow",
+})
+
+
+def handlers_for_offered_tools(
+    tools: list[dict[str, Any]], handlers: dict[str, Any]
+) -> dict[str, Any]:
+    """The handlers for exactly the tools in ``tools`` — nothing else.
+
+    A dispatcher that looks names up in the full handler registry runs a tool
+    the model was never offered whenever the model emits its name anyway (from
+    a guess, or from text injected into its context). Building the map from
+    the offered list makes "not offered" mean "cannot run"."""
+    offered = {t.get("name", "") for t in tools}
+    return {name: h for name, h in handlers.items() if name in offered}
+
+
+def unattended_toolkit(
+    tools: list[dict[str, Any]], handlers: dict[str, Any], mode: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """``(tools, handlers)`` for an unattended pass (reflection, research).
+
+    ``tools`` is the pass's own list (already narrowed to what it offers and
+    to the configured channels). Solo withholds the team-only tools and
+    ``SOLO_UNATTENDED_WITHHELD_TOOLS``, and its ``message_person`` reaches the
+    founder only. Either mode, the handler map is built from the list that
+    is returned, so a name the model emits without being offered it is
+    skipped as unknown instead of run. Order is preserved.
+    """
+    tools = filter_tools_for_workspace_mode(tools, mode)
+    if mode == "solo":
+        tools = [t for t in tools if t.get("name", "") not in SOLO_UNATTENDED_WITHHELD_TOOLS]
+    offered = handlers_for_offered_tools(tools, handlers)
+    if mode == "solo":
+        offered = founder_only_handlers(offered)
+    return tools, offered
+
+
 def withheld_tool_error(tool_name: str, mode: str) -> str:
     """The JSON error tool_result for a call to a tool this mode does not
     offer. The model can still emit one (from an earlier turn, or a guess),

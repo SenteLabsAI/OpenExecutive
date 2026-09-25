@@ -612,9 +612,7 @@ class ExecutiveReflectionWorkflow(Workflow):
             configured_integrations,
             current_session,
             filter_tools_for_configured_channels,
-            filter_tools_for_workspace_mode,
-            founder_only_handlers,
-            tools_withheld_in_mode,
+            unattended_toolkit,
         )
         from openexecutive.orchestrator.session import Session
         from openexecutive.people.store import list_people
@@ -712,15 +710,10 @@ class ExecutiveReflectionWorkflow(Workflow):
         # can't route into a DM tool whose integration has no token.
         configured = configured_integrations(settings)
         tools = filter_tools_for_configured_channels(tools, settings)
-        # Solo withholds the team-only tools, and refuses them at dispatch.
-        tools = filter_tools_for_workspace_mode(tools, mode)
-        withheld = tools_withheld_in_mode(mode)
-        handlers = {
-            name: h for name, h in _ALL_SKILL_HANDLERS.items() if name not in withheld
-        }
-        if solo:
-            # Nobody but the founder hears from this unattended pass.
-            handlers = founder_only_handlers(handlers)
+        # Dispatch only what was offered (a withheld name the model emits
+        # anyway is skipped as unknown). Solo also withholds the team tools,
+        # meeting booking and run_workflow, and messages only the founder.
+        tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
         # Build the system prompt for the SAME configured set, so the
         # audience rule never names a DM channel the model can't use.
         reflection_system = (
