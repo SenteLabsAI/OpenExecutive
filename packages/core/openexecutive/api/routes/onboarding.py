@@ -97,7 +97,7 @@ async def start_onboarding() -> OnboardStatusResponse:
 
 
 @router.post("/onboard/answer", response_model=OnboardStatusResponse)
-async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
+async def submit_answer(body: OnboardAnswerRequest, request: Request) -> OnboardStatusResponse:
     state = _wizard_sessions.get(body.session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
@@ -117,8 +117,19 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
     state = process_answer(state, body.answer)
 
     if state.completed:
+        from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
         from openexecutive.onboarding.profile_builder import build_and_save_profile
 
+        # Saving adds people with their emails (the web sign-in allow-list)
+        # and a principal, so once there is an owner it is theirs to do — the
+        # People routes' rule. Rolled back like a failed build, so the owner
+        # can still finish this session.
+        if not _caller_is_principal_or_unclaimed(request):
+            _wizard_sessions[body.session_id] = snapshot
+            raise HTTPException(
+                status_code=403,
+                detail="Only the owner can save this form, because it adds people and their emails.",
+            )
         try:
             build_and_save_profile(state)
         except Exception as exc:

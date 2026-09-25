@@ -223,9 +223,9 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
         )
     if own_row is not None and own_row.email and own_row.email.strip().lower() != email:
         raise OwnerEmailError(
-            "Your People entry already has a different sign-in email, and setup never "
-            "replaces it. Keep that one here, or sign in with it and change it on the "
-            "People page."
+            "The owner's People entry already has a different sign-in email, and setup "
+            "never replaces it. Keep that one here, or sign in with it and change it on "
+            "the People page."
         )
     return email
 
