@@ -2667,10 +2667,12 @@ people:
     (listed on /jobs); create_skill / update_skill / delete_skill (the
     shared skill review list); load_mcp_server (connects to any HTTPS URL,
     which can itself carry the turn's content — the dispatch guard covers
-    MCP tool uses too). Nor does it reach any MCP server but Google
-    Workspace: search_tools shows it only google_workspace__ tools and a
-    call_tool naming another server's tool is refused the same way
-    (`schedule_tools.private_turn_withholds`; see integrations.mcp_gateway).
+    MCP tool uses too). Of the MCP tools it may use only
+    `schedule_tools.PRIVATE_TURN_MCP_TOOLS` (Google Workspace reads and the
+    Gmail send / draft the gateway narrows to the principal): search_tools
+    shows it nothing else and a call_tool naming anything else is refused
+    the same way (`schedule_tools.private_turn_withholds`; see
+    integrations.mcp_gateway).
     Left offered: the email / DM / invite paths
     (they reach only the principal; Gmail goes through call_tool, whose
     Gmail / Calendar / Drive gates narrow recipients to the principal),
@@ -3315,12 +3317,38 @@ audit:
       - Otherwise False. On anyone else's turn a contact is a stranger, so
         a row naming one keeps its visibility: hiding it would tell the
         teammate who wrote it that the address is a contact.
+    Some rows are written before their turn binds its session, so the rule
+    also reads two scopes in audit.context (save/restore contextvars; an
+    inner scope never lifts an outer one; tasks and asyncio.to_thread calls
+    started inside inherit them; neither changes who the turn may reach):
+      - private_rows: every row is private. email_poller._handle_one_email
+        holds it for the whole handling of a mail from a contact or a
+        principal forward, from the privacy decision to _mark_read. Without
+        it the knowledge_retrieval row (retrieve(raw_email[:500]) is an
+        argument evaluated before Executive.chat binds the session) carried
+        the From line, subject and opening of the mail to every reader.
+      - principal_turn_rows: rows naming a contact are private, as on the
+        principal's own verified turn. people_tools.audit_rows_on_senders_turn
+        decorates the Slack, Discord and Telegram handlers: it resolves the
+        sender (off the event loop) and holds the scope when
+        people_tools.sent_by_principal (the sender is the principal and the
+        surface verifies them; Telegram only with a valid webhook secret and
+        a private chat). The web chat route holds it around its "User:" row,
+        its context fan-out and the SSE body when is_principal_on_verified_
+        surface(caller) — the Executive binds the caller to the session only
+        inside stream_chat. Covers the integration_inbound row, the
+        knowledge retrieval and alert triage, which all ran with no session.
+    Known signal, accepted: audit ids are one AUTOINCREMENT sequence, so a
+    reader who is not the principal can see a gap where a private row was
+    written (that one was, and roughly when), never what it says.
     A caller can add privacy, never remove it (`private=False` on a
     private turn still writes a private row), and the check fails closed:
     if it raises, or the roster cannot be read, the row is private.
     Reads: query / count / usage_summary take include_private (default
     True for internal readers; the department check-in passes False, since
-    its report goes to the department); api.routes.audit passes
+    its report goes to the department, both for the activity it reports and
+    for its "nothing new since the review" skip rule, whose run-or-skip the
+    department sees); api.routes.audit passes
     `caller_is_principal(request)` — the /alerts and /decisions rule: the
     principal's signed-in email, or no x-caller-email (CLI, curl, local
     login) once a principal is on the roster; nobody before one is. The
@@ -5051,10 +5079,13 @@ integrations:
     contact on a poller turn anyway. This turn and the principal-forward
     turn below set `Session.private_to_principal`: they reach the
     principal only, raise private alerts, are not offered
-    `schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS` or any MCP server's tools
-    but Google Workspace's, and write only audit rows
+    `schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS` or any MCP tool outside
+    `schedule_tools.PRIVATE_TURN_MCP_TOOLS`, and write only audit rows
     private to the principal — the poller's two inbound rows included
-    (`_private_to_principal_mail`, the same rule). Each message is handled
+    (`_private_to_principal_mail`, the same rule), and every row written
+    while the mail is handled, before the turn binds its session too
+    (the `openexecutive.audit.private_rows` scope; see the audit.private_rows
+    note). Each message is handled
     with no session bound (`schedule_tools.set_session(None)`), because
     `Executive.stream_chat` binds its session without unbinding it and the
     poller is one long-lived task: otherwise one message's private turn
@@ -5593,24 +5624,35 @@ integrations:
       (manage_document_comment etc.) can email a non-roster address and are NOT
       gated — a softer vector left open deliberately.
 
-    A private turn reaches no MCP server but Google Workspace. Only that
-    server's calls have the gates above; a Slack or Notion server, the
-    default `fetch` server (any URL, which can carry the turn's content) and
-    a server loaded at runtime have none. So on such a turn the chat loop
-    (Executive._stream_agent_loop) passes on only google_workspace__ tools
-    from search_tools (workflows.tool_catalog.filter_search_results; output
-    it cannot parse reads as no match) and refuses a call_tool naming any
-    other tool: schedule_tools.private_turn_withholds, answered with
+    A private turn may call only schedule_tools.PRIVATE_TURN_MCP_TOOLS, an
+    exact allow-list: the Google Workspace reads the code already uses or
+    documents (search_gmail_messages and get_gmail_message_content from the
+    email poller; get_events, list_calendars and query_freebusy from the
+    calendar surface below and the decisions route; search_drive_files, a
+    read in the Drive gate's tests) and the two gated Gmail tools
+    (send_gmail_message, draft_gmail_message), which the Gmail gate narrows
+    to the principal on such a turn. Not a server prefix: at the complete
+    tier much of Google Workspace reaches people with no recipient check —
+    a Google Chat message to a space, Docs / Sheets / Drive writes into
+    files already shared with others, manage_event on a shared calendar
+    (the calendar gate checks attendees only), a Drive file created from a
+    URL the server fetches, the comment-notification tools above — and no
+    other server has any check (a Slack or Notion server; the default
+    `fetch` server, whose URL can carry the turn's content; a server loaded
+    at runtime). So on such a turn the chat loop
+    (Executive._stream_agent_loop) passes on only the allowed tools from
+    search_tools (workflows.tool_catalog.filter_search_results; output it
+    cannot parse reads as no match) and refuses a call_tool naming anything
+    else: schedule_tools.private_turn_withholds, answered with
     private_turn_withheld_error and a tool_invocation audit row that is
     private to the principal (details.refused = "private_turn"). A missing
-    or non-string name is refused too. The name must be a plain tool name
-    right after the prefix (schedule_tools.private_turn_allows_mcp_tool):
-    extensible-mcp names tools <server>__<tool>, so a server loaded as
-    google_workspace__x (tools google_workspace__x__...) would otherwise
-    pass. search_tools and call_tool stay offered and load_mcp_server stays
-    withheld, so the offered list and its cached prefix do not change.
-    Residual: every Google Workspace tool stays callable on such a turn,
-    the ungated ones above included.
+    or non-string name is refused too, and names match exactly, so a server
+    loaded as google_workspace__x never passes. search_tools and call_tool
+    stay offered and load_mcp_server stays withheld, so the offered list
+    and its cached prefix do not change. Add a name to the allow-list only
+    for a tool that reads, or whose every recipient the gateway checks.
+    Residual: if the google_workspace server is not connected, a normal
+    turn could load a server under that exact name.
 
     Calendar tool surface (a subset of the complete tier; all namespaced google_workspace__):
       manage_event    — create/update/delete/rsvp (action param)

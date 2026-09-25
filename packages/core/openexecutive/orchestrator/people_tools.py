@@ -8,14 +8,18 @@ They sit alongside `create_alert`, the schedule/send tools, and
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
+import functools
+import inspect
 import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import date
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, ParamSpec
 
 from openexecutive.memory.honcho_client import directional_chat
 
@@ -361,12 +365,86 @@ def audit_row_private_to_principal(*payloads: Any) -> bool:
     question about one. On any other turn a contact is a stranger, so a row
     naming one stays as it is: hiding it would tell whoever wrote it that
     the address is a contact.
+
+    Some rows are written before their turn binds its session, so the audit
+    scopes count as well (``audit.context``): inside ``private_rows`` every
+    row is private (the email poller, for the whole handling of a private
+    mail), and inside ``principal_turn_rows`` a row naming a contact is, as
+    on the principal's own turn (a chat adapter, once it knows the principal
+    sent the message — see ``audit_rows_on_senders_turn``).
     """
-    if turn_is_private_to_principal():
+    from openexecutive.audit.context import rows_on_principal_turn, rows_private
+
+    if turn_is_private_to_principal() or rows_private():
         return True
-    if not contacts_reachable_now():
+    if not (contacts_reachable_now() or rows_on_principal_turn()):
         return False
     return _names_a_contact(payloads)
+
+
+def sent_by_principal(channel: str, channel_ref: str, sender: Any) -> bool:
+    """Whether a message a chat adapter received on ``channel`` from
+    ``sender`` (the Person it resolved, or None) starts the principal's own
+    verified turn — what ``is_principal_on_verified_surface`` answers once the
+    turn's session is bound. ``channel_ref`` is the id that session carries as
+    its ``origin_channel_ref`` (Telegram's chat id decides whether it is
+    verified at all)."""
+    if sender is None or getattr(sender, "is_principal", False) is not True:
+        return False
+    if getattr(sender, "archived", False) is True:
+        return False
+    surface = SimpleNamespace(
+        from_web_chat=False, origin_channel=channel, origin_channel_ref=channel_ref
+    )
+    return _is_verified_speaker_surface(surface)
+
+
+_P = ParamSpec("_P")
+
+
+def audit_rows_on_senders_turn(
+    channel: str,
+    sender_ref: Callable[[dict[str, Any]], str],
+    find_sender: Callable[[str], Any],
+) -> Callable[[Callable[_P, Awaitable[None]]], Callable[_P, Awaitable[None]]]:
+    """Decorate an inbound chat handler so the audit rows it writes before its
+    turn binds its session (the inbound row, the knowledge retrieval, alert
+    triage) follow the rule they follow once it is: when the principal sent
+    the message on a verified surface, a row that names one of their contacts
+    is private to the principal (``audit.context.principal_turn_rows``).
+
+    ``sender_ref`` picks the sender's user or chat id out of the handler's
+    arguments (by name), and ``find_sender`` resolves it to a Person, off the
+    event loop. A lookup that fails keeps such rows private. This decides
+    audit visibility only: contacts stay unreachable until the session is
+    bound.
+    """
+
+    def decorate(handler: Callable[_P, Awaitable[None]]) -> Callable[_P, Awaitable[None]]:
+        signature = inspect.signature(handler)
+
+        @functools.wraps(handler)
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
+            from openexecutive.audit.context import principal_turn_rows
+
+            try:
+                bound = signature.bind(*args, **kwargs)
+                bound.apply_defaults()
+                ref = sender_ref(dict(bound.arguments))
+                sender = await asyncio.to_thread(find_sender, ref) if ref else None
+                principal = sent_by_principal(channel, ref, sender)
+            except Exception:
+                logger.exception(
+                    "people_tools: could not tell who sent an inbound %s message — "
+                    "its rows naming a contact are kept private", channel,
+                )
+                principal = True
+            with principal_turn_rows(principal):
+                await handler(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
 
 
 # Keys whose value is a person or a DM recipient: person_id,

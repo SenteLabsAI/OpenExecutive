@@ -454,6 +454,7 @@ async def _handle_one_email(
     # in _run_executive) so it knows reply tools will block and proposes
     # to a human instead.
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.audit import private_rows
     from openexecutive.people.store import find_person_by_email
     sender_in_roster = find_person_by_email(from_addr) is not None
     # Mail from one of the principal's contacts, or mail they forwarded: its
@@ -468,60 +469,65 @@ async def _handle_one_email(
             message_id,
         )
         private = True
-    if not sender_in_roster:
-        # A contact, like any non-team sender, gets no reply from this turn
-        # (the gateway reaches contacts only when the principal asks
-        # directly). A contact's row reads exactly like a non-roster
-        # sender's; only its visibility differs (private to the principal).
-        logger.info(
-            "non-roster sender=%s message=%s — routing to Executive (no auto-reply allowed)",
-            from_addr, message_id,
+    # Every row written while this mail is handled is private when the mail
+    # is, however early it is written: the knowledge retrieval, for one,
+    # runs before the turn binds its private session. The scope ends with
+    # the handling.
+    with private_rows(private):
+        if not sender_in_roster:
+            # A contact, like any non-team sender, gets no reply from this turn
+            # (the gateway reaches contacts only when the principal asks
+            # directly). A contact's row reads exactly like a non-roster
+            # sender's; only its visibility differs (private to the principal).
+            logger.info(
+                "non-roster sender=%s message=%s — routing to Executive (no auto-reply allowed)",
+                from_addr, message_id,
+            )
+            audit_log(
+                "integration_inbound",
+                f"Accepted non-roster email from {from_addr} (reply blocked at outbound gate)",
+                actor="email",
+                details={
+                    "channel": "email",
+                    "from": from_addr,
+                    "message_id": message_id,
+                    "outcome": "accepted_non_roster",
+                },
+                private=private,
+            )
+
+        logger.info("routing message=%s to Executive", message_id)
+        subject_line = next(
+            (ln for ln in raw.splitlines() if ln.lower().startswith("subject:")), ""
         )
+        subject = subject_line[len("subject:"):].strip()[:160] if subject_line else ""
+        # Deterministic per-thread session id so every audit row from this inbound
+        # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
+        # with the integration_inbound row. Falls back to from_addr when the Gmail
+        # message exposes no thread header.
+        session_id = f"email:{thread_id or from_addr}"
         audit_log(
             "integration_inbound",
-            f"Accepted non-roster email from {from_addr} (reply blocked at outbound gate)",
+            f"Inbound email from {from_addr}: {subject}" if subject else f"Inbound email from {from_addr}",
             actor="email",
+            session_id=session_id,
             details={
                 "channel": "email",
-                "from": from_addr,
                 "message_id": message_id,
-                "outcome": "accepted_non_roster",
+                "thread_id": thread_id,
+                "from": from_addr,
+                "subject": subject,
             },
             private=private,
         )
+        try:
+            await _run_executive(
+                gateway, _strip_reply_to(raw), message_id, thread_id, from_addr, session_id
+            )
+        except Exception:
+            logger.exception("Executive raised for message=%s", message_id)
 
-    logger.info("routing message=%s to Executive", message_id)
-    subject_line = next(
-        (ln for ln in raw.splitlines() if ln.lower().startswith("subject:")), ""
-    )
-    subject = subject_line[len("subject:"):].strip()[:160] if subject_line else ""
-    # Deterministic per-thread session id so every audit row from this inbound
-    # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
-    # with the integration_inbound row. Falls back to from_addr when the Gmail
-    # message exposes no thread header.
-    session_id = f"email:{thread_id or from_addr}"
-    audit_log(
-        "integration_inbound",
-        f"Inbound email from {from_addr}: {subject}" if subject else f"Inbound email from {from_addr}",
-        actor="email",
-        session_id=session_id,
-        details={
-            "channel": "email",
-            "message_id": message_id,
-            "thread_id": thread_id,
-            "from": from_addr,
-            "subject": subject,
-        },
-        private=private,
-    )
-    try:
-        await _run_executive(
-            gateway, _strip_reply_to(raw), message_id, thread_id, from_addr, session_id
-        )
-    except Exception:
-        logger.exception("Executive raised for message=%s", message_id)
-
-    await _mark_read(gateway, message_id, user_email)
+        await _mark_read(gateway, message_id, user_email)
 
 
 def _one_line(value: str, limit: int) -> str:

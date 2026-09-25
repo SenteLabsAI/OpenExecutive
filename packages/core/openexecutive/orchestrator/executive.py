@@ -1502,7 +1502,8 @@ class Executive:
         # mail they forwarded) may reach the principal and nobody else: it is
         # not offered the tools that post to other people, publish where they
         # read, or start work outside the turn — again a stable list of its
-        # own — nor any MCP server's tools but Google Workspace's.
+        # own — and of the MCP tools, only Google Workspace reads and the
+        # recipient-gated Gmail send (`PRIVATE_TURN_MCP_TOOLS`).
         private_turn = turn_is_private_to_principal()
         private_withheld = PRIVATE_TURN_WITHHELD_TOOLS if private_turn else frozenset()
         not_offered = unattended_withheld | private_withheld
@@ -1658,9 +1659,10 @@ class Executive:
                 ]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
             # A private turn is not offered load_mcp_server either (it
-            # reaches any URL), nor another server's tools through call_tool
-            # (only Google Workspace's are recipient-gated to the principal),
-            # and the same guard refuses them.
+            # reaches any URL), nor any MCP tool through call_tool but those
+            # in PRIVATE_TURN_MCP_TOOLS (Google Workspace reads, and the Gmail
+            # send the gateway narrows to the principal), and the same guard
+            # refuses them.
             withheld_mcp_uses = [
                 tu for tu in mcp_tool_uses
                 if private_turn and private_turn_withholds(tu["name"], tu["input"])
@@ -2025,7 +2027,7 @@ class Executive:
                         continue
                     result = raw
                     if private_turn and tu["name"] == "search_tools":
-                        # Offer a private turn Google Workspace's tools only.
+                        # Offer a private turn PRIVATE_TURN_MCP_TOOLS only.
                         result = filter_search_results(result, private_turn_allows_mcp_tool)
                     logger.info("← %s  result=%s", tool_label, _trunc(result))
                     results_by_id[tu["id"]] = result

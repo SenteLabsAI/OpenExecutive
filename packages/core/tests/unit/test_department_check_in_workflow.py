@@ -696,3 +696,16 @@ def test_check_in_never_reads_a_row_private_to_the_principal(audit_db: AuditLogg
     queries = " ".join(str(c.kwargs.get("query", "")) for c in specialist.call_args_list)
     assert "runway review booked" in queries
     assert "Jordan Client" not in queries
+
+
+def test_needs_check_in_ignores_a_row_private_to_the_principal(audit_db: AuditLogger) -> None:
+    """Whether the check-in runs is seen by the department, so a row only the
+    principal may read must not decide it."""
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    audit_db.log("tool_invocation", "finance note: Jordan Client asked for a discount",
+                 actor="executive", department="finance", private=True)
+    assert needs_check_in(_finance(), datetime.now(UTC)) is not None
+    audit_db.log("tool_invocation", "finance note: runway review booked",
+                 actor="executive", department="finance")
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None

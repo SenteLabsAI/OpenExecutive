@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from openexecutive.config import get_settings
+from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -123,6 +124,20 @@ async def _get_telegram_file_bytes(token: str, file_id: str) -> tuple[str, bytes
     return file_path, data
 
 
+def _find_telegram_sender(chat_id: str) -> object:
+    from openexecutive.people.store import find_person_by_telegram_chat_id
+
+    return find_person_by_telegram_chat_id(chat_id)
+
+
+# The rows this handler writes before the turn binds its session (the inbound
+# row, the knowledge retrieval, alert triage) are private when the principal
+# sent the message from a verified chat and they name one of their contacts.
+@audit_rows_on_senders_turn(
+    "telegram",
+    sender_ref=lambda args: str(args["chat_id"]),
+    find_sender=_find_telegram_sender,
+)
 async def _process_and_reply(
     message_text: str,
     sender_name: str,

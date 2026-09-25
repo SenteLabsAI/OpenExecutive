@@ -445,10 +445,13 @@ def needs_check_in(state: DepartmentState, now: datetime) -> str | None:
     try:
         from openexecutive.audit.logger import get_audit_logger
 
+        # Not the rows private to the principal: whether the check-in runs
+        # would otherwise tell the department one was written.
         rows = get_audit_logger().query(
             department=slug,
             since=baseline.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),  # audit ts format
             limit=200,
+            include_private=False,
         )
     except Exception:
         logger.warning("check_in: audit unreadable for %s — running", slug, exc_info=True)

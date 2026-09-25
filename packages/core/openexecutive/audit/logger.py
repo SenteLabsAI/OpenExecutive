@@ -12,8 +12,10 @@ Design notes:
 - A row can be private to the principal (`private_to_principal`): every row
   a turn about their private mail writes, and a row on their own turn that
   names one of their contacts (`people_tools.audit_row_private_to_principal`,
-  decided at write time), plus any row a caller marks `private=True`. The
-  read API (`api.routes.audit`) leaves those rows out for anyone else.
+  decided at write time — the `audit.context` scopes included, for rows
+  written before a turn binds its session), plus any row a caller marks
+  `private=True`. The read API (`api.routes.audit`) leaves those rows out
+  for anyone else.
 """
 from __future__ import annotations
 

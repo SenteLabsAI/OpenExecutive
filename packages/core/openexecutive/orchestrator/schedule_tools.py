@@ -21,7 +21,6 @@ import contextvars
 import copy
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1680,8 +1679,8 @@ def unattended_withheld_error(tool_name: str) -> str:
 # allow-list), and an alert the turn raises is private to the principal. The
 # roster tools and create_goal already refuse every private turn (they run
 # only for the principal on a verified surface, and these turns come from
-# email). search_tools and call_tool stay offered, for the Google Workspace
-# server's tools only (`private_turn_allows_mcp_tool`). The chat loop drops
+# email). search_tools and call_tool stay offered, for
+# `PRIVATE_TURN_MCP_TOOLS` only (`private_turn_allows_mcp_tool`). The chat loop drops
 # this set from the offered list before the sort, so a private turn has a
 # stable tool prefix of its own, and refuses a call the model emits anyway
 # (`private_turn_withholds`, `private_turn_withheld_error`), MCP tools
@@ -1707,32 +1706,48 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
 })
 
 
-# The MCP tools a turn private to the principal may still reach through the
-# gateway: the Google Workspace server's. Its Gmail, Calendar and Drive calls
-# go through the gateway's recipient gates, which narrow such a turn to the
-# principal (`mcp_gateway._roster_allow_set`). No other server has a
-# recipient check: a Slack or Notion server posts where it is told, the
-# default `fetch` server requests any URL (which can carry the turn's
-# content), and a server loaded at runtime can do anything. So on such a turn
-# the chat loop passes on only this server's tools from `search_tools` and
-# refuses a `call_tool` naming any other. extensible-mcp names a tool
-# `<server>__<tool>`, so the name must be a plain tool name right after the
-# prefix: a server loaded as `google_workspace__x` (tools
-# `google_workspace__x__...`) or `google_workspace_` would otherwise pass.
-_PRIVATE_TURN_MCP_TOOL = re.compile(r"google_workspace__[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*")
+# The only MCP tools a turn private to the principal may call through the
+# gateway: Google Workspace reads, and the two Gmail tools whose recipients
+# the gateway narrows to the principal on such a turn
+# (`mcp_gateway._GATED_GMAIL_TOOLS`, `_roster_allow_set`). An allow-list, not
+# a server prefix: workspace-mcp runs at the `complete` tier, where much of
+# Google Workspace reaches people with no recipient check — a Chat message to
+# a space, Docs / Sheets / Drive writes into files already shared with
+# others, `manage_event` on a shared calendar (its gate checks attendees
+# only), a Drive file created from a URL the server fetches. Every other
+# server has no check at all: a Slack or Notion server posts where it is
+# told, the default `fetch` server requests any URL (which can carry the
+# turn's content), a server loaded at runtime can do anything. So on such a
+# turn the chat loop passes on only these tools from `search_tools` and
+# refuses a `call_tool` naming anything else. Names are exact, as the
+# gateway's own gates match them; each is one the code already calls or
+# documents: the poller's Gmail reads (`email_poller`), the calendar reads in
+# the gateway notes and `decisions` (free/busy), and the Drive search the
+# Drive gate's tests treat as a read. Add a name only for a tool that reads,
+# or whose every recipient the gateway checks.
+PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
+    "google_workspace__draft_gmail_message",
+    "google_workspace__get_events",
+    "google_workspace__get_gmail_message_content",
+    "google_workspace__list_calendars",
+    "google_workspace__query_freebusy",
+    "google_workspace__search_drive_files",
+    "google_workspace__search_gmail_messages",
+    "google_workspace__send_gmail_message",
+})
 
 
 def private_turn_allows_mcp_tool(tool_name: object) -> bool:
     """Whether a turn private to the principal may call the gateway tool
-    ``tool_name``: a Google Workspace tool, and nothing else. A missing or
-    non-string name is refused too."""
-    return isinstance(tool_name, str) and _PRIVATE_TURN_MCP_TOOL.fullmatch(tool_name) is not None
+    ``tool_name``: one of ``PRIVATE_TURN_MCP_TOOLS``, and nothing else. A
+    missing or non-string name is refused too."""
+    return isinstance(tool_name, str) and tool_name in PRIVATE_TURN_MCP_TOOLS
 
 
 def private_turn_withholds(tool_name: str, tool_input: Any) -> bool:
     """Whether a turn private to the principal may not run this tool use: a
     tool in ``PRIVATE_TURN_WITHHELD_TOOLS``, or a gateway ``call_tool`` that
-    names a tool of any server but Google Workspace."""
+    names a tool outside ``PRIVATE_TURN_MCP_TOOLS``."""
     if tool_name in PRIVATE_TURN_WITHHELD_TOOLS:
         return True
     if tool_name != "call_tool":

