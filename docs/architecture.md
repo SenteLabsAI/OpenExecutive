@@ -571,7 +571,8 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | `GOOGLE_OAUTH_CLIENT_SECRET` | No | — | Google OAuth client secret (Gmail MCP) |
 | `MCP_ENABLED` | No | `false` | Enable MCP tool gateway |
 | `UI_BASE_URL` | No | `http://localhost:3000` | Base URL for UI links in notifications |
-| `USER_TIMEZONE` | No | `UTC` | Timezone for scheduler and alerts |
+| `USER_TIMEZONE` | No | `UTC` | Fallback IANA zone when the user has not set one through `PUT /workspace`: brief and reflection times, "tomorrow at 9" in chat, open-loop due dates, default alert quiet hours |
+| `PRINCIPAL_BRIEF_MORNING_TIME` / `PRINCIPAL_BRIEF_EOD_TIME` / `PRINCIPAL_REFLECTION_TIME` | No | `08:00` / `18:00` / `07:30` local | Unset (or not a valid `HH:MM`): that time in the user's zone. Set to a valid `HH:MM`: read as **UTC**, as before zones existed |
 
 See [../.env.example](../.env.example) for the full list.
 

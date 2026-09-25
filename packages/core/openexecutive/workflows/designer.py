@@ -215,12 +215,12 @@ def build_context_block() -> str:
     stays identical across the conversation. Every source degrades to an
     empty list rather than failing the session.
     """
+    from openexecutive.memory.workspace_settings import get_user_timezone
     from openexecutive.orchestrator.router import SPECIALIST_DESCRIPTIONS, SPECIALIST_REGISTRY
     from openexecutive.people.store import list_people
     from openexecutive.workflows import WORKFLOW_REGISTRY
     from openexecutive.workflows.dynamic_store import list_definitions
 
-    settings = get_settings()
 
     specialists = [
         f"- {key}: {SPECIALIST_DESCRIPTIONS.get(key, key)}"
@@ -269,7 +269,7 @@ def build_context_block() -> str:
         "People on the roster (the only valid person_id values):\n"
         + ("\n".join(roster) if roster else "- (nobody yet — no approval gates or schedules)")
         + "\n\n"
-        f"The user's timezone: {settings.user_timezone}. Cadences are in UTC.\n\n"
+        f"The user's timezone: {get_user_timezone().key}. Cadences are in UTC.\n\n"
         "Sections:\n" + "\n".join(sections) + "\n\n"
         f"External tool gateway (email, sheets, files, etc.): {gateway}.\n"
         "Built-in tools (always available):\n" + "\n".join(builtins) + "\n\n"

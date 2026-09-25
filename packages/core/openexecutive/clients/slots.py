@@ -114,6 +114,11 @@ _BLANK_WIPE_TABLES = (
     "alerts",
     "mute_topics",
     "user_preferences",
+    # Solo/team mode and the user's time zone (memory.workspace_settings) are
+    # per company, like user_preferences above: a blank client starts on the
+    # defaults (team, no zone) rather than inheriting the previous client's.
+    # Saved slots carry their own row in state.db.
+    "workspace_settings",
     "workflow_runs",
     "audit_log",
     "eval_runs",
@@ -562,6 +567,7 @@ def _ensure_schemas() -> None:
     from openexecutive.knowledge.review_store import ReviewStore
     from openexecutive.memory.episodic import cancel_orphaned_talent_reminders
     from openexecutive.memory.episodic import initialize_db as init_episodic
+    from openexecutive.memory.workspace_settings import init_workspace_settings_db
     from openexecutive.monitoring.store import initialize_db as init_monitoring
     from openexecutive.people.store import initialize_db as init_people
     from openexecutive.scheduler.pause import initialize_pause_db
@@ -585,6 +591,9 @@ def _ensure_schemas() -> None:
     init_people(db_path)
     init_departments(db_path)
     init_monitoring(db_path)
+    # A slot saved before workspace settings existed has no table; create it
+    # so the slot reads as the defaults.
+    init_workspace_settings_db(db_path)
     # Before _restore_global_tables: a slot saved before the pause switch
     # existed lacks the table, and the restore skips tables it can't find.
     initialize_pause_db(db_path)

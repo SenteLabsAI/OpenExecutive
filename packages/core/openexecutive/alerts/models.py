@@ -148,7 +148,9 @@ class UserPreferences(BaseModel):
     severity_threshold: AlertSeverity = AlertSeverity.MEDIUM
     quiet_hours_start: str = ""  # "22:00"
     quiet_hours_end: str = ""  # "07:00"
-    quiet_hours_tz: str = "UTC"
+    # IANA zone the quiet hours are read in; empty = the user's zone
+    # (memory.workspace_settings.get_user_timezone).
+    quiet_hours_tz: str = ""
     channels_enabled: list[AlertChannel] = Field(
         default_factory=lambda: [
             AlertChannel.WEB,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from openexecutive.memory.episodic import (
     ScheduledAction,
@@ -252,6 +252,30 @@ async def _execute_action(
         return
 
     now = datetime.now(UTC)
+
+    # ------------------------------------------------------------------
+    # Solo mode runs no department check-ins. A dept_cadence row still
+    # pending from before the switch (or seeded by a fixture) is retired
+    # here WITHOUT running and WITHOUT chaining its next occurrence. It is
+    # marked `cancelled`, not `done`: the nudge engine reads a done
+    # check-in as a recent department pulse, and the Pulse history would
+    # show one that never ran. It sits ahead of the authority gate, which
+    # would otherwise turn a propose_only department's check-in into an
+    # approval card.
+    # ------------------------------------------------------------------
+    if action.kind == "dept_cadence":
+        from openexecutive.memory.episodic import mark_action_cancelled
+        from openexecutive.memory.workspace_settings import get_workspace
+
+        if get_workspace().mode == "solo":
+            mark_action_cancelled(
+                action.id, "solo workspace: department check-ins are off"
+            )
+            logger.info(
+                "scheduler: dept_cadence action %d retired — solo workspace",
+                action.id,
+            )
+            return
 
     # ------------------------------------------------------------------
     # Authority gate — only applies to department-scoped actions.
@@ -925,12 +949,13 @@ async def _execute_action(
 # Principal briefs (Shift 3)
 # --------------------------------------------------------------------------- #
 
-# Default times of day for the principal brief and EoD digest, in HH:MM
-# UTC. Override via env vars. Single-timezone for v1 — when company
-# timezone awareness lands, this should consult company_profile.
-# TODO(v2): treat these times as local-to-company once timezone is on
-# the profile; today, a SF team with default 08:00 UTC sees the morning
-# brief at midnight PT.
+# Default times of day for the principal brief and EoD digest, as HH:MM
+# wall-clock times in the user's zone (memory.workspace_settings
+# .get_user_timezone: the workspace's zone, else USER_TIMEZONE, else UTC).
+# An operator who pinned a time with one of the env vars in
+# `_RECURRING_KIND_ENV` keeps it read as UTC, as before zones existed, so a
+# pinned time never moves. (An install that set USER_TIMEZONE but no pinned
+# times does move to that zone, from each brief's first fire after upgrade.)
 _DEFAULT_MORNING_TIME = "08:00"
 _DEFAULT_EOD_TIME = "18:00"
 # Executive reflection runs ~30 minutes before the morning brief so OE
@@ -954,17 +979,23 @@ def _rotation_pause_active() -> bool:
         return False
 
 
+def _strict_hhmm(spec: str) -> tuple[int, int] | None:
+    """Parse an HH:MM time of day, or None if it is not one."""
+    try:
+        hh_str, mm_str = spec.strip().split(":", 1)
+        hh, mm = int(hh_str), int(mm_str)
+    except (ValueError, AttributeError):
+        return None
+    return (hh, mm) if 0 <= hh < 24 and 0 <= mm < 60 else None
+
+
 def _parse_hhmm(spec: str, default: str) -> tuple[int, int]:
     """Parse an HH:MM time-of-day string. Falls back to ``default`` on any
     parse error so a malformed env var can't crash the scheduler."""
     raw = (spec or default).strip()
-    try:
-        hh_str, mm_str = raw.split(":", 1)
-        hh, mm = int(hh_str), int(mm_str)
-        if 0 <= hh < 24 and 0 <= mm < 60:
-            return hh, mm
-    except (ValueError, AttributeError):
-        pass
+    parsed = _strict_hhmm(raw)
+    if parsed is not None:
+        return parsed
     logger.warning("scheduler: invalid time-of-day %r, falling back to %s", raw, default)
     dh, dm = default.split(":", 1)
     return int(dh), int(dm)
@@ -999,48 +1030,86 @@ def _has_pending_brief(kind: str) -> bool:
     return row is not None
 
 
-def seed_principal_briefs() -> int:
-    """Idempotently enqueue the next morning_brief and EoD_digest occurrences.
+# Recurring principal kinds → (env var overriding the time of day, default).
+_RECURRING_KIND_ENV: dict[str, tuple[str, str]] = {
+    "principal_brief_morning": ("PRINCIPAL_BRIEF_MORNING_TIME", _DEFAULT_MORNING_TIME),
+    "principal_brief_eod": ("PRINCIPAL_BRIEF_EOD_TIME", _DEFAULT_EOD_TIME),
+    # Reflection runs alongside the briefs — same seed-once-per-DB pattern
+    # and chain-next mechanism, just on its own time of day.
+    "executive_reflection": ("PRINCIPAL_REFLECTION_TIME", _DEFAULT_REFLECTION_TIME),
+}
 
-    Called at scheduler startup. Returns the number of rows newly
-    inserted (0–2). When a brief row is already pending or running, no
-    new row is added — the existing one will fire and chain its
-    successor via ``_run_principal_brief``.
 
-    Times of day are read from env vars (`PRINCIPAL_BRIEF_MORNING_TIME`,
-    `PRINCIPAL_BRIEF_EOD_TIME`) in HH:MM UTC format, defaulting to
-    08:00 and 18:00 respectively. The principal's company timezone is
-    not yet supported — a v2 task.
+def _next_principal_run_at(kind: str, after: datetime) -> datetime | None:
+    """Next fire time of a recurring principal kind, strictly after ``after``.
+
+    The default time of day is local to the user's zone (DST-safe, via the
+    cadence parser). A valid time the operator set in the kind's env var is
+    read as UTC, exactly as before zones existed; a malformed one is logged
+    and ignored, like an unset one. None for an unknown kind.
     """
     import os
 
+    from openexecutive.departments.cadence import _parse_cadence_spec
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    env_pair = _RECURRING_KIND_ENV.get(kind)
+    if env_pair is None:
+        return None
+    env_name, default_time = env_pair
+    raw = os.environ.get(env_name, "").strip()
+    pinned = _strict_hhmm(raw) if raw else None
+    if pinned is not None:
+        hh, mm = pinned
+        zone: tzinfo = UTC
+    else:
+        if raw:
+            logger.warning(
+                "scheduler: invalid %s=%r — using %s in the user's zone",
+                env_name, raw, default_time,
+            )
+        hh, mm = _parse_hhmm(default_time, default_time)
+        zone = get_user_timezone()
+    return _parse_cadence_spec(f"daily@{hh:02d}:{mm:02d}", after, zone)
+
+
+def _brief_intent(kind: str) -> str:
+    return (
+        f"Generate the {kind.replace('_', ' ')} via the matching "
+        f"workflow and DM the artifact to the principal."
+    )
+
+
+def seed_principal_briefs() -> int:
+    """Idempotently enqueue the next morning brief, EoD digest and reflection.
+
+    Called at scheduler startup (and after a reset, a blank client slot or a
+    change of the user's zone). Returns the number of rows newly inserted
+    (0–3). When a row of a kind is already pending or running, no new row is
+    added — the existing one will fire and chain its successor via
+    ``_run_principal_brief`` / ``_run_executive_reflection``.
+
+    Times of day default to 08:00 / 18:00 / 07:30 in the user's zone; see
+    ``_next_principal_run_at`` for the env-var overrides.
+    """
     from openexecutive.memory.episodic import insert_scheduled_action
 
     now = datetime.now(UTC)
     inserted = 0
 
-    for kind, env_name, default_time in (
-        ("principal_brief_morning", "PRINCIPAL_BRIEF_MORNING_TIME", _DEFAULT_MORNING_TIME),
-        ("principal_brief_eod", "PRINCIPAL_BRIEF_EOD_TIME", _DEFAULT_EOD_TIME),
-        # Reflection runs alongside the briefs — same seed-once-per-DB
-        # pattern, just on its own cadence. Shares this loop because
-        # the chain-next mechanism is identical.
-        ("executive_reflection", "PRINCIPAL_REFLECTION_TIME", _DEFAULT_REFLECTION_TIME),
-    ):
+    for kind in _RECURRING_KIND_ENV:
         if _has_pending_brief(kind):
             logger.info("scheduler: %s already pending, not re-seeding", kind)
             continue
-        hh, mm = _parse_hhmm(os.environ.get(env_name, ""), default_time)
-        run_at = _next_occurrence(now, hh, mm)
+        run_at = _next_principal_run_at(kind, now)
+        if run_at is None:
+            continue
         try:
             action_id = insert_scheduled_action(
                 run_at=run_at.isoformat(),
                 channel="__internal__",
                 channel_ref="principal",
-                intent_text=(
-                    f"Generate the {kind.replace('_', ' ')} via the matching "
-                    f"workflow and DM the artifact to the principal."
-                ),
+                intent_text=_brief_intent(kind),
                 kind=kind,
             )
             inserted += 1
@@ -1053,11 +1122,36 @@ def seed_principal_briefs() -> int:
     return inserted
 
 
-_RECURRING_KIND_ENV: dict[str, tuple[str, str]] = {
-    "principal_brief_morning": ("PRINCIPAL_BRIEF_MORNING_TIME", _DEFAULT_MORNING_TIME),
-    "principal_brief_eod": ("PRINCIPAL_BRIEF_EOD_TIME", _DEFAULT_EOD_TIME),
-    "executive_reflection": ("PRINCIPAL_REFLECTION_TIME", _DEFAULT_REFLECTION_TIME),
-}
+def reschedule_principal_rhythm() -> int:
+    """Re-time the principal's briefs and reflection after the user's zone
+    changed: cancel their FUTURE pending rows, then seed fresh ones.
+
+    Left alone, so they still fire once and chain their successor in the new
+    zone: a row that is running right now, and a pending row that is already
+    due (held by a pause or a missing company profile, or simply not claimed
+    yet) — cancelling that one would silently drop the brief it holds.
+    ``seed_principal_briefs`` skips any kind that still has such a row.
+    Returns the number of rows seeded.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    resolved = _resolve_db_path(None)
+    if resolved.exists():
+        kinds = list(_RECURRING_KIND_ENV)
+        placeholders = ",".join("?" for _ in kinds)
+        with _get_conn(resolved) as conn:
+            table_present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+            ).fetchone()
+            if table_present is not None:
+                cancelled = conn.execute(
+                    "UPDATE scheduled_actions SET status = 'cancelled' "
+                    f"WHERE status = 'pending' AND kind IN ({placeholders}) "  # noqa: S608 — placeholders only
+                    "AND run_at > ?",
+                    (*kinds, datetime.now(UTC).isoformat()),
+                ).rowcount
+                logger.info("scheduler: cancelled %d pending brief row(s) to re-time", cancelled)
+    return seed_principal_briefs()
 
 
 def _enqueue_next_principal_brief(kind: str, after: datetime) -> int | None:
@@ -1067,28 +1161,21 @@ def _enqueue_next_principal_brief(kind: str, after: datetime) -> int | None:
     Returns the new action id, or None on failure. Mirrors
     ``departments.cadence.enqueue_next`` for the daily-recurring case.
     Despite the name, this also handles the ``executive_reflection``
-    kind — the chain logic is identical, just the env var differs.
+    kind — the chain logic is identical, just the env var differs. The
+    zone is read fresh, so a change of zone applies from the next link.
     """
-    import os
-
     from openexecutive.memory.episodic import insert_scheduled_action
 
-    env_pair = _RECURRING_KIND_ENV.get(kind)
-    if env_pair is None:
+    run_at = _next_principal_run_at(kind, after)
+    if run_at is None:
         logger.warning("scheduler: unknown recurring kind %r — no chain", kind)
         return None
-    env_name, default_time = env_pair
-    hh, mm = _parse_hhmm(os.environ.get(env_name, ""), default_time)
-    run_at = _next_occurrence(after, hh, mm)
     try:
         action_id = insert_scheduled_action(
             run_at=run_at.isoformat(),
             channel="__internal__",
             channel_ref="principal",
-            intent_text=(
-                f"Generate the {kind.replace('_', ' ')} via the matching "
-                f"workflow and DM the artifact to the principal."
-            ),
+            intent_text=_brief_intent(kind),
             kind=kind,
         )
         logger.info(

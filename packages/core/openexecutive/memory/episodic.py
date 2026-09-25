@@ -1427,6 +1427,20 @@ def mark_action_done(action_id: int, db_path: Path | None = None) -> bool:
         return cursor.rowcount > 0
 
 
+def mark_action_cancelled(action_id: int, reason: str, db_path: Path | None = None) -> bool:
+    """Retire a claimed action without running it, recording why in
+    ``last_error`` (e.g. a department check-in in a solo workspace). Unlike
+    ``cancel_scheduled_action`` this also moves a ``running`` row — for the
+    runner, which holds the claim."""
+    with _get_conn(_resolve_db_path(db_path)) as conn:
+        cursor = conn.execute(
+            "UPDATE scheduled_actions SET status = 'cancelled', last_error = ? "
+            "WHERE id = ? AND status IN ('pending', 'running')",
+            (reason[:500], action_id),
+        )
+        return cursor.rowcount > 0
+
+
 def mark_action_failed_or_retry(
     action_id: int,
     error: str,

@@ -38,12 +38,16 @@ def build_system_blocks(
     the assembled base prompt. If the placeholder is absent (user removed it),
     the body is appended at the end of the prompt so it is never silently dropped.
     """
-    # Inject user_timezone so the Executive can resolve relative times
-    # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup.
-    # Read once from settings — value is process-stable, so cache stays valid.
+    # Inject the user's zone so the Executive can resolve relative times
+    # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup. Read
+    # fresh from the workspace settings (else USER_TIMEZONE, else UTC). It
+    # only changes when the user sets a new zone, so block 0's 1h cache misses
+    # once on that change and stays warm otherwise.
     from openexecutive.config import get_settings
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
     settings = get_settings()
-    tz = settings.user_timezone
+    tz = get_user_timezone().key
     tz_addendum = f"\n\nThe user's local timezone is {tz} (IANA). When converting relative times to UTC for scheduling, use this zone."
 
     # The Executive has its own Google Workspace account; without this it

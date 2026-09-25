@@ -475,10 +475,10 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _user_tz() -> ZoneInfo:
-    from openexecutive.config import get_settings
+    from openexecutive.memory.workspace_settings import get_user_timezone
 
     try:
-        return ZoneInfo(get_settings().user_timezone)
+        return get_user_timezone()
     except Exception:
         return ZoneInfo("UTC")
 
