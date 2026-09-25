@@ -621,6 +621,27 @@ routing:
     `ensure_head_persona_override` so the head-voice plumbing fires.
     Every invocation emits a `tool_invocation` audit event with
     actor="executive".
+
+    The three WRITE tools are the principal's alone, and only on a surface
+    that verified the speaker (`_refuse_unless_owner`): the web chat
+    (`Session.from_web_chat`, the signed-in Google account) or the
+    principal's own Slack / Discord / Telegram (`origin_channel`, the
+    platform's user or chat id). `is_principal_or_self(caller, None)`
+    decides, so an archived principal is refused too. Everything else gets
+    `{"status": "refused", "detail": ...}` — a rostered teammate on any
+    surface, a signed-in web user whose email is on no People row (told to
+    link their email on the People page), and every unverified surface:
+    email (the poller resolves the From header, which proves nothing —
+    even the principal's address), Google Chat (no sender identity), the
+    CLI, the MCP server, and unattended runs (no `current_session`). Why:
+    these tools are offered on every turn, and a People row is the web
+    sign-in allow-list, the outbound-email allow-list and approval routing
+    at once — a crafted inbound email or a teammate could otherwise add an
+    address that can then sign in and receive mail, or grant themselves
+    WILDCARD. Refusals are audited (`tool_invocation`, ok=false,
+    refused=true, with caller / origin_channel / from_web_chat) and render
+    no action chip. `list_people` stays open. The People page (behind the
+    web sign-in) is unaffected.
   department_tools: |
     `list_department_goals` and `update_department_goal`
     (openexecutive.orchestrator.department_tools) let the Executive
@@ -2059,7 +2080,9 @@ people:
   executive_write_access: |
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
-    `set_department_head` tools (openexecutive.orchestrator.people_tools).
+    `set_department_head` tools (openexecutive.orchestrator.people_tools) —
+    but only when the principal asks from the web chat or their own
+    Slack / Discord / Telegram; anyone and anything else is refused.
     See `routing.people_tools` for details.
   brief_insights: |
     openexecutive.people.insights generates a one-line per-person note for the
@@ -2155,11 +2178,29 @@ scheduler:
     init, bounded by an `app_migrations` marker row (runs once per DB).
     Department-scoped
     actions pass through the authority gate first
-    (`departments.authority.gate_action`), which can `propose` (route to
-    an approver via alert, not dispatched), `escalate` (alert + dispatch),
-    `allow`, or defer to the approver's next available window. Nudge
-    engine emissions set `department=""` to bypass the gate — they are
-    about reaching the approver, not a dept-scoped operation.
+    (`departments.authority.gate_action`), which can `execute`
+    (auto_execute: dispatch), `propose` (route to an approver via alert,
+    not dispatched; deferred to the approver's next available window when
+    they are outside it) or `escalate` (an urgent "[ESCALATION]" alert to
+    the approver right away, never deferred, and NOT dispatched — the row
+    is marked done and the card's "If you approve: … right away" line is
+    what sends it). `escalate` used to raise the alert AND dispatch, which
+    contradicted the UI's "the specialist will not act" and sent the
+    action twice once the card was approved. A gated `dept_cadence` row
+    becomes a card and does not chain its next occurrence (re-bootstrapped
+    at startup) — true of propose_only departments before this change too.
+    Nudge engine emissions set `department=""` to bypass the gate — they
+    are about reaching the approver, not a dept-scoped operation.
+    Cancelling: DELETE /scheduled/{id} (the Pulse page's Cancel) soft-
+    cancels a `pending` row (409 otherwise). Like pause it only stops
+    work, so any signed-in user may: `require_cancel_permission` accepts
+    a matching X-Admin-Token (SCHEDULED_ADMIN_TOKEN, scripts), a signed-in
+    user through the UI proxy — `x-caller-email` trusted only when the
+    request also carries the BACKEND_SHARED_SECRET `x-api-key` — or a
+    loopback caller when no admin token is set; else 401 (token set) /
+    503. Each cancel is audited `scheduled_action_cancelled` with the
+    caller's email, "admin-token" or "local" as actor. Before this the UI
+    could never send the admin token, so Cancel failed on every deploy.
   nudge_engine: |
     openexecutive.scheduler.nudge_engine — periodic heartbeat (kind=
     `nudge_scan`, default every 15 min via NUDGE_SCAN_INTERVAL_MINUTES)
@@ -2493,6 +2534,7 @@ audit:
     - watchlist_auto_disabled — the sweep disabled a research-origin watch (`reason`: dismissed N of M alerts with low trust; no signals in 30 days; 3 consecutive poll failures). Renders in the HANDLED block as `stopped_watching`; re-enable from /watchlist.
     - auth_login / auth_logout — admin auth events
     - executive_paused / executive_resumed — the operator pause switch flipped (scheduler.pause). actor is the caller's email (else "api"); details carry the reason on pause, and paused_at / paused_by / held_actions on resume. Re-pausing or re-resuming writes nothing.
+    - scheduled_action_cancelled — a pending scheduled action cancelled via DELETE /scheduled/{id} (the Pulse page's Cancel, or a script). actor is the signed-in caller's email, "admin-token" or "local"; details carry action_id, kind, channel and department. A refused or 409 cancel writes nothing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
@@ -5154,17 +5196,20 @@ for_executives:
         tools), routes it to whoever holds the "approve money under
         $10k" tag, and waits. No payment moves until they say yes.
     escalate:
-      label: Escalate to the principal (escalate)
+      label: Escalate to a human (escalate)
       meaning: |
-        For live, time-sensitive signal — an interested customer
-        replying, a competitor moving, a board-level event — Open
-        Executive both alerts the principal AND ships the immediate
-        response in the same beat. You hear about it now; you don't
-        wait for the morning brief.
+        For work too sensitive or time-critical for the routine queue —
+        legal, a board-level event, a key customer upset — Open Executive
+        drafts the response and puts it in front of the right person
+        straight away, flagged urgent, even outside their working hours.
+        Nothing is sent until they approve; approving sends it right away.
+        (It used to send first and alert at the same time, which is not
+        what "escalate to a human" promises.)
       example: |
-        A prospect replies on LinkedIn. Open Executive drafts the
-        acknowledgement, holds 30 minutes on the calendar, and pings
-        the principal so they're in the loop before the day ends.
+        A customer's lawyer emails about a contract dispute. Legal is set
+        to escalate, so Open Executive drafts the holding reply and the
+        general counsel sees an urgent card within minutes — but the reply
+        only goes out when they approve it.
   proactive_examples: |
     What Open Executive does when you're not in a chat with it:
       - Sends a morning brief (state of departments, what needs your

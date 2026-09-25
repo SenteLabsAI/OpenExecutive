@@ -238,6 +238,76 @@ def _audit(tool: str, kind: str, ok: bool, summary: str, details: dict[str, Any]
     )
 
 
+# Surfaces that verify who sent every message: the web chat (the signed-in
+# Google account, stamped by the UI proxy) and the Slack / Discord / Telegram
+# adapters (the platform's own user or chat id, matched to the roster). Email
+# (an unauthenticated From header), Google Chat (no sender identity), the CLI,
+# the MCP server and unattended runs (scheduler, workflows, alert review) don't.
+_VERIFIED_SPEAKER_CHANNELS = frozenset({"slack", "discord", "telegram"})
+
+
+def _roster_refusal_reason(session: Any) -> str | None:
+    """None when this turn may change the roster, else what to tell the asker."""
+    from openexecutive.people.store import is_principal_or_self
+
+    from_web = bool(getattr(session, "from_web_chat", False))
+    channel = str(getattr(session, "origin_channel", "") or "")
+    if session is None or not (from_web or channel in _VERIFIED_SPEAKER_CHANNELS):
+        return (
+            "Only the company's owner can change the People list, and this request "
+            "did not come from somewhere I can confirm it is them. Tell whoever "
+            "asked that the owner needs to make this change, from the web app or "
+            "their own Slack, Discord or Telegram."
+        )
+    caller = getattr(session, "caller_person_id", None)
+    try:
+        if is_principal_or_self(caller, None):
+            return None
+    except Exception:
+        logger.exception("people_tools: principal lookup failed — refusing roster write")
+    if from_web and caller is None:
+        return (
+            "Only the company's owner can change the People list, and this signed-in "
+            "email is not on anyone's People entry, so I cannot confirm it is the "
+            "owner. If it is, they should add their sign-in email to their own "
+            "entry on the People page and ask again, or make the change there."
+        )
+    return (
+        "Only the company's owner can add, change or remove people or set "
+        "department heads, and this request came from someone else. Tell them "
+        "the owner needs to make this change."
+    )
+
+
+def _refuse_unless_owner(tool: str) -> str | None:
+    """The refusal tool result when this turn may not change the roster, else None.
+
+    A People row decides who may sign in to the web app, who the Executive may
+    email, and who approves what — and these tools are offered on every turn,
+    including one an inbound email, a Google Chat message or a teammate
+    started. So only the principal may change the roster from chat, and only on
+    a surface that verified it is them. The People page (behind the web
+    sign-in) is unaffected.
+    """
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    reason = _roster_refusal_reason(session)
+    if reason is None:
+        return None
+    _audit(
+        tool, "write", False,
+        f"{tool} refused: not the principal on a verified surface",
+        {
+            "refused": True,
+            "caller_person_id": getattr(session, "caller_person_id", None),
+            "origin_channel": getattr(session, "origin_channel", "") or None,
+            "from_web_chat": bool(getattr(session, "from_web_chat", False)),
+        },
+    )
+    return json.dumps({"status": "refused", "detail": reason})
+
+
 async def handle_list_people(tool_input: dict[str, Any]) -> str:
     from openexecutive.people import store as people_store
 
@@ -279,6 +349,10 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
     def _bad(err: str) -> str:
         _audit("upsert_person", "write", False, f"upsert_person bad input: {err}", {"error": err[:300]})
         return json.dumps({"error": err})
+
+    refused = _refuse_unless_owner("upsert_person")
+    if refused is not None:
+        return refused
 
     try:
         full_name = str(tool_input["full_name"]).strip()
@@ -405,6 +479,10 @@ async def handle_archive_person(tool_input: dict[str, Any]) -> str:
     from openexecutive.people import registry as people_registry
     from openexecutive.people import store as people_store
 
+    refused = _refuse_unless_owner("archive_person")
+    if refused is not None:
+        return refused
+
     try:
         person_id = int(tool_input["person_id"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -444,6 +522,10 @@ async def handle_set_department_head(tool_input: dict[str, Any]) -> str:
     from openexecutive.departments import store as dept_store
     from openexecutive.departments.head_persona import ensure_head_persona_override
     from openexecutive.people import store as people_store
+
+    refused = _refuse_unless_owner("set_department_head")
+    if refused is not None:
+        return refused
 
     try:
         department_slug = str(tool_input["department_slug"]).strip()

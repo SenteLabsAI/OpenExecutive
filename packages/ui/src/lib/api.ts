@@ -1189,8 +1189,10 @@ export async function cancelScheduledAction(id: number): Promise<ScheduledAction
     throw new Error("Action is no longer pending — can't cancel.");
   }
   if (res.status === 401 || res.status === 503) {
+    // Signed-in users can cancel once the API and the UI share
+    // BACKEND_SHARED_SECRET (every internet-reachable deploy sets it).
     throw new Error(
-      "Cancel is gated by SCHEDULED_ADMIN_TOKEN. The UI doesn't forward this header yet — cancel from a loopback client or unset the token.",
+      "Cancel isn't enabled on this server yet. Ask your administrator to set the same BACKEND_SHARED_SECRET on the API and the UI.",
     );
   }
   if (!res.ok) throw new Error("Failed to cancel scheduled action");

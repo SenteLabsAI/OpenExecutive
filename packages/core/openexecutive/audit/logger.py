@@ -63,6 +63,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "attunement",           # open loops opened / closed / expired, 👍/👎 on replies
     "executive_paused",     # operator paused autonomous work (scheduler/pause.py)
     "executive_resumed",    # operator resumed it; held work released
+    "scheduled_action_cancelled",  # a person cancelled a pending action (DELETE /scheduled/{id})
 )
 
 

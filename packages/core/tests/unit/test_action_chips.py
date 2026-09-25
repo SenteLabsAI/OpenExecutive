@@ -147,6 +147,27 @@ def test_chip_suppressed_on_not_found() -> None:
     assert chip is None
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        ("upsert_person", {"full_name": "Mallory"}),
+        ("archive_person", {"person_id": 3}),
+        ("set_department_head", {"department_slug": "legal", "person_id": 3}),
+    ],
+)
+def test_chip_suppressed_when_roster_change_is_refused(
+    tool_name: str, tool_input: dict
+) -> None:
+    # A roster change asked for by someone other than the principal is refused
+    # (people_tools returns `status: refused`), so no "Updated …" ✓ chip.
+    chip = summarize_action(
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_result=json.dumps({"status": "refused", "detail": "owner only"}),
+    )
+    assert chip is None
+
+
 def test_run_workflow_chip_with_link() -> None:
     chip = summarize_action(
         tool_name="run_workflow",

@@ -303,7 +303,12 @@ async def _execute_action(
             return
 
         if decision.action == "escalate":
-            # Create alert AND fall through to dispatch.
+            # Hold for a human, flagged urgent; do NOT dispatch. The setting
+            # promises "the specialist will not act — it forwards everything
+            # to a human", and the card's "If you approve: … right away" line
+            # is what sends it — dispatching here as well acted before anyone
+            # agreed, then acted again on approval. Unlike `propose`, an
+            # escalation is never deferred to the approver's window.
             if decision.assignee_person_id is not None:
                 propose_via_alert(
                     department_slug=action.department,
@@ -315,10 +320,15 @@ async def _execute_action(
             else:
                 logger.warning(
                     "scheduler: escalate for dept=%r has no assignee — "
-                    "alert skipped, dispatch continues",
-                    action.department,
+                    "nobody to ask, action %d not dispatched",
+                    action.department, action.id,
                 )
-            # fall through → dispatch proceeds below
+            mark_action_done(action.id)
+            logger.info(
+                "scheduler: action %d escalated to person %s — not dispatched",
+                action.id, decision.assignee_person_id,
+            )
+            return
 
     # ------------------------------------------------------------------
     # Department cadence — run the check-in workflow, then chain the next

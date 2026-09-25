@@ -1,13 +1,17 @@
 """Unit tests for openexecutive.orchestrator.people_tools.
 
 These tools let the Executive add/update/archive people and assign
-department heads from inside a chat turn (no UI round-trip).
+department heads from inside a chat turn (no UI round-trip) — for the
+principal only, on a surface that verified it is them.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +25,8 @@ from openexecutive.orchestrator.people_tools import (
     handle_set_department_head,
     handle_upsert_person,
 )
+from openexecutive.orchestrator.schedule_tools import current_session
+from openexecutive.orchestrator.session import Session
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 
@@ -41,6 +47,38 @@ def shared_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     people_registry.invalidate()
     dept_registry.invalidate()
     return db_path
+
+
+@pytest.fixture(autouse=True)
+def audit_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Capture the tools' audit rows instead of writing ./episodic_memory.db."""
+    calls: list[dict[str, Any]] = []
+
+    def _fake_log_event(event_type: str, summary: str, **kwargs: Any) -> None:
+        calls.append({"event_type": event_type, "summary": summary, **kwargs})
+
+    monkeypatch.setattr("openexecutive.audit.log_event", _fake_log_event)
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def owner_id(shared_db: Path) -> Iterator[int]:
+    """Run every call as the principal in the signed-in web chat — a turn
+    that may change the roster. Tests of refusals rebind with `_turn`."""
+    pid = people_store.upsert_person(full_name="Owner Olivia", is_principal=True)
+    people_registry.invalidate()
+    token = current_session.set(Session(from_web_chat=True, caller_person_id=pid))
+    yield pid
+    current_session.reset(token)
+
+
+@contextmanager
+def _turn(session: Session | None) -> Iterator[None]:
+    token = current_session.set(session)
+    try:
+        yield
+    finally:
+        current_session.reset(token)
 
 
 def _call(coro_fn, payload: dict) -> dict:
@@ -274,6 +312,124 @@ def test_upsert_preserves_is_principal_on_update() -> None:
     assert refreshed is not None
     assert refreshed.is_principal is True
     assert refreshed.role == "Founder"
+
+
+# --------------------------------------------------------------------------- #
+# Only the principal, on a surface that verified it is them, may change the
+# roster. A roster row decides web sign-in, who the Executive may email and who
+# approves what — and these tools are offered on every turn.
+# --------------------------------------------------------------------------- #
+
+
+def _names() -> set[str]:
+    return {p.full_name for p in people_store.list_people()}
+
+
+def test_owner_on_their_own_slack_can_change_the_roster(owner_id: int) -> None:
+    with _turn(Session(origin_channel="slack", caller_person_id=owner_id)):
+        result = _call(handle_upsert_person, {"full_name": "Cindy Lee"})
+    assert result["status"] == "ok"
+    assert "Cindy Lee" in _names()
+
+
+@pytest.mark.parametrize("surface", [
+    {"origin_channel": "slack"},
+    {"origin_channel": "discord"},
+    {"origin_channel": "telegram"},
+    {"from_web_chat": True},
+])
+def test_teammate_cannot_change_the_roster(surface: dict[str, Any]) -> None:
+    teammate = people_store.upsert_person(full_name="Ben Teammate")
+    with _turn(Session(caller_person_id=teammate, **surface)):
+        added = _call(handle_upsert_person, {
+            "full_name": "Mallory", "email": "mallory@evil.example",
+            "authority_scopes": ["wildcard"],
+        })
+        promoted = _call(handle_upsert_person, {
+            "person_id": teammate, "full_name": "Ben Teammate",
+            "authority_scopes": ["wildcard"],
+        })
+    assert added["status"] == "refused"
+    assert promoted["status"] == "refused"
+    assert "owner" in added["detail"]
+    assert "Mallory" not in _names()
+    ben = people_store.get_person(teammate)
+    assert ben is not None and ben.authority_scope == []
+
+
+@pytest.mark.parametrize("surface", [
+    # An inbound email: the poller resolves the From header to a person, but a
+    # From header proves nothing — even when it names the principal.
+    {"session_id": "email:thread-1"},
+    {"origin_channel": "google_chat"},
+    # The CLI, the MCP server and unattended runs set no surface either.
+    {},
+], ids=["email", "google_chat", "no_surface"])
+def test_unverified_surfaces_cannot_change_the_roster(
+    owner_id: int, surface: dict[str, Any]
+) -> None:
+    with _turn(Session(caller_person_id=owner_id, **surface)):
+        result = _call(handle_upsert_person, {"full_name": "Mallory"})
+    assert result["status"] == "refused"
+    assert "web app" in result["detail"]
+    assert "Mallory" not in _names()
+
+
+def test_background_run_with_no_conversation_cannot_change_the_roster() -> None:
+    with _turn(None):
+        result = _call(handle_upsert_person, {"full_name": "Mallory"})
+    assert result["status"] == "refused"
+    assert "Mallory" not in _names()
+
+
+def test_unlinked_web_user_is_told_how_to_prove_they_are_the_owner() -> None:
+    # Signed in, but their email is on no People entry — e.g. a new owner who
+    # has not added it to their own row yet.
+    with _turn(Session(from_web_chat=True, caller_person_id=None)):
+        result = _call(handle_upsert_person, {"full_name": "Cindy Lee"})
+    assert result["status"] == "refused"
+    assert "People page" in result["detail"]
+    assert "Cindy Lee" not in _names()
+
+
+def test_archived_owner_cannot_change_the_roster(owner_id: int) -> None:
+    people_store.archive_person(owner_id)
+    result = _call(handle_upsert_person, {"full_name": "Cindy Lee"})
+    assert result["status"] == "refused"
+
+
+def test_archive_and_department_head_are_owner_only_too() -> None:
+    dept = dept_store.create_department("Legal")
+    teammate = people_store.upsert_person(full_name="Ben Teammate")
+    with _turn(Session(origin_channel="slack", caller_person_id=teammate)):
+        archived = _call(handle_archive_person, {"person_id": teammate})
+        head = _call(handle_set_department_head, {
+            "department_slug": dept.config.slug, "person_id": teammate,
+        })
+    assert archived["status"] == "refused"
+    assert head["status"] == "refused"
+    assert teammate in {p.id for p in people_store.list_people()}
+    refreshed = dept_store.get_department(dept.config.slug)
+    assert refreshed is not None and refreshed.config.head_person_id is None
+
+
+def test_refusal_is_audited(audit_calls: list[dict[str, Any]]) -> None:
+    teammate = people_store.upsert_person(full_name="Ben Teammate")
+    with _turn(Session(origin_channel="discord", caller_person_id=teammate)):
+        _call(handle_upsert_person, {"full_name": "Mallory"})
+    refused = [c for c in audit_calls if c["details"].get("refused")]
+    assert len(refused) == 1
+    assert refused[0]["details"]["tool"] == "upsert_person"
+    assert refused[0]["details"]["ok"] is False
+    assert refused[0]["details"]["caller_person_id"] == teammate
+    assert refused[0]["details"]["origin_channel"] == "discord"
+
+
+def test_reading_the_roster_stays_open_to_everyone() -> None:
+    teammate = people_store.upsert_person(full_name="Ben Teammate")
+    with _turn(Session(origin_channel="slack", caller_person_id=teammate)):
+        result = _call(handle_list_people, {})
+    assert "Ben Teammate" in {p["full_name"] for p in result["people"]}
 
 
 # --------------------------------------------------------------------------- #

@@ -3,7 +3,8 @@
 The gate is consulted whenever a proactive action (scheduled or cadence)
 has a department slug — it reads the department's authority_level and
 decides whether the action should execute immediately, be proposed to an
-approver, or be escalated to the principal.
+approver, or be escalated to an approver as urgent. Only `execute` runs the
+action; `propose` and `escalate` both wait for a person to approve it.
 
 All callers are expected to pass `now` explicitly so the gate is
 deterministic and easy to test without time mocking.
@@ -46,11 +47,12 @@ def gate_action(
     Returns a GateDecision describing:
     - execute  — run the action immediately (auto_execute level or has consent)
     - propose  — surface to an approver; do not execute now
-    - escalate — surface to principal AND execute (high-urgency escalation)
+    - escalate — surface to an approver as urgent, now; do not execute until
+                 they approve (the level promises "the specialist will not act")
 
     `deliver_at` is set when the best matching approver is outside their
-    availability window — the caller should reschedule for that time instead
-    of dispatching immediately.
+    availability window — a `propose` caller should reschedule for that time
+    instead of surfacing it immediately; an escalation does not wait.
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
@@ -94,7 +96,7 @@ def gate_action(
             reason=f"department {department_slug!r} has authority_level=propose_only",
         )
 
-    # ESCALATE: route to approver AND escalate (execute with notification).
+    # ESCALATE: route to an approver as urgent; nothing executes until they approve.
     return _route_proposal(
         department_slug=department_slug,
         action="escalate",
@@ -129,7 +131,7 @@ def _route_proposal(
                 department_slug, scope,
             )
             return GateDecision(
-                allowed=action == "escalate",
+                allowed=False,
                 action=action,
                 assignee_person_id=None,
                 deliver_at=None,
@@ -152,7 +154,7 @@ def _route_proposal(
     deliver_at = None if in_window_now else next_available_window(assignee.id, after=now)
 
     return GateDecision(
-        allowed=action == "escalate",
+        allowed=False,
         action=action,
         assignee_person_id=assignee.id,
         deliver_at=deliver_at,

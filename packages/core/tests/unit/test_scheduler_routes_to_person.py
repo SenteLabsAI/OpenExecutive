@@ -26,6 +26,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(people_store, "DB_PATH", db)
     monkeypatch.setattr(episodic, "DB_PATH", db)
     monkeypatch.setattr(alert_store, "DB_PATH", db)
+    # Dispatch writes a "delivered" audit row; keep it out of the default
+    # ./episodic_memory.db, where it leaks into other modules' assertions.
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
 
     dept_registry.invalidate()
     people_registry.invalidate()
@@ -195,10 +198,10 @@ def test_auto_execute_dispatches() -> None:
 
 
 # ---------------------------------------------------------------------------
-# escalate → alert created AND dispatch proceeds
+# escalate → urgent alert created, nothing dispatched until someone approves
 # ---------------------------------------------------------------------------
 
-def test_escalate_creates_alert_and_dispatches() -> None:
+def test_escalate_creates_urgent_alert_and_holds() -> None:
     dept_store.seed_default_departments()
     dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
     principal_id = people_store.upsert_person(
@@ -213,29 +216,78 @@ def test_escalate_creates_alert_and_dispatches() -> None:
     with patch(
         "openexecutive.orchestrator.executive.Executive.chat",
         new_callable=AsyncMock,
-    ) as mock_chat, patch(
-        "openexecutive.onboarding.profile_builder.load_or_create_profile",
-        return_value=MagicMock(is_empty=lambda: True),
-    ), patch(
-        "openexecutive.knowledge.retriever.retrieve",
-        return_value="",
-    ), patch(
-        "openexecutive.memory.episodic.format_for_prompt",
-        return_value="",
-    ):
+    ) as mock_chat:
         asyncio.run(_execute_action(action, gateway=None))
 
-    # Alert should have been created (escalate creates a proposal alert).
+    # Nothing is sent: "Escalates to a human" promises the specialist will not act.
+    mock_chat.assert_not_called()
+
+    # An urgent card went to the approver instead.
     alerts = alert_store.list_alerts()
     assert len(alerts) == 1
+    assert alerts[0].headline.startswith("[ESCALATION]")
+    assert alerts[0].routed_to_person_id == principal_id
     assert "department:legal" in alerts[0].topic_tags
-    # Escalation phrasing is the concrete action with an urgency tail, not the
-    # old "Escalated ... action — review immediately." meta-instruction.
+    # Escalation phrasing is the concrete action with an urgency tail — what
+    # approving the card will do, not something already done.
     assert alerts[0].suggested_action.startswith("Send this")
     assert alerts[0].suggested_action.endswith("right away.")
 
-    # Dispatch should also have happened.
-    mock_chat.assert_called_once()
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "done"
+
+
+def test_escalate_is_not_deferred_to_approver_window() -> None:
+    """Unlike propose, an escalation reaches the approver now, even off-hours."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    approver_id = people_store.upsert_person(full_name="Sarah", slack_user_id="U_GC")
+    people_store.set_authority_scope(approver_id, [AuthorityScope.WILDCARD])
+    # Available only on Sundays 09-10 UTC. Whether or not that is now, an
+    # escalation must not be rescheduled to the approver's next window.
+    people_store.set_availability(approver_id, [
+        AvailabilityWindow(weekdays=[6], start_local="09:00", end_local="10:00", timezone="UTC")
+    ])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    action = _make_action(department="legal")
+
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_not_called()
+    alerts = alert_store.list_alerts()
+    assert len(alerts) == 1
+    assert alerts[0].routed_to_person_id == approver_id
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "done"  # not rescheduled back to pending
+
+
+def test_escalate_with_nobody_to_ask_does_not_dispatch() -> None:
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    action = _make_action(department="legal")
+
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_not_called()
+    assert alert_store.list_alerts() == []
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "done"
 
 
 # ---------------------------------------------------------------------------
