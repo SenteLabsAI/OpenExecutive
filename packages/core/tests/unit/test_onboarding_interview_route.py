@@ -82,9 +82,14 @@ def seeded(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
 @pytest.fixture()
 def client(
-    monkeypatch: pytest.MonkeyPatch, profile_path: Path
+    monkeypatch: pytest.MonkeyPatch, profile_path: Path, tmp_path: Path
 ) -> TestClient:
     fired: list[str] = []
+    # An empty roster unless a test seeds one: the commit reads it to decide
+    # who owns the workspace, and must never see the developer's real DB.
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", tmp_path / "no-people.db")
 
     async def _no_research(session_id: str) -> None:
         fired.append(session_id)
@@ -800,3 +805,87 @@ def test_a_rerun_never_replaces_the_owners_existing_email(
     assert client.post("/onboard/interview/commit", json=body).status_code == 200
     dana = people_store.find_principal_person(db_path=people_db)
     assert dana is not None and dana.email == "dana@example.com"
+
+
+# ── who may change the owner ─────────────────────────────────────────────────
+# Setup demotes the current owner when it drafts someone else as principal,
+# and any signed-in user can open /onboard.
+
+
+def _seed_owner_and_teammate() -> None:
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Bob Lin", email="bob@example.com")
+
+
+def _bob_as_owner(sid: str) -> dict[str, Any]:
+    body = _commit_body(sid)
+    body["people"] = [{"full_name": "Bob Lin", "role": "COO", "is_principal": True}]
+    body["departments"] = [{"title": "Operations"}]
+    return body
+
+
+def test_a_teammate_cannot_take_the_owner_role_by_rerunning_setup(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client)
+    resp = client.post(
+        "/onboard/interview/commit",
+        json=_bob_as_owner(sid),
+        headers={"x-caller-email": "bob@example.com"},
+    )
+    assert resp.status_code == 403
+    assert not profile_path.exists()
+    owner = people_store.find_principal_person(db_path=people_db)
+    assert owner is not None and owner.full_name == "Dana Reyes"
+
+
+def test_the_owner_can_hand_the_role_on(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client)
+    resp = client.post(
+        "/onboard/interview/commit",
+        json=_bob_as_owner(sid),
+        headers={"x-caller-email": "dana@example.com"},
+    )
+    assert resp.status_code == 200, resp.text
+    owner = people_store.find_principal_person(db_path=people_db)
+    assert owner is not None and owner.full_name == "Bob Lin"
+
+
+def test_anyone_may_rerun_setup_that_keeps_the_owner(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client)
+    resp = client.post(
+        "/onboard/interview/commit",
+        json=_commit_body(sid),
+        headers={"x-caller-email": "bob@example.com"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_local_login_and_the_cli_count_as_the_owner(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    """No x-caller-email resolves to the principal, as everywhere else."""
+    from openexecutive.people import store as people_store
+
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client)
+    assert client.post("/onboard/interview/commit", json=_bob_as_owner(sid)).status_code == 200
+    owner = people_store.find_principal_person(db_path=people_db)
+    assert owner is not None and owner.full_name == "Bob Lin"

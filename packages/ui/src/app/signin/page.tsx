@@ -1,8 +1,8 @@
 import { AuthError } from "next-auth";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { LOCAL_OWNER_MODE, auth, sessionStillAllowed, signIn } from "@/auth";
-import { LOCAL_OWNER_PROVIDER_ID } from "@/lib/localOwner";
+import { LOCAL_LOGIN, auth, sessionStillAllowed, signIn } from "@/auth";
+import { LOCAL_LOGIN_PROVIDER_ID } from "@/lib/localLogin";
 
 type SearchParams = Promise<{ callbackUrl?: string; error?: string }>;
 
@@ -34,7 +34,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
       <div className="w-full max-w-sm rounded-2xl border border-line bg-surface/60 p-8 shadow-xl">
         <h1 className="text-xl font-semibold tracking-tight text-fg">Open Executive</h1>
         <p className="mt-2 text-sm text-fg-muted">
-          {LOCAL_OWNER_MODE
+          {LOCAL_LOGIN
             ? "This copy runs on your computer, and only you can reach it — so there’s no sign-in."
             : "Sign in to continue."}
         </p>
@@ -45,13 +45,13 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
           </p>
         )}
 
-        {LOCAL_OWNER_MODE ? (
+        {LOCAL_LOGIN ? (
           <>
             <form
               action={async () => {
                 "use server";
                 try {
-                  await signIn(LOCAL_OWNER_PROVIDER_ID, { redirectTo: safeDest });
+                  await signIn(LOCAL_LOGIN_PROVIDER_ID, { redirectTo: safeDest });
                 } catch (err) {
                   // A refused sign-in throws; success throws Next's redirect, which must pass through.
                   if (err instanceof AuthError) {

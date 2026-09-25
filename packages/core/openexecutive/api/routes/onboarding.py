@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import sqlite3
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from openexecutive.api.intake_uploads import (
     _INTAKE_GEN_CHARS_PER_FILE,
@@ -530,7 +531,7 @@ async def get_interview(session_id: str) -> OnboardSessionResponse:
 
 
 @router.post("/onboard/interview/commit", response_model=CompanyProfileResponse)
-async def commit_interview(body: OnboardCommitRequest) -> CompanyProfileResponse:
+async def commit_interview(body: OnboardCommitRequest, request: Request) -> CompanyProfileResponse:
     """Save the reviewed draft. The single write in this whole flow.
 
     Ordering matters and is load-bearing — see the section header above.
@@ -542,6 +543,7 @@ async def commit_interview(body: OnboardCommitRequest) -> CompanyProfileResponse
         check_owner_email,
         derive_org_structure,
         link_owner_email,
+        owner_change_blocked,
         reconcile_onboarding_departments,
         save_onboarding_people,
     )
@@ -599,6 +601,25 @@ async def commit_interview(body: OnboardCommitRequest) -> CompanyProfileResponse
     # validate_draft guarantees exactly one principal. Their sign-in email is
     # checked now, while a rejection still leaves the draft editable.
     principal_name = next(p.full_name.strip() for p in people if p.is_principal)
+    # Setup demotes the current owner when it drafts someone else, so only the
+    # owner may do that (owner_change_blocked explains the rule).
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    try:
+        blocked = owner_change_blocked(principal_name, _resolve_caller_person_id(request))
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("onboarding commit: owner lookup failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Could not check who owns this workspace. Try again."
+        ) from exc
+    if blocked:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the current owner can make someone else the owner. Mark the current "
+                'owner as "This is me", or ask them to run setup.'
+            ),
+        )
     try:
         owner_email = check_owner_email(body.owner_email, principal_name)
     except OwnerEmailError as exc:

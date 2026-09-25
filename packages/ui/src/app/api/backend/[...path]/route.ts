@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
-import { LOCAL_OWNER_MODE, auth } from "@/auth";
+import { LOCAL_LOGIN, auth } from "@/auth";
 import { isCrossSiteWrite } from "@/lib/crossSite";
-import { localOwnerSessionAllowed } from "@/lib/localOwner";
+import { localLoginSessionAllowed } from "@/lib/localLogin";
 
 // Streaming-aware proxy to the FastAPI backend. Replaces the `rewrites()` rule
 // in next.config.ts, which buffers SSE responses in dev so the chat stream
@@ -30,13 +30,13 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   // Belt-and-suspenders: middleware should have already rejected unauthenticated
   // traffic, but check here too so a stray client can't reach the backend.
   const session = await auth();
-  // A one-person-mode session has no email on purpose: the backend reads a
+  // A local-login session has no email on purpose: the backend reads a
   // request with no `x-caller-email` as the principal (the CLI's fallback).
   // So it is re-checked here, where it reaches the API, and every OTHER
   // session must carry an email — without one it would be read the same way.
   const callerEmail = session?.user?.email?.toLowerCase();
-  const allowed = session?.localOwner
-    ? localOwnerSessionAllowed(LOCAL_OWNER_MODE, req.headers.get("host"))
+  const allowed = session?.localLogin
+    ? localLoginSessionAllowed(LOCAL_LOGIN, req.headers.get("host"))
     : Boolean(callerEmail);
   if (!allowed) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
@@ -85,7 +85,7 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   // filtering on /audit, /today, etc.). Source: the verified NextAuth
   // session — clients have no way to set this themselves (stripped
   // above).
-  if (callerEmail && !session?.localOwner) {
+  if (callerEmail && !session?.localLogin) {
     headers.set("x-caller-email", callerEmail);
   }
 

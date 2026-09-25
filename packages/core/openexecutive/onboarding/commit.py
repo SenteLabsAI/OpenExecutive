@@ -189,8 +189,9 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     principal's own row already has a different email (replacing it would
     sign the owner out — web sign-in and caller resolution both key on it —
     so that change belongs on the People page); or when the roster can't be
-    read. The drafted principal maps onto an existing row by case-insensitive
-    name, exactly as save_onboarding_people's upsert does.
+    read. "The drafted principal's row" is the one save_onboarding_people's
+    name-keyed upsert will update — compared by id, because two rows can
+    share a name and the upsert then takes the last one.
     """
     email = (raw or "").strip().lower()
     if not email:
@@ -202,17 +203,18 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     key = principal_name.strip().lower()
     try:
         holder = find_person_by_email(email)
+        # The same dict save_onboarding_people builds, so the same row wins.
         own_row = {p.full_name.strip().lower(): p for p in list_people()}.get(key)
     except (OSError, sqlite3.Error) as exc:
         # Unknown is not "free": saving anyway could give two people one email.
         logger.warning("check_owner_email: lookup failed (%s)", type(exc).__name__)
         raise OwnerEmailError("Could not check that email just now. Try again.") from exc
-    if holder is not None and holder.full_name.strip().lower() != key:
+    if holder is not None and (own_row is None or holder.id != own_row.id):
         if holder.is_principal:
             raise OwnerEmailError(
-                "That email is on the current owner's People entry, under another name. "
-                "If that's you, keep that name here (you can rename yourself on the People "
-                "page); if the owner is changing, enter the new owner's email or leave it blank."
+                "That email is on the current owner's People entry, but setup would update "
+                "a different one (another name, or two entries share this name). Use the "
+                "owner's name exactly as on the People page, or leave the email blank."
             )
         raise OwnerEmailError(
             "That email already belongs to someone else on the People page. "
@@ -226,20 +228,53 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     return email
 
 
+def owner_change_blocked(principal_name: str, caller_person_id: int | None) -> bool:
+    """Whether this commit would make a different person the owner while the
+    caller is not the current owner.
+
+    The seed demotes whoever was principal and grants WILDCARD to the drafted
+    one, so re-running setup is also a way to take the owner's seat: any
+    signed-in user can open /onboard. Keeping the current owner is open to
+    everyone, as is a first setup (no principal yet); handing the role to
+    another People row — including a new row, as a renamed owner becomes
+    under the name-keyed upsert — takes the current owner. A caller with no
+    x-caller-email (the CLI, local login) resolves to the principal already.
+    Lookup errors propagate: the route turns them into a retryable 503.
+    """
+    from openexecutive.people.store import find_principal_person, is_principal_or_self, list_people
+
+    current = find_principal_person()
+    if current is None:
+        return False
+    # The same dict save_onboarding_people builds, so the same row wins.
+    own_row = {p.full_name.strip().lower(): p for p in list_people()}.get(
+        principal_name.strip().lower()
+    )
+    if own_row is not None and own_row.id == current.id:
+        return False
+    return caller_person_id is None or not is_principal_or_self(caller_person_id, None)
+
+
 def link_owner_email(person_id: int, email: str) -> bool:
     """Fill in the principal's sign-in email.
 
-    Never replaces a different one: check_owner_email refuses that before
-    anything is written, and this re-checks the row it is about to change.
-    Best-effort, like the rest of this module — the profile is already saved,
-    and a failure here only leaves the owner to add their email on the People
-    page, as before this step existed.
+    Never replaces a different one, and never gives an email two owners:
+    check_owner_email refuses both before anything is written, and this
+    re-checks the row it is about to change. Best-effort, like the rest of
+    this module — the profile is already saved, and a failure here only leaves
+    the owner to add their email on the People page, as before this step
+    existed.
     """
     try:
-        from openexecutive.people.store import get_person, update_person
+        from openexecutive.people.store import find_person_by_email, get_person, update_person
 
         person = get_person(person_id)
-        if person is None or (person.email and person.email.strip().lower() != email):
+        holder = find_person_by_email(email)
+        if (
+            person is None
+            or (person.email and person.email.strip().lower() != email)
+            or (holder is not None and holder.id != person_id)
+        ):
             return False
         return update_person(person_id, email=email)
     except Exception as exc:

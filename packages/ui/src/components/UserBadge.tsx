@@ -28,9 +28,9 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
     );
   }
 
-  // One-person mode: no Google account and nothing to sign out of — the
+  // Local login: no Google account and nothing to sign out of — the
   // sign-in page would just offer "Open" again.
-  if (session?.localOwner) {
+  if (session?.localLogin) {
     return (
       <div
         className={
@@ -38,7 +38,7 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
             ? "px-3 py-3 border-t border-line flex items-center gap-2.5 flex-shrink-0"
             : "flex items-center gap-2 text-xs text-fg-muted"
         }
-        title="One-person mode: only this computer can reach Open Executive"
+        title="Local login: only this computer can reach Open Executive"
       >
         <Avatar name="ME" size={variant === "sidebar" ? "w-7 h-7" : "w-6 h-6"} />
         <div className="flex-1 min-w-0">

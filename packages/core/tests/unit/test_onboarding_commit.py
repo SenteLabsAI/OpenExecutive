@@ -598,6 +598,25 @@ def test_a_renamed_owner_is_told_it_is_their_own_entry(people_db: Path) -> None:
     assert "someone else" not in str(err.value)
 
 
+def test_two_entries_sharing_the_owners_name_cannot_split_the_email(people_db: Path) -> None:
+    """The name-keyed upsert updates the LAST row with that name. If that is
+    not the row holding the email, linking would give two people one email
+    and resolve the owner's sign-in to the row being demoted."""
+    people_store.upsert_person(full_name="Ann Lee", email="ann@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Ann Lee")
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("ann@example.com", "Ann Lee")
+    assert "current owner" in str(err.value)
+
+
+def test_link_refuses_an_email_another_entry_holds(people_db: Path) -> None:
+    people_store.upsert_person(full_name="Sam Okafor", email="sam@example.com")
+    pid = people_store.upsert_person(full_name="Dana Reyes", is_principal=True)
+    assert link_owner_email(pid, "sam@example.com") is False
+    person = people_store.get_person(pid, db_path=people_db)
+    assert person is not None and person.email is None
+
+
 def test_link_never_replaces_a_different_email(people_db: Path) -> None:
     pid = people_store.upsert_person(
         full_name="Dana Reyes", email="dana@example.com", is_principal=True

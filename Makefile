@@ -13,9 +13,9 @@ install:
 # Note: exported values win over packages/ui/.env.local for duplicate keys.
 # .env values must be shell-safe: quote anything containing spaces or `$`.
 #
-# One-person mode: when Google sign-in isn't set up the UI has no sign-in at
+# Local login: when Google sign-in isn't set up the UI has no sign-in at
 # all, so it binds to 127.0.0.1 (nobody else on the network can reach it), and
-# both apps get OE_LOCAL_OWNER_MODE=1: the UI requires it before offering the
+# both apps get OE_LOCAL_LOGIN=1: the UI requires it before offering the
 # "Open" button, and the API then refuses requests not addressed to this
 # computer (DNS rebinding). The flag and the loopback bind must travel
 # together — the flag alone would hand the owner's seat to the whole network —
@@ -29,13 +29,14 @@ dev:
 	@echo "Starting Open Executive..."
 	@[ -d packages/ui/node_modules ] || { echo "Installing the web app's packages (first run only)..."; cd packages/ui && npm install; }
 	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
-	mode=$$(cd packages/ui && node --no-warnings --experimental-strip-types scripts/devMode.mjs) || exit 1; \
-	export OE_LOCAL_OWNER_MODE=; ui_host=; \
+	mode=$$(cd packages/ui && node --no-warnings --experimental-strip-types scripts/devMode.mjs) || \
+	  { echo "Could not work out how to start the web app. Open Executive needs Node 22.6 or newer."; exit 1; }; \
+	export OE_LOCAL_LOGIN=; ui_host=; \
 	if [ "$$mode" != sign-in ]; then \
-	  echo "Google sign-in is not set up, so this runs in one-person mode: open http://localhost:3000 on this computer."; \
-	  export OE_LOCAL_OWNER_MODE=1; ui_host="-H 127.0.0.1"; \
+	  echo "Google sign-in is not set up, so this uses local login: open http://localhost:3000 on this computer."; \
+	  export OE_LOCAL_LOGIN=1; ui_host="-H 127.0.0.1"; \
 	fi; \
-	if [ "$$mode" = one-person-no-secret ]; then \
+	if [ "$$mode" = local-login-no-secret ]; then \
 	  AUTH_SECRET=$$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))"); export AUTH_SECRET; \
 	fi; \
 	(cd packages/core && exec uv run uvicorn openexecutive.api.main:app --reload --port 8000) & \

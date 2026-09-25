@@ -4071,38 +4071,49 @@ auth:
         middleware.ts exports `auth` UNWRAPPED — next-auth ignores an
         `authorized` false whenever a wrapper `auth((req) => …)` is
         passed, which is how this re-check went unenforced until the
-        one-person-mode change: removed users kept working until their
+        local-login change: removed users kept working until their
         JWT expired. /signin bounces a visitor onward only when
         `sessionStillAllowed` agrees, or a refused session would loop.
-    One-person mode (packages/ui/src/lib/localOwner.ts): `make dev` with
+    Local login (packages/ui/src/lib/localLogin.ts): `make dev` with
     Google sign-in not set up starts the UI with `-H 127.0.0.1` and
-    OE_LOCAL_OWNER_MODE=1 in one recipe line (the flag alone would hand
+    OE_LOCAL_LOGIN=1 in one recipe line (the flag alone would hand
     the owner's seat to the network, so nothing else sets it). The recipe
     decides via scripts/devMode.mjs, which loads the env the way Next does
     (root .env exports plus packages/ui/.env*) and applies the app's own
-    `localOwnerModeEnabled`, so recipe and sign-in page cannot disagree;
+    `localLoginEnabled`, so recipe and sign-in page cannot disagree;
     it also reports whether AUTH_SECRET is blank everywhere. The UI
-    then offers a Credentials provider (`local-owner`) instead of Google:
+    then offers a Credentials provider (`local-login`) instead of Google:
     an "Open" button with no password. Guards: the mode is compiled out
     of production builds (literal `process.env.NODE_ENV`, folded at build
     time), off whenever AUTH_GOOGLE_ID or OE_PUBLIC_DEPLOYMENT is set, and
     every sign-in and request must carry a loopback raw `Host` header —
     that stops DNS rebinding, since a browser cannot forge Host (it CAN
     set X-Forwarded-Host, which is why request.url is not used). The
-    session has no email; the JWT carries `localOwner`, and it stops
+    session has no email; the JWT carries `localLogin`, and it stops
     working the moment Google sign-in is set up. An AUTH_SECRET blank in
     every env file gets a throwaway per-run value from the Makefile, and
     trustHost is on in this mode without AUTH_TRUST_HOST (no OAuth redirect
     to steer; its checks read the raw Host). Docker (`make docker`)
     publishes port 3000 on all interfaces, so it never sets the flag — its
-    ui service exports OE_LOCAL_OWNER_MODE EMPTY, which (Next never lets a
+    ui service exports OE_LOCAL_LOGIN EMPTY, which (Next never lets a
     dotenv file override a set variable) also shadows any value in the
     bind-mounted packages/ui/.env*; `make dev` exports it empty outside the
-    mode for the same reason. The API receives the same flag and then adds
-    `_loopback_host_gate` (api/main.py): a 403 for any request whose raw
-    Host is not loopback, except the self-verifying webhooks — without it a
-    DNS-rebinding page could reach :8000 same-origin, where a request with
-    no x-caller-email runs as the principal.
+    mode for the same reason; compose's api service shadows it empty too
+    (from the root .env it would 403 the UI, which calls as Host api:8000).
+    The API receives the same flag and then adds `_local_login_gate`
+    (api/main.py), a 403 for (a) a raw Host that is not loopback, unless
+    the path is a webhook that verifies its caller (Google Chat always;
+    Telegram only with TELEGRAM_WEBHOOK_SECRET, since without it the
+    webhook accepts anyone's update), and (b) a write whose Sec-Fetch-Site
+    is present and not same-origin/none. Without it the owner's browser
+    could drive :8000 as the principal (usually no shared secret; no
+    x-caller-email = principal): a DNS-rebinding page calls it
+    same-origin, and a plain multipart form from any site or localhost
+    port needs neither a cookie nor a preflight. The UI proxy, the CLI and
+    webhook senders send no Sec-Fetch-Site. Both rules are mirrored in the
+    UI (isLoopbackHost, OWN_PAGE_FETCH_SITES) with tests that read the
+    Python literals and fail on drift. scripts/devMode.mjs resolves
+    @next/env through `next` itself and needs Node 22.6+ (type stripping).
     Both callbacks share one helper (`checkEmailAllowed`). The allowlist
     is the UNION of two additive sources — neither overrides the other:
       1. ALLOWED_EMAILS: comma-separated env var on the UI, parsed once
@@ -4147,7 +4158,7 @@ auth:
     Person row for Honcho's per-person memory; future routes
     (audit/today filters etc.) can read the same signal.
     A request WITHOUT the header resolves to the principal (the CLI's
-    fallback), so the proxy sends none only for a one-person-mode
+    fallback), so the proxy sends none only for a local-login
     session, re-checked there (mode on, loopback Host); any other
     session without an email gets a 401 rather than that fallback.
     The proxy also 403s a write (not GET/HEAD) whose Sec-Fetch-Site is
@@ -4934,9 +4945,19 @@ company_onboarding:
     row after the people seed, re-checking that it replaces nothing. Before
     this, the signed-in owner
     matched no Person, so `x-caller-email` resolved to nobody and their chat
-    list stayed empty until they found the People page. Optional in
-    one-person mode, whose email-less session already resolves to the
-    principal.
+    list stayed empty until they found the People page. Optional with
+    local login, whose email-less session already resolves to the
+    principal. "The drafted principal's row" is matched BY ID against the
+    same name-keyed dict save_onboarding_people builds (two rows can share
+    a name; the upsert takes the last), and link_owner_email also refuses
+    an email another active row holds.
+    Owner changes: the seed demotes the old principal and grants WILDCARD
+    to the drafted one, and any signed-in user can open /onboard, so the
+    commit route calls commit.owner_change_blocked before any write: when a
+    principal exists and the draft's principal maps to a different row (a
+    renamed owner included), the caller — resolved from x-caller-email; no
+    header means the principal — must be the principal, else 403. Keeping
+    the owner, or a first setup, stays open.
   org_structure_is_derived: |
     profile.org_structure.departments and .leadership_team are computed from
     the reviewed people and department tables at commit time

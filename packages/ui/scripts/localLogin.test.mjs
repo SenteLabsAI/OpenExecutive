@@ -4,12 +4,12 @@ import test from "node:test";
 import {
   FALSEY_ENV,
   isLoopbackHost,
-  localOwnerModeEnabled,
-  localOwnerSessionAllowed,
-} from "../src/lib/localOwner.ts";
+  localLoginEnabled,
+  localLoginSessionAllowed,
+} from "../src/lib/localLogin.ts";
 
 // `make dev` with Google sign-in not set up — the one configuration that opens
-// one-person mode. Each test below changes one thing about it.
+// local login. Each test below changes one thing about it.
 const MAKE_DEV = {
   devServer: true,
   flag: "1",
@@ -17,26 +17,26 @@ const MAKE_DEV = {
   publicDeployment: undefined,
 };
 
-// --- localOwnerModeEnabled -------------------------------------------------
+// --- localLoginEnabled -------------------------------------------------
 
-test("make dev without Google sign-in turns one-person mode on", () => {
-  assert.equal(localOwnerModeEnabled(MAKE_DEV), true);
+test("make dev without Google sign-in turns local login on", () => {
+  assert.equal(localLoginEnabled(MAKE_DEV), true);
 });
 
-test("a production build never runs one-person mode", () => {
-  assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, devServer: false }), false);
+test("a production build never runs local login", () => {
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, devServer: false }), false);
 });
 
 test("without the flag make dev sets (plain npm run dev, Docker) it stays off", () => {
-  assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, flag: undefined }), false);
-  assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, flag: "" }), false);
-  assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, flag: "true" }), false);
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, flag: undefined }), false);
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, flag: "" }), false);
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, flag: "true" }), false);
 });
 
 test("once Google sign-in is set up it is the only way in", () => {
-  assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, googleClientId: "123.apps.googleusercontent.com" }), false);
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, googleClientId: "123.apps.googleusercontent.com" }), false);
   // Whitespace alone is not a client id.
-  assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, googleClientId: "  " }), true);
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, googleClientId: "  " }), true);
 });
 
 test("OE_PUBLIC_DEPLOYMENT's off-values match the API's exactly", () => {
@@ -51,10 +51,10 @@ test("OE_PUBLIC_DEPLOYMENT's off-values match the API's exactly", () => {
 
 test("a public deployment always requires sign-in, read like the API reads it", () => {
   for (const on of ["1", "true", "YES", " on "]) {
-    assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, publicDeployment: on }), false, on);
+    assert.equal(localLoginEnabled({ ...MAKE_DEV, publicDeployment: on }), false, on);
   }
   for (const off of ["", "0", "false", "No", "off"]) {
-    assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, publicDeployment: off }), true, off);
+    assert.equal(localLoginEnabled({ ...MAKE_DEV, publicDeployment: off }), true, off);
   }
 });
 
@@ -84,7 +84,7 @@ test("other machines and look-alike names are refused", () => {
 });
 
 test("the API's loopback rule accepts exactly the hosts the UI's does", () => {
-  // In one-person mode both apps gate on "addressed to this computer". The API
+  // With local login both apps gate on "addressed to this computer". The API
   // keeps its own regex (api/main.py _LOOPBACK_HOST_RE, used with fullmatch
   // after strip); this runs one corpus through both so they cannot drift.
   const mainPy = readFileSync(new URL("../../core/openexecutive/api/main.py", import.meta.url), "utf8");
@@ -107,11 +107,11 @@ test("a missing Host header is refused", () => {
   assert.equal(isLoopbackHost(""), false);
 });
 
-// --- localOwnerSessionAllowed -----------------------------------------------
+// --- localLoginSessionAllowed -----------------------------------------------
 
-test("a one-person session works only while the mode is on and on this machine", () => {
-  assert.equal(localOwnerSessionAllowed(true, "localhost:3000"), true);
-  assert.equal(localOwnerSessionAllowed(true, "192.168.1.20:3000"), false);
+test("a local-login session works only while it is on and on this machine", () => {
+  assert.equal(localLoginSessionAllowed(true, "localhost:3000"), true);
+  assert.equal(localLoginSessionAllowed(true, "192.168.1.20:3000"), false);
   // Google sign-in was set up since: the old session stops working.
-  assert.equal(localOwnerSessionAllowed(false, "localhost:3000"), false);
+  assert.equal(localLoginSessionAllowed(false, "localhost:3000"), false);
 });

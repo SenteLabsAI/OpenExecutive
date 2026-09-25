@@ -21,6 +21,10 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
+      # Local login is `make dev` only. Shadow any OE_LOCAL_LOGIN left in the
+      # root .env: it would make the API refuse the UI's requests, which
+      # arrive as Host api:8000.
+      - OE_LOCAL_LOGIN=
       - VECTOR_STORE_PATH=/data/chroma_db
       - COMPANY_PROFILE_PATH=/data/company/profile.yaml
       - EPISODIC_DB_PATH=/data/episodic_memory.db
@@ -60,11 +64,11 @@ services:
       - AUTH_URL=${AUTH_URL:-}
       - ALLOWED_EMAILS=${ALLOWED_EMAILS:-}
       - BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET:-}
-      # One-person mode (no sign-in) is `make dev` only: this port is published
+      # Local login (no sign-in) is `make dev` only: this port is published
       # on every interface. Set explicitly EMPTY because Next.js never lets a
       # dotenv file override a variable that is already set, so this also
-      # shadows any OE_LOCAL_OWNER_MODE left in the bind-mounted packages/ui/.env*.
-      - OE_LOCAL_OWNER_MODE=
+      # shadows any OE_LOCAL_LOGIN left in the bind-mounted packages/ui/.env*.
+      - OE_LOCAL_LOGIN=
       - OE_PUBLIC_DEPLOYMENT=${OE_PUBLIC_DEPLOYMENT:-}
     depends_on:
       - api

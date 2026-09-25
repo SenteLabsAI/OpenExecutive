@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { isCrossSiteWrite } from "../src/lib/crossSite.ts";
+import { OWN_PAGE_FETCH_SITES, isCrossSiteWrite } from "../src/lib/crossSite.ts";
 
 test("the app's own requests pass", () => {
   for (const method of ["POST", "PUT", "PATCH", "DELETE", "GET"]) {
@@ -26,4 +27,12 @@ test("reads are never refused — another site cannot read the response anyway",
 test("a typed URL, a bookmark or a non-browser client is not refused", () => {
   assert.equal(isCrossSiteWrite("POST", "none"), false);
   assert.equal(isCrossSiteWrite("POST", null), false);
+});
+
+test("the API's local-login check allows exactly the same Sec-Fetch-Site values", () => {
+  const mainPy = readFileSync(new URL("../../core/openexecutive/api/main.py", import.meta.url), "utf8");
+  const literal = /_OWN_PAGE_FETCH_SITES = frozenset\(\{([^}]*)\}\)/.exec(mainPy);
+  assert.ok(literal, "_OWN_PAGE_FETCH_SITES not found in api/main.py");
+  const apiValues = [...literal[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual([...OWN_PAGE_FETCH_SITES].sort(), apiValues.sort());
 });

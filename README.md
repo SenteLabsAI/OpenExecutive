@@ -119,7 +119,7 @@ make dev
 ```
 
 **Trying it on your own computer needs no sign-in setup.** While
-`AUTH_GOOGLE_ID` is blank, `make dev` starts in one-person mode: the web app
+`AUTH_GOOGLE_ID` is blank, `make dev` uses local login: the web app
 only accepts connections from this computer, you click **Open**, and you are
 the owner. To invite your team, or to run it on a server or with `make docker`,
 set up Google sign-in by filling in the `AUTH_*` block (see
@@ -133,7 +133,7 @@ in both files the root `.env` takes precedence.
 
 Open http://localhost:3000 to start chatting with your executive. The API runs on port 8000 and the UI on 3000.
 
-> **First run:** requires Python 3.11+ and Node 22+. The initial `uv sync` pulls heavy
+> **First run:** requires Python 3.11+ and Node 22.6+. The initial `uv sync` pulls heavy
 > ML dependencies (ChromaDB + sentence-transformers/PyTorch), and the first boot
 > downloads a small embedding model (~90 MB) to build the local vector index — so the
 > first `make dev` takes a few minutes before the app is ready. Subsequent starts are fast.

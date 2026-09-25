@@ -1,14 +1,14 @@
-// One-person mode: running Open Executive on your own computer without setting
+// Local login: running Open Executive on your own computer without setting
 // up Google sign-in. The sign-in page offers an "Open" button instead, and the
 // session it creates carries no email — so the UI proxy sends no
 // `x-caller-email`, and the backend treats the caller as the principal, exactly
 // as it does for the CLI.
 //
 // There is no password, so the guard is WHERE a request can come from:
-//   1. `make dev` is the only thing that sets OE_LOCAL_OWNER_MODE, and the same
+//   1. `make dev` is the only thing that sets OE_LOCAL_LOGIN, and the same
 //      recipe line starts the UI with `-H 127.0.0.1`, so nothing off this
 //      machine can connect. Docker (`make docker`) and deploy images never set
-//      it, and a production build compiles the mode out (see auth.ts).
+//      it, and a production build compiles local login out (see auth.ts).
 //   2. Every sign-in and every request must carry a loopback `Host` header.
 //      That stops a DNS-rebinding page — a site the owner visits that re-points
 //      its own hostname at 127.0.0.1 — because a browser always sends the
@@ -18,15 +18,15 @@
 //      trustHost).
 //
 // No imports, so `npm test` can exercise this under
-// `node --experimental-strip-types` (see scripts/localOwner.test.mjs).
+// `node --experimental-strip-types` (see scripts/localLogin.test.mjs).
 
 /** The Auth.js provider id, and the id of the one user it signs in. */
-export const LOCAL_OWNER_PROVIDER_ID = "local-owner";
+export const LOCAL_LOGIN_PROVIDER_ID = "local-login";
 
-export interface LocalOwnerEnv {
+export interface LocalLoginEnv {
   /** False in a production build (`next build`); the mode never applies there. */
   devServer: boolean;
-  /** OE_LOCAL_OWNER_MODE — set only by `make dev`, with the loopback bind. */
+  /** OE_LOCAL_LOGIN — set only by `make dev`, with the loopback bind. */
   flag: string | undefined;
   /** AUTH_GOOGLE_ID — once Google sign-in is set up, it is the only way in. */
   googleClientId: string | undefined;
@@ -35,10 +35,10 @@ export interface LocalOwnerEnv {
 }
 
 // Mirrors api/main.py's _FALSEY_ENV, so both apps read OE_PUBLIC_DEPLOYMENT
-// alike; scripts/localOwner.test.mjs fails if the two drift apart.
+// alike; scripts/localLogin.test.mjs fails if the two drift apart.
 export const FALSEY_ENV: ReadonlySet<string> = new Set(["", "0", "false", "no", "off"]);
 
-export function localOwnerModeEnabled(env: LocalOwnerEnv): boolean {
+export function localLoginEnabled(env: LocalLoginEnv): boolean {
   return (
     env.devServer &&
     env.flag?.trim() === "1" &&
@@ -61,10 +61,10 @@ export function isLoopbackHost(host: string | null | undefined): boolean {
 }
 
 /**
- * Whether a one-person-mode session may be used for this request. It stays
+ * Whether a local-login session may be used for this request. It stays
  * valid only while the mode is on and the request still comes from this
  * machine — so setting up Google sign-in ends it on the next request.
  */
-export function localOwnerSessionAllowed(modeEnabled: boolean, host: string | null | undefined): boolean {
+export function localLoginSessionAllowed(modeEnabled: boolean, host: string | null | undefined): boolean {
   return modeEnabled && isLoopbackHost(host);
 }

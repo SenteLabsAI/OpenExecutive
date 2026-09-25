@@ -11,11 +11,11 @@ import {
   type AllowDecision,
 } from "@/lib/allowlist";
 import {
-  LOCAL_OWNER_PROVIDER_ID,
+  LOCAL_LOGIN_PROVIDER_ID,
   isLoopbackHost,
-  localOwnerModeEnabled,
-  localOwnerSessionAllowed,
-} from "@/lib/localOwner";
+  localLoginEnabled,
+  localLoginSessionAllowed,
+} from "@/lib/localLogin";
 
 // Operator-controlled allowlist, read once at startup (docs/auth.md promises a
 // restart is what makes an edit live). ALWAYS honored: the backend People
@@ -26,14 +26,14 @@ const ENV_ALLOWED = parseAllowedEmails(process.env.ALLOWED_EMAILS);
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
 
-// One-person mode — `make dev` with Google sign-in not set up (see
-// lib/localOwner.ts for the whole guard). `process.env.NODE_ENV` is written out
+// Local login — `make dev` with Google sign-in not set up (see
+// lib/localLogin.ts for the whole guard). `process.env.NODE_ENV` is written out
 // literally on purpose: Next.js folds it to a build-time constant, so a
 // production build (`next build`, the deploy image) compiles the mode out
 // whatever its runtime environment says.
-export const LOCAL_OWNER_MODE = localOwnerModeEnabled({
+export const LOCAL_LOGIN = localLoginEnabled({
   devServer: process.env.NODE_ENV !== "production",
-  flag: process.env.OE_LOCAL_OWNER_MODE,
+  flag: process.env.OE_LOCAL_LOGIN,
   googleClientId: process.env.AUTH_GOOGLE_ID,
   publicDeployment: process.env.OE_PUBLIC_DEPLOYMENT,
 });
@@ -41,13 +41,13 @@ export const LOCAL_OWNER_MODE = localOwnerModeEnabled({
 // No password: `authorize` admits only a request whose raw Host header is
 // loopback. It signs in one fixed user with no email, which the proxy turns
 // into "no x-caller-email", i.e. the principal.
-const localOwner = Credentials({
-  id: LOCAL_OWNER_PROVIDER_ID,
+const localLogin = Credentials({
+  id: LOCAL_LOGIN_PROVIDER_ID,
   name: "This computer",
   credentials: {},
   authorize: (_credentials, request) =>
-    LOCAL_OWNER_MODE && isLoopbackHost(request.headers.get("host"))
-      ? { id: LOCAL_OWNER_PROVIDER_ID }
+    LOCAL_LOGIN && isLoopbackHost(request.headers.get("host"))
+      ? { id: LOCAL_LOGIN_PROVIDER_ID }
       : null,
 });
 
@@ -115,7 +115,7 @@ type SessionVerdict =
  * the `authorized` callback, and what /signin asks before bouncing a visitor
  * onward (bouncing a session the middleware refuses would loop).
  *
- * A one-person-mode session is valid only while that mode is on and the
+ * A local-login session is valid only while that mode is on and the
  * request comes from this machine. A Google session is re-checked against the
  * allow-list: it fails open ONLY when the user is not in ALLOWED_EMAILS and
  * their roster membership is currently unreadable, so a brief backend hiccup
@@ -123,8 +123,8 @@ type SessionVerdict =
  * once. A *definite* miss (both lists readable, neither matched) revokes.
  */
 async function judgeSession(session: Session | null, host: string | null): Promise<SessionVerdict> {
-  if (session?.localOwner) {
-    return localOwnerSessionAllowed(LOCAL_OWNER_MODE, host) ? { kind: "allow" } : { kind: "deny" };
+  if (session?.localLogin) {
+    return localLoginSessionAllowed(LOCAL_LOGIN, host) ? { kind: "allow" } : { kind: "deny" };
   }
   const email = session?.user?.email?.toLowerCase();
   if (!email) return { kind: "deny" };
@@ -182,15 +182,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // setup already sets AUTH_TRUST_HOST=true explicitly and never relied on
   // that fallback anyway. A deployment that sets neither AUTH_URL nor
   // AUTH_TRUST_HOST gets `false` here — fail-closed, matching intent.
-  // One-person mode trusts the host without being told: there is no OAuth
+  // Local login trusts the host without being told: there is no OAuth
   // redirect to steer, only this machine can connect, and its own checks read
   // the raw Host header, never the forwarded one.
   trustHost:
     Boolean(process.env.AUTH_URL?.trim()) ||
     process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true" ||
-    LOCAL_OWNER_MODE,
-  // Never both: one-person mode is only ever on while Google is not set up.
-  providers: LOCAL_OWNER_MODE ? [localOwner] : [Google],
+    LOCAL_LOGIN,
+  // Never both: local login is only ever on while Google is not set up.
+  providers: LOCAL_LOGIN ? [localLogin] : [Google],
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check
   // below — a session that somehow drifts out of sync with the roster
   // is corrected on next access, but also naturally expires within a
@@ -203,10 +203,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     // Strict initial gate. Requires `email_verified === true` explicitly: a
     // missing / non-boolean value fails closed. Google always returns true
-    // for real accounts. A one-person-mode sign-in was already vetted by the
+    // for real accounts. A local-login sign-in was already vetted by the
     // provider's `authorize` (mode on, loopback Host).
     signIn: async ({ account, profile }) => {
-      if (account?.provider === LOCAL_OWNER_PROVIDER_ID) return LOCAL_OWNER_MODE;
+      if (account?.provider === LOCAL_LOGIN_PROVIDER_ID) return LOCAL_LOGIN;
       const email = profile?.email?.toLowerCase();
       if (!email) {
         auditAuth("auth_login", "Login denied: no email", null, { denied: true, reason: "no_email" });
@@ -236,11 +236,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // `account` is present only on the sign-in request itself, so the flag is
     // set once and then rides the JWT.
     jwt: ({ token, account }) => {
-      if (account) token.localOwner = account.provider === LOCAL_OWNER_PROVIDER_ID;
+      if (account) token.localLogin = account.provider === LOCAL_LOGIN_PROVIDER_ID;
       return token;
     },
     session: ({ session, token }) => {
-      session.localOwner = token.localOwner === true;
+      session.localLogin = token.localLogin === true;
       return session;
     },
     // Re-runs on every request gated by the middleware (see middleware.ts),
@@ -274,9 +274,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   events: {
     signIn: ({ user, account }) => {
-      if (account?.provider === LOCAL_OWNER_PROVIDER_ID) {
-        auditAuth("auth_login", "Login: the owner, on this computer (one-person mode)", null, {
-          provider: LOCAL_OWNER_PROVIDER_ID,
+      if (account?.provider === LOCAL_LOGIN_PROVIDER_ID) {
+        auditAuth("auth_login", "Login: the owner, on this computer (local login)", null, {
+          provider: LOCAL_LOGIN_PROVIDER_ID,
         });
         return;
       }
@@ -286,8 +286,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     signOut: (message) => {
       // JWT strategy sends { token }, session strategy sends { session }.
       const token = "token" in message ? message.token : undefined;
-      if (token?.localOwner === true) {
-        auditAuth("auth_logout", "Logout: the owner, on this computer (one-person mode)", null, {});
+      if (token?.localLogin === true) {
+        auditAuth("auth_logout", "Logout: the owner, on this computer (local login)", null, {});
         return;
       }
       const email = typeof token?.email === "string" ? token.email.toLowerCase() : null;

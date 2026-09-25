@@ -178,7 +178,7 @@ export default function OnboardDraftReview({
           Links the person marked &ldquo;This is me&rdquo; to this login, so your chats and
           owner rights work straight away. Setting this up for someone else? Enter the
           Google email they will sign in with.
-          {session?.localOwner &&
+          {session?.localLogin &&
             " Optional on this computer — add one if you set up Google sign-in later."}
         </p>
         <input

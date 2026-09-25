@@ -14,9 +14,15 @@
 // `node --experimental-strip-types` (see scripts/crossSite.test.mjs).
 
 const READ_ONLY_METHODS = new Set(["GET", "HEAD"]);
-const OWN_PAGE_OR_TYPED_URL = new Set(["same-origin", "none"]);
+
+/**
+ * Sec-Fetch-Site values for a request the page's own origin (or a typed URL)
+ * made. The API applies the same rule under local login (api/main.py
+ * _OWN_PAGE_FETCH_SITES); scripts/crossSite.test.mjs fails if they drift.
+ */
+export const OWN_PAGE_FETCH_SITES: ReadonlySet<string> = new Set(["same-origin", "none"]);
 
 export function isCrossSiteWrite(method: string, secFetchSite: string | null): boolean {
   if (READ_ONLY_METHODS.has(method.toUpperCase()) || secFetchSite === null) return false;
-  return !OWN_PAGE_OR_TYPED_URL.has(secFetchSite.trim().toLowerCase());
+  return !OWN_PAGE_FETCH_SITES.has(secFetchSite.trim().toLowerCase());
 }
