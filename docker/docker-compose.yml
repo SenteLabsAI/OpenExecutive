@@ -60,6 +60,12 @@ services:
       - AUTH_URL=${AUTH_URL:-}
       - ALLOWED_EMAILS=${ALLOWED_EMAILS:-}
       - BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET:-}
+      # One-person mode (no sign-in) is `make dev` only: this port is published
+      # on every interface. Set explicitly EMPTY because Next.js never lets a
+      # dotenv file override a variable that is already set, so this also
+      # shadows any OE_LOCAL_OWNER_MODE left in the bind-mounted packages/ui/.env*.
+      - OE_LOCAL_OWNER_MODE=
+      - OE_PUBLIC_DEPLOYMENT=${OE_PUBLIC_DEPLOYMENT:-}
     depends_on:
       - api
 

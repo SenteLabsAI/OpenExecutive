@@ -4094,7 +4094,15 @@ auth:
     every env file gets a throwaway per-run value from the Makefile, and
     trustHost is on in this mode without AUTH_TRUST_HOST (no OAuth redirect
     to steer; its checks read the raw Host). Docker (`make docker`)
-    publishes port 3000 on all interfaces, so it never sets the flag.
+    publishes port 3000 on all interfaces, so it never sets the flag — its
+    ui service exports OE_LOCAL_OWNER_MODE EMPTY, which (Next never lets a
+    dotenv file override a set variable) also shadows any value in the
+    bind-mounted packages/ui/.env*; `make dev` exports it empty outside the
+    mode for the same reason. The API receives the same flag and then adds
+    `_loopback_host_gate` (api/main.py): a 403 for any request whose raw
+    Host is not loopback, except the self-verifying webhooks — without it a
+    DNS-rebinding page could reach :8000 same-origin, where a request with
+    no x-caller-email runs as the principal.
     Both callbacks share one helper (`checkEmailAllowed`). The allowlist
     is the UNION of two additive sources — neither overrides the other:
       1. ALLOWED_EMAILS: comma-separated env var on the UI, parsed once
@@ -4142,6 +4150,12 @@ auth:
     fallback), so the proxy sends none only for a one-person-mode
     session, re-checked there (mode on, loopback Host); any other
     session without an email gets a 401 rather than that fallback.
+    The proxy also 403s a write (not GET/HEAD) whose Sec-Fetch-Site is
+    anything but same-origin/none (lib/crossSite.ts): the SameSite=Lax
+    cookie stops other websites, not other pages on the same site, and a
+    browser treats every localhost port as one site, so any local dev
+    server could otherwise post a multipart form (chat upload, documents)
+    with the user's cookie.
     Onboarding saves the owner's sign-in email on the principal's row
     (company_onboarding.people_and_contacts), so a Google-signed-in
     owner resolves to themselves from the first turn.

@@ -4,7 +4,7 @@ install:
 	cd packages/core && uv sync
 	cd packages/ui && npm install
 
-# Both dev recipe lines source the repo-root .env into the process env:
+# The dev recipe sources the repo-root .env into the process env of both apps:
 # - the UI needs it because Next.js only auto-loads packages/ui/.env*, so
 #   Auth.js never saw AUTH_SECRET etc. (issue #44);
 # - the API needs it because BACKEND_SHARED_SECRET / BACKEND_ALLOWED_ORIGINS
@@ -14,26 +14,32 @@ install:
 # .env values must be shell-safe: quote anything containing spaces or `$`.
 #
 # One-person mode: when Google sign-in isn't set up the UI has no sign-in at
-# all, so it binds to 127.0.0.1 (nobody else on the network can reach it) and gets
-# OE_LOCAL_OWNER_MODE=1, which packages/ui/src/auth.ts requires before it
-# offers the "Open" button. The flag and the loopback bind must travel
+# all, so it binds to 127.0.0.1 (nobody else on the network can reach it), and
+# both apps get OE_LOCAL_OWNER_MODE=1: the UI requires it before offering the
+# "Open" button, and the API then refuses requests not addressed to this
+# computer (DNS rebinding). The flag and the loopback bind must travel
 # together — the flag alone would hand the owner's seat to the whole network —
-# so this recipe is the only thing that sets it. scripts/devMode.mjs makes the
-# call with the app's own rule over the settings the app will see (including
-# packages/ui/.env.local). If AUTH_SECRET is blank everywhere, the run gets a
-# throwaway one (you click "Open" again after a restart).
+# so this recipe is the only thing that sets it, and otherwise it exports the
+# flag EMPTY, which also shadows any value in packages/ui/.env*.
+# scripts/devMode.mjs makes the call with the app's own rule over the settings
+# the app will see (including packages/ui/.env.local). If AUTH_SECRET is blank
+# everywhere, the run gets a throwaway one (you click "Open" again after a
+# restart).
 dev:
 	@echo "Starting Open Executive..."
 	@[ -d packages/ui/node_modules ] || { echo "Installing the web app's packages (first run only)..."; cd packages/ui && npm install; }
-	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/core && uv run uvicorn openexecutive.api.main:app --reload --port 8000 &
-	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/ui && \
-	mode=$$(node --no-warnings --experimental-strip-types scripts/devMode.mjs) || exit 1; \
-	if [ "$$mode" = sign-in ]; then exec npm run dev; fi; \
-	echo "Google sign-in is not set up, so this runs in one-person mode: open http://localhost:3000 on this computer."; \
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
+	mode=$$(cd packages/ui && node --no-warnings --experimental-strip-types scripts/devMode.mjs) || exit 1; \
+	export OE_LOCAL_OWNER_MODE=; ui_host=; \
+	if [ "$$mode" != sign-in ]; then \
+	  echo "Google sign-in is not set up, so this runs in one-person mode: open http://localhost:3000 on this computer."; \
+	  export OE_LOCAL_OWNER_MODE=1; ui_host="-H 127.0.0.1"; \
+	fi; \
 	if [ "$$mode" = one-person-no-secret ]; then \
 	  AUTH_SECRET=$$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))"); export AUTH_SECRET; \
 	fi; \
-	OE_LOCAL_OWNER_MODE=1 exec npm run dev -- -H 127.0.0.1
+	(cd packages/core && exec uv run uvicorn openexecutive.api.main:app --reload --port 8000) & \
+	cd packages/ui && exec npm run dev -- $$ui_host
 
 stop:
 	@lsof -ti :8000 -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true

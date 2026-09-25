@@ -5,6 +5,7 @@ import contextlib
 import hmac
 import logging
 import os
+import re
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -145,9 +146,10 @@ _configure_logging()
 # health checker;
 # the /webhook/* routes are called by external services (Google, Telegram) and
 # carry their own verification.
-_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset(
-    {"/health", "/webhook/telegram", "/webhook/google-chat"}
+_SELF_VERIFYING_PATHS: frozenset[str] = frozenset(
+    {"/webhook/telegram", "/webhook/google-chat"}
 )
+_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset({"/health", *_SELF_VERIFYING_PATHS})
 
 
 # How long the MCP gateway gets to come up. The child is
@@ -764,6 +766,17 @@ def _is_public_deployment() -> bool:
     return os.environ.get("OE_PUBLIC_DEPLOYMENT", "").strip().lower() not in _FALSEY_ENV
 
 
+def _is_local_owner_mode() -> bool:
+    """Whether `make dev` started this API for one-person mode (no sign-in; see
+    packages/ui/src/lib/localOwner.ts). Never on a public deployment."""
+    return os.environ.get("OE_LOCAL_OWNER_MODE", "").strip() == "1" and not _is_public_deployment()
+
+
+# A raw Host header naming this machine, with an optional port — the same rule
+# as isLoopbackHost in packages/ui/src/lib/localOwner.ts.
+_LOOPBACK_HOST_RE = re.compile(r"(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?", re.IGNORECASE)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Open Executive API",
@@ -814,6 +827,24 @@ def create_app() -> FastAPI:
             "dev only; set this secret in any environment reachable from the "
             "public internet."
         )
+
+    # One-person mode: the UI admits the owner with no password, guarded by
+    # where requests come from, and this API needs the same guard. It listens
+    # on 127.0.0.1, but a web page that re-points its own hostname at
+    # 127.0.0.1 (DNS rebinding) would reach it same-origin — and a request
+    # with no x-caller-email runs as the principal. A browser always sends
+    # the page's real hostname as Host, and scripts cannot change it. The
+    # webhooks verify their callers themselves and may arrive via a tunnel.
+    if _is_local_owner_mode():
+        @app.middleware("http")
+        async def _loopback_host_gate(request: Request, call_next):  # type: ignore[no-untyped-def]
+            host = request.headers.get("host", "")
+            if request.url.path in _SELF_VERIFYING_PATHS or _LOOPBACK_HOST_RE.fullmatch(host.strip()):
+                return await call_next(request)
+            return JSONResponse(
+                {"error": "one-person mode only accepts requests addressed to this computer"},
+                status_code=403,
+            )
 
     app.include_router(auth_route.router, tags=["auth"])
     app.include_router(fixtures.router, tags=["fixtures"])

@@ -84,9 +84,11 @@ There is no password, so the protection is *where* a request can come from:
   `OE_PUBLIC_DEPLOYMENT` is set. `make docker` publishes port 3000 to your
   network, so it keeps Google sign-in.
 - **Only from this computer's browser.** Signing in, and every request after,
-  must be addressed to `localhost`, `127.0.0.1` or `[::1]`. This also blocks a
-  malicious website that tries to reach the app through your browser
-  (DNS rebinding).
+  must be addressed to `localhost`, `127.0.0.1` or `[::1]`, and in this mode
+  the API on port 8000 applies the same rule. That blocks a malicious website
+  that tries to reach either one through your browser (DNS rebinding). The
+  web app also refuses form posts that another page, including another
+  `localhost` port, makes your browser send.
 
 The session has no email. The UI proxy then sends no `x-caller-email`, and the
 API treats the request as the principal's, the same way it treats the CLI. If
@@ -280,6 +282,7 @@ curl -sv -H "x-api-key: $SHARED" https://api.example.com/sessions           # 20
 - Direct API hits bypassing the UI (shared secret)
 - Cookie theft from one session leaking *another* user's data (each session is independent JWT; no shared state)
 - Missing-secret deploys silently exposing the API (the `OE_PUBLIC_DEPLOYMENT` fail-closed guard)
+- Other pages on the same site — to a browser, every `localhost` port is one site — posting to the UI proxy with your cookie (it refuses writes whose `Sec-Fetch-Site` isn't `same-origin`)
 
 **Does not mitigate:**
 - A compromised `BACKEND_SHARED_SECRET` — anyone who learns it can hit the API as if they were the UI. Rotate if leaked.

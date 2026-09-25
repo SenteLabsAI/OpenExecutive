@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { LOCAL_OWNER_MODE, auth } from "@/auth";
+import { isCrossSiteWrite } from "@/lib/crossSite";
 import { localOwnerSessionAllowed } from "@/lib/localOwner";
 
 // Streaming-aware proxy to the FastAPI backend. Replaces the `rewrites()` rule
@@ -17,6 +18,15 @@ const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
 
 async function proxy(req: NextRequest, params: { path: string[] }): Promise<Response> {
+  // Another page on this site (any localhost port counts) must not be able to
+  // make the browser post here with the user's cookie — see lib/crossSite.ts.
+  if (isCrossSiteWrite(req.method, req.headers.get("sec-fetch-site"))) {
+    return new Response(JSON.stringify({ error: "cross-site request refused" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   // Belt-and-suspenders: middleware should have already rejected unauthenticated
   // traffic, but check here too so a stray client can't reach the backend.
   const session = await auth();
