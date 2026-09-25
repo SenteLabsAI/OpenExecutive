@@ -287,8 +287,9 @@ def check_owner(snap: Snapshot) -> SetupCheck:
             "warn",
             f"{owner.full_name} is the owner, but has no email on the team list, so the app won't recognise "
             "them when they sign in — owner-only actions will be refused.",
-            "Add the Google address they sign in with to their entry on the People page.",
-            link="/people",
+            "Signed in as them, run the setup interview again: saving it adds the address they "
+            "signed in with to their entry.",
+            link="/onboard",
         )
     return _result("owner", "ok", f"{owner.full_name} ({owner.email}) is the owner.")
 

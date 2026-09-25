@@ -277,7 +277,8 @@ def test_owner() -> None:
 
     unlinked = Person(id=1, full_name="Ada Park", is_principal=True)
     warn = check_owner(make_snap(principal=unlinked))
-    assert (warn.state, warn.link) == ("warn", "/people")
+    # Not the People page: it refuses whoever the app can't recognise as the owner.
+    assert (warn.state, warn.link) == ("warn", "/onboard")
     assert "owner-only actions will be refused" in warn.summary
 
     # Local login signs in as the owner, so no email is needed.
