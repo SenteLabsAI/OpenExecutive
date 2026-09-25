@@ -26,6 +26,9 @@ from openexecutive.api.models import ONBOARD_MESSAGE_MAX_CHARS
 from openexecutive.api.routes import onboarding as route
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding import interview as iv
+from openexecutive.onboarding.commit import (
+    save_onboarding_people as _real_save_onboarding_people,
+)
 
 
 def _draft(**overrides: Any) -> iv.CompanyDraft:
@@ -695,3 +698,81 @@ def test_a_full_legal_start_does_not_lock_the_conversation(
         "/onboard/interview/message", json={"session_id": sid, "message": "Series A."}
     )
     assert follow_up.status_code == 200, follow_up.text
+
+
+# ── the owner's sign-in email ────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def people_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A real roster, and the real save_onboarding_people the client fixture stubs."""
+    from openexecutive.people import store as people_store
+
+    path = tmp_path / "people.db"
+    monkeypatch.setattr(people_store, "DB_PATH", path)
+    people_store.initialize_db(path)
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.save_onboarding_people", _real_save_onboarding_people
+    )
+    return path
+
+
+def test_commit_links_the_owner_email_to_the_principal(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["owner_email"] = " Dana@Example.com "
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+
+    owner = people_store.find_person_by_email("dana@example.com", db_path=people_db)
+    assert owner is not None
+    assert owner.full_name == "Dana Reyes" and owner.is_principal
+    assert owner.email == "dana@example.com"
+
+
+def test_commit_without_an_owner_email_leaves_the_principal_without_one(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    seeded.append(_draft())
+    sid = _start(client)
+    assert client.post("/onboard/interview/commit", json=_commit_body(sid)).status_code == 200
+    principal = people_store.find_principal_person(db_path=people_db)
+    assert principal is not None and principal.email is None
+
+
+@pytest.mark.parametrize("taken", [False, True])
+def test_a_rejected_owner_email_writes_nothing_and_stays_retryable(
+    client: TestClient,
+    seeded: list[Any],
+    people_db: Path,
+    profile_path: Path,
+    taken: bool,
+) -> None:
+    from openexecutive.people import store as people_store
+
+    if taken:
+        people_store.upsert_person(full_name="Sam Okafor", email="secret-owner@example.com")
+        bad = "secret-owner@example.com"
+    else:
+        bad = "secret-owner-at-example"
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["owner_email"] = bad
+
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 422
+    assert "secret-owner" not in resp.text
+    assert not profile_path.exists()
+    assert people_store.find_principal_person(db_path=people_db) is None
+
+    # Fixed and resent, the same session saves.
+    body["owner_email"] = "dana@example.com"
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+    assert profile_path.exists()

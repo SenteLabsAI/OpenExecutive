@@ -384,6 +384,12 @@ class OnboardCommitRequest(BaseModel):
     profile: CompanyProfileUpdateRequest
     people: list[OnboardPersonDraft] = Field(default_factory=list)
     departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+    # The principal's sign-in email, confirmed by the user on the review
+    # screen (pre-filled from their own login). The one contact detail setup
+    # saves: without it the signed-in owner matches no Person, so their chat
+    # history stays empty until they add it on the People page. Never taken
+    # from the model's draft — the people drafts above still drop emails.
+    owner_email: str | None = None
 
 
 # ── /workflows/designer/* (conversational "New workflow" wizard) ─────────────

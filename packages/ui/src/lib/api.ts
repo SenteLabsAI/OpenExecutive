@@ -380,7 +380,9 @@ export async function commitOnboardDraft(
   sessionId: string,
   profile: CompanyProfile,
   people: OnboardPersonDraft[],
-  departments: OnboardDepartmentDraft[]
+  departments: OnboardDepartmentDraft[],
+  /** The principal's sign-in email, confirmed on the review screen. Blank = don't set one. */
+  ownerEmail = ""
 ): Promise<CompanyProfile> {
   const res = await fetch(`${API_BASE}/onboard/interview/commit`, {
     method: "POST",
@@ -390,6 +392,7 @@ export async function commitOnboardDraft(
       profile,
       people,
       departments,
+      owner_email: ownerEmail.trim() || null,
     }),
   });
   if (!res.ok) throw await onboardError(res, "Could not save your profile");

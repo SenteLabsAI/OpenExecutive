@@ -1,12 +1,21 @@
-import NextAuth from "next-auth";
+import NextAuth, { type Session } from "next-auth";
+import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
+import type { NextRequest } from "next/server";
 import {
   createRosterLoader,
   decideSessionAction,
   describeDenial,
   parseAllowedEmails,
   resolveAllowed,
+  type AllowDecision,
 } from "@/lib/allowlist";
+import {
+  LOCAL_OWNER_PROVIDER_ID,
+  isLoopbackHost,
+  localOwnerModeEnabled,
+  localOwnerSessionAllowed,
+} from "@/lib/localOwner";
 
 // Operator-controlled allowlist, read once at startup (docs/auth.md promises a
 // restart is what makes an edit live). ALWAYS honored: the backend People
@@ -16,6 +25,31 @@ const ENV_ALLOWED = parseAllowedEmails(process.env.ALLOWED_EMAILS);
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
+
+// One-person mode — `make dev` with Google sign-in not set up (see
+// lib/localOwner.ts for the whole guard). `process.env.NODE_ENV` is written out
+// literally on purpose: Next.js folds it to a build-time constant, so a
+// production build (`next build`, the deploy image) compiles the mode out
+// whatever its runtime environment says.
+export const LOCAL_OWNER_MODE = localOwnerModeEnabled({
+  devServer: process.env.NODE_ENV !== "production",
+  flag: process.env.OE_LOCAL_OWNER_MODE,
+  googleClientId: process.env.AUTH_GOOGLE_ID,
+  publicDeployment: process.env.OE_PUBLIC_DEPLOYMENT,
+});
+
+// No password: `authorize` admits only a request whose raw Host header is
+// loopback. It signs in one fixed user with no email, which the proxy turns
+// into "no x-caller-email", i.e. the principal.
+const localOwner = Credentials({
+  id: LOCAL_OWNER_PROVIDER_ID,
+  name: "This computer",
+  credentials: {},
+  authorize: (_credentials, request) =>
+    LOCAL_OWNER_MODE && isLoopbackHost(request.headers.get("host"))
+      ? { id: LOCAL_OWNER_PROVIDER_ID }
+      : null,
+});
 
 // How long a fetched roster is trusted. `authorized` runs on nearly every
 // gated request, so this is what keeps one page load from becoming N backend
@@ -71,6 +105,59 @@ function auditAuth(
   });
 }
 
+type SessionVerdict =
+  | { kind: "allow" }
+  | { kind: "deny" }
+  | { kind: "revoke"; email: string; decision: AllowDecision };
+
+/**
+ * May this existing session still be used? The per-request re-check behind
+ * the `authorized` callback, and what /signin asks before bouncing a visitor
+ * onward (bouncing a session the middleware refuses would loop).
+ *
+ * A one-person-mode session is valid only while that mode is on and the
+ * request comes from this machine. A Google session is re-checked against the
+ * allow-list: it fails open ONLY when the user is not in ALLOWED_EMAILS and
+ * their roster membership is currently unreadable, so a brief backend hiccup
+ * doesn't sign out everyone — the strict `signIn` gate already vetted them
+ * once. A *definite* miss (both lists readable, neither matched) revokes.
+ */
+async function judgeSession(session: Session | null, host: string | null): Promise<SessionVerdict> {
+  if (session?.localOwner) {
+    return localOwnerSessionAllowed(LOCAL_OWNER_MODE, host) ? { kind: "allow" } : { kind: "deny" };
+  }
+  const email = session?.user?.email?.toLowerCase();
+  if (!email) return { kind: "deny" };
+  const decision = await checkEmailAllowed(email);
+  // Exhaustive on purpose: a `!== "revoke"` test would admit any future
+  // SessionAction, i.e. fail open. This way adding one is a build error.
+  switch (decideSessionAction(decision)) {
+    case "allow":
+    case "allow_roster_unknown":
+      return { kind: "allow" };
+    case "revoke":
+      return { kind: "revoke", email, decision };
+  }
+}
+
+export async function sessionStillAllowed(session: Session | null, host: string | null): Promise<boolean> {
+  return (await judgeSession(session, host)).kind === "allow";
+}
+
+/**
+ * The response a refused request gets: JSON 401 for API routes (a redirect
+ * would be followed by fetch() and break the caller), otherwise a redirect to
+ * /signin carrying a same-origin path the sign-in page's own check accepts.
+ */
+function refuse(request: NextRequest): Response {
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const signInUrl = new URL("/signin", request.nextUrl.origin);
+  signInUrl.searchParams.set("callbackUrl", request.nextUrl.pathname + request.nextUrl.search);
+  return Response.redirect(signInUrl);
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // @auth/core auto-detects trustHost via `AUTH_URL ?? AUTH_TRUST_HOST ??
   // VERCEL ?? CF_PAGES ?? NODE_ENV !== "production"` — a chain of `??`
@@ -98,7 +185,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost:
     Boolean(process.env.AUTH_URL?.trim()) ||
     process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true",
-  providers: [Google],
+  // Never both: one-person mode is only ever on while Google is not set up.
+  providers: LOCAL_OWNER_MODE ? [localOwner] : [Google],
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check
   // below — a session that somehow drifts out of sync with the roster
   // is corrected on next access, but also naturally expires within a
@@ -111,8 +199,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     // Strict initial gate. Requires `email_verified === true` explicitly: a
     // missing / non-boolean value fails closed. Google always returns true
-    // for real accounts.
-    signIn: async ({ profile }) => {
+    // for real accounts. A one-person-mode sign-in was already vetted by the
+    // provider's `authorize` (mode on, loopback Host).
+    signIn: async ({ account, profile }) => {
+      if (account?.provider === LOCAL_OWNER_PROVIDER_ID) return LOCAL_OWNER_MODE;
       const email = profile?.email?.toLowerCase();
       if (!email) {
         auditAuth("auth_login", "Login denied: no email", null, { denied: true, reason: "no_email" });
@@ -139,55 +229,63 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       return true;
     },
-    // Re-runs on every request gated by the middleware (see middleware.ts).
-    // Without this, a user removed from the roster mid-session — or one
-    // whose JWT predates the roster being installed — would keep coasting
-    // until their JWT expires.
-    //
-    // Fails open ONLY for a session that is not in ALLOWED_EMAILS and whose
-    // roster membership is currently unreadable, so a brief backend hiccup
-    // doesn't sign out everyone with a valid session — the strict `signIn`
-    // gate already vetted them once. A *definite* miss (both lists readable,
-    // neither matched) still revokes. `decideSessionAction` owns that
-    // ordering so it can be tested without importing this module.
-    authorized: async ({ auth }) => {
-      if (!auth?.user?.email) return false;
-      const email = auth.user.email.toLowerCase();
-      const decision = await checkEmailAllowed(email);
-      // Exhaustive on purpose: a `!== "revoke"` test would admit any future
-      // SessionAction, i.e. fail open. This way adding one is a build error.
-      switch (decideSessionAction(decision)) {
-        case "allow":
-        case "allow_roster_unknown":
-          return true;
-        case "revoke":
-          // Fire-and-forget audit so a mid-session eviction leaves a
-          // trail even if the user never re-attempts sign-in.
-          auditAuth(
-            "auth_logout",
-            `Session revoked: ${email} (${describeDenial(decision.source)})`,
-            email,
-            {
-              revoked: true,
-              reason: "not_in_allowlist",
-              source: decision.source,
-              // Always false on this branch; read off the decision anyway so
-              // it cannot silently desync from decideSessionAction.
-              roster_unavailable: decision.rosterUnknown,
-            },
-          );
-          return false;
+    // `account` is present only on the sign-in request itself, so the flag is
+    // set once and then rides the JWT.
+    jwt: ({ token, account }) => {
+      if (account) token.localOwner = account.provider === LOCAL_OWNER_PROVIDER_ID;
+      return token;
+    },
+    session: ({ session, token }) => {
+      session.localOwner = token.localOwner === true;
+      return session;
+    },
+    // Re-runs on every request gated by the middleware (see middleware.ts),
+    // so a user removed from the roster mid-session — or one whose JWT
+    // predates the roster being installed — is refused on their next request
+    // instead of coasting until their JWT expires. Returns a Response rather
+    // than `false` so API routes get JSON 401s instead of Auth.js's default
+    // HTML redirect.
+    authorized: async ({ auth, request }) => {
+      const verdict = await judgeSession(auth, request.headers.get("host"));
+      if (verdict.kind === "allow") return true;
+      if (verdict.kind === "revoke") {
+        // Fire-and-forget audit so a mid-session eviction leaves a
+        // trail even if the user never re-attempts sign-in.
+        auditAuth(
+          "auth_logout",
+          `Session revoked: ${verdict.email} (${describeDenial(verdict.decision.source)})`,
+          verdict.email,
+          {
+            revoked: true,
+            reason: "not_in_allowlist",
+            source: verdict.decision.source,
+            // Always false on this branch; read off the decision anyway so
+            // it cannot silently desync from decideSessionAction.
+            roster_unavailable: verdict.decision.rosterUnknown,
+          },
+        );
       }
+      return refuse(request);
     },
   },
   events: {
-    signIn: ({ user }) => {
+    signIn: ({ user, account }) => {
+      if (account?.provider === LOCAL_OWNER_PROVIDER_ID) {
+        auditAuth("auth_login", "Login: the owner, on this computer (one-person mode)", null, {
+          provider: LOCAL_OWNER_PROVIDER_ID,
+        });
+        return;
+      }
       const email = user.email?.toLowerCase() ?? null;
       auditAuth("auth_login", `Login: ${email ?? "unknown"}`, email, { provider: "google" });
     },
     signOut: (message) => {
       // JWT strategy sends { token }, session strategy sends { session }.
       const token = "token" in message ? message.token : undefined;
+      if (token?.localOwner === true) {
+        auditAuth("auth_logout", "Logout: the owner, on this computer (one-person mode)", null, {});
+        return;
+      }
       const email = typeof token?.email === "string" ? token.email.toLowerCase() : null;
       auditAuth("auth_logout", `Logout: ${email ?? "unknown"}`, email, {});
     },

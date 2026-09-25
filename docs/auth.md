@@ -1,6 +1,6 @@
 # Authentication & Access Control
 
-Open Executive is gated behind Google sign-in plus an email allow-list. This doc explains what's protected, how, and how to operate it (add/remove users, rotate secrets, debug failures).
+Open Executive is gated behind Google sign-in plus an email allow-list — except in [one-person mode](#one-person-mode-no-google-sign-in), for trying it on your own computer. This doc explains what's protected, how, and how to operate it (add/remove users, rotate secrets, debug failures).
 
 ---
 
@@ -62,6 +62,38 @@ These bypass the shared-secret check because they're hit by external services th
 - `OPTIONS *` — CORS preflight (no auth headers possible)
 
 See [`_UNAUTHENTICATED_PATHS`](../packages/core/openexecutive/api/main.py) — any new webhook from an external service must be added here.
+
+---
+
+## One-person mode (no Google sign-in)
+
+While `AUTH_GOOGLE_ID` is blank, `make dev` starts the web app in one-person
+mode. The sign-in page shows an **Open** button instead of Google, and whoever
+clicks it is the owner (the principal). This is for trying Open Executive on
+your own computer; it never runs anywhere else.
+
+There is no password, so the protection is *where* a request can come from:
+
+- **Only `make dev` turns it on.** The same command starts the UI on
+  `127.0.0.1`, so other machines on your network cannot connect. It sets
+  `OE_LOCAL_OWNER_MODE=1` for the UI; don't set that yourself.
+- **Never on a server.** A production build (`next build`, the deploy image)
+  compiles the mode out, and it stays off whenever `AUTH_GOOGLE_ID` or
+  `OE_PUBLIC_DEPLOYMENT` is set. `make docker` publishes port 3000 to your
+  network, so it keeps Google sign-in.
+- **Only from this computer's browser.** Signing in, and every request after,
+  must be addressed to `localhost`, `127.0.0.1` or `[::1]`. This also blocks a
+  malicious website that tries to reach the app through your browser
+  (DNS rebinding).
+
+The session has no email. The UI proxy then sends no `x-caller-email`, and the
+API treats the request as the principal's, the same way it treats the CLI. If
+`AUTH_SECRET` is blank, `make dev` uses a temporary one for that run, so you
+click **Open** again after a restart.
+
+To invite your team, or to run on a server, set up Google sign-in (below). As
+soon as `AUTH_GOOGLE_ID` is set, one-person mode is off and any session it
+created stops working.
 
 ---
 
@@ -218,6 +250,9 @@ If `AUTH_GOOGLE_SECRET` is leaked, regenerate in Google Cloud Console (Clients �
 | API returns `401` for every request | UI and API have different `BACKEND_SHARED_SECRET` values (very common after rotating in two separate terminal sessions) |
 | API refuses to start with `RuntimeError: BACKEND_SHARED_SECRET is required` | `OE_PUBLIC_DEPLOYMENT` is set and the secret is missing. Set it; the next restart will boot |
 | Sign-in works but the chat stays empty | Backend is auth'd but `ANTHROPIC_API_KEY` is missing on the API. Its logs will show the error |
+| Signed in, but no past chats are listed | Your email isn't on your own People entry, so the API can't tell who you are. Setup saves it from the **Your sign-in email** field; to fix it afterwards, add the email to your row on the People page |
+| **Open** says it only works on this computer | You opened the app by a network address. Use `http://localhost:3000` in a browser on the machine running `make dev` |
+| Sign-in page shows Google, but you wanted one-person mode | `AUTH_GOOGLE_ID` is set (in the root `.env` or `packages/ui/.env.local`), or the app was started some way other than `make dev` |
 
 ### Useful commands
 
@@ -248,5 +283,6 @@ curl -sv -H "x-api-key: $SHARED" https://api.example.com/sessions           # 20
 - A compromised Google account on the allow-list — that user has full access to all shared data. The product is currently a **shared workspace**; there is no per-user data isolation.
 - A compromised deploy credential — attacker can change secrets, redeploy, or read logs. Rotate deploy credentials if a CI workflow is compromised.
 - Browser-side XSS — Auth.js sessions are httpOnly cookies, so JS can't read them, but a successful XSS could make authenticated requests from the victim's browser. Standard same-origin protections apply.
+- Other users or programs on the same computer in one-person mode — anything that can reach `127.0.0.1:3000` can click **Open**. Use that mode only on a computer that is yours alone.
 
 If/when per-user data isolation matters (e.g. private sessions per teammate), the change is non-trivial — see the original plan note in [PR #86](https://github.com/SenteLabsAI/OpenExecutive/pull/86) about adding `user_id` to the sessions table.

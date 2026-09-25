@@ -18,6 +18,8 @@ what is genuinely new.
 from __future__ import annotations
 
 import logging
+import re
+import sqlite3
 from typing import TYPE_CHECKING
 
 from openexecutive.utils.slug import DEPARTMENT_SLUG_FALLBACK, slugify
@@ -163,6 +165,65 @@ def _strip_wildcard(person_id: int, current: list[AuthorityScope]) -> None:
     remaining: list[Scope] = [s for s in current if s != Scope.WILDCARD]
     if len(remaining) != len(current):
         set_authority_scope(person_id, remaining)
+
+
+# Loose on purpose: Google checks the address for real at sign-in. This only
+# stops a typo or a stray sentence from becoming the owner's roster address.
+_OWNER_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+# RFC 5321's limit on a forward path.
+_OWNER_EMAIL_MAX_LEN = 254
+
+
+class OwnerEmailError(ValueError):
+    """The owner email from the review screen can't be saved. The message is a
+    fixed, input-free string, safe to return as an HTTP detail."""
+
+
+def check_owner_email(raw: str | None, principal_name: str) -> str | None:
+    """Normalise the owner's sign-in email, or return None when left blank.
+
+    Runs BEFORE the commit writes anything. Raises OwnerEmailError when the
+    value is not one plausible address, or when it already belongs to someone
+    other than the drafted principal: two people sharing an email would make
+    sign-in resolve to whichever row is older. The drafted principal maps onto
+    an existing row by case-insensitive name (save_onboarding_people's upsert),
+    so a row of that name holding the email is the owner re-running setup.
+    """
+    email = (raw or "").strip().lower()
+    if not email:
+        return None
+    if len(email) > _OWNER_EMAIL_MAX_LEN or not _OWNER_EMAIL_RE.fullmatch(email):
+        raise OwnerEmailError("That email address doesn't look right. Check it and try again.")
+    from openexecutive.people.store import find_person_by_email
+
+    try:
+        holder = find_person_by_email(email)
+    except (OSError, sqlite3.Error) as exc:
+        # Unknown is not "free": saving anyway could give two people one email.
+        logger.warning("check_owner_email: lookup failed (%s)", type(exc).__name__)
+        raise OwnerEmailError("Could not check that email just now. Try again.") from exc
+    if holder is not None and holder.full_name.strip().lower() != principal_name.strip().lower():
+        raise OwnerEmailError(
+            "That email already belongs to someone else on the People page. "
+            "Use a different one, or change theirs there first."
+        )
+    return email
+
+
+def link_owner_email(person_id: int, email: str) -> bool:
+    """Save the confirmed owner email on the principal's row.
+
+    Best-effort, like the rest of this module: the profile is already saved,
+    and a failure here only leaves the owner to add their email on the People
+    page, as before this step existed.
+    """
+    try:
+        from openexecutive.people.store import update_person
+
+        return update_person(person_id, email=email)
+    except Exception as exc:
+        logger.warning("link_owner_email failed (%s)", type(exc).__name__)
+        return False
 
 
 def reconcile_onboarding_departments(

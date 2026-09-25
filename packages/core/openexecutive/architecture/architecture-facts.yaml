@@ -4066,7 +4066,29 @@ auth:
         than coasting until JWT expiry. Fails open ONLY for a session
         that is not in ALLOWED_EMAILS and whose roster membership is
         currently unreadable; a definite miss (both lists readable,
-        neither matched) still revokes.
+        neither matched) still revokes. It returns the refusal itself
+        (JSON 401 for /api/*, a redirect to /signin for pages), and
+        middleware.ts exports `auth` UNWRAPPED — next-auth ignores an
+        `authorized` false whenever a wrapper `auth((req) => …)` is
+        passed, which is how this re-check went unenforced until the
+        one-person-mode change: removed users kept working until their
+        JWT expired. /signin bounces a visitor onward only when
+        `sessionStillAllowed` agrees, or a refused session would loop.
+    One-person mode (packages/ui/src/lib/localOwner.ts): `make dev` with
+    AUTH_GOOGLE_ID blank starts the UI with `-H 127.0.0.1` and
+    OE_LOCAL_OWNER_MODE=1 in one recipe line (the flag alone would hand
+    the owner's seat to the network, so nothing else sets it). The UI
+    then offers a Credentials provider (`local-owner`) instead of Google:
+    an "Open" button with no password. Guards: the mode is compiled out
+    of production builds (literal `process.env.NODE_ENV`, folded at build
+    time), off whenever AUTH_GOOGLE_ID or OE_PUBLIC_DEPLOYMENT is set, and
+    every sign-in and request must carry a loopback raw `Host` header —
+    that stops DNS rebinding, since a browser cannot forge Host (it CAN
+    set X-Forwarded-Host, which is why request.url is not used). The
+    session has no email; the JWT carries `localOwner`, and it stops
+    working the moment Google sign-in is set up. A blank AUTH_SECRET gets
+    a throwaway per-run value from the Makefile. Docker (`make docker`)
+    publishes port 3000 on all interfaces, so it never sets the flag.
     Both callbacks share one helper (`checkEmailAllowed`). The allowlist
     is the UNION of two additive sources — neither overrides the other:
       1. ALLOWED_EMAILS: comma-separated env var on the UI, parsed once
@@ -4110,6 +4132,13 @@ auth:
     backend uses this header in /chat to resolve the caller to a
     Person row for Honcho's per-person memory; future routes
     (audit/today filters etc.) can read the same signal.
+    A request WITHOUT the header resolves to the principal (the CLI's
+    fallback), so the proxy sends none only for a one-person-mode
+    session, re-checked there (mode on, loopback Host); any other
+    session without an email gets a 401 rather than that fallback.
+    Onboarding saves the owner's sign-in email on the principal's row
+    (company_onboarding.people_and_contacts), so a Google-signed-in
+    owner resolves to themselves from the first turn.
 
 integrations:
   channel_access: |
@@ -4838,9 +4867,11 @@ company_onboarding:
   write_once_commit: |
     The interview NEVER writes. POST /onboard/interview/commit is the single
     write, ordered so nothing observable changes until the atomic save
-    succeeds: (1) validate profile + drafts, (2) reject an empty name,
+    succeeds: (1) validate profile + drafts, then the owner email
+    (commit.check_owner_email), (2) reject an empty name,
     (3) profile.save_to_yaml (write-then-rename, O_EXCL, fsync), (4) mark the
-    session saved, (5) seed people, (6) reconcile departments, (7) fire the
+    session saved, (5) seed people, then link the owner email to the
+    principal (best-effort), (6) reconcile departments, (7) fire the
     post-onboarding research workflow. A failure at 1-3 leaves the session
     untouched, so the user edits the draft and retries. This replaces the
     deepcopy-snapshot rollback the wizard needs (process_answer mutates state
@@ -4865,6 +4896,19 @@ company_onboarding:
     model boundary — OE never auto-imports contacts, matching the fixture and
     engagement-intake invariants. Channels, availability and scopes stay a
     deliberate action on /people.
+    The one exception is the owner's OWN sign-in email, and it never comes
+    from the model: OnboardCommitRequest.owner_email is a separate field the
+    review screen pre-fills from the signed-in session and the user confirms
+    (or changes, when setting up for someone else). check_owner_email
+    lowercases it and 422s — with fixed, non-echoing messages — on a malformed
+    address, one already held by a non-archived person other than the drafted
+    principal (two rows sharing an email would resolve sign-in to the older
+    one), or a roster it cannot read; link_owner_email then saves it on the
+    principal's row after the people seed. Before this, the signed-in owner
+    matched no Person, so `x-caller-email` resolved to nobody and their chat
+    list stayed empty until they found the People page. Optional in
+    one-person mode, whose email-less session already resolves to the
+    principal.
   org_structure_is_derived: |
     profile.org_structure.departments and .leadership_team are computed from
     the reviewed people and department tables at commit time

@@ -28,6 +28,29 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
     );
   }
 
+  // One-person mode: no Google account and nothing to sign out of — the
+  // sign-in page would just offer "Open" again.
+  if (session?.localOwner) {
+    return (
+      <div
+        className={
+          variant === "sidebar"
+            ? "px-3 py-3 border-t border-line flex items-center gap-2.5 flex-shrink-0"
+            : "flex items-center gap-2 text-xs text-fg-muted"
+        }
+        title="One-person mode: only this computer can reach Open Executive"
+      >
+        <Avatar name="ME" size={variant === "sidebar" ? "w-7 h-7" : "w-6 h-6"} />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-fg truncate">You (owner)</p>
+          {variant === "sidebar" && (
+            <p className="text-[10px] text-fg-muted truncate">On this computer</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const user = session?.user;
   if (!user?.email) {
     return null; // shouldn't happen post-middleware, but fail quiet

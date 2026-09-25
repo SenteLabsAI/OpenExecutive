@@ -12,10 +12,23 @@ install:
 #   surface them, silently leaving the API gate open.
 # Note: exported values win over packages/ui/.env.local for duplicate keys.
 # .env values must be shell-safe: quote anything containing spaces or `$`.
+#
+# One-person mode: with AUTH_GOOGLE_ID blank there is no sign-in, so the UI
+# binds to 127.0.0.1 (nobody else on the network can reach it) and gets
+# OE_LOCAL_OWNER_MODE=1, which packages/ui/src/auth.ts requires before it
+# offers the "Open" button. The flag and the loopback bind must travel
+# together — the flag alone would hand the owner's seat to the whole network —
+# so this recipe is the only thing that sets it. A blank AUTH_SECRET gets a
+# throwaway one for the run (you click "Open" again after a restart).
 dev:
 	@echo "Starting Open Executive..."
+	@[ -d packages/ui/node_modules ] || { echo "Installing the web app's packages (first run only)..."; cd packages/ui && npm install; }
 	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/core && uv run uvicorn openexecutive.api.main:app --reload --port 8000 &
-	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/ui && npm run dev
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; cd packages/ui && \
+	if [ -n "$$AUTH_GOOGLE_ID" ]; then exec npm run dev; fi; \
+	echo "Google sign-in is not set up, so this runs in one-person mode: open http://localhost:3000 on this computer."; \
+	[ -n "$$AUTH_SECRET" ] || AUTH_SECRET=$$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))"); \
+	AUTH_SECRET="$$AUTH_SECRET" AUTH_TRUST_HOST="$${AUTH_TRUST_HOST:-true}" OE_LOCAL_OWNER_MODE=1 exec npm run dev -- -H 127.0.0.1
 
 stop:
 	@lsof -ti :8000 -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true

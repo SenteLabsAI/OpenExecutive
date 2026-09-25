@@ -538,7 +538,10 @@ async def commit_interview(body: OnboardCommitRequest) -> CompanyProfileResponse
     rejection leaves the session untouched and the user can edit and retry.
     """
     from openexecutive.onboarding.commit import (
+        OwnerEmailError,
+        check_owner_email,
         derive_org_structure,
+        link_owner_email,
         reconcile_onboarding_departments,
         save_onboarding_people,
     )
@@ -593,6 +596,14 @@ async def commit_interview(body: OnboardCommitRequest) -> CompanyProfileResponse
         logger.info("onboarding commit: rejected draft (%d error(s))", len(errors))
         raise HTTPException(status_code=422, detail=errors[0].safe)
 
+    # validate_draft guarantees exactly one principal. Their sign-in email is
+    # checked now, while a rejection still leaves the draft editable.
+    principal_name = next(p.full_name.strip() for p in people if p.is_principal)
+    try:
+        owner_email = check_owner_email(body.owner_email, principal_name)
+    except OwnerEmailError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     profile = derive_org_structure(profile, people, departments)
 
     # 2. is_empty() keys off the name — a nameless profile is invisible to
@@ -616,6 +627,9 @@ async def commit_interview(body: OnboardCommitRequest) -> CompanyProfileResponse
     # 5-6. Best-effort seeding. Departments are reconciled additively — see
     #      onboarding/commit.py for why this must not mirror the fixture loader.
     person_ids = save_onboarding_people(people)
+    principal_id = person_ids.get(principal_name)
+    if owner_email and principal_id is not None:
+        link_owner_email(principal_id, owner_email)
     reconcile_onboarding_departments(departments, person_ids)
 
     # 7. Same post-onboarding research fire the wizard does, same dedup set.
