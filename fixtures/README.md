@@ -68,6 +68,7 @@ Loading a fixture replaces:
 3. Episodic memory rows — decisions, initiatives, advice_given (cleared and seeded)
 4. **People** — leadership and key employees with channels, authority scopes, availability windows
 5. **Departments** — company-specific org shape, charters, OKRs, authority levels (including informational departments with no specialist agent — useful for nonprofits with "Volunteer Coordination" or "Family Services")
+6. **Workspace settings** — reset to the defaults (team mode, no time zone of its own), then taken from the fixture's optional `workspace.yaml`
 
 ## Running Fixture-Specific Evals
 
@@ -90,6 +91,7 @@ fixtures/companies/<name>/
   memory.json         # Episodic seed data (decisions, initiatives, advice_given)
   people.yaml         # Leadership + key employees as Person records
   departments.yaml    # Company-specific departments + OKRs + authority levels
+  workspace.yaml      # Optional: solo/team mode + the user's time zone
   scenarios/
     <name>_001.yaml   # Eval scenario 1
     <name>_002.yaml   # Eval scenario 2
@@ -124,6 +126,24 @@ departments:
     specialist_key: null          # informational only — no specialist agent
     ...
 ```
+
+### Authoring `workspace.yaml` (optional)
+
+Both keys are optional; a fixture without the file loads in team mode with no
+time zone of its own (the server's `USER_TIMEZONE`, else UTC, applies).
+
+```yaml
+mode: solo                 # solo | team — solo: one person using Open Executive
+                           # just for themselves, so department check-ins don't run
+timezone: America/Chicago  # IANA zone for the brief times, "tomorrow at 9", quiet hours
+```
+
+A value that doesn't validate (including a region like `America` rather than a
+zone like `America/Chicago`) is logged and ignored; it never stops the load.
+Loading a fixture while your own company is live writes your current settings
+to `workspace.yaml` in the backup — even when an earlier backup is reused — so
+unloading the fixture restores them. Unloading from an older backup that has no
+`workspace.yaml` leaves the current settings as they are.
 
 ## Adding a New Fixture
 

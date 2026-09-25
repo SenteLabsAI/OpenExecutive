@@ -3,6 +3,13 @@
 A *cadence* is a recurring proactive action tied to a department — e.g.
 ``"daily@09:00"`` fires a check-in workflow every day at 09:00 UTC.
 
+Department cadences are always read in UTC. ``_parse_cadence_spec`` also
+takes a zone, which the principal's own rhythm (the briefs and the
+reflection in ``scheduler.runner``) uses to fire at a local wall-clock time.
+
+In solo mode (``memory.workspace_settings``) there are no department
+check-ins: ``bootstrap_cadences`` does nothing.
+
 Phase 5 surfaces two public entry points:
 
 * ``bootstrap_cadences`` — called at startup to ensure every department
@@ -26,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -42,22 +49,42 @@ _QUARTERLY_RE = re.compile(r"^quarterly@(\d{2})-(\d{2}):(\d{2})$")
 _QUARTER_START_MONTHS = [1, 4, 7, 10]
 
 
-def _parse_cadence_spec(spec: str, after: datetime) -> datetime | None:
+def _at_local(day: date, hour: int, minute: int, tz: tzinfo) -> datetime:
+    """The UTC instant of wall-clock ``hour:minute`` on ``day`` in ``tz``.
+
+    DST-safe by construction: the wall-clock time is built in the zone and
+    only then converted, so it stays at the same local time across a
+    transition. A time the spring-forward gap skips (02:30 in New York in
+    March) resolves to the instant just after the jump (03:30 local); a time
+    the fall-back repeats (01:30 in November) resolves to its first
+    occurrence — ``fold=0`` semantics either way. Raises ``ValueError`` for an
+    out-of-range hour or minute.
+    """
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).astimezone(UTC)
+
+
+def _parse_cadence_spec(
+    spec: str, after: datetime, tz: tzinfo = UTC
+) -> datetime | None:
     """Return the next occurrence of ``spec`` that is strictly *after* ``after``.
 
-    Returns ``None`` for unrecognised specs.  ``after`` is treated as UTC;
-    the returned datetime is always UTC-aware.
+    The spec's times of day are wall-clock times in ``tz`` (UTC by default,
+    which is what department and workflow cadences use). The result is
+    always UTC-aware. A naive ``after`` is treated as UTC. Returns ``None``
+    for unrecognised specs.
     """
     if after.tzinfo is None:
         after = after.replace(tzinfo=UTC)
     after_utc = after.astimezone(UTC)
+    after_local = after.astimezone(tz)
+    today = after_local.date()
 
     daily_m = _DAILY_RE.match(spec)
     if daily_m:
         hour, minute = int(daily_m.group(1)), int(daily_m.group(2))
-        candidate = after_utc.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        candidate = _at_local(today, hour, minute, tz)
         if candidate <= after_utc:
-            candidate += timedelta(days=1)
+            candidate = _at_local(today + timedelta(days=1), hour, minute, tz)
         return candidate
 
     weekly_m = _WEEKLY_RE.match(spec)
@@ -68,27 +95,28 @@ def _parse_cadence_spec(spec: str, after: datetime) -> datetime | None:
         if target_dow is None:
             logger.warning("cadence: unknown DOW token %r in spec %r", dow_str, spec)
             return None
-        candidate = after_utc.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        days_ahead = (target_dow - after_utc.weekday()) % 7
-        candidate += timedelta(days=days_ahead)
+        day = today + timedelta(days=(target_dow - today.weekday()) % 7)
+        candidate = _at_local(day, hour, minute, tz)
         if candidate <= after_utc:
-            candidate += timedelta(weeks=1)
+            candidate = _at_local(day + timedelta(weeks=1), hour, minute, tz)
         return candidate
 
     quarterly_m = _QUARTERLY_RE.match(spec)
     if quarterly_m:
-        day = int(quarterly_m.group(1))
+        day_of_month = int(quarterly_m.group(1))
         hour, minute = int(quarterly_m.group(2)), int(quarterly_m.group(3))
         # Walk forward through up to 5 quarter-start months until we find a
-        # valid date that is strictly after `after_utc`.
-        year = after_utc.year
-        start_q = (after_utc.month - 1) // 3  # 0-based index of current quarter
+        # valid date that is strictly after `after`.
+        year = today.year
+        start_q = (today.month - 1) // 3  # 0-based index of current quarter
         for offset in range(5):
             q_idx = (start_q + offset) % 4
             q_year = year + (start_q + offset) // 4
             q_month = _QUARTER_START_MONTHS[q_idx]
             try:
-                candidate = datetime(q_year, q_month, day, hour, minute, 0, tzinfo=UTC)
+                candidate = _at_local(
+                    date(q_year, q_month, day_of_month), hour, minute, tz
+                )
             except ValueError:
                 # day out of range for this month (e.g. day=31 in a 30-day month)
                 continue
@@ -138,9 +166,19 @@ def bootstrap_cadences(db_path: Path | None = None) -> int:
 
     Idempotent — skips departments that already have a pending or running
     ``dept_cadence`` action.  Returns the count of newly inserted rows.
+
+    A no-op in solo mode. The check lives here rather than at a call site
+    because the lifespan, the fixture reset and client-slot activation all
+    call this, and none of them should start department check-ins for
+    someone using Open Executive just for themselves.
     """
     from openexecutive.departments import store as dept_store
     from openexecutive.memory.episodic import _get_conn, insert_scheduled_action
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    if get_workspace(db_path).mode == "solo":
+        logger.info("cadence.bootstrap: solo workspace — no department check-ins")
+        return 0
 
     now = datetime.now(UTC)
     inserted = 0
@@ -226,6 +264,33 @@ def cancel_orphaned_cadences(db_path: Path | None = None) -> int:
     return cancelled
 
 
+def cancel_pending_cadences(db_path: Path | None = None) -> int:
+    """Cancel every pending ``dept_cadence`` action (switching to solo mode).
+
+    A running row is left alone: it finishes, and ``enqueue_next`` does not
+    chain another in solo. Idempotent; safe when no DB or table exists.
+    Returns the count cancelled.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return 0
+    with _get_conn(resolved) as conn:
+        table_present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+        ).fetchone()
+        if table_present is None:
+            return 0
+        cancelled = conn.execute(
+            "UPDATE scheduled_actions SET status = 'cancelled' "
+            "WHERE kind = 'dept_cadence' AND status = 'pending'"
+        ).rowcount
+    if cancelled:
+        logger.info("cadence.cancel_pending: cancelled %d department check-in(s)", cancelled)
+    return cancelled
+
+
 def enqueue_next(
     slug: str,
     *,
@@ -235,10 +300,17 @@ def enqueue_next(
     """Insert the next cadence occurrence for *slug*.
 
     Returns the new ``scheduled_action.id``, or ``None`` if the department
-    doesn't exist or has no ``check_in`` cadence configured.
+    doesn't exist, has no ``check_in`` cadence configured, or the workspace
+    is solo — a check-in that was already running when the install switched
+    to solo finishes but does not schedule another.
     """
     from openexecutive.departments import store as dept_store
     from openexecutive.memory.episodic import insert_scheduled_action
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    if get_workspace(db_path).mode == "solo":
+        logger.info("cadence.enqueue_next: solo workspace — not chaining %r", slug)
+        return None
 
     state = dept_store.get_department(slug, db_path=db_path)
     if state is None:

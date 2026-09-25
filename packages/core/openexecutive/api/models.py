@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PageFormField(BaseModel):
@@ -302,6 +302,42 @@ class CompanyProfileUpdateRequest(BaseModel):
     financials: FinancialsData | None = None
     vendors: list[str] | None = None
     tickers: list[str] | None = None
+
+
+# ── workspace settings (/workspace) ──────────────────────────────────────────
+
+
+class WorkspaceResponse(BaseModel):
+    mode: Literal["solo", "team"]
+    # The zone the user set, or null when none is set.
+    timezone: str | None
+    # The zone in effect: `timezone`, else the USER_TIMEZONE setting, else UTC.
+    effective_timezone: str
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    """A partial update: only the fields present are changed. `timezone: null`
+    (or blank) clears the stored zone; `mode` may be omitted but not null."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["solo", "team"] | None = None
+    timezone: str | None = Field(default=None, max_length=64)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _mode_not_null(cls, v: object) -> object:
+        # Runs only when the field is sent (defaults are not validated).
+        if v is None:
+            raise ValueError("mode must be 'solo' or 'team'")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, v: str | None) -> str | None:
+        from openexecutive.memory.workspace_settings import validate_timezone
+
+        return validate_timezone(v)
 
 
 

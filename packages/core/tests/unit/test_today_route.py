@@ -578,6 +578,45 @@ def test_insight_served_from_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert person["insight"] == "Available and clear; last contacted last week"
 
 
+def test_principal_only_roster_regenerates_no_insight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The UI shows no People sidebar for one person, so a one-person install
+    must not pay a daily model call for a note nobody sees."""
+    db = tmp_path / "solo_insight.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Sole Owner", is_principal=True, email="o@co.com", db_path=db)
+
+    stale: list[today_route.StaleInsight] = []
+    snapshot = today_route._build_today(stale_out=stale)
+    assert [p.full_name for p in snapshot.people] == ["Sole Owner"]
+    assert stale == []
+
+    regen: list[object] = []
+
+    async def _spy(items: list[object]) -> None:
+        regen.append(items)
+
+    monkeypatch.setattr(today_route, "_regen_stale_insights", _spy)
+    _make_client().get("/today")
+    assert regen == []
+
+
+def test_two_person_roster_collects_both_stale_insights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "team_insight.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db)
+    people_store.upsert_person(full_name="Tia Teammate", email="t@co.com", db_path=db)
+
+    stale: list[today_route.StaleInsight] = []
+    today_route._build_today(stale_out=stale)
+    assert sorted(person.full_name for person, _signals, _hash in stale) == [
+        "Pat Principal", "Tia Teammate",
+    ]
+
+
 def test_morning_brief_alias_unaffected_by_async_today(client: TestClient) -> None:
     """The sync /morning-brief alias must keep returning the same body as
     the now-async /today (both serve insight=None on a cold INSIGHT cache;

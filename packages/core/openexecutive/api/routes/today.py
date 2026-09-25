@@ -544,7 +544,8 @@ def _build_today(
     morning_brief workflow (which call this directly) need no changes; the LLM
     insight notes are served from cache here and regenerated off the hot path.
     When `stale_out` is provided, people whose cached note is missing/stale are
-    appended for the caller to regenerate in the background.
+    appended for the caller to regenerate in the background — only when the
+    roster has more than one person (the UI shows no People sidebar for one).
 
     The briefing narrative is NOT attached here — it is per-viewer (see
     `_attach_narrative`), so the caller-aware endpoints attach it after
@@ -621,6 +622,13 @@ def _build_today(
             ],
         ))
 
+    # Per-person insight notes only earn their model call when the brief has a
+    # roster to show: the UI renders the People sidebar only for more than one
+    # person, so a one-person install (solo, or a team before anyone is added)
+    # would pay a daily LLM + peer-memory call for a note nobody sees. Decided
+    # before the loop; cached notes are still served either way.
+    collect_stale = stale_out is not None and len(people) > 1
+
     person_items = []
     # Per-person reply-overdue, kept separately from PersonBriefItem.overdue
     # (which also folds in workflow-SLA overdue) so the `awaiting` list — which
@@ -675,7 +683,7 @@ def _build_today(
             cached = insights_cache.get(pid)
             if cached is not None and cached.input_hash == input_hash:
                 insight = cached.insight_text
-            elif stale_out is not None:
+            elif collect_stale and stale_out is not None:
                 stale_out.append((person, signals, input_hash))
 
         person_items.append(PersonBriefItem(

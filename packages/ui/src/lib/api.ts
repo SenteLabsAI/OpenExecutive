@@ -1253,6 +1253,54 @@ export async function resumeExecutive(): Promise<ExecutiveStatus> {
 }
 
 // ----------------------------------------------------------------------------
+// Workspace settings — solo / team mode and the user's time zone.
+// ----------------------------------------------------------------------------
+
+// "solo": one person using Open Executive just for themselves (no department
+// check-ins). "team": a company with departments and people (the default).
+export type WorkspaceMode = "solo" | "team";
+
+export interface WorkspaceSettings {
+  mode: WorkspaceMode;
+  // IANA zone the user set, or null when none is set.
+  timezone: string | null;
+  // The zone in effect: `timezone`, else the server's USER_TIMEZONE, else UTC.
+  effective_timezone: string;
+}
+
+// Partial update: only the fields present change. `timezone: null` (or "")
+// clears the stored zone.
+export interface WorkspaceUpdate {
+  mode?: WorkspaceMode;
+  timezone?: string | null;
+}
+
+export async function getWorkspace(signal?: AbortSignal): Promise<WorkspaceSettings> {
+  const res = await fetch(`${API_BASE}/workspace`, { signal });
+  if (!res.ok) throw new Error("Failed to load workspace settings");
+  return res.json();
+}
+
+export async function updateWorkspace(update: WorkspaceUpdate): Promise<WorkspaceSettings> {
+  const res = await fetch(`${API_BASE}/workspace`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (res.status === 403) throw new Error("Only the principal can change workspace settings.");
+  if (res.status === 422) {
+    // FastAPI validation errors: `detail` is a list of {msg}; surface the
+    // first one ("timezone 'Mars/Base' is not a known IANA zone").
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    const first = Array.isArray(body.detail) ? (body.detail[0] as { msg?: unknown }) : undefined;
+    const msg = typeof first?.msg === "string" ? first.msg.replace(/^Value error, /, "") : null;
+    throw new Error(msg ?? "Invalid workspace settings");
+  }
+  if (!res.ok) throw new Error("Failed to update workspace settings");
+  return res.json();
+}
+
+// ----------------------------------------------------------------------------
 // Workflows
 // ----------------------------------------------------------------------------
 
