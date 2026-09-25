@@ -725,6 +725,31 @@ def get_recent_decisions(
     return [Decision(**dict(row)) for row in rows]
 
 
+def has_department_decision_since(
+    department: str,
+    since: datetime,
+    db_path: Path | None = None,
+) -> bool:
+    """True when a decision tagged ``department`` was logged after ``since``.
+
+    Filtered in SQL, so a busy company's newest-N page of decisions cannot
+    hide one department's. Timestamps are UTC ISO strings, compared as text
+    (the same convention ``store_decision``'s dedup window uses).
+    """
+    if not department:
+        return False
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return False
+    bound = since.astimezone(UTC).isoformat() if since.tzinfo else since.isoformat()
+    with _get_conn(resolved) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM decisions WHERE department = ? AND timestamp > ? LIMIT 1",
+            (department, bound),
+        ).fetchone()
+    return row is not None
+
+
 def get_active_initiatives(db_path: Path = DB_PATH) -> list[Initiative]:
     if not db_path.exists():
         return []

@@ -1,10 +1,12 @@
 """Authority gate for department-scoped proactive actions.
 
-The gate is consulted whenever a proactive action (scheduled or cadence)
-has a department slug — it reads the department's authority_level and
-decides whether the action should execute immediately, be proposed to an
-approver, or be escalated to an approver as urgent. Only `execute` runs the
-action; `propose` and `escalate` both wait for a person to approve it.
+The gate is consulted whenever a scheduled proactive action has a department
+slug — it reads the department's authority_level and decides whether the
+action should execute immediately, be proposed to an approver, or be
+escalated to an approver as urgent. Only `execute` runs the action;
+`propose` and `escalate` both wait for a person to approve it. A
+`dept_cadence` fire is the exception: the check-in it runs sends nothing
+and gates each action it proposes.
 
 All callers are expected to pass `now` explicitly so the gate is
 deterministic and easy to test without time mocking.
@@ -14,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
@@ -24,6 +27,9 @@ from openexecutive.departments.models import AuthorityLevel
 from openexecutive.people.models import AuthorityScope
 
 logger = logging.getLogger(__name__)
+
+# `alerts.source` of every card `propose_via_alert` files.
+PROPOSAL_ALERT_SOURCE = "authority_gate"
 
 
 class GateDecision(BaseModel):
@@ -168,6 +174,26 @@ def _route_proposal(
 # Alert helper
 # ---------------------------------------------------------------------------
 
+def proposal_dedup_key(
+    department_slug: str,
+    person_id: int | None,
+    summary: str,
+    *,
+    dedup_on: str | None = None,
+) -> str:
+    """The ``dedup_key`` ``propose_via_alert`` files a card under.
+
+    Exposed so a caller that must not refresh an open card on every pass
+    (a coalesce bumps its "seen ×N") can look that card up first.
+    """
+    route_key = "unrouted" if person_id is None else str(person_id)
+    subject = (
+        summary[:60] if dedup_on is None
+        else hashlib.sha256(dedup_on.encode()).hexdigest()[:16]
+    )
+    return f"proposal:{department_slug}:{route_key}:{subject}"
+
+
 def propose_via_alert(
     department_slug: str,
     person_id: int | None,
@@ -180,6 +206,7 @@ def propose_via_alert(
     severity: AlertSeverity = AlertSeverity.MEDIUM,
     dedup_on: str | None = None,
     raise_errors: bool = False,
+    db_path: Path | None = None,
 ) -> int | None:
     """Persist a proposal as an alert routed to a specific Person.
 
@@ -204,32 +231,34 @@ def propose_via_alert(
 
     ``person_id=None`` files the card unrouted: the Briefing lists every
     unread card, so work with nobody to route to still reaches a person.
+    An empty ``department_slug`` (work no department owns) files it with no
+    ``department:`` tag.
     ``dedup_on`` keys the dedup on that text (hashed) instead of the
-    summary's first 60 characters.
+    summary's first 60 characters. ``db_path`` overrides the alerts store's
+    database (tests, callers already bound to one).
     """
     from openexecutive.alerts.store import coalesce_alert, insert_alert
 
-    topic_tags = [f"department:{department_slug}"]
+    # No department tag for a card no department owns: an empty
+    # "department:" tag would be what "mute this topic" picks, and mutes
+    # substring-match every future card's tags — it would silence them all.
+    topic_tags = [f"department:{department_slug}"] if department_slug else []
     if person_id is not None:
         topic_tags.append(f"person:{person_id}")
     for tag in extra_tags or []:
         if tag not in topic_tags:
             topic_tags.append(tag)
-    route_key = "unrouted" if person_id is None else str(person_id)
-    subject = (
-        summary[:60] if dedup_on is None
-        else hashlib.sha256(dedup_on.encode()).hexdigest()[:16]
-    )
-    dedup_key = f"proposal:{department_slug}:{route_key}:{subject}"
+    dedup_key = proposal_dedup_key(department_slug, person_id, summary, dedup_on=dedup_on)
     external_id = f"{dedup_key}:{external_id_suffix}" if external_id_suffix else dedup_key
 
     try:
         if external_id_suffix and coalesce_alert(
-            source="authority_gate", dedup_key=dedup_key, severity=severity, body=body,
+            source=PROPOSAL_ALERT_SOURCE, dedup_key=dedup_key, severity=severity, body=body,
+            db_path=db_path,
         ):
             return None
         return insert_alert(
-            source="authority_gate",
+            source=PROPOSAL_ALERT_SOURCE,
             external_id=external_id,
             severity=severity,
             headline=summary,
@@ -238,6 +267,7 @@ def propose_via_alert(
             topic_tags=topic_tags,
             dedup_key=dedup_key,
             routed_to_person_id=person_id,
+            db_path=db_path,
         )
     except Exception:
         if raise_errors:

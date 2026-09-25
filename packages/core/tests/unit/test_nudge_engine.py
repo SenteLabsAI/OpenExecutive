@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from openexecutive.audit import logger as audit_logger_module
 from openexecutive.config import Settings
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
@@ -24,6 +25,10 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(people_store, "DB_PATH", db)
     monkeypatch.setattr(episodic, "DB_PATH", db)
     monkeypatch.setattr(wf_persistence, "DB_PATH", db)
+    # Initiative writes mirror to Honcho, which audits: keep those rows out
+    # of the default ./episodic_memory.db.
+    audit_log = audit_logger_module.AuditLogger(tmp_path / "audit.db")
+    monkeypatch.setattr(audit_logger_module, "get_audit_logger", lambda: audit_log)
 
     dept_registry.invalidate()
     people_registry.invalidate()
@@ -798,3 +803,212 @@ class TestPerScopeCap:
         # Cap disabled → the chase resumes.
         _patch_settings(monkeypatch, nudge_max_per_scope=0)
         assert await nudge_engine.run_nudge_scan(now=now) == 1
+
+
+# ---------------------------------------------------------------------------
+# Idle initiatives with no department head → the principal owns them
+# ---------------------------------------------------------------------------
+
+
+def _idle_initiative(title: str = "Hire a controller", department: str = "") -> int:
+    episodic.store_initiative(
+        title=title, status="active", summary="", department=department,
+        db_path=episodic.DB_PATH,
+    )
+    with sqlite3.connect(str(episodic.DB_PATH)) as conn:
+        conn.execute(
+            "UPDATE initiatives SET updated_at = ? WHERE title = ?",
+            ((_now() - timedelta(days=20)).isoformat(), title),
+        )
+        row = conn.execute("SELECT id FROM initiatives WHERE title = ?", (title,)).fetchone()
+        conn.commit()
+    return int(row[0])
+
+
+def _make_principal(**channels: str) -> int:
+    pid = people_store.upsert_person(full_name="Owner", is_principal=True, **channels)  # type: ignore[arg-type]
+    people_registry.invalidate()
+    return pid
+
+
+class TestInitiativeOwnerFallback:
+    def test_departmentless_initiative_goes_to_the_principal(self) -> None:
+        principal = _make_principal(slack_user_id="U_OWNER", preferred_channel="slack")
+        _idle_initiative()
+
+        (cand,) = nudge_engine._select_idle_initiative_candidates(
+            _now(), idle_days=7, cooldown_days=7,
+        )
+        assert cand.person_id == principal
+        assert cand.department == ""
+        # Self-addressed: the principal is reminded of their own initiative.
+        assert cand.intent_text.startswith("Remind the principal")
+        assert '"Hire a controller"' in cand.intent_text
+        assert "still active, done, or dropped" in cand.intent_text
+        assert "Do not call schedule_followup." in cand.intent_text
+        assert cand.unreachable_card is not None
+
+    def test_unknown_department_falls_back_to_the_principal(self) -> None:
+        principal = _make_principal(slack_user_id="U_OWNER", preferred_channel="slack")
+        _idle_initiative(department="ghost")
+
+        (cand,) = nudge_engine._select_idle_initiative_candidates(
+            _now(), idle_days=7, cooldown_days=7,
+        )
+        assert cand.person_id == principal
+
+    def test_department_head_still_wins(self) -> None:
+        dept_store.seed_default_departments()
+        _make_principal(slack_user_id="U_OWNER", preferred_channel="slack")
+        head = _make_person()
+        dept_store.update_department("finance", head_person_id=head)
+        dept_registry.invalidate()
+        _idle_initiative(department="finance")
+
+        (cand,) = nudge_engine._select_idle_initiative_candidates(
+            _now(), idle_days=7, cooldown_days=7,
+        )
+        assert cand.person_id == head
+        assert cand.intent_text.startswith("Check in on the active initiative")
+        assert cand.unreachable_card is None  # only the principal gets a card
+
+    def test_head_who_is_the_principal_gets_the_self_addressed_wording(self) -> None:
+        dept_store.seed_default_departments()
+        principal = _make_principal(slack_user_id="U_OWNER", preferred_channel="slack")
+        dept_store.update_department("finance", head_person_id=principal)
+        dept_registry.invalidate()
+        _idle_initiative(department="finance")
+
+        (cand,) = nudge_engine._select_idle_initiative_candidates(
+            _now(), idle_days=7, cooldown_days=7,
+        )
+        assert cand.person_id == principal
+        assert cand.intent_text.startswith("Remind the principal")
+
+    def test_no_principal_skips(self) -> None:
+        _idle_initiative()
+        assert nudge_engine._select_idle_initiative_candidates(
+            _now(), idle_days=7, cooldown_days=7,
+        ) == []
+
+
+class TestInitiativeNudgeToThePrincipal:
+    @pytest.fixture(autouse=True)
+    def _alerts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openexecutive.alerts import store as alert_store
+
+        monkeypatch.setattr(alert_store, "DB_PATH", episodic.DB_PATH)
+        alert_store.initialize_db(episodic.DB_PATH)
+
+    @pytest.mark.asyncio
+    async def test_reachable_principal_gets_a_nudge_row(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_settings(monkeypatch)
+        _make_principal(slack_user_id="U_OWNER", preferred_channel="slack")
+        initiative_id = _idle_initiative()
+
+        assert await nudge_engine.run_nudge_scan(now=_now()) == 1
+        (row,) = [
+            r for r in episodic.list_scheduled_actions(status="pending")
+            if r.kind == "proactive_nudge"
+        ]
+        assert (row.channel, row.channel_ref) == ("slack_dm", "U_OWNER")
+        assert row.scope_key == f"nudge:initiative:{initiative_id}"
+        assert row.department == ""  # bypasses the authority gate
+
+    @pytest.mark.asyncio
+    async def test_unreachable_principal_gets_one_briefing_card_a_week(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from openexecutive.alerts import store as alert_store
+
+        _patch_settings(monkeypatch)
+        _make_principal()  # web-only: no chat id, no email
+        _idle_initiative()
+        now = _now()
+
+        assert await nudge_engine.run_nudge_scan(now=now) == 0
+        (card,) = alert_store.list_alerts()
+        assert card.routed_to_person_id is None  # unrouted → the principal's queue
+        assert "initiative" in card.topic_tags
+        # No empty "department:" tag: "mute this topic" would pick it, and a
+        # mute substring-matches every department card's tags.
+        assert not any(t.startswith("department:") for t in card.topic_tags)
+        assert '"Hire a controller"' in card.headline
+        # Neutral: the principal may simply be on leave, not channel-less.
+        assert "couldn't reach you" in card.body
+        assert not episodic.list_scheduled_actions(status="pending")
+
+        # The scan runs every 15 minutes: the open card is left alone, not
+        # refreshed (a coalesce would bump its "seen ×N" each pass).
+        await nudge_engine.run_nudge_scan(now=now + timedelta(minutes=15))
+        (same,) = alert_store.list_alerts()
+        assert same.id == card.id and same.occurrence_count == card.occurrence_count
+
+        # Handled this week → nothing new until next week.
+        assert card.id is not None
+        alert_store.set_status(card.id, "ack")
+        await nudge_engine.run_nudge_scan(now=now + timedelta(hours=1))
+        assert len(alert_store.list_alerts()) == 1
+        await nudge_engine.run_nudge_scan(now=now + timedelta(days=7))
+        assert sorted(a.status for a in alert_store.list_alerts()) == ["ack", "unread"]
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_check_in_does_not_suppress_the_departments_initiative_nudge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seeded departments have no Goals, so their daily check-in is skipped.
+    A skipped check-in covered nothing: an idle initiative tagged to that
+    department must still be chased (a done cadence row would suppress it)."""
+    from openexecutive.scheduler import runner
+
+    _patch_settings(monkeypatch)
+    dept_store.seed_default_departments()
+    head = _make_person(slack_user_id="U_HEAD", preferred="slack")
+    dept_store.update_department("finance", head_person_id=head)
+    dept_registry.invalidate()
+    initiative_id = _idle_initiative(department="finance")
+
+    episodic.insert_scheduled_action(
+        run_at=(_now() - timedelta(seconds=10)).isoformat(), channel="__internal__",
+        channel_ref="finance", intent_text="Department check-in: Finance",
+        department="finance", kind="dept_cadence",
+    )
+    (cadence,) = episodic.claim_due_actions(_now())
+    await runner._execute_action(cadence, None)
+    assert cadence.id is not None
+    fired = episodic.get_scheduled_action(cadence.id)
+    assert fired is not None and fired.status == "cancelled"
+
+    assert await nudge_engine.run_nudge_scan(now=_now()) == 1
+    (nudge,) = [
+        r for r in episodic.list_scheduled_actions(status="pending")
+        if r.kind == "proactive_nudge"
+    ]
+    assert nudge.scope_key == f"nudge:initiative:{initiative_id}"
+    assert nudge.channel_ref == "U_HEAD"
+
+
+@pytest.mark.asyncio
+async def test_unreachable_card_goes_to_the_scans_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`run_nudge_scan(db_path=...)` files the card in that database, not in
+    the alerts store's default one."""
+    from openexecutive.alerts import store as alert_store
+
+    decoy = tmp_path / "decoy.db"
+    monkeypatch.setattr(alert_store, "DB_PATH", decoy)
+    alert_store.initialize_db(decoy)
+    alert_store.initialize_db(episodic.DB_PATH)
+    _patch_settings(monkeypatch)
+    _make_principal()  # web-only
+    _idle_initiative()
+
+    await nudge_engine.run_nudge_scan(now=_now(), db_path=episodic.DB_PATH)
+
+    assert alert_store.list_alerts(db_path=decoy) == []
+    (card,) = alert_store.list_alerts(db_path=episodic.DB_PATH)
+    assert "couldn't reach you" in card.body
