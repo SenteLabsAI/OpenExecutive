@@ -49,6 +49,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "close_open_loop",
     # Department goal mutations (Phase B — chat-driven progress updates)
     "update_department_goal",
+    # A new goal (and, when its area did not exist, a new area)
+    "create_goal",
     # Skills mutations
     "create_skill",
     "update_skill",
@@ -258,6 +260,23 @@ def summarize_action(
             payload["summary"] = f"Touched {slug} goal"
         else:
             payload["summary"] = "Updated a department goal"
+        payload["target"] = slug or None
+        if slug:
+            payload["link"] = f"/departments/{slug}"
+    elif tool_name == "create_goal":
+        # The handler's result names the area the goal landed in — which may
+        # be one it just created — so prefer it over the model's input.
+        slug = str((parsed or {}).get("area_slug") or "")
+        area = str((parsed or {}).get("area_title") or tool_input.get("area", "") or "")
+        key_result = str(tool_input.get("key_result", "") or "")[:80]
+        created = bool((parsed or {}).get("area_created"))
+        where = f"new {area} area" if created and area else area
+        if where and key_result:
+            payload["summary"] = f"Added a {where} goal: {key_result}"
+        elif key_result:
+            payload["summary"] = f"Added a goal: {key_result}"
+        else:
+            payload["summary"] = "Added a goal"
         payload["target"] = slug or None
         if slug:
             payload["link"] = f"/departments/{slug}"

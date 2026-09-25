@@ -1,0 +1,34 @@
+id: department_goal_update_005
+domain: departments
+description: "User states a NEW goal with a concrete target; Executive should start tracking it via create_goal (one goal, the stated target, filed under Marketing) instead of redirecting to the UI or inventing extra goals."
+company_context:
+  stage: "Series A"
+  industry: "B2B software"
+  headcount: 45
+  arr: 3500000
+# Creation case for chat-driven goals. The user sets a brand-new target in
+# their own words for an area that already exists (Marketing is one of the
+# seeded departments). The Executive should:
+# (1) optionally list_department_goals for marketing to check it isn't
+#     tracked already (reading first is fine),
+# (2) create_goal with area "marketing" / "Marketing", the key result, the
+#     stated target and the current figure the user gave (150), plus a
+#     rationale citing the message — ONE goal, nothing invented alongside it,
+# (3) confirm briefly that it is tracked, without asking the user to add it
+#     in the UI or to confirm again.
+# Eval turns carry no verified speaker, so a goal for an area that does not
+# exist yet would be refused (adding an area is the principal's call); this
+# scenario deliberately names an existing one.
+query: "New goal for Marketing this quarter: 400 qualified demo requests by December 31. We're at 150 right now — start tracking it."
+expected_tool_calls:
+  - create_goal
+not_expected_tool_calls:
+  - update_department_goal
+expected_topics:
+  - confirms_goal_is_tracked
+  - restates_target_and_current
+quality_criteria:
+  acknowledges_user_directly: true
+  does_not_redirect_to_ui: true
+  does_not_invent_additional_goals: true
+  brief: true

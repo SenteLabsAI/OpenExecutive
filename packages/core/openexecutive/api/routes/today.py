@@ -1307,8 +1307,24 @@ def _nothing_needs_attention(today_data: dict[str, Any], mode: str = "team") -> 
     ):
         return False
     if mode == "solo":
-        return True
+        # Solo's own open items (DUE THIS WEEK) want attention too.
+        return not today_data.get("due_soon")
     return not any(p.get("awaiting_count", 0) for p in today_data.get("people", []))
+
+
+def _with_due_soon(
+    today_data: dict[str, Any], mode: str, viewer_desc: dict[str, str] | None
+) -> dict[str, Any]:
+    """``today_data`` plus, in solo and for the principal's own (whole-
+    business) view only, ``due_soon``: their open loops due this week or
+    overdue (``open_loops.principal_due_soon``). Rendered as the context's
+    DUE THIS WEEK block, so the cache key moves when one is added, closed or
+    falls due. A copy; team data is returned untouched."""
+    if mode != "solo" or viewer_desc is not None:
+        return today_data
+    from openexecutive.attunement.open_loops import principal_due_soon
+
+    return {**today_data, "due_soon": principal_due_soon()}
 
 
 def _narrative_context(
@@ -1330,6 +1346,7 @@ def _narrative_context(
     from openexecutive.briefing import narrative_cache
     from openexecutive.briefing.narrative import render_briefing_context
 
+    today_data = _with_due_soon(today_data, mode, viewer_desc)
     if _nothing_needs_attention(today_data, mode):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)

@@ -708,6 +708,10 @@ class ExecutiveReflectionWorkflow(Workflow):
             # Same reasoning as ack_alert: loop descriptions are quoted from
             # what people wrote, and nobody is watching this pass.
             "close_open_loop",
+            # A goal is set by what the user said, and this pass sees only
+            # inbound text — an injected "track this goal" (which can also
+            # create an area) must not land with nobody watching.
+            "create_goal",
         }
         tools = sorted(
             (t for t in _ALL_SKILL_TOOLS if t["name"] not in _excluded_dm),

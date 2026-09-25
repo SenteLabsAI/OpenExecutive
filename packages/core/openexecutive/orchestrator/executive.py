@@ -905,6 +905,9 @@ class Executive:
             schedule_open_loop_pass(
                 speaker_text, full_response, person_id=person_id,
                 session_id=session.session_id,
+                # The turn's pinned mode: solo opens the principal's own
+                # dated commitments, team does not.
+                workspace_mode=workspace_mode,
             )
             # Re-learn this speaker's working style once enough new
             # messages have arrived (paced and budgeted inside).
@@ -1357,7 +1360,7 @@ class Executive:
 
         schedule_open_loop_pass(
             speaker_text, final_response, person_id=person_id,
-            session_id=session.session_id,
+            session_id=session.session_id, workspace_mode=workspace_mode,
         )
         from openexecutive.attunement.style import schedule_style_pass
 

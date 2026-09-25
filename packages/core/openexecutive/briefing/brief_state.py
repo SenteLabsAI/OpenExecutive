@@ -220,7 +220,11 @@ def build_brief_fingerprint(
 
     ``mode="solo"`` leaves out who is awaiting (the solo brief never says)
     and carries the mode, so switching mode never suppresses the first brief
-    in the new one as "unchanged". Team fingerprints are unchanged."""
+    in the new one as "unchanged". Team fingerprints are unchanged.
+
+    Solo also carries ``due_soon`` (the DUE THIS WEEK items) as
+    ``(loop_id, state)`` pairs — no dates — so a new item, a closed one, or
+    one that falls due today or goes overdue un-suppresses the brief."""
     new, carried = split_proposals(today_data.get("proposals", []), since)
     payload = {
         "new": sorted(int(p.get("alert_id") or 0) for p in new),
@@ -251,6 +255,13 @@ def build_brief_fingerprint(
     if mode == "solo":
         payload.pop("awaiting")
         payload["mode"] = mode
+        due = today_data.get("due_soon") or []
+        if due:
+            # Only when present, so a solo fingerprint with nothing due is
+            # exactly what it was before this block existed.
+            payload["due_soon"] = sorted(
+                (int(d.get("loop_id") or 0), str(d.get("state", ""))) for d in due
+            )
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
