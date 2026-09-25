@@ -9,6 +9,32 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.4.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.0...v0.4.1) (2026-09-25)
+
+
+### Added
+
+* add local login for make dev and link the owner at setup ([#218](https://github.com/SenteLabsAI/OpenExecutive/issues/218)) ([a8efeed](https://github.com/SenteLabsAI/OpenExecutive/commit/a8efeeddf3f969a9c2439ce88f4aca9a644d050f))
+* **agents:** add a sales specialist and advice for bootstrapped founders ([#220](https://github.com/SenteLabsAI/OpenExecutive/issues/220)) ([fd7a8aa](https://github.com/SenteLabsAI/OpenExecutive/commit/fd7a8aae60dbb8d68678cee86901fc9775368c97))
+* **briefing:** email briefs as a backup and show when one isn't sent ([#226](https://github.com/SenteLabsAI/OpenExecutive/issues/226)) ([71a75c8](https://github.com/SenteLabsAI/OpenExecutive/commit/71a75c818f7bedc526a37c72fb951c77089c6146))
+* **chat:** keep answers when an expert fails and show their sources ([#222](https://github.com/SenteLabsAI/OpenExecutive/issues/222)) ([90ca2b2](https://github.com/SenteLabsAI/OpenExecutive/commit/90ca2b2d3c708ef160a3b049c99d584e74add4c5))
+* **core:** add workspace settings for your time zone and a solo mode ([#221](https://github.com/SenteLabsAI/OpenExecutive/issues/221)) ([345a91a](https://github.com/SenteLabsAI/OpenExecutive/commit/345a91a65f36c713280878337dee04a0e62f6867))
+* **goals:** track your goals and dated commitments in solo mode ([#228](https://github.com/SenteLabsAI/OpenExecutive/issues/228)) ([242af54](https://github.com/SenteLabsAI/OpenExecutive/commit/242af54c771de5a593421ae8b79e91ce8fbf541e))
+* **onboarding:** ask what your role is when you use Open Executive just for yourself ([#230](https://github.com/SenteLabsAI/OpenExecutive/issues/230)) ([5dc3a43](https://github.com/SenteLabsAI/OpenExecutive/commit/5dc3a438694000c9373008ca54757afbde602c7b))
+* **orchestrator:** work for one person in solo mode ([#225](https://github.com/SenteLabsAI/OpenExecutive/issues/225)) ([1c35275](https://github.com/SenteLabsAI/OpenExecutive/commit/1c35275d306ae684edeba329ed422f737b4d5bc7))
+* **people:** keep contacts apart from your team and act on mail you forward ([#233](https://github.com/SenteLabsAI/OpenExecutive/issues/233)) ([1bf703d](https://github.com/SenteLabsAI/OpenExecutive/commit/1bf703d17e191e093bff6c388628ff511bfeba5d))
+* **ui:** add a setup status page that tests each part of the install ([#219](https://github.com/SenteLabsAI/OpenExecutive/issues/219)) ([a95f924](https://github.com/SenteLabsAI/OpenExecutive/commit/a95f924dd54813c708d279419f0654c6f5810e33))
+* **ui:** describe Just me for any role, not only someone running a business ([#234](https://github.com/SenteLabsAI/OpenExecutive/issues/234)) ([7d97b8d](https://github.com/SenteLabsAI/OpenExecutive/commit/7d97b8d006f6fd01df2e3d64f194f110ca4c2040))
+* **ui:** set up and run Open Executive just for yourself ([#224](https://github.com/SenteLabsAI/OpenExecutive/issues/224)) ([bf3670a](https://github.com/SenteLabsAI/OpenExecutive/commit/bf3670a882418ee1abe14bcfba0cee3559c0188f))
+* **workflows:** add a weekly review and a daily top three ([#232](https://github.com/SenteLabsAI/OpenExecutive/issues/232)) ([62b283f](https://github.com/SenteLabsAI/OpenExecutive/commit/62b283f2bcd4399eef861e7df39ef486ef59a5cc))
+
+
+### Fixed
+
+* hold escalations, allow cancel, and keep roster edits owner-only ([#216](https://github.com/SenteLabsAI/OpenExecutive/issues/216)) ([4975dff](https://github.com/SenteLabsAI/OpenExecutive/commit/4975dfffc9bedadf0d94b0efaee4c18fcf2a6566))
+* **people:** stop teammates taking over the owner's entry ([#227](https://github.com/SenteLabsAI/OpenExecutive/issues/227)) ([9325113](https://github.com/SenteLabsAI/OpenExecutive/commit/9325113ea395fa2d78a3015e4284e1ce3f2b0354))
+* **scheduler:** run check-ins, chase idle initiatives and honour brief channels ([#223](https://github.com/SenteLabsAI/OpenExecutive/issues/223)) ([2a31596](https://github.com/SenteLabsAI/OpenExecutive/commit/2a3159653750702709f36f0d4e891cf3d1a95422))
+
 ## [0.4.0](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.3.2...v0.4.0) (2026-09-24)
 
 

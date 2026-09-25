@@ -138,7 +138,7 @@ class HealthResponse(BaseModel):
     company_name: str | None = None
     builtin_skills: int = 0
     company_skills: int = 0
-    version: str = "0.4.0"  # x-release-please-version
+    version: str = "0.4.1"  # x-release-please-version
 
 
 class SkillWorkflowRef(BaseModel):
