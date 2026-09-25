@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -743,6 +744,29 @@ def test_bad_meeting_class_mode_is_422(decisions_client: Any) -> None:
     for body in ({"mode": "sometimes"}, {}, {"mode": None}):
         res = decisions_client.put("/decisions/classes/meeting_scheduling", json=body)
         assert res.status_code == 422, body
+
+
+def test_auto_execute_needs_an_active_principal(decisions_client: Any) -> None:
+    """With no principal the PUT is open to anyone (first-run setup), so
+    switching meetings to auto-booking is refused until one exists; propose
+    stays allowed. An archived principal does not count."""
+    url = "/decisions/classes/meeting_scheduling"
+    res = decisions_client.put(url, json={"mode": "auto_execute"})
+    assert res.status_code == 409
+    assert "principal" in res.json()["detail"]
+    assert decisions_client.get(url).json()["mode"] == "propose"
+    assert decisions_client.put(url, json={"mode": "propose"}).status_code == 200
+
+    pid = _founder()
+    people_store.archive_person(pid)
+    assert decisions_client.put(url, json={"mode": "auto_execute"}).status_code == 409
+
+    # Back on the roster (there is no un-archive API): now it can be set.
+    with sqlite3.connect(str(people_store.DB_PATH)) as conn:
+        conn.execute("UPDATE people SET archived = 0 WHERE id = ?", (pid,))
+    res = decisions_client.put(url, json={"mode": "auto_execute"})
+    assert res.status_code == 200
+    assert res.json()["mode"] == "auto_execute"
 
 
 def _next_weekday_at_10() -> datetime:

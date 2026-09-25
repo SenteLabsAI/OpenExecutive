@@ -313,6 +313,17 @@ def _class_mode_response(decision_class: str) -> DecisionClassMode:
     )
 
 
+def _has_active_principal() -> bool:
+    """Whether a non-archived principal is on the roster. Fails closed."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        return find_principal_person() is not None
+    except Exception:
+        logger.exception("decisions: principal lookup failed — treating as none")
+        return False
+
+
 @router.get(
     f"/decisions/classes/{_CALENDAR_CLASS}", response_model=DecisionClassMode
 )
@@ -329,14 +340,27 @@ def set_meeting_class_mode(
 ) -> DecisionClassMode:
     """Set the meeting class mode. Principal only — the same rule as the
     workspace settings (``chat._caller_is_principal_or_unclaimed``): letting
-    the Executive book meetings on its own is the principal's call. Every
-    change is audited."""
+    the Executive book meetings on its own is the principal's call. While no
+    principal exists (when that rule lets anyone in) only ``propose`` can be
+    set — ``auto_execute`` is a 409. Every change is audited."""
     from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
 
     if not _caller_is_principal_or_unclaimed(request):
         raise HTTPException(
             status_code=403,
             detail="Only the principal can change how meetings are scheduled",
+        )
+    if body.mode == "auto_execute" and not _has_active_principal():
+        # Before anyone is the principal the PUT is open to every caller (so
+        # first-run setup is never locked out), and auto-booking would then
+        # be switched on by nobody in particular. Propose stays allowed.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Meetings can only be booked automatically once someone is set "
+                "as the principal (the owner) on the People page. Until then "
+                "they are proposed for approval."
+            ),
         )
     before = _class_mode_response(_CALENDAR_CLASS).mode
     if body.mode != before:

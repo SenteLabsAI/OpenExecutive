@@ -5887,6 +5887,10 @@ trust_ledger: |
                                    back. Principal only
                                    (chat._caller_is_principal_or_unclaimed,
                                    403 otherwise), 422 on any other mode;
+                                   auto_execute is a 409 while no
+                                   non-archived principal exists (the
+                                   route is open to anyone then), propose
+                                   stays allowed;
                                    a change writes a
                                    decision_class_mode_changed audit row
     GET  /audit/reliability      — ReliabilityCard for a class+window
