@@ -1401,11 +1401,11 @@ _PREFERRED_TO_DELIVERY: dict[str, str] = {
     "email": "email",
 }
 # Chat fallback order after the preferred channel. Email comes after all of
-# them unless it is the preference — see `_delivery_order`.
+# them unless it is the preference — see `delivery_order`.
 _CHAT_DELIVERY_ORDER: tuple[str, ...] = ("slack_dm", "discord_dm", "telegram")
 
 
-def _delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
+def delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
     """The channels a message can reach ``principal`` on, in the order to try.
 
     Chat channels the principal has an id for come first — the preferred one
@@ -1436,15 +1436,35 @@ def _delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]
     return order
 
 
-def _principal_delivery_plan() -> tuple[Person | None, list[str]]:
+def email_ready() -> bool:
+    """Whether the Executive can send email: the MCP gateway is up and the
+    Google Workspace server (its Gmail tools) is one it runs. Another MCP
+    server alone does not count."""
+    from openexecutive.config import get_settings
+    from openexecutive.orchestrator.mcp_gateway import (
+        configured_server_names,
+        get_active_gateway,
+    )
+
+    if get_active_gateway() is None:
+        return False
+    return "google_workspace" in configured_server_names(get_settings().mcp_servers_config_path)
+
+
+def principal_delivery_plan() -> tuple[Person | None, list[str]]:
     """The principal Person row and the channels to try, in order."""
-    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.people.store import find_principal_person
 
     principal = find_principal_person()
-    return principal, _delivery_order(
-        principal, email_ready=get_active_gateway() is not None
-    )
+    return principal, delivery_order(principal, email_ready=email_ready())
+
+
+def next_brief_runs(after: datetime) -> dict[str, datetime]:
+    """When each recurring brief next goes out after ``after``."""
+    from openexecutive.briefing.brief_state import BRIEF_KINDS
+
+    runs = {kind: _next_principal_run_at(kind, after) for kind in BRIEF_KINDS}
+    return {kind: at for kind, at in runs.items() if at is not None}
 
 
 def _email_subject(label: str, now: datetime | None = None) -> str:
@@ -1504,13 +1524,13 @@ class PrincipalDelivery:
 async def _deliver_to_principal(text: str, *, label: str = "Update") -> PrincipalDelivery:
     """Send ``text`` to the principal on their preferred channel.
 
-    Tries the channels from ``_principal_delivery_plan`` in order until one
+    Tries the channels from ``principal_delivery_plan`` in order until one
     sends; ``label`` names the message in the email subject. Not ok when no
     channel is configured or every send failed — the caller still marks the
     action done (no point retrying the same misconfiguration) but audits the
     failure.
     """
-    principal, plan = _principal_delivery_plan()
+    principal, plan = principal_delivery_plan()
     if principal is None:
         return PrincipalDelivery(False, "no principal Person row found", "no_owner")
     if not plan:
@@ -1668,6 +1688,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
     import uuid
 
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.briefing import brief_state
     from openexecutive.config import get_settings
     from openexecutive.knowledge.store import ChromaDBStore
     from openexecutive.workflows import WORKFLOW_REGISTRY
@@ -1699,6 +1720,9 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         except Exception:
             logger.exception("scheduler: pre-brief alert review failed")
 
+    # Every run ends with its outcome recorded — sent, not sent, or not
+    # written — for the Briefing's notice and the Setup status page.
+    sending = recorded = False
     try:
         create_run(
             run_id, workflow_name, f"{workflow.title} {now.strftime('%Y-%m-%d')}",
@@ -1719,14 +1743,17 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 raise RuntimeError(event.message)
         complete_run(run_id, artifact or "(no artifact)")
 
-        if artifact:
-            from openexecutive.briefing import brief_state
-
+        if not artifact:
+            brief_state.record_delivery_outcome(kind, reason="not_written", channel=None)
+            recorded = True
+        else:
+            sending = True
             delivery = await _deliver_to_principal(artifact, label=workflow.title)
             ok, detail = delivery.ok, delivery.detail
             brief_state.record_delivery_outcome(
                 kind, reason=delivery.reason, channel=delivery.channel
             )
+            recorded = True
             if ok:
                 logger.info("scheduler: %s delivered (%s)", kind, detail)
                 audit_log(
@@ -1755,6 +1782,10 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         import contextlib
         with contextlib.suppress(Exception):
             fail_run(run_id, str(exc))
+        if not recorded:
+            brief_state.record_delivery_outcome(
+                kind, reason="send_failed" if sending else "not_written", channel=None
+            )
 
     # Always chain the next occurrence + mark this row done, so a single
     # bad brief doesn't kill the recurring rhythm. Worst case the next

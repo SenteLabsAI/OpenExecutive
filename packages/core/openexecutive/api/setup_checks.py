@@ -146,9 +146,11 @@ class Snapshot:
     discord_bot_task: asyncio.Task[None] | None = None
     slack_handler: Any = None
     mcp_gateway: Any = None
-    # The daily brief: its latest send, when each brief next goes out, and the
-    # zone the user chose for those times (None: nobody chose one, so UTC).
+    # The daily brief: its latest run, whether email can carry it, when each
+    # brief next goes out, and the zone the user chose for those times (None:
+    # nobody chose one, so UTC).
     brief_delivery: DeliveryOutcome | None = None
+    brief_email_ready: bool = False
     brief_next_runs: dict[str, datetime] = field(default_factory=dict)
     brief_zone: str | None = None
 
@@ -871,17 +873,28 @@ def check_scheduler(snap: Snapshot) -> SetupCheck:
     return _result("scheduler", "ok", "Running.")
 
 
+# Delivery channel (scheduler.runner.delivery_order) → its light on this page.
+_DELIVERY_CHANNEL_CHECKS: dict[str, str] = {
+    "email": "gmail",
+    "slack_dm": "slack",
+    "discord_dm": "discord",
+    "telegram": "telegram",
+}
+
+
 def check_brief(snap: Snapshot) -> SetupCheck:
     """When the morning brief and end-of-day digest go out, and where."""
     from zoneinfo import ZoneInfo
 
     from openexecutive.briefing.brief_state import (
-        BRIEF_NAMES,
-        CHANNEL_PHRASES,
+        BRIEF_KINDS,
+        CHANNEL_NAMES,
         DELIVERY_PROBLEMS,
-        still_unsent,
+        brief_name,
+        channel_phrase,
+        current_problem,
     )
-    from openexecutive.scheduler.runner import _delivery_order
+    from openexecutive.scheduler.runner import delivery_order
 
     if not snap.settings.scheduler_enabled:
         return _result("brief", "off", "Off, because the scheduler is turned off.")
@@ -889,7 +902,7 @@ def check_brief(snap: Snapshot) -> SetupCheck:
     if principal is None:
         problem, fix = DELIVERY_PROBLEMS["no_owner"]
         return _result("brief", "warn", f"Not sent: {problem}.", fix, link="/people")
-    plan = _delivery_order(principal, email_ready=snap.mcp_gateway is not None)
+    plan = delivery_order(principal, email_ready=snap.brief_email_ready)
     if not plan:
         problem, fix = DELIVERY_PROBLEMS["no_channel"]
         return _result(
@@ -900,15 +913,27 @@ def check_brief(snap: Snapshot) -> SetupCheck:
             link=f"/people/{principal.id}",
         )
     last = snap.brief_delivery
-    if last is not None and still_unsent(last, can_deliver=True):
-        problem, fix = DELIVERY_PROBLEMS[last.reason]
+    reason = current_problem(last, has_owner=True, can_deliver=True)
+    if last is not None and reason is not None:
+        problem, fix = DELIVERY_PROBLEMS[reason]
         return _result(
-            "brief", "error", f"Your last {BRIEF_NAMES[last.kind]} wasn't sent: {problem}.", fix
+            "brief", "error", f"Your last {brief_name(last.kind)} wasn't sent: {problem}.", fix
+        )
+    if last is not None and last.channel and last.channel != plan[0]:
+        # It got through, but not on the first channel it tried: that one is
+        # broken, and every brief is going by the backup.
+        first = CHANNEL_NAMES[plan[0]]
+        return _result(
+            "brief",
+            "warn",
+            f"Your last {brief_name(last.kind)} went {channel_phrase(last.channel)}, "
+            f"because {first} didn't work.",
+            f'See the "{LABELS[_DELIVERY_CHANNEL_CHECKS[plan[0]]]}" light on this page.',
         )
     zone = ZoneInfo(snap.brief_zone or "UTC")
     times = [
-        f"the {BRIEF_NAMES[kind]} at {snap.brief_next_runs[kind].astimezone(zone):%H:%M}"
-        for kind in BRIEF_NAMES
+        f"the {brief_name(kind)} at {snap.brief_next_runs[kind].astimezone(zone):%H:%M}"
+        for kind in BRIEF_KINDS
         if kind in snap.brief_next_runs
     ]
     when = f": {' and '.join(times)}" if times else ""
@@ -916,13 +941,11 @@ def check_brief(snap: Snapshot) -> SetupCheck:
         return _result(
             "brief",
             "warn",
-            f"Sent to you {CHANNEL_PHRASES[plan[0]]}{when}, in UTC because no time zone is set.",
+            f"Sent to you {channel_phrase(plan[0])}{when}, in UTC because no time zone is set.",
             "Set your time zone in Settings.",
             link="/settings",
         )
-    return _result(
-        "brief", "ok", f"Sent to you {CHANNEL_PHRASES[plan[0]]}{when} ({snap.brief_zone})."
-    )
+    return _result("brief", "ok", f"Sent to you {channel_phrase(plan[0])}{when} ({snap.brief_zone}).")
 
 
 async def check_memory(snap: Snapshot) -> SetupCheck:
@@ -967,17 +990,16 @@ def _latest_inbound() -> dict[str, AuditEvent | None]:
 
 def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) -> Snapshot:
     """Read everything the checks need. Blocking (SQLite): run it off the loop."""
-    from openexecutive.briefing.brief_state import BRIEF_NAMES, last_delivery_outcome
+    from openexecutive.briefing.brief_state import last_delivery_outcome
     from openexecutive.memory.workspace_settings import get_user_timezone, get_workspace
     from openexecutive.people.store import find_principal_person, list_people
-    from openexecutive.scheduler.runner import _next_principal_run_at
+    from openexecutive.scheduler.runner import email_ready, next_brief_runs
 
     now = datetime.now(UTC)
     zone_chosen = (
         get_workspace().timezone is not None
         or settings.user_timezone.strip() not in ("", "UTC")
     )
-    next_runs = {kind: _next_principal_run_at(kind, now) for kind in BRIEF_NAMES}
     return Snapshot(
         settings=settings,
         now=now,
@@ -990,7 +1012,8 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
         slack_handler=getattr(app_state, "slack_handler", None),
         mcp_gateway=getattr(app_state, "mcp_gateway", None),
         brief_delivery=last_delivery_outcome(),
-        brief_next_runs={kind: at for kind, at in next_runs.items() if at is not None},
+        brief_email_ready=email_ready(),
+        brief_next_runs=next_brief_runs(now),
         brief_zone=get_user_timezone().key if zone_chosen else None,
     )
 

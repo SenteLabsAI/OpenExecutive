@@ -23,6 +23,10 @@ export default function BriefDeliveryNotice() {
   }, []);
 
   if (!notice) return null;
+  const day = new Date(notice.at);
+  const when = Number.isNaN(day.getTime())
+    ? ""
+    : ` (${day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })})`;
   return (
     <div
       role="status"
@@ -31,12 +35,19 @@ export default function BriefDeliveryNotice() {
       {/* Themed text with an amber marker: amber text is too faint on the light theme. */}
       <span className="mt-1.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" aria-hidden="true" />
       <p className="flex-1 min-w-0 text-xs text-fg-muted leading-snug">
-        <span className="font-medium text-fg">Your {notice.brief} wasn&apos;t sent:</span> {notice.problem}.{" "}
-        {notice.fix}{" "}
-        <Link href="/artifacts" className="text-indigo-400 hover:text-indigo-300 font-medium whitespace-nowrap">
-          Read it
-        </Link>
-        <span aria-hidden="true"> · </span>
+        <span className="font-medium text-fg">
+          Your {notice.brief}
+          {when} wasn&apos;t sent:
+        </span>{" "}
+        {notice.problem}. {notice.fix}{" "}
+        {notice.readable ? (
+          <>
+            <Link href="/artifacts" className="text-indigo-400 hover:text-indigo-300 font-medium whitespace-nowrap">
+              Read it
+            </Link>
+            <span aria-hidden="true"> · </span>
+          </>
+        ) : null}
         <Link href="/settings/status" className="text-indigo-400 hover:text-indigo-300 font-medium whitespace-nowrap">
           Setup status
         </Link>

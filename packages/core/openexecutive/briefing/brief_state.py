@@ -19,10 +19,11 @@ collide with the per-viewer header cache. Only the scheduler records a
 delivery (after a successful send), so manual workflow runs never advance
 the window.
 
-Each send's outcome, delivered or not, goes under ``brief_delivery:<kind>``
+Each run's outcome, sent or not, goes under ``brief_delivery:<kind>``
 (``record_delivery_outcome``): the reason in ``input_hash`` and the channel
 that sent it in ``narrative_text`` — a channel name, never an address. The
-Briefing's "not sent" notice and the Setup status page read it back.
+Briefing's "not sent" notice and the Setup status page read it back through
+``current_problem``.
 """
 from __future__ import annotations
 
@@ -126,24 +127,23 @@ def record_delivered(kind: str, fingerprint: str, text: str) -> None:
         logger.exception("brief_state: write failed for %s", kind)
 
 
-# How a brief's last send went (scheduler.runner.PrincipalDelivery.reason).
-DeliveryReason = Literal["delivered", "no_owner", "no_channel", "send_failed"]
+# How a brief's latest run ended: sent, or why not (``not_written`` — the run
+# failed or produced nothing; the others are scheduler.runner.
+# PrincipalDelivery.reason).
+DeliveryReason = Literal["delivered", "no_owner", "no_channel", "send_failed", "not_written"]
 _DELIVERY_REASONS: frozenset[str] = frozenset(get_args(DeliveryReason))
 DELIVERY_SCOPE_PREFIX = "brief_delivery:"
-# The recurring briefs whose sends are recorded, and their names in the app.
-BRIEF_NAMES: dict[str, str] = {
-    "principal_brief_morning": "morning brief",
-    "principal_brief_eod": "end-of-day digest",
+# The recurring briefs whose runs are recorded.
+BRIEF_KINDS: tuple[str, ...] = ("principal_brief_morning", "principal_brief_eod")
+# Delivery channels (scheduler.runner.delivery_order) as the app names them.
+CHANNEL_NAMES: dict[str, str] = {
+    "email": "email",
+    "slack_dm": "Slack",
+    "discord_dm": "Discord",
+    "telegram": "Telegram",
 }
-# Delivery channels (scheduler.runner._delivery_order), as in "sent to you
-# by email".
-CHANNEL_PHRASES: dict[str, str] = {
-    "email": "by email",
-    "slack_dm": "on Slack",
-    "discord_dm": "on Discord",
-    "telegram": "on Telegram",
-}
-# Why a brief wasn't sent, and what to do about it, in the user's words.
+# Why a brief didn't reach the owner, and what to do about it, in the user's
+# words.
 DELIVERY_PROBLEMS: dict[str, tuple[str, str]] = {
     "no_owner": (
         "there's no owner on the People list to send it to",
@@ -157,7 +157,23 @@ DELIVERY_PROBLEMS: dict[str, tuple[str, str]] = {
         "every way of sending it failed",
         "The Setup status page shows which connection needs attention.",
     ),
+    "not_written": (
+        "it couldn't be written",
+        "The Setup status page shows which part needs attention — often the AI model.",
+    ),
 }
+
+
+def brief_name(kind: str) -> str:
+    """The brief's name in the app ("morning brief"): the scheduler's own label."""
+    from openexecutive.scheduler.action_phrasing import KIND_LABEL
+
+    return KIND_LABEL.get(kind, "brief")
+
+
+def channel_phrase(channel: str) -> str:
+    """As in "sent to you by email" or "sent to you on Slack"."""
+    return "by email" if channel == "email" else f"on {CHANNEL_NAMES.get(channel, channel)}"
 
 
 @dataclass(frozen=True)
@@ -172,7 +188,7 @@ class DeliveryOutcome:
 def record_delivery_outcome(
     kind: str, *, reason: DeliveryReason, channel: str | None
 ) -> None:
-    """Remember how this brief's latest send went. Never raises."""
+    """Remember how this brief's latest run ended. Never raises."""
     try:
         narrative_cache.put(narrative_cache.BriefingNarrative(
             scope=f"{DELIVERY_SCOPE_PREFIX}{kind}",
@@ -185,10 +201,10 @@ def record_delivery_outcome(
 
 
 def last_delivery_outcome() -> DeliveryOutcome | None:
-    """The latest send of either recurring brief, or None when neither has
-    been sent yet (or the store can't be read). Never raises."""
+    """The latest run of either recurring brief, or None when neither has run
+    yet (or the store can't be read). Never raises."""
     latest: DeliveryOutcome | None = None
-    for kind in BRIEF_NAMES:
+    for kind in BRIEF_KINDS:
         try:
             row = narrative_cache.get(f"{DELIVERY_SCOPE_PREFIX}{kind}")
         except Exception:
@@ -208,13 +224,24 @@ def last_delivery_outcome() -> DeliveryOutcome | None:
     return latest
 
 
-def still_unsent(outcome: DeliveryOutcome | None, *, can_deliver: bool) -> bool:
-    """Whether ``outcome`` is a failure the user still needs to hear about: a
-    send that failed, or a brief that had nowhere to go while that is still
-    true (``can_deliver``: a channel exists now, so the next one will go)."""
+def current_problem(
+    outcome: DeliveryOutcome | None, *, has_owner: bool, can_deliver: bool
+) -> DeliveryReason | None:
+    """What still keeps the latest brief from the owner, or None.
+
+    A failed send, or a brief that couldn't be written, stays reported until
+    the next brief records a new outcome. Having nowhere to send it is judged
+    from now (``has_owner``, ``can_deliver``), not from the record, so a
+    partial fix reports the problem that is left: once a channel exists the
+    next brief will go, and there is nothing to report.
+    """
     if outcome is None or outcome.reason == "delivered":
-        return False
-    return outcome.reason == "send_failed" or not can_deliver
+        return None
+    if outcome.reason in ("send_failed", "not_written"):
+        return outcome.reason
+    if can_deliver:
+        return None
+    return "no_channel" if has_owner else "no_owner"
 
 
 def split_proposals(
@@ -372,14 +399,24 @@ def pending_watch_suggestions() -> int:
 
 
 __all__ = [
+    "BRIEF_KINDS",
+    "CHANNEL_NAMES",
+    "DELIVERY_PROBLEMS",
     "HANDLED_EVENT_KINDS",
     "REVIEW_EVENT_TYPES",
     "SUPPRESSED_TEMPLATE",
+    "DeliveryOutcome",
+    "DeliveryReason",
+    "brief_name",
     "build_brief_fingerprint",
+    "channel_phrase",
+    "current_problem",
     "handled_since",
     "last_delivered",
+    "last_delivery_outcome",
     "pending_watch_suggestions",
     "record_delivered",
+    "record_delivery_outcome",
     "rewritten_lines",
     "rewritten_since",
     "scope_for",

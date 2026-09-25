@@ -1,11 +1,11 @@
 """Where the daily brief went, and telling the owner when it went nowhere.
 
-  * Each brief's latest send is recorded: the reason, and the channel that
+  * Each brief's latest run is recorded: the reason, and the channel that
     sent it (a name, never an address).
   * The Setup status page's "Daily brief" light says when the briefs go out
     and where, and turns amber or red when they can't.
   * ``GET /today/brief-delivery`` gives the owner, and only the owner, the
-    latest brief that wasn't sent, until its cause is fixed.
+    latest brief that didn't reach them, until its cause is fixed.
 """
 from __future__ import annotations
 
@@ -61,19 +61,48 @@ def test_an_unreadable_record_is_ignored() -> None:
 
 
 @pytest.mark.parametrize(
-    ("reason", "can_deliver", "tell"),
+    ("recorded", "has_owner", "can_deliver", "problem"),
     [
-        ("delivered", False, False),
-        ("send_failed", True, True),  # a channel exists but sending failed
-        ("no_channel", False, True),  # still nowhere to send it
-        ("no_channel", True, False),  # fixed since: the next one will go
-        ("no_owner", True, False),
+        ("delivered", False, False, None),
+        ("send_failed", True, True, "send_failed"),  # stays until the next brief
+        ("not_written", True, True, "not_written"),
+        ("no_channel", True, False, "no_channel"),  # still nowhere to send it
+        ("no_channel", True, True, None),  # fixed since: the next one will go
+        ("no_owner", True, True, None),
+        # A partial fix reports what is left: an owner now, but still no channel.
+        ("no_owner", True, False, "no_channel"),
+        ("no_channel", False, False, "no_owner"),
     ],
 )
-def test_still_unsent(reason: str, can_deliver: bool, tell: bool) -> None:
-    outcome = DeliveryOutcome(MORNING, reason, None, NOW)  # type: ignore[arg-type]
-    assert brief_state.still_unsent(outcome, can_deliver=can_deliver) is tell
-    assert brief_state.still_unsent(None, can_deliver=can_deliver) is False
+def test_current_problem(
+    recorded: str, has_owner: bool, can_deliver: bool, problem: str | None
+) -> None:
+    outcome = DeliveryOutcome(MORNING, recorded, None, NOW)  # type: ignore[arg-type]
+    assert brief_state.current_problem(outcome, has_owner=has_owner, can_deliver=can_deliver) == problem
+    assert brief_state.current_problem(None, has_owner=has_owner, can_deliver=can_deliver) is None
+
+
+def test_brief_names_come_from_the_scheduler_labels() -> None:
+    from openexecutive.scheduler.action_phrasing import KIND_LABEL
+
+    for kind in brief_state.BRIEF_KINDS:
+        assert brief_state.brief_name(kind) == KIND_LABEL[kind]
+
+
+def test_email_is_ready_only_with_the_google_workspace_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import mcp_gateway
+    from openexecutive.scheduler import runner
+
+    servers: list[str] = ["notion"]
+    monkeypatch.setattr(mcp_gateway, "configured_server_names", lambda _path: servers)
+    monkeypatch.setattr(mcp_gateway, "_active_gateway", None)
+    assert runner.email_ready() is False  # no gateway at all
+    monkeypatch.setattr(mcp_gateway, "_active_gateway", object())
+    assert runner.email_ready() is False  # a gateway, but no Gmail behind it
+    servers.append("google_workspace")
+    assert runner.email_ready() is True
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +127,7 @@ def _snap(**fields: Any) -> Snapshot:
         "people": [],
         "principal": Person(id=3, full_name="Ada", is_principal=True, email="ada@acme.io"),
         "last_inbound": {},
-        "mcp_gateway": object(),  # Gmail connected
+        "brief_email_ready": True,  # Gmail connected
         "brief_next_runs": {
             MORNING: datetime(2026, 9, 26, 15, 0, tzinfo=UTC),  # 08:00 in Los Angeles
             EVENING: datetime(2026, 9, 26, 1, 0, tzinfo=UTC),  # 18:00 in Los Angeles
@@ -134,7 +163,7 @@ def test_no_time_zone_means_utc_and_says_so() -> None:
 
 
 def test_nowhere_to_send_it() -> None:
-    check = check_brief(_snap(mcp_gateway=None))  # Gmail off, no chat ids
+    check = check_brief(_snap(brief_email_ready=False))  # Gmail off, no chat ids
     assert check.state == "warn"
     assert check.summary == "Kept in the app only: nothing is set up to send it to you."
     assert check.link == "/people/3"
@@ -150,6 +179,26 @@ def test_a_failed_send_turns_it_red() -> None:
     check = check_brief(_snap(brief_delivery=failed))
     assert check.state == "error"
     assert check.summary == "Your last end-of-day digest wasn't sent: every way of sending it failed."
+
+
+def test_a_brief_that_couldnt_be_written_turns_it_red() -> None:
+    failed = DeliveryOutcome(MORNING, "not_written", None, NOW)
+    check = check_brief(_snap(brief_delivery=failed))
+    assert check.state == "error"
+    assert check.summary == "Your last morning brief wasn't sent: it couldn't be written."
+
+
+def test_a_broken_first_channel_is_named_when_the_backup_carried_it() -> None:
+    # Prefers Slack, Slack failed, email carried it: not all well.
+    ada = Person(
+        id=3, full_name="Ada", is_principal=True, preferred_channel="slack",
+        slack_user_id="U1", email="ada@acme.io",
+    )
+    carried = DeliveryOutcome(MORNING, "delivered", "email", NOW)
+    check = check_brief(_snap(principal=ada, brief_delivery=carried))
+    assert check.state == "warn"
+    assert check.summary == "Your last morning brief went by email, because Slack didn't work."
+    assert check.fix == 'See the "Slack" light on this page.'
 
 
 def test_a_fixed_cause_is_not_reported() -> None:
@@ -174,9 +223,9 @@ def notice_client(monkeypatch: pytest.MonkeyPatch) -> Any:
     from openexecutive.api.routes import today as today_route
     from openexecutive.scheduler import runner
 
-    state: dict[str, Any] = {"owner": True, "plan": []}
+    state: dict[str, Any] = {"owner": True, "principal": object(), "plan": []}
     monkeypatch.setattr(chat_route, "_caller_is_principal_or_unclaimed", lambda _r: state["owner"])
-    monkeypatch.setattr(runner, "_principal_delivery_plan", lambda: (None, state["plan"]))
+    monkeypatch.setattr(runner, "principal_delivery_plan", lambda: (state["principal"], state["plan"]))
     app = FastAPI()
     app.include_router(today_route.router)
     return TestClient(app), state
@@ -189,7 +238,32 @@ def test_the_owner_hears_about_an_unsent_brief(notice_client: Any) -> None:
     assert body["brief"] == "morning brief"
     assert body["problem"] == "nothing is set up to send it to you"
     assert body["fix"].startswith("Connect Gmail")
+    assert body["readable"] is True
     assert "@" not in str(body)
+
+
+def test_the_notice_names_what_is_left_after_a_partial_fix(notice_client: Any) -> None:
+    client, _ = notice_client  # an owner now, still nowhere to send it
+    brief_state.record_delivery_outcome(MORNING, reason="no_owner", channel=None)
+    assert client.get("/today/brief-delivery").json()["problem"] == "nothing is set up to send it to you"
+
+
+def test_a_brief_that_couldnt_be_written_has_nothing_to_read(notice_client: Any) -> None:
+    client, state = notice_client
+    state["plan"] = ["email"]
+    brief_state.record_delivery_outcome(EVENING, reason="not_written", channel=None)
+    body = client.get("/today/brief-delivery").json()
+    assert (body["brief"], body["readable"]) == ("end-of-day digest", False)
+    assert body["problem"] == "it couldn't be written"
+
+
+def test_no_notice_with_the_scheduler_off(
+    notice_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = notice_client
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    brief_state.record_delivery_outcome(MORNING, reason="send_failed", channel=None)
+    assert client.get("/today/brief-delivery").json() is None
 
 
 def test_nobody_else_does(notice_client: Any) -> None:

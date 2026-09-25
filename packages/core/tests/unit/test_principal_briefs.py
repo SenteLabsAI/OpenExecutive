@@ -214,7 +214,14 @@ def _fake_brief_workflow(fingerprint: str, artifact: str = "BRIEF"):
     return _Fake()
 
 
-def _run_brief(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deliver_ok: bool) -> None:
+def _run_brief(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    deliver_ok: bool = True,
+    workflow: object | None = None,
+    deliver: object | None = None,
+) -> None:
     import asyncio
 
     from openexecutive.briefing import narrative_cache
@@ -224,14 +231,16 @@ def _run_brief(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deliver_ok: b
     _setup_isolated_db(db, monkeypatch)
     monkeypatch.setattr(narrative_cache, "DB_PATH", tmp_path / "cache.db")
     monkeypatch.setattr(wf_persistence, "DB_PATH", db)
-    monkeypatch.setitem(WORKFLOW_REGISTRY, "morning_brief", _fake_brief_workflow("fp-123"))
+    monkeypatch.setitem(
+        WORKFLOW_REGISTRY, "morning_brief", workflow or _fake_brief_workflow("fp-123")
+    )
 
     async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
         if deliver_ok:
             return runner.PrincipalDelivery(True, "discord_dm → 1", "delivered", "discord_dm")
         return runner.PrincipalDelivery(False, "delivery failed", "send_failed")
 
-    monkeypatch.setattr(runner, "_deliver_to_principal", _deliver)
+    monkeypatch.setattr(runner, "_deliver_to_principal", deliver or _deliver)
     monkeypatch.setattr(runner, "_enqueue_next_principal_brief", lambda kind, after: None)
 
     class _Store:
@@ -275,6 +284,53 @@ def test_run_principal_brief_does_not_record_on_delivery_failure(
     # The failure is still recorded, for the Briefing's "not sent" notice.
     outcome = brief_state.last_delivery_outcome()
     assert outcome is not None and (outcome.reason, outcome.channel) == ("send_failed", None)
+
+
+def _failing_brief_workflow(event: str):  # type: ignore[no-untyped-def]
+    from openexecutive.workflows.base import WorkflowEvent
+    from openexecutive.workflows.morning_brief import MorningBriefInput, MorningBriefWorkflow
+
+    class _Fails(MorningBriefWorkflow):
+        async def run(self, inputs, store):  # type: ignore[override]
+            if event == "error":
+                yield WorkflowEvent(type="error", message="model unavailable")
+            yield WorkflowEvent(type="done")  # "empty": no artifact at all
+
+        def input_model(self):  # type: ignore[override]
+            return MorningBriefInput
+
+    return _Fails()
+
+
+@pytest.mark.parametrize("event", ["error", "empty"])
+def test_a_brief_that_couldnt_be_written_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event: str
+) -> None:
+    from openexecutive.briefing import brief_state
+
+    sends: list[str] = []
+
+    async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        sends.append(text)
+        return runner.PrincipalDelivery(True, "email → x", "delivered", "email")
+
+    _run_brief(tmp_path, monkeypatch, workflow=_failing_brief_workflow(event), deliver=_deliver)
+    assert sends == []
+    outcome = brief_state.last_delivery_outcome()
+    assert outcome is not None and outcome.reason == "not_written"
+
+
+def test_a_send_that_crashes_is_recorded_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import brief_state
+
+    async def _crash(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        raise RuntimeError("people store locked")
+
+    _run_brief(tmp_path, monkeypatch, deliver=_crash)
+    outcome = brief_state.last_delivery_outcome()
+    assert outcome is not None and outcome.reason == "send_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -337,9 +393,11 @@ def _principal(**fields: object) -> int:
 
 
 def _with_gateway(monkeypatch: pytest.MonkeyPatch, sent: _Sent, **kw: str) -> None:
+    """An MCP gateway running the Google Workspace server, so email is ready."""
     from openexecutive.orchestrator import mcp_gateway
 
     monkeypatch.setattr(mcp_gateway, "_active_gateway", _Gateway(sent, **kw))
+    monkeypatch.setattr(mcp_gateway, "configured_server_names", lambda _path: ["google_workspace"])
 
 
 def _deliver(text: str = "BRIEF", label: str = "Morning Brief") -> tuple[bool, str]:

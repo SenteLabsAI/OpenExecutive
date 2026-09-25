@@ -3305,13 +3305,16 @@ export async function getToday(): Promise<Today> {
   return res.json();
 }
 
-// The latest morning brief or end-of-day digest that wasn't sent, and what
-// fixes it. Null while briefs are going out, and for anyone but the owner.
+// The latest morning brief or end-of-day digest that didn't reach the owner,
+// and what fixes it. Null while briefs are going out, and for anyone but the
+// owner.
 export interface BriefDeliveryNotice {
   brief: string;
   at: string;
   problem: string;
   fix: string;
+  // False when it couldn't be written, so there is nothing to read.
+  readable: boolean;
 }
 
 export async function getBriefDelivery(signal?: AbortSignal): Promise<BriefDeliveryNotice | null> {
