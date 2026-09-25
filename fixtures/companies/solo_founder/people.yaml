@@ -1,0 +1,12 @@
+# Solo fixture: only the founder. Placeholder email (example.com) — nothing
+# here maps to a real person. Clients and contractors are added as contacts
+# later, when the founder asks.
+people:
+  - full_name: Maya Lindqvist
+    role: Founder & Principal Designer
+    is_principal: true
+    email: maya.lindqvist@example.com
+    department_slugs: [strategy, finance, marketing, product]
+    preferred_channel: email
+    response_sla_hours: 24
+    authority_scope: [wildcard]

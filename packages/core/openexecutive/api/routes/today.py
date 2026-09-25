@@ -1289,14 +1289,15 @@ def _narrative_activity(
     return activity
 
 
-def _nothing_needs_attention(today_data: dict[str, Any]) -> bool:
+def _nothing_needs_attention(today_data: dict[str, Any], mode: str = "team") -> bool:
     """True when the viewer's slice holds nothing that wants a decision.
 
     The header's job is to synthesize what needs attention. With no action
     proposals, no at-risk/off-track department and nobody awaiting, there is
     nothing to synthesize — and handing the model only the history rail makes
     it manufacture urgency out of settled items. Callers emit a fixed quiet
-    line instead of spending a model call.
+    line instead of spending a model call. Solo never renders who is
+    awaiting (one founder, no team), so it does not count here either.
     """
     if today_data.get("proposals"):
         return False
@@ -1305,6 +1306,8 @@ def _nothing_needs_attention(today_data: dict[str, Any]) -> bool:
         for d in today_data.get("departments", [])
     ):
         return False
+    if mode == "solo":
+        return True
     return not any(p.get("awaiting_count", 0) for p in today_data.get("people", []))
 
 
@@ -1312,6 +1315,7 @@ def _narrative_context(
     today_data: dict[str, Any],
     viewer: PersonBriefItem | None,
     viewer_desc: dict[str, str] | None,
+    mode: str = "team",
 ) -> tuple[str, list[dict[str, Any]] | None]:
     """``(context, activity)`` — the exact user turn the model would receive.
 
@@ -1326,13 +1330,14 @@ def _narrative_context(
     from openexecutive.briefing import narrative_cache
     from openexecutive.briefing.narrative import render_briefing_context
 
-    if _nothing_needs_attention(today_data):
+    if _nothing_needs_attention(today_data, mode):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)
     context = render_briefing_context(
         period_label=datetime.now(UTC).strftime("%Y-%m-%d"),
         today_data=today_data,
         activity=activity,
+        mode=mode,
     )
     return context, activity
 
@@ -1347,11 +1352,13 @@ def _attach_narrative(
     background regeneration when it's missing/stale. `background_tasks=None`
     (the deprecated alias) serves cache-only without scheduling regen."""
     from openexecutive.briefing import narrative_cache
+    from openexecutive.memory.workspace_settings import get_workspace
 
     scope, today_data, desc, viewer = _narrative_inputs(response, caller_person_id)
     try:
-        context, _activity = _narrative_context(today_data, viewer, desc)
-        nhash = narrative_cache.build_narrative_input_hash(context, scope=scope)
+        mode = get_workspace().mode
+        context, _activity = _narrative_context(today_data, viewer, desc, mode)
+        nhash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
         cached = narrative_cache.get(scope)
         if cached is not None:
             response.narrative = cached.narrative_text
@@ -1384,8 +1391,10 @@ async def _regen_briefing_narrative(
         QUIET_VIEWER,
         synthesize_briefing_narrative,
     )
+    from openexecutive.memory.workspace_settings import get_workspace
 
     try:
+        mode = get_workspace().mode
         snapshot = _build_today()
         scope, today_data, viewer_desc, viewer = _narrative_inputs(
             snapshot, caller_person_id
@@ -1396,7 +1405,7 @@ async def _regen_briefing_narrative(
                 "regen; skipping write", expected_scope, scope,
             )
             return
-        context, activity = _narrative_context(today_data, viewer, viewer_desc)
+        context, activity = _narrative_context(today_data, viewer, viewer_desc, mode)
         if context == narrative_cache.QUIET_CONTEXT:
             # Nothing awaits a decision — skip the model call entirely and
             # write the fixed quiet line. Still cached (below) so the hot path
@@ -1410,6 +1419,7 @@ async def _regen_briefing_narrative(
                     viewer=viewer_desc,
                     # Hand the model the very string that was hashed.
                     rendered_context=context,
+                    mode=mode,
                 ),
                 timeout=25.0,
             )
@@ -1419,7 +1429,7 @@ async def _regen_briefing_narrative(
 
     if not text:
         return
-    input_hash = narrative_cache.build_narrative_input_hash(context, scope=scope)
+    input_hash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
     narrative_cache.put(narrative_cache.BriefingNarrative(
         scope=scope,
         input_hash=input_hash,

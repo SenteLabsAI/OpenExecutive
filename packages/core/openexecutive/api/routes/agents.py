@@ -218,9 +218,12 @@ class _ExecutiveDefaults:
 
     @staticmethod
     def prompt() -> str:
-        from openexecutive.prompts.executive_persona import EXECUTIVE_PERSONA_PROMPT
+        """The built-in persona for this install's workspace mode, so the
+        Council shows — and resets to — the prompt a turn actually uses."""
+        from openexecutive.memory.workspace_settings import get_workspace
+        from openexecutive.prompts.executive_persona import default_persona
 
-        return EXECUTIVE_PERSONA_PROMPT
+        return default_persona(get_workspace().mode)
 
 
 def _build_executive_meta() -> AgentMeta:
@@ -471,7 +474,6 @@ async def _test_executive(req: AgentTestRequest) -> str:
     persona reads, not a real chat turn.
     """
     from openexecutive.config import get_settings
-    from openexecutive.prompts.executive_persona import EXECUTIVE_PERSONA_PROMPT
     from openexecutive.providers import get_provider
 
     settings = get_settings()
@@ -482,7 +484,7 @@ async def _test_executive(req: AgentTestRequest) -> str:
         else (
             ov.prompt
             if ov is not None and ov.prompt is not None
-            else EXECUTIVE_PERSONA_PROMPT
+            else _ExecutiveDefaults.prompt()
         )
     )
     model = (

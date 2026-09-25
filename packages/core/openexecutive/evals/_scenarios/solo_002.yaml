@@ -1,0 +1,28 @@
+id: solo_002
+domain: departments
+workspace_mode: solo
+description: "Solo mode: the founder reports progress on one goal. The Executive calls the grouping an area (never a department), updates only that goal via update_department_goal with a rationale naming the evidence, and does not sweep the others."
+# Load the solo_founder fixture: its finance area holds two goals (the cash
+# buffer and invoice collections). The payment clears the collections goal;
+# the buffer goal moves only if the founder says so — no blanket sweep.
+company_context:
+  name: Tallgrass Studio
+  industry: Independent Brand & Product Design Studio
+  stage: Bootstrapped / founder-run
+  headcount: 1
+  arr: 310000
+  monthly_burn: 6500
+  runway_months: 2.1
+query: "Good news — Brightwell just paid the overdue $5,500 invoice, so nothing is past 30 days anymore. Update my goal."
+expected_tool_calls:
+  - list_department_goals
+  - update_department_goal
+expected_topics:
+  - acknowledges_the_payment
+  - collections_goal_updated
+  - finance_area
+quality_criteria:
+  calls_it_an_area_not_a_department: true
+  updates_one_goal_with_a_rationale_naming_the_payment: true
+  does_not_sweep_other_goals: true
+  brief: true

@@ -186,11 +186,69 @@ def _routing_option_a(configured: set[str], has_roster: bool = True) -> str:
     )
 
 
-def _build_synthesis_system(configured: set[str], has_roster: bool = True) -> str:
+def _solo_routing_options(configured: set[str]) -> str:
+    """The ROUTING OPTIONS section in solo mode: the founder is the only
+    person this pass routes to. Nobody else is contacted unattended."""
+    if configured & {"slack", "discord", "telegram"}:
+        option_a = (
+            "  (a) **DM the founder** via message_person(person_id, text), "
+            "with the person_id under THE FOUNDER in the findings turn — only "
+            "for something they should see today, before the morning brief.\n"
+        )
+    else:
+        option_a = (
+            "  (a) **DM the founder** — UNAVAILABLE: no direct-message channel "
+            "is configured. Use a briefing card (b) instead.\n"
+        )
+    return (
+        "## ROUTING OPTIONS\n\n"
+        "The founder runs this business on their own and is the only person "
+        "you route to. There is no team, no department channel and no company "
+        "broadcast. Never message anyone else from this pass — clients, "
+        "contractors and vendors hear from you only when the founder asks.\n\n"
+        + option_a
+        + "  (b) **Surface as briefing card** via create_alert — when the "
+        "founder must decide or react.\n"
+        "  (c) **Schedule a follow-up** to the founder via schedule_followup "
+        "for time-shifted chases.\n"
+        "  (d) **Suggest a deeper workflow** via suggest_workflow only "
+        "for major events (M&A, fundraising, crisis comms).\n"
+        "  Watchlist changes are NOT yours to make here — a dedicated pass "
+        "after this one proposes monitors under policy.\n\n"
+    )
+
+
+def _build_synthesis_system(
+    configured: set[str], has_roster: bool = True, mode: str = "team"
+) -> str:
     """Build the synthesis system prompt for the channels actually
     configured, so option (a) never names an unavailable DM channel.
     ``has_roster`` controls whether option (a) tells the model to take a
-    person_id from the in-turn roster or to fall back to lookup_person."""
+    person_id from the in-turn roster or to fall back to lookup_person.
+    ``mode="solo"`` swaps the routing menu for the founder-only one."""
+    if mode == "solo":
+        routing = _solo_routing_options(configured)
+    else:
+        routing = (
+            "## ROUTING OPTIONS\n\n"
+            "When you do act, pick the SMALLEST audience that owns the "
+            "matter (persona rule). PREFER department-head DMs over briefing "
+            "cards — the principal's briefing is the most expensive surface "
+            "and a finding ending up there means it warrants their direct "
+            "attention.\n\n"
+            + _routing_option_a(configured, has_roster)
+            + "  (b) **Message a department channel** via "
+            "send_department_message when no single human owns it.\n"
+            "  (c) **Surface as briefing card** via create_alert — RARE. Only "
+            "when the principal personally must decide / react and the matter "
+            "is materially company-wide. Default away from this.\n"
+            "  (d) **Schedule a follow-up** via schedule_followup for "
+            "time-shifted chases.\n"
+            "  (e) **Suggest a deeper workflow** via suggest_workflow only "
+            "for major events (M&A, fundraising, crisis comms).\n"
+            "  Watchlist changes are NOT yours to make here — a dedicated pass "
+            "after this one proposes monitors under policy.\n\n"
+        )
     return (
         "You are the user's Executive reviewing research findings from "
         "your specialist council.\n\n"
@@ -213,25 +271,8 @@ def _build_synthesis_system(configured: set[str], has_roster: bool = True) -> st
         "(`lookup_person`, `list_people`) do NOT count against this "
         "budget — resolve a recipient freely, then spend the budget on "
         "the message itself.\n\n"
-        "## ROUTING OPTIONS\n\n"
-        "When you do act, pick the SMALLEST audience that owns the "
-        "matter (persona rule). PREFER department-head DMs over briefing "
-        "cards — the principal's briefing is the most expensive surface "
-        "and a finding ending up there means it warrants their direct "
-        "attention.\n\n"
-        + _routing_option_a(configured, has_roster)
-        + "  (b) **Message a department channel** via "
-        "send_department_message when no single human owns it.\n"
-        "  (c) **Surface as briefing card** via create_alert — RARE. Only "
-        "when the principal personally must decide / react and the matter "
-        "is materially company-wide. Default away from this.\n"
-        "  (d) **Schedule a follow-up** via schedule_followup for "
-        "time-shifted chases.\n"
-        "  (e) **Suggest a deeper workflow** via suggest_workflow only "
-        "for major events (M&A, fundraising, crisis comms).\n"
-        "  Watchlist changes are NOT yours to make here — a dedicated pass "
-        "after this one proposes monitors under policy.\n\n"
-        "## INVARIANTS\n\n"
+        + routing
+        + "## INVARIANTS\n\n"
         "  - Privacy: board / comp / legal stay per-Person. NEVER "
         "broadcast.\n"
         "  - Cross-finding synthesis: when two findings tell one story, "
@@ -755,6 +796,7 @@ async def _executive_synthesis_loop(
     orchestrator stack into anywhere it's referenced at import time.
     """
     from openexecutive.config import get_settings
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
     from openexecutive.orchestrator.executive import (
         _ALL_SKILL_HANDLERS,
         _ALL_SKILL_TOOLS,
@@ -763,6 +805,9 @@ async def _executive_synthesis_loop(
         configured_integrations,
         current_session,
         filter_tools_for_configured_channels,
+        filter_tools_for_workspace_mode,
+        founder_only_handlers,
+        tools_withheld_in_mode,
     )
     from openexecutive.orchestrator.session import Session
     from openexecutive.people.store import list_people
@@ -786,15 +831,21 @@ async def _executive_synthesis_loop(
     # Derive has_roster from the SAME render the turn uses (which caps at 50),
     # so the system prompt's "use YOUR TEAM / don't look up" can never disagree
     # with whether the roster block is actually present in the turn.
-    has_roster = bool(_render_team_roster(people))
-    user_content = _render_synthesis_turn(findings, people)
+    # Solo / team for this run; a caller's session override (evals) is read
+    # before the synthesis binds its own session below.
+    outer_session = current_session.get()
+    mode = effective_workspace_mode(outer_session)
+    solo = mode == "solo"
+    roster_people = [p for p in people if getattr(p, "is_principal", False)] if solo else people
+    has_roster = bool(_render_team_roster(roster_people))
+    user_content = _render_synthesis_turn(findings, people, mode=mode)
 
     # Seed a synthetic Session so send_slack_dm / send_discord_dm etc.
     # don't trip the anti-spam guard the chat path enforces. Identical
     # mechanism to executive_reflection's setup — channels visible
     # only when they correspond to a real Person.
     seen: set[tuple[str, str]] = set()
-    for person in people:
+    for person in roster_people:
         if person.slack_user_id:
             seen.add(("slack_dm", person.slack_user_id))
         if person.discord_user_id:
@@ -804,7 +855,10 @@ async def _executive_synthesis_loop(
         if person.email:
             seen.add(("email", person.email))
 
-    synth_session = Session(seen_channel_refs=seen)
+    synth_session = Session(
+        seen_channel_refs=seen,
+        workspace_mode=getattr(outer_session, "workspace_mode", None),
+    )
     ctx_token = current_session.set(synth_session)
 
     # Synthesis tools = full toolkit MINUS the research tools themselves.
@@ -819,9 +873,18 @@ async def _executive_synthesis_loop(
     # can't route a finding into e.g. send_slack_dm when Slack has no token.
     configured = configured_integrations(settings)
     tools = filter_tools_for_configured_channels(tools, settings)
+    # Solo withholds the team-only tools, and refuses them at dispatch.
+    tools = filter_tools_for_workspace_mode(tools, mode)
+    withheld = tools_withheld_in_mode(mode)
+    handlers = {
+        name: h for name, h in _ALL_SKILL_HANDLERS.items() if name not in withheld
+    }
+    if solo:
+        # Nobody but the founder hears from this unattended pass.
+        handlers = founder_only_handlers(handlers)
     # Build the system prompt for the SAME configured set, so the routing
     # menu never names a DM channel the model can't actually use.
-    synthesis_system = _build_synthesis_system(configured, has_roster)
+    synthesis_system = _build_synthesis_system(configured, has_roster, mode=mode)
     model = settings.routing_model
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": user_content},
@@ -858,7 +921,7 @@ async def _executive_synthesis_loop(
 
             with tag_proactive(SOURCE_RESEARCH):
                 iter_calls = await execute_tool_calls(
-                    response, _ALL_SKILL_HANDLERS,
+                    response, handlers,
                     budget_remaining=budget_remaining,
                     free_tools=_NON_ROUTING_TOOLS,
                 )
@@ -1291,7 +1354,7 @@ def _render_department_interests(departments: list[Any] | None) -> list[str]:
     return lines[:_MAX_INTEREST_DEPARTMENTS]
 
 
-def _render_team_roster(people: list[Any]) -> str:
+def _render_team_roster(people: list[Any], heading: str = "YOUR TEAM") -> str:
     """Render the active roster so the Executive can DM by person_id directly,
     without spending synthesis turns on lookup_person (which it otherwise burns
     on names that aren't on the roster — the "looks up, never routes" failure).
@@ -1310,17 +1373,23 @@ def _render_team_roster(people: list[Any]) -> str:
     if not lines:
         return ""
     return (
-        "YOUR TEAM (DM with message_person — pass the person_id, nothing else):\n"
+        f"{heading} (DM with message_person — pass the person_id, nothing else):\n"
         + "\n".join(lines)
         + "\n"
     )
 
 
-def _render_synthesis_turn(findings: list[ResearchFinding], people: list[Any]) -> str:
+def _render_synthesis_turn(
+    findings: list[ResearchFinding], people: list[Any], mode: str = "team"
+) -> str:
     """Pack the deduped findings + the active roster into a single user-turn
-    for the Executive's synthesis pass."""
+    for the Executive's synthesis pass. Solo lists only the founder."""
     parts: list[str] = []
-    roster = _render_team_roster(people)
+    solo = mode == "solo"
+    roster_heading = "THE FOUNDER" if solo else "YOUR TEAM"
+    if solo:
+        people = [p for p in people if getattr(p, "is_principal", False)]
+    roster = _render_team_roster(people, heading=roster_heading)
     if roster:
         parts.append(roster)
     parts.append("FINDINGS FROM YOUR SPECIALIST COUNCIL:\n")
@@ -1347,7 +1416,7 @@ def _render_synthesis_turn(findings: list[ResearchFinding], people: list[Any]) -
 
     dm_howto = (
         "To DM a person, call message_person(person_id, text) using a "
-        "person_id from YOUR TEAM above — do NOT call lookup_person, the "
+        f"person_id from {roster_heading} above — do NOT call lookup_person, the "
         "roster is already here."
         if roster else
         "To DM a person, call lookup_person to resolve their person_id, then "

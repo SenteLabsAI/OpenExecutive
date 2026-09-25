@@ -16,6 +16,12 @@ Yielded event shapes:
   {"type": "scenario_error",  "index": int, "total": int, "scenario_id": str, "error": str}
   {"type": "suite_done",      "kind": str, "passed": int, "total": int}
   {"type": "suite_canceled",  "kind": str, "passed": int, "total": int}
+
+A chat, mcp or workflow scenario may set ``workspace_mode: solo`` (or
+``team``) to run as that workspace mode without touching the install-wide
+setting — scenarios run concurrently on one Executive. Chat puts it on the
+scenario's ``Session.workspace_mode``; a workflow runs with a session carrying
+it bound as the current session, which is where workflows read the mode.
 """
 from __future__ import annotations
 
@@ -146,6 +152,18 @@ def _is_canceled(cancel_event: asyncio.Event | None) -> bool:
     return cancel_event is not None and cancel_event.is_set()
 
 
+def scenario_workspace_mode(scenario: dict[str, Any]) -> str | None:
+    """The scenario's ``workspace_mode`` ("solo" / "team"), or None to run
+    under the install's own setting. Raises ValueError for any other value, so
+    a typo fails the scenario instead of silently running in the wrong mode."""
+    mode = scenario.get("workspace_mode")
+    if mode is None:
+        return None
+    if mode not in ("solo", "team"):
+        raise ValueError(f"workspace_mode must be 'solo' or 'team', got {mode!r}")
+    return str(mode)
+
+
 def _make_triage_runner(
     sem: asyncio.Semaphore,
     queue: asyncio.Queue[dict[str, Any] | None],
@@ -226,6 +244,8 @@ def _make_workflow_runner(
     total: int,
     cancel_event: asyncio.Event | None,
 ) -> RunOne:
+    from openexecutive.orchestrator.schedule_tools import set_session
+    from openexecutive.orchestrator.session import Session
     from openexecutive.workflows import WORKFLOW_REGISTRY
 
     async def run_one(i: int, scenario: dict[str, Any]) -> None:
@@ -252,12 +272,24 @@ def _make_workflow_runner(
                     workflow_inputs = scenario.get("workflow_inputs") or {}
                     inputs = workflow.input_model()(**workflow_inputs)
                     artifact = ""
-                    async for ev in workflow.run(inputs, store):
-                        ev = ensure_workflow_event(ev, site='evals.runner')
-                        if ev.type == "artifact":
-                            artifact = ev.content or ""
-                        elif ev.type == "error":
-                            raise RuntimeError(f"workflow errored: {ev.message}")
+                    # Workflows read the mode from the current session; this
+                    # task's own binding, so concurrent scenarios don't mix.
+                    # Bound only when the scenario sets a mode: a bound session
+                    # also arms schedule_followup's seen-refs guard, which a
+                    # workflow that binds no session of its own would then hit.
+                    mode = scenario_workspace_mode(scenario)
+                    binding = (
+                        set_session(Session(workspace_mode=mode))
+                        if mode is not None
+                        else contextlib.nullcontext()
+                    )
+                    with binding:
+                        async for ev in workflow.run(inputs, store):
+                            ev = ensure_workflow_event(ev, site='evals.runner')
+                            if ev.type == "artifact":
+                                artifact = ev.content or ""
+                            elif ev.type == "error":
+                                raise RuntimeError(f"workflow errored: {ev.message}")
                     scores = await judge_workflow(scenario, artifact)
                     ok = float(scores.get("overall", 0)) >= _PASS_THRESHOLD
                     if ok:
@@ -336,7 +368,10 @@ def _make_chat_runner(
                         profile.financials.burn_rate_monthly = ctx["monthly_burn"]
                     if ctx.get("runway_months"):
                         profile.financials.runway_months = ctx["runway_months"]
-                    session = Session(company_profile=profile)
+                    session = Session(
+                        company_profile=profile,
+                        workspace_mode=scenario_workspace_mode(scenario),
+                    )
                     query = scenario["query"]
                     response = await executive.chat(
                         user_message=query,

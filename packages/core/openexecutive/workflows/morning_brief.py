@@ -114,10 +114,15 @@ class MorningBriefWorkflow(Workflow):
 
         from openexecutive.api.routes import today as today_route
         from openexecutive.briefing import brief_state
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
+        from openexecutive.orchestrator.schedule_tools import current_session
 
         # The window is "since the last brief I actually delivered" (24 h on
         # a cold store), so "what changed" is a real delta, not the latest N.
         since = brief_state.since_for(BRIEF_KIND)
+        # Solo / team: the solo brief speaks to one founder (goals by area,
+        # no people waiting). A caller's session override (evals) wins.
+        mode = effective_workspace_mode(current_session.get())
 
         try:
             today_response = today_route._build_today()
@@ -144,7 +149,7 @@ class MorningBriefWorkflow(Workflow):
         pending_suggestions = brief_state.pending_watch_suggestions()
         fingerprint = brief_state.build_brief_fingerprint(
             today_data=today_data, activity=activity, handled=handled, since=since,
-            pending_watch_suggestions=pending_suggestions,
+            pending_watch_suggestions=pending_suggestions, mode=mode,
         )
         previous = brief_state.last_delivered(BRIEF_KIND)
         suppressed = (
@@ -206,7 +211,7 @@ class MorningBriefWorkflow(Workflow):
             artifact_text = await synthesize_briefing_narrative(
                 today_data=today_data, activity=activity, period_label=period,
                 standalone=True, since=since, handled=handled,
-                pending_watch_suggestions=pending_suggestions,
+                pending_watch_suggestions=pending_suggestions, mode=mode,
             )
         except Exception as exc:
             logger.exception("morning_brief: synthesis failed")

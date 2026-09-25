@@ -98,7 +98,7 @@ QUIET_CONTEXT = "<nothing-needs-attention>"
 
 
 def build_narrative_input_hash(
-    rendered_context: str, scope: str = DEFAULT_SCOPE
+    rendered_context: str, scope: str = DEFAULT_SCOPE, mode: str = "team"
 ) -> str:
     """Hash of the EXACT user-turn context the model will be given.
 
@@ -124,6 +124,11 @@ def build_narrative_input_hash(
     ``NARRATIVE_PROMPT_VERSION`` invalidates every entry when a prompt is
     reworded, and the UTC date gives a daily floor (it is also inside the
     rendered context's PERIOD line, but the quiet sentinel has no such line).
+
+    ``mode`` is the workspace mode. Solo and team use different system
+    prompts over what can be the very same context, so a solo key carries the
+    mode and never matches a team one. Team keys leave it out, so they are
+    unchanged from before solo mode existed and no team cache is invalidated.
     """
     if not isinstance(rendered_context, str):
         # This used to take the `today_data` dict. A dict is JSON-serialisable,
@@ -139,6 +144,8 @@ def build_narrative_input_hash(
         "date": datetime.now(UTC).strftime("%Y-%m-%d"),
         "context": rendered_context,
     }
+    if mode != "team":
+        payload["mode"] = mode
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

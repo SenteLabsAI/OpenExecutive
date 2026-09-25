@@ -1,0 +1,67 @@
+{
+  "decisions": [
+    {
+      "timestamp": "2026-08-18T09:00:00+00:00",
+      "domain": "strategy",
+      "summary": "Replace hourly billing with three fixed-fee sprint packages (Brand Sprint, Site Sprint, UI Refresh) for all new clients from September.",
+      "rationale": "Hourly bills made the final price unpredictable for founders and capped my income at hours worked. Fixed sprints sell the outcome, match how founders budget, and reward me for getting faster.",
+      "outcome": "Published price list live on the portfolio site. Existing clients stay on their current terms until their projects end; the change is tested on new clients first.",
+      "tags": "strategy,pricing,packaging",
+      "department": "strategy"
+    },
+    {
+      "timestamp": "2026-07-02T09:00:00+00:00",
+      "domain": "finance",
+      "summary": "Hold a three-month expense buffer before booking the planned December month off.",
+      "rationale": "Income is lumpy and the studio has no one to cover while I am away. A buffer keeps the month off from turning into a cash scramble.",
+      "outcome": "Buffer target set at three months of expenses (about $19,500). Month off stays on the calendar only if the buffer is hit by November 30.",
+      "tags": "finance,cash,buffer",
+      "department": "finance"
+    },
+    {
+      "timestamp": "2026-06-10T09:00:00+00:00",
+      "domain": "operations",
+      "summary": "Bring in a contract illustrator for overflow work only, never client-facing.",
+      "rationale": "Taking on a second designer would change what clients are buying. A scoped contractor for illustration keeps quality high without turning the studio into an agency.",
+      "outcome": "One contractor on a per-project agreement; I stay the single point of contact for every client.",
+      "tags": "operations,contractors",
+      "department": "strategy"
+    }
+  ],
+  "initiatives": [
+    {
+      "title": "Sprint pricing rollout",
+      "status": "active",
+      "created_at": "2026-08-18T00:00:00+00:00",
+      "updated_at": "2026-09-20T00:00:00+00:00",
+      "summary": "Move every new client to fixed-fee sprint packages. Two of three new contracts since September are on sprints; one legacy lead asked for hourly and is still undecided.",
+      "department": "strategy"
+    },
+    {
+      "title": "Template kit launch",
+      "status": "active",
+      "created_at": "2026-07-15T00:00:00+00:00",
+      "updated_at": "2026-09-19T00:00:00+00:00",
+      "summary": "Brand template kit for founders who cannot afford a sprint yet. About 60% built; launch to the 140-person waitlist slipped two weeks because of client work.",
+      "department": "product"
+    },
+    {
+      "title": "Referral program",
+      "status": "active",
+      "created_at": "2026-05-01T00:00:00+00:00",
+      "updated_at": "2026-09-10T00:00:00+00:00",
+      "summary": "Past clients get a thank-you credit for every founder they refer who books a sprint. Two referrals booked this quarter.",
+      "department": "marketing"
+    }
+  ],
+  "advice_given": [
+    {
+      "timestamp": "-3d",
+      "domain": "finance",
+      "query_summary": "Should I chase Brightwell's overdue invoice now or wait until their project wraps?",
+      "advice_summary": "Chase it now — a friendly reminder with the invoice attached, and pause the next milestone if it is not paid within a week. The buffer goal depends on it and waiting only makes the ask harder.",
+      "department": "finance"
+    }
+  ],
+  "scheduled_actions": []
+}

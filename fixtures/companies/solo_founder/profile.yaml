@@ -1,0 +1,68 @@
+company:
+  name: Tallgrass Studio
+  industry: Independent Brand & Product Design Studio
+  stage: Bootstrapped / founder-run
+  founding_year: 2023
+  headcount: 1
+  annual_revenue_arr: 310000
+  mission: Give early-stage founders a brand and product design partner they
+    can afford and actually reach — one senior designer, fixed scopes, and work
+    that ships in weeks rather than quarters.
+  vision: Be the studio a founder recommends to the next founder — known for
+    clear pricing, calm delivery, and design that still holds up at Series A.
+  target_customer:
+    profile: Seed and pre-seed founders (1–15 people) who need a brand
+      identity, a marketing site, or a product UI refresh before a launch or a
+      raise. They have a hard date, a modest budget, and no in-house designer.
+    pain_points:
+      - Agencies quote five figures and months; freelancers disappear mid-project
+      - Hourly billing makes the final bill impossible to predict
+      - Design work stalls whenever the founder is too busy to give feedback
+      - A launch date that will not move
+  competitive_landscape:
+    primary_competitors:
+      - Full-service branding agencies — broader teams, 3–5x the price, slower
+      - Marketplace freelancers — cheaper, but uneven quality and availability
+      - Productized design subscriptions — unlimited requests, junior output
+    competitive_advantages:
+      - One senior designer on every project, start to finish
+      - Fixed-fee sprints with a published price list
+      - Two-week turnaround on the core brand sprint
+      - A referral network of past founders who send the next client
+  org_structure:
+    departments:
+      - strategy
+      - finance
+      - marketing
+      - product
+    leadership_team:
+      - Maya Lindqvist, Founder & Principal Designer — principal; runs the studio alone and makes every call
+  strategic_priorities:
+    current_year:
+      - Replace hourly billing with fixed-fee sprint packages without losing margin
+      - Build a three-month cash buffer before taking a planned month off
+      - Turn the referral network into a predictable pipeline of two new clients a month
+      - Launch a small paid template kit as a second income line
+    north_star_metric: Booked sprint revenue per month
+  culture:
+    values:
+      - Clear prices, clear scopes, no surprises
+      - Ship the work, then polish it
+      - Protect the calendar — deep work beats meetings
+    operating_principles:
+      - Any change to pricing is tested on new clients before existing ones
+      - Never take a project that starts before the current one ends
+      - Contractors are brought in only for scoped overflow work, never client-facing
+  financials:
+    burn_rate_monthly: 6500
+    runway_months: 2.1
+    key_metrics:
+      booked_revenue_last_month_usd: 24000
+      average_sprint_price_usd: 8500
+      active_clients: 2
+      pipeline_leads: 5
+      template_kit_waitlist: 140
+  vendors:
+    - Figma
+    - Webflow
+    - Stripe
