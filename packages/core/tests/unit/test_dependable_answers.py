@@ -152,9 +152,18 @@ def test_unavailable_areas_never_name_a_specialist() -> None:
     assert sources.payload()["unavailable"] == ["finance", "legal", "one area"]
     assert not sources.is_empty()
     assert sources.event("s-1") == {"type": "sources", "session_id": "s-1", **sources.payload()}
-    for specialist in router.SPECIALIST_REGISTRY:
-        area = area_for(specialist)
-        assert specialist not in area and "specialist" not in area
+
+
+@pytest.mark.parametrize("specialist", sorted(router.SPECIALIST_REGISTRY))
+def test_every_specialist_has_an_area_in_plain_words(specialist: str) -> None:
+    # A new specialist needs an entry in answer_sources._AREAS, or the note
+    # under a reply would say "one area". The area is a business topic, never
+    # a role or an internal name.
+    area = area_for(specialist)
+    assert area != "one area"
+    assert area.islower() and "_" not in area
+    for word in ("specialist", "agent", "chief", "officer", "head", "director"):
+        assert word not in area
 
 
 def test_an_area_is_missing_only_if_nothing_answered_for_it() -> None:
@@ -334,6 +343,7 @@ def fake_specialists(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return ""
 
     monkeypatch.setattr(router, "route_to_specialist", route_to_specialist)
+    monkeypatch.setattr(router, "load_company_stage", lambda: "")
     monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", retrieve)
     monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve_failures", lambda **_k: "")
     monkeypatch.setattr(router, "_prefetch_department_for_call", no_memory)

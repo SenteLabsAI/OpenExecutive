@@ -50,6 +50,7 @@ _IN_APP_PATH_RE = re.compile(r"/artifacts/[A-Za-z0-9_%~-]+")
 
 # The part of the analysis each specialist covers, in the user's words. The
 # web chat lists them as "Some of the analysis is missing (finance, legal)".
+# Every SPECIALIST_REGISTRY key needs one (a test checks).
 _AREAS: dict[str, str] = {
     "cso": "strategy",
     "cfo": "finance",
@@ -58,6 +59,7 @@ _AREAS: dict[str, str] = {
     "coo": "operations",
     "cmo": "marketing",
     "cpo": "product",
+    "sales": "sales",
     "board_comms": "board and investors",
     "triage": "priorities",
 }
