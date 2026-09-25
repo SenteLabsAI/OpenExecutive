@@ -22,6 +22,7 @@ from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
 from openexecutive.memory.workspace_settings import (
+    effective_principal_role,
     effective_workspace_mode,
     pin_turn_workspace_mode,
 )
@@ -75,6 +76,7 @@ from openexecutive.orchestrator.research_tools import (
 from openexecutive.orchestrator.router import (
     SPECIALIST_TOOLS,
     partition_specialist_fanout,
+    principal_role_context,
     route_parallel,
 )
 from openexecutive.orchestrator.schedule_tools import (
@@ -741,12 +743,20 @@ class Executive:
         # handler agree even if the setting flips mid-turn (Session override →
         # workspace).
         workspace_mode = pin_turn_workspace_mode(session)
+        # Solo: the principal's role (the session's override, else the
+        # workspace's), resolved once with the mode so the org block and every
+        # specialist's <principal_role> tag in the turn describe the same role.
+        # Team never renders one.
+        principal_role = (
+            effective_principal_role(session) if workspace_mode == "solo" else None
+        )
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
             workspace_mode=workspace_mode,
+            principal_role=principal_role,
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -823,6 +833,7 @@ class Executive:
                 turn_id=turn_id,
                 turn_sources=turn_sources,
                 workspace_mode=workspace_mode,
+                principal_role_tag=principal_role_context(principal_role),
             ):
                 if isinstance(item, str) and item != self._THINKING:
                     full_response += item
@@ -1013,12 +1024,16 @@ class Executive:
             logger.exception("Failed to load executive override; using defaults")
 
         workspace_mode = pin_turn_workspace_mode(session)
+        principal_role = (
+            effective_principal_role(session) if workspace_mode == "solo" else None
+        )
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
             workspace_mode=workspace_mode,
+            principal_role=principal_role,
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.
@@ -1114,6 +1129,7 @@ class Executive:
             turn_id=turn_id,
             turn_sources=turn_sources,
             workspace_mode=workspace_mode,
+            principal_role_tag=principal_role_context(principal_role),
         ):
             # Swallow draft text and the THINKING sentinel — the user sees
             # only the revised stream. Pass debug-event dicts through so the
@@ -1410,6 +1426,7 @@ class Executive:
         turn_id: str | None = None,
         turn_sources: TurnSources | None = None,
         workspace_mode: str | None = None,
+        principal_role_tag: str | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Tool-use loop that yields text deltas as they arrive.
 
@@ -1424,9 +1441,19 @@ class Executive:
         ``workspace_mode`` is the turn's solo/team mode (the caller resolves it
         once, for the system blocks too); None resolves it from the current
         session. Solo withholds the team-only tools and refuses a call to one.
+
+        ``principal_role_tag`` is the specialists' ``<principal_role>`` body
+        for the turn, resolved by the caller with the mode ("" for none);
+        None resolves it here from the current session — solo only.
         """
         if workspace_mode is None:
             workspace_mode = effective_workspace_mode(current_session.get())
+        if principal_role_tag is None:
+            principal_role_tag = (
+                principal_role_context(effective_principal_role(current_session.get()))
+                if workspace_mode == "solo"
+                else ""
+            )
         # An unattended run (the scheduler's proactive trigger) is also not
         # offered the principal-only tools; its tool list is a stable variant
         # of its own, like each mode's.
@@ -1694,6 +1721,10 @@ class Executive:
                     company_stage=(
                         session_stage if isinstance(session_stage, str) else None
                     ),
+                    # Solo: what the principal does, so a specialist advises
+                    # a VP inside a large company differently from an owner.
+                    # Resolved with the turn's mode; team sends no tag.
+                    principal_role=principal_role_tag,
                     record_source=turn_sources.add if turn_sources is not None else None,
                     failed_calls_out=failed_calls,
                     # The web chat shows a missing area under the reply;

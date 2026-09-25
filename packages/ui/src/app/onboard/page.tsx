@@ -7,8 +7,10 @@ import OnboardConversation, {
   type Bubble,
 } from "@/components/onboard/OnboardConversation";
 import OnboardDraftReview from "@/components/onboard/OnboardDraftReview";
+import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { updateWorkspace, type OnboardTurn, type WorkspaceMode } from "@/lib/api";
+import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/principalRole";
 
 // Onboarding is a focused full-screen flow — exempt from the AppShell chrome
 // (see AppShell.tsx EXEMPT_PREFIXES) so it owns the whole viewport.
@@ -16,9 +18,12 @@ import { updateWorkspace, type OnboardTurn, type WorkspaceMode } from "@/lib/api
 // First run starts with one question: is this just for you, or for you and
 // your team? The answer is saved as the workspace mode (PUT /workspace, with
 // the browser's time zone) before anything else, because the conversation
-// and the form ask different things in each mode. A re-run — a company
-// profile already exists — skips it: the mode is changed in Settings, and the
-// flow below follows whatever it currently is.
+// and the form ask different things in each mode. "Just me" then asks what
+// your role is — owner, an executive inside an organisation, independent —
+// saved with the workspace settings too (skippable; editable in Settings),
+// so setup asks the right questions and the Executive advises for that role.
+// A re-run — a company profile already exists — skips both: they are changed
+// in Settings, and the flow below follows whatever they currently are.
 //
 // Then the conversational flow: describe the business, answer a few
 // clarifying questions, then review and edit a drafted profile. The original
@@ -42,7 +47,7 @@ function onboardHref(form: boolean, chosenFor: string | null): string {
 function OnboardFlow() {
   const router = useRouter();
   const params = useSearchParams();
-  const { mode } = useWorkspace();
+  const { mode, role } = useWorkspace();
   const [turn, setTurn] = useState<OnboardTurn | null>(null);
   const [resumeTurns, setResumeTurns] = useState<Bubble[]>([]);
   const [conversationTurn, setConversationTurn] = useState<OnboardTurn | null>(null);
@@ -91,7 +96,7 @@ function OnboardFlow() {
         <OnboardWizard onComplete={finish} />
         <p className="text-center text-xs text-fg-muted pb-10">
           <a href={onboardHref(false, forParam)} className="hover:text-fg transition-colors">
-            ← Describe your business instead
+            ← Describe your {mode === "solo" ? "work" : "business"} instead
           </a>
         </p>
       </div>
@@ -121,7 +126,7 @@ function OnboardFlow() {
         <h1 className="text-xl font-semibold text-fg">Set up your Executive</h1>
         <p className="text-sm text-fg-muted mt-1">
           A few minutes now, and every answer you get afterwards is grounded in
-          your {mode === "solo" ? "business" : "company"} rather than a generic one.
+          your {mode === "solo" ? "work" : "company"} rather than a generic one.
         </p>
       </div>
 
@@ -129,6 +134,7 @@ function OnboardFlow() {
         initialTurn={conversationTurn}
         initialTurns={resumeTurns}
         solo={mode === "solo"}
+        roleKind={role.role_kind}
         onDraft={(next, bubbles) => {
           setResumeTurns(bubbles);
           setTurn(next);
@@ -151,12 +157,12 @@ const CHOICES: { mode: WorkspaceMode; title: string; body: string }[] = [
   {
     mode: "solo",
     title: "Just me",
-    body: "You run the business on your own. Goals are grouped by area, with no team check-ins.",
+    body: "Only you use Open Executive. Goals are grouped by area; the people you work with are your contacts.",
   },
   {
     mode: "team",
     title: "Me and my team",
-    body: "You work with others. Departments and people, each department checking in daily.",
+    body: "The Executive works with your team too. Departments and people, each department checking in daily.",
   },
 ];
 
@@ -173,6 +179,8 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
   const { refresh } = useWorkspace();
   const [saving, setSaving] = useState<WorkspaceMode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // "Just me" was saved: ask the role before moving on.
+  const [askRole, setAskRole] = useState(false);
 
   async function choose(mode: WorkspaceMode) {
     if (saving) return;
@@ -189,12 +197,19 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
         await updateWorkspace({ mode });
       }
       await refresh();
+      if (mode === "solo") {
+        setAskRole(true);
+        setSaving(null);
+        return;
+      }
       onChosen(mode);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save your choice.");
       setSaving(null);
     }
   }
+
+  if (askRole) return <RoleStep onDone={() => onChosen("solo")} />;
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-16 w-full">
@@ -233,6 +248,79 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// "Just me" → what is your role? Saved with the workspace settings; skipping
+// saves nothing, and Settings → Workspace edits it later.
+function RoleStep({ onDone }: { onDone: () => void }) {
+  const { role, refresh } = useWorkspace();
+  // Mounted right after the mode was saved and re-read, so `role` is current.
+  const [form, setForm] = useState<RoleForm>(() => roleFormFrom(role));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const problems = roleFormErrors(form);
+
+  async function save() {
+    if (saving || problems.length > 0) return;
+    const update = roleUpdate(form, role);
+    if (Object.keys(update).length === 0) {
+      onDone();
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await updateWorkspace(update);
+      await refresh();
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save your role.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto px-6 py-16 w-full">
+      <h1 className="text-xl font-semibold text-fg">What&apos;s your role?</h1>
+      <p className="text-sm text-fg-muted mt-1">
+        So setup asks the right questions and the advice fits your job — a case to put to your
+        boss, or a call that&apos;s yours alone to make. You can change it later in Settings.
+      </p>
+
+      <div className="mt-8 rounded-xl border border-line bg-surface-elevated p-5">
+        <RoleFields value={form} onChange={setForm} disabled={saving} idPrefix="onboard-role" />
+      </div>
+
+      {(problems.length > 0 || error) && (
+        <div className="mt-3 space-y-1 text-xs text-red-400">
+          {problems.map((p) => (
+            <p key={p}>{p}</p>
+          ))}
+          {error && <p>{error}</p>}
+        </div>
+      )}
+
+      <div className="mt-6 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || problems.length > 0}
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-500 hover:bg-indigo-600 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {saving ? "Saving…" : "Continue"}
+        </button>
+        <button
+          type="button"
+          onClick={onDone}
+          disabled={saving}
+          className="px-3 py-2 rounded-lg text-sm text-fg-muted hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
+        >
+          Skip for now
+        </button>
+      </div>
     </div>
   );
 }

@@ -2,11 +2,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import { getWorkspace, type WorkspaceMode } from "@/lib/api";
+import { getWorkspace, type PrincipalRole, type WorkspaceMode } from "@/lib/api";
 
 // How this install is used: "solo" (one person, just for themselves — goals
 // grouped by area, no team surfaces) or "team" (a company with departments
-// and people). Lives in the root layout next to ExecutiveStatusProvider so
+// and people) — plus the principal's role, which solo setup asks for. Lives in the root layout next to ExecutiveStatusProvider so
 // the sidebar, the chat home (outside the shell), onboarding and Settings all
 // read one value.
 //
@@ -19,6 +19,8 @@ interface WorkspaceContextValue {
   timezone: string | null;
   /** The zone in effect (the user's, else the server default); null until loaded. */
   effectiveTimezone: string | null;
+  /** The principal's role (solo mode reads it); every field null until set. */
+  role: PrincipalRole;
   /** True until the first request settles (either way). */
   loading: boolean;
   /** Re-read the settings, e.g. after Settings or onboarding changed them. */
@@ -27,11 +29,20 @@ interface WorkspaceContextValue {
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
+const NO_ROLE: PrincipalRole = {
+  role_kind: null,
+  role_title: null,
+  reports_to: null,
+  remit: null,
+  measured_on: null,
+};
+
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const { status: authStatus } = useSession();
   const [mode, setMode] = useState<WorkspaceMode>("team");
   const [timezone, setTimezone] = useState<string | null>(null);
   const [effectiveTimezone, setEffectiveTimezone] = useState<string | null>(null);
+  const [role, setRole] = useState<PrincipalRole>(NO_ROLE);
   const [loading, setLoading] = useState(true);
   // Only the latest request may write: a slow first read must not overwrite
   // the answer to a refresh() issued after a change.
@@ -45,6 +56,13 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setMode(ws.mode === "solo" ? "solo" : "team");
       setTimezone(ws.timezone);
       setEffectiveTimezone(ws.effective_timezone);
+      setRole({
+        role_kind: ws.role_kind ?? null,
+        role_title: ws.role_title ?? null,
+        reports_to: ws.reports_to ?? null,
+        remit: ws.remit ?? null,
+        measured_on: ws.measured_on ?? null,
+      });
     } catch {
       // Keep what we have (the "team" default on a first failure).
     } finally {
@@ -63,8 +81,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, [authStatus, refresh]);
 
   const value = useMemo(
-    () => ({ mode, timezone, effectiveTimezone, loading, refresh }),
-    [mode, timezone, effectiveTimezone, loading, refresh],
+    () => ({ mode, timezone, effectiveTimezone, role, loading, refresh }),
+    [mode, timezone, effectiveTimezone, role, loading, refresh],
   );
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

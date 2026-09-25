@@ -64,7 +64,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "executive_paused",     # operator paused autonomous work (scheduler/pause.py)
     "executive_resumed",    # operator resumed it; held work released
     "scheduled_action_cancelled",  # a person cancelled a pending action (DELETE /scheduled/{id})
-    "workspace_settings_changed",  # solo/team mode or the user's time zone changed (PUT /workspace)
+    "workspace_settings_changed",  # solo/team mode, the user's time zone or the principal's role changed (PUT /workspace)
     "decision_class_mode_changed",  # propose ↔ auto_execute for a decision class (PUT /decisions/classes/…)
 )
 

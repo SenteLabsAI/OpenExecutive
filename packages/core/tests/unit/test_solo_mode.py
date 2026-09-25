@@ -232,6 +232,10 @@ def test_team_dept_cadence_row_still_reaches_the_check_in(
 # --------------------------------------------------------------------------- #
 
 
+# The role fields _apply_workspace also reports (all unset in these files).
+NO_ROLE: dict[str, Any] = dict.fromkeys(ws.ROLE_FIELDS)
+
+
 def _apply_file(path: Path, *, keep_when_missing: bool = False) -> dict[str, Any]:
     return fixture_loader._apply_workspace(
         fixture_loader._read_workspace_file(path), keep_when_missing=keep_when_missing
@@ -243,7 +247,7 @@ def test_workspace_file_applied_after_reset(tmp_path: Path) -> None:
     f = tmp_path / "workspace.yaml"
     f.write_text("mode: solo\ntimezone: America/Chicago\n")
     out = _apply_file(f)
-    assert out == {"mode": "solo", "timezone": "America/Chicago"}
+    assert out == {"mode": "solo", "timezone": "America/Chicago", **NO_ROLE}
     assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="America/Chicago")
 
 
@@ -251,7 +255,7 @@ def test_missing_workspace_file_means_defaults_for_a_fixture(tmp_path: Path) -> 
     ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Asia/Seoul"))
     assert fixture_loader._read_workspace_file(tmp_path / "workspace.yaml") is None
     out = _apply_file(tmp_path / "workspace.yaml")
-    assert out == {"mode": "team", "timezone": None}
+    assert out == {"mode": "team", "timezone": None, **NO_ROLE}
 
 
 def test_missing_workspace_file_keeps_settings_for_a_legacy_backup(tmp_path: Path) -> None:
@@ -259,7 +263,7 @@ def test_missing_workspace_file_keeps_settings_for_a_legacy_backup(tmp_path: Pat
     user's settings to team / no zone."""
     ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Asia/Seoul"))
     out = _apply_file(tmp_path / "workspace.yaml", keep_when_missing=True)
-    assert out == {"mode": "solo", "timezone": "Asia/Seoul"}
+    assert out == {"mode": "solo", "timezone": "Asia/Seoul", **NO_ROLE}
 
 
 @pytest.mark.parametrize(
@@ -283,7 +287,7 @@ def test_bad_workspace_file_values_are_skipped(
 ) -> None:
     f = tmp_path / "workspace.yaml"
     f.write_text(text)
-    assert _apply_file(f) == expected
+    assert _apply_file(f) == {**expected, **NO_ROLE}
 
 
 def test_snapshot_round_trip_restores_the_users_settings(tmp_path: Path) -> None:

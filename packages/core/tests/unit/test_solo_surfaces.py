@@ -1093,6 +1093,7 @@ def test_solo_scenarios_are_shipped_and_valid() -> None:
     files = sorted(SCENARIOS_DIR.glob("solo_*.yaml"))
     assert [f.name for f in files] == [
         "solo_001.yaml", "solo_002.yaml", "solo_003.yaml", "solo_004.yaml",
+        "solo_005.yaml",
     ]
     for f in files:
         text = f.read_text(encoding="utf-8")
@@ -1182,15 +1183,23 @@ def test_solo_studio_fixture_seeds_a_solo_workspace() -> None:
     # workspace.yaml is read and validated up front, then applied after the
     # people and departments are seeded (a fixture, so not keep_when_missing).
     wanted = fixture_loader._read_workspace_file(SOLO_FIXTURE / "workspace.yaml")
-    assert wanted == ws.WorkspaceSettings(mode="solo", timezone="Europe/Stockholm")
+    role = {
+        "role_kind": "owner",
+        "role_title": "Founder & Principal Designer",
+        "remit": "The whole studio — client work, sales and pricing, and the books.",
+        "measured_on": "Profit after owner pay, a three-month cash buffer, and referral clients.",
+    }
+    expected = ws.WorkspaceSettings(mode="solo", timezone="Europe/Stockholm", **role)
+    assert wanted == expected
     assert fixture_loader._seed_people(SOLO_FIXTURE / "people.yaml") == 1
     assert fixture_loader._seed_departments(SOLO_FIXTURE / "departments.yaml") == 4
     applied = fixture_loader._apply_workspace(wanted, keep_when_missing=False)
     dept_registry.invalidate()
     people_registry.invalidate()
 
-    assert applied == {"mode": "solo", "timezone": "Europe/Stockholm"}
-    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="Europe/Stockholm")
+    assert applied == expected.model_dump()
+    assert applied["reports_to"] is None  # an owner reports to no one here
+    assert ws.get_workspace() == expected
     principal = people_store.find_principal_person()
     assert principal is not None and principal.full_name == "Maya Lindqvist"
     states = dept_store.list_departments()
@@ -1202,6 +1211,9 @@ def test_solo_studio_fixture_seeds_a_solo_workspace() -> None:
     block = render_org_block(mode="solo")
     assert "### Finance (area slug: finance)" in block
     assert "Collect every invoice within 30 days" in block
+    assert (
+        "- Role: Founder & Principal Designer — the owner or founder of their own business"
+    ) in block
 
     listed = {f["name"]: f for f in fixture_loader.list_fixtures()}
     assert len(listed["solo_studio"]["people"]) == 1

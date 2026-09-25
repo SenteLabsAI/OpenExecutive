@@ -3,9 +3,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.memory.company_profile import CompanyProfile
+
+if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import PrincipalRole
 
 
 @dataclass
@@ -51,6 +54,11 @@ class Session:
     # one Executive, so they set it here instead of flipping the global. Read
     # it through `memory.workspace_settings.effective_workspace_mode`.
     workspace_mode: str | None = None
+    # Per-session override of the principal's role (None = use the
+    # workspace's), for the same reason: an eval scenario supplies the role
+    # of the principal it plays without writing the install-wide row. Read
+    # it through `memory.workspace_settings.effective_principal_role`.
+    principal_role: PrincipalRole | None = None
     # The mode resolved for the turn in progress, pinned at its start by
     # `workspace_settings.pin_turn_workspace_mode` (Executive.stream_chat and
     # the committee path) so the tool handlers use the same mode as the

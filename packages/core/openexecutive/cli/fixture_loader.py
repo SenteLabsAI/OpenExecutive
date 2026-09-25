@@ -1220,7 +1220,9 @@ def _same_dir(a: Path, b: Path) -> bool:
 
 def _read_workspace_file(workspace_path: Path) -> WorkspaceSettings | None:
     """The settings an optional ``workspace.yaml`` asks for (``mode:
-    solo|team``, ``timezone: <IANA zone>``), or None when there is no file.
+    solo|team``, ``timezone: <IANA zone>``, and the principal's role:
+    ``role_kind``, ``role_title``, ``reports_to``, ``remit``,
+    ``measured_on`` — each optional), or None when there is no file.
 
     Never raises: an unreadable file, a non-mapping or a value that does not
     validate is logged and skipped (reading as the default for that field).
@@ -1228,9 +1230,11 @@ def _read_workspace_file(workspace_path: Path) -> WorkspaceSettings | None:
     import yaml
 
     from openexecutive.memory.workspace_settings import (
+        ROLE_FIELDS,
         WORKSPACE_MODES,
         WorkspaceMode,
         WorkspaceSettings,
+        validate_role_field,
         validate_timezone,
     )
 
@@ -1257,6 +1261,15 @@ def _read_workspace_file(workspace_path: Path) -> WorkspaceSettings | None:
             wanted.timezone = validate_timezone(str(tz))
         except ValueError:
             logger.warning("fixture: ignoring workspace timezone %r", tz)
+    for field in ROLE_FIELDS:
+        value = raw.get(field)
+        if value is None:
+            continue
+        try:
+            setattr(wanted, field, validate_role_field(field, value))
+        except ValueError:
+            # The field name only: the value is the principal's own text.
+            logger.warning("fixture: ignoring an invalid workspace %s", field)
     return wanted
 
 

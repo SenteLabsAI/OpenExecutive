@@ -10,6 +10,15 @@ One row (``id = 1``) in the ``workspace_settings`` table of the episodic DB:
   the morning brief, end-of-day digest and reflection, the zone the Executive
   resolves "tomorrow at 9" in, open-loop due dates, and the alert quiet
   hours when no zone was stored for them.
+- The principal's role (``PrincipalRole``), all nullable: ``role_kind``
+  (``owner`` / ``in_house`` / ``independent`` / ``other``), ``role_title``,
+  ``reports_to``, ``remit`` (what they are responsible for) and
+  ``measured_on`` (what they are judged on). Solo mode is for anyone using
+  Open Executive for themselves — a business owner, an executive inside a
+  larger organisation, an independent or fractional executive — and this is
+  how the Executive and its specialists learn which. Only solo mode reads it
+  (the solo org block and the specialists' ``<principal_role>`` tag); it is
+  kept, not cleared, in team mode.
 
 The row lives in its own table rather than on ``CompanyProfile`` on purpose:
 onboarding's commit and the form wizard rebuild the profile from scratch,
@@ -28,7 +37,7 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import TYPE_CHECKING, Literal, cast, get_args
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
@@ -47,18 +56,65 @@ DEFAULT_MODE: WorkspaceMode = "team"
 # Longest IANA key is ~30 chars; anything far past that is not a zone name.
 _MAX_TZ_LEN = 64
 
+# How the principal relates to the organisation in their profile.
+RoleKind = Literal["owner", "in_house", "independent", "other"]
+ROLE_KINDS: tuple[str, ...] = get_args(RoleKind)
+
+# The role's free-text fields and their length caps (after trimming). The
+# same caps bound the API, a fixture's workspace.yaml and an eval scenario.
+ROLE_TEXT_MAX: dict[str, int] = {
+    "role_title": 120,
+    "reports_to": 120,
+    "remit": 500,
+    "measured_on": 300,
+}
+ROLE_FIELDS: tuple[str, ...] = ("role_kind", *ROLE_TEXT_MAX)
+
+# role_kind in plain words, as the solo org block and the specialists'
+# <principal_role> tag say it. "other" has no phrase: the title says it.
+ROLE_KIND_PHRASE: dict[str, str] = {
+    "owner": "the owner or founder of their own business",
+    "in_house": "an executive inside an organisation they do not own",
+    "independent": "an independent or fractional executive who serves clients",
+}
+
 _CREATE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     mode TEXT NOT NULL DEFAULT 'team',
     timezone TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    role_kind TEXT,
+    role_title TEXT,
+    reports_to TEXT,
+    remit TEXT,
+    measured_on TEXT
 )
 """
 
 
-class WorkspaceSettings(BaseModel):
+class PrincipalRole(BaseModel):
+    """What the principal does: the context the solo persona reads their role
+    from. Every field is optional; all unset means "not said"."""
+
     model_config = ConfigDict(extra="ignore")
+
+    role_kind: RoleKind | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    remit: str | None = None
+    measured_on: str | None = None
+
+    def principal_role(self) -> PrincipalRole:
+        """Just the role fields (a ``WorkspaceSettings`` carries more)."""
+        return PrincipalRole(**{f: getattr(self, f) for f in ROLE_FIELDS})
+
+    def is_empty(self) -> bool:
+        return all(getattr(self, f) is None for f in ROLE_FIELDS)
+
+
+class WorkspaceSettings(PrincipalRole):
+    """The one settings row: mode, zone, and the principal's role."""
 
     mode: WorkspaceMode = DEFAULT_MODE
     timezone: str | None = None
@@ -80,11 +136,27 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create the table if missing and add the role columns to one created
+    before they existed (additive ALTERs; a duplicate-column error from a
+    concurrent boot counts as success)."""
+    conn.execute(_CREATE_SQL)
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({TABLE})")}
+    for col in ROLE_FIELDS:
+        if col in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
 def init_workspace_settings_db(db_path: Path | None = None) -> None:
-    """Create the table if missing. Idempotent."""
+    """Create the table (and any missing column) if needed. Idempotent."""
     conn = _connect(_resolve_db_path(db_path))
     try:
-        conn.execute(_CREATE_SQL)
+        _ensure_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -124,6 +196,61 @@ def validate_timezone(tz: str | None) -> str | None:
     return name
 
 
+def validate_role_kind(kind: object) -> RoleKind | None:
+    """``kind`` as a role kind, or None for "not set" (None or blank).
+    Raises ``ValueError`` for anything else."""
+    if kind is None:
+        return None
+    if not isinstance(kind, str):
+        raise ValueError("role_kind must be a string")
+    name = kind.strip()
+    if not name:
+        return None
+    if name not in ROLE_KINDS:
+        raise ValueError(f"role_kind must be one of {', '.join(ROLE_KINDS)}")
+    return cast(RoleKind, name)
+
+
+def validate_role_text(field: str, value: object) -> str | None:
+    """One free-text role field, trimmed; None or blank means "not set".
+    Raises ``ValueError`` for a non-string or a value over the field's cap.
+    The message never quotes the value."""
+    cap = ROLE_TEXT_MAX[field]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > cap:
+        raise ValueError(f"{field} must be at most {cap} characters")
+    return text
+
+
+def validate_role_field(field: str, value: object) -> str | None:
+    """``validate_role_kind`` or ``validate_role_text``, by field name."""
+    if field == "role_kind":
+        return validate_role_kind(value)
+    return validate_role_text(field, value)
+
+
+def _stored_role(row: sqlite3.Row) -> dict[str, str | None]:
+    """The role columns of a stored row, field by field: a column the row
+    lacks (a table not migrated yet) or a value that no longer validates
+    (hand-edited) reads as unset. Never raises."""
+    keys = set(row.keys())
+    out: dict[str, str | None] = {}
+    for field in ROLE_FIELDS:
+        if field not in keys:
+            continue
+        try:
+            out[field] = validate_role_field(field, row[field])
+        except ValueError:
+            logger.warning("workspace: ignoring an invalid stored %s", field)
+    return out
+
+
 def _stored_zone(raw: object) -> str | None:
     """A stored zone name if it still loads, else None (logged). Never raises."""
     try:
@@ -151,8 +278,10 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
             return WorkspaceSettings()
         conn = _connect(path)
         try:
+            # SELECT *: a table created before the role columns existed has
+            # none of them, and a read never migrates (_stored_role).
             row = conn.execute(
-                f"SELECT mode, timezone FROM {TABLE} WHERE id = 1"  # noqa: S608 — constant table name
+                f"SELECT * FROM {TABLE} WHERE id = 1"  # noqa: S608 — constant table name
             ).fetchone()
         finally:
             conn.close()
@@ -170,7 +299,9 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
     if mode not in WORKSPACE_MODES:
         logger.warning("workspace: ignoring unknown stored mode %r", mode)
         mode = DEFAULT_MODE
-    return WorkspaceSettings(mode=mode, timezone=_stored_zone(row["timezone"]))
+    return WorkspaceSettings.model_validate(
+        {"mode": mode, "timezone": _stored_zone(row["timezone"]), **_stored_role(row)}
+    )
 
 
 def _log_read_failure(exc: BaseException) -> None:
@@ -238,10 +369,24 @@ def pin_turn_workspace_mode(session: Session) -> WorkspaceMode:
     return mode
 
 
+def effective_principal_role(session: Session | None = None) -> PrincipalRole:
+    """The principal's role for a turn: the session's override when it
+    carries one (an eval scenario's ``principal_role`` — scenarios run
+    concurrently on one Executive, so they cannot write the install-wide
+    row), else the workspace's, read fresh. Never raises; an empty role
+    means none was given."""
+    if session is not None:
+        override = getattr(session, "principal_role", None)
+        if isinstance(override, PrincipalRole):
+            return override.principal_role()
+    return get_workspace().principal_role()
+
+
 def _upsert(db_path: Path | None, **columns: str | None) -> None:
-    """Write the given columns of the row (``mode`` / ``timezone``), leaving
-    the others as they are. Creates the table and the row as needed."""
-    unknown = set(columns) - {"mode", "timezone"}
+    """Write the given columns of the row (``mode`` / ``timezone`` / the role
+    fields), leaving the others as they are. Creates the table, any missing
+    column and the row as needed."""
+    unknown = set(columns) - {"mode", "timezone", *ROLE_FIELDS}
     if unknown:
         raise ValueError(f"unknown workspace column(s): {sorted(unknown)}")
     names = list(columns)
@@ -251,7 +396,7 @@ def _upsert(db_path: Path | None, **columns: str | None) -> None:
     updates = ", ".join(f"{n} = excluded.{n}" for n in [*names, "updated_at"])
     conn = _connect(_resolve_db_path(db_path))
     try:
-        conn.execute(_CREATE_SQL)
+        _ensure_schema(conn)
         conn.execute(
             f"INSERT INTO {TABLE} (id, {col_list}) VALUES (1, {placeholders}) "  # noqa: S608 — allowlisted columns
             f"ON CONFLICT(id) DO UPDATE SET {updates}",
@@ -319,17 +464,36 @@ def set_workspace_mode(mode: str) -> WorkspaceSettings:
     return get_workspace()
 
 
+def set_principal_role(**fields: object) -> WorkspaceSettings:
+    """Store the given role fields (any of ``ROLE_FIELDS``), leaving the
+    others as they are; None or blank clears one. Raises ``ValueError`` for
+    an unknown field or a value that does not validate — before anything is
+    written. No side effects: the next turn reads it fresh."""
+    unknown = set(fields) - set(ROLE_FIELDS)
+    if unknown:
+        raise ValueError(f"unknown role field(s): {sorted(unknown)}")
+    clean = {f: validate_role_field(f, v) for f, v in fields.items()}
+    if clean:
+        _upsert(None, **clean)
+    return get_workspace()
+
+
 def restore_workspace_settings(
     settings: WorkspaceSettings, db_path: Path | None = None
 ) -> None:
     """Write ``settings`` verbatim, with none of the scheduler side effects of
     ``set_timezone`` / ``set_workspace_mode``. For callers that rebuild
     ``scheduled_actions`` themselves (fixture load / unload)."""
-    _upsert(db_path, mode=settings.mode, timezone=validate_timezone(settings.timezone))
+    _upsert(
+        db_path,
+        mode=settings.mode,
+        timezone=validate_timezone(settings.timezone),
+        **{f: validate_role_field(f, getattr(settings, f)) for f in ROLE_FIELDS},
+    )
 
 
 def reset_workspace_settings(db_path: Path | None = None) -> None:
-    """Back to the defaults (team, no zone). No scheduler side effects.
+    """Back to the defaults (team, no zone, no role). No scheduler side effects.
 
     A DB file that does not exist has nothing to reset and is not created.
     """

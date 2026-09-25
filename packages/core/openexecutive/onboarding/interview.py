@@ -21,8 +21,8 @@ Shape notes for anyone changing this file:
 
 * **The system block is a constant**, never f-stringed. An existing profile is
   rendered into the first USER turn via ``to_prompt_block()``, never into the
-  cached system block — and so is ``SOLO_HINT`` when the workspace is in solo
-  mode. This module does not touch ``prompts/cache_manager.py``,
+  cached system block — and so is the solo hint (``solo_hint``: one constant
+  per role kind) when the workspace is in solo mode. This module does not touch ``prompts/cache_manager.py``,
   so the "exactly 2 cache_control blocks" budget there is unaffected.
 
 * **Errors never echo model or user input.** A ``ValidationError``'s ``str()``
@@ -500,17 +500,69 @@ def replay_transcript(
 
 
 # Prepended to the FIRST user turn when the workspace is in solo mode (one
-# person using Open Executive just for themselves). A user-turn hint rather
-# than a second system prompt, so the cached system block stays one constant
-# for both modes.
-SOLO_HINT = (
-    "This person is setting up Open Executive just for themselves: they run "
-    "the business alone. In the draft, `people` must hold only them — exactly "
-    "one person, with is_principal true — and `departments` must be empty. "
-    "Do not ask about a leadership team or departments; ask instead about "
-    "what they offer, who their customers are, their pricing, their cash and "
-    "runway, and their top goals."
+# person using Open Executive just for themselves — whatever their role).
+# User-turn hints rather than a second system prompt, so the cached system
+# block stays one constant for both modes. One static constant per role kind
+# (the workspace's role_kind, from the role step): no user text is ever
+# interpolated into them.
+_SOLO_DRAFT_RULE = (
+    "In the draft, `people` must hold only them — exactly one person, with "
+    "is_principal true — and `departments` must be empty."
 )
+
+# No role given (or "other"): find out which kind of principal this is.
+SOLO_HINT = (
+    "This person is setting up Open Executive just for themselves: only they "
+    "will use it. They may run their own business, lead a function inside a "
+    "larger organisation, or work independently as an advisor or fractional "
+    "executive — if their words do not make it clear, ask. "
+    + _SOLO_DRAFT_RULE
+    + " The company profile describes the organisation they work in: their "
+    "own business or practice, or their employer. Do not ask about a "
+    "leadership team or departments; ask instead about their role and what "
+    "they are responsible for, that organisation, and their top goals."
+)
+
+SOLO_ROLE_HINTS: dict[str, str] = {
+    "owner": (
+        "This person is setting up Open Executive just for themselves, and "
+        "they own and run the business. "
+        + _SOLO_DRAFT_RULE
+        + " Do not ask about a leadership team or departments; ask instead "
+        "about what they offer, who their customers are, their pricing, their "
+        "cash and runway, and their top goals."
+    ),
+    "in_house": (
+        "This person is setting up Open Executive just for themselves. They "
+        "are an executive inside an organisation they do not own, so the "
+        "company is their employer: draft the company profile for that "
+        "organisation. "
+        + _SOLO_DRAFT_RULE
+        + " Do not add their manager, peers or team as people. Do not ask "
+        "about the company's leadership team or departments, and do not ask "
+        "about cash, runway or fundraising as if the business were theirs. "
+        "Ask instead about their organisation (what it does, its industry "
+        "and size), the function they lead and what they are responsible "
+        "for, who they report to, how big their team is (as context, not a "
+        "roster), what they are measured on, and their top goals."
+    ),
+    "independent": (
+        "This person is setting up Open Executive just for themselves. They "
+        "work independently — an advisor, consultant or fractional executive "
+        "who serves clients — so the company is their own practice. "
+        + _SOLO_DRAFT_RULE
+        + " Clients are not people in the draft. Do not ask about a "
+        "leadership team or departments; ask instead about their practice "
+        "and what they offer, who their clients are and how they work with "
+        "them, how they price their work, and their top goals."
+    ),
+}
+
+
+def solo_hint(role_kind: str | None) -> str:
+    """The solo hint for the principal's role kind: the tailored one, else
+    the role-neutral ``SOLO_HINT`` (no kind, or ``other``)."""
+    return SOLO_ROLE_HINTS.get(role_kind or "", SOLO_HINT)
 
 
 def _build_messages(
@@ -518,19 +570,20 @@ def _build_messages(
     existing_profile: CompanyProfile | None,
     *,
     solo: bool = False,
+    role_kind: str | None = None,
 ) -> list[dict[str, Any]]:
     """Replay the transcript as plain text turns.
 
-    The solo hint (when ``solo``) and an existing profile are prepended to the
-    FIRST user turn, never put in the cached system block (see module
-    docstring).
+    The solo hint (when ``solo``; tailored to ``role_kind``) and an existing
+    profile are prepended to the FIRST user turn, never put in the cached
+    system block (see module docstring).
     """
     messages = replay_transcript(transcript, _CONTINUE_PROMPT)
     if not messages:
         raise InterviewError("The setup session has no conversation yet.")
     preamble: list[str] = []
     if solo:
-        preamble.append(SOLO_HINT)
+        preamble.append(solo_hint(role_kind))
     if existing_profile is not None and not existing_profile.is_empty():
         block = existing_profile.to_prompt_block()
         if block:
@@ -577,8 +630,12 @@ async def advance(
 
     from openexecutive.memory.workspace_settings import get_workspace
 
+    workspace = get_workspace()
     messages = _build_messages(
-        transcript, existing_profile, solo=get_workspace().mode == "solo"
+        transcript,
+        existing_profile,
+        solo=workspace.mode == "solo",
+        role_kind=workspace.role_kind,
     )
 
     # The one place tool_choice varies — see the module docstring.

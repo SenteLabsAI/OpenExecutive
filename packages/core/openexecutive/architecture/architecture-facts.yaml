@@ -75,7 +75,7 @@ system:
     - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only.
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
-    - The workspace mode (memory.workspace_settings, `workspace_settings` table) is per install and defaults to team. Solo (one person using Open Executive just for themselves) runs no department check-ins anywhere — bootstrap_cadences and enqueue_next are no-ops and the runner cancels a stray dept_cadence row without running or chaining it — but department rows are kept, so switching back is instant. A Session may carry an explicit `workspace_mode` override (read via effective_workspace_mode) so a caller running several conversations on one Executive, such as evals, can pick the mode per session; otherwise the install-wide mode is read fresh at the start of each turn and pinned on the session for that turn only (Session.turn_workspace_mode, via pin_turn_workspace_mode), so every tool handler in the turn uses the mode its persona and tools were built in.
+    - The workspace mode (memory.workspace_settings, `workspace_settings` table) is per install and defaults to team. Solo (one person using Open Executive just for themselves) runs no department check-ins anywhere — bootstrap_cadences and enqueue_next are no-ops and the runner cancels a stray dept_cadence row without running or chaining it — but department rows are kept, so switching back is instant. A Session may carry an explicit `workspace_mode` override (read via effective_workspace_mode) so a caller running several conversations on one Executive, such as evals, can pick the mode per session; otherwise the install-wide mode is read fresh at the start of each turn and pinned on the session for that turn only (Session.turn_workspace_mode, via pin_turn_workspace_mode), so every tool handler in the turn uses the mode its persona and tools were built in. The same row holds the principal's role (role_kind owner | in_house | independent | other, role_title, reports_to, remit, measured_on; all nullable) — solo is about who uses Open Executive, not the principal's level. Only solo mode reads it (the solo org block's role lines and the specialists' <principal_role> tag), and team output is byte-identical whether a role is stored or not. A Session may carry a `principal_role` override (effective_principal_role) for the same reason as the mode override.
     - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it.
     - Each specialist gets its own RAG fetch filtered by its declared domain alias.
     - System-prompt blocks marked with cache_control must remain byte-identical across turns — any dynamic content in them breaks Anthropic prompt caching and roughly 10× the cost.
@@ -137,13 +137,17 @@ caching:
         render_org_block(mode=workspace_mode) from
         departments/prompt_block.py — team: departments, heads, principals,
         charters, the People roster; solo: a "## Your Principal" line
-        (name, person_id, reachable channels) and "## Your Goals" grouped by
+        (name, person_id, reachable channels), the principal's role lines
+        when set (Role / Reports to / Responsible for / Measured on, from
+        the workspace settings or a Session.principal_role override), and
+        "## Your Principal's Goals" grouped by
         area (a department row), with no authority levels, heads, cadences,
         channels or roster. Same 4000-char cap and sanitizing either way.
       why_cached: |
-        Changes when the profile YAML or department/people state changes.
-        Shorter TTL so org edits propagate quickly. Only emitted when
-        non-empty.
+        Changes when the profile YAML or department/people state changes,
+        or the principal edits their role (set once per install, so it is
+        as stable as the rest). Shorter TTL so org edits propagate quickly.
+        Only emitted when non-empty.
   per_mode_prefix: |
     Solo mode (one person using Open Executive for themselves) changes three
     cached parts, all resolved ONCE per turn by
@@ -484,9 +488,9 @@ routing:
     and IN_APP_PATH equal to _IN_APP_PATH_RE.
   specialist_user_turn: |
     BaseAgent.analyze assembles each specialist's USER turn from per-call
-    blocks, outermost first: <company_stage>, <department_memory>,
-    <past_decisions>, <failure_cases>, <relevant_knowledge>,
-    <conversation_context>, then the query. The specialist's system prompt is
+    blocks, outermost first: <company_stage>, <principal_role> (solo only),
+    <department_memory>, <past_decisions>, <failure_cases>,
+    <relevant_knowledge>, <conversation_context>, then the query. The specialist's system prompt is
     its static domain constant under one cache_control block and never carries
     per-call or per-company content.
 
@@ -509,6 +513,28 @@ routing:
     read it fresh from disk on every call, so a profile edit reaches them
     without a restart. load_company_stage never raises: a missing or
     unreadable profile means no tag, not a failed consult.
+
+    <principal_role> (solo mode only) says what kind of principal the advice
+    is for — router.principal_role_context: the role kind in plain words
+    (workspace_settings.ROLE_KIND_PHRASE), the title and the remit, each
+    collapsed to one line and capped (120 / 300 chars); reports_to and
+    measured_on stay in the Executive's org block. Specialists never see
+    that block, and the kind changes which advice fits: an executive inside
+    a large company makes the case to their CFO or VP rather than raising a
+    round. The turn resolves the role ONCE, next to pin_turn_workspace_mode
+    (Executive.stream_chat and the committee path): effective_principal_role
+    (session) in solo, None in team; the same value goes to
+    build_system_blocks and, as principal_role_context(...), to
+    _stream_agent_loop(principal_role_tag=…) and so route_parallel — so the
+    org block and every specialist tag in a turn describe the same role ("" in
+    team, so the router reads nothing). A direct _stream_agent_loop caller
+    that passes no tag gets it resolved from the current session. Angle
+    brackets in the text are defanged (‹ ›) so it cannot close the tag.
+    None (session-less callers: workflow steps, the MCP server's
+    consult_specialist) reads it once per call or batch via
+    router.load_principal_role, which checks effective_workspace_mode of the
+    current session (else the workspace) and never raises. No domain prompt
+    changed: the tag body is self-describing.
   committee_review: |
     Optional 3-phase response synthesis exposed via
     Executive.stream_chat_with_committee():
@@ -2361,8 +2387,20 @@ departments:
     resurrects rows the user removed.
   workspace_settings: |
     openexecutive.memory.workspace_settings — one row (id=1) in
-    `workspace_settings` (episodic DB): `mode` ('team' default | 'solo')
-    and `timezone` (IANA, NULL = fall back to USER_TIMEZONE, then UTC).
+    `workspace_settings` (episodic DB): `mode` ('team' default | 'solo'),
+    `timezone` (IANA, NULL = fall back to USER_TIMEZONE, then UTC), and the
+    principal's role — `role_kind` (owner | in_house | independent | other),
+    `role_title`, `reports_to`, `remit`, `measured_on`, all nullable TEXT
+    (PrincipalRole; WorkspaceSettings extends it). The role columns are added
+    additively (_ensure_schema: PRAGMA-guarded ALTER TABLE ... ADD COLUMN,
+    run by init_workspace_settings_db and every write — so a client slot
+    restored from an older state.db gets them via clients.slots.
+    _ensure_schemas); a read (SELECT *) of an older table never migrates it
+    and reads the role as unset, and a stored role value that no longer
+    validates is ignored field by field. Text is trimmed, blank = unset,
+    capped after trimming at 120 (role_title, reports_to) / 500 (remit) /
+    300 (measured_on) — ROLE_TEXT_MAX, shared by the API, fixtures and eval
+    scenarios; validation errors never quote the value.
     Its own table, not a CompanyProfile field, because onboarding's commit
     and the form wizard rebuild the profile from scratch and would wipe it.
     Reads are fresh and read-only (a missing file/table reads as the
@@ -2385,15 +2423,24 @@ departments:
     pin_turn_workspace_mode(session) (resolves override-else-workspace at
     the start of a turn and pins it on Session.turn_workspace_mode;
     Executive.stream_chat and the committee path call it, reflection and
-    research pin their own run's mode on their synthetic sessions). HTTP: GET /workspace, PUT /workspace
-    (principal-only, open before a principal exists). Per company: blank
+    research pin their own run's mode on their synthetic sessions),
+    set_principal_role(**fields) (validates every field before writing; no
+    side effects — the next turn reads it), effective_principal_role(session)
+    (Session.principal_role override, else the stored role).
+    HTTP: GET /workspace, PUT /workspace
+    (principal-only, open before a principal exists; the role fields are
+    optional in the PUT body like timezone, null/blank clears one). GET
+    stays open, but returns the role only to a caller the PUT would accept
+    (_caller_is_principal_or_unclaimed) and nulls to anyone else. Per company: blank
     client slots wipe it (clients.slots._BLANK_WIPE_TABLES), saved slots
     carry it in state.db, and the factory reset returns it to the defaults
     before re-bootstrapping. Fixtures: `_apply_state_from_source` reads and
     validates the source's optional workspace.yaml before swapping anything
     (bad values are logged and skipped, never abort the load); a fixture
-    load resets to the defaults and applies it; the user snapshot writes
-    one, and a load while the live state is the user's own (no fixture, no
+    load resets to the defaults and applies it (optional role keys
+    role_kind / role_title / reports_to / remit / measured_on, each skipped
+    with a warning naming only the field when invalid); the user snapshot
+    writes one (every field, so the role round-trips), and a load while the live state is the user's own (no fixture, no
     client active) rewrites `_user_backup/workspace.yaml` even when an
     older backup is reused — unload keeps `_user_backup`; an unload from a
     backup with no workspace.yaml (one that predates it) leaves the current
@@ -2406,7 +2453,10 @@ departments:
     openexecutive.departments.prompt_block.render_org_block(mode="team") —
     produces the cached org block in system block 1. mode="solo" renders
     "## Your Principal" (the principal's name, person_id, reachable channels
-    and preferred channel) then "## Your Principal's Goals" grouped by area
+    and preferred channel), followed — when a role is set — by role lines
+    ("- Role: <title> — <kind in plain words>", "- Reports to:",
+    "- Responsible for:", "- Measured on:", each only when set, _safe()
+    sanitized and capped at ROLE_TEXT_MAX), then "## Your Principal's Goals" grouped by area
     (area title +
     slug, each goal's period, key result, target, current, status and
     goal_id); areas with no goals are skipped; no authority levels, heads,
@@ -2415,7 +2465,12 @@ departments:
     the same rule every solo check uses (principal_only_handlers, the
     follow-up rule, the meeting gate, reflection's principal line,
     research's principal roster), so the person named is the person those
-    checks let through; a failed lookup drops the line, never the goals.
+    checks let through; a failed lookup drops the line, never the goals
+    (nor the role lines: with no principal to name, "## Your Principal"
+    holds just the role). render_org_block(mode, principal_role=None): the
+    chat turn passes effective_principal_role(session) through
+    build_system_blocks(principal_role=…); None reads the workspace's. Team
+    mode never reads or renders it (byte-identical).
     Headings name the principal from the Executive's side ("Your
     Principal"), never "## You", which it could read as its own identity.
     Deterministic, sanitized, and held to the same 4000-char cap (the
@@ -2764,7 +2819,7 @@ today:
     explicit ids to `POST /alerts/bulk-ack` (never a server-side age sweep),
     and "Re-check relevance" (`POST /alerts/review`); Monitoring gets the
     same footer at 3 days; the ack body may carry `mute_topic`.
-  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. `/?new=1&draft=<text>` (Playbooks "Try in chat") also seeds the new chat's input, capped at 2000 chars, WITHOUT auto-sending — unlike briefing handoffs, the text comes from a URL the user didn't type. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge`; Skills moved to the Playbooks tab of Workflows, `/jobs?tab=playbooks`), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`. In solo mode (read app-wide from `components/workspace/WorkspaceContext.tsx`'s WorkspaceProvider, mounted in the root layout next to ExecutiveStatusProvider, which reads team while loading or on error so a team install never flashes solo UI) `buildPrimaryNav({mode})` swaps the Company group (Departments, People, Company profile) for "You" (Goals → `/goals`, People, Business profile), `buildMobilePrimary(mode)` swaps People for Goals, and the briefing drops the Departments card, the People card, the "Across the team" lane (all action proposals land in "Needs you"), the people-awaiting, people-overdue and departments-at-risk pills and the quiet-day "Set up a check-in" link (a "N goals at risk" pill links to `/goals` instead), and shows a "Your projects" card of active initiatives (Done = PATCH status completed, Drop = DELETE after a confirm) where the Departments card was. `/goals` lists every goal from GET /departments grouped by area (a department row; areas with goals first, the rest offered as "Other areas") and adds, edits and deletes goals through the slug-scoped goal routes, sharing `components/goals/GoalEditor.tsx` with the department page. Pulse hides "Department check-ins" and "Awaiting people" in solo. Settings has a Workspace card (mode with a confirm, time zone, and "Book meetings without asking", bound to GET/PUT `/decisions/classes/meeting_scheduling` and hidden when that returns 404). Team rendering is unchanged.
+  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. `/?new=1&draft=<text>` (Playbooks "Try in chat") also seeds the new chat's input, capped at 2000 chars, WITHOUT auto-sending — unlike briefing handoffs, the text comes from a URL the user didn't type. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge`; Skills moved to the Playbooks tab of Workflows, `/jobs?tab=playbooks`), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`. In solo mode (read app-wide from `components/workspace/WorkspaceContext.tsx`'s WorkspaceProvider, mounted in the root layout next to ExecutiveStatusProvider, which reads team while loading or on error so a team install never flashes solo UI) `buildPrimaryNav({mode})` swaps the Company group (Departments, People, Company profile) for "You" (Goals → `/goals`, People, Business profile), `buildMobilePrimary(mode)` swaps People for Goals, and the briefing drops the Departments card, the People card, the "Across the team" lane (all action proposals land in "Needs you"), the people-awaiting, people-overdue and departments-at-risk pills and the quiet-day "Set up a check-in" link (a "N goals at risk" pill links to `/goals` instead), and shows a "Your projects" card of active initiatives (Done = PATCH status completed, Drop = DELETE after a confirm) where the Departments card was. `/goals` lists every goal from GET /departments grouped by area (a department row; areas with goals first, the rest offered as "Other areas") and adds, edits and deletes goals through the slug-scoped goal routes, sharing `components/goals/GoalEditor.tsx` with the department page. Pulse hides "Department check-ins" and "Awaiting people" in solo. Settings has a Workspace card (mode with a confirm, "Your role" in solo — the principal's role kind, title, reports to, remit and measured on, saved with PUT /workspace —, time zone, and "Book meetings without asking", bound to GET/PUT `/decisions/classes/meeting_scheduling` and hidden when that returns 404). Team rendering is unchanged.
   briefing_first_landing: |
     The root page (`packages/ui/src/app/page.tsx`) defaults to `mode="briefing"`
     and renders `<Briefing>` (`packages/ui/src/components/Briefing.tsx`) in the
@@ -3046,7 +3101,7 @@ audit:
     - executive_paused / executive_resumed — the operator pause switch flipped (scheduler.pause). actor is the caller's email (else "api"); details carry the reason on pause, and paused_at / paused_by / held_actions on resume. Re-pausing or re-resuming writes nothing.
     - scheduled_action_cancelled — a pending scheduled action cancelled via DELETE /scheduled/{id} (the Pulse page's Cancel, or a script). actor is the signed-in caller's email, "admin-token" or "local"; details carry action_id, kind, channel and department. A refused or 409 cancel writes nothing.
     - decision_class_mode_changed — a decision class's mode changed (propose ↔ auto_execute) via PUT /decisions/classes/meeting_scheduling. actor is the caller's x-caller-email or "api"; details carry decision_class and mode as from/to. Setting the current mode writes nothing.
-    - workspace_settings_changed — solo/team mode or the user's time zone changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to. A PUT that changes nothing writes nothing.
+    - workspace_settings_changed — solo/team mode, the user's time zone or the principal's role changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed. The summary names only what moved ("mode A → B, time zone X → Y" and/or "principal's role updated"). A PUT that changes nothing writes nothing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
@@ -5439,6 +5494,25 @@ evals:
     report are people the principal works with, not a team to message, and
     no business owner is assumed. The standalone evals/run_evals.py passes
     the key through too.
+  principal_role: |
+    A scenario may set a `principal_role` mapping — the workspace settings'
+    role keys (role_kind, role_title, reports_to, remit, measured_on) —
+    to play a principal with that role. evals.scenarios.
+    scenario_principal_role validates it like the API (unknown key, bad
+    kind, over-long text, a block that sets nothing, or a scenario without
+    workspace_mode solo raises; validate_scenario_yaml rejects it with a
+    "`principal_role`:" message) and returns a PrincipalRole, which the
+    chat runner puts on Session.principal_role and a workflow scenario on
+    its bound session — never into the install-wide row, which concurrent
+    scenarios would share. It reaches the Executive's org block and every
+    specialist's <principal_role> tag exactly as a stored role does. The
+    solo judge section then adds "THE ASKER'S ROLE" (the keys and values)
+    so the judge knows the role the question may not repeat. solo_005: a
+    Director of Operations at a 2,000-person logistics company (in_house,
+    reporting to a VP) asks for help with a quarterly update — expect
+    manager-facing framing against what they are measured on and no
+    business-owner assumptions (runway, fundraising, investors, own
+    pricing). evals/run_evals.py passes the block through too.
 
 company_onboarding:
   module: openexecutive.onboarding (interview.py, commit.py, wizard.py) + api.routes.onboarding
@@ -5607,20 +5681,40 @@ company_onboarding:
     refreshes the app-wide WorkspaceProvider before the conversation or the
     form starts, because the two modes ask different things. `?for=me|team`
     marks the choice as made so moving between the conversation and the form
-    does not ask again. A re-run (GET /health says a profile is loaded) skips
-    the screen; the mode is changed in Settings, and the flow follows it.
+    does not ask again. Choosing "Just me" then shows a role step (RoleStep,
+    sharing components/workspace/RoleFields.tsx with Settings): kind (Owner /
+    founder, Executive inside an organisation, Independent or fractional,
+    Other), title, who they report to (optional), what they are responsible
+    for, what they are measured on (optional) — saved with PUT /workspace
+    (lib/principalRole.ts roleUpdate: trimmed, blank as null, only changed
+    fields). "Skip for now" saves nothing. A re-run (GET /health says a
+    profile is loaded) skips both screens; they are changed in Settings, and
+    the flow follows them. The solo choice copy is role-neutral ("Only you
+    use Open Executive…"), and the conversation's opening prompt and example
+    follow the role kind (owner: the business; in_house: the organisation,
+    function, remit and manager; independent: the practice and clients; none:
+    role-neutral).
     Interview: when get_workspace().mode == "solo", advance() passes solo=True
-    to _build_messages, which prepends interview.SOLO_HINT to the FIRST user
-    turn (before the re-run profile block): the founder runs the business
-    alone, so `people` holds only them with is_principal true and
-    `departments` is empty, and the questions go to the offer, customers,
-    pricing, cash and runway and their top goals instead of a leadership team.
+    and the workspace's role_kind to _build_messages, which prepends
+    interview.solo_hint(role_kind) to the FIRST user turn (before the re-run
+    profile block) — one static constant per kind, never the principal's own
+    text. Every variant keeps `people` to only the principal with
+    is_principal true and `departments` empty. SOLO_ROLE_HINTS["owner"] asks
+    about the offer, customers, pricing, cash and runway; ["in_house"] says
+    the company is their employer (draft the profile for it), adds no
+    manager, peers or team as people, avoids cash/runway/fundraising as if
+    the business were theirs, and asks about the organisation, their function
+    and remit, who they report to, team size (context, not a roster) and what
+    they are measured on; ["independent"] asks about the practice, clients
+    and pricing; no kind or "other" gets the role-neutral SOLO_HINT, which
+    asks which kind of principal they are. All ask their top goals.
     The system block (ONBOARDING_INTERVIEWER_SYSTEM) and the tool array are
     unchanged, so both caches hold across modes. A principal-only draft with
     no departments already passes validate_draft.
     Review: in solo OnboardDraftReview hides the people and departments
     drafts and shows a "You" card (name and role — the drafted principal,
-    else the first drafted person, else blank) beside the owner sign-in email
+    else the first drafted person, else blank; the role falls back to the
+    role step's title) beside the owner sign-in email
     field; the commit sends that one person as principal and an empty
     department list, so save_onboarding_people creates exactly one Person and
     reconcile_onboarding_departments adds nothing — the seeded defaults stay,
@@ -5685,10 +5779,11 @@ fixtures:
     people.yaml holds only the principal (its owner, wildcard),
     departments.yaml four areas (strategy, finance, marketing, product)
     headed by the principal with one or two goals each and no cadences,
-    workspace.yaml sets mode: solo, and memory.json seeds decisions and
+    workspace.yaml sets mode: solo and the owner's role (role_kind owner,
+    title, remit, measured_on), and memory.json seeds decisions and
     initiatives with no scheduled actions. Its evals are the built-in
-    solo_001..003 scenarios (solo_004, an in-house executive, needs no
-    fixture).
+    solo_001..003 scenarios (solo_004 and solo_005, in-house executives,
+    need no fixture).
   client_interplay: |
     Loading a fixture while a client slot is active first saves that client
     back to its slot and clears the active-client sentinel (leaving client

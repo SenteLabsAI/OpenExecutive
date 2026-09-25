@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from openexecutive.memory.workspace_settings import RoleKind
 
 
 class PageFormField(BaseModel):
@@ -317,16 +319,30 @@ class WorkspaceResponse(BaseModel):
     timezone: str | None
     # The zone in effect: `timezone`, else the USER_TIMEZONE setting, else UTC.
     effective_timezone: str
+    # The principal's role (memory.workspace_settings.PrincipalRole); each is
+    # null when not set. Read by solo mode only.
+    role_kind: RoleKind | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    remit: str | None = None
+    measured_on: str | None = None
 
 
 class WorkspaceUpdateRequest(BaseModel):
     """A partial update: only the fields present are changed. `timezone: null`
-    (or blank) clears the stored zone; `mode` may be omitted but not null."""
+    (or blank) clears the stored zone; `mode` may be omitted but not null.
+    The role fields work like `timezone`: null or blank clears one. Their
+    length caps are checked after trimming (ROLE_TEXT_MAX)."""
 
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["solo", "team"] | None = None
     timezone: str | None = Field(default=None, max_length=64)
+    role_kind: RoleKind | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    remit: str | None = None
+    measured_on: str | None = None
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -342,6 +358,15 @@ class WorkspaceUpdateRequest(BaseModel):
         from openexecutive.memory.workspace_settings import validate_timezone
 
         return validate_timezone(v)
+
+    @field_validator("role_kind", "role_title", "reports_to", "remit", "measured_on", mode="before")
+    @classmethod
+    def _role_field(cls, v: object, info: ValidationInfo) -> object:
+        from openexecutive.memory.workspace_settings import validate_role_field
+
+        # Runs only for fields that were sent; the message never quotes `v`.
+        assert info.field_name is not None
+        return validate_role_field(info.field_name, v)
 
 
 
