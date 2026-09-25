@@ -70,8 +70,6 @@ EXAMPLE_VALUES: frozenset[str] = frozenset(
 _EXAMPLE_EMAIL_DOMAINS = frozenset({"example.com", "example.org", "example.net"})
 
 _TELEGRAM_TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]{30,}")
-# What setWebhook accepts as a secret_token.
-_TELEGRAM_SECRET_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
 _SLACK_ERROR_CODE_RE = re.compile(r"[a-z_]{1,40}")
 # The sender id in the "Rejected: …" audit summaries the channel adapters
 # write when someone off the team list messages the Executive.
@@ -364,7 +362,7 @@ def _turned_away_sender(snap: Snapshot, last: AuditEvent | None, roster: _Roster
         return None
     if at.tzinfo is None:
         at = at.replace(tzinfo=UTC)
-    if (snap.now - at).total_seconds() > _RECENT_FAILURE_S:
+    if (snap.now - at).total_seconds() >= _RECENT_FAILURE_S:
         return None
     match = _REJECTED_SENDER_RE.search(last.summary)
     if match is None:
@@ -596,12 +594,12 @@ async def check_telegram(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             f"Copy the token @BotFather gave you into .env, {_RESTART}",
         )
     secret = settings.telegram_webhook_secret
-    if secret and not _TELEGRAM_SECRET_RE.fullmatch(secret):
+    if secret and not settings.telegram_webhook_secret_valid:
         return _result(
             "telegram",
             "error",
-            "TELEGRAM_WEBHOOK_SECRET has characters Telegram won't accept, so every message is "
-            "turned away.",
+            "TELEGRAM_WEBHOOK_SECRET has characters Telegram won't accept, so the app turns "
+            "away every message.",
             "Use 1–256 letters, digits, _ or - (openssl rand -hex 32 makes one), restart the app, "
             "and register the webhook again with it (docs/telegram_setup.md).",
         )

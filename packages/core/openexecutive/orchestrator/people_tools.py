@@ -257,12 +257,13 @@ def _is_verified_speaker_surface(session: Any) -> bool:
         return False
     # Telegram identifies the chat, not the sender, and its webhook is exempt
     # from the shared secret: an update is only proven to come from Telegram
-    # when TELEGRAM_WEBHOOK_SECRET is set (otherwise anyone can post one naming
-    # the principal's chat id). A group (negative id) is everyone in it.
+    # when TELEGRAM_WEBHOOK_SECRET is set to a value Telegram can send
+    # (otherwise anyone can post one naming the principal's chat id). A group
+    # (negative id) is everyone in it.
     from openexecutive.config import get_settings
 
     chat_ref = str(getattr(session, "origin_channel_ref", "") or "")
-    return bool(get_settings().telegram_webhook_secret) and chat_ref.isdigit()
+    return get_settings().telegram_webhook_secret_valid and chat_ref.isdigit()
 
 
 def _roster_refusal_reason(session: Any) -> str | None:

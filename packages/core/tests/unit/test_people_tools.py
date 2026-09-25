@@ -392,7 +392,10 @@ def test_owner_in_a_private_telegram_chat_can_change_the_roster(
     (None, "424242"),
     # A group chat (negative id) is every member of the group.
     ("hook-secret", "-100424242"),
-], ids=["no_webhook_secret", "group_chat"])
+    # A secret Telegram can't send (a comment left in .env) proves only that
+    # the sender guessed it.
+    ("# from step 2", "424242"),
+], ids=["no_webhook_secret", "group_chat", "secret_telegram_cannot_send"])
 def test_unverifiable_telegram_cannot_change_the_roster(
     owner_id: int, monkeypatch: pytest.MonkeyPatch, secret: str | None, chat_ref: str
 ) -> None:

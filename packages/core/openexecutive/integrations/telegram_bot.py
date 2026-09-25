@@ -365,6 +365,14 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
 
     # Verify the secret token Telegram sends in the header (set when registering the webhook).
     if settings.telegram_webhook_secret:
+        if not settings.telegram_webhook_secret_valid:
+            # Telegram can never send such a value (setWebhook refuses it), so
+            # the only request that could match it is a forged one.
+            logger.warning(
+                "Telegram: TELEGRAM_WEBHOOK_SECRET is not a value Telegram can send "
+                "(1-256 of A-Z a-z 0-9 _ -); refusing every update until it is fixed"
+            )
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
         sent = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if not hmac.compare_digest(sent, settings.telegram_webhook_secret):
             logger.warning("Telegram: webhook secret mismatch")

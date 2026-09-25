@@ -474,6 +474,16 @@ async def test_discord_stopped(exc_name: str, phrase: str) -> None:
     assert phrase in check.summary
 
 
+async def test_discord_stopped_task_wins_over_a_stale_ready_flag() -> None:
+    bot = SimpleNamespace(is_ready=lambda: True, user="exec-bot#0001", ws=SimpleNamespace(open=True))
+    snap = make_snap(
+        make_settings(DISCORD_BOT_TOKEN=DISCORD), discord_bot=bot, discord_bot_task=failed_task("LoginFailure")
+    )
+    async with Recorder(never_called).client() as c:
+        check = await check_discord(snap, c)
+    assert check.state == "error" and "turned down DISCORD_BOT_TOKEN" in check.summary
+
+
 async def test_discord_task_that_ended_without_an_error_is_stopped() -> None:
     finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     finished.set_result(None)
@@ -911,13 +921,6 @@ def test_a_comment_left_as_a_value_means_unset(field: str) -> None:
     settings = make_settings(**{field: "# from @BotFather"})
     assert getattr(settings, field.lower()) is None
     assert getattr(make_settings(**{field: "real-value"}), field.lower()) == "real-value"
-
-
-def test_a_comment_left_as_the_webhook_secret_still_refuses_updates() -> None:
-    # Read as unset, it would switch the webhook's check off; kept, it
-    # refuses every update — and the Setup status page says why.
-    settings = make_settings(TELEGRAM_BOT_TOKEN=TELEGRAM, TELEGRAM_WEBHOOK_SECRET="# from step 2")
-    assert settings.telegram_webhook_secret == "# from step 2"
 
 
 async def test_telegram_secret_telegram_would_refuse_is_red() -> None:

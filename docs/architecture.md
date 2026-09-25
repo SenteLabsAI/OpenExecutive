@@ -511,7 +511,7 @@ Optional: `EMAIL_POLL_INTERVAL_SECONDS`
 ### Telegram Bot
 `integrations/telegram_bot.py`
 
-Webhook-based bot registered via FastAPI (`POST /webhook/telegram`). When `TELEGRAM_WEBHOOK_SECRET` is set, rejects (401) any request whose `X-Telegram-Bot-Api-Secret-Token` header doesn't match it (constant-time comparison). Splits long responses at paragraph boundaries to stay within Telegram's 4096-char limit.
+Webhook-based bot registered via FastAPI (`POST /webhook/telegram`). When `TELEGRAM_WEBHOOK_SECRET` is set, rejects (401) any request whose `X-Telegram-Bot-Api-Secret-Token` header doesn't match it (constant-time comparison) — and every request while the secret has characters Telegram can't send (only 1–256 of `A-Z a-z 0-9 _ -`), since only a guess could match it. Splits long responses at paragraph boundaries to stay within Telegram's 4096-char limit.
 
 Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`
 

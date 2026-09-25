@@ -90,7 +90,8 @@ There is no password, so the protection is *where* a request can come from:
   rebinding). Both also refuse writes that another page makes your browser
   send, such as a form posted from another site or another `localhost` port.
   A Telegram webhook arriving through a tunnel is accepted only when
-  `TELEGRAM_WEBHOOK_SECRET` is set, so Telegram can prove it sent it.
+  `TELEGRAM_WEBHOOK_SECRET` is set to a value Telegram can send, so Telegram
+  can prove it sent it.
 
 The session has no email. The UI proxy then sends no `x-caller-email`, and the
 API treats the request as the principal's, the same way it treats the CLI. If

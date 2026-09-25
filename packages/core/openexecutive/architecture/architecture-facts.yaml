@@ -627,7 +627,8 @@ routing:
     (`Session.from_web_chat`, the signed-in Google account) or the
     principal's own Slack / Discord (`origin_channel`, the platform's user
     id over an authenticated connection), or a PRIVATE Telegram chat only
-    when TELEGRAM_WEBHOOK_SECRET is set — Telegram identifies the chat, not
+    when TELEGRAM_WEBHOOK_SECRET is set to a value Telegram can send
+    (Settings.telegram_webhook_secret_valid) — Telegram identifies the chat, not
     the sender (a group is all its members), and /webhook/telegram is
     exempt from the shared secret, so without the webhook secret anyone
     can post an update naming the principal's chat id
@@ -2087,7 +2088,8 @@ people:
     UI via the `list_people` / `upsert_person` / `archive_person` /
     `set_department_head` tools (openexecutive.orchestrator.people_tools) —
     but only when the principal asks from the web chat, their own Slack or
-    Discord, or a private Telegram chat with TELEGRAM_WEBHOOK_SECRET set;
+    Discord, or a private Telegram chat with a TELEGRAM_WEBHOOK_SECRET
+    Telegram can send;
     anyone and anything else is refused.
     See `routing.people_tools` for details.
   brief_insights: |
@@ -4121,8 +4123,9 @@ auth:
     The API receives the same flag and then adds `_local_login_gate`
     (api/main.py), a 403 for (a) a raw Host that is not loopback, unless
     the path is a webhook that verifies its caller (Google Chat always;
-    Telegram only with TELEGRAM_WEBHOOK_SECRET, since without it the
-    webhook accepts anyone's update), and (b) a write whose Sec-Fetch-Site
+    Telegram only with a TELEGRAM_WEBHOOK_SECRET Telegram can send, since
+    without it the webhook accepts anyone's update), and (b) a write whose
+    Sec-Fetch-Site
     is present and not same-origin/none. Without it the owner's browser
     could drive :8000 as the principal (usually no shared secret; no
     x-caller-email = principal): a DNS-rebinding page calls it
@@ -4448,10 +4451,15 @@ integrations:
     credentials (config._unset_if_comment → _blank_or_comment), so a
     copied .env.example no longer switches Telegram and Google Chat on
     with their comments as tokens; the example's notes now sit on their
-    own lines. TELEGRAM_WEBHOOK_SECRET is deliberately NOT covered: a
-    junk secret fails closed (every update refused), while None would
-    skip the webhook's header check. Setup status instead flags a secret
-    outside setWebhook's charset ([A-Za-z0-9_-]{1,256}) as red.
+    own lines. TELEGRAM_WEBHOOK_SECRET is deliberately NOT covered: None
+    would skip the webhook's header check. Instead a secret outside
+    setWebhook's charset ([A-Za-z0-9_-]{1,256} — the only values Telegram
+    can send back) is treated as proving nothing: the webhook answers 401
+    to every update without comparing (a forger who guessed the junk text
+    would otherwise match it, and a non-ASCII value would make
+    hmac.compare_digest raise), people_tools and the local-login gate's
+    _webhook_verifies_its_caller return False, and Setup status shows it
+    red. One rule for all four: Settings.telegram_webhook_secret_valid.
   attachments: |
     openexecutive.integrations.attachments — cross-platform attachment
     handling for the web chat, Discord, and Telegram. Inbound images are

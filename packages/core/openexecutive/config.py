@@ -30,6 +30,10 @@ _ENV_FILE = _ROOT / ".env"
 # two silent retries later, and nowhere near the setting that caused it.
 _WORKSPACE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# What Telegram's setWebhook accepts as a secret_token — and so the only
+# header values its servers can ever send back.
+_TELEGRAM_SECRET_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
+
 
 def _blank_or_comment(v: Any) -> bool:
     """True for unset, '', or a dotenv inline-comment captured as the value.
@@ -511,8 +515,9 @@ class Settings(BaseSettings):
         # `KEY=   # note` reaches us as "# note": python-dotenv only strips a
         # comment that follows a value. Left alone, that note would count as
         # a token and switch the channel on with it. TELEGRAM_WEBHOOK_SECRET
-        # is deliberately not here: a junk secret refuses every update, and
-        # reading it as unset would switch the webhook's check off instead.
+        # is deliberately not here: read as unset, a junk secret would switch
+        # the webhook's check off; kept, it makes the webhook refuse every
+        # update (see telegram_webhook_secret_valid).
         return None if _blank_or_comment(v) else v
 
     # ---- Tool results ----
@@ -935,6 +940,19 @@ class Settings(BaseSettings):
         ):
             self.mcp_enabled = True
         return self
+
+    @property
+    def telegram_webhook_secret_valid(self) -> bool:
+        """Whether TELEGRAM_WEBHOOK_SECRET is set to a value Telegram can send.
+
+        setWebhook only accepts 1–256 of ``A-Z a-z 0-9 _ -``, so any other
+        value — a leftover ``# note``, a pasted ``<value from Step 2>`` — can
+        only ever be matched by someone who guessed it. Such a secret proves
+        nothing: the webhook refuses every update while it is set, and
+        nothing counts a Telegram message as verified.
+        """
+        secret = self.telegram_webhook_secret
+        return bool(secret) and _TELEGRAM_SECRET_RE.fullmatch(secret or "") is not None
 
     @property
     def mcp_auto_enabled(self) -> bool:

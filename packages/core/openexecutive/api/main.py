@@ -796,13 +796,14 @@ _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 def _webhook_verifies_its_caller(path: str) -> bool:
     """Whether this webhook authenticates its caller by itself. Google Chat
     always checks the signed JWT; Telegram only when TELEGRAM_WEBHOOK_SECRET is
-    set — without it, it accepts anyone's update."""
+    set to a value Telegram can send — without it, it accepts anyone's
+    update."""
     if path == "/webhook/google-chat":
         return True
     if path == "/webhook/telegram":
         from openexecutive.config import get_settings
 
-        return bool(get_settings().telegram_webhook_secret)
+        return get_settings().telegram_webhook_secret_valid
     return False
 
 
