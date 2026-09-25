@@ -97,7 +97,7 @@ async def start_onboarding() -> OnboardStatusResponse:
 
 
 @router.post("/onboard/answer", response_model=OnboardStatusResponse)
-async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
+async def submit_answer(body: OnboardAnswerRequest, request: Request) -> OnboardStatusResponse:
     state = _wizard_sessions.get(body.session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
@@ -117,8 +117,19 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
     state = process_answer(state, body.answer)
 
     if state.completed:
+        from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
         from openexecutive.onboarding.profile_builder import build_and_save_profile
 
+        # Saving adds people with their emails (the web sign-in allow-list)
+        # and a principal, so once there is an owner it is theirs to do — the
+        # People routes' rule. Rolled back like a failed build, so the owner
+        # can still finish this session.
+        if not _caller_is_principal_or_unclaimed(request):
+            _wizard_sessions[body.session_id] = snapshot
+            raise HTTPException(
+                status_code=403,
+                detail="Only the owner can save this form, because it adds people and their emails.",
+            )
         try:
             build_and_save_profile(state)
         except Exception as exc:
@@ -529,6 +540,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
         derive_org_structure,
         link_owner_email,
         owner_change_blocked,
+        owner_email_blocked,
         reconcile_onboarding_departments,
         save_onboarding_people,
     )
@@ -590,8 +602,9 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     # owner may do that (owner_change_blocked explains the rule).
     from openexecutive.api.routes.chat import _resolve_caller_person_id
 
+    caller_person_id = _resolve_caller_person_id(request)
     try:
-        blocked = owner_change_blocked(principal_name, _resolve_caller_person_id(request))
+        blocked = owner_change_blocked(principal_name, caller_person_id)
     except (OSError, sqlite3.Error) as exc:
         logger.warning("onboarding commit: owner lookup failed (%s)", type(exc).__name__)
         raise HTTPException(
@@ -609,6 +622,24 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
         owner_email = check_owner_email(body.owner_email, principal_name)
     except OwnerEmailError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Someone who isn't the owner may fill in the owner's missing email only
+    # with the address they signed in with (owner_email_blocked explains why).
+    caller_email = (request.headers.get("x-caller-email") or "").strip().lower()
+    try:
+        email_blocked = owner_email_blocked(owner_email, caller_person_id, caller_email)
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("onboarding commit: owner lookup failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Could not check who owns this workspace. Try again."
+        ) from exc
+    if email_blocked:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the owner can put another address on the owner's entry. If you "
+                "are the owner, use the email you signed in with; if not, leave it blank."
+            ),
+        )
 
     profile = derive_org_structure(profile, people, departments)
 

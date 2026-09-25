@@ -2,7 +2,8 @@
 
 Phase 3 surface: CRUD + archive + approver lookup.
 All mutations invalidate the 60s registry cache so the next
-Executive turn picks up the change.
+Executive turn picks up the change. Adding, editing and archiving
+people are the principal's alone (``_require_roster_owner``).
 
 ``GET /people`` lists team members only unless ``include_contacts=true`` (the
 People page asks for both; pickers such as a department head or a workflow
@@ -10,9 +11,10 @@ approver keep the default and never offer a contact).
 
 Contacts are private to the principal. ``include_contacts`` is honoured only
 for a caller that resolves to the principal (``caller_is_principal``), a
-contact's id reads as 404 for anyone else — on every route, so its existence
-is not revealed — and only the principal may create a contact or turn someone
-into one. ``GET /people/me`` tells the UI whether to offer contacts at all.
+contact's id reads as 404 for anyone else on the read routes — and the write
+routes refuse anyone else before looking the id up — so its existence is not
+revealed, and only the principal may create a contact or turn someone into
+one. ``GET /people/me`` tells the UI whether to offer contacts at all.
 """
 from __future__ import annotations
 
@@ -166,11 +168,38 @@ _PRINCIPAL_CONTACT_DETAIL = "The principal is always on the team and cannot be a
 _CONTACTS_ARE_PRIVATE = "Only the principal can add contacts or make someone a contact."
 
 
+def _require_roster_owner(request: Request) -> None:
+    """403 unless the caller may change the roster: the principal, or anyone
+    while no one is principal yet, so a first setup can add its owner.
+
+    A People row is also the web sign-in allow-list, the outbound-email
+    allow-list and approval routing, so without this any signed-in teammate
+    could put their own address on the principal's row and sign in as them.
+    The same owner rule as the workspace settings; the Executive's roster
+    tools (``orchestrator.people_tools``) are the principal's too.
+
+    A person can't edit their own row either: its email and chat ids are how
+    they sign in and how the Executive reaches them, and the rest decides
+    their approvals and how they are chased. Their working style and open
+    loops, further down, stay theirs.
+
+    Called before the id lookup, so a refused caller can't probe which ids
+    exist.
+    """
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    if not _caller_is_principal_or_unclaimed(request):
+        raise HTTPException(status_code=403, detail="Only the principal can change the People list")
+
+
 @router.post("/people", response_model=Person, status_code=status.HTTP_201_CREATED)
 def create_person(body: PersonCreate, request: Request) -> Person:
+    _require_roster_owner(request)
     if body.is_principal and body.kind != "team":
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
     if body.kind != "team" and not caller_is_principal(request):
+        # Before a principal exists anyone may add people, but not contacts:
+        # a contact is private to a principal there is not yet.
         raise HTTPException(status_code=403, detail=_CONTACTS_ARE_PRIVATE)
     pid = people_store.upsert_person(
         full_name=body.full_name,
@@ -200,6 +229,7 @@ def create_person(body: PersonCreate, request: Request) -> Person:
 
 @router.patch("/people/{person_id}", response_model=Person)
 def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
+    _require_roster_owner(request)
     existing = _visible_person(person_id, request)
     if body.kind is not None and body.kind != "team" and existing.is_principal:
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
@@ -241,6 +271,7 @@ def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
 
 @router.post("/people/{person_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
 def archive_person(person_id: int, request: Request) -> Response:
+    _require_roster_owner(request)
     _visible_person(person_id, request)
     people_store.archive_person(person_id)
     people_registry.invalidate()

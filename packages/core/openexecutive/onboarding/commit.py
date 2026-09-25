@@ -188,10 +188,11 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
     email would resolve sign-in to the older one); when the drafted
     principal's own row already has a different email (replacing it would
     sign the owner out — web sign-in and caller resolution both key on it —
-    so that change belongs on the People page); or when the roster can't be
-    read. "The drafted principal's row" is the one save_onboarding_people's
-    name-keyed upsert will update — compared by id, because two rows can
-    share a name and the upsert then takes the last one.
+    so the owner changes it on the People page, signed in with the current
+    one); or when the roster can't be read. "The drafted principal's row" is
+    the one save_onboarding_people's name-keyed upsert will update — compared
+    by id, because two rows can share a name and the upsert then takes the
+    last one.
     """
     email = (raw or "").strip().lower()
     if not email:
@@ -218,12 +219,13 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
             )
         raise OwnerEmailError(
             "That email already belongs to someone else on the People page. "
-            "Use a different one, or change theirs there first."
+            "Use the owner's own email, or leave it blank."
         )
     if own_row is not None and own_row.email and own_row.email.strip().lower() != email:
         raise OwnerEmailError(
-            "Your People entry already has a different sign-in email, and setup never "
-            "replaces it. Keep that one here, or change it on the People page."
+            "The owner's People entry already has a different sign-in email, and setup "
+            "never replaces it. Keep that one here, or sign in with it and change it on "
+            "the People page."
         )
     return email
 
@@ -255,6 +257,28 @@ def owner_change_blocked(principal_name: str, caller_person_id: int | None) -> b
     return caller_person_id is None or not is_principal_or_self(caller_person_id, None)
 
 
+def owner_email_blocked(email: str | None, caller_person_id: int | None, caller_email: str) -> bool:
+    """Whether someone who isn't the owner is filling in the owner's missing
+    email with an address other than the one they signed in with.
+
+    The roster is the web sign-in allow-list, so an address of their choosing
+    would let them sign in with it as the owner. Their own is allowed: it is
+    how an owner the app can't recognise yet links theirs, and a rostered
+    teammate's own is already on their entry, which check_owner_email
+    refuses. Lookup errors propagate (the route answers 503).
+    """
+    from openexecutive.people.store import find_principal_person, is_principal_or_self
+
+    if not email:
+        return False
+    current = find_principal_person()
+    if current is None or is_principal_or_self(caller_person_id, None):
+        return False
+    if (current.email or "").strip().lower() == email:
+        return False
+    return email != caller_email
+
+
 def link_owner_email(person_id: int, email: str) -> bool:
     """Fill in the principal's sign-in email.
 
@@ -262,8 +286,8 @@ def link_owner_email(person_id: int, email: str) -> bool:
     check_owner_email refuses both before anything is written, and this
     re-checks the row it is about to change. Best-effort, like the rest of
     this module — the profile is already saved, and a failure here only leaves
-    the owner to add their email on the People page, as before this step
-    existed.
+    the owner's email missing, as before this step existed: running setup
+    again adds it.
     """
     try:
         from openexecutive.people.store import find_person_by_email, get_person, update_person
@@ -299,6 +323,7 @@ def reconcile_onboarding_departments(
         from openexecutive.departments.store import (
             create_department,
             list_departments,
+            match_department,
             update_department,
         )
         from openexecutive.departments.store import (
@@ -310,9 +335,7 @@ def reconcile_onboarding_departments(
             return counts
 
         init_departments_db()
-        existing = list_departments()
-        by_slug = {d.config.slug: d.config for d in existing}
-        by_title = {d.config.title.strip().lower(): d.config for d in existing}
+        known = [d.config for d in list_departments()]
         # Two drafted titles can collide with each other as well as with an
         # existing row ("Growth" and "growth"). Without this the second one
         # would either create a `growth-2` row or silently overwrite the first
@@ -324,7 +347,9 @@ def reconcile_onboarding_departments(
             # Same fallback the store uses, so the slug we look up is the one
             # create_department would have assigned.
             drafted_slug = slugify(title, fallback=DEPARTMENT_SLUG_FALLBACK)
-            match = by_slug.get(drafted_slug) or by_title.get(title.lower())
+            # By slug or case-insensitive title — the store's shared rule,
+            # also used by the Executive's create_goal tool.
+            match = match_department(title, known)
             # Key on the row actually being touched. Keying on the drafted slug
             # alone missed the match-by-TITLE case: the shipped `hr` department
             # is titled "People & Talent", so drafts "HR" and "People & Talent"
@@ -347,8 +372,7 @@ def reconcile_onboarding_departments(
                 slug = created.config.slug
                 # Register it so a later draft in this same batch matches the
                 # row we just made instead of creating a `-2` duplicate.
-                by_slug[slug] = created.config
-                by_title[created.config.title.strip().lower()] = created.config
+                known.append(created.config)
                 # create_department fixes authority to propose_only and takes no
                 # head, so apply the drafted values in a second call.
                 update_department(slug, authority_level=draft.authority_level)

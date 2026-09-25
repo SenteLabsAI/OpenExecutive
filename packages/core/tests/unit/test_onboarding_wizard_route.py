@@ -222,3 +222,57 @@ def test_solo_wizard_saves_only_the_principal(
 
     people = people_store.list_people(db_path=db)
     assert [(p.full_name, p.is_principal) for p in people] == [("Dana Reyes", True)]
+
+
+# ── who may save the form ────────────────────────────────────────────────────
+# Saving adds people with their emails (the web sign-in allow-list) and a
+# principal, so once there is an owner only they may — as on the People page.
+
+
+@pytest.fixture()
+def roster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from openexecutive.people import store as people_store
+
+    db = tmp_path / "people.db"
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Bob Lin", email="bob@example.com")
+    return db
+
+
+def _finish(client: TestClient, session_id: str, caller: str) -> Any:
+    return client.post(
+        "/onboard/answer",
+        json={"session_id": session_id, "answer": "final"},
+        headers={"x-caller-email": caller},
+    )
+
+
+def test_a_teammate_cannot_save_the_form(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, roster: Path
+) -> None:
+    built: list[Any] = []
+    monkeypatch.setattr(profile_builder, "build_and_save_profile", built.append)
+    session_id = _answer_all_but_last(client)
+
+    resp = _finish(client, session_id, "bob@example.com")
+    assert resp.status_code == 403
+    assert built == []
+    # Rolled back rather than stuck, so the owner can still finish it.
+    assert client.get(f"/onboard/status/{session_id}").json()["completed"] is False
+    assert _finish(client, session_id, "dana@example.com").status_code == 200
+    assert len(built) == 1
+
+
+def test_before_there_is_an_owner_anyone_can_save_the_form(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", tmp_path / "no-roster-yet.db")
+    built: list[Any] = []
+    monkeypatch.setattr(profile_builder, "build_and_save_profile", built.append)
+    session_id = _answer_all_but_last(client)
+    assert _finish(client, session_id, "sam@example.com").status_code == 200
+    assert len(built) == 1

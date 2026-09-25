@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import openexecutive.orchestrator.mcp_gateway as gw_module
+from openexecutive.audit import logger as audit_logger
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic
@@ -56,6 +57,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         "openexecutive.audit.log_event",
         lambda event_type, summary, **kw: audited.append((summary, kw.get("details") or {})),
     )
+    # Audit reads (e.g. /today's handled-overnight block) use this file too,
+    # never the default ./episodic_memory.db.
+    monkeypatch.setattr(audit_logger, "_default_logger", audit_logger.AuditLogger(db_path=path))
     prior = current_session.get()
     current_session.set(None)
     yield path
@@ -347,9 +351,13 @@ class _FakeProvider:
         return SimpleNamespace(content=[block])
 
 
+@pytest.mark.parametrize("mode", ["team", "solo"])
 async def test_asking_a_contact_opens_no_loop_they_own(
-    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
+    # Solo (#228) opens the principal's own dated commitments from their
+    # verified turn, but its roster is still the team: a contact never owns a
+    # loop, so the nudge engine and DUE THIS WEEK never chase or list one.
     from openexecutive.attunement import open_loops
 
     monkeypatch.setattr("openexecutive.audit.usage.log_model_usage", lambda *a, **k: None)
@@ -362,9 +370,11 @@ async def test_asking_a_contact_opens_no_loop_they_own(
     counts = await open_loops.run_open_loop_pass(
         "Jordan, can you send me the signed contract?", "Noted.",
         person_id=roster.principal, session_id="s1",
+        workspace_mode=mode, principal_verified=True,
     )
     assert counts["opened"] == 0
     assert all(loop.owner_person_id != roster.contact for loop in open_loops.list_open_loops())
+    assert open_loops.principal_due_soon() == []
 
 
 def test_a_contact_is_never_accepted_as_a_loop_owner(roster: SimpleNamespace) -> None:
@@ -1127,12 +1137,24 @@ def test_people_api_keeps_contacts_from_everyone_but_the_principal(roster: Simpl
     missing = client.get("/people/99999", headers=teammate)
     for response in (
         client.get(f"/people/{roster.contact}", headers=teammate),
-        client.patch(f"/people/{roster.contact}", json={"role": "x"}, headers=teammate),
-        client.post(f"/people/{roster.contact}/archive", headers=teammate),
         client.get(f"/people/{roster.contact}/open-loops", headers=teammate),
     ):
         # Exactly what an id that does not exist gets.
         assert (response.status_code, response.json()) == (404, missing.json())
+    # Editing and archiving are the principal's alone, refused before any
+    # lookup: a contact's id and a missing one get the same 403.
+    for contact_resp, missing_resp in (
+        (
+            client.patch(f"/people/{roster.contact}", json={"role": "x"}, headers=teammate),
+            client.patch("/people/99999", json={"role": "x"}, headers=teammate),
+        ),
+        (
+            client.post(f"/people/{roster.contact}/archive", headers=teammate),
+            client.post("/people/99999/archive", headers=teammate),
+        ),
+    ):
+        assert contact_resp.status_code == 403
+        assert contact_resp.json() == missing_resp.json()
     assert client.post(
         "/people", json={"full_name": "Pat Vendor", "kind": "contact"}, headers=teammate
     ).status_code == 403
@@ -1150,6 +1172,36 @@ def test_people_api_keeps_contacts_from_everyone_but_the_principal(roster: Simpl
     assert client.patch(
         f"/people/{roster.contact}", json={"role": "CFO, Acme"}, headers=owner
     ).status_code == 200
+
+
+def test_people_api_hides_contacts_while_no_one_is_principal(roster: SimpleNamespace) -> None:
+    # Before anyone is principal the owner rule lets anyone change the roster
+    # (a first setup), but contacts stay private to a principal there is not
+    # yet: a contact's id reads as missing and nobody may add one.
+    people_store.archive_person(roster.principal)
+    people_registry.invalidate()
+    assert people_store.find_principal_person() is None
+    client = _people_client()
+    teammate = _as(TEAM_EMAIL)
+
+    missing_patch = client.patch("/people/99999", json={"role": "x"}, headers=teammate)
+    assert missing_patch.status_code == 404
+    for response, missing in (
+        (client.patch(f"/people/{roster.contact}", json={"role": "x"}, headers=teammate),
+         missing_patch),
+        (client.post(f"/people/{roster.contact}/archive", headers=teammate),
+         client.post("/people/99999/archive", headers=teammate)),
+    ):
+        assert (response.status_code, response.json()) == (404, missing.json())
+    assert client.post(
+        "/people", json={"full_name": "Pat Vendor", "kind": "contact"}, headers=teammate
+    ).status_code == 403
+    # A team member can still be added, so a first setup can add its owner.
+    assert client.post(
+        "/people", json={"full_name": "Pat Hire"}, headers=teammate
+    ).status_code == 201
+    person = people_store.get_person(roster.contact)
+    assert person is not None and not person.archived and person.role.startswith("Head")
 
 
 # --- Alerts private to the principal ---------------------------------------

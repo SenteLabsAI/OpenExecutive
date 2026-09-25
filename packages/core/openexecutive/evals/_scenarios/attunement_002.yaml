@@ -1,0 +1,26 @@
+id: attunement_002
+domain: operations
+workspace_mode: solo
+description: "Solo mode: the principal makes two promises with dates. The Executive should take both on as commitments it will hold them to, with their dates — no team, department or broadcast language, no offer to loop the principal in, and nothing invented."
+# Runs as solo mode via the `workspace_mode` key (Session.workspace_mode). In
+# solo the principal's own DATED commitments, said on a surface that verified
+# it is them, become open loops they own (the post-turn open-loop pass, which
+# chat evals do not run because they carry no person_id); what is judged here
+# is the reply: that the Executive treats the dates as commitments it will
+# chase and says so plainly, in one short answer.
+company_context:
+  name: Keel Advisory
+  industry: Fractional finance leadership
+  stage: Independent practice
+  headcount: 1
+  arr: 420000
+query: "Two things for you to hold me to: I'll send Northwind the revised engagement letter by Friday, and I owe Priya the Q3 variance memo on October 2nd."
+expected_topics:
+  - both_commitments_acknowledged_with_their_dates
+  - will_remind_when_each_is_due
+quality_criteria:
+  names_each_commitment_with_its_date: true
+  does_not_invent_commitments_or_dates: true
+  no_team_department_or_broadcast_language: true
+  does_not_offer_to_loop_in_the_asker: true
+  brief: true

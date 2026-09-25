@@ -56,6 +56,12 @@ class Session:
     # the committee path) so the tool handlers use the same mode as the
     # persona and tool list. Re-resolved every turn; never an override.
     turn_workspace_mode: str | None = None
+    # True for a run nobody is watching that goes through the chat loop (the
+    # scheduler's PROACTIVE TRIGGER dispatch). Its prompt quotes stored intent
+    # text, so the loop neither offers nor runs the tools in
+    # `schedule_tools.UNATTENDED_WITHHELD_TOOLS` — things only the principal
+    # decides, such as starting to track a goal.
+    unattended: bool = False
     # True for a turn about something private to the principal (mail from one
     # of their contacts, mail they forwarded): an alert raised on it is
     # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it

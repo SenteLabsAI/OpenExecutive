@@ -650,3 +650,29 @@ def test_skip_that_could_not_be_recorded_does_not_chain_twice_on_refire(
 
     assert _status(action) == "cancelled"
     assert len(_pending_cadences()) == 1
+
+
+def test_proactive_trigger_runs_as_an_unattended_session() -> None:
+    """The scheduler's PROACTIVE TRIGGER run is nobody's conversation: its
+    Session is marked unattended, so the chat loop neither offers nor runs
+    the principal-only tools (schedule_tools.UNATTENDED_WITHHELD_TOOLS)."""
+    action = _make_action(channel="slack_dm", channel_ref="U123")
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat, patch(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        return_value=MagicMock(is_empty=lambda: True),
+    ), patch(
+        "openexecutive.knowledge.retriever.retrieve",
+        return_value="",
+    ), patch(
+        "openexecutive.memory.episodic.format_for_prompt",
+        return_value="",
+    ):
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_called_once()
+    session = mock_chat.call_args.kwargs["session"]
+    assert session.unattended is True
+    assert session.caller_person_id is None and not session.from_web_chat
