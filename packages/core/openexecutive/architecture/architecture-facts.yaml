@@ -2667,7 +2667,11 @@ people:
     (listed on /jobs); create_skill / update_skill / delete_skill (the
     shared skill review list); load_mcp_server (connects to any HTTPS URL,
     which can itself carry the turn's content — the dispatch guard covers
-    MCP tool uses too). Left offered: the email / DM / invite paths
+    MCP tool uses too). Nor does it reach any MCP server but Google
+    Workspace: search_tools shows it only google_workspace__ tools and a
+    call_tool naming another server's tool is refused the same way
+    (`schedule_tools.private_turn_withholds`; see integrations.mcp_gateway).
+    Left offered: the email / DM / invite paths
     (they reach only the principal; Gmail goes through call_tool, whose
     Gmail / Calendar / Drive gates narrow recipients to the principal),
     create_alert (private on such a turn),
@@ -5047,7 +5051,8 @@ integrations:
     contact on a poller turn anyway. This turn and the principal-forward
     turn below set `Session.private_to_principal`: they reach the
     principal only, raise private alerts, are not offered
-    `schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS`, and write only audit rows
+    `schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS` or any MCP server's tools
+    but Google Workspace's, and write only audit rows
     private to the principal — the poller's two inbound rows included
     (`_private_to_principal_mail`, the same rule). Each message is handled
     with no session bound (`schedule_tools.set_session(None)`), because
@@ -5587,6 +5592,25 @@ integrations:
       sharing (the safe direction) still passes. Residual: comment-notification tools
       (manage_document_comment etc.) can email a non-roster address and are NOT
       gated — a softer vector left open deliberately.
+
+    A private turn reaches no MCP server but Google Workspace. Only that
+    server's calls have the gates above; a Slack or Notion server, the
+    default `fetch` server (any URL, which can carry the turn's content) and
+    a server loaded at runtime have none. So on such a turn the chat loop
+    (Executive._stream_agent_loop) passes on only google_workspace__ tools
+    from search_tools (workflows.tool_catalog.filter_search_results; output
+    it cannot parse reads as no match) and refuses a call_tool naming any
+    other tool: schedule_tools.private_turn_withholds, answered with
+    private_turn_withheld_error and a tool_invocation audit row that is
+    private to the principal (details.refused = "private_turn"). A missing
+    or non-string name is refused too. The name must be a plain tool name
+    right after the prefix (schedule_tools.private_turn_allows_mcp_tool):
+    extensible-mcp names tools <server>__<tool>, so a server loaded as
+    google_workspace__x (tools google_workspace__x__...) would otherwise
+    pass. search_tools and call_tool stay offered and load_mcp_server stays
+    withheld, so the offered list and its cached prefix do not change.
+    Residual: every Google Workspace tool stays callable on such a turn,
+    the ungated ones above included.
 
     Calendar tool surface (a subset of the complete tier; all namespaced google_workspace__):
       manage_event    — create/update/delete/rsvp (action param)

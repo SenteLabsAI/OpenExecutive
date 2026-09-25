@@ -87,6 +87,29 @@ def test_parse_no_results_and_bad_schema() -> None:
     assert tool.name == "srv__tool" and tool.input_schema == {}
 
 
+def test_filter_search_results_keeps_only_the_accepted_blocks() -> None:
+    gmail = _block("google_workspace__send_gmail_message", "Send mail.", _APPEND_SCHEMA)
+    sheet = _block("google_workspace__read_sheet_values", "Read a range.", {"type": "object"})
+    slack = _block("slack__post_message", "Post to Slack.", {"type": "object"})
+    text = _search_text(slack, gmail, sheet)
+
+    def is_google(name: str) -> bool:
+        return name.startswith("google_workspace__")
+
+    kept = tc.filter_search_results(text, is_google)
+    assert "slack__" not in kept and "Found 3" not in kept
+    assert [t.name for t in tc.parse_search_results(kept)] == [
+        "google_workspace__send_gmail_message",
+        "google_workspace__read_sheet_values",
+    ]
+    assert tc.parse_search_results(kept) == tc.parse_search_results(_search_text(gmail, sheet))
+    # Nothing left, and output it cannot parse, both read as no match.
+    no_match = "No matching tools found. Try a different search query."
+    assert tc.filter_search_results(_search_text(slack), is_google) == no_match
+    assert tc.filter_search_results('{"tools": ["slack__post_message"]}', is_google) == no_match
+    assert tc.filter_search_results("", is_google) == no_match
+
+
 def test_as_anthropic_tool_falls_back_to_an_object_schema() -> None:
     tool = tc.ToolInfo(name="srv__x", description="d", input_schema={"type": "string"})
     assert tool.as_anthropic_tool()["input_schema"] == {"type": "object", "properties": {}}
