@@ -270,11 +270,15 @@ export async function stopChat(clientTurnId: string): Promise<boolean> {
 
 export interface OnboardStatus {
   session_id: string;
+  // The step's place among the steps this wizard asks (a solo workspace
+  // skips the team steps), not an index into the full step list.
   current_step: number;
   total_steps: number;
   current_question: string | null;
   progress_percent: number;
   completed: boolean;
+  // Whether the current step can be skipped. Absent from older backends.
+  optional?: boolean;
 }
 
 export async function startOnboarding(): Promise<OnboardStatus> {
@@ -1310,6 +1314,49 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
     throw new Error(msg ?? "Invalid workspace settings");
   }
   if (!res.ok) throw new Error("Failed to update workspace settings");
+  return res.json();
+}
+
+// ----------------------------------------------------------------------------
+// Decision classes — whether the Executive acts on a class of decision on its
+// own ("auto_execute") or proposes it for approval first ("propose").
+// ----------------------------------------------------------------------------
+
+export type DecisionClassMode = "propose" | "auto_execute";
+
+export interface DecisionClassSetting {
+  decision_class: string;
+  mode: DecisionClassMode;
+}
+
+// The class behind "Book meetings without asking".
+export const MEETING_SCHEDULING_CLASS = "meeting_scheduling";
+
+/** The class's mode, or null when this backend has no setting for it (404). */
+export async function getDecisionClassMode(
+  decisionClass: string,
+  signal?: AbortSignal,
+): Promise<DecisionClassSetting | null> {
+  const res = await fetch(
+    `${API_BASE}/decisions/classes/${encodeURIComponent(decisionClass)}`,
+    { signal },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Failed to load the setting");
+  return res.json();
+}
+
+export async function setDecisionClassMode(
+  decisionClass: string,
+  mode: DecisionClassMode,
+): Promise<DecisionClassSetting> {
+  const res = await fetch(`${API_BASE}/decisions/classes/${encodeURIComponent(decisionClass)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (res.status === 403) throw new Error("Only the principal can change this setting.");
+  if (!res.ok) throw new Error("Failed to save the setting");
   return res.json();
 }
 

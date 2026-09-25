@@ -9,13 +9,17 @@ import {
   ackAlert,
   approveDecision,
   bulkAckAlerts,
+  deleteInitiative,
   getToday,
+  listInitiatives,
   rejectDecision,
   reopenAlert,
   reviewAlerts,
+  updateInitiative,
   type DepartmentBriefItem,
   type HandledItem,
   type InFlightItem,
+  type Initiative,
   type PersonBriefItem,
   type ClientCockpitCard,
   type ProposalItem,
@@ -36,6 +40,7 @@ import {
 import InfoTip from "./InfoTip";
 import { hostOf } from "@/lib/url";
 import { SectionHeading } from "./memories/shared";
+import { useWorkspace } from "./workspace/WorkspaceContext";
 
 // Future-relative label for a pending run time ("in 8h"). Past/blank →
 // "soon" (the caller renders "overdue" separately via the backend flag).
@@ -448,7 +453,8 @@ type StatTone = "indigo" | "rose" | "amber" | "sky" | "slate";
 // (the first one that's actually present wins). Each section now renders once
 // (the responsive grid stacks instead of duplicating into a mobile block), so
 // these are effectively single-element, but the list shape is kept for headroom.
-interface StatPill { label: string; tone: StatTone; targetIds: string[] }
+// `href` (solo's goals pill) navigates instead: its detail lives on /goals.
+interface StatPill { label: string; tone: StatTone; targetIds: string[]; href?: string }
 
 const STAT_TONES: Record<StatTone, string> = {
   indigo: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
@@ -469,6 +475,7 @@ const SECTION_IDS = {
   departments: "sec-departments",
   people: "sec-people",
   practice: "sec-practice",
+  projects: "sec-projects",
 } as const;
 
 // Smooth-scroll to the first rendered (visible) section in `ids`, popping open
@@ -494,6 +501,8 @@ function briefingStats(args: {
   peopleOverdue: number;
   peopleNeedReply: number;
   deptAtRisk: number;
+  /** Solo only: at-risk + off-track goals, which have no card on the page. */
+  goalsAtRisk?: number;
   inFlight: number;
   monitoring: number;
 }): StatPill[] {
@@ -511,6 +520,8 @@ function briefingStats(args: {
     pills.push({ label: `${args.peopleNeedReply} awaiting reply`, tone: "amber", targetIds: peopleTargets });
   if (args.deptAtRisk > 0)
     pills.push({ label: `${args.deptAtRisk} dept${args.deptAtRisk === 1 ? "" : "s"} at risk`, tone: "amber", targetIds: [SECTION_IDS.departments] });
+  if (args.goalsAtRisk && args.goalsAtRisk > 0)
+    pills.push({ label: `${args.goalsAtRisk} goal${args.goalsAtRisk === 1 ? "" : "s"} at risk`, tone: "amber", targetIds: [], href: "/goals" });
   if (args.inFlight > 0)
     pills.push({ label: `${args.inFlight} in flight`, tone: "sky", targetIds: [SECTION_IDS.inFlight] });
   // Passive watchlist signals — quietest pill, last, so it never crowds the
@@ -1149,6 +1160,112 @@ function InFlightPanel({ inFlight, id }: { inFlight: InFlightItem[]; id?: string
   );
 }
 
+// Solo only: the projects (initiatives) the Executive is tracking as active —
+// the solo stand-in for the Departments card. "Done" marks one completed
+// (PATCH), which is what takes it out of the Executive's active context;
+// "Drop" deletes it after a confirm, since there is no "dropped" status the
+// rest of the system treats as closed.
+function ProjectsPanel({ id }: { id?: string }) {
+  const [projects, setProjects] = useState<Initiative[] | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listInitiatives()
+      .then((all) => {
+        if (!cancelled) setProjects(all.filter((i) => i.status === "active"));
+      })
+      .catch(() => {
+        if (!cancelled) setError("Couldn't load your projects.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const close = async (project: Initiative, how: "done" | "drop") => {
+    if (
+      how === "drop" &&
+      !window.confirm(
+        `Drop "${project.title}"? The Executive stops tracking it, and it is removed from Pulse.`,
+      )
+    ) {
+      return;
+    }
+    setBusyId(project.id);
+    setError(null);
+    try {
+      if (how === "done") await updateInitiative(project.id, { status: "completed" });
+      else await deleteInitiative(project.id);
+      setProjects((prev) => (prev ?? []).filter((p) => p.id !== project.id));
+    } catch {
+      setError(how === "done" ? "Couldn't mark it done — try again." : "Couldn't drop it — try again.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <SectionHeading title="Your projects" count={projects?.length} icon="flag" />
+          <InfoTip align="left">
+            The projects you&apos;re running that the Executive is keeping track of. Mention a
+            new one in chat and it appears here.
+          </InfoTip>
+        </div>
+        <Link href="/goals" className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300">
+          Goals →
+        </Link>
+      </div>
+      {error && <p className="text-xs text-rose-300 mb-2">{error}</p>}
+      {projects === null ? (
+        !error && <p className="text-sm text-fg-muted py-2">Loading…</p>
+      ) : projects.length === 0 ? (
+        <p className="text-sm text-fg-muted py-2">
+          No active projects. Tell the Executive about one you&apos;re running and it will
+          keep track of it here.
+        </p>
+      ) : (
+        <div className="max-h-[32rem] overflow-y-auto pr-1 divide-y divide-line">
+          {projects.map((p) => (
+            <div key={p.id} className="py-3 flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-fg font-medium break-words">{p.title}</div>
+                {p.summary && (
+                  <div className="text-xs text-fg-muted mt-0.5 line-clamp-2" title={p.summary}>
+                    {p.summary}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void close(p, "done")}
+                  disabled={busyId !== null}
+                  className="px-2 py-1 text-xs rounded-lg bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  ✓ Done
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void close(p, "drop")}
+                  disabled={busyId !== null}
+                  className="px-2 py-1 text-xs rounded-lg text-fg-muted hover:text-rose-300 hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  Drop
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // Multi-client practice mode only: rollup cards for PARKED client slots so
 // the operator sees the whole practice from the active client's brief. The
 // backend sends [] for single-company installs (0-1 slots), so this renders
@@ -1485,6 +1602,11 @@ function HandledOvernightPanel({
 }
 
 export default function Briefing({ onContinue, showHeader = false, firstName }: BriefingProps) {
+  // Solo (one person, just for themselves): no departments, roster or
+  // cross-team lanes — see the `solo` branches below. Team rendering is
+  // unchanged.
+  const { mode } = useWorkspace();
+  const solo = mode === "solo";
   const [today, setToday] = useState<Today | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1720,8 +1842,9 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   );
   const monitoringProposals = liveProposals.filter((p) => p.category === "monitoring");
   const actionProposals = liveProposals.filter((p) => p.category !== "monitoring");
+  // Solo: everything is yours, so nothing goes to an "Across the team" lane.
   const mineProposals =
-    callerId == null
+    callerId == null || solo
       ? actionProposals
       : actionProposals.filter(
           (p) =>
@@ -1730,7 +1853,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
         );
   const mineIds = new Set(mineProposals.map((p) => p.alert_id));
   const otherProposals =
-    callerId == null ? [] : actionProposals.filter((p) => !mineIds.has(p.alert_id));
+    callerId == null || solo ? [] : actionProposals.filter((p) => !mineIds.has(p.alert_id));
   // "Needs you" splits into the single highest-priority item (rendered as an
   // elevated "Start here" card so there's one obvious first action) and the
   // rest (the scrolling queue below). Backend sorts action proposals by score,
@@ -1742,11 +1865,19 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
 
   // Status-strip inputs, all from data already computed above.
   const inFlightCount = today?.in_flight?.length ?? 0;
-  const deptAtRiskCount = attentionDepts.filter(
-    (d) => d.at_risk_count > 0 || d.off_track_count > 0,
-  ).length;
-  const peopleNeedReply = (today?.people ?? []).filter((p) => p.status === "needs_reply").length;
-  const peopleOverdue = (today?.people ?? []).filter((p) => p.overdue).length;
+  // Solo hides the Departments and People cards, so it drops the pills that
+  // would jump to them.
+  const deptAtRiskCount = solo
+    ? 0
+    : attentionDepts.filter((d) => d.at_risk_count > 0 || d.off_track_count > 0).length;
+  const peopleNeedReply = solo
+    ? 0
+    : (today?.people ?? []).filter((p) => p.status === "needs_reply").length;
+  const peopleOverdue = solo ? 0 : (today?.people ?? []).filter((p) => p.overdue).length;
+  // …and says how many goals need attention instead, linking to /goals.
+  const goalsAtRisk = solo
+    ? (today?.departments ?? []).reduce((n, d) => n + d.at_risk_count + d.off_track_count, 0)
+    : 0;
   const statPills: StatPill[] = today
     ? briefingStats({
         needsYou: mineProposals.length,
@@ -1754,6 +1885,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
         peopleOverdue,
         peopleNeedReply,
         deptAtRisk: deptAtRiskCount,
+        goalsAtRisk,
         inFlight: inFlightCount,
         monitoring: monitoringProposals.length,
       })
@@ -1789,16 +1921,23 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                     All clear
                   </span>
                 ) : (
-                  statPills.map((pill) => (
-                    <button
-                      key={pill.label}
-                      type="button"
-                      onClick={() => scrollToFirstVisible(pill.targetIds)}
-                      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium cursor-pointer transition hover:brightness-110 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 ${STAT_TONES[pill.tone]}`}
-                    >
-                      {pill.label}
-                    </button>
-                  ))
+                  statPills.map((pill) => {
+                    const pillClass = `inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium cursor-pointer transition hover:brightness-110 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 ${STAT_TONES[pill.tone]}`;
+                    return pill.href ? (
+                      <Link key={pill.label} href={pill.href} className={pillClass}>
+                        {pill.label}
+                      </Link>
+                    ) : (
+                      <button
+                        key={pill.label}
+                        type="button"
+                        onClick={() => scrollToFirstVisible(pill.targetIds)}
+                        className={pillClass}
+                      >
+                        {pill.label}
+                      </button>
+                    );
+                  })
                 )}
               </div>
 
@@ -1902,9 +2041,11 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
               {isQuiet && activeDepts.length > 0 && (
                 <div className="mb-6 flex items-center justify-between rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
                   <span className="text-sm text-emerald-300">Quiet day — nothing needs your attention.</span>
-                  <Link href="/departments" className="text-xs text-indigo-400 hover:text-indigo-300 flex-shrink-0">
-                    Set up a check-in →
-                  </Link>
+                  {!solo && (
+                    <Link href="/departments" className="text-xs text-indigo-400 hover:text-indigo-300 flex-shrink-0">
+                      Set up a check-in →
+                    </Link>
+                  )}
                 </div>
               )}
 
@@ -2028,81 +2169,85 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
 
                 {/* RIGHT — awareness (org health + ambient signals) */}
                 <div className="min-w-0 space-y-8">
+                  {solo && <ProjectsPanel id={SECTION_IDS.projects} />}
+
                   {/* Departments — only those needing attention get a row;
                       healthy + inactive ones fold into one quiet toggle. */}
-                  <section id="sec-departments" className="rounded-xl border border-line bg-surface-elevated p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-1.5">
-                        <SectionLabel variant="ambient">Departments</SectionLabel>
-                        <InfoTip align="left">
-                          <span className="text-amber-300">At risk</span> /{" "}
-                          <span className="text-rose-300">off track</span> = goal
-                          health. <span className="text-sky-300">Awaiting</span> =
-                          items waiting on the department head.{" "}
-                          <span className="text-fg">Inactive</span> = no goals or
-                          check-ins set up yet.
-                        </InfoTip>
-                      </div>
-                      <Link href="/departments" className="text-xs text-indigo-400 hover:text-indigo-300">
-                        View all →
-                      </Link>
-                    </div>
-
-                    {activeDepts.length === 0 && (
-                      <div className="py-3">
-                        <p className="text-sm text-fg-muted mb-2">
-                          No department has a check-in set up yet.
-                        </p>
+                  {!solo && (
+                    <section id="sec-departments" className="rounded-xl border border-line bg-surface-elevated p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-1.5">
+                          <SectionLabel variant="ambient">Departments</SectionLabel>
+                          <InfoTip align="left">
+                            <span className="text-amber-300">At risk</span> /{" "}
+                            <span className="text-rose-300">off track</span> = goal
+                            health. <span className="text-sky-300">Awaiting</span> =
+                            items waiting on the department head.{" "}
+                            <span className="text-fg">Inactive</span> = no goals or
+                            check-ins set up yet.
+                          </InfoTip>
+                        </div>
                         <Link href="/departments" className="text-xs text-indigo-400 hover:text-indigo-300">
-                          Pick one to activate →
+                          View all →
                         </Link>
                       </div>
-                    )}
 
-                    {/* Attention departments (full, no cap) + the quiet toggle
-                        all share one fixed-height scroll, like the Pulse cards —
-                        the section never grows the page. */}
-                    {(attentionDepts.length > 0 || quietDeptCount > 0) && (
-                      <div className="max-h-[32rem] overflow-y-auto pr-1">
-                        {attentionDepts.length > 0 && (
-                          <div className="divide-y divide-line">
-                            {attentionDepts.map((d) => (
-                              <DeptCard key={d.slug} dept={d} onContinue={onContinue} />
-                            ))}
-                          </div>
-                        )}
+                      {activeDepts.length === 0 && (
+                        <div className="py-3">
+                          <p className="text-sm text-fg-muted mb-2">
+                            No department has a check-in set up yet.
+                          </p>
+                          <Link href="/departments" className="text-xs text-indigo-400 hover:text-indigo-300">
+                            Pick one to activate →
+                          </Link>
+                        </div>
+                      )}
 
-                        {/* One quiet toggle for the rest — on-track and inactive
-                            departments revealed together in a single column. */}
-                        {quietDeptCount > 0 && (
-                          <div className={attentionDepts.length > 0 ? "mt-3" : ""}>
-                            <button
-                              type="button"
-                              onClick={() => setShowAllDeptsOpen((v) => !v)}
-                              aria-expanded={showAllDeptsOpen}
-                              className="flex items-center gap-1.5 min-h-[44px] text-xs text-fg-muted hover:text-fg transition-colors"
-                            >
-                              <span aria-hidden="true">{showAllDeptsOpen ? "▲" : "▼"}</span>
-                              {quietDeptSummary}
-                            </button>
-                            {showAllDeptsOpen && (
-                              <div className="divide-y divide-line mt-3">
-                                {onTrackDepts.map((d) => (
-                                  <DeptCard key={d.slug} dept={d} onContinue={onContinue} />
-                                ))}
-                                {inactiveDepts.map((d) => (
-                                  <DeptCard key={d.slug} dept={d} onContinue={onContinue} dimmed />
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </section>
+                      {/* Attention departments (full, no cap) + the quiet toggle
+                          all share one fixed-height scroll, like the Pulse cards —
+                          the section never grows the page. */}
+                      {(attentionDepts.length > 0 || quietDeptCount > 0) && (
+                        <div className="max-h-[32rem] overflow-y-auto pr-1">
+                          {attentionDepts.length > 0 && (
+                            <div className="divide-y divide-line">
+                              {attentionDepts.map((d) => (
+                                <DeptCard key={d.slug} dept={d} onContinue={onContinue} />
+                              ))}
+                            </div>
+                          )}
+
+                          {/* One quiet toggle for the rest — on-track and inactive
+                              departments revealed together in a single column. */}
+                          {quietDeptCount > 0 && (
+                            <div className={attentionDepts.length > 0 ? "mt-3" : ""}>
+                              <button
+                                type="button"
+                                onClick={() => setShowAllDeptsOpen((v) => !v)}
+                                aria-expanded={showAllDeptsOpen}
+                                className="flex items-center gap-1.5 min-h-[44px] text-xs text-fg-muted hover:text-fg transition-colors"
+                              >
+                                <span aria-hidden="true">{showAllDeptsOpen ? "▲" : "▼"}</span>
+                                {quietDeptSummary}
+                              </button>
+                              {showAllDeptsOpen && (
+                                <div className="divide-y divide-line mt-3">
+                                  {onTrackDepts.map((d) => (
+                                    <DeptCard key={d.slug} dept={d} onContinue={onContinue} />
+                                  ))}
+                                  {inactiveDepts.map((d) => (
+                                    <DeptCard key={d.slug} dept={d} onContinue={onContinue} dimmed />
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  )}
 
                   {/* People — full roster, scrolling inside the card. */}
-                  {showPeopleSidebar && (
+                  {showPeopleSidebar && !solo && (
                     <section id="sec-people" className="rounded-xl border border-line bg-surface-elevated p-4">
                       {(() => {
                         const summary = peopleSummary(today.people);

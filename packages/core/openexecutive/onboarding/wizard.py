@@ -111,24 +111,69 @@ WIZARD_STEPS = [
 
 TOTAL_STEPS = len(WIZARD_STEPS)
 
+# Steps a solo workspace (one person using Open Executive just for themselves)
+# never asks: the team size, the team roster and the fractional executives.
+# Keyed by field so the list survives steps being renumbered.
+SOLO_SKIPPED_FIELDS: frozenset[str] = frozenset(
+    {"headcount_and_founding", "team_members", "fractional_executives"}
+)
+
+
+def steps_for(solo: bool) -> list[dict[str, Any]]:
+    """The steps a wizard in this mode walks through, in order."""
+    if not solo:
+        return WIZARD_STEPS
+    return [s for s in WIZARD_STEPS if s["field"] not in SOLO_SKIPPED_FIELDS]
+
 
 @dataclass
 class WizardState:
+    # Index into WIZARD_STEPS (not into steps_for(solo)), so a step keeps its
+    # identity in both modes; `position()` is what a progress label shows.
     current_step: int = 0
     answers: dict[str, Any] = field(default_factory=dict)
     completed: bool = False
     skipped_steps: list[int] = field(default_factory=list)
+    solo: bool = False
+
+    def __post_init__(self) -> None:
+        self.current_step = _next_active_step(self, self.current_step)
+        if self.current_step >= TOTAL_STEPS:
+            self.completed = True
+
+    def steps(self) -> list[dict[str, Any]]:
+        return steps_for(self.solo)
+
+    def total_steps(self) -> int:
+        return len(self.steps())
+
+    def position(self) -> int:
+        """The current step's 0-based place among this mode's steps (equal to
+        ``current_step`` in team mode; ``total_steps()`` once completed)."""
+        return sum(1 for s in self.steps() if s["step"] < self.current_step)
 
     def is_complete(self) -> bool:
-        required_steps = [s["step"] for s in WIZARD_STEPS if s["required"]]
         return all(
-            step in self.answers or step in self.skipped_steps
-            for step in required_steps
+            s["field"] in self.answers or s["step"] in self.skipped_steps
+            for s in self.steps()
+            if s["required"]
         )
 
     def get_progress(self) -> dict[str, int]:
         answered = len(self.answers) + len(self.skipped_steps)
-        return {"answered": answered, "total": TOTAL_STEPS, "percent": int(answered / TOTAL_STEPS * 100)}
+        total = self.total_steps()
+        return {"answered": answered, "total": total, "percent": int(answered / total * 100)}
+
+
+def _next_active_step(state: WizardState, index: int) -> int:
+    """``index``, or the first step after it this mode asks."""
+    while (
+        index < TOTAL_STEPS
+        and state.solo
+        and WIZARD_STEPS[index]["field"] in SOLO_SKIPPED_FIELDS
+    ):
+        index += 1
+    return index
 
 
 def get_step(step: int) -> dict[str, Any] | None:
@@ -156,7 +201,7 @@ def process_answer(state: WizardState, answer: str) -> WizardState:
         if not step_config["required"]:
             state.skipped_steps.append(state.current_step)
 
-    state.current_step += 1
+    state.current_step = _next_active_step(state, state.current_step + 1)
     if state.current_step >= TOTAL_STEPS:
         state.completed = True
 

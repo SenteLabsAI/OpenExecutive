@@ -9,6 +9,7 @@ import {
   type ScheduledAction,
 } from "@/lib/api";
 import Icon, { type IconName } from "@/components/Icon";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   LivePulse,
   STATUS_PILL,
@@ -18,6 +19,7 @@ import {
   formatRunAt,
   groupByRhythm,
   metaFor,
+  showsRhythm,
 } from "./shared";
 
 // The "how it runs" half of the Pulse page. The rhythm taxonomy (KIND_META /
@@ -38,6 +40,8 @@ const FETCH_LIMIT = 500;
 // ---------------------------------------------------------------------------
 
 export default function CadenceSection() {
+  // Solo hides the department check-ins and the awaiting-people block.
+  const { mode } = useWorkspace();
   const [rows, setRows] = useState<ScheduledAction[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -71,8 +75,8 @@ export default function CadenceSection() {
   // follow-ups would render an empty padded card instead of the empty message.
   const hasRhythm =
     groups.daily.length > 0 ||
-    groups.departments.length > 0 ||
-    groups.awaiting.length > 0 ||
+    (showsRhythm("departments", mode) && groups.departments.length > 0) ||
+    (showsRhythm("awaiting", mode) && groups.awaiting.length > 0) ||
     groups.system.length > 0;
 
   return (
@@ -100,20 +104,24 @@ export default function CadenceSection() {
               tagTone="info"
               actions={groups.daily}
             />
-            <RhythmBlock
-              title="Department check-ins"
-              subtitle="Each team's cadence — the next scheduled check-in per department."
-              icon="grid"
-              actions={groups.departments}
-              showDepartment
-            />
+            {showsRhythm("departments", mode) && (
+              <RhythmBlock
+                title="Department check-ins"
+                subtitle="Each team's cadence — the next scheduled check-in per department."
+                icon="grid"
+                actions={groups.departments}
+                showDepartment
+              />
+            )}
 
-            <RhythmBlock
-              title="Awaiting people"
-              subtitle="Paused workflows and nudges waiting on a reply."
-              icon="bell"
-              actions={groups.awaiting}
-            />
+            {showsRhythm("awaiting", mode) && (
+              <RhythmBlock
+                title="Awaiting people"
+                subtitle="Paused workflows and nudges waiting on a reply."
+                icon="bell"
+                actions={groups.awaiting}
+              />
+            )}
 
             <SystemPulse actions={groups.system} />
           </div>

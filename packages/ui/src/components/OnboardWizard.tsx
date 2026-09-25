@@ -97,7 +97,10 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
     );
   }
 
-  const isOptionalStep = status.current_step >= 6;
+  // The server says which steps can be skipped (a solo workspace asks fewer
+  // steps, so the position alone no longer tells); older backends only had
+  // the team order, where the optional steps start at the seventh.
+  const isOptionalStep = status.optional ?? status.current_step >= 6;
 
   return (
     <div className="flex flex-col h-full max-w-2xl mx-auto px-6 py-10">

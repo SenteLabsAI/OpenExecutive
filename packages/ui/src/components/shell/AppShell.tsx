@@ -9,7 +9,8 @@ import AskOEPanel from "@/components/askoe/AskOEPanel";
 import Icon from "@/components/Icon";
 import PausedBanner from "@/components/executive/PausedBanner";
 import AppSidebar from "@/components/shell/AppSidebar";
-import { isNavActive, MOBILE_PRIMARY } from "@/components/shell/navConfig";
+import { buildMobilePrimary, isNavActive } from "@/components/shell/navConfig";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
 // Routes that own their full layout and should not be wrapped by the
 // shell — sign-in, the onboarding wizard (full-screen flow), and the
@@ -26,6 +27,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   proposals: "Proposals",
   people: "People",
   departments: "Departments",
+  goals: "Goals",
   memories: "Pulse",
   knowledge: "Knowledge base",
   jobs: "Workflows",
@@ -221,12 +223,13 @@ export function MobileBottomNav({
   hideFrom?: "md" | "lg";
 }) {
   const hideClass = hideFrom === "md" ? "md:hidden" : "lg:hidden";
+  const { mode } = useWorkspace();
   return (
     <nav
       aria-label="Primary"
       className={`${hideClass} h-16 border-t border-line bg-surface-elevated flex items-stretch flex-shrink-0`}
     >
-      {MOBILE_PRIMARY.map((item) => {
+      {buildMobilePrimary(mode).map((item) => {
         const active = isNavActive(item.href, pathname);
         return (
           <Link

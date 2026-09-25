@@ -306,6 +306,65 @@ async def test_empty_existing_profile_is_not_prepended(
     assert provider.calls[0]["messages"][0]["content"] == "We sell industrial tools."
 
 
+def _set_mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from openexecutive.memory import workspace_settings as ws
+
+    monkeypatch.setattr(ws, "get_workspace", lambda *a, **k: ws.WorkspaceSettings(mode=mode))
+
+
+@pytest.mark.asyncio
+async def test_solo_hint_goes_in_the_first_user_turn_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Solo mode steers the draft (one person, no departments) from the user
+    turn: the cached system block stays the one constant for both modes."""
+    _set_mode(monkeypatch, "solo")
+    provider = _ScriptedProvider(
+        [
+            _tool_response(iv.ASK_TOOL_NAME, {"question": "What do you charge?"}),
+            _tool_response(iv.EMIT_TOOL_NAME, _draft_dict()),
+        ]
+    )
+    _install(monkeypatch, provider)
+
+    transcript = _opening()
+    await iv.advance(transcript, existing_profile=CompanyProfile(name="Acme Widgets"))
+    transcript += [
+        iv.Turn(role="assistant", text="What do you charge?"),
+        iv.Turn(role="user", text="$40 an hour."),
+    ]
+    await iv.advance(transcript, questions_asked=1)
+
+    for call in provider.calls:
+        assert call["system"][0]["text"] == ONBOARDING_INTERVIEWER_SYSTEM
+        first, *rest = call["messages"]
+        assert first["content"].startswith(iv.SOLO_HINT)
+        assert first["content"].endswith("We sell industrial tools.")
+        assert all(iv.SOLO_HINT not in m["content"] for m in rest)
+    # The re-run context still rides along, after the hint.
+    assert "Acme Widgets" in provider.calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_team_mode_sends_no_solo_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_mode(monkeypatch, "team")
+    provider = _ScriptedProvider([_tool_response(iv.EMIT_TOOL_NAME, _draft_dict())])
+    _install(monkeypatch, provider)
+    await iv.advance(_opening())
+    assert provider.calls[0]["messages"][0]["content"] == "We sell industrial tools."
+
+
+def test_a_principal_only_draft_with_no_departments_is_valid() -> None:
+    """What the solo hint asks for must pass the commit's own validation."""
+    draft = iv.CompanyDraft.model_validate(
+        _draft_dict(
+            people=[{"full_name": "Dana Reyes", "role": "Founder", "is_principal": True}],
+            departments=[],
+        )
+    )
+    assert iv.validate_draft(draft) == []
+
+
 @pytest.mark.asyncio
 async def test_people_draft_drops_contact_fields(
     monkeypatch: pytest.MonkeyPatch,

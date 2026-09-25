@@ -59,6 +59,8 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
   { prefix: "/artifacts", guideId: "artifacts", title: "Documents" },
   { prefix: "/watchlist", guideId: "watchlist", title: "Watch list" },
   { prefix: "/departments", guideId: "departments", title: "Departments" },
+  // Goals grouped by area — documented with Departments (an area is one).
+  { prefix: "/goals", guideId: "departments", title: "Goals" },
   { prefix: "/people", guideId: "people", title: "People" },
   { prefix: "/company-profile", guideId: "company_profile", title: "Company profile" },
   { prefix: "/knowledge", guideId: "knowledge", title: "Knowledge base" },

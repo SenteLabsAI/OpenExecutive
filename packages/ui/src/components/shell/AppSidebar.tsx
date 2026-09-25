@@ -8,6 +8,7 @@ import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import Icon, { IconName } from "@/components/Icon";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import UserBadge from "@/components/UserBadge";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   BRIEFING_DESCRIPTION,
   buildPrimaryNav,
@@ -68,6 +69,7 @@ export default function AppSidebar({
   home,
 }: AppSidebarProps) {
   const { sessions } = useSessions();
+  const { mode } = useWorkspace();
   const [reviewBadge, setReviewBadge] = useState(0);
 
   // Knowledge base badge: items waiting in its review queue. Refetched on
@@ -79,7 +81,7 @@ export default function AppSidebar({
       .catch(() => {});
   }, [pathname]);
 
-  const groups = buildPrimaryNav({ isOnboarded, reviewBadge });
+  const groups = buildPrimaryNav({ isOnboarded, reviewBadge, mode });
   const recent = recentWebChats(sessions, RECENT_LIMIT);
 
   const briefingActive = home ? home.mode === "briefing" : isNavActive("/", pathname);

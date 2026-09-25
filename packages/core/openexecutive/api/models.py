@@ -106,11 +106,15 @@ class OnboardAnswerRequest(BaseModel):
 
 class OnboardStatusResponse(BaseModel):
     session_id: str
+    # The step's place among the steps this wizard asks — a solo workspace
+    # skips the team steps, so this is not an index into WIZARD_STEPS.
     current_step: int
     total_steps: int
     current_question: str | None
     progress_percent: int
     completed: bool
+    # Whether the current step can be skipped.
+    optional: bool = False
 
 
 class DocumentUploadResponse(BaseModel):

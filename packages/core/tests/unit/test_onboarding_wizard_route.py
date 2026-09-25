@@ -8,6 +8,7 @@ completed" — the only way out was to restart onboarding from scratch.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +28,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(route, "_fire_post_onboarding_research", _no_research)
     monkeypatch.setattr(route, "_wizard_sessions", {})
     monkeypatch.setattr(route, "_onboarding_research_fired", set())
+    # /onboard/start reads the workspace mode; pin team so a stray local DB
+    # cannot change the step count. The solo tests below switch it.
+    _set_mode(monkeypatch, "team")
     app = FastAPI()
     app.include_router(route.router)
     return TestClient(app)
@@ -127,3 +131,94 @@ def test_oversized_answer_is_rejected_before_parsing(
     resp = client.post("/onboard/answer", json={"session_id": session_id, "answer": just_fits})
     assert resp.status_code == 200
     assert called is False
+
+
+# ── solo mode: the wizard skips the team steps ──────────────────────────────
+
+
+def _set_mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from openexecutive.memory import workspace_settings as ws
+
+    monkeypatch.setattr(ws, "get_workspace", lambda *a, **k: ws.WorkspaceSettings(mode=mode))
+
+
+def test_team_mode_asks_every_step(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_mode(monkeypatch, "team")
+    status = client.get("/onboard/start").json()
+    assert status["total_steps"] == TOTAL_STEPS
+    assert status["current_step"] == 0
+    assert status["optional"] is False
+
+
+def test_solo_mode_skips_team_size_members_and_fractional_steps(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.onboarding.wizard import SOLO_SKIPPED_FIELDS, WIZARD_STEPS
+
+    _set_mode(monkeypatch, "solo")
+    built: list[Any] = []
+    monkeypatch.setattr(profile_builder, "build_and_save_profile", built.append)
+
+    skipped = {s["question"] for s in WIZARD_STEPS if s["field"] in SOLO_SKIPPED_FIELDS}
+    assert len(skipped) == 3
+    solo_total = TOTAL_STEPS - 3
+
+    status = client.get("/onboard/start").json()
+    session_id = status["session_id"]
+    assert status["total_steps"] == solo_total
+    asked: list[str] = []
+    positions: list[int] = []
+    optional: list[bool] = []
+    while not status["completed"]:
+        asked.append(status["current_question"])
+        positions.append(status["current_step"])
+        optional.append(status["optional"])
+        # The team-size step was required; nothing solo asks is skipped here.
+        status = client.post(
+            "/onboard/answer", json={"session_id": session_id, "answer": "x"}
+        ).json()
+        assert status["total_steps"] == solo_total
+
+    assert not skipped & set(asked)
+    assert positions == list(range(solo_total))
+    # The optional steps (culture onward) are flagged so the UI offers Skip.
+    assert optional == [not s["required"] for s in WIZARD_STEPS if s["field"] not in SOLO_SKIPPED_FIELDS]
+    assert status["progress_percent"] == 100
+    assert len(built) == 1
+    state = built[0]
+    assert state.solo is True
+    assert not SOLO_SKIPPED_FIELDS & set(state.answers)
+
+
+def test_solo_wizard_saves_only_the_principal(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end through the real builder: the roster steps never run, so the
+    only person a solo wizard can create is the principal."""
+    from openexecutive.onboarding.wizard import SOLO_SKIPPED_FIELDS, WIZARD_STEPS
+    from openexecutive.people import store as people_store
+
+    _set_mode(monkeypatch, "solo")
+    db = tmp_path / "people.db"
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    real_build = profile_builder.build_and_save_profile
+    monkeypatch.setattr(
+        profile_builder,
+        "build_and_save_profile",
+        lambda state: real_build(state, profile_path=tmp_path / "profile.yaml"),
+    )
+
+    answers = {"name": "Dana Studio", "principal_identity": "Dana Reyes, Founder"}
+    session_id = client.get("/onboard/start").json()["session_id"]
+    for step in WIZARD_STEPS:
+        if step["field"] in SOLO_SKIPPED_FIELDS:
+            continue
+        resp = client.post(
+            "/onboard/answer",
+            json={"session_id": session_id, "answer": answers.get(step["field"], "x")},
+        )
+        assert resp.status_code == 200, resp.json()
+    assert resp.json()["completed"] is True
+
+    people = people_store.list_people(db_path=db)
+    assert [(p.full_name, p.is_principal) for p in people] == [("Dana Reyes", True)]

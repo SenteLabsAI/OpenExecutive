@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import Icon from "@/components/Icon";
+import WorkspaceCard from "@/components/settings/WorkspaceCard";
 import { ADVANCED_ITEMS } from "@/components/shell/navConfig";
 
 // Settings hub — home for admin / power-user tools that were pulled out
@@ -21,6 +22,10 @@ export default function SettingsPage() {
 
         <div className="mt-6">
           <ExecutiveRunSwitch variant="card" />
+        </div>
+
+        <div className="mt-3">
+          <WorkspaceCard />
         </div>
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
