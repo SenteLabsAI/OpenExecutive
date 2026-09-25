@@ -1,4 +1,7 @@
-import { IconName } from "@/components/Icon";
+// Type-only imports, so `npm test` can load this file under
+// `node --experimental-strip-types` (see scripts/navConfig.test.mjs).
+import type { IconName } from "@/components/Icon";
+import type { WorkspaceMode } from "@/lib/api";
 
 // Single source of truth for the app's navigation. The one sidebar
 // (`components/shell/AppSidebar.tsx`, rendered by both the chat home and
@@ -35,11 +38,82 @@ interface BuildOpts {
   isOnboarded?: boolean;
   /** Pending + needs-revision count shown on the Review entry. */
   reviewBadge?: number;
+  /**
+   * "solo" (one person using Open Executive just for themselves) swaps the
+   * Company group — Departments, People, Company profile — for "You":
+   * Goals, People and Business profile. Defaults to "team".
+   */
+  mode?: WorkspaceMode;
+}
+
+const PEOPLE_DESCRIPTION =
+  "Your roster — who the Executive coordinates with and their approval scopes.";
+
+const GOALS_ITEM: NavItem = {
+  href: "/goals",
+  label: "Goals",
+  icon: "flag",
+  description: "What you're working towards, grouped by area — add, update and close goals.",
+};
+
+function companyGroup(isOnboarded: boolean): NavGroup {
+  return {
+    key: "company",
+    label: "Company",
+    items: [
+      {
+        href: "/departments",
+        label: "Departments",
+        icon: "grid",
+        description: "Org units with goals, an authority level, and a specialist behind each.",
+      },
+      {
+        href: "/people",
+        label: "People",
+        icon: "users",
+        description: PEOPLE_DESCRIPTION,
+      },
+      {
+        href: isOnboarded ? "/company-profile" : "/onboard",
+        label: isOnboarded ? "Company profile" : "Set up company",
+        icon: "building",
+        description: "Your company's identity and strategy — set up once, edited any time.",
+      },
+    ],
+  };
+}
+
+// Solo: the same destinations minus Departments (their goals live on /goals,
+// grouped by area), with the copy speaking to one person.
+function youGroup(isOnboarded: boolean): NavGroup {
+  return {
+    key: "you",
+    label: "You",
+    items: [
+      GOALS_ITEM,
+      {
+        href: "/people",
+        label: "People",
+        icon: "users",
+        description: "The people the Executive knows about — clients, partners, anyone you work with.",
+      },
+      {
+        href: isOnboarded ? "/company-profile" : "/onboard",
+        label: isOnboarded ? "Business profile" : "Set up your business",
+        icon: "building",
+        description: "Your business — what you offer, who you serve, your priorities.",
+      },
+    ],
+  };
 }
 
 // Day-to-day navigation only. Power/admin tools live in the Settings
 // area (see ADVANCED_ITEMS) so this list stays focused.
-export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOpts = {}): NavGroup[] {
+export function buildPrimaryNav({
+  isOnboarded = true,
+  reviewBadge = 0,
+  mode = "team",
+}: BuildOpts = {}): NavGroup[] {
   return [
     {
       key: "workspace",
@@ -66,31 +140,7 @@ export function buildPrimaryNav({ isOnboarded = true, reviewBadge = 0 }: BuildOp
         },
       ],
     },
-    {
-      key: "company",
-      label: "Company",
-      items: [
-        {
-          href: "/departments",
-          label: "Departments",
-          icon: "grid",
-          description: "Org units with goals, an authority level, and a specialist behind each.",
-        },
-        {
-          href: "/people",
-          label: "People",
-          icon: "users",
-          description:
-            "Your roster — who the Executive coordinates with and their approval scopes.",
-        },
-        {
-          href: isOnboarded ? "/company-profile" : "/onboard",
-          label: isOnboarded ? "Company profile" : "Set up company",
-          icon: "building",
-          description: "Your company's identity and strategy — set up once, edited any time.",
-        },
-      ],
-    },
+    mode === "solo" ? youGroup(isOnboarded) : companyGroup(isOnboarded),
     {
       key: "knowledge",
       label: "Knowledge",
@@ -204,27 +254,32 @@ export const ADVANCED_ITEMS: NavItem[] = [
 ];
 
 // Anchors the mobile bottom nav. ≤5 per Material guidance; "More" opens
-// the drawer with the full menu. `/` lands on the briefing surface.
-export const MOBILE_PRIMARY: NavItem[] = [
-  { href: "/", label: "Briefing", icon: "clipboard", description: BRIEFING_DESCRIPTION },
-  PULSE_NAV_ITEM,
-  // `?new=1` signals the chat home to reset to a fresh chat and strip
-  // the query — see the effect in app/page.tsx.
-  { href: "/?new=1", label: "New chat", icon: "plus", description: NEW_CHAT_DESCRIPTION },
-  {
-    href: "/people",
-    label: "People",
-    icon: "users",
-    description: "Your roster — who the Executive coordinates with and their approval scopes.",
-  },
-  {
-    href: "/jobs",
-    label: "Workflows",
-    icon: "doc",
-    description:
-      "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",
-  },
-];
+// the drawer with the full menu. `/` lands on the briefing surface. Solo
+// swaps People for Goals — the page a team of one visits most.
+export function buildMobilePrimary(mode: WorkspaceMode = "team"): NavItem[] {
+  return [
+    { href: "/", label: "Briefing", icon: "clipboard", description: BRIEFING_DESCRIPTION },
+    PULSE_NAV_ITEM,
+    // `?new=1` signals the chat home to reset to a fresh chat and strip
+    // the query — see the effect in app/page.tsx.
+    { href: "/?new=1", label: "New chat", icon: "plus", description: NEW_CHAT_DESCRIPTION },
+    mode === "solo"
+      ? GOALS_ITEM
+      : {
+          href: "/people",
+          label: "People",
+          icon: "users",
+          description: PEOPLE_DESCRIPTION,
+        },
+    {
+      href: "/jobs",
+      label: "Workflows",
+      icon: "doc",
+      description:
+        "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",
+    },
+  ];
+}
 
 // Is `href` the active destination for `pathname`? Active on an exact match
 // or anywhere below it (`/jobs` is active on `/jobs/runs/42`).

@@ -21,7 +21,8 @@ Shape notes for anyone changing this file:
 
 * **The system block is a constant**, never f-stringed. An existing profile is
   rendered into the first USER turn via ``to_prompt_block()``, never into the
-  cached system block. This module does not touch ``prompts/cache_manager.py``,
+  cached system block — and so is ``SOLO_HINT`` when the workspace is in solo
+  mode. This module does not touch ``prompts/cache_manager.py``,
   so the "exactly 2 cache_control blocks" budget there is unaffected.
 
 * **Errors never echo model or user input.** A ``ValidationError``'s ``str()``
@@ -498,29 +499,52 @@ def replay_transcript(
     return messages
 
 
+# Prepended to the FIRST user turn when the workspace is in solo mode (one
+# person using Open Executive just for themselves). A user-turn hint rather
+# than a second system prompt, so the cached system block stays one constant
+# for both modes.
+SOLO_HINT = (
+    "This person is setting up Open Executive just for themselves: they run "
+    "the business alone. In the draft, `people` must hold only them — exactly "
+    "one person, with is_principal true — and `departments` must be empty. "
+    "Do not ask about a leadership team or departments; ask instead about "
+    "what they offer, who their customers are, their pricing, their cash and "
+    "runway, and their top goals."
+)
+
+
 def _build_messages(
-    transcript: list[Turn], existing_profile: CompanyProfile | None
+    transcript: list[Turn],
+    existing_profile: CompanyProfile | None,
+    *,
+    solo: bool = False,
 ) -> list[dict[str, Any]]:
     """Replay the transcript as plain text turns.
 
-    An existing profile is prepended to the FIRST user turn, never put in the
-    cached system block (see module docstring).
+    The solo hint (when ``solo``) and an existing profile are prepended to the
+    FIRST user turn, never put in the cached system block (see module
+    docstring).
     """
     messages = replay_transcript(transcript, _CONTINUE_PROMPT)
     if not messages:
         raise InterviewError("The setup session has no conversation yet.")
+    preamble: list[str] = []
+    if solo:
+        preamble.append(SOLO_HINT)
     if existing_profile is not None and not existing_profile.is_empty():
         block = existing_profile.to_prompt_block()
         if block:
-            messages[0] = {
-                "role": messages[0]["role"],
-                "content": (
-                    "The user is re-running setup. Their current saved profile "
-                    "is below — confirm or update it rather than starting over, "
-                    "and do not re-ask what it already answers.\n\n"
-                    f"{block}\n\n---\n\n{messages[0]['content']}"
-                ),
-            }
+            preamble.append(
+                "The user is re-running setup. Their current saved profile "
+                "is below — confirm or update it rather than starting over, "
+                "and do not re-ask what it already answers.\n\n"
+                f"{block}"
+            )
+    if preamble:
+        messages[0] = {
+            "role": messages[0]["role"],
+            "content": "\n\n".join(preamble) + f"\n\n---\n\n{messages[0]['content']}",
+        }
     return messages
 
 
@@ -551,7 +575,11 @@ async def advance(
     system_text = agent.effective_system_prompt()
     provider = get_provider(resolved_model)
 
-    messages = _build_messages(transcript, existing_profile)
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    messages = _build_messages(
+        transcript, existing_profile, solo=get_workspace().mode == "solo"
+    )
 
     # The one place tool_choice varies — see the module docstring.
     must_draft = (

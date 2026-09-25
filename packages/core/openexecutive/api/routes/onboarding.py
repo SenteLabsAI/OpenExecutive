@@ -42,9 +42,9 @@ from openexecutive.onboarding.interview import (
     validate_draft,
 )
 from openexecutive.onboarding.wizard import (
-    TOTAL_STEPS,
     WizardState,
     get_current_question,
+    get_step,
     process_answer,
 )
 from openexecutive.workflows.gate import ensure_workflow_event
@@ -70,23 +70,30 @@ _onboarding_research_fired: set[str] = set()
 _RESEARCH_WALLCLOCK_TIMEOUT_SECONDS = 600
 
 
-@router.get("/onboard/start", response_model=OnboardStatusResponse)
-async def start_onboarding() -> OnboardStatusResponse:
-    session_id = str(uuid.uuid4())
-    state = WizardState()
-    _wizard_sessions[session_id] = state
-
-    question = get_current_question(state)
-    progress = state.get_progress()
-
+def _wizard_status(session_id: str, state: WizardState) -> OnboardStatusResponse:
+    question = get_current_question(state) if not state.completed else None
+    step = get_step(state.current_step)
     return OnboardStatusResponse(
         session_id=session_id,
-        current_step=state.current_step,
-        total_steps=TOTAL_STEPS,
+        current_step=state.position(),
+        total_steps=state.total_steps(),
         current_question=question,
-        progress_percent=progress["percent"],
+        progress_percent=state.get_progress()["percent"],
         completed=state.completed,
+        optional=bool(step is not None and not state.completed and not step["required"]),
     )
+
+
+@router.get("/onboard/start", response_model=OnboardStatusResponse)
+async def start_onboarding() -> OnboardStatusResponse:
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    session_id = str(uuid.uuid4())
+    # The mode is read once, here: a solo workspace skips the team steps, and
+    # the first-run choice screen sets it before this is called.
+    state = WizardState(solo=get_workspace().mode == "solo")
+    _wizard_sessions[session_id] = state
+    return _wizard_status(session_id, state)
 
 
 @router.post("/onboard/answer", response_model=OnboardStatusResponse)
@@ -150,18 +157,7 @@ async def submit_answer(body: OnboardAnswerRequest) -> OnboardStatusResponse:
             task.add_done_callback(_background_research_tasks.discard)
 
     _wizard_sessions[body.session_id] = state
-
-    question = get_current_question(state) if not state.completed else None
-    progress = state.get_progress()
-
-    return OnboardStatusResponse(
-        session_id=body.session_id,
-        current_step=state.current_step,
-        total_steps=TOTAL_STEPS,
-        current_question=question,
-        progress_percent=progress["percent"],
-        completed=state.completed,
-    )
+    return _wizard_status(body.session_id, state)
 
 
 async def _fire_post_onboarding_research(session_id: str) -> None:
@@ -248,18 +244,7 @@ async def get_onboard_status(session_id: str) -> OnboardStatusResponse:
     state = _wizard_sessions.get(session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Onboarding session not found")
-
-    question = get_current_question(state) if not state.completed else None
-    progress = state.get_progress()
-
-    return OnboardStatusResponse(
-        session_id=session_id,
-        current_step=state.current_step,
-        total_steps=TOTAL_STEPS,
-        current_question=question,
-        progress_percent=progress["percent"],
-        completed=state.completed,
-    )
+    return _wizard_status(session_id, state)
 
 
 # ── conversational onboarding (/onboard/interview/*) ─────────────────────────

@@ -10,7 +10,9 @@ import {
   listScheduledActions,
   type DailyActivityCount,
   type ScheduledAction,
+  type WorkspaceMode,
 } from "@/lib/api";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   deriveVitals,
   formatTrend,
@@ -44,10 +46,13 @@ const HEATMAP_DAYS = 90;
 interface HeaderData {
   pending: ScheduledAction[];
   memoriesTotal: number;
+  /** Initiatives with status "active" — solo's stand-in for dept check-ins. */
+  activeProjects: number;
   heatmap: DailyActivityCount[];
 }
 
 export default function PulseHeader() {
+  const { mode } = useWorkspace();
   const [data, setData] = useState<HeaderData | null>(null);
   const [loading, setLoading] = useState(true);
   // null until peer memory answers (or fails / is disabled): the tile then
@@ -85,6 +90,7 @@ export default function PulseHeader() {
         setData({
           pending,
           memoriesTotal: decisions.length + initiatives.length + advice.length,
+          activeProjects: initiatives.filter((i) => i.status === "active").length,
           heatmap: daily.days,
         });
       })
@@ -101,7 +107,10 @@ export default function PulseHeader() {
     };
   }, []);
 
-  const stats = useMemo(() => (data ? deriveStats(data, peerNotes) : null), [data, peerNotes]);
+  const stats = useMemo(
+    () => (data ? deriveStats(data, peerNotes, mode) : null),
+    [data, peerNotes, mode],
+  );
 
   return (
     <header className="space-y-6">
@@ -173,8 +182,9 @@ interface Stat {
 }
 
 function deriveStats(
-  { pending, memoriesTotal, heatmap }: HeaderData,
+  { pending, memoriesTotal, activeProjects, heatmap }: HeaderData,
   peerNotes: number | null,
+  mode: WorkspaceMode,
 ): Stat[] {
   const groups = groupByRhythm(pending);
   const followups = pending.filter((a) => a.kind === "ad_hoc").length;
@@ -195,7 +205,10 @@ function deriveStats(
     { label: "Beats today", value: beatsToday, tone: "emerald", hint: "actions fired" },
     { label: "Next beat", value: nextBeat.value, tone: "accent", hint: nextBeat.hint },
     { label: "Daily rhythms", value: groups.daily.length },
-    { label: "Dept check-ins", value: groups.departments.length },
+    // Solo has no department check-ins; the projects it tracks take the slot.
+    mode === "solo"
+      ? { label: "Projects", value: activeProjects, hint: "active" }
+      : { label: "Dept check-ins", value: groups.departments.length },
     { label: "Follow-ups", value: followups },
     // Three episodic lists plus what peer memory has learned about people;
     // the hint says how much of the number is peer notes so it reconciles

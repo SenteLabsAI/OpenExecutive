@@ -293,9 +293,9 @@ def onboard() -> None:
 
 
 async def _onboard() -> None:
+    from openexecutive.memory.workspace_settings import get_workspace
     from openexecutive.onboarding.profile_builder import build_and_save_profile
     from openexecutive.onboarding.wizard import (
-        TOTAL_STEPS,
         WizardState,
         get_current_question,
         process_answer,
@@ -304,15 +304,16 @@ async def _onboard() -> None:
     console.print("[bold]Open Executive Onboarding[/bold]\n")
     console.print("This wizard will set up your company profile. Type 'skip' to skip optional questions.\n")
 
-    state = WizardState()
+    # A solo workspace skips the team steps (see onboarding.wizard).
+    state = WizardState(solo=get_workspace().mode == "solo")
 
     while not state.completed:
         question = get_current_question(state)
         if question is None:
             break
 
-        step_num = state.current_step + 1
-        console.print(f"[dim]Step {step_num}/{TOTAL_STEPS}[/dim]")
+        step_num = state.position() + 1
+        console.print(f"[dim]Step {step_num}/{state.total_steps()}[/dim]")
         console.print(f"[bold]{question}[/bold]\n")
 
         try:

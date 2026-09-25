@@ -2442,7 +2442,7 @@ today:
     explicit ids to `POST /alerts/bulk-ack` (never a server-side age sweep),
     and "Re-check relevance" (`POST /alerts/review`); Monitoring gets the
     same footer at 3 days; the ack body may carry `mute_topic`.
-  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. `/?new=1&draft=<text>` (Playbooks "Try in chat") also seeds the new chat's input, capped at 2000 chars, WITHOUT auto-sending — unlike briefing handoffs, the text comes from a URL the user didn't type. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge`; Skills moved to the Playbooks tab of Workflows, `/jobs?tab=playbooks`), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`.
+  ui_route: / (Next.js app router root) — the briefing is the default landing surface. `/today` still renders the same content as a standalone route (no sidebar shell) for bookmarks and the sidebar Briefing button. The chat lives at the same root behind a `mode` toggle — entering chat from "New chat" or by selecting a session swaps the main content; clicking the sidebar brandmark or the "Briefing" sidebar button returns to the briefing. Every signed-in route renders ONE sidebar component (`components/shell/AppSidebar.tsx`). The AppShell renders it for inner routes, and `/` (exempt from the shell for its own top bar and debug panel) renders the same component with in-page callbacks. On `/` its entries switch the page's in-memory mode; elsewhere they are links (`/?new=1`, `/?session=<id>`) that the home page applies on mount and then strips from the URL. `/?new=1&draft=<text>` (Playbooks "Try in chat") also seeds the new chat's input, capped at 2000 chars, WITHOUT auto-sending — unlike briefing handoffs, the text comes from a URL the user didn't type. The sidebar's "Recent" list is deliberately short — the 7 newest WEB chats only (channel sessions are recognised by their `slack:` / `telegram:` / `discord:` / `email:` / `google_chat:` session-id prefix, `lib/sessionChannel.ts`, since `sessions` has no channel column) — with an "All chats" link to `/chats`, the full history page with channel filter tabs, title search, date groups, a channel tag per row, and delete. The session list is held app-wide by `SessionsProvider` (root layout) over the unchanged `GET /sessions`, so the chat home refreshes it after each turn and every route sees the same list. A standalone "Pulse" link (→ `/memories`, the page titled "Pulse") is pinned directly beneath Briefing in the sidebar and the mobile bottom bar — an always-visible top-level destination rather than a Knowledge-group entry (the Knowledge group now lists "RAG" → `/knowledge`; Skills moved to the Playbooks tab of Workflows, `/jobs?tab=playbooks`), rendered from the shared `PULSE_NAV_ITEM` in `navConfig.ts`. In solo mode (read app-wide from `components/workspace/WorkspaceContext.tsx`'s WorkspaceProvider, mounted in the root layout next to ExecutiveStatusProvider, which reads team while loading or on error so a team install never flashes solo UI) `buildPrimaryNav({mode})` swaps the Company group (Departments, People, Company profile) for "You" (Goals → `/goals`, People, Business profile), `buildMobilePrimary(mode)` swaps People for Goals, and the briefing drops the Departments card, the People card, the "Across the team" lane (all action proposals land in "Needs you"), the people-awaiting, people-overdue and departments-at-risk pills and the quiet-day "Set up a check-in" link (a "N goals at risk" pill links to `/goals` instead), and shows a "Your projects" card of active initiatives (Done = PATCH status completed, Drop = DELETE after a confirm) where the Departments card was. `/goals` lists every goal from GET /departments grouped by area (a department row; areas with goals first, the rest offered as "Other areas") and adds, edits and deletes goals through the slug-scoped goal routes, sharing `components/goals/GoalEditor.tsx` with the department page. Pulse hides "Department check-ins" and "Awaiting people" in solo. Settings has a Workspace card (mode with a confirm, time zone, and "Book meetings without asking", bound to GET/PUT `/decisions/classes/meeting_scheduling` and hidden when that returns 404). Team rendering is unchanged.
   briefing_first_landing: |
     The root page (`packages/ui/src/app/page.tsx`) defaults to `mode="briefing"`
     and renders `<Briefing>` (`packages/ui/src/components/Briefing.tsx`) in the
@@ -5061,8 +5061,11 @@ company_onboarding:
     POST /onboard/interview/message, POST /onboard/interview/draft,
     GET /onboard/interview/{session_id}, POST /onboard/interview/commit.
     The original wizard endpoints (/onboard/start, /onboard/answer,
-    /onboard/status/{id}) are unchanged and still serve the form fallback at
-    /onboard?mode=form and the `openexecutive onboard` CLI.
+    /onboard/status/{id}) still serve the form fallback at /onboard?mode=form
+    and the `openexecutive onboard` CLI. /onboard/start reads the workspace
+    mode once per session (WizardState.solo); the status response's
+    current_step / total_steps count only the steps that session asks, and
+    `optional` says whether the current step can be skipped.
   agent: |
     openexecutive.agents.onboarding_interviewer.OnboardingInterviewerAgent.
     Council-visible (model + prompt overridable) but OUTSIDE
@@ -5203,6 +5206,37 @@ company_onboarding:
     POSTs with a typing indicator, no SSE — a clarifying question is one
     sentence, and the draft turn is a forced tool call whose partial JSON
     cannot be usefully streamed.
+  solo_mode: |
+    First run opens on a choice screen in app/onboard/page.tsx — "Just me" or
+    "Me and my team" — that writes PUT /workspace ({mode, timezone} with the
+    browser's IANA zone; the mode alone if the server rejects the zone) and
+    refreshes the app-wide WorkspaceProvider before the conversation or the
+    form starts, because the two modes ask different things. `?for=me|team`
+    marks the choice as made so moving between the conversation and the form
+    does not ask again. A re-run (GET /health says a profile is loaded) skips
+    the screen; the mode is changed in Settings, and the flow follows it.
+    Interview: when get_workspace().mode == "solo", advance() passes solo=True
+    to _build_messages, which prepends interview.SOLO_HINT to the FIRST user
+    turn (before the re-run profile block): the founder runs the business
+    alone, so `people` holds only them with is_principal true and
+    `departments` is empty, and the questions go to the offer, customers,
+    pricing, cash and runway and their top goals instead of a leadership team.
+    The system block (ONBOARDING_INTERVIEWER_SYSTEM) and the tool array are
+    unchanged, so both caches hold across modes. A principal-only draft with
+    no departments already passes validate_draft.
+    Review: in solo OnboardDraftReview hides the people and departments
+    drafts and shows a "You" card (name and role — the drafted principal,
+    else the first drafted person, else blank) beside the owner sign-in email
+    field; the commit sends that one person as principal and an empty
+    department list, so save_onboarding_people creates exactly one Person and
+    reconcile_onboarding_departments adds nothing — the seeded defaults stay,
+    as the areas /goals groups goals by. The workspace settings live in their
+    own table, so the commit's profile rebuild cannot wipe them.
+    Form wizard: WizardState(solo=...) skips SOLO_SKIPPED_FIELDS
+    (headcount_and_founding — the required Team Size step —, team_members,
+    fractional_executives); current_step stays an index into WIZARD_STEPS so
+    a step keeps its identity, and position() / total_steps() drive the
+    progress label. The CLI wizard does the same.
 
 fixtures:
   module: openexecutive.api.routes.fixtures

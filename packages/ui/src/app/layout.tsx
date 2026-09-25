@@ -3,6 +3,7 @@ import AuthProvider from "@/components/AuthProvider";
 import { ExecutiveStatusProvider } from "@/components/executive/ExecutiveStatusContext";
 import { SessionsProvider } from "@/components/sessions/SessionsContext";
 import AppShell from "@/components/shell/AppShell";
+import { WorkspaceProvider } from "@/components/workspace/WorkspaceContext";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,7 +22,9 @@ export default function RootLayout({
         <AuthProvider>
           <SessionsProvider>
             <ExecutiveStatusProvider>
-              <AppShell>{children}</AppShell>
+              <WorkspaceProvider>
+                <AppShell>{children}</AppShell>
+              </WorkspaceProvider>
             </ExecutiveStatusProvider>
           </SessionsProvider>
         </AuthProvider>

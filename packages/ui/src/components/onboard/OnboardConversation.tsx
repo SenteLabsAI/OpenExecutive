@@ -15,7 +15,19 @@ interface Props {
   initialTurns?: { role: "user" | "assistant"; text: string }[];
   initialTurn: OnboardTurn | null;
   onDraft: (turn: OnboardTurn, turns: Bubble[]) => void;
+  /** One person setting this up just for themselves — asks about the business, not a team. */
+  solo?: boolean;
 }
+
+const OPENING = {
+  team: "Tell me about your company — what you do, who you sell to, roughly how big you are, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a deck, a one-pager, or anything else that describes the business.",
+  solo: "Tell me about your business — what you offer, who your customers are, how you price it, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a one-pager, a price list, or anything else that describes the business.",
+};
+
+const OPENING_EXAMPLE = {
+  team: "e.g. We're Northwind Tools — we sell industrial supplies to construction crews in the Midwest. About 40 people, bootstrapped, doing roughly $12M a year. This year we're trying to launch same-day delivery without blowing up margins.",
+  solo: "e.g. I'm a freelance brand designer working with early-stage food and drink startups. Most projects are fixed-price, $8–15k each, and I have about four months of runway. This year I want to productise a brand-sprint offer and land three retainer clients.",
+};
 
 export interface Bubble {
   role: "user" | "assistant";
@@ -26,7 +38,9 @@ export default function OnboardConversation({
   initialTurns = [],
   initialTurn,
   onDraft,
+  solo = false,
 }: Props) {
+  const flavour = solo ? "solo" : "team";
   const [turn, setTurn] = useState<OnboardTurn | null>(initialTurn);
   const [bubbles, setBubbles] = useState<Bubble[]>(initialTurns);
   const [input, setInput] = useState("");
@@ -103,7 +117,7 @@ export default function OnboardConversation({
             {headline ??
               (started
                 ? "Anything else I should know? Tell me what to change, or draft again."
-                : "Tell me about your company — what you do, who you sell to, roughly how big you are, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a deck, a one-pager, or anything else that describes the business.")}
+                : OPENING[flavour])}
           </p>
           {turn?.question_hint && (
             <p className="text-xs text-fg-muted mt-2">{turn.question_hint}</p>
@@ -146,7 +160,7 @@ export default function OnboardConversation({
           placeholder={
             started
               ? "Your answer… (Enter to send, Shift+Enter for a new line)"
-              : "e.g. We're Northwind Tools — we sell industrial supplies to construction crews in the Midwest. About 40 people, bootstrapped, doing roughly $12M a year. This year we're trying to launch same-day delivery without blowing up margins."
+              : OPENING_EXAMPLE[flavour]
           }
           className="w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors disabled:opacity-50"
         />

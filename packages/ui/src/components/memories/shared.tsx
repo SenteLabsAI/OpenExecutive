@@ -6,7 +6,7 @@
 // and a handful of presentational primitives (StatTile, LivePulse, etc.).
 
 import Icon, { type IconName } from "@/components/Icon";
-import type { ScheduledAction } from "@/lib/api";
+import type { ScheduledAction, WorkspaceMode } from "@/lib/api";
 
 export const DOMAINS = [
   "strategy",
@@ -139,6 +139,18 @@ export function groupByRhythm(
     groups[key].sort((x, y) => x.run_at.localeCompare(y.run_at));
   }
   return groups;
+}
+
+// Groups a solo workspace (one person, just for themselves) does not show:
+// it has no department check-ins, and no team whose replies are awaited.
+export const SOLO_HIDDEN_RHYTHMS: ReadonlySet<RhythmGroup> = new Set<RhythmGroup>([
+  "departments",
+  "awaiting",
+]);
+
+/** Whether a rhythm group is shown in this workspace mode. */
+export function showsRhythm(group: RhythmGroup, mode: WorkspaceMode): boolean {
+  return mode !== "solo" || !SOLO_HIDDEN_RHYTHMS.has(group);
 }
 
 // ---------------------------------------------------------------------------

@@ -889,3 +889,64 @@ def test_local_login_and_the_cli_count_as_the_owner(
     assert client.post("/onboard/interview/commit", json=_bob_as_owner(sid)).status_code == 200
     owner = people_store.find_principal_person(db_path=people_db)
     assert owner is not None and owner.full_name == "Bob Lin"
+
+
+# ── solo: one person, no new departments, workspace settings untouched ───────
+
+
+def test_solo_commit_keeps_workspace_settings_and_saves_one_person(
+    client: TestClient,
+    seeded: list[Any],
+    profile_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the solo review screen sends — the principal alone and no
+    departments — creates exactly one Person and leaves the seeded areas
+    as they were. The workspace settings live in their own table, so the
+    commit (which rebuilds the profile from scratch) cannot wipe them."""
+    from openexecutive.departments import store as dept_store
+    from openexecutive.memory import episodic
+    from openexecutive.memory import workspace_settings as ws
+    from openexecutive.onboarding.commit import (
+        reconcile_onboarding_departments as real_reconcile,
+    )
+    from openexecutive.people import store as people_store
+
+    db = tmp_path / "episodic.db"
+    for module in (episodic, dept_store, people_store):
+        monkeypatch.setattr(module, "DB_PATH", db)
+    people_store.initialize_db(db)
+    dept_store.initialize_db(db)
+    dept_store.seed_default_departments(db)
+    monkeypatch.setattr("openexecutive.departments.registry.invalidate", lambda: None)
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.save_onboarding_people", _real_save_onboarding_people
+    )
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.reconcile_onboarding_departments", real_reconcile
+    )
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Europe/Berlin"))
+    areas_before = sorted(d.config.slug for d in dept_store.list_departments(db))
+    assert areas_before, "fixture assumption: the default areas are seeded"
+
+    seeded.append(
+        _draft(
+            people=[{"full_name": "Dana Reyes", "role": "Founder", "is_principal": True}],
+            departments=[],
+        )
+    )
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["departments"] = []
+    body["people"] = [{"full_name": "Dana Reyes", "role": "Founder", "is_principal": True}]
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 200, resp.text
+
+    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="Europe/Berlin")
+    people = people_store.list_people(db_path=db)
+    assert [(p.full_name, p.is_principal) for p in people] == [("Dana Reyes", True)]
+    assert sorted(d.config.slug for d in dept_store.list_departments(db)) == areas_before
+    saved = CompanyProfile.load_from_yaml(profile_path)
+    assert saved.org_structure.departments == []
+    assert saved.org_structure.leadership_team == ["Dana Reyes, Founder"]
