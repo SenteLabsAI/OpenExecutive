@@ -8,6 +8,7 @@ import OnboardPeopleDraft from "@/components/onboard/OnboardPeopleDraft";
 import {
   commitOnboardDraft,
   listDepartments,
+  listPeople,
   type CompanyProfile,
   type OnboardDepartmentDraft,
   type OnboardPersonDraft,
@@ -35,16 +36,22 @@ export default function OnboardDraftReview({
   const [existingTitles, setExistingTitles] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The owner's sign-in email, pre-filled from the login doing the setup.
-  // Null until edited, so the field follows the session as it loads.
+  // The owner's sign-in email. Pre-filled with the owner's current one when
+  // setup is re-run — so whoever re-runs it doesn't silently take over the
+  // owner's login — otherwise with the login doing the setup. Null until
+  // edited, so the field follows both as they load.
   const { data: session } = useSession();
+  const [currentOwnerEmail, setCurrentOwnerEmail] = useState<string | null>(null);
   const [ownerEmailEdit, setOwnerEmailEdit] = useState<string | null>(null);
-  const ownerEmail = ownerEmailEdit ?? session?.user?.email ?? "";
+  const ownerEmail = ownerEmailEdit ?? currentOwnerEmail ?? session?.user?.email ?? "";
 
   useEffect(() => {
     listDepartments()
       .then((ds) => setExistingTitles(ds.map((d) => d.config.title)))
       .catch(() => setExistingTitles([]));
+    listPeople()
+      .then((ps) => setCurrentOwnerEmail(ps.find((p) => p.is_principal && p.email)?.email ?? null))
+      .catch(() => setCurrentOwnerEmail(null));
   }, []);
 
   // The seam that lets the /company-profile section editors work here: they
@@ -66,10 +73,8 @@ export default function OnboardDraftReview({
     new Set(namedDepartments.map((d) => d.title.trim().toLowerCase())).size !==
     namedDepartments.length;
 
-  // The server's check is the real one; this just catches a typo before saving.
-  const ownerEmailInvalid =
-    ownerEmail.trim() !== "" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ownerEmail.trim());
-
+  // The owner email is checked only by the server (check_owner_email): a
+  // rejection comes back as the error below and leaves the draft editable.
   const blocker = !profile.name.trim()
     ? "Your company needs a name."
     : namedPeople.length === 0
@@ -80,9 +85,7 @@ export default function OnboardDraftReview({
           ? "Two people have the same name — give them distinct names."
           : duplicateDepartments
             ? "Two departments have the same name."
-            : ownerEmailInvalid
-              ? "Check your sign-in email — it doesn’t look like an email address."
-              : null;
+            : null;
 
   async function save() {
     if (blocker || saving) return;

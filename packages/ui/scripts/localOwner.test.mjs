@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  FALSEY_ENV,
   isLoopbackHost,
   localOwnerModeEnabled,
   localOwnerSessionAllowed,
@@ -35,6 +37,16 @@ test("once Google sign-in is set up it is the only way in", () => {
   assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, googleClientId: "123.apps.googleusercontent.com" }), false);
   // Whitespace alone is not a client id.
   assert.equal(localOwnerModeEnabled({ ...MAKE_DEV, googleClientId: "  " }), true);
+});
+
+test("OE_PUBLIC_DEPLOYMENT's off-values match the API's exactly", () => {
+  // If the UI counted a value as "off" that the API counts as "on", an
+  // internet-facing API could sit behind a UI that opens without sign-in.
+  const mainPy = readFileSync(new URL("../../core/openexecutive/api/main.py", import.meta.url), "utf8");
+  const literal = /_FALSEY_ENV = frozenset\(\{([^}]*)\}\)/.exec(mainPy);
+  assert.ok(literal, "_FALSEY_ENV not found in api/main.py");
+  const apiValues = [...literal[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual([...FALSEY_ENV].sort(), apiValues.sort());
 });
 
 test("a public deployment always requires sign-in, read like the API reads it", () => {

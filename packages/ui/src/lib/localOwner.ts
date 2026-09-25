@@ -34,8 +34,9 @@ export interface LocalOwnerEnv {
   publicDeployment: string | undefined;
 }
 
-// Mirrors api/main.py's _FALSEY_ENV, so both apps read OE_PUBLIC_DEPLOYMENT alike.
-const FALSEY_ENV = new Set(["", "0", "false", "no", "off"]);
+// Mirrors api/main.py's _FALSEY_ENV, so both apps read OE_PUBLIC_DEPLOYMENT
+// alike; scripts/localOwner.test.mjs fails if the two drift apart.
+export const FALSEY_ENV: ReadonlySet<string> = new Set(["", "0", "false", "no", "off"]);
 
 export function localOwnerModeEnabled(env: LocalOwnerEnv): boolean {
   return (
