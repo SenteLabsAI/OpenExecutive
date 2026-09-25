@@ -22,6 +22,7 @@ const SPECIALISTS = [
   { id: "coo", label: "COO (Operations)" },
   { id: "cmo", label: "CMO (Marketing)" },
   { id: "cpo", label: "CPO (Product + Strategy)" },
+  { id: "sales", label: "Sales (Sales + Marketing)" },
   { id: "board_comms", label: "Board Comms (Board + Finance)" },
 ];
 

@@ -77,6 +77,7 @@ The internal routing is implemented as a `consult_specialist` tool — the model
 | Chief Operating Officer | `coo` | `claude-sonnet-4-6` | Process, vendor management, operational scaling |
 | Chief Marketing Officer | `cmo` | `claude-sonnet-4-6` | GTM, brand, messaging, PR, crisis comms |
 | Chief Product Officer | `cpo` | `claude-sonnet-4-6` | Roadmap, prioritization, product strategy |
+| Head of Sales | `sales` | `DEFAULT_MODEL` | Pipeline, qualification, founder-led sales, pricing conversations, proposals, forecasting |
 | Board Comms Director | `board_comms` | `claude-opus-4-7` | Board decks, investor relations, governance |
 
 CSO, CFO, GC, and Board Comms use `extended-thinking` (`budget_tokens: 8000`) for deeper reasoning on high-stakes decisions.
@@ -160,14 +161,17 @@ Curated MBA-level content seeded into ChromaDB at startup:
 | Domain | Content |
 |---|---|
 | Strategy | Competitive analysis frameworks, OKR methodology |
-| Finance | Unit economics, LTV/CAC, fundraising playbooks |
-| HR | Hiring scorecards, comp philosophy, performance management |
-| Legal | Startup legal basics, employment, IP, contracts |
+| Finance | Unit economics, LTV/CAC, fundraising playbooks, running a bootstrapped business on cash |
+| HR | Hiring scorecards, comp philosophy, performance management, first contractor vs. first employee |
+| Legal | Startup legal basics, employment, IP, contracts, contractor agreements and IP assignment |
 | Operations | Scaling frameworks, vendor management |
-| Marketing | GTM playbooks, brand strategy |
+| Marketing | GTM playbooks, brand strategy, pricing a solo offer |
+| Sales | Founder-led sales, qualification and pipeline, proposals and pricing conversations, follow-up and forecasting |
 | Board | Board communication, investor relations, governance |
 
-Collection: `builtin_knowledge`. Seeded once at startup, idempotent.
+Collection: `builtin_knowledge`. Seeded at startup: the whole tree on first boot, then on every later boot only the shipped docs (`knowledge/shipped_manifest.py`) that have no chunks yet, so docs added in a new release reach existing installs. Idempotent.
+
+Specialists also receive the company's stage (from `company/profile.yaml`) as a `<company_stage>` block in their user turn — never in their cached system prompt — so stage-sensitive advice (venture benchmarks vs. cash-first for a bootstrapped company) does not depend on the Executive restating it.
 
 ### Layer 2 — Company-Specific Knowledge
 
@@ -209,6 +213,7 @@ Domain aliases per specialist (`DOMAIN_ALIASES` in `knowledge/retriever.py`):
 | coo | operations, finance |
 | cmo | marketing, strategy |
 | cpo | product, strategy |
+| sales | sales, marketing |
 | board_comms | board, finance, strategy |
 
 ---

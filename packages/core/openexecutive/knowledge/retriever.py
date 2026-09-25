@@ -184,6 +184,7 @@ DOMAIN_ALIASES: dict[str, list[str]] = {
     "coo": ["operations"],
     "cmo": ["marketing"],
     "cpo": ["product", "strategy"],
+    "sales": ["sales", "marketing"],
     "board_comms": ["board", "finance"],
 }
 

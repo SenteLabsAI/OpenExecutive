@@ -30,7 +30,7 @@ _FUNCTION_TO_SPECIALIST = {
     "engineering": "cpo",  # closest available — no CTO specialist
     "product": "cpo",
     "marketing": "cmo",
-    "sales": "cmo",  # closest available — no CRO specialist
+    "sales": "sales",
     "operations": "coo",
     "finance": "cfo",
     "strategy": "cso",

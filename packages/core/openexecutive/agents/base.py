@@ -56,6 +56,7 @@ class BaseAgent(ABC):
         failure_cases: str = "",
         department_memory: str = "",
         *,
+        company_stage: str = "",
         system_prompt_override: str | None = None,
         model_override: str | None = None,
         deep_reasoning_override: bool | None = None,
@@ -116,6 +117,15 @@ class BaseAgent(ABC):
             user_content = (
                 f"<department_memory>\n{department_memory}\n</department_memory>\n\n{user_content}"
             )
+        # The company's stage, from the profile. Specialists never see the
+        # company profile — it lives in the Executive's cached system block —
+        # and stage changes which benchmarks apply (venture metrics mislead a
+        # bootstrapped business). It rides in the USER turn, outermost, so the
+        # specialist's cached system prompt stays byte-identical whatever the
+        # profile says. Collapsed to one line: it is free text.
+        stage = " ".join(company_stage.split())
+        if stage:
+            user_content = f"<company_stage>\n{stage}\n</company_stage>\n\n{user_content}"
 
         create_kwargs: dict = {
             "model": model,

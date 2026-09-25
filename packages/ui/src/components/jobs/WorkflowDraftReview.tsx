@@ -23,6 +23,7 @@ const SPECIALIST_LABELS: Record<(typeof DYNAMIC_SPECIALISTS)[number], string> = 
   coo: "Operations",
   cmo: "Marketing",
   cpo: "Product",
+  sales: "Sales",
   board_comms: "Board comms",
 };
 
