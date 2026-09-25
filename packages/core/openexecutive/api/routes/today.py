@@ -1297,7 +1297,8 @@ def _nothing_needs_attention(today_data: dict[str, Any], mode: str = "team") -> 
     nothing to synthesize — and handing the model only the history rail makes
     it manufacture urgency out of settled items. Callers emit a fixed quiet
     line instead of spending a model call. Solo never renders who is
-    awaiting (one founder, no team), so it does not count here either.
+    awaiting (the Executive coordinates nobody but the principal there), so
+    it does not count here either.
     """
     if today_data.get("proposals"):
         return False

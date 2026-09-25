@@ -1,7 +1,7 @@
 # Tallgrass Studio — Overview
 
 Tallgrass Studio is an independent brand and product design studio run by one
-person: Maya Lindqvist, founder and principal designer. There is no team.
+person: Maya Lindqvist, its owner and principal designer. She has no employees.
 Maya sells the work, does the work, invoices for it, and decides what the
 studio takes on next. A contract illustrator helps with overflow on some
 projects but never talks to clients.

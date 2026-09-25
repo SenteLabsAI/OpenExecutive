@@ -647,10 +647,10 @@ async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
 
     session_id = getattr(session, "session_id", None) if session is not None else None
 
-    # Solo: a follow-up to the founder goes straight to the founder. A
-    # department or scope would send it through the authority gate, which
-    # files a proposal card asking the founder to approve a message to
-    # themselves — so both are dropped when the recipient is the principal.
+    # Solo: a follow-up to the principal goes straight to them. A department
+    # or scope would send it through the authority gate, which files a
+    # proposal card asking the principal to approve a message to themselves
+    # — so both are dropped when the recipient is the principal.
     if department or required_scope:
         from openexecutive.memory.workspace_settings import effective_workspace_mode
 
@@ -1449,11 +1449,13 @@ def configured_integrations(settings: Any) -> set[str]:
     return configured
 
 
-# Tools that only make sense with a team: posting to a department's room,
-# broadcasting to the whole company, naming a department head. Solo mode (one
-# person using Open Executive for themselves) has no team, so these are not
-# offered in any toolkit — chat, reflection, research. The founder still adds
-# and messages their own contacts (upsert_person, list_people, message_person).
+# Tools that coordinate a team through Open Executive: posting to a
+# department's room, broadcasting to the whole company, naming a department
+# head. In solo mode only one person (the principal) uses Open Executive —
+# the people in their world are contacts, not a team wired to it — so these
+# are not offered in any toolkit: chat, reflection, research. The principal
+# still adds and messages their own contacts (upsert_person, list_people,
+# message_person).
 SOLO_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "send_company_broadcast",
     "send_department_message",
@@ -1478,18 +1480,18 @@ def filter_tools_for_workspace_mode(
     return [t for t in tools if t.get("name", "") not in withheld]
 
 
-def founder_only_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
+def principal_only_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
     """A copy of ``handlers`` whose ``message_person`` refuses anyone but the
-    principal. For solo mode's unattended passes (reflection, research): a
-    founder's contacts hear from the Executive only when the founder asks in
-    conversation, and those passes run with inbound text in their context and
-    nobody watching, so the rule is enforced here rather than left to the
+    principal. For solo mode's unattended passes (reflection, research): the
+    principal's contacts hear from the Executive only when the principal asks
+    in conversation, and those passes run with inbound text in their context
+    and nobody watching, so the rule is enforced here rather than left to the
     prompt. Fails closed when the roster cannot be read."""
     inner = handlers.get("message_person")
     if inner is None:
         return dict(handlers)
 
-    async def _message_founder_only(tool_input: dict[str, Any]) -> str:
+    async def _message_principal_only(tool_input: dict[str, Any]) -> str:
         from openexecutive.people.store import find_principal_person
 
         try:
@@ -1501,19 +1503,19 @@ def founder_only_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
             return json.dumps({
                 "error": (
                     "message_person refused: in solo mode this pass messages "
-                    "only the founder. Raise it for the founder instead."
+                    "only your principal. Raise it for them instead."
                 )
             })
         return str(await inner(tool_input))
 
-    return {**handlers, "message_person": _message_founder_only}
+    return {**handlers, "message_person": _message_principal_only}
 
 
 # What a solo install's UNATTENDED passes (reflection, research) additionally
 # never get: booking a meeting reaches its attendees, and starting a workflow
 # can do anything its steps do. Those passes run with inbound mail and chat in
 # their context and nobody watching, so injected text ("book a sync with X")
-# must not be able to reach a contact. The founder books meetings and starts
+# must not be able to reach a contact. The principal books meetings and starts
 # workflows from chat, where they are in the room.
 SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_calendar_event",
@@ -1543,7 +1545,7 @@ def unattended_toolkit(
     ``tools`` is the pass's own list (already narrowed to what it offers and
     to the configured channels). Solo withholds the team-only tools and
     ``SOLO_UNATTENDED_WITHHELD_TOOLS``, and its ``message_person`` reaches the
-    founder only. Either mode, the handler map is built from the list that
+    principal only. Either mode, the handler map is built from the list that
     is returned, so a name the model emits without being offered it is
     skipped as unknown instead of run. Order is preserved.
     """
@@ -1552,7 +1554,7 @@ def unattended_toolkit(
         tools = [t for t in tools if t.get("name", "") not in SOLO_UNATTENDED_WITHHELD_TOOLS]
     offered = handlers_for_offered_tools(tools, handlers)
     if mode == "solo":
-        offered = founder_only_handlers(offered)
+        offered = principal_only_handlers(offered)
     return tools, offered
 
 
@@ -1563,8 +1565,8 @@ def withheld_tool_error(tool_name: str, mode: str) -> str:
     return json.dumps({
         "error": (
             f"{tool_name} is not available: this workspace is in {mode} mode, "
-            "with no team, departments or company channel to post to. Tell the "
-            "founder directly instead."
+            "so Open Executive has no department room or company channel to "
+            "post to. Say it to your principal directly instead."
         )
     })
 
