@@ -8,6 +8,7 @@ import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   archivePerson,
   closeOpenLoop,
+  getPeopleViewer,
   getPerson,
   getPersonOpenLoops,
   getPersonOutreach,
@@ -37,7 +38,7 @@ const ALL_SCOPES = [
   { value: "customer_credit", label: "Credit", hint: "Receives proposals involving credit or debt." },
   { value: "legal_sign", label: "Legal", hint: "Receives proposals with legal implications." },
   { value: "board_comms", label: "Board", hint: "Receives proposals before board communications." },
-  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the founder." },
+  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
 ];
 
 const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
@@ -428,6 +429,15 @@ export default function PersonDetailPage() {
   const router = useRouter();
   const { mode } = useWorkspace();
   const [offerFor, setOfferFor] = useState<string | null>(null);
+  // Only the principal may move someone between team and contacts (contacts
+  // are theirs alone); for anyone else the API 404s a contact's page anyway.
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
+
+  useEffect(() => {
+    getPeopleViewer()
+      .then((v) => setViewerIsPrincipal(v.is_principal))
+      .catch(() => setViewerIsPrincipal(false));
+  }, []);
   const rawId = params?.id;
   const personId = rawId ? parseInt(String(rawId), 10) : NaN;
 
@@ -549,8 +559,9 @@ export default function PersonDetailPage() {
       const updated = await updatePerson(personId, {
         full_name: trimmedName,
         role: form.role.trim(),
-        // The principal is always on the team; the server refuses otherwise.
-        ...(person?.is_principal ? {} : { kind: form.kind }),
+        // The principal is always on the team, and only the principal may
+        // change anyone's kind; the server refuses otherwise.
+        ...(person?.is_principal || !viewerIsPrincipal ? {} : { kind: form.kind }),
         email: form.email.trim() || null,
         slack_user_id: form.slack_user_id.trim() || null,
         telegram_chat_id: form.telegram_chat_id.trim() || null,
@@ -700,7 +711,7 @@ export default function PersonDetailPage() {
                       </label>
                     </div>
 
-                    {!person.is_principal && (
+                    {!person.is_principal && viewerIsPrincipal && (
                       <label className="text-xs text-fg-muted flex flex-col gap-1">
                         Team member or contact
                         <select
@@ -709,7 +720,7 @@ export default function PersonDetailPage() {
                           className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
                         >
                           <option value="team">Team member — can sign in, message the Executive and approve</option>
-                          <option value="contact">Contact — outside the team, emailed only when you ask</option>
+                          <option value="contact">Contact — outside the team and private to you, emailed only when you ask</option>
                         </select>
                       </label>
                     )}

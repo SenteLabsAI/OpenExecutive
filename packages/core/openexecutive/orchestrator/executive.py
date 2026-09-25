@@ -102,6 +102,23 @@ from openexecutive.providers.translator import reasoning_replay_block
 logger = logging.getLogger(__name__)
 
 
+def _contacts_in_prompt(session: Any) -> bool:
+    """Whether this turn's system prompt lists the principal's contacts.
+
+    Contacts are private to the principal, so only a turn the principal
+    started on a verified surface sees them (the same rule as reaching them:
+    ``people_tools.principal_on_verified_surface``). Every other turn gets the
+    team-only org block. Fails closed.
+    """
+    try:
+        from openexecutive.orchestrator.people_tools import principal_on_verified_surface
+
+        return principal_on_verified_surface(session)
+    except Exception:
+        logger.exception("contacts_in_prompt: check failed — contacts left out")
+        return False
+
+
 def _trunc(value: Any, limit: int = 200) -> str:
     """Render *value* for a log line, capped at *limit* chars.
 
@@ -731,6 +748,7 @@ class Executive:
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
+            include_contacts=_contacts_in_prompt(session),
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -995,6 +1013,7 @@ class Executive:
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
+            include_contacts=_contacts_in_prompt(session),
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.

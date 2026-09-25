@@ -10,6 +10,7 @@ from typing import Any
 
 from openexecutive.alerts import dispatcher, preferences, store
 from openexecutive.alerts.models import (
+    AlertChannel,
     AlertEvent,
     TriageDecision,
 )
@@ -69,6 +70,30 @@ def _rate_limited() -> bool:
             return True
         _recent_event_ts.append(now)
         return False
+
+
+def _make_private(
+    topic_tags: list[str], dedup_key: str
+) -> tuple[list[str], int | None, str, list[AlertChannel]]:
+    """An alert only the principal may see: tagged, routed to the principal,
+    stored but never pushed live or broadcast, and deduplicated only against
+    other private alerts (coalescing into a shared card would copy its body
+    there)."""
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG
+
+    principal_id: int | None = None
+    try:
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        principal_id = principal.id if principal is not None else None
+    except Exception:
+        logger.exception("alerts.pipeline: principal lookup failed for a private alert")
+    tags = [t for t in topic_tags if t != PRIVATE_ALERT_TAG] + [PRIVATE_ALERT_TAG]
+    # Stored for the principal's /today only: no live push to every open
+    # browser (dispatch_web), no email, no team-room broadcast.
+    persisted_only: list[AlertChannel] = [AlertChannel.PERSISTED]
+    return tags, principal_id, f"private:{dedup_key}", persisted_only
 
 
 async def evaluate_and_dispatch(
@@ -154,6 +179,10 @@ async def evaluate_and_dispatch(
         decision.topic_tags, event.department or event.channel,
     )
     routed_to = _person_id_from_event(event)
+    if event.private:
+        topic_tags, routed_to, dedup_key, effective_channels = _make_private(
+            topic_tags, dedup_key
+        )
 
     # A replay of the SAME upstream event (webhook retry, re-poll) is a
     # no-op, exactly as before: the (source, external_id) row already exists.

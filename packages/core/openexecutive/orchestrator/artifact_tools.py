@@ -249,6 +249,18 @@ async def handle_draft_artifact(tool_input: dict[str, Any]) -> str:
     if not title or not why_interesting:
         return _err("title and why_interesting are required")
 
+    # Artifacts are visible to the whole team (and indexed as company
+    # knowledge); a turn about the principal's private mail must not publish
+    # one. The principal gets the draft by email instead.
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    if getattr(current_session.get(), "private_to_principal", False) is True:
+        return _err(
+            "this conversation is private to the principal, and artifacts are "
+            "visible to the whole team — put the draft in your email to the "
+            "principal instead"
+        )
+
     fmt_name = str(tool_input.get("format") or "").strip().lower() or DEFAULT_FORMAT
     try:
         built = build_artifact(fmt_name, tool_input)

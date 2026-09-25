@@ -75,6 +75,8 @@ def format_open_alerts_for_prompt(
     db_path: Path | None = None,
     limit: int = _MAX_ALERTS,
     trusted_ids: list[int] | None = None,
+    *,
+    include_private: bool = False,
 ) -> str:
     """Render current open (unread) alerts as a compact digest, or ``""`` when none.
 
@@ -124,6 +126,12 @@ def format_open_alerts_for_prompt(
     except Exception:
         logger.exception("briefing_context.list_alerts_failed")
         return ""
+    if not include_private:
+        # Private to the principal (alerts.models.PRIVATE_ALERT_TAG): neither
+        # shown nor trusted for an ack on anyone else's turn.
+        from openexecutive.alerts.models import is_private_alert
+
+        live = [a for a in live if not is_private_alert(a)]
 
     if trusted_ids is not None:
         # Clamped to BOARD_LIMIT, never to `limit`. `limit` only decides how
@@ -272,7 +280,13 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
     """
     trusted: list[int] = []
     try:
-        block = format_open_alerts_for_prompt(db_path=db_path, trusted_ids=trusted)
+        from openexecutive.orchestrator.people_tools import principal_on_verified_surface
+
+        block = format_open_alerts_for_prompt(
+            db_path=db_path, trusted_ids=trusted,
+            # Alerts private to the principal only on their own verified turn.
+            include_private=principal_on_verified_surface(session),
+        )
     except Exception:
         logger.exception("briefing_context.render_and_trust_failed")
         trusted = []

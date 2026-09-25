@@ -16,8 +16,11 @@ Key invariants:
   departments section. The People section is omitted when no People are seeded.
 - The principal's contacts (people outside the team) get their own short
   "## Contacts" section after it — name, role/company and whether an email is
-  on file, nothing about authority. With no contacts the block is exactly what
-  it was before contacts existed.
+  on file, nothing about authority — but only when ``include_contacts`` is
+  set, i.e. on the principal's own verified turn: contacts are private to the
+  principal. Every other turn gets the team block, byte-identical to the
+  block with no contacts at all. The 5m cache therefore holds at most two
+  stable variants, never a per-request one.
 
 Security note: Goal text fields (key_result, current, target, mission) are
 user-controlled strings that land inside the system prompt. All values are
@@ -235,11 +238,13 @@ def _render_contacts_section(contacts: list) -> str:
         return ""
 
 
-def render_org_block() -> str:
+def render_org_block(*, include_contacts: bool = False) -> str:
     """Return a Markdown block of all department states + People roster.
 
     Capped at 4000 chars total. Returns "" only when both departments and
-    people are absent (fresh install / test env).
+    people are absent (fresh install / test env). ``include_contacts`` adds
+    the principal's private ``## Contacts`` section — pass it only for the
+    principal's own verified turn.
 
     Any unexpected error is logged and "" is returned — this function must
     never crash a chat turn.
@@ -254,11 +259,11 @@ def render_org_block() -> str:
         # department and for the People section below. Team only; contacts
         # get their own section and never head a department.
         try:
-            everyone = list_people(include_contacts=True)
+            everyone = list_people(include_contacts=include_contacts)
         except Exception:
             everyone = []
         people = [p for p in everyone if p.kind == "team"]
-        contacts = [p for p in everyone if p.kind != "team"]
+        contacts = [p for p in everyone if p.kind != "team"] if include_contacts else []
 
         # Build a quick id→name map for head-person lookups.
         head_name_by_id: dict[int, str] = {

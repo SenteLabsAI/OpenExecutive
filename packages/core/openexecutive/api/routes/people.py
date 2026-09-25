@@ -7,6 +7,12 @@ Executive turn picks up the change.
 ``GET /people`` lists team members only unless ``include_contacts=true`` (the
 People page asks for both; pickers such as a department head or a workflow
 approver keep the default and never offer a contact).
+
+Contacts are private to the principal. ``include_contacts`` is honoured only
+for a caller that resolves to the principal (``caller_is_principal``), a
+contact's id reads as 404 for anyone else — on every route, so its existence
+is not revealed — and only the principal may create a contact or turn someone
+into one. ``GET /people/me`` tells the UI whether to offer contacts at all.
 """
 from __future__ import annotations
 
@@ -75,13 +81,62 @@ class PersonPatch(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Who is asking (contacts are the principal's alone)
+# --------------------------------------------------------------------------- #
+
+def caller_is_principal(request: Request) -> bool:
+    """Whether the caller resolves to the principal: their signed-in email is
+    the principal's, or there is no ``x-caller-email`` (the CLI, direct curl,
+    local login — see ``chat._resolve_caller_person_id``). Stricter than
+    ``_caller_is_principal_or_unclaimed``: with no principal on the roster
+    nobody is. Fails closed."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    try:
+        return people_store.is_principal_or_self(_resolve_caller_person_id(request), None)
+    except Exception:
+        logger.exception("people: principal check failed — contacts stay hidden")
+        return False
+
+
+def _visible_person(person_id: int, request: Request) -> Person:
+    """The person, or 404 — also for a contact when the caller is not the
+    principal, exactly as for an id that does not exist."""
+    person = people_store.get_person(person_id)
+    if person is None or (person.kind != "team" and not caller_is_principal(request)):
+        raise HTTPException(status_code=404, detail="Person not found")
+    return person
+
+
+class PeopleViewer(BaseModel):
+    person_id: int | None
+    is_principal: bool
+
+
+# --------------------------------------------------------------------------- #
 # Read routes
 # --------------------------------------------------------------------------- #
 
 @router.get("/people", response_model=list[Person])
-def list_people(include_archived: bool = False, include_contacts: bool = False) -> list[Person]:
+def list_people(
+    request: Request, include_archived: bool = False, include_contacts: bool = False
+) -> list[Person]:
     return people_store.list_people(
-        include_archived=include_archived, include_contacts=include_contacts
+        include_archived=include_archived,
+        # Anyone but the principal gets the team, as if no contact existed.
+        include_contacts=include_contacts and caller_is_principal(request),
+    )
+
+
+@router.get("/people/me", response_model=PeopleViewer)
+def people_viewer(request: Request) -> PeopleViewer:
+    """Who the caller is on the roster, so the UI can offer contacts (the
+    principal's alone) only to the principal."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    return PeopleViewer(
+        person_id=_resolve_caller_person_id(request),
+        is_principal=caller_is_principal(request),
     )
 
 
@@ -99,11 +154,8 @@ def people_by_scope(token: str) -> list[Person]:
 
 
 @router.get("/people/{person_id}", response_model=Person)
-def get_person(person_id: int) -> Person:
-    person = people_store.get_person(person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
-    return person
+def get_person(person_id: int, request: Request) -> Person:
+    return _visible_person(person_id, request)
 
 
 # --------------------------------------------------------------------------- #
@@ -111,12 +163,15 @@ def get_person(person_id: int) -> Person:
 # --------------------------------------------------------------------------- #
 
 _PRINCIPAL_CONTACT_DETAIL = "The principal is always on the team and cannot be a contact."
+_CONTACTS_ARE_PRIVATE = "Only the principal can add contacts or make someone a contact."
 
 
 @router.post("/people", response_model=Person, status_code=status.HTTP_201_CREATED)
-def create_person(body: PersonCreate) -> Person:
+def create_person(body: PersonCreate, request: Request) -> Person:
     if body.is_principal and body.kind != "team":
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
+    if body.kind != "team" and not caller_is_principal(request):
+        raise HTTPException(status_code=403, detail=_CONTACTS_ARE_PRIVATE)
     pid = people_store.upsert_person(
         full_name=body.full_name,
         role=body.role,
@@ -144,12 +199,12 @@ def create_person(body: PersonCreate) -> Person:
 
 
 @router.patch("/people/{person_id}", response_model=Person)
-def patch_person(person_id: int, body: PersonPatch) -> Person:
-    existing = people_store.get_person(person_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
+    existing = _visible_person(person_id, request)
     if body.kind is not None and body.kind != "team" and existing.is_principal:
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
+    if body.kind == "contact" and existing.kind == "team" and not caller_is_principal(request):
+        raise HTTPException(status_code=403, detail=_CONTACTS_ARE_PRIVATE)
 
     raw = body.model_dump(exclude_unset=True)
     if raw:
@@ -185,9 +240,8 @@ def patch_person(person_id: int, body: PersonPatch) -> Person:
 
 
 @router.post("/people/{person_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
-def archive_person(person_id: int) -> Response:
-    if people_store.get_person(person_id) is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def archive_person(person_id: int, request: Request) -> Response:
+    _visible_person(person_id, request)
     people_store.archive_person(person_id)
     people_registry.invalidate()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -226,8 +280,7 @@ def get_person_open_loops(person_id: int, request: Request) -> list[OpenLoopOut]
     person only — what someone owes is not roster-public."""
     from openexecutive.attunement.open_loops import list_open_loops
 
-    if people_store.get_person(person_id) is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+    _visible_person(person_id, request)
     _require_principal_or(person_id, request)
     return [
         OpenLoopOut(

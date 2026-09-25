@@ -246,50 +246,35 @@ def _block(field: str, addr: str, tool: str, *, reason: str | None = None) -> st
     })
 
 
-def _egress_sets() -> tuple[set[str], set[str]]:
-    """``(allowed, held)``: the lowercased addresses the Executive may reach
-    outbound right now, and the contact addresses it may not reach on this
-    turn (so a refusal can say why).
-
-    Team members and the Executive's own address are always allowed.
-    Contacts are allowed only on a turn the principal started on a verified
-    surface, or inside ``grant_contact_egress`` (see
-    ``people_tools.contacts_reachable_now``) — never on an inbound email, a
-    teammate's turn or an unattended run. Reads the live roster on each call
-    (channel access is roster-driven and changes at runtime).
-    """
-    from openexecutive.people.store import list_people
-
-    settings = get_settings()
-    everyone = list_people(include_contacts=True)
-    allow = {p.email.lower() for p in everyone if p.email and p.kind == "team"}
-    allow.add(settings.exec_email_address.lower())
-    contacts = {p.email.lower() for p in everyone if p.email and p.kind != "team"} - allow
-    if not contacts:
-        return allow, set()
-    from openexecutive.orchestrator.people_tools import contacts_reachable_now
-
-    if contacts_reachable_now():
-        return allow | contacts, set()
-    return allow, contacts
-
-
 def _roster_allow_set() -> set[str]:
     """The set of lowercased addresses the Executive may reach outbound.
 
     Derived from the People roster plus the Executive's own address — the single
     egress allow-list shared by the Gmail, Calendar, and Drive gates so they
-    can't drift apart. Contacts are in it only on the principal's own turns
-    (see ``_egress_sets``).
+    can't drift apart. Reads the live roster on each call (channel access is
+    roster-driven and changes at runtime).
+
+    Team members and the Executive's own address are always in it. The
+    principal's contacts are in it only when
+    ``people_tools.contacts_reachable_now()`` — a turn the principal started on
+    a verified surface, or ``grant_contact_egress``. On any other turn a
+    contact's address is refused exactly like a stranger's, so the refusal
+    cannot reveal that the address belongs to a contact.
     """
-    return _egress_sets()[0]
+    from openexecutive.orchestrator.people_tools import (
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
+    from openexecutive.people.store import list_people
 
-
-def _contact_block(field: str, addr: str, tool: str, what: str) -> str:
-    """The refusal for a contact address on a turn that may not reach contacts."""
-    from openexecutive.orchestrator.people_tools import CONTACT_EGRESS_REFUSAL
-
-    return _block(field, addr, tool, reason=f"{what} {addr!r} {CONTACT_EGRESS_REFUSAL}")
+    settings = get_settings()
+    everyone = list_people(include_contacts=contacts_reachable_now())
+    if turn_is_private_to_principal():
+        # A turn about the principal's private mail reaches the principal only.
+        everyone = [p for p in everyone if p.is_principal]
+    allow = {p.email.lower() for p in everyone if p.email}
+    allow.add(settings.exec_email_address.lower())
+    return allow
 
 
 # Artifact attachments on one email. Gmail caps a message at 25 MB and base64
@@ -483,7 +468,7 @@ def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
     # People roster or to its own exec address. Used to be a static env
     # allowlist; now derived from the People table so it stays in sync
     # with channel access. Contacts only on the principal's own turns.
-    allow, held = _egress_sets()
+    allow = _roster_allow_set()
 
     for field in _GMAIL_RECIPIENT_FIELDS:
         value = arguments.get(field)
@@ -506,8 +491,6 @@ def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
             return _block(field, "<unparseable>", tool)
         for _name, addr in parsed:
             if addr.lower() not in allow:
-                if addr.lower() in held:
-                    return _contact_block(field, addr, tool, "recipient")
                 return _block(field, addr, tool)
     return None
 
@@ -541,7 +524,7 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
     if isinstance(attendees, list) and len(attendees) == 0:
         return None
 
-    allow, held = _egress_sets()
+    allow = _roster_allow_set()
 
     # attendees may be a list of strings (emails) or dicts with an "email" key.
     items = attendees if isinstance(attendees, list) else [attendees]
@@ -557,8 +540,6 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
         if "\n" in email or "\r" in email:
             return _block("attendees", "<contains-newline>", tool)
         if email.lower() not in allow:
-            if email.lower() in held:
-                return _contact_block("attendees", email, tool, "attendee")
             return _block("attendees", email, tool,
                           reason=f"attendee {email!r} is not on the People roster — "
                                  "refusing to create calendar event.")
@@ -650,7 +631,7 @@ def _check_drive_share(tool: str, arguments: dict[str, Any]) -> str | None:
     that lets a grantee slip through an unrecognized field, and the Executive can
     re-issue the share without the incidental mention.
     """
-    allow, held = _egress_sets()
+    allow = _roster_allow_set()
 
     # Typed-flag form first: a boolean/int "make public" flag carries no string
     # for the scan below to catch, so check sharing-scope keys against a
@@ -675,8 +656,6 @@ def _check_drive_share(tool: str, arguments: dict[str, Any]) -> str | None:
             )
         for match in _EMAIL_RE.findall(s):
             if match.lower() not in allow:
-                if match.lower() in held:
-                    return _contact_block("share", match, tool, "Drive share recipient")
                 return _block(
                     "share", match, tool,
                     reason=(

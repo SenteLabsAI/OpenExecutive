@@ -1,7 +1,9 @@
 // The People page splits the roster into the team and the principal's
 // contacts. A contact is someone outside the team (a client, a contractor):
 // they cannot sign in or talk to the bot, and the Executive emails or invites
-// them only when the principal asks directly.
+// them only when the principal asks directly. Contacts are private to the
+// principal — the API never returns one to anyone else — so the Contacts tab
+// is offered to the principal only.
 //
 // Type-only imports, so `npm test` can exercise this under
 // `node --experimental-strip-types` (see scripts/peopleKinds.test.mjs).
@@ -17,13 +19,21 @@ export function isContact(person: Pick<Person, "kind">): boolean {
   return person.kind === "contact";
 }
 
-/** Using it just for yourself, the people you add are mostly contacts. */
-export function defaultPeopleTab(mode: WorkspaceMode): PeopleTab {
-  return mode === "solo" ? "contacts" : "team";
+/** The tabs this viewer gets: Contacts is the principal's alone. */
+export function tabsFor(viewerIsPrincipal: boolean): PeopleTab[] {
+  return viewerIsPrincipal ? ["team", "contacts"] : ["team"];
 }
 
 /**
- * The people a tab lists. In solo mode the Team tab is just the founder:
+ * Where the page opens: using it just for yourself, the people the principal
+ * adds are mostly contacts. Anyone else only ever has the Team tab.
+ */
+export function defaultPeopleTab(mode: WorkspaceMode, viewerIsPrincipal = true): PeopleTab {
+  return viewerIsPrincipal && mode === "solo" ? "contacts" : "team";
+}
+
+/**
+ * The people a tab lists. In solo mode the Team tab is just the principal:
  * there is no team to show.
  */
 export function peopleForTab<P extends KindFields>(people: P[], tab: PeopleTab, mode: WorkspaceMode): P[] {
@@ -32,7 +42,7 @@ export function peopleForTab<P extends KindFields>(people: P[], tab: PeopleTab, 
   return mode === "solo" ? team.filter((p) => p.is_principal) : team;
 }
 
-/** Team members the solo Team tab leaves out (everyone but the founder). */
+/** Team members the solo Team tab leaves out (everyone but the principal). */
 export function hiddenTeamCount(people: KindFields[], mode: WorkspaceMode): number {
   if (mode !== "solo") return 0;
   return people.filter((p) => !isContact(p) && !p.is_principal).length;
@@ -51,7 +61,7 @@ export function effectiveKind(kind: PersonKind, isPrincipal: boolean): PersonKin
 /**
  * Adding someone to the team while using Open Executive just for yourself
  * means there is a team now: offer to switch the workspace to team mode.
- * Never for the founder's own entry or for a contact.
+ * Never for the principal's own entry or for a contact.
  */
 export function shouldOfferTeamMode(mode: WorkspaceMode, kind: PersonKind, isPrincipal: boolean): boolean {
   return mode === "solo" && effectiveKind(kind, isPrincipal) === "team" && !isPrincipal;

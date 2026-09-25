@@ -92,6 +92,12 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                 if _routable_person(routed_id):
                     event.routed_to_person_id = routed_id
                     event.user = f"person:{routed_id}"
+        # A turn about the principal's private mail raises a private alert
+        # (the pipeline routes it to the principal whatever was asked here).
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        if getattr(current_session.get(), "private_to_principal", False) is True:
+            event.private = True
         schedule_evaluation(event)
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
         audit_log(

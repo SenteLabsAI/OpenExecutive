@@ -295,10 +295,14 @@ def test_slack_gate_lookup_ignores_a_contact(roster: SimpleNamespace) -> None:
 def test_telegram_gate_ignores_a_contact(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, chat_id: int, admitted: bool
 ) -> None:
+    from openexecutive import config
     from openexecutive.integrations import telegram_bot
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:AAH" + "x" * 32)
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "")
+    # Rebind: a module imported while another test had get_settings patched
+    # would otherwise keep that stub.
+    monkeypatch.setattr(telegram_bot, "get_settings", config.get_settings)
     process = AsyncMock()
     monkeypatch.setattr(telegram_bot, "_process_and_reply", process)
     app = FastAPI()
@@ -466,8 +470,12 @@ def test_email_to_a_contact_only_on_the_principals_turn(
     out, sent = _send(CONTACT_EMAIL, _sessions(roster)[surface])
     assert (sent.await_count == 1) is allowed
     if not allowed:
-        error = json.loads(out)["error"]
-        assert "contact" in error and "asks me to directly" in error
+        # Refused exactly like a stranger: nothing says the address is a contact.
+        stranger, _ = _send("stranger@elsewhere.example", _sessions(roster)[surface])
+        assert json.loads(out)["error"] == json.loads(stranger)["error"].replace(
+            "stranger@elsewhere.example", CONTACT_EMAIL
+        )
+        assert "contact" not in json.loads(out)["error"]
 
 
 @pytest.mark.parametrize("surface", [
@@ -499,7 +507,8 @@ def test_drive_share_to_a_contact_is_refused_unattended(roster: SimpleNamespace)
     args = {"file_id": "f1", "email": CONTACT_EMAIL, "role": "reader", "type": "user"}
     out, sent = _send("", None, "google_workspace__manage_drive_access", args)
     assert sent.await_count == 0
-    assert "contact" in json.loads(out)["error"]
+    assert "not on the People roster" in json.loads(out)["error"]
+    assert "contact" not in json.loads(out)["error"]
     _, sent = _send("", _principal_web(roster), "google_workspace__manage_drive_access", args)
     assert sent.await_count == 1
 
@@ -527,7 +536,8 @@ def test_calendar_attendee_resolution(roster: SimpleNamespace, surface: str, ok:
     if ok:
         assert resolved == ([TEAM_EMAIL, CONTACT_EMAIL], [roster.teammate, roster.contact])
     else:
-        assert isinstance(resolved, dict) and "contact" in resolved["error"]
+        # Reads exactly like an unknown id.
+        assert resolved == {"error": f"person_id {roster.contact} not found on roster"}
 
 
 @pytest.mark.parametrize(("surface", "ok"), [("principal_web", True), ("unattended", False)])
@@ -556,7 +566,12 @@ def test_message_person_to_a_contact_is_refused_unattended(roster: SimpleNamespa
         out = json.loads(asyncio.run(schedule_tools.handle_message_person(
             {"person_id": roster.contact, "text": "Contract attached"}
         )))
-    assert "contact" in out["error"]
+        unknown = json.loads(asyncio.run(schedule_tools.handle_message_person(
+            {"person_id": 99999, "text": "Contract attached"}
+        )))
+    # Exactly the unknown-id error: no name, no hint a contact exists.
+    assert out["error"] == unknown["error"].replace("99999", str(roster.contact))
+    assert "Jordan" not in out["error"]
 
 
 def test_message_person_to_a_contact_on_the_principals_turn(
@@ -644,12 +659,12 @@ async def test_a_kicked_resume_runs_without_the_callers_session(
 # --------------------------------------------------------------------------- #
 
 
-def _org_block() -> str:
+def _org_block(include_contacts: bool = True) -> str:
     from openexecutive.departments.prompt_block import render_org_block
 
     people_registry.invalidate()
     dept_registry.invalidate()
-    return render_org_block()
+    return render_org_block(include_contacts=include_contacts)
 
 
 def test_org_block_is_byte_identical_without_contacts(roster: SimpleNamespace) -> None:
@@ -752,10 +767,10 @@ def test_upsert_person_stays_owner_only_for_contacts(roster: SimpleNamespace) ->
     assert out["status"] == "refused"
 
 
-def test_list_people_tool_returns_both_with_kind(roster: SimpleNamespace) -> None:
+def test_list_people_tool_returns_both_with_kind_to_the_principal(roster: SimpleNamespace) -> None:
     from openexecutive.orchestrator.people_tools import handle_list_people
 
-    out = _tool(handle_list_people, {}, None)
+    out = _tool(handle_list_people, {}, _principal_web(roster))
     kinds = {p["full_name"]: p["kind"] for p in out["people"]}
     assert kinds == {"Olivia Owner": "team", "Ben Teammate": "team", "Jordan Client": "contact"}
 
@@ -920,3 +935,490 @@ def test_the_forward_eval_uses_the_notice_the_poller_sends() -> None:
     query = yaml.safe_load(path.read_text())["query"]
     notice = poller._forwarded_by_principal_notice(SimpleNamespace(full_name="Olivia Owner"))
     assert notice.strip() in query
+
+
+# =========================================================================== #
+# Contacts are private to the principal
+# =========================================================================== #
+# A solo user may be an executive whose contacts are their boss, reports,
+# board and clients: nobody else using the install may see one — not in a
+# listing, a prompt, an error message, an alert, the activity rail or the API.
+
+
+def _non_principal_sessions(r: SimpleNamespace) -> dict[str, Session | None]:
+    return {
+        "teammate_web": Session(from_web_chat=True, caller_person_id=r.teammate),
+        "teammate_slack": Session(origin_channel="slack", caller_person_id=r.teammate),
+        "principal_by_email": Session(session_id="email:t1", caller_person_id=r.principal),
+        "unattended": None,
+    }
+
+
+@pytest.mark.parametrize("surface", [
+    "teammate_web", "teammate_slack", "principal_by_email", "unattended",
+])
+def test_list_people_tool_hides_contacts_off_the_principals_turn(
+    roster: SimpleNamespace, surface: str
+) -> None:
+    from openexecutive.orchestrator.people_tools import handle_list_people
+
+    session = _non_principal_sessions(roster)[surface]
+    out = _tool(handle_list_people, {}, session)
+    archived = _tool(handle_list_people, {"include_archived": True}, session)
+    assert {p["full_name"] for p in out["people"]} == {"Olivia Owner", "Ben Teammate"}
+    assert out["count"] == 2 and archived["count"] == 2
+    # Nothing in the result so much as mentions that contacts exist.
+    assert "contact" not in json.dumps(out) and "Jordan" not in json.dumps(archived)
+
+
+def test_lookup_person_hint_does_not_mention_contacts(roster: SimpleNamespace) -> None:
+    from openexecutive.orchestrator.schedule_tools import handle_lookup_person
+
+    out = _tool(handle_lookup_person, {"query": "Jordan"}, _non_principal_sessions(roster)["teammate_web"])
+    assert out["matches"] == [] and "contact" not in out["hint"]
+
+
+@pytest.mark.parametrize(("session_key", "expected"), [
+    ("principal_web", True), ("principal_slack", True), ("teammate_web", False),
+    ("teammate_slack", False), ("email_poller", False), ("unattended", False),
+])
+def test_prompt_lists_contacts_only_on_the_principals_turn(
+    roster: SimpleNamespace, session_key: str, expected: bool
+) -> None:
+    from openexecutive.orchestrator.executive import _contacts_in_prompt
+
+    assert _contacts_in_prompt(_sessions(roster)[session_key]) is expected
+
+
+def test_teammate_turns_get_the_byte_identical_team_block(roster: SimpleNamespace) -> None:
+    from openexecutive.prompts.cache_manager import build_system_blocks
+
+    def _block1(include_contacts: bool) -> str:
+        people_registry.invalidate()
+        return build_system_blocks(include_contacts=include_contacts)[1]["text"]
+
+    teammate_block = _block1(False)
+    principal_block = _block1(True)
+    people_store.archive_person(roster.contact)
+    no_contacts_block = _block1(False)
+    # A teammate's block is the block of an install with no contacts at all…
+    assert teammate_block == no_contacts_block
+    assert "Jordan" not in teammate_block and "## Contacts" not in teammate_block
+    # …and the principal's is that same block plus the Contacts section.
+    assert principal_block.startswith(teammate_block)
+    assert "## Contacts" in principal_block and "Jordan Client" in principal_block
+
+
+@pytest.mark.parametrize(("session_key", "expected"), [
+    ("principal_web", True), ("teammate_web", False), ("email_poller", False),
+])
+def test_executive_asks_for_contacts_only_on_the_principals_turn(
+    roster: SimpleNamespace, session_key: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import executive as executive_module
+
+    seen: list[bool] = []
+
+    def _capture(*_args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["include_contacts"])
+        raise RuntimeError("stop after the system prompt")
+
+    monkeypatch.setattr(executive_module, "build_system_blocks", _capture)
+    session = _sessions(roster)[session_key]
+    with pytest.raises(RuntimeError, match="stop after"):
+        asyncio.run(executive_module.Executive().chat(
+            user_message="hi", session=session,
+            person_id=getattr(session, "caller_person_id", None),
+        ))
+    assert seen == [expected]
+
+
+def test_a_contact_reads_as_unknown_to_a_raw_dm_off_the_principals_turn(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.orchestrator import schedule_tools
+
+    with _turn(_non_principal_sessions(roster)["teammate_web"]):
+        recovered = schedule_tools._recover_channel_id_from_person_id(str(roster.contact), "telegram")
+        on_roster = schedule_tools._dm_recipient_on_roster(
+            people_store.find_person_by_telegram_chat_id, "6002"
+        )
+    assert recovered is None and on_roster is False
+
+
+# --- People API -----------------------------------------------------------
+
+
+def _as(email: str | None) -> dict[str, str]:
+    return {"x-caller-email": email} if email else {}
+
+
+def test_people_api_viewer(roster: SimpleNamespace) -> None:
+    client = _people_client()
+    assert client.get("/people/me", headers=_as(OWNER_EMAIL)).json() == {
+        "person_id": roster.principal, "is_principal": True,
+    }
+    assert client.get("/people/me", headers=_as(TEAM_EMAIL)).json() == {
+        "person_id": roster.teammate, "is_principal": False,
+    }
+    # No x-caller-email (the CLI, local login) is the principal.
+    assert client.get("/people/me").json()["is_principal"] is True
+    assert client.get("/people/me", headers=_as("nobody@elsewhere.example")).json() == {
+        "person_id": None, "is_principal": False,
+    }
+
+
+def test_people_api_keeps_contacts_from_everyone_but_the_principal(roster: SimpleNamespace) -> None:
+    client = _people_client()
+    teammate = _as(TEAM_EMAIL)
+    listed = client.get("/people?include_contacts=true", headers=teammate).json()
+    assert {p["full_name"] for p in listed} == {"Olivia Owner", "Ben Teammate"}
+    listed_archived = client.get(
+        "/people?include_contacts=true&include_archived=true", headers=teammate
+    ).json()
+    assert "Jordan Client" not in {p["full_name"] for p in listed_archived}
+
+    missing = client.get("/people/99999", headers=teammate)
+    for response in (
+        client.get(f"/people/{roster.contact}", headers=teammate),
+        client.patch(f"/people/{roster.contact}", json={"role": "x"}, headers=teammate),
+        client.post(f"/people/{roster.contact}/archive", headers=teammate),
+        client.get(f"/people/{roster.contact}/open-loops", headers=teammate),
+    ):
+        # Exactly what an id that does not exist gets.
+        assert (response.status_code, response.json()) == (404, missing.json())
+    assert client.post(
+        "/people", json={"full_name": "Pat Vendor", "kind": "contact"}, headers=teammate
+    ).status_code == 403
+    assert client.patch(
+        f"/people/{roster.teammate}", json={"kind": "contact"}, headers=teammate
+    ).status_code == 403
+    person = people_store.get_person(roster.contact)
+    assert person is not None and not person.archived and person.role.startswith("Head")
+
+    owner = _as(OWNER_EMAIL)
+    assert "Jordan Client" in {
+        p["full_name"] for p in client.get("/people?include_contacts=true", headers=owner).json()
+    }
+    assert client.get(f"/people/{roster.contact}", headers=owner).json()["kind"] == "contact"
+    assert client.patch(
+        f"/people/{roster.contact}", json={"role": "CFO, Acme"}, headers=owner
+    ).status_code == 200
+
+
+# --- Alerts private to the principal ---------------------------------------
+
+
+def _alerts_db(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.alerts import store as alert_store
+
+    monkeypatch.setattr(alert_store, "DB_PATH", db)
+    alert_store.initialize_db(db)
+
+
+def _insert(headline: str, *, private: bool) -> int:
+    from openexecutive.alerts import store as alert_store
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG
+
+    alert_id = alert_store.insert_alert(
+        source="email", external_id=headline, severity="high", headline=headline,
+        body=f"{headline} body", topic_tags=[PRIVATE_ALERT_TAG] if private else ["customer"],
+    )
+    assert alert_id is not None
+    return alert_id
+
+
+def test_create_alert_on_a_private_turn_raises_a_private_alert(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import alert_tools
+
+    events: list[Any] = []
+    monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", events.append)
+    private = Session(session_id="email:t1", private_to_principal=True)
+    _tool(alert_tools.handle_create_alert,
+          {"subject": "Jordan asked about pricing", "body": "...",
+           "assigned_to_person_id": roster.teammate}, private)
+    _tool(alert_tools.handle_create_alert, {"subject": "Server down", "body": "..."}, None)
+    assert [e.private for e in events] == [True, False]
+
+
+def test_pipeline_keeps_a_private_alert_to_the_principal(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.agents import triage as triage_module
+    from openexecutive.alerts import pipeline
+    from openexecutive.alerts import store as alert_store
+    from openexecutive.alerts.models import (
+        PRIVATE_ALERT_TAG,
+        AlertChannel,
+        AlertEvent,
+        AlertSeverity,
+        TriageDecision,
+    )
+
+    _alerts_db(db, monkeypatch)
+
+    async def fake_triage(self: Any, event: Any, **_kw: Any) -> TriageDecision:
+        return TriageDecision(
+            alert=True, severity=AlertSeverity.HIGH,
+            channels=[AlertChannel.WEB, AlertChannel.PERSISTED, AlertChannel.COMPANY_BROADCAST],
+            headline="Jordan wants a call", body="From Acme", topic_tags=["customer"],
+            dedup_key="acme-call",
+        )
+
+    monkeypatch.setattr(triage_module.TriageAgent, "triage", fake_triage)
+    public_id = asyncio.run(pipeline.evaluate_and_dispatch(
+        AlertEvent(source="email", external_id="m-public", subject="s", body="b"), db_path=db,
+    ))[1]
+    private_id = asyncio.run(pipeline.evaluate_and_dispatch(
+        AlertEvent(source="email", external_id="m-private", subject="s", body="b", private=True),
+        db_path=db,
+    ))[1]
+    assert public_id is not None and private_id is not None and public_id != private_id
+    private = alert_store.get_alert(private_id, db_path=db)
+    assert private is not None
+    assert PRIVATE_ALERT_TAG in private.topic_tags
+    assert private.routed_to_person_id == roster.principal
+    assert private.dedup_key == "private:acme-call"  # never coalesced into the shared card
+    assert private.channels_delivered == ["persisted"]  # no live push, no broadcast
+
+
+def test_today_shows_a_private_alert_to_the_principal_only(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.people import insights_cache
+    from openexecutive.workflows import persistence as wf_persistence
+
+    _alerts_db(db, monkeypatch)
+    for module in (wf_persistence, insights_cache, narrative_cache):
+        monkeypatch.setattr(module, "DB_PATH", db)
+    wf_persistence.initialize_runs_db(db)
+    insights_cache.initialize_db(db)
+    narrative_cache.initialize_db(db)
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", AsyncMock())
+    monkeypatch.setattr(today_route, "_regen_stale_insights", AsyncMock())
+    _insert("Board seat for Jordan", private=True)
+    _insert("Server down", private=False)
+
+    app = FastAPI()
+    app.include_router(today_route.router)
+    client = TestClient(app)
+
+    def headlines(email: str | None) -> set[str]:
+        return {p["headline"] for p in client.get("/today", headers=_as(email)).json()["proposals"]}
+
+    assert headlines(OWNER_EMAIL) == {"Board seat for Jordan", "Server down"}
+    assert headlines(None) == {"Board seat for Jordan", "Server down"}
+    assert headlines(TEAM_EMAIL) == {"Server down"}
+    assert headlines("nobody@elsewhere.example") == {"Server down"}
+    # The unattended readers (brief, digest, reflection) never get it, and the
+    # narrative — cached per scope — is never written from it.
+    assert {p.headline for p in today_route._build_today().proposals} == {"Server down"}
+    full = today_route._build_today(include_private=True)
+    assert [p.headline for p in today_route._action_proposals(full.proposals)] == ["Server down"]
+    # Nor does the activity rail, which everyone sees.
+    rail = {i.summary for i in today_route._build_activity(20).items}
+    assert "Server down" in rail and "Board seat for Jordan" not in rail
+
+
+def test_chat_digest_shows_private_alerts_to_the_principal_only(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing.context import render_and_trust
+
+    _alerts_db(db, monkeypatch)
+    private_id = _insert("Board seat for Jordan", private=True)
+    public_id = _insert("Server down", private=False)
+
+    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
+    block = render_and_trust(teammate)
+    assert "Server down" in block and "Jordan" not in block
+    assert teammate.trusted_alert_ids == {public_id}  # cannot ack what it was not shown
+
+    principal = _principal_web(roster)
+    block = render_and_trust(principal)
+    assert "Board seat for Jordan" in block
+    assert principal.trusted_alert_ids == {public_id, private_id}
+
+
+def test_alert_routes_keep_private_alerts_to_the_principal(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.alerts import store as alert_store
+    from openexecutive.api.routes import alerts as alerts_route
+
+    _alerts_db(db, monkeypatch)
+    private_id = _insert("Board seat for Jordan", private=True)
+    public_id = _insert("Server down", private=False)
+    app = FastAPI()
+    app.include_router(alerts_route.router)
+    client = TestClient(app)
+
+    teammate = _as(TEAM_EMAIL)
+    missing = client.post("/alerts/99999/ack", json={"status": "ack"}, headers=teammate)
+    refused = client.post(f"/alerts/{private_id}/ack", json={"status": "ack"}, headers=teammate)
+    assert (refused.status_code, refused.json()) == (404, missing.json())
+    assert client.post(f"/alerts/{private_id}/reopen", headers=teammate).status_code == 404
+    swept = client.post(
+        "/alerts/bulk-ack", json={"status": "ack", "alert_ids": [private_id, public_id]},
+        headers=teammate,
+    )
+    assert swept.json() == {"count": 1}
+    private = alert_store.get_alert(private_id)
+    assert private is not None and private.status == "unread"
+
+    assert client.post(
+        f"/alerts/{private_id}/ack", json={"status": "ack"}, headers=_as(OWNER_EMAIL)
+    ).status_code == 200
+
+
+def test_alert_review_never_touches_a_private_alert(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from openexecutive.alerts import review
+
+    _alerts_db(db, monkeypatch)
+    _insert("Board seat for Jordan", private=True)
+    public_id = _insert("Server down", private=False)
+    later = datetime.now(UTC) + timedelta(days=2)
+    settings = SimpleNamespace(min_age_hours=0, interval_hours=0, max_per_scan=50)
+    picked = review.select_candidates(later, settings, ignore_interval=True)  # type: ignore[arg-type]
+    assert [a.id for a in picked] == [public_id]
+
+
+def test_a_dm_to_a_contact_stays_off_the_activity_rail(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import schedule_tools
+
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        "openexecutive.memory.episodic.insert_scheduled_action",
+        lambda **kw: recorded.append(kw["channel_ref"]),
+    )
+    schedule_tools._record_send_to_activity(channel="telegram", channel_ref="6002", intent_text="hi")
+    schedule_tools._record_send_to_activity(channel="telegram", channel_ref="5002", intent_text="hi")
+    assert recorded == ["5002"]
+
+
+# --- Meetings with a contact ----------------------------------------------
+
+
+def test_a_meeting_with_a_contact_is_the_principals_to_approve_and_see(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.alerts import store as alert_store
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG
+    from openexecutive.api.routes import decisions
+    from openexecutive.memory.decision_ledger import create_decision_instance
+    from openexecutive.orchestrator import calendar_tools
+
+    _alerts_db(db, monkeypatch)
+    assert calendar_tools._has_contact([roster.teammate, roster.contact]) is True
+    assert calendar_tools._has_contact([roster.teammate]) is False
+
+    def _instance(key: str, private: bool) -> int:
+        payload = {"title": key, "start": "2026-10-01T10:00:00+00:00",
+                   "end": "2026-10-01T11:00:00+00:00", "attendee_emails": [CONTACT_EMAIL],
+                   **({"private": True} if private else {})}
+        iid = create_decision_instance(
+            decision_class="meeting_scheduling", department="operations",
+            originating_session_id=None, proposed_payload=payload, idempotency_key=key,
+            gate_mode="propose", approver_person_id=roster.principal, confidence=0.9,
+        )
+        calendar_tools._propose_via_decision_alert(
+            iid, payload, roster.principal, severity="medium", private=private
+        )
+        return iid
+
+    private_id = _instance("Acme kickoff", True)
+    public_id = _instance("Team sync", False)
+    card = alert_store.get_alert_by_external("decision_scheduling", f"decision:{private_id}")
+    assert card is not None and PRIVATE_ALERT_TAG in card.topic_tags
+
+    app = FastAPI()
+    app.include_router(decisions.router)
+    client = TestClient(app)
+    teammate = _as(TEAM_EMAIL)
+    assert [i["id"] for i in client.get("/decisions", headers=teammate).json()] == [public_id]
+    for response in (
+        client.get(f"/decisions/{private_id}", headers=teammate),
+        client.post(f"/decisions/{private_id}/approve", json={}, headers=teammate),
+        client.post(f"/decisions/{private_id}/reject", json={}, headers=teammate),
+        client.post(f"/decisions/{private_id}/cancel", headers=teammate),
+    ):
+        assert response.status_code == 404
+    owner_ids = {i["id"] for i in client.get("/decisions", headers=_as(OWNER_EMAIL)).json()}
+    assert owner_ids == {private_id, public_id}
+
+
+# --- Turns about the principal's private mail reach the principal only ------
+
+
+def _private_turn(r: SimpleNamespace) -> Session:
+    # The principal forwarded mail: even their own (unverified) turn reaches
+    # nobody but them while it is about private mail.
+    return Session(session_id="email:t1", caller_person_id=r.principal, private_to_principal=True)
+
+
+def test_a_private_turn_emails_the_principal_and_nobody_else(roster: SimpleNamespace) -> None:
+    _, to_principal = _send(OWNER_EMAIL, _private_turn(roster))
+    out, to_teammate = _send(TEAM_EMAIL, _private_turn(roster))
+    assert to_principal.await_count == 1 and to_teammate.await_count == 0
+    assert "EMAIL_ALLOWED_SENDERS" in json.loads(out)["error"]
+
+
+def test_a_private_turn_messages_the_principal_and_nobody_else(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import calendar_tools, schedule_tools
+    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
+
+    sent = AsyncMock(return_value=json.dumps({"status": "sent", "channel": "telegram"}))
+    monkeypatch.setattr(schedule_tools, "handle_send_telegram_message", sent)
+    monkeypatch.setattr(schedule_tools, "configured_integrations", lambda _s: {"telegram"})
+    with _turn(_private_turn(roster)):
+        to_teammate = json.loads(asyncio.run(schedule_tools.handle_message_person(
+            {"person_id": roster.teammate, "text": "Jordan emailed"})))
+        to_principal = json.loads(asyncio.run(schedule_tools.handle_message_person(
+            {"person_id": roster.principal, "text": "Jordan emailed"})))
+        gate_teammate = schedule_tools._dm_recipient_on_roster(
+            people_store.find_person_by_telegram_chat_id, "5002")
+        gate_principal = schedule_tools._dm_recipient_on_roster(
+            people_store.find_person_by_telegram_chat_id, "5001")
+        invite = calendar_tools._resolve_attendees([roster.teammate], False, 5)
+        slack = json.loads(asyncio.run(schedule_tools.handle_send_slack_dm(
+            {"user_id": "U_BEN", "text": "Jordan emailed"})))
+    assert to_teammate == {"error": PRIVATE_TURN_REFUSAL}
+    assert to_principal["status"] == "sent"
+    assert (gate_teammate, gate_principal) == (False, True)
+    assert invite == {"error": PRIVATE_TURN_REFUSAL}
+    assert slack == {"error": PRIVATE_TURN_REFUSAL}
+
+
+def test_a_private_turn_cannot_publish_an_artifact(roster: SimpleNamespace) -> None:
+    from openexecutive.orchestrator.artifact_tools import handle_draft_artifact
+
+    out = _tool(handle_draft_artifact, {
+        "title": "Reply to Jordan", "why_interesting": "draft", "content": "Hi Jordan",
+    }, _private_turn(roster))
+    assert "private to the principal" in json.dumps(out)
+
+
+@pytest.mark.parametrize(("sender", "body", "private"), [
+    (CONTACT_EMAIL, "Body text here.", True),
+    (OWNER_EMAIL, FORWARDED_BODY, True),
+    (OWNER_EMAIL, "Remind me about Acme.", False),
+    (TEAM_EMAIL, "Body text here.", False),
+    ("stranger@elsewhere.example", "Body text here.", False),
+])
+def test_poller_marks_contact_mail_and_forwards_private(
+    roster: SimpleNamespace, sender: str, body: str, private: bool
+) -> None:
+    turn = _poller_turn(sender, _raw(sender, body))
+    assert turn["session"].private_to_principal is private

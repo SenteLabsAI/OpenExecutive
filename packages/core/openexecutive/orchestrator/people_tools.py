@@ -28,11 +28,12 @@ _VALID_KINDS = ("team", "contact")
 LIST_PEOPLE_TOOL: dict[str, Any] = {
     "name": "list_people",
     "description": (
-        "List people in the company roster — your team and the principal's "
-        "contacts, each with its `kind` (\"team\" or \"contact\"). Use this to "
-        "resolve a name to a person_id before calling upsert_person, "
-        "archive_person, set_department_head, create_calendar_event or "
-        "message_person. Returns a compact JSON list."
+        "List people on the roster, each with its `kind`. Use this to resolve "
+        "a name to a person_id before calling upsert_person, archive_person, "
+        "set_department_head, create_calendar_event or message_person. The "
+        "principal's contacts (`kind` \"contact\") are private to the "
+        "principal: they are listed only when the principal asks directly. "
+        "Returns a compact JSON list."
     ),
     "input_schema": {
         "type": "object",
@@ -324,13 +325,16 @@ def grant_contact_egress() -> Iterator[None]:
 
 
 def contacts_reachable_now() -> bool:
-    """Whether the Executive may email, invite or message a contact right now.
+    """Whether contacts exist for this turn at all — may be listed, named,
+    emailed, invited or messaged.
 
-    Only on a turn the principal started on a verified surface (the web app,
-    their own Slack or Discord, a verified private Telegram chat) or inside
-    ``grant_contact_egress``. Never on an inbound email (a From header proves
-    nothing), a teammate's turn, or an unattended run (scheduler, workflows,
-    alert review) — those can still reach the team.
+    Contacts are private to the principal: only a turn the principal started
+    on a verified surface (the web app, their own Slack or Discord, a verified
+    private Telegram chat), or code inside ``grant_contact_egress``, sees them.
+    Everywhere else — an inbound email (a From header proves nothing), a
+    teammate's turn, an unattended run (scheduler, workflows, alert review) —
+    a contact is indistinguishable from someone who is not on the roster, so
+    no refusal, listing or error message can reveal that one exists.
     """
     if _contact_egress_granted.get():
         return True
@@ -339,10 +343,19 @@ def contacts_reachable_now() -> bool:
     return principal_on_verified_surface(current_session.get())
 
 
-CONTACT_EGRESS_REFUSAL = (
-    "is one of the principal's contacts. I can only email, invite or message a "
-    "contact when the principal asks me to directly — from the web app or their "
-    "own Slack or Discord — so draft it for the principal to send instead."
+def turn_is_private_to_principal() -> bool:
+    """Whether the current turn is about something private to the principal
+    (mail from one of their contacts, mail they forwarded — set by the email
+    poller). Such a turn may reach the principal and nobody else."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    return getattr(current_session.get(), "private_to_principal", False) is True
+
+
+PRIVATE_TURN_REFUSAL = (
+    "This conversation is private to the principal, so I can only send it to "
+    "the principal. Tell the principal instead and let them decide who else "
+    "should know."
 )
 
 
@@ -411,11 +424,13 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
     from openexecutive.people import store as people_store
 
     include_archived = bool(tool_input.get("include_archived", False))
+    # Contacts only on the principal's own verified turn (the model needs a
+    # contact's person_id to invite or message them then). Anyone else gets the
+    # team exactly as if no contact existed — same rows, same count.
+    include_contacts = contacts_reachable_now()
     try:
-        # Team and contacts both: the model needs a contact's person_id to
-        # invite or message them when the principal asks.
         people = people_store.list_people(
-            include_archived=include_archived, include_contacts=True
+            include_archived=include_archived, include_contacts=include_contacts
         )
     except Exception as exc:
         logger.exception("list_people: failed")

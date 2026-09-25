@@ -134,14 +134,25 @@ def _approver_is_principal(request: Request) -> bool:
     """Whether the caller resolves to the principal (a request with no
     ``x-caller-email`` does — the CLI, direct curl, local login). Fails
     closed."""
-    from openexecutive.api.routes.chat import _resolve_caller_person_id
-    from openexecutive.people.store import is_principal_or_self
+    from openexecutive.api.routes.people import caller_is_principal
 
-    try:
-        return is_principal_or_self(_resolve_caller_person_id(request), None)
-    except Exception:
-        logger.exception("decisions/approve: principal check failed — contacts stay off")
-        return False
+    return caller_is_principal(request)
+
+
+def _is_private(instance: DecisionInstance) -> bool:
+    """A booking with one of the principal's contacts (``calendar_tools``
+    marks its payload ``private``): the principal's alone to see and act on."""
+    payload = _parse_payload(instance)
+    return payload.get("private") is True
+
+
+def _visible_instance(instance_id: int, request: Request) -> DecisionInstance:
+    """The instance, or 404 — also for a private one when the caller is not
+    the principal, so its existence (and the contact on it) is not revealed."""
+    instance = get_decision_instance(instance_id)
+    if instance is None or (_is_private(instance) and not _approver_is_principal(request)):
+        raise HTTPException(status_code=404, detail="Decision instance not found")
+    return instance
 
 
 # ---------------------------------------------------------------------------
@@ -150,30 +161,29 @@ def _approver_is_principal(request: Request) -> bool:
 
 @router.get("/decisions", response_model=list[DecisionInstance])
 def get_decisions(
+    request: Request,
     decision_class: str = _CALENDAR_CLASS,
     status: str | None = None,
     limit: int = 50,
 ) -> list[DecisionInstance]:
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=400, detail="limit must be 1–500")
-    return list_instances(decision_class, status=status, limit=limit)
+    instances = list_instances(decision_class, status=status, limit=limit)
+    if _approver_is_principal(request):
+        return instances
+    return [i for i in instances if not _is_private(i)]
 
 
 @router.get("/decisions/{instance_id}", response_model=DecisionInstance)
-def get_decision(instance_id: int) -> DecisionInstance:
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
-    return instance
+def get_decision(instance_id: int, request: Request) -> DecisionInstance:
+    return _visible_instance(instance_id, request)
 
 
 @router.post("/decisions/{instance_id}/approve", response_model=DecisionInstance)
 async def approve_decision(
     instance_id: int, body: ApproveBody, request: Request
 ) -> DecisionInstance:
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
+    instance = _visible_instance(instance_id, request)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
@@ -267,10 +277,8 @@ async def approve_decision(
 
 
 @router.post("/decisions/{instance_id}/reject", response_model=DecisionInstance)
-def reject_decision(instance_id: int, body: RejectBody) -> DecisionInstance:
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
+def reject_decision(instance_id: int, body: RejectBody, request: Request) -> DecisionInstance:
+    instance = _visible_instance(instance_id, request)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
@@ -285,11 +293,9 @@ def reject_decision(instance_id: int, body: RejectBody) -> DecisionInstance:
 
 
 @router.post("/decisions/{instance_id}/cancel", response_model=DecisionInstance)
-async def cancel_decision(instance_id: int) -> DecisionInstance:
+async def cancel_decision(instance_id: int, request: Request) -> DecisionInstance:
     """Cancel an approved/executed event (reverse it)."""
-    instance = get_decision_instance(instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="Decision instance not found")
+    instance = _visible_instance(instance_id, request)
     if instance.status not in (
         STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT, STATUS_PROPOSED,
     ):

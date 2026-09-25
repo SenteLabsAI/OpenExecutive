@@ -537,6 +537,8 @@ def _person_priority(
 
 def _build_today(
     stale_out: list[StaleInsight] | None = None,
+    *,
+    include_private: bool = False,
 ) -> TodayResponse:
     """Assemble the live dashboard snapshot.
 
@@ -719,6 +721,14 @@ def _build_today(
     # Live = unread AND inside its TTL AND not snoozed — the read-side twin of
     # the scheduler's expiry sweep, so the page is right before the sweep runs.
     raw_alerts = list_live_alerts(limit=lifecycle_module.BOARD_LIMIT, now=now)
+    if not include_private:
+        # Alerts private to the principal (mail from one of their contacts,
+        # a meeting with one) appear only on the principal's own /today —
+        # never for a teammate, and never in the morning brief, the
+        # end-of-day digest or the reflection, which all read this default.
+        from openexecutive.alerts.models import is_private_alert
+
+        raw_alerts = [a for a in raw_alerts if not is_private_alert(a)]
     superseded_counts = count_superseded_by()
     trust_by_slug = _watch_trust_by_slug(raw_alerts)
     proposal_items = []
@@ -918,6 +928,16 @@ _DECISION_STATUS_LABEL = {
 }
 
 
+def _payload_is_private(payload_json: str | None) -> bool:
+    """Whether a decision payload is private to the principal (a booking with
+    one of their contacts — see ``calendar_tools``)."""
+    try:
+        data = json.loads(payload_json or "")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("private") is True
+
+
 def _payload_headline(payload_json: str | None) -> str | None:
     """Best-effort human label from a decision payload JSON blob.
 
@@ -1014,6 +1034,8 @@ def _build_activity(
         if d.config.authority_level == "propose_only"
     }
 
+    from openexecutive.alerts.models import is_private_alert
+
     for action in list_scheduled_actions(status="done", limit=pool, exclude_internal=True):
         if action.kind == "nudge_scan" or action.channel == "__internal__":
             continue
@@ -1087,6 +1109,8 @@ def _build_activity(
     # Gated decisions that reached a terminal state (approved / rejected /
     # reversed / …). The pending ones are surfaced as proposals, not activity.
     for instance in decision_ledger.list_recent_resolved(limit=pool):
+        if _payload_is_private(instance.proposed_payload_json):
+            continue  # a meeting with one of the principal's contacts
         label = _DECISION_STATUS_LABEL.get(instance.status, "Resolved")
         detail = (
             _payload_headline(instance.final_payload_json)
@@ -1115,6 +1139,8 @@ def _build_activity(
     for alert in (alerts_store.recent_alerts(
         limit=pool, exclude_source=decision_ledger.DECISION_ALERT_SOURCE,
     ) if include_alert_raised else []):
+        if is_private_alert(alert):
+            continue  # the rail is shown to everyone
         items.append(ActivityItem(
             kind="alert_raised",
             summary=alert.headline,
@@ -1205,7 +1231,12 @@ def _action_proposals(proposals: list[ProposalItem]) -> list[ProposalItem]:
     reason over the signal — decisions/approvals — and ignore the passive
     monitoring items the UI collapses into its own section.
     """
-    return [p for p in proposals if p.category == "action"]
+    # Never a private alert: the narrative is cached per scope and the
+    # principal's scope is also served to an unresolved caller, so it is
+    # written from what everyone may see (the principal still gets the card).
+    from openexecutive.alerts.models import is_private_alert
+
+    return [p for p in proposals if p.category == "action" and not is_private_alert(p)]
 
 
 def _viewer_slice(response: TodayResponse, viewer: PersonBriefItem) -> dict[str, Any]:
@@ -1428,12 +1459,24 @@ async def _regen_briefing_narrative(
     ))
 
 
+def _is_principal(caller_person_id: int | None) -> bool:
+    """Whether the resolved caller is the principal. Fails closed."""
+    from openexecutive.people.store import is_principal_or_self
+
+    try:
+        return is_principal_or_self(caller_person_id, None)
+    except Exception:
+        logger.exception("today: principal check failed — private alerts stay hidden")
+        return False
+
+
 @router.get("/today", response_model=TodayResponse, tags=["today"])
 async def get_today(request: Request, background_tasks: BackgroundTasks) -> TodayResponse:
     stale: list[StaleInsight] = []
-    response = _build_today(stale_out=stale)
     from openexecutive.api.routes.chat import _resolve_caller_person_id
-    response.caller_person_id = _resolve_caller_person_id(request)
+    caller = _resolve_caller_person_id(request)
+    response = _build_today(stale_out=stale, include_private=_is_principal(caller))
+    response.caller_person_id = caller
     if stale:
         background_tasks.add_task(_regen_stale_insights, stale)
     _attach_narrative(
@@ -1491,9 +1534,10 @@ def get_morning_brief(request: Request, response: Response) -> TodayResponse:
     response.headers["Deprecation"] = "true"
     response.headers["Sunset"] = "Sat, 22 Aug 2026 00:00:00 GMT"
     response.headers["Link"] = '</today>; rel="successor-version"'
-    payload = _build_today()
     from openexecutive.api.routes.chat import _resolve_caller_person_id
-    payload.caller_person_id = _resolve_caller_person_id(request)
+    caller = _resolve_caller_person_id(request)
+    payload = _build_today(include_private=_is_principal(caller))
+    payload.caller_person_id = caller
     # Serve the viewer's cached narrative (cache-only — this deprecated alias
     # has no BackgroundTasks to schedule a regen).
     _attach_narrative(

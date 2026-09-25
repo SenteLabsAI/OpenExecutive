@@ -8,6 +8,7 @@ import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   createPerson,
+  getPeopleViewer,
   listPeople,
   type PageFormField,
   type Person,
@@ -21,6 +22,7 @@ import {
   isContact,
   peopleForTab,
   shouldOfferTeamMode,
+  tabsFor,
   type PeopleTab,
 } from "@/lib/peopleKinds";
 
@@ -37,7 +39,7 @@ const ALL_SCOPES = [
   { value: "customer_credit", label: "Credit", hint: "Receives proposals involving credit or debt." },
   { value: "legal_sign", label: "Legal", hint: "Receives proposals with legal implications." },
   { value: "board_comms", label: "Board", hint: "Receives proposals before board communications." },
-  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the founder." },
+  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
 ];
 
 const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
@@ -107,6 +109,8 @@ function PersonCard({ person }: { person: Person }) {
 
 interface AddPersonModalProps {
   initialKind: PersonKind;
+  /** Contacts are the principal's alone: nobody else is offered the choice. */
+  canAddContacts: boolean;
   onCreated: (p: Person) => void;
   onClose: () => void;
 }
@@ -154,8 +158,8 @@ function DisclosureSection({
 
 const SCOPE_VALUES = ALL_SCOPES.map((s) => s.value);
 
-function AddPersonModal({ initialKind, onCreated, onClose }: AddPersonModalProps) {
-  const [form, setForm] = useState({ ...BLANK_FORM, kind: initialKind });
+function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: AddPersonModalProps) {
+  const [form, setForm] = useState({ ...BLANK_FORM, kind: canAddContacts ? initialKind : "team" });
   const kind = effectiveKind(form.kind, form.is_principal);
   const contact = kind === "contact";
   const [saving, setSaving] = useState(false);
@@ -177,14 +181,16 @@ function AddPersonModal({ initialKind, onCreated, onClose }: AddPersonModalProps
       "Adds a human the Executive coordinates with — a team member (can sign in, approve and be chased) or a contact (someone outside the team the Executive emails only when you ask). Authority scopes determine which proposals route to a team member for approval.",
     getFields: (): PageFormField[] => [
       { name: "full_name", label: "Full name", type: "text", value: form.full_name, required: true },
-      {
-        name: "kind",
-        label: "Team member or contact",
-        type: "select",
-        options: KINDS,
-        value: form.kind,
-        description: "team: works with you. contact: a client, contractor or advisor outside the team.",
-      },
+      ...(canAddContacts
+        ? [{
+            name: "kind",
+            label: "Team member or contact",
+            type: "select" as const,
+            options: KINDS,
+            value: form.kind,
+            description: "team: works with you. contact: a client, contractor or advisor outside the team, private to you.",
+          }]
+        : []),
       { name: "role", label: contact ? "Role and company" : "Role", type: "text", value: form.role },
       {
         name: "is_principal",
@@ -228,7 +234,7 @@ function AddPersonModal({ initialKind, onCreated, onClose }: AddPersonModalProps
             else { next.is_principal = raw; applied.push(key); }
             break;
           case "kind":
-            if (raw === "team" || raw === "contact") { next.kind = raw; applied.push(key); }
+            if (canAddContacts && (raw === "team" || raw === "contact")) { next.kind = raw; applied.push(key); }
             else skipped.push(key);
             break;
           case "preferred_channel":
@@ -321,7 +327,7 @@ function AddPersonModal({ initialKind, onCreated, onClose }: AddPersonModalProps
         <h2 className="text-base font-semibold text-fg mb-4">{contact ? "Add contact" : "Add person"}</h2>
 
         <div className="space-y-3">
-          {!form.is_principal && (
+          {canAddContacts && !form.is_principal && (
             <div role="radiogroup" aria-label="Team member or contact" className="grid grid-cols-2 gap-2">
               {KINDS.map((k) => (
                 <button
@@ -340,7 +346,7 @@ function AddPersonModal({ initialKind, onCreated, onClose }: AddPersonModalProps
                   <div className="text-[10px] leading-tight mt-0.5 opacity-80">
                     {k === "team"
                       ? "Works with you: can sign in, message the Executive and approve."
-                      : "Outside the team: emailed or invited only when you ask."}
+                      : "Outside the team and private to you: emailed or invited only when you ask."}
                   </div>
                 </button>
               ))}
@@ -560,7 +566,7 @@ const TAB_COPY: Record<PeopleTab, { label: string; blurb: string; empty: string;
   },
   contacts: {
     label: "Contacts",
-    blurb: "Clients, contractors and advisors outside the team. The Executive emails or invites them only when you ask it to; they can't sign in or message it.",
+    blurb: "Clients, contractors and advisors outside the team — private to you. The Executive emails or invites them only when you ask it to; they can't sign in or message it, and nobody else on the team sees them.",
     empty: "No contacts yet.",
     add: "+ Add contact",
   },
@@ -574,10 +580,16 @@ export default function PeoplePage() {
   const [showAdd, setShowAdd] = useState(false);
   const [tab, setTab] = useState<PeopleTab | null>(null);
   const [offerFor, setOfferFor] = useState<string | null>(null);
+  // Contacts are private to the principal. Until the viewer is known (or if
+  // the check fails) nobody is offered them; the API enforces it regardless.
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
+  const [viewerLoading, setViewerLoading] = useState(true);
 
+  const tabs = tabsFor(viewerIsPrincipal);
   // Open on the mode's default tab once the mode is known; a tab the user
-  // picked is kept from then on.
-  const activeTab: PeopleTab = tab ?? defaultPeopleTab(mode);
+  // picked is kept from then on (and never one this viewer is not offered).
+  const activeTab: PeopleTab =
+    tab !== null && tabs.includes(tab) ? tab : defaultPeopleTab(mode, viewerIsPrincipal);
 
   function refresh() {
     setLoading(true);
@@ -587,7 +599,13 @@ export default function PeoplePage() {
       .finally(() => setLoading(false));
   }
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+    getPeopleViewer()
+      .then((v) => setViewerIsPrincipal(v.is_principal))
+      .catch(() => setViewerIsPrincipal(false))
+      .finally(() => setViewerLoading(false));
+  }, []);
 
   const shown = peopleForTab(people, activeTab, mode);
   const hidden = activeTab === "team" ? hiddenTeamCount(people, mode) : 0;
@@ -598,6 +616,7 @@ export default function PeoplePage() {
       {showAdd && (
         <AddPersonModal
           initialKind={defaultKindForTab(activeTab)}
+          canAddContacts={viewerIsPrincipal}
           onCreated={(p) => {
             setPeople((prev) => [...prev, p]);
             setShowAdd(false);
@@ -624,8 +643,9 @@ export default function PeoplePage() {
             </button>
           </div>
 
+          {tabs.length > 1 && (
           <div role="tablist" aria-label="Team or contacts" className="flex gap-1 border-b border-line mb-6">
-            {(["team", "contacts"] as PeopleTab[]).map((t) => {
+            {tabs.map((t) => {
               const count = peopleForTab(people, t, mode).length;
               const selected = activeTab === t;
               return (
@@ -633,7 +653,7 @@ export default function PeoplePage() {
                   key={t}
                   role="tab"
                   aria-selected={selected}
-                  disabled={workspaceLoading && tab === null}
+                  disabled={(workspaceLoading || viewerLoading) && tab === null}
                   onClick={() => setTab(t)}
                   className={`px-3 py-2 text-sm -mb-px border-b-2 transition-colors ${
                     selected
@@ -647,6 +667,7 @@ export default function PeoplePage() {
               );
             })}
           </div>
+          )}
 
           {loading && <p className="text-fg-muted text-sm">Loading…</p>}
           {error && (

@@ -136,7 +136,12 @@ caching:
       why_cached: |
         Changes when the profile YAML or department/people state changes.
         Shorter TTL so org edits propagate quickly. Only emitted when
-        non-empty.
+        non-empty. Two stable variants: with the principal's private
+        `## Contacts` section (only on the principal's own verified turn —
+        `build_system_blocks(include_contacts=...)`, decided by
+        `executive._contacts_in_prompt`) and without it (every other turn,
+        byte-identical to an install with no contacts). Nothing
+        per-request.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
   intra_turn_cache: |
     executive._apply_loop_cache_marker moves a single ephemeral marker onto
@@ -2338,28 +2343,62 @@ people:
     callers that act on the result check `kind`.
 
     OPT-IN callers, and only these: the MCP gateway's egress allow-list
-    (`mcp_gateway._egress_sets`), calendar attendee resolution
+    (`mcp_gateway._roster_allow_set`), calendar attendee resolution
     (`calendar_tools._resolve_attendees`), the chat DM gates
-    (`schedule_tools._dm_recipient_on_roster`), the People page listing
-    (`GET /people?include_contacts=true`), the chat `list_people` tool,
-    the org prompt block's `## Contacts` section, the email poller's
-    contact lookup (to word its notice), and the style deny-list
-    (`attunement.style._roster_names` — more names is stricter). The
-    first three still need the principal's own turn
-    (`people_tools.contacts_reachable_now`).
+    (`schedule_tools._dm_recipient_on_roster` and person-id recovery),
+    the People page listing (`GET /people?include_contacts=true`), the
+    chat `list_people` tool, the org prompt block's `## Contacts`
+    section, the email poller's contact lookup (to word its notice), and
+    the style deny-list (`attunement.style._roster_names` — more names is
+    stricter).
 
-    Prompt block: `departments.prompt_block.render_org_block` renders
-    contacts in a compact `## Contacts` section after "People You
+    PRIVATE TO THE PRINCIPAL: a contact exists only on the principal's
+    own verified turn (`people_tools.contacts_reachable_now` — the #216
+    roster-write rule, or `grant_contact_egress`). Everywhere else every
+    opt-in above behaves as if no contact existed: `list_people` returns
+    the team with the same count, a contact's id or address gets exactly
+    the unknown-person error (no contact-specific refusal), and the org
+    block has no Contacts section. The API decides by caller
+    (`api.routes.people.caller_is_principal` — the signed-in email is the
+    principal's, or no x-caller-email): `include_contacts` is ignored for
+    anyone else, a contact's id is a 404 on get / patch / archive /
+    open-loops exactly like a missing id, and only the principal may
+    create a contact or turn someone into one (403); `GET /people/me`
+    returns {person_id, is_principal} for the UI.
+
+    What the Executive raises about a contact stays private too
+    (`alerts.models.PRIVATE_ALERT_TAG` = "private:principal",
+    `is_private_alert`). A meeting with a contact is proposed to the
+    principal, its payload is marked `private` (hidden from anyone else's
+    `/decisions`, 404 by id and on every action) and its card is tagged.
+    A turn about the principal's private mail
+    (`Session.private_to_principal`, set by the email poller for contact
+    mail and principal forwards) raises private alerts (`AlertEvent.private`:
+    tagged, routed to the principal, persisted only — no live push, email
+    or broadcast — and deduped only against other private alerts), can
+    email / DM / invite only the principal (`PRIVATE_TURN_REFUSAL`) and
+    cannot publish an artifact. A private alert shows on the principal's
+    own `/today` and chat digest only: `_build_today` excludes it by
+    default (brief, digest, reflection, Discord /today), the narrative
+    and activity rail never include it, the alert review never selects
+    it nor uses it as evidence, and a non-principal ack / reopen gets 404
+    and their bulk sweep skips it. DMs to a contact are not written to
+    the activity rail.
+
+    Prompt block: `departments.prompt_block.render_org_block(include_contacts=...)`
+    renders contacts in a compact `## Contacts` section after "People You
     Coordinate With" — name, role/company, email on file or not; no
     scopes, SLA or channel ids — capped at 25 lines plus a count, in
-    both modes. With no contacts the block is byte-identical to before.
+    both modes, on the principal's own verified turn only. Without it the
+    block is byte-identical to before.
 
-    UI: `/people` has Team and Contacts tabs (solo opens on Contacts and
-    its Team tab shows only the founder), a kind selector on the add
-    form, and a contact's page hides authority scopes, SLA, availability,
-    open loops, outreach and working style. Adding a team member in solo
-    offers to switch the workspace to team mode (`PUT /workspace`) or keep
-    solo. Pure helpers: packages/ui/src/lib/peopleKinds.ts.
+    UI: `/people` shows the principal Team and Contacts tabs (solo opens
+    on Contacts and its Team tab shows only the principal) and a kind
+    selector on the add form; anyone else sees the team only. A contact's
+    page hides authority scopes, SLA, availability, open loops, outreach
+    and working style. Adding a team member in solo offers to switch the
+    workspace to team mode (`PUT /workspace`) or keep solo. Pure helpers:
+    packages/ui/src/lib/peopleKinds.ts.
   registry: openexecutive.people.registry — in-memory cache + lookup
   channel: |
     openexecutive.people.channel — resolves a person to a deliverable
@@ -4552,8 +4591,9 @@ integrations:
         get an ``integration_outbound_blocked`` audit row.
       • ``send_telegram_message`` and ``send_discord_dm`` apply the
         same People-roster check pre-send.
-      • Contacts (``people.kind``): a contact's address or chat id is
-        reachable only when ``people_tools.contacts_reachable_now()`` —
+      • Contacts (``people.kind``, private to the principal): a contact's
+        address or chat id is reachable only when
+        ``people_tools.contacts_reachable_now()`` —
         a turn the principal started on a verified surface (web chat,
         their own Slack / Discord, a verified private Telegram chat),
         or inside ``grant_contact_egress()`` (the decisions approve
@@ -4561,7 +4601,9 @@ integrations:
         email (even from the principal's address), a teammate's turn and
         unattended runs (scheduler, workflows — a kicked resume binds no
         session — alert review) reach the team only, and a contact is
-        refused with a reason that asks for a draft for the principal.
+        refused exactly like a stranger, so nothing reveals one exists.
+        A turn about the principal's private mail
+        (``Session.private_to_principal``) reaches the principal only.
         Applies to the Gmail / Calendar / Drive gates, calendar attendee
         resolution, ``message_person`` (which never falls back to a
         "Needs you" alert for a contact) and the raw DM tools with their
@@ -4591,9 +4633,12 @@ integrations:
     Mail from one of the principal's CONTACTS gets a contact [POLICY]
     notice instead (`_contact_notice`): it names them (name, role /
     company), says not to reply unless the principal asks, and asks for
-    a summary for the principal; the turn stays unattributed
-    (person_id None) and the gateway refuses mail to a contact on a
-    poller turn anyway. Mail FORWARDED BY THE PRINCIPAL (the sender
+    a summary for the principal and to tell nobody else; the turn stays
+    unattributed (person_id None) and the gateway refuses mail to a
+    contact on a poller turn anyway. This turn and the principal-forward
+    turn below set `Session.private_to_principal`: they reach the
+    principal only, raise private alerts and cannot publish artifacts
+    (see `people.kind`). Mail FORWARDED BY THE PRINCIPAL (the sender
     resolves to the principal and `_new_text_lines` reports a forward)
     is framed as `<forwarded_by_principal>`: summarise it, draft a reply
     the principal could send (text in the reply, never sent, never a
@@ -5086,11 +5131,12 @@ integrations:
 
     Egress gating: MCPGateway.call_tool intercepts three tool families before
     delegating to the MCP subprocess. All three resolve the allow-list from the
-    shared _egress_sets() helper (_roster_allow_set() is its first half): every
-    team member's email plus the exec address, and contacts' emails only when
-    people_tools.contacts_reachable_now() (the principal's own verified turn,
-    or grant_contact_egress()); otherwise a contact recipient is refused with
-    a contact-specific reason (_contact_block):
+    shared _roster_allow_set() helper: every team member's email plus the exec
+    address, and contacts' emails only when people_tools.contacts_reachable_now()
+    (the principal's own verified turn, or grant_contact_egress()); otherwise a
+    contact's address is refused exactly like a stranger's, so the refusal never
+    reveals a contact. A private turn (Session.private_to_principal) narrows it
+    to the principal's address and the exec's:
     - Gmail (_GATED_GMAIL_TOOLS): to/cc/bcc must be on the People roster
       or the exec address; unknown argument keys rejected.
     - Calendar (_GATED_CALENDAR_TOOLS = {google_workspace__manage_event}):

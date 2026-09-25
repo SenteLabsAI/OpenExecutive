@@ -75,6 +75,25 @@ def set_session(session: Any) -> Iterator[None]:
         current_session.set(prior)
 
 
+def _is_contact_ref(channel: str, channel_ref: str, finder: Callable[..., Any]) -> bool:
+    """Whether a DM recipient is one of the principal's contacts (a team
+    member never is). A roster that cannot be read at all (no people table
+    yet) holds no contacts; once the team lookup has worked, a failing
+    contact lookup counts as a contact, so nothing private lands on the
+    team-visible activity rail."""
+    try:
+        if finder(channel, channel_ref) is not None:
+            return False
+    except Exception:
+        return False
+    try:
+        person = finder(channel, channel_ref, include_contacts=True)
+    except Exception:
+        logger.warning("record_send_to_activity: contact lookup failed — not recorded")
+        return True
+    return person is not None and getattr(person, "kind", "team") != "team"
+
+
 def _record_send_to_activity(
     *,
     channel: str,
@@ -102,6 +121,12 @@ def _record_send_to_activity(
     """
     try:
         from openexecutive.memory.episodic import insert_scheduled_action
+        from openexecutive.people.store import find_person_by_channel_ref
+
+        # The activity rail is shown to everyone; a message to one of the
+        # principal's contacts is theirs alone (the audit row still records it).
+        if _is_contact_ref(channel, channel_ref, find_person_by_channel_ref):
+            return
 
         session = current_session.get()
         session_id = getattr(session, "session_id", None) if session is not None else None
@@ -189,11 +214,18 @@ def _dm_recipient_on_roster(finder: Callable[..., Any], ref: str) -> bool:
     """Whether a raw DM tool may send to ``ref``: a team member always, a
     contact only when the principal asked on a verified surface (see
     ``people_tools.contacts_reachable_now``)."""
-    if finder(ref) is not None:
-        return True
-    from openexecutive.orchestrator.people_tools import contacts_reachable_now
+    from openexecutive.orchestrator.people_tools import (
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
 
-    return contacts_reachable_now() and finder(ref, include_contacts=True) is not None
+    person = finder(ref)
+    if person is None and contacts_reachable_now():
+        person = finder(ref, include_contacts=True)
+    if person is None:
+        return False
+    # A turn about the principal's private mail reaches the principal only.
+    return not turn_is_private_to_principal() or getattr(person, "is_principal", False) is True
 
 
 def _record_outbound_context(
@@ -778,6 +810,19 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
     if not user_id or not text.strip():
         return json.dumps({"error": "user_id and text are required"})
 
+    # A turn about the principal's private mail reaches the principal only.
+    from openexecutive.orchestrator.people_tools import (
+        PRIVATE_TURN_REFUSAL,
+        turn_is_private_to_principal,
+    )
+
+    if turn_is_private_to_principal():
+        from openexecutive.people.store import find_person_by_slack_id
+
+        recipient = find_person_by_slack_id(user_id)
+        if recipient is None or not recipient.is_principal:
+            return json.dumps({"error": PRIVATE_TURN_REFUSAL})
+
     settings = get_settings()
     if not settings.slack_bot_token:
         return json.dumps({"error": "slack is not configured"})
@@ -864,11 +909,15 @@ def _recover_channel_id_from_person_id(value: str, channel: str) -> str | None:
     person = get_person(int(value))
     if person is None or person.archived:
         return None
-    if person.kind != "team":
-        from openexecutive.orchestrator.people_tools import contacts_reachable_now
+    from openexecutive.orchestrator.people_tools import (
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
 
-        if not contacts_reachable_now():
-            return None
+    if person.kind != "team" and not contacts_reachable_now():
+        return None
+    if turn_is_private_to_principal() and not person.is_principal:
+        return None
     if channel == "discord":
         # Discord user ids are positive numeric snowflakes; reject a malformed
         # or empty stored value rather than handing garbage to the API.
@@ -999,9 +1048,8 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
     # log or DoS the substring scan via huge memory.
     query = query[:_LOOKUP_PERSON_MAX_QUERY_CHARS]
     hint = (
-        "No team member matched the query. The principal's contacts are not "
-        "searched here — call list_people for them. The principal can add or "
-        "edit people at /people."
+        "No person matched the query. Try list_people. The principal can add "
+        "or edit people at /people."
     )
 
     def _audit(ok: bool, matches_count: int, reason: str | None = None) -> None:
@@ -1214,15 +1262,22 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
             f"person_id {person_id} is not on the People roster. Call "
             "lookup_person to get a valid person_id."
         )})
-    is_contact = person.kind != "team"
-    if is_contact:
-        from openexecutive.orchestrator.people_tools import (
-            CONTACT_EGRESS_REFUSAL,
-            contacts_reachable_now,
-        )
+    from openexecutive.orchestrator.people_tools import (
+        PRIVATE_TURN_REFUSAL,
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
 
-        if not contacts_reachable_now():
-            return json.dumps({"error": f"{person.full_name} {CONTACT_EGRESS_REFUSAL}"})
+    if turn_is_private_to_principal() and not person.is_principal:
+        return json.dumps({"error": PRIVATE_TURN_REFUSAL})
+    is_contact = person.kind != "team"
+    if is_contact and not contacts_reachable_now():
+        # Contacts are private to the principal: off the principal's own
+        # turn, a contact's id reads exactly like an unknown one.
+        return json.dumps({"error": (
+            f"person_id {person_id} is not on the People roster. Call "
+            "lookup_person to get a valid person_id."
+        )})
 
     configured = configured_integrations(get_settings())
 

@@ -2965,11 +2965,25 @@ export interface Person {
 }
 
 // Team members only by default — the pickers (department head, workflow
-// approver, …) must never offer a contact. The People page asks for both.
+// approver, …) must never offer a contact. The People page asks for both;
+// the server honours that only for the principal (contacts are theirs alone).
 export async function listPeople(opts: { includeContacts?: boolean } = {}): Promise<Person[]> {
   const query = opts.includeContacts ? "?include_contacts=true" : "";
   const res = await fetch(`${API_BASE}/people${query}`);
   if (!res.ok) throw new Error(`Failed to load people: ${res.statusText}`);
+  return res.json();
+}
+
+// Who the signed-in viewer is on the roster. Contacts are private to the
+// principal, so the People page offers them only when `is_principal`.
+export interface PeopleViewer {
+  person_id: number | null;
+  is_principal: boolean;
+}
+
+export async function getPeopleViewer(): Promise<PeopleViewer> {
+  const res = await fetch(`${API_BASE}/people/me`);
+  if (!res.ok) throw new Error(`Failed to load viewer: ${res.statusText}`);
   return res.json();
 }
 
