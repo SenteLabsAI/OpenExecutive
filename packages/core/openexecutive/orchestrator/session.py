@@ -46,6 +46,11 @@ class Session:
     # LIVE card; see `format_open_alerts_for_prompt` for the limits of this
     # control. Empty means the turn was shown no board and can ack nothing.
     trusted_alert_ids: set[int] = field(default_factory=set)
+    # Per-session override of the install's workspace mode ("solo" / "team";
+    # None = use the workspace setting). Evals run scenarios concurrently on
+    # one Executive, so they set it here instead of flipping the global. Read
+    # it through `memory.workspace_settings.effective_workspace_mode`.
+    workspace_mode: str | None = None
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})

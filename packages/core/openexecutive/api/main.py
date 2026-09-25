@@ -48,6 +48,7 @@ from openexecutive.api.routes import (
     watchlist,
     workflow_designer,
     workflows,
+    workspace,
 )
 from openexecutive.api.routes import (
     auth as auth_route,
@@ -377,6 +378,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     initialize_db()
     initialize_alerts_db()
 
+    # Solo / team mode and the user's time zone (memory.workspace_settings).
+    # Right after the episodic DB so every bootstrap below reads it.
+    from openexecutive.memory.workspace_settings import (
+        get_workspace,
+        init_workspace_settings_db,
+    )
+    init_workspace_settings_db()
+
     # User-generated company fixtures (DB-backed; persists on the data volume).
     from openexecutive.fixtures.store import initialize_db as initialize_fixtures_db
     initialize_fixtures_db()
@@ -416,10 +425,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     initialize_departments_db()
     seed_default_departments()
 
-    from openexecutive.departments.completeness import check_org_completeness
-    _org_warnings = check_org_completeness()
-    for _w in _org_warnings:
-        logging.getLogger("openexecutive").warning("org-completeness: %s", _w)
+    # Solo installs have no team to be incomplete: the check only warns
+    # about departments with no head, which is every department there.
+    if get_workspace().mode != "solo":
+        from openexecutive.departments.completeness import check_org_completeness
+        _org_warnings = check_org_completeness()
+        for _w in _org_warnings:
+            logging.getLogger("openexecutive").warning("org-completeness: %s", _w)
 
     from openexecutive.departments.cadence import (
         bootstrap_cadences,
@@ -917,6 +929,7 @@ def create_app() -> FastAPI:
     app.include_router(today.router, tags=["today"])
     app.include_router(scheduled.router, tags=["scheduled"])
     app.include_router(executive.router, tags=["executive"])
+    app.include_router(workspace.router, tags=["workspace"])
     app.include_router(watchlist.router, tags=["watchlist"])
     app.include_router(google_chat_router, tags=["google-chat"])
     app.include_router(telegram_router, tags=["telegram"])

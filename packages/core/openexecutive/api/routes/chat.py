@@ -619,6 +619,25 @@ def _resolve_caller_person_id(request: Request) -> int | None:
         return None
 
 
+def _caller_is_principal_or_unclaimed(request: Request) -> bool:
+    """Whether the caller may make an install-wide change that is the
+    principal's call (resuming the Executive, changing the workspace
+    settings): the caller resolves to the principal — a request with no
+    ``x-caller-email`` does, see ``_resolve_caller_person_id`` — or no
+    principal is on the roster yet, so a first-run install is never locked
+    out. Fails closed: if the roster cannot be read, the answer is no.
+    """
+    from openexecutive.people import store as people_store
+
+    try:
+        if people_store.find_principal_person() is None:
+            return True
+        return people_store.is_principal_or_self(_resolve_caller_person_id(request), None)
+    except Exception:
+        logger.exception("principal check failed — refusing the principal-only change")
+        return False
+
+
 async def _run_chat_turn(
     *,
     message: str,

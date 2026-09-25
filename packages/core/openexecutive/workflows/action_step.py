@@ -112,12 +112,13 @@ def _user_turn(
     company_block: str,
     prior_outputs: dict[str, tuple[str, str]],
 ) -> str:
-    settings = get_settings()
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
     parts = [
         f"Workflow: {workflow_title}",
         f"Step: {step.title}",
         f"Today: {datetime.now(UTC).date().isoformat()} (UTC). "
-        f"The user's timezone: {settings.user_timezone}.",
+        f"The user's timezone: {get_user_timezone().key}.",
         "",
         "Goal:",
         goal.strip(),

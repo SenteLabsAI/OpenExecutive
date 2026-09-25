@@ -51,19 +51,10 @@ def _caller(request: Request) -> str:
 
 
 def _may_resume(request: Request) -> bool:
-    from openexecutive.api.routes.chat import _resolve_caller_person_id
-    from openexecutive.people import store as people_store
+    # Can't tell who is asking → False, so the brake stays on.
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
 
-    try:
-        if people_store.find_principal_person() is None:
-            return True
-        return people_store.is_principal_or_self(
-            _resolve_caller_person_id(request), None
-        )
-    except Exception:
-        # Can't tell who is asking — keep the brake on.
-        logger.exception("executive: principal lookup failed — denying resume")
-        return False
+    return _caller_is_principal_or_unclaimed(request)
 
 
 def _status(request: Request) -> ExecutiveStatus:
