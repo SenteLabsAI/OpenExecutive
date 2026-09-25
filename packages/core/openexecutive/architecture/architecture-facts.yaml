@@ -394,9 +394,11 @@ routing:
         of a specialist that failed and never answered this turn (a retry or
         a second call to it that answered covers it) — never the specialist,
         per the one-voice invariant.
-      - it does not count as consulted: specialists_consulted, consulted_out
-        (committee critic seats, per-department Honcho sync) and
-        specialist_outputs_out take only the calls that answered.
+      - it does not count as consulted: consulted_out (committee critic
+        seats, per-department Honcho sync) and specialist_outputs_out take
+        only the calls that answered. The loop's own specialists_consulted,
+        which only marks the next round as synthesis_start for the debug
+        panel, keeps every dispatched call.
       - its retrieved documents are dropped: route_parallel holds each call's
         record_source calls and replays only the answered calls', in call
         order, after the gather.

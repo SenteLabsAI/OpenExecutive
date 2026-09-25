@@ -569,6 +569,21 @@ def test_a_failed_specialist_is_not_counted_as_consulted(
     assert outputs == {"cso": "Strategy view"}
 
 
+def test_the_debug_panel_still_shows_the_synthesis_when_every_specialist_failed(
+    fake_specialists: dict[str, Any], no_audit: None
+) -> None:
+    from openexecutive.orchestrator.debug_events import DebugCollector
+
+    fake_specialists["answers"].update({"cfo": RuntimeError("529"), "cso": TimeoutError()})
+    collector = DebugCollector()
+    _run_loop(
+        _consult_then_answer(), TurnSources(), Session(session_id="s", from_web_chat=True), debug_collector=collector
+    )
+    kinds = [e.kind for e in collector._events]
+    assert kinds.count("specialist_unavailable") == 2
+    assert "synthesis_start" in kinds
+
+
 def test_web_pages_the_reply_used_are_recorded(fake_specialists: dict[str, Any], no_audit: None) -> None:
     from anthropic.types import (
         CitationsWebSearchResultLocation,

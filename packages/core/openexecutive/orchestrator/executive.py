@@ -1666,7 +1666,9 @@ class Executive:
                         fanout_cap,
                         len(skipped_results),
                     )
-                specialists_consulted.extend(call["specialist"] for call, _ in answered)
+                # Every dispatched call, failed ones too: this list only marks
+                # the next round as the synthesis pass in the debug panel.
+                specialists_consulted.extend(c["specialist"] for c in run_calls)
                 if consulted_out is not None:
                     consulted_out.extend(call["specialist"] for call, _ in answered)
                 if specialist_outputs_out is not None:
