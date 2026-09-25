@@ -736,6 +736,7 @@ export const SKILL_CATEGORIES = [
   "marketing",
   "product",
   "board",
+  "sales",
   "general",
 ] as const;
 
@@ -1386,7 +1387,7 @@ export interface DynamicWorkflowDef {
   owner_person_id?: number | null;
 }
 
-// The 8 specialists a dynamic step may consult (matches SPECIALIST_REGISTRY,
+// The specialists a dynamic step may consult (matches SPECIALIST_REGISTRY,
 // excluding the internal `triage` router).
 export const DYNAMIC_SPECIALISTS = [
   "cso",
@@ -1396,6 +1397,7 @@ export const DYNAMIC_SPECIALISTS = [
   "coo",
   "cmo",
   "cpo",
+  "sales",
   "board_comms",
 ] as const;
 

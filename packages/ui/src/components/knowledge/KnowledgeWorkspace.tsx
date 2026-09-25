@@ -37,6 +37,7 @@ const DOMAINS = [
   "marketing",
   "operations",
   "product",
+  "sales",
   "strategy",
 ];
 

@@ -36,7 +36,7 @@ from openexecutive.people.models import AuthorityScope
 # Org-facing specialist keys a department may map to. Anything else (or None)
 # renders as an informational department. Mirrors orchestrator.router's
 # user-facing specialists; board_comms/triage are internal and excluded.
-ALLOWED_SPECIALIST_KEYS = {"cso", "cfo", "chro", "gc", "coo", "cmo", "cpo"}
+ALLOWED_SPECIALIST_KEYS = {"cso", "cfo", "chro", "gc", "coo", "cmo", "cpo", "sales"}
 
 _SAFE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _VALID_SCOPES = {s.value for s in AuthorityScope}

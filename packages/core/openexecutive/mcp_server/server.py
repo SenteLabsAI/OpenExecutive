@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ``orchestrator/router.SPECIALIST_REGISTRY`` by a unit test. Declared as a
 # ``Literal`` so MCP clients see a proper enum in the tool schema.
 SpecialistKey = Literal[
-    "board_comms", "cfo", "chro", "cmo", "coo", "cpo", "cso", "gc", "triage"
+    "board_comms", "cfo", "chro", "cmo", "coo", "cpo", "cso", "gc", "sales", "triage"
 ]
 
 _INSTRUCTIONS = (
@@ -221,7 +221,8 @@ async def consult_specialist(
     domain-expert read. Specialists: cso (strategy/M&A/OKRs), cfo (finance/unit
     economics/fundraising), chro (people/comp/org design), gc (legal/contracts/
     compliance), coo (operations/process/metrics), cmo (GTM/brand/PR), cpo
-    (product/roadmap), board_comms (board decks/IR/governance),
+    (product/roadmap), sales (pipeline/deals/pricing conversations/forecast),
+    board_comms (board decks/IR/governance),
     triage (chief of staff — significance of inbound events).
 
     Args:

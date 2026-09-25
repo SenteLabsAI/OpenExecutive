@@ -1614,11 +1614,20 @@ class Executive:
             if specialist_calls:
                 spec_t0 = time.monotonic()
                 failed_calls: list[int] = []
+                # Specialists get the stage from the same profile the
+                # Executive reasons over; no session profile → the router
+                # reads it from disk.
+                session_stage = getattr(
+                    getattr(current_session.get(), "company_profile", None), "stage", None
+                )
                 specialist_results = await route_parallel(
                     run_calls,
                     episodic_context=episodic_context,
                     session_id=session_id,
                     debug_collector=debug_collector,
+                    company_stage=(
+                        session_stage if isinstance(session_stage, str) else None
+                    ),
                     record_source=turn_sources.add if turn_sources is not None else None,
                     failed_calls_out=failed_calls,
                     # The web chat shows a missing area under the reply;
