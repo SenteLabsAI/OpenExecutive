@@ -6,6 +6,13 @@ there is one place to look. All tables are created idempotently via
 
 The `_resolve_db_path` pattern lets tests monkeypatch `DB_PATH` and have
 it take effect at call time, mirroring `departments.store`.
+
+Team vs contacts (deny by default): every roster read here — `list_people`,
+each `find_person_by_*`, `find_approvers` — returns team members only unless
+the caller passes ``include_contacts=True``. A roster row grants web sign-in,
+inbound access on Slack / Telegram / Discord, approvals and chasing, so a
+contact must never slip into one of those reads by accident. `get_person`
+(a lookup by id) returns any kind; its callers check ``kind`` themselves.
 """
 from __future__ import annotations
 
@@ -20,9 +27,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from openexecutive.people.models import (
+    PERSON_KINDS,
     AuthorityScope,
     AvailabilityWindow,
     Person,
+    PersonKind,
     PreferredChannel,
 )
 
@@ -62,6 +71,26 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+# SQL fragment every team-only read appends. A kind this code does not know
+# (a hand-edited row) is not "team", so it is left out — deny by default.
+_TEAM_ONLY = " AND kind = 'team'"
+
+
+def _kind_filter(include_contacts: bool) -> str:
+    return "" if include_contacts else _TEAM_ONLY
+
+
+class PrincipalContactError(ValueError):
+    """Raised when a write would make the principal a contact."""
+
+
+def _check_kind(kind: str, is_principal: bool) -> None:
+    if kind not in PERSON_KINDS:
+        raise ValueError(f"kind must be one of {list(PERSON_KINDS)}, got {kind!r}")
+    if is_principal and kind != "team":
+        raise PrincipalContactError("the principal is always on the team, never a contact")
+
+
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
@@ -81,6 +110,7 @@ def initialize_db(db_path: Path | None = None) -> None:
                 telegram_chat_id TEXT,
                 discord_user_id TEXT,
                 preferred_channel TEXT NOT NULL DEFAULT 'any',
+                kind TEXT NOT NULL DEFAULT 'team',
                 response_sla_hours INTEGER NOT NULL DEFAULT 24,
                 on_leave_until TEXT,
                 reports_to_person_id INTEGER,
@@ -126,6 +156,21 @@ def initialize_db(db_path: Path | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+        # Additive migration: kind (team | contact). Every existing row is a
+        # team member — that is what the roster meant before contacts existed.
+        if "kind" not in cols:
+            try:
+                conn.execute(
+                    "ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'team'"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        # The principal is never a contact; repair a hand-edited row so every
+        # team-only read keeps finding them.
+        conn.execute(
+            "UPDATE people SET kind = 'team' WHERE is_principal = 1 AND kind != 'team'"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -181,11 +226,20 @@ def _row_to_person(row: sqlite3.Row, conn: sqlite3.Connection) -> Person:
     if row["on_leave_until"]:
         with contextlib.suppress(ValueError):
             on_leave = date.fromisoformat(row["on_leave_until"])
+    is_principal = bool(row["is_principal"])
+    try:
+        raw_kind = row["kind"]
+    except (IndexError, KeyError):  # a table initialize_db has not migrated yet
+        raw_kind = "team"
+    # An unknown stored kind reads as a contact (least access); the principal
+    # always reads as team (initialize_db repairs such a row on boot).
+    kind: PersonKind = "team" if raw_kind == "team" or is_principal else "contact"
     return Person(
         id=person_id,
         full_name=row["full_name"],
         role=row["role"],
-        is_principal=bool(row["is_principal"]),
+        is_principal=is_principal,
+        kind=kind,
         department_slugs=dept_slugs,
         email=row["email"],
         slack_user_id=row["slack_user_id"],
@@ -221,22 +275,42 @@ def upsert_person(
     response_sla_hours: int = 24,
     on_leave_until: date | None = None,
     reports_to_person_id: int | None = None,
+    kind: PersonKind | None = None,
     person_id: int | None = None,
     db_path: Path | None = None,
 ) -> int:
-    """Insert or update a Person row. Returns the person_id."""
+    """Insert or update a Person row. Returns the person_id.
+
+    ``kind`` None means "team" for a new row and "leave it as it is" on an
+    update: every other column is rewritten by the UPDATE, but a caller that
+    does not mention kind must never turn a contact into a team member (that
+    grants sign-in and inbound access) or the reverse. Raises
+    ``PrincipalContactError`` for a principal contact.
+    """
     now = _now()
     dept_json = json.dumps(department_slugs or [])
     leave_str = on_leave_until.isoformat() if on_leave_until else None
 
+    became_contact = False
     with _get_conn(db_path) as conn:
         if person_id is not None and person_id > 0:
+            row = conn.execute(
+                "SELECT kind FROM people WHERE id = ?", (person_id,)
+            ).fetchone()
+            # Same reading as _row_to_person: an unknown stored kind is a contact.
+            stored_kind = (
+                (row["kind"] if row["kind"] in PERSON_KINDS else "contact")
+                if row is not None else None
+            )
+            effective_kind: str = kind or stored_kind or "team"
+            _check_kind(effective_kind, is_principal)
+            became_contact = stored_kind == "team" and effective_kind == "contact"
             conn.execute(
                 """
                 UPDATE people SET
                     full_name=?, role=?, is_principal=?, department_slugs_json=?,
                     email=?, slack_user_id=?, telegram_chat_id=?, discord_user_id=?,
-                    preferred_channel=?,
+                    preferred_channel=?, kind=?,
                     response_sla_hours=?, on_leave_until=?, reports_to_person_id=?,
                     updated_at=?
                 WHERE id=?
@@ -244,31 +318,38 @@ def upsert_person(
                 (
                     full_name, role, int(is_principal), dept_json,
                     email, slack_user_id, telegram_chat_id, discord_user_id,
-                    preferred_channel,
+                    preferred_channel, effective_kind,
                     response_sla_hours, leave_str, reports_to_person_id,
                     now, person_id,
                 ),
             )
-            return person_id
-        cursor = conn.execute(
-            """
-            INSERT INTO people
-                (full_name, role, is_principal, department_slugs_json,
-                 email, slack_user_id, telegram_chat_id, discord_user_id,
-                 preferred_channel,
-                 response_sla_hours, on_leave_until, reports_to_person_id,
-                 created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                full_name, role, int(is_principal), dept_json,
-                email, slack_user_id, telegram_chat_id, discord_user_id,
-                preferred_channel,
-                response_sla_hours, leave_str, reports_to_person_id,
-                now, now,
-            ),
-        )
-        return int(cursor.lastrowid or 0)
+        else:
+            new_kind: str = kind or "team"
+            _check_kind(new_kind, is_principal)
+            cursor = conn.execute(
+                """
+                INSERT INTO people
+                    (full_name, role, is_principal, department_slugs_json,
+                     email, slack_user_id, telegram_chat_id, discord_user_id,
+                     preferred_channel, kind,
+                     response_sla_hours, on_leave_until, reports_to_person_id,
+                     created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    full_name, role, int(is_principal), dept_json,
+                    email, slack_user_id, telegram_chat_id, discord_user_id,
+                    preferred_channel, new_kind,
+                    response_sla_hours, leave_str, reports_to_person_id,
+                    now, now,
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+    assert person_id is not None  # the INSERT branch returned above
+    # After the UPDATE has committed: the loop close writes the same file.
+    if became_contact and db_path is None:
+        _left_the_team(person_id)
+    return person_id
 
 
 def set_authority_scope(
@@ -326,13 +407,20 @@ def get_person(person_id: int, db_path: Path | None = None) -> Person | None:
         return _row_to_person(row, conn)
 
 
-def find_person_by_slack_id(slack_user_id: str, db_path: Path | None = None) -> Person | None:
-    """Return the first non-archived Person with this Slack user id, or None."""
+def find_person_by_slack_id(
+    slack_user_id: str,
+    db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
+) -> Person | None:
+    """Return the first non-archived team member with this Slack user id, or
+    None. ``include_contacts=True`` also matches contacts."""
     if not slack_user_id or not _resolve_db_path(db_path).exists():
         return None
     with _get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM people WHERE slack_user_id = ? AND archived = 0 LIMIT 1",
+            "SELECT * FROM people WHERE slack_user_id = ? AND archived = 0"
+            + _kind_filter(include_contacts) + " LIMIT 1",
             (slack_user_id,),
         ).fetchone()
         if row is None:
@@ -340,13 +428,20 @@ def find_person_by_slack_id(slack_user_id: str, db_path: Path | None = None) -> 
         return _row_to_person(row, conn)
 
 
-def find_person_by_telegram_chat_id(telegram_chat_id: str, db_path: Path | None = None) -> Person | None:
-    """Return the first non-archived Person with this Telegram chat id, or None."""
+def find_person_by_telegram_chat_id(
+    telegram_chat_id: str,
+    db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
+) -> Person | None:
+    """Return the first non-archived team member with this Telegram chat id,
+    or None. ``include_contacts=True`` also matches contacts."""
     if not telegram_chat_id or not _resolve_db_path(db_path).exists():
         return None
     with _get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM people WHERE telegram_chat_id = ? AND archived = 0 LIMIT 1",
+            "SELECT * FROM people WHERE telegram_chat_id = ? AND archived = 0"
+            + _kind_filter(include_contacts) + " LIMIT 1",
             (telegram_chat_id,),
         ).fetchone()
         if row is None:
@@ -354,8 +449,14 @@ def find_person_by_telegram_chat_id(telegram_chat_id: str, db_path: Path | None 
         return _row_to_person(row, conn)
 
 
-def find_person_by_email(email: str, db_path: Path | None = None) -> Person | None:
-    """Return the first non-archived Person with this email address, or None.
+def find_person_by_email(
+    email: str,
+    db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
+) -> Person | None:
+    """Return the first non-archived team member with this email address, or
+    None. ``include_contacts=True`` also matches contacts.
 
     Case-insensitive match — email `From:` headers come back with the
     sender's chosen capitalization, which isn't necessarily what was
@@ -370,8 +471,12 @@ def find_person_by_email(email: str, db_path: Path | None = None) -> Person | No
         # than crashing.
         if not _table_exists(conn, "people"):
             return None
+        # A contact may share an address with a team member (an assistant's
+        # alias, a duplicate entry); the team row wins.
         row = conn.execute(
-            "SELECT * FROM people WHERE LOWER(email) = LOWER(?) AND archived = 0 LIMIT 1",
+            "SELECT * FROM people WHERE LOWER(email) = LOWER(?) AND archived = 0"
+            + _kind_filter(include_contacts)
+            + " ORDER BY kind = 'team' DESC, id LIMIT 1",
             (email,),
         ).fetchone()
         if row is None:
@@ -379,13 +484,20 @@ def find_person_by_email(email: str, db_path: Path | None = None) -> Person | No
         return _row_to_person(row, conn)
 
 
-def find_person_by_discord_id(discord_user_id: str, db_path: Path | None = None) -> Person | None:
-    """Return the first non-archived Person with this Discord user id, or None."""
+def find_person_by_discord_id(
+    discord_user_id: str,
+    db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
+) -> Person | None:
+    """Return the first non-archived team member with this Discord user id, or
+    None. ``include_contacts=True`` also matches contacts."""
     if not discord_user_id or not _resolve_db_path(db_path).exists():
         return None
     with _get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM people WHERE discord_user_id = ? AND archived = 0 LIMIT 1",
+            "SELECT * FROM people WHERE discord_user_id = ? AND archived = 0"
+            + _kind_filter(include_contacts) + " LIMIT 1",
             (discord_user_id,),
         ).fetchone()
         if row is None:
@@ -394,7 +506,11 @@ def find_person_by_discord_id(discord_user_id: str, db_path: Path | None = None)
 
 
 def find_person_by_channel_ref(
-    channel: str, channel_ref: str, db_path: Path | None = None
+    channel: str,
+    channel_ref: str,
+    db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
 ) -> Person | None:
     """Map a scheduled-action (channel, channel_ref) to a non-archived Person.
 
@@ -403,7 +519,8 @@ def find_person_by_channel_ref(
     refs may carry a ``address|thread_id`` suffix, so only the address is matched.
     Returns None for an unknown channel or any miss. Single source of truth for
     the outbound guard and the outbound-context linkage, which both need to
-    resolve a DM recipient back to a Person.
+    resolve a DM recipient back to a Person. Team only unless
+    ``include_contacts``.
     """
     finder = {
         "slack_dm": find_person_by_slack_id,
@@ -417,6 +534,8 @@ def find_person_by_channel_ref(
     # Forward db_path only when explicitly given so the common default-DB path
     # calls the finder with a single positional argument (matching how the
     # finders are normally invoked across the codebase).
+    if include_contacts:
+        return finder(ref, db_path, include_contacts=True)
     return finder(ref) if db_path is None else finder(ref, db_path)
 
 
@@ -450,19 +569,21 @@ def find_principal_person(db_path: Path | None = None) -> Person | None:
 def list_people(
     include_archived: bool = False,
     db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
 ) -> list[Person]:
+    """The roster, principal first. Team members only unless
+    ``include_contacts`` — see the module docstring."""
     if not _resolve_db_path(db_path).exists():
         return []
+    where = [] if include_archived else ["archived = 0"]
+    if not include_contacts:
+        where.append("kind = 'team'")
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
     with _get_conn(db_path) as conn:
-        if include_archived:
-            rows = conn.execute(
-                "SELECT * FROM people ORDER BY is_principal DESC, id"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM people WHERE archived = 0"
-                " ORDER BY is_principal DESC, id"
-            ).fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM people{clause} ORDER BY is_principal DESC, id"  # noqa: S608 — fixed fragments
+        ).fetchall()
         return [_row_to_person(row, conn) for row in rows]
 
 
@@ -481,6 +602,18 @@ def is_principal_or_self(
         return True
     caller = get_person(caller_person_id, db_path=db_path)
     return bool(caller is not None and caller.is_principal and not caller.archived)
+
+
+def _left_the_team(person_id: int) -> None:
+    """A team member just became a contact: close the open loops they own,
+    as archiving does — a contact is never chased, so the loops would
+    otherwise sit in /today until they expire. Best-effort."""
+    try:
+        from openexecutive.attunement.open_loops import close_loops_for_person
+
+        close_loops_for_person(person_id, reason="moved_to_contacts")
+    except Exception:
+        logger.warning("people: closing open loops for a new contact failed", exc_info=True)
 
 
 def archive_person(person_id: int, db_path: Path | None = None) -> bool:
@@ -514,11 +647,14 @@ def find_approvers(
     scope: AuthorityScope,
     db_path: Path | None = None,
 ) -> list[Person]:
-    """Return non-archived people who can approve the given scope token.
+    """Return non-archived team members who can approve the given scope token.
 
     Includes:
     - People who hold the exact scope token.
     - People who hold WILDCARD (approves everything).
+
+    A contact never approves anything, whatever scopes a hand-edited row
+    carries — there is deliberately no opt-in here.
 
     Sort order: non-principals first (prefer delegated humans over the
     fallback principal), then by response_sla_hours ASC (fastest SLA first).
@@ -532,6 +668,7 @@ def find_approvers(
             FROM people p
             JOIN person_authority_scope pas ON pas.person_id = p.id
             WHERE p.archived = 0
+              AND p.kind = 'team'
               AND pas.scope_token IN (?, ?)
             ORDER BY p.is_principal ASC, p.response_sla_hours ASC, p.id ASC
             """,
@@ -555,13 +692,22 @@ def update_person(
     clear_on_leave: bool = False,
     reports_to_person_id: int | None = None,
     department_slugs: list[str] | None = None,
+    kind: PersonKind | None = None,
     db_path: Path | None = None,
 ) -> bool:
     """Partial update. Returns True if a row was modified.
 
     Pass `clear_on_leave=True` to explicitly set on_leave_until to NULL.
+    Raises ``PrincipalContactError`` when asked to make the principal a
+    contact.
     """
     fields: list[tuple[str, object]] = []
+    became_contact = False
+    if kind is not None:
+        existing = get_person(person_id, db_path)
+        _check_kind(kind, bool(existing is not None and existing.is_principal))
+        fields.append(("kind", kind))
+        became_contact = existing is not None and existing.kind == "team" and kind == "contact"
     if full_name is not None:
         fields.append(("full_name", full_name))
     if role is not None:
@@ -595,4 +741,7 @@ def update_person(
         cursor = conn.execute(
             f"UPDATE people SET {set_clause} WHERE id = ?", values
         )
-        return cursor.rowcount > 0
+        updated = cursor.rowcount > 0
+    if updated and became_contact and db_path is None:
+        _left_the_team(person_id)
+    return updated

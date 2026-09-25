@@ -185,6 +185,17 @@ def _resolve_recipient_person_id(channel: str, channel_ref: str) -> int | None:
         return None
 
 
+def _dm_recipient_on_roster(finder: Callable[..., Any], ref: str) -> bool:
+    """Whether a raw DM tool may send to ``ref``: a team member always, a
+    contact only when the principal asked on a verified surface (see
+    ``people_tools.contacts_reachable_now``)."""
+    if finder(ref) is not None:
+        return True
+    from openexecutive.orchestrator.people_tools import contacts_reachable_now
+
+    return contacts_reachable_now() and finder(ref, include_contacts=True) is not None
+
+
 def _record_outbound_context(
     *,
     channel: str,
@@ -689,7 +700,7 @@ async def handle_send_telegram_message(tool_input: dict[str, Any]) -> str:
     # non-archived Person row. Prevents prompt-injection from coaxing the
     # Executive into DMing arbitrary Telegram users.
     from openexecutive.people.store import find_person_by_telegram_chat_id
-    if find_person_by_telegram_chat_id(str(chat_id)) is None:
+    if not _dm_recipient_on_roster(find_person_by_telegram_chat_id, str(chat_id)):
         # The Executive frequently passes a Person id (== its Honcho peer id)
         # here instead of the Telegram chat_id. If it resolves to a rostered
         # person who has a Telegram chat id, route to that real chat id.
@@ -853,6 +864,11 @@ def _recover_channel_id_from_person_id(value: str, channel: str) -> str | None:
     person = get_person(int(value))
     if person is None or person.archived:
         return None
+    if person.kind != "team":
+        from openexecutive.orchestrator.people_tools import contacts_reachable_now
+
+        if not contacts_reachable_now():
+            return None
     if channel == "discord":
         # Discord user ids are positive numeric snowflakes; reject a malformed
         # or empty stored value rather than handing garbage to the API.
@@ -886,7 +902,7 @@ async def handle_send_discord_dm(tool_input: dict[str, Any]) -> str:
     # a non-archived Person row. Prevents prompt-injection from coaxing
     # the Executive into DMing arbitrary Discord users.
     from openexecutive.people.store import find_person_by_discord_id
-    if find_person_by_discord_id(discord_user_id) is None:
+    if not _dm_recipient_on_roster(find_person_by_discord_id, discord_user_id):
         # The Executive frequently passes a Person id (== its Honcho peer id)
         # here instead of the Discord snowflake. If the value resolves to a
         # rostered person who has a Discord id, that person IS the intended
@@ -982,7 +998,11 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
     # Truncate before any logging so an oversized query can't bloat the audit
     # log or DoS the substring scan via huge memory.
     query = query[:_LOOKUP_PERSON_MAX_QUERY_CHARS]
-    hint = "No person matched the query. The principal can add or edit people at /people."
+    hint = (
+        "No team member matched the query. The principal's contacts are not "
+        "searched here — call list_people for them. The principal can add or "
+        "edit people at /people."
+    )
 
     def _audit(ok: bool, matches_count: int, reason: str | None = None) -> None:
         msg = f"lookup_person query={query!r} matched {matches_count}"
@@ -1194,6 +1214,15 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
             f"person_id {person_id} is not on the People roster. Call "
             "lookup_person to get a valid person_id."
         )})
+    is_contact = person.kind != "team"
+    if is_contact:
+        from openexecutive.orchestrator.people_tools import (
+            CONTACT_EGRESS_REFUSAL,
+            contacts_reachable_now,
+        )
+
+        if not contacts_reachable_now():
+            return json.dumps({"error": f"{person.full_name} {CONTACT_EGRESS_REFUSAL}"})
 
     configured = configured_integrations(get_settings())
 
@@ -1247,6 +1276,14 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
         if parsed.get("status") == "sent":
             return result
         last_error = parsed.get("error") or last_error
+
+    if is_contact:
+        # A contact cannot sign in, so an alert routed to them reaches no one.
+        return json.dumps({"error": (
+            f"could not reach {person.full_name!r} (a contact) on a chat channel "
+            f"({last_error or 'none configured for them'}). Email them instead "
+            "if they have an address."
+        )})
 
     # No channel delivered (none usable, or every attempt failed). Don't drop
     # the finding — surface it as a briefing alert routed to that person so it

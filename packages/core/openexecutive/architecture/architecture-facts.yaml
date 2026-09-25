@@ -759,6 +759,18 @@ routing:
     refused=true, with caller / origin_channel / from_web_chat) and render
     no action chip. `list_people` stays open. The People page (behind the
     web sign-in) is unaffected.
+
+    Contacts (see `people.kind`): `upsert_person` takes `kind` — explicit
+    wins; an update that omits it keeps the row's kind; a new person
+    defaults to "team", or to "contact" when
+    `memory.workspace_settings.effective_workspace_mode` is solo.
+    Making the principal a contact is refused. `list_people` returns both
+    kinds, each with `kind`; `lookup_person` searches the team only.
+    `set_department_head` refuses a contact. The same verified-principal
+    rule, exposed as `people_tools.principal_on_verified_surface(session)`
+    and `contacts_reachable_now()`, decides whether a turn may reach a
+    contact at all (egress, calendar attendees, `message_person` and the
+    raw DM tools) — see `integrations.channel_access`.
   department_tools: |
     `list_department_goals` and `update_department_goal`
     (openexecutive.orchestrator.department_tools) let the Executive
@@ -2296,7 +2308,58 @@ departments:
 people:
   module: openexecutive.people
   store: openexecutive.people.store (SQLite)
-  models: openexecutive.people.models — Person (name, role, department, principal flag, contact channels, availability windows, on-leave date)
+  models: openexecutive.people.models — Person (name, role, department, principal flag, kind, contact channels, availability windows, on-leave date)
+  kind: |
+    `Person.kind` is "team" (the default) or "contact" — someone outside
+    the team (a client, contractor, advisor) the Executive may need to
+    email or invite but who must get nothing a team row grants. Column
+    `kind TEXT NOT NULL DEFAULT 'team'`, added by the PRAGMA-guarded
+    additive migration in `people.store.initialize_db` (existing rows are
+    team). The principal is always team: `upsert_person` /
+    `update_person` raise `PrincipalContactError`, the API answers 422, and
+    `initialize_db` repairs a hand-edited principal contact on boot. An
+    unknown stored value reads as "contact". `upsert_person` with
+    `kind=None` keeps the stored kind on UPDATE, so a full-row rewrite
+    (onboarding, fixtures, the chat tool) never promotes a contact to the
+    team — that would grant sign-in.
+
+    DENY BY DEFAULT: `store.list_people`, every `find_person_by_*`
+    (including `find_person_by_channel_ref`) and the `people.registry`
+    cache return team members only unless called with
+    `include_contacts=True`; `find_approvers` has no opt-in. So contacts
+    are excluded from web sign-in (`/auth/allowed-emails`), the Slack /
+    Telegram / Discord inbound gates and co-presence, approvers, the
+    alert review's roster slice, `/today` people and insights, open-loop
+    owners (an ask of a contact opens no loop the nudge engine would
+    chase), workflow approval/cadence people (`dynamic_models._person_exists`),
+    the post-meeting recap DM, department heads (chat tool and
+    `PATCH /departments/{slug}`), and alert routing (`create_alert`
+    drops a contact assignee). `get_person(id)` returns either kind; the
+    callers that act on the result check `kind`.
+
+    OPT-IN callers, and only these: the MCP gateway's egress allow-list
+    (`mcp_gateway._egress_sets`), calendar attendee resolution
+    (`calendar_tools._resolve_attendees`), the chat DM gates
+    (`schedule_tools._dm_recipient_on_roster`), the People page listing
+    (`GET /people?include_contacts=true`), the chat `list_people` tool,
+    the org prompt block's `## Contacts` section, the email poller's
+    contact lookup (to word its notice), and the style deny-list
+    (`attunement.style._roster_names` — more names is stricter). The
+    first three still need the principal's own turn
+    (`people_tools.contacts_reachable_now`).
+
+    Prompt block: `departments.prompt_block.render_org_block` renders
+    contacts in a compact `## Contacts` section after "People You
+    Coordinate With" — name, role/company, email on file or not; no
+    scopes, SLA or channel ids — capped at 25 lines plus a count, in
+    both modes. With no contacts the block is byte-identical to before.
+
+    UI: `/people` has Team and Contacts tabs (solo opens on Contacts and
+    its Team tab shows only the founder), a kind selector on the add
+    form, and a contact's page hides authority scopes, SLA, availability,
+    open loops, outreach and working style. Adding a team member in solo
+    offers to switch the workspace to team mode (`PUT /workspace`) or keep
+    solo. Pure helpers: packages/ui/src/lib/peopleKinds.ts.
   registry: openexecutive.people.registry — in-memory cache + lookup
   channel: |
     openexecutive.people.channel — resolves a person to a deliverable
@@ -2311,7 +2374,7 @@ people:
     GET /people/by-scope/{token} — e.g. "ceo", "head-of-marketing",
     "department:engineering". The Executive uses this through the
     `lookup_person` tool when a user asks "tell the head of X".
-  api: /people — CRUD plus by-scope lookup and archive.
+  api: /people — CRUD plus by-scope lookup and archive. GET /people is team-only unless include_contacts=true; POST and PATCH take kind.
   executive_write_access: |
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
@@ -4406,8 +4469,10 @@ auth:
          with the backend down, at no fetch latency. Revocable only by
          editing the env and restarting.
       2. Roster: GET /auth/allowed-emails returns every non-archived
-         Person with a non-null email. Consulted only on an env miss,
-         and purely additive.
+         TEAM member with a non-null email — never a contact
+         (`people.kind`), so adding a client to reach them by email does
+         not let them sign in. Consulted only on an env miss, and purely
+         additive.
     Roster fetch is cached for 5 minutes per Next.js server instance
     (ROSTER_TTL_MS in auth.ts) and concurrent misses coalesce onto one
     in-flight request — `authorized` runs per gated request, so without
@@ -4468,12 +4533,14 @@ integrations:
         the People roster, the poller prepends a [POLICY] notice to
         the body the Executive sees explaining that outbound reply
         will be blocked. Audit ``integration_inbound`` row carries
-        ``details.outcome="accepted_non_roster"`` for observability.
+        ``details.outcome="accepted_non_roster"`` for observability
+        (``accepted_contact`` when the sender is one of the principal's
+        contacts — see ``email_poller``).
       • Discord, Slack, Telegram: still roster-gated on inbound. A
-        sender's channel ID must match a non-archived Person row
-        (discord_user_id / slack_user_id / telegram_chat_id).
-        Unknown senders are silently dropped with
-        ``details.outcome="rejected_unknown_sender"``.
+        sender's channel ID must match a non-archived TEAM member's row
+        (discord_user_id / slack_user_id / telegram_chat_id) — a
+        contact's id counts as unknown. Unknown senders are silently
+        dropped with ``details.outcome="rejected_unknown_sender"``.
 
     Outbound — roster-gated everywhere this matters:
       • Gmail send (``send_gmail_message`` — which also covers reply/forward
@@ -4485,6 +4552,20 @@ integrations:
         get an ``integration_outbound_blocked`` audit row.
       • ``send_telegram_message`` and ``send_discord_dm`` apply the
         same People-roster check pre-send.
+      • Contacts (``people.kind``): a contact's address or chat id is
+        reachable only when ``people_tools.contacts_reachable_now()`` —
+        a turn the principal started on a verified surface (web chat,
+        their own Slack / Discord, a verified private Telegram chat),
+        or inside ``grant_contact_egress()`` (the decisions approve
+        route when the approver resolves to the principal). An inbound
+        email (even from the principal's address), a teammate's turn and
+        unattended runs (scheduler, workflows — a kicked resume binds no
+        session — alert review) reach the team only, and a contact is
+        refused with a reason that asks for a draft for the principal.
+        Applies to the Gmail / Calendar / Drive gates, calendar attendee
+        resolution, ``message_person`` (which never falls back to a
+        "Needs you" alert for a contact) and the raw DM tools with their
+        person-id recovery.
       • ``send_slack_dm`` does not have a roster check today — a
         pre-existing gap not addressed by the email-inbound change.
 
@@ -4507,6 +4588,19 @@ integrations:
     to-roster) instead of wasting a turn discovering the outbound
     block. The outbound gate at ``mcp_gateway._check_gmail_recipients``
     is the actual security boundary against auto-replying to spam.
+    Mail from one of the principal's CONTACTS gets a contact [POLICY]
+    notice instead (`_contact_notice`): it names them (name, role /
+    company), says not to reply unless the principal asks, and asks for
+    a summary for the principal; the turn stays unattributed
+    (person_id None) and the gateway refuses mail to a contact on a
+    poller turn anyway. Mail FORWARDED BY THE PRINCIPAL (the sender
+    resolves to the principal and `_new_text_lines` reports a forward)
+    is framed as `<forwarded_by_principal>`: summarise it, draft a reply
+    the principal could send (text in the reply, never sent, never a
+    Gmail draft), note any commitment or date, and offer to add the
+    original sender as a contact (confirmed from the web app or the
+    principal's Slack / Discord). The reply goes to the principal only;
+    the From header is unauthenticated, so the framing grants nothing.
     Peer memory records ``_email_memory_text(raw)`` as the sender's
     words, not the prompt: the subject, the body cut at the first quoted
     or forwarded message (Gmail's possibly-wrapped "On … wrote:",
@@ -4992,7 +5086,11 @@ integrations:
 
     Egress gating: MCPGateway.call_tool intercepts three tool families before
     delegating to the MCP subprocess. All three resolve the allow-list from the
-    shared _roster_allow_set() helper (People roster emails + the exec address):
+    shared _egress_sets() helper (_roster_allow_set() is its first half): every
+    team member's email plus the exec address, and contacts' emails only when
+    people_tools.contacts_reachable_now() (the principal's own verified turn,
+    or grant_contact_egress()); otherwise a contact recipient is refused with
+    a contact-specific reason (_contact_block):
     - Gmail (_GATED_GMAIL_TOOLS): to/cc/bcc must be on the People roster
       or the exec address; unknown argument keys rejected.
     - Calendar (_GATED_CALENDAR_TOOLS = {google_workspace__manage_event}):

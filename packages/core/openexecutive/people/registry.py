@@ -2,6 +2,10 @@
 
 Pattern mirrors `departments.registry`: 60s TTL, thread-safe, invalidated
 by the route layer after any mutation.
+
+The cache holds the whole active roster, but every read is team-only unless
+it passes ``include_contacts=True`` — the same deny-by-default rule as
+``people.store``.
 """
 from __future__ import annotations
 
@@ -19,22 +23,29 @@ _cache_expires_at: float = 0.0
 
 def _refresh() -> list[Person]:
     global _cache, _cache_expires_at
-    people = store.list_people()
+    people = store.list_people(include_contacts=True)
     _cache = people
     _cache_expires_at = time.monotonic() + _TTL_SECONDS
     return people
 
 
-def list_people(*, force_refresh: bool = False) -> list[Person]:
-    """Return all non-archived people, served from the 60s cache."""
+def list_people(
+    *, force_refresh: bool = False, include_contacts: bool = False
+) -> list[Person]:
+    """Return non-archived team members (and contacts, when asked), served
+    from the 60s cache."""
     with _lock:
         if force_refresh or _cache is None or time.monotonic() >= _cache_expires_at:
-            return _refresh()
-        return list(_cache)
+            people = _refresh()
+        else:
+            people = list(_cache)
+    if include_contacts:
+        return list(people)
+    return [p for p in people if p.kind == "team"]
 
 
-def get_person(person_id: int) -> Person | None:
-    for p in list_people():
+def get_person(person_id: int, *, include_contacts: bool = False) -> Person | None:
+    for p in list_people(include_contacts=include_contacts):
         if p.id == person_id:
             return p
     return None

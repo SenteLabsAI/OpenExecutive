@@ -196,6 +196,18 @@ def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentState:
                 detail=f"Invalid {name} cadence {spec!r}: use {CADENCE_FORMATS_HINT}.",
             )
 
+    # A department head is chased by check-ins and routed approvals, so it
+    # must be a team member — never one of the principal's contacts.
+    if "head_person_id" in raw and patch.head_person_id is not None:
+        from openexecutive.people.store import get_person
+
+        head = get_person(patch.head_person_id)
+        if head is not None and head.kind != "team":
+            raise HTTPException(
+                status_code=422,
+                detail=f"{head.full_name} is a contact — only a team member can head a department.",
+            )
+
     store.update_department(
         slug,
         title=patch.title,

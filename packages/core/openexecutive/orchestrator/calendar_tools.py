@@ -217,7 +217,15 @@ def _resolve_attendees(
     max-attendees, roster membership, non-archived, present email, and
     principal-protection (the principal is only allowed when ``include_principal``
     is set). Shared by both the scheduled and instant booking handlers.
+
+    A contact is a valid attendee only on a turn the principal started on a
+    verified surface (``people_tools.contacts_reachable_now``) — the same rule
+    the gateway's calendar gate applies when the event is created.
     """
+    from openexecutive.orchestrator.people_tools import (
+        CONTACT_EGRESS_REFUSAL,
+        contacts_reachable_now,
+    )
     from openexecutive.people.store import list_people
 
     if not attendee_person_ids:
@@ -225,7 +233,10 @@ def _resolve_attendees(
     if len(attendee_person_ids) > max_attendees:
         return {"error": f"too many attendees (max {max_attendees})"}
 
-    all_people = {p.id: p for p in list_people() if p.id is not None}
+    all_people = {
+        p.id: p for p in list_people(include_contacts=True) if p.id is not None
+    }
+    reachable: bool | None = None  # resolved on the first contact only
     attendee_emails: list[str] = []
     int_ids: list[int] = []
     for pid in attendee_person_ids:
@@ -240,6 +251,11 @@ def _resolve_attendees(
             return {"error": f"person {person.full_name!r} (id={person_id}) has no email"}
         if getattr(person, "archived", False):
             return {"error": f"person {person.full_name!r} (id={person_id}) is archived"}
+        if person.kind != "team":
+            if reachable is None:
+                reachable = contacts_reachable_now()
+            if not reachable:
+                return {"error": f"{person.full_name} {CONTACT_EGRESS_REFUSAL}"}
         if getattr(person, "is_principal", False) and not include_principal:
             return {"error": (
                 f"{person.full_name!r} is the principal. Set include_principal=true "
@@ -308,7 +324,9 @@ def _pick_recap_target(
             continue
         if person is None or getattr(person, "archived", False):
             continue
-        if getattr(person, "is_principal", False):
+        # The recap ask is a chase that fires later, unattended: never a
+        # contact (they cannot answer the bot anyway).
+        if getattr(person, "is_principal", False) or getattr(person, "kind", "team") != "team":
             continue
         resolved = resolve_person_scheduled_dm(person, configured)
         if resolved is not None:

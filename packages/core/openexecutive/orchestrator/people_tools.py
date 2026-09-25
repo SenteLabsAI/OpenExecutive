@@ -8,9 +8,11 @@ They sit alongside `create_alert`, the schedule/send tools, and
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import date
 from typing import Any
 
@@ -20,14 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_PREFERRED_CHANNELS = {"email", "slack", "telegram", "discord", "any"}
+_VALID_KINDS = ("team", "contact")
 
 
 LIST_PEOPLE_TOOL: dict[str, Any] = {
     "name": "list_people",
     "description": (
-        "List people in the company roster. Use this to resolve a name to a "
-        "person_id before calling upsert_person, archive_person, or "
-        "set_department_head. Returns a compact JSON list."
+        "List people in the company roster — your team and the principal's "
+        "contacts, each with its `kind` (\"team\" or \"contact\"). Use this to "
+        "resolve a name to a person_id before calling upsert_person, "
+        "archive_person, set_department_head, create_calendar_event or "
+        "message_person. Returns a compact JSON list."
     ),
     "input_schema": {
         "type": "object",
@@ -49,19 +54,36 @@ UPSERT_PERSON_TOOL: dict[str, Any] = {
         "asks you to add someone, fill in everything you know — name, role, "
         "email, department slugs, authority scopes — and call this directly. "
         "Do not refuse and do not redirect to the UI. Call list_people first "
-        "if you need to look up an existing person_id by name."
+        "if you need to look up an existing person_id by name. Set `kind` to "
+        "\"contact\" for someone outside the team (a client, contractor, "
+        "advisor): you can email or invite a contact only when the principal "
+        "asks you to directly, and a contact cannot sign in, message you, or "
+        "approve anything. \"team\" is for people who work with the principal."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "full_name": {"type": "string", "description": "Person's full name."},
+            "kind": {
+                "type": "string",
+                "enum": ["team", "contact"],
+                "description": (
+                    "\"team\" or \"contact\". On a new person it defaults to "
+                    "\"team\" — or to \"contact\" when the principal uses Open "
+                    "Executive just for themselves. On an update, omit it to "
+                    "keep the current kind."
+                ),
+            },
             "person_id": {
                 "type": "integer",
                 "description": "Existing person id to UPDATE. Omit to create a new row.",
             },
             "role": {
                 "type": "string",
-                "description": "Role/title (e.g. 'Head of Marketing', 'Bookkeeper').",
+                "description": (
+                    "Role/title (e.g. 'Head of Marketing', 'Bookkeeper'); for a "
+                    "contact, their role and company (e.g. 'CFO, Acme Corp')."
+                ),
             },
             "department_slugs": {
                 "type": "array",
@@ -266,6 +288,64 @@ def _is_verified_speaker_surface(session: Any) -> bool:
     return get_settings().telegram_webhook_secret_valid and chat_ref.isdigit()
 
 
+def principal_on_verified_surface(session: Any) -> bool:
+    """Whether this turn was started by the principal on a surface that
+    verified it is them — the roster-write rule, reused for contact egress.
+    Fails closed on any error."""
+    try:
+        return _roster_refusal_reason(session) is None
+    except Exception:
+        logger.exception("people_tools: principal/surface check failed — treating as not the principal")
+        return False
+
+
+# Set only around an action the principal took themselves outside a chat turn
+# (approving a proposed meeting in the web app): those run with no session, so
+# `principal_on_verified_surface` alone would always say no.
+_contact_egress_granted: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "contact_egress_granted", default=False
+)
+
+
+@contextlib.contextmanager
+def grant_contact_egress() -> Iterator[None]:
+    """Let the egress gates reach contacts for the duration of the block.
+
+    Only for code that has itself established the principal is acting (e.g.
+    the decisions approve route, after resolving the caller). Save/restore
+    rather than ``Token.reset`` for the same reason as ``set_session``.
+    """
+    prior = _contact_egress_granted.get()
+    _contact_egress_granted.set(True)
+    try:
+        yield
+    finally:
+        _contact_egress_granted.set(prior)
+
+
+def contacts_reachable_now() -> bool:
+    """Whether the Executive may email, invite or message a contact right now.
+
+    Only on a turn the principal started on a verified surface (the web app,
+    their own Slack or Discord, a verified private Telegram chat) or inside
+    ``grant_contact_egress``. Never on an inbound email (a From header proves
+    nothing), a teammate's turn, or an unattended run (scheduler, workflows,
+    alert review) — those can still reach the team.
+    """
+    if _contact_egress_granted.get():
+        return True
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    return principal_on_verified_surface(current_session.get())
+
+
+CONTACT_EGRESS_REFUSAL = (
+    "is one of the principal's contacts. I can only email, invite or message a "
+    "contact when the principal asks me to directly — from the web app or their "
+    "own Slack or Discord — so draft it for the principal to send instead."
+)
+
+
 def _roster_refusal_reason(session: Any) -> str | None:
     """None when this turn may change the roster, else what to tell the asker."""
     from openexecutive.people.store import is_principal_or_self
@@ -332,7 +412,11 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
 
     include_archived = bool(tool_input.get("include_archived", False))
     try:
-        people = people_store.list_people(include_archived=include_archived)
+        # Team and contacts both: the model needs a contact's person_id to
+        # invite or message them when the principal asks.
+        people = people_store.list_people(
+            include_archived=include_archived, include_contacts=True
+        )
     except Exception as exc:
         logger.exception("list_people: failed")
         _audit("list_people", "read", False, f"list_people failed: {exc}", {"error": str(exc)[:300]})
@@ -344,6 +428,7 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
             "full_name": p.full_name,
             "role": p.role,
             "is_principal": p.is_principal,
+            "kind": p.kind,
             "email": p.email,
             "preferred_channel": p.preferred_channel,
             "department_slugs": p.department_slugs,
@@ -390,6 +475,7 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         )
 
     person_id = tool_input.get("person_id")
+    existing = None
     if person_id is not None:
         try:
             person_id = int(person_id)
@@ -404,6 +490,26 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
             return _bad(
                 "is_principal can only be changed via the authenticated /people API"
             )
+
+    # kind: explicit wins; an update that omits it keeps the row's kind (the
+    # store preserves it); a new person defaults to team — or to contact when
+    # the principal uses Open Executive just for themselves, where anyone they
+    # add is almost always someone outside (a client, a contractor).
+    kind_raw = tool_input.get("kind")
+    kind: str | None
+    if kind_raw is not None:
+        kind = str(kind_raw).strip().lower()
+        if kind not in _VALID_KINDS:
+            return _bad(f"kind must be one of {list(_VALID_KINDS)}")
+    elif existing is None:
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        kind = "contact" if effective_workspace_mode(current_session.get()) == "solo" else "team"
+    else:
+        kind = None
+    if existing is not None and existing.is_principal and kind == "contact":
+        return _bad("the principal is always on the team and cannot be made a contact")
 
     preferred_channel = tool_input.get("preferred_channel", "any")
     if preferred_channel not in _VALID_PREFERRED_CHANNELS:
@@ -451,6 +557,7 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         "response_sla_hours": int(tool_input.get("response_sla_hours", 24)),
         "on_leave_until": on_leave_until,
         "reports_to_person_id": tool_input.get("reports_to_person_id"),
+        "kind": kind,
     }
     if person_id is not None:
         kwargs["person_id"] = person_id
@@ -480,17 +587,20 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
             "person_id": new_id,
             "action": action,
             "full_name": full_name,
+            "kind": kind,
             "department_slugs": department_slugs or [],
             "authority_scopes_set": (
                 [s.value for s in authority_scopes] if authority_scopes is not None else None
             ),
         },
     )
+    stored = people_store.get_person(new_id)
     return json.dumps({
         "status": "ok",
         "action": action,
         "person_id": new_id,
         "full_name": full_name,
+        "kind": stored.kind if stored is not None else kind,
     })
 
 
@@ -565,13 +675,25 @@ async def handle_set_department_head(tool_input: dict[str, Any]) -> str:
             _audit("set_department_head", "write", False, "person_id not an integer", {"department_slug": department_slug})
             return json.dumps({"error": "person_id must be an integer or null"})
 
-    if person_id is not None and people_store.get_person(person_id) is None:
+    head = people_store.get_person(person_id) if person_id is not None else None
+    if person_id is not None and head is None:
         _audit(
             "set_department_head", "write", False,
             f"set_department_head: person {person_id} not found",
             {"department_slug": department_slug, "person_id": person_id},
         )
         return json.dumps({"error": f"person {person_id} not found"})
+    if head is not None and head.kind != "team":
+        _audit(
+            "set_department_head", "write", False,
+            f"set_department_head: person {person_id} is a contact",
+            {"department_slug": department_slug, "person_id": person_id},
+        )
+        return json.dumps({"error": (
+            f"{head.full_name} is a contact, not on the team — only a team member "
+            "can head a department. Make them a team member first (upsert_person "
+            "with kind \"team\") if the principal wants that."
+        )})
 
     # Pre-check the department exists so we don't create a head-persona
     # override row for a slug that nobody can reach.

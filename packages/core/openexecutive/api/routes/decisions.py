@@ -17,7 +17,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from openexecutive.memory.decision_ledger import (
@@ -108,15 +108,40 @@ def _clear_decision_alert(instance_id: int, status: str) -> None:
 async def _execute_booking(
     instance: DecisionInstance,
     final_payload: dict[str, Any],
+    *,
+    by_principal: bool = False,
 ) -> dict[str, Any]:
-    """Call the MCP to create the calendar event. Returns the gateway response."""
+    """Call the MCP to create the calendar event. Returns the gateway response.
+
+    ``by_principal``: the approver is the principal, acting in the web app. An
+    approval runs outside any chat turn, so without this the gateway would
+    refuse a contact on the invite even though the principal asked for it.
+    """
     from openexecutive.orchestrator.calendar_tools import _do_create_event
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.orchestrator.people_tools import grant_contact_egress
 
     gateway = get_active_gateway()
     if gateway is None:
         return {"error": "MCP gateway not running — cannot create calendar event"}
+    if by_principal:
+        with grant_contact_egress():
+            return await _do_create_event(gateway, final_payload)
     return await _do_create_event(gateway, final_payload)
+
+
+def _approver_is_principal(request: Request) -> bool:
+    """Whether the caller resolves to the principal (a request with no
+    ``x-caller-email`` does — the CLI, direct curl, local login). Fails
+    closed."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.people.store import is_principal_or_self
+
+    try:
+        return is_principal_or_self(_resolve_caller_person_id(request), None)
+    except Exception:
+        logger.exception("decisions/approve: principal check failed — contacts stay off")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +168,9 @@ def get_decision(instance_id: int) -> DecisionInstance:
 
 
 @router.post("/decisions/{instance_id}/approve", response_model=DecisionInstance)
-async def approve_decision(instance_id: int, body: ApproveBody) -> DecisionInstance:
+async def approve_decision(
+    instance_id: int, body: ApproveBody, request: Request
+) -> DecisionInstance:
     instance = get_decision_instance(instance_id)
     if instance is None:
         raise HTTPException(status_code=404, detail="Decision instance not found")
@@ -187,8 +214,11 @@ async def approve_decision(instance_id: int, body: ApproveBody) -> DecisionInsta
     except Exception:
         logger.debug("decisions/approve: freebusy check skipped", exc_info=True)
 
-    # Create the actual calendar event.
-    result = await _execute_booking(instance, final_payload)
+    # Create the actual calendar event. Contacts on the invite only when the
+    # principal is the one approving.
+    result = await _execute_booking(
+        instance, final_payload, by_principal=_approver_is_principal(request)
+    )
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 

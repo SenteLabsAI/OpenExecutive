@@ -229,12 +229,18 @@ def _valid_specialists() -> frozenset[str]:
 
 
 def _person_exists(person_id: int) -> bool:
-    """True if person_id resolves to a non-archived roster Person."""
+    """True if person_id resolves to a non-archived team member. An approval
+    gate's approver and a cadence recipient are messaged by unattended runs,
+    which never reach one of the principal's contacts."""
     try:
         from openexecutive.people.store import get_person
 
         person = get_person(person_id)
-        return person is not None and not getattr(person, "archived", False)
+        return (
+            person is not None
+            and not getattr(person, "archived", False)
+            and getattr(person, "kind", "team") == "team"
+        )
     except Exception:
         return False
 

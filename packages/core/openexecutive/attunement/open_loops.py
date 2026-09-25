@@ -761,6 +761,10 @@ def _accept_loop(
     owner = _resolve_owner(str(item.get("owner", "")), speaker=speaker, roster=roster)
     if owner is None or owner.id is None or owner.archived:
         return "unknown_owner"
+    if getattr(owner, "kind", "team") != "team":
+        # The roster is team-only, so this is defence in depth: a loop's owner
+        # is chased by the nudge engine, and a contact must never be.
+        return "owner_is_contact"
     if kind == "ask":
         if owner.id == speaker.id:
             return "ask_of_self"

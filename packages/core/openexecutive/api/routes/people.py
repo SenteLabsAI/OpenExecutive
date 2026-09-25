@@ -3,6 +3,10 @@
 Phase 3 surface: CRUD + archive + approver lookup.
 All mutations invalidate the 60s registry cache so the next
 Executive turn picks up the change.
+
+``GET /people`` lists team members only unless ``include_contacts=true`` (the
+People page asks for both; pickers such as a department head or a workflow
+approver keep the default and never offer a contact).
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ from openexecutive.people.models import (
     AuthorityScope,
     AvailabilityWindow,
     Person,
+    PersonKind,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,7 @@ class PersonCreate(BaseModel):
     full_name: str = Field(min_length=1, max_length=200)
     role: str = Field(default="", max_length=200)
     is_principal: bool = False
+    kind: PersonKind = "team"
     department_slugs: list[str] = Field(default_factory=list)
     email: str | None = None
     slack_user_id: str | None = None
@@ -53,6 +59,7 @@ class PersonCreate(BaseModel):
 class PersonPatch(BaseModel):
     full_name: str | None = Field(default=None, max_length=200)
     role: str | None = Field(default=None, max_length=200)
+    kind: PersonKind | None = None
     email: str | None = None
     slack_user_id: str | None = None
     telegram_chat_id: str | None = None
@@ -72,8 +79,10 @@ class PersonPatch(BaseModel):
 # --------------------------------------------------------------------------- #
 
 @router.get("/people", response_model=list[Person])
-def list_people(include_archived: bool = False) -> list[Person]:
-    return people_store.list_people(include_archived=include_archived)
+def list_people(include_archived: bool = False, include_contacts: bool = False) -> list[Person]:
+    return people_store.list_people(
+        include_archived=include_archived, include_contacts=include_contacts
+    )
 
 
 @router.get("/people/by-scope/{token}", response_model=list[Person])
@@ -101,8 +110,13 @@ def get_person(person_id: int) -> Person:
 # Mutation routes
 # --------------------------------------------------------------------------- #
 
+_PRINCIPAL_CONTACT_DETAIL = "The principal is always on the team and cannot be a contact."
+
+
 @router.post("/people", response_model=Person, status_code=status.HTTP_201_CREATED)
 def create_person(body: PersonCreate) -> Person:
+    if body.is_principal and body.kind != "team":
+        raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
     pid = people_store.upsert_person(
         full_name=body.full_name,
         role=body.role,
@@ -116,6 +130,7 @@ def create_person(body: PersonCreate) -> Person:
         response_sla_hours=body.response_sla_hours,
         on_leave_until=body.on_leave_until,
         reports_to_person_id=body.reports_to_person_id,
+        kind=body.kind,
     )
     if body.authority_scope:
         people_store.set_authority_scope(pid, body.authority_scope)
@@ -130,8 +145,11 @@ def create_person(body: PersonCreate) -> Person:
 
 @router.patch("/people/{person_id}", response_model=Person)
 def patch_person(person_id: int, body: PersonPatch) -> Person:
-    if people_store.get_person(person_id) is None:
+    existing = people_store.get_person(person_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="Person not found")
+    if body.kind is not None and body.kind != "team" and existing.is_principal:
+        raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
 
     raw = body.model_dump(exclude_unset=True)
     if raw:
@@ -149,6 +167,7 @@ def patch_person(person_id: int, body: PersonPatch) -> Person:
             clear_on_leave=body.clear_on_leave,
             reports_to_person_id=body.reports_to_person_id,
             department_slugs=body.department_slugs,
+            kind=body.kind,
         )
     if "authority_scope" in raw:
         people_store.set_authority_scope(

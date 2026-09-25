@@ -14,6 +14,10 @@ Key invariants:
   is appended — the function must never raise.
 - Phase 3 extended this to include a compact People roster below the
   departments section. The People section is omitted when no People are seeded.
+- The principal's contacts (people outside the team) get their own short
+  "## Contacts" section after it — name, role/company and whether an email is
+  on file, nothing about authority. With no contacts the block is exactly what
+  it was before contacts existed.
 
 Security note: Goal text fields (key_result, current, target, mission) are
 user-controlled strings that land inside the system prompt. All values are
@@ -41,6 +45,16 @@ _PERIOD_VALUE_CHAR_CAP = 64  # matches the API GoalCreate.period_value max_lengt
 
 # Header string for the org block — constant so Phase 3 can reliably locate it.
 _ORG_BLOCK_HEADER = "## Departments You Manage"
+
+# Contacts section: header, the one-line rule the Executive needs, and a cap
+# on how many are listed (the rest are a list_people call away).
+_CONTACTS_HEADER = "## Contacts"
+_CONTACTS_NOTE = (
+    "People outside the team. You may email, invite or message a contact only "
+    "when the principal asks you to directly; they cannot sign in, message you, "
+    "or approve anything. Call list_people for their person_id."
+)
+_MAX_CONTACTS_IN_BLOCK = 25
 
 # Goal status → short display label so the block stays scannable.
 _STATUS_LABEL: dict[str, str] = {
@@ -196,6 +210,31 @@ def _render_people_section(people: list | None = None) -> str:
         return ""
 
 
+def _render_contacts_section(contacts: list) -> str:
+    """Render the compact ## Contacts section, or "" when there are none.
+
+    One line each: name, role/company, and whether an email is on file (the
+    address itself is not needed to decide anything; list_people has it).
+    Capped at ``_MAX_CONTACTS_IN_BLOCK`` lines plus a count of the rest.
+    """
+    try:
+        if not contacts:
+            return ""
+        lines = [f"{_CONTACTS_HEADER}\n", _CONTACTS_NOTE]
+        for person in contacts[:_MAX_CONTACTS_IN_BLOCK]:
+            name = _safe(person.full_name, 80)
+            role = _safe(person.role, 80) if person.role else "—"
+            email = "email on file" if person.email else "no email"
+            lines.append(f"- {name} — {role} — {email}")
+        extra = len(contacts) - _MAX_CONTACTS_IN_BLOCK
+        if extra > 0:
+            lines.append(f"- …and {extra} more (list_people)")
+        return "\n".join(lines)
+    except Exception:
+        logger.warning("render_contacts_section failed — omitting contacts", exc_info=True)
+        return ""
+
+
 def render_org_block() -> str:
     """Return a Markdown block of all department states + People roster.
 
@@ -212,11 +251,14 @@ def render_org_block() -> str:
         states = list_states()
 
         # Fetch people once — used both for the head-name lookup per
-        # department and for the People section below.
+        # department and for the People section below. Team only; contacts
+        # get their own section and never head a department.
         try:
-            people = list_people()
+            everyone = list_people(include_contacts=True)
         except Exception:
-            people = []
+            everyone = []
+        people = [p for p in everyone if p.kind == "team"]
+        contacts = [p for p in everyone if p.kind != "team"]
 
         # Build a quick id→name map for head-person lookups.
         head_name_by_id: dict[int, str] = {
@@ -238,8 +280,9 @@ def render_org_block() -> str:
         # Build people section — pass the already-fetched list to avoid a
         # second DB call.
         people_section = _render_people_section(people)
+        contacts_section = _render_contacts_section(contacts)
 
-        if not dept_sections and not people_section:
+        if not dept_sections and not people_section and not contacts_section:
             return ""
 
         parts: list[str] = []
@@ -247,6 +290,8 @@ def render_org_block() -> str:
             parts.append("\n\n".join(dept_sections))
         if people_section:
             parts.append(people_section)
+        if contacts_section:
+            parts.append(contacts_section)
 
         body = "\n\n".join(parts).strip()
 
