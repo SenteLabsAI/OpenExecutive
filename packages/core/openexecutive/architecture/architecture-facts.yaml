@@ -823,37 +823,54 @@ routing:
     via `action_chips.summarize_action` as
     "Updated {slug} goal → {status}".
     `create_goal` (same module, both modes) starts tracking a NEW goal the
-    user states ("20 paying clients by the end of Q4"). Inputs: `area`
+    principal states ("20 paying clients by the end of Q4"). Inputs: `area`
     (free text — a department slug or title), `key_result`, `target`,
     `rationale` (required), optional `period_type` (default quarter),
     `period_value` (default the current period in the user's zone, shaped
     like the UI's suggestPeriodValue), `current`, `status` (default
     on_track). The schema is STATIC — no enum of existing areas, which would
-    change the cached tool prefix whenever one is added. The area resolves
-    through `departments.store.match_department` (slug as given or as the
-    store would slug it, else case-insensitive title — the rule onboarding's
-    reconcile also uses); when nothing matches, `create_department` makes it
-    — ONLY when the turn is the principal on a verified surface
-    (`people_tools.is_principal_on_verified_surface`, the roster tools' rule:
-    a new department is org structure, and the tool is offered on turns an
-    inbound email or a teammate started; otherwise refused, audited
-    refused=true) — (a bare slug from the model is title-cased), with a `specialist_key` only
-    when `specialist_key_for_area` maps the title (the default departments'
-    slugs and titles, plus sales) AND no department already holds that
-    specialist — otherwise the area is informational. Guards in code: field
-    caps matching the goal routes; refuses a goal whose normalized
-    key_result the area already tracks (error names the goal_id and points
-    at update_department_goal); at most 5 goals per chat turn (keyed on the
-    audit turn id — a sweep is not a stated goal; no cap without a turn).
+    change the cached tool prefix whenever one is added.
+    WHO: the whole tool runs only when the turn is the principal on a
+    verified surface (`people_tools.is_principal_on_verified_surface`, the
+    roster tools' rule: web chat, their own Slack or Discord, a private
+    Telegram chat with a valid webhook secret). A goal renders in every
+    turn's org block as one of the principal's own, so a goal from an inbound
+    email (the sender is the From header), Google Chat, the CLI, the MCP
+    server, a teammate or an unattended run would be text with their
+    authority: refused before any write, audited refused=true with
+    caller_person_id / origin_channel / from_web_chat / unattended.
+    The area resolves through `departments.store.match_department` (slug as
+    given or as the store would slug it, else case-insensitive title — the
+    rule onboarding's reconcile also uses); when nothing matches,
+    `create_department` makes it (a bare slug from the model is
+    title-cased), with a `specialist_key` only when `specialist_key_for_area`
+    maps the title (the default departments' slugs and titles, plus sales)
+    AND no department already holds that specialist — otherwise the area is
+    informational. Guards in code: field caps matching the goal routes;
+    refuses a goal whose normalized key_result the area already tracks
+    (error names the goal_id and points at update_department_goal); at most
+    5 goals per chat turn (keyed on the audit turn id — a sweep is not a
+    stated goal; no cap without a turn); at most 8 goals per area
+    (`_MAX_GOALS_PER_AREA` — common practice keeps 3-5 key results per
+    objective, and every goal renders in the 4000-char org block, so one
+    area cannot crowd the others out; the goal routes / UI are not capped).
+    A store failure reaches the model as the exception TYPE only (as
+    `executive._tool_error_result`; the log keeps the rest) — the same now
+    holds for list_department_goals and update_department_goal.
     Audited as `tool_invocation` with `details.tool="create_goal"`,
     department_slug, goal_id, area_created, specialist_key and the
     rationale; invalidates the department registry. Chip: "Added a {area}
     goal: {key_result}", linking to /goals in solo (the turn's mode reaches
     `summarize_action(workspace_mode=...)`) and /departments/{slug} in team.
-    Withheld from reflection and research synthesis (a
-    goal is set by what the user said; those passes see only inbound text).
-    The solo persona teaches it (`_SOLO_CREATE_GOAL`); team mode learns it
-    from the tool description, so the team persona stays byte-identical.
+    Never offered to an unattended run: it is in
+    `schedule_tools.UNATTENDED_WITHHELD_TOOLS`, which `unattended_toolkit`
+    drops for reflection and research (both modes) and the chat loop drops
+    (list AND dispatch, `unattended_withheld_error`) when the Session has
+    `unattended=True` — set by the scheduler's PROACTIVE TRIGGER dispatch
+    (`scheduler.runner._execute_action`). That run therefore has its own
+    stable tool prefix. The solo persona teaches it (`_SOLO_CREATE_GOAL`);
+    team mode learns it from the tool description, so the team persona
+    stays byte-identical.
     Evals: `department_goal_update_005`.
   outbound_target_selection: |
     For any proactive outbound message, the Executive picks the audience
@@ -2053,14 +2070,22 @@ attunement:
     solo_dated_commitments: |
       Solo mode only. The turn's pinned mode reaches the pass
       (`schedule_open_loop_pass(..., workspace_mode=...)` from both Executive
-      paths; None reads the workspace). Solo swaps the extraction system
+      paths; None reads the workspace), with `principal_verified` =
+      `people_tools.is_principal_on_verified_surface(session)` (default
+      False, fail-closed). A principal commitment from an unverified surface
+      (an email's sender is its From header) is dropped as
+      `principal_commitment_unverified` before the date checks. Solo swaps the extraction system
       prompt for `_SYSTEM_SOLO` (a separate module constant, never formatted;
       team `_SYSTEM` is byte-identical, sha256 pinned in test_open_loops) and
       `_accept_loop(..., solo=True)` OPENS a commitment of the principal's own
       when it is dated: the model's `due_date` parses as YYYY-MM-DD
       (`_stated_due_date` — stated, never `_resolve_due`'s 2-day default) AND
-      the quote matches `_STATED_DUE_HINT` (weekday / month / today /
-      tomorrow / end of Q4 / the 14th / in 3 days / 10/14). Otherwise it is
+      the quote matches `_STATED_DUE_HINT` — precision over recall:
+      unambiguous words alone (full weekday, today, tomorrow, next week, end
+      of Q4, in 3 days), explicit dates alone (Oct 3, 3 October, 2026-10-03,
+      10/03), and short or ambiguous tokens (may, sat, wed, q1, the 14th,
+      10/3) only after a due word (by / on / before / until / till / due /
+      through); "I may", "the 1st draft", "50/50" never match. Otherwise it is
       dropped as `principal_commitment_undated` (an undated intention is an
       initiative). Owner = the principal, so the nudge engine chases it once
       overdue through their channel; when none reaches them it still

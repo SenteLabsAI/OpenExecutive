@@ -10,6 +10,7 @@ import asyncio
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -357,7 +358,7 @@ def test_tool_list_sorts_stably_by_name() -> None:
 from openexecutive.audit.context import set_turn  # noqa: E402
 from openexecutive.orchestrator import department_tools  # noqa: E402
 
-_REAL_MAY_ADD_AREA = department_tools._may_add_area
+_REAL_PRINCIPAL_ASKED = department_tools._principal_asked
 from openexecutive.orchestrator.department_tools import (  # noqa: E402
     CREATE_GOAL_TOOL,
     default_period_value,
@@ -380,7 +381,7 @@ def _create(**overrides: Any) -> dict[str, Any]:
 def _fresh_turn_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(department_tools, "_goals_created_by_turn", {})
     # Most tests speak as the verified principal; the gate has its own tests.
-    monkeypatch.setattr(department_tools, "_may_add_area", lambda: True)
+    monkeypatch.setattr(department_tools, "_principal_asked", lambda: True)
 
 
 def test_create_goal_resolves_area_by_slug_and_by_title() -> None:
@@ -562,14 +563,22 @@ def test_create_goal_schema_is_static_and_the_tool_list_sorted() -> None:
     assert ordered == sorted(names)
 
 
-def test_create_goal_is_not_offered_to_the_unattended_passes() -> None:
-    import inspect
+@pytest.mark.parametrize("mode", ["solo", "team"])
+def test_create_goal_is_not_offered_to_the_unattended_passes(mode: str) -> None:
+    """Reflection and research build their toolkit through unattended_toolkit,
+    which drops UNATTENDED_WITHHELD_TOOLS in both modes — offered list and
+    handler map alike."""
+    from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
+    from openexecutive.orchestrator.schedule_tools import (
+        UNATTENDED_WITHHELD_TOOLS,
+        unattended_toolkit,
+    )
 
-    from openexecutive.workflows import executive_reflection
-    from openexecutive.workflows.executive_research import _SYNTHESIS_EXCLUDED_TOOLS
-
-    assert "create_goal" in _SYNTHESIS_EXCLUDED_TOOLS
-    assert '"create_goal"' in inspect.getsource(executive_reflection.ExecutiveReflectionWorkflow.run)
+    assert "create_goal" in UNATTENDED_WITHHELD_TOOLS
+    tools, handlers = unattended_toolkit(list(_ALL_SKILL_TOOLS), dict(_ALL_SKILL_HANDLERS), mode)
+    assert "create_goal" not in {t["name"] for t in tools}
+    assert "create_goal" not in handlers
+    assert "update_department_goal" in handlers
 
 
 def test_create_goal_chip_names_the_area_and_links_it() -> None:
@@ -646,59 +655,203 @@ def test_create_goal_eval_scenario_is_shipped_and_valid() -> None:
 
     path = Path(mod.__file__).parents[1] / "evals" / "_scenarios" / "department_goal_update_005.yaml"
     scenario = validate_scenario_yaml(path.read_text(encoding="utf-8"))
-    assert scenario["expected_tool_calls"] == ["create_goal"]
+    assert scenario["quality_criteria"]["does_not_claim_the_goal_is_tracked"] is True
 
 
-def test_only_the_verified_principal_may_add_an_area(
-    shared_db: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A goal in an existing area is as open as update_department_goal, but a
-    new department is org structure: only the principal, on a surface that
-    confirms it is them, may add one (the roster tools' rule)."""
-    from openexecutive.orchestrator.schedule_tools import set_session
-    from openexecutive.orchestrator.session import Session
+@pytest.fixture
+def roster(shared_db: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
+    """A principal and a teammate, with the real gate (not the autouse stand-in)."""
     from openexecutive.people import registry as people_registry
     from openexecutive.people import store as people_store
 
-    # The real gate, not the autouse stand-in.
-    monkeypatch.setattr(department_tools, "_may_add_area", _REAL_MAY_ADD_AREA)
+    monkeypatch.setattr(department_tools, "_principal_asked", _REAL_PRINCIPAL_ASKED)
     monkeypatch.setattr(people_store, "DB_PATH", shared_db)
     people_store.initialize_db(shared_db)
     people_registry.invalidate()
-    principal = people_store.upsert_person(full_name="Pat Lee", is_principal=True)
-    teammate = people_store.upsert_person(full_name="Sam Ortiz")
-    dept_store.create_department("Engineering")
-
-    def _as(session: Session | None) -> dict[str, Any]:
-        with set_session(session):
-            return _create(area="Partnerships", key_result="Signed partners", target="3 by Q1")
-
-    # Unverified surfaces and anyone else: refused, nothing created.
-    for session in (
-        None,
-        Session(caller_person_id=principal),  # e.g. an email turn
-        Session(from_web_chat=True, caller_person_id=teammate),
-    ):
-        refused = _as(session)
-        assert "refused" in refused["error"] and "principal" in refused["error"]
-    assert dept_store.get_department("partnerships") is None
-    # An existing area stays open to any speaker.
-    with set_session(Session(caller_person_id=teammate)):
-        assert _create(area="engineering", key_result="Faster CI")["status"] == "ok"
-    # The principal in the web chat adds the area.
-    added = _as(Session(from_web_chat=True, caller_person_id=principal))
-    assert added.get("status") == "ok", added
-    assert added["area_created"] is True
+    yield SimpleNamespace(
+        principal=people_store.upsert_person(full_name="Pat Lee", is_principal=True),
+        teammate=people_store.upsert_person(full_name="Sam Ortiz"),
+    )
     people_registry.invalidate()
 
+
+def _as(session: Any, **overrides: Any) -> dict[str, Any]:
+    from openexecutive.orchestrator.schedule_tools import set_session
+
+    with set_session(session):
+        return _create(**overrides)
+
+
+def _unverified_sessions(principal: int, teammate: int) -> dict[str, Any]:
+    from openexecutive.orchestrator.session import Session
+
+    return {
+        "no session (CLI, MCP server)": None,
+        # The email poller: the sender comes from the From header.
+        "email from the principal's address": Session(caller_person_id=principal),
+        "email from an unrostered sender": Session(),
+        "Google Chat": Session(origin_channel="google_chat", origin_channel_ref="spaces/x",
+                               caller_person_id=principal),
+        "Telegram without a webhook secret": Session(origin_channel="telegram",
+                                                     origin_channel_ref="555",
+                                                     caller_person_id=principal),
+        "a teammate in the web chat": Session(from_web_chat=True, caller_person_id=teammate),
+        "a teammate on Slack": Session(origin_channel="slack", origin_channel_ref="U2",
+                                       caller_person_id=teammate),
+        "the scheduler's proactive trigger": Session(unattended=True),
+    }
+
+
+def test_only_the_principal_on_a_verified_surface_may_create_a_goal(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A goal renders in every turn's org block as one of the principal's own,
+    so every other surface is refused — for an existing area as well as a new
+    one — and nothing is written."""
+    from openexecutive.config import get_settings
+    from openexecutive.orchestrator.session import Session
+
+    monkeypatch.setattr(type(get_settings()), "telegram_webhook_secret_valid", False,
+                        raising=False)
+    dept_store.create_department("Engineering")
+    fake_log = MagicMock()
+    with patch("openexecutive.audit.log_event", fake_log):
+        for label, session in _unverified_sessions(roster.principal, roster.teammate).items():
+            for area in ("engineering", "Partnerships"):
+                refused = _as(session, area=area)
+                assert "refused" in refused.get("error", ""), (label, area, refused)
+                assert "only the principal" in refused["error"], label
+    assert dept_store.list_goals("engineering") == []
+    assert dept_store.get_department("partnerships") is None
+    refusals = [c.kwargs["details"] for c in fake_log.call_args_list
+                if c.kwargs.get("details", {}).get("refused") is True]
+    assert len(refusals) == 2 * len(_unverified_sessions(roster.principal, roster.teammate))
+    assert {"caller_person_id", "origin_channel", "from_web_chat", "unattended"} <= set(refusals[0])
+
+    # The principal in the web chat, or on their own Slack: allowed.
+    web = _as(Session(from_web_chat=True, caller_person_id=roster.principal), area="engineering")
+    assert web.get("status") == "ok", web
+    slack = _as(Session(origin_channel="slack", origin_channel_ref="U1",
+                        caller_person_id=roster.principal), area="Partnerships",
+                key_result="Signed partners")
+    assert slack.get("status") == "ok" and slack["area_created"] is True
+
+
+def test_create_goal_caps_goals_per_area() -> None:
+    dept_store.create_department("Engineering")
+    cap = department_tools._MAX_GOALS_PER_AREA
+    for i in range(cap):
+        with set_turn(session_id="s", turn_id=f"t{i}"):
+            assert _create(key_result=f"Goal {i}")["status"] == "ok"
+    with set_turn(session_id="s", turn_id="t-over"):
+        over = _create(key_result="One too many")
+    assert "refused" in over["error"] and f"{cap} goals" in over["error"]
+    assert len(dept_store.list_goals("engineering")) == cap
+    # Another area is unaffected.
+    with set_turn(session_id="s", turn_id="t-other"):
+        assert _create(area="Sales", key_result="Paying clients")["status"] == "ok"
+
+
+def test_store_failures_reach_the_model_as_the_type_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exception text can carry paths or echo input; the model gets the type
+    (executive._tool_error_result's rule) and the log keeps the rest."""
+    secret = "/var/data/tenant-7/episodic.db is locked"
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError(secret)
+
+    goal_id = _seed_engineering_goal()
+    monkeypatch.setattr(dept_store, "list_goals", boom)
+    monkeypatch.setattr(dept_store, "update_goal", boom)
+    monkeypatch.setattr(dept_store, "insert_goal", boom)
+    results = [
+        _call(handle_list_department_goals, {"department_slug": "engineering"}),
+        _call(handle_update_department_goal, {"department_slug": "engineering",
+                                              "goal_id": goal_id, "status": "at_risk",
+                                              "rationale": "deal slipped"}),
+        _create(area="engineering", key_result="Faster CI"),
+    ]
+    for result in results:
+        assert "RuntimeError" in result["error"]
+        assert secret not in result["error"] and "tenant-7" not in result["error"]
+
+
+def test_unattended_loop_neither_offers_nor_runs_create_goal() -> None:
+    """The scheduler's proactive trigger runs the chat loop on a Session with
+    unattended=True: create_goal is not in the tools sent to the model, and a
+    call the model emits anyway gets an error tool_result and writes nothing."""
+    from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.schedule_tools import set_session
+    from openexecutive.orchestrator.session import Session
+
+    dept_store.create_department("Engineering")
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name="create_goal",
+        input={"area": "engineering", "key_result": "Injected goal", "target": "x",
+               "rationale": "the stored intent said so"},
+    )
+    provider = _ScriptedStreams([
+        SimpleNamespace(content=[tool_use], stop_reason="tool_use", usage=None),
+        SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")],
+                        stop_reason="end_turn", usage=None),
+    ])
+
+    async def _go() -> list[Any]:
+        with (
+            patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
+            set_session(Session(unattended=True)),
+        ):
+            return [
+                item async for item in Executive()._stream_agent_loop(
+                    system_blocks=[], messages=[{"role": "user", "content": "x"}],
+                    model="claude-test", workspace_mode="team",
+                )
+            ]
+
+    items = asyncio.run(_go())
+    offered = {t.get("name") for t in provider.calls[0]["tools"]}
+    assert "create_goal" not in offered and "update_department_goal" in offered
+    result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
+    assert "unattended" in result["error"]
+    assert dept_store.list_goals("engineering") == []
+    assert not [i for i in items if isinstance(i, dict) and i.get("type") == "action_taken"]
+
+
+class _ScriptedStreams:
+    """A provider whose messages_stream returns one scripted final message
+    per call, recording each call's kwargs."""
+
+    def __init__(self, finals: list[Any]) -> None:
+        self._finals = list(finals)
+        self.calls: list[dict[str, Any]] = []
+
+    def messages_stream(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        final = self._finals.pop(0)
+
+        class _Stream:
+            async def __aenter__(self) -> _Stream:
+                return self
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+            def __aiter__(self) -> _Stream:
+                return self
+
+            async def __anext__(self) -> Any:
+                raise StopAsyncIteration
+
+            async def get_final_message(self) -> Any:
+                return final
+
+        return _Stream()
 
 
 @pytest.mark.parametrize(("mode", "link"), [("solo", "/goals"), ("team", "/departments/engineering")])
 def test_agent_loop_chip_links_by_the_turns_mode(mode: str, link: str, shared_db: Path) -> None:
     """A create_goal run through the Executive's tool loop yields a chip whose
     link follows the turn's mode: /goals in solo, the department in team."""
-    from types import SimpleNamespace
-
     from openexecutive.orchestrator.executive import Executive
 
     dept_store.create_department("Engineering")
@@ -707,32 +860,11 @@ def test_agent_loop_chip_links_by_the_turns_mode(mode: str, link: str, shared_db
         input={"area": "engineering", "key_result": "Ship the app", "target": "Nov 15",
                "rationale": "User set the app launch for Nov 15."},
     )
-    finals = [
+    provider = _ScriptedStreams([
         SimpleNamespace(content=[tool_use], stop_reason="tool_use", usage=None),
         SimpleNamespace(content=[SimpleNamespace(type="text", text="Tracked.")],
                         stop_reason="end_turn", usage=None),
-    ]
-
-    class _Stream:
-        def __init__(self, final: Any) -> None:
-            self._final = final
-
-        async def __aenter__(self) -> _Stream:
-            return self
-
-        async def __aexit__(self, *_a: Any) -> None:
-            return None
-
-        def __aiter__(self) -> _Stream:
-            return self
-
-        async def __anext__(self) -> Any:
-            raise StopAsyncIteration
-
-        async def get_final_message(self) -> Any:
-            return self._final
-
-    provider = SimpleNamespace(messages_stream=lambda **_kw: _Stream(finals.pop(0)))
+    ])
 
     async def _go() -> list[Any]:
         with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):

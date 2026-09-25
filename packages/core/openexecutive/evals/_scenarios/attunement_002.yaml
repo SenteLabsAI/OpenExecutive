@@ -3,10 +3,11 @@ domain: operations
 workspace_mode: solo
 description: "Solo mode: the principal makes two promises with dates. The Executive should take both on as commitments it will hold them to, with their dates — no team, department or broadcast language, no offer to loop the principal in, and nothing invented."
 # Runs as solo mode via the `workspace_mode` key (Session.workspace_mode). In
-# solo the principal's own DATED commitments become open loops they own (the
-# post-turn open-loop pass, which chat evals do not run because they carry no
-# person_id); what is judged here is the reply: that the Executive treats the
-# dates as commitments it will chase and says so plainly, in one short answer.
+# solo the principal's own DATED commitments, said on a surface that verified
+# it is them, become open loops they own (the post-turn open-loop pass, which
+# chat evals do not run because they carry no person_id); what is judged here
+# is the reply: that the Executive treats the dates as commitments it will
+# chase and says so plainly, in one short answer.
 company_context:
   name: Keel Advisory
   industry: Fractional finance leadership

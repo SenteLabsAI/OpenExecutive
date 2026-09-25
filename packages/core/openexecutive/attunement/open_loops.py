@@ -181,15 +181,44 @@ the message does not give.
 
 # A principal's own commitment is opened (solo only) when its quote says when
 # it is due — a backstop to the model's `due_date`, which must not be a guess.
+# Precision over recall (a miss is today's behaviour, a false hit chases the
+# principal about nothing): a short or ambiguous token ("may", "sat", "wed",
+# "q1", "1st", "10/3") counts only after a due word ("by Wed", "on the 14th",
+# "before May 3", "end of Q4"); bare, only unambiguous words (a full weekday,
+# "tomorrow", "next week") and explicit dates ("Oct 3", "3 October",
+# "2026-10-03", "10/03") count.
+_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+_WEEKDAY_SHORT = r"(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)"
+_WEEKDAY_FULL = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+_DAY_NUM = r"(?:0?[1-9]|[12]\d|3[01])"
+# An ordinal is a date only when no word follows it ("the 14th" / "the 14th
+# of", never "the 1st draft").
+_ORDINAL = r"(?:" + _DAY_NUM + r"(?:st|nd|rd|th)\b(?!\s+(?!of\b)[a-z]))"
+_SHORT_DATE = r"(?:(?:0?[1-9]|1[0-2])/" + _DAY_NUM + r"(?:/\d{2,4})?\b)"
+_DUE_WORD = r"(?:by|on|before|until|till|due|through|no later than)"
 _STATED_DUE_HINT = re.compile(
-    r"\b(today|tonight|tomorrow|tmrw|"
-    r"mon(day)?|tue(s|sday)?|wed(nesday)?|thu(r|rs|rsday)?|fri(day)?|sat(urday)?|sun(day)?|"
-    r"jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|"
-    r"sep(t|tember)?|oct(ober)?|nov(ember)?|dec(ember)?|"
-    r"this (morning|afternoon|evening|week|month|quarter)|next (week|month|quarter)|"
-    r"end of (the )?(day|week|month|quarter|year)|eod|eow|eom|eoq|q[1-4]|"
-    r"in (a|an|one|two|three|four|five|six|seven|\d+) (days?|weeks?)|"
-    r"\d{1,2}(st|nd|rd|th)|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2})\b",
+    r"\b(?:"
+    # Unambiguous on their own.
+    r"today|tonight|tomorrow|tmrw|eod|eow|eom|eoq|" + _WEEKDAY_FULL + r"|"
+    r"end of (?:the )?(?:day|week|month|quarter|year)|"
+    r"end of (?:" + _MONTH + r"|q[1-4])\b|"
+    r"this (?:morning|afternoon|evening|week|month|quarter)|"
+    r"next (?:week|month|quarter|year|" + _WEEKDAY_SHORT + r"|" + _WEEKDAY_FULL + r")\b|"
+    r"this " + _WEEKDAY_SHORT + r"\b|"
+    r"in (?:a|an|one|two|three|four|five|six|seven|\d+) (?:days?|weeks?)|"
+    # Explicit dates.
+    + _MONTH + r"\.? " + _DAY_NUM + r"(?:st|nd|rd|th)?\b|"
+    + _DAY_NUM + r"(?:st|nd|rd|th)? (?:of )?" + _MONTH + r"\b|"
+    r"\d{4}-\d{2}-\d{2}\b|"
+    r"(?:0[1-9]|1[0-2])/(?:0[1-9]|[12]\d|3[01])(?:/\d{2,4})?\b(?!/?\d)|"
+    # Short or ambiguous tokens, after a due word.
+    + _DUE_WORD + r" (?:the |this |next )?(?:"
+    + _WEEKDAY_SHORT + r"\b|" + _MONTH + r"\b|q[1-4]\b|" + _ORDINAL + r"|" + _SHORT_DATE
+    + r")"
+    r")",
     re.IGNORECASE,
 )
 
@@ -689,6 +718,7 @@ async def run_open_loop_pass(
     person_id: int,
     session_id: str = "",
     workspace_mode: str | None = None,
+    principal_verified: bool = False,
     db_path: Path | None = None,
 ) -> dict[str, int]:
     """One extraction pass for one attributed turn. Never raises; returns the
@@ -696,7 +726,9 @@ async def run_open_loop_pass(
 
     ``workspace_mode`` is the turn's mode ("solo" / "team"); None reads the
     workspace. Solo uses ``_SYSTEM_SOLO`` and opens the principal's own DATED
-    commitments (see the module docstring); team is unchanged."""
+    commitments (see the module docstring) — only when ``principal_verified``:
+    the turn is the principal on a surface that verified it is them
+    (``people_tools.is_principal_on_verified_surface``). Team is unchanged."""
     from openexecutive.config import get_settings
     from openexecutive.people.store import get_person, list_people
 
@@ -738,7 +770,7 @@ async def run_open_loop_pass(
         counts["opened"] = _apply_opens(
             payload, user_message, speaker=speaker, roster=roster, today=today,
             settings=settings, session_id=session_id, dropped=dropped, db_path=db_path,
-            solo=solo,
+            solo=solo, principal_verified=principal_verified,
         )
     except Exception as exc:
         failure = type(exc).__name__
@@ -838,13 +870,15 @@ def _apply_opens(
     dropped: list[dict[str, str]],
     db_path: Path | None,
     solo: bool = False,
+    principal_verified: bool = False,
 ) -> int:
     """Open the loops that pass every gate. Returns how many opened."""
     principal = next((p for p in roster if p.is_principal), None)
     opened = 0
     for item in payload.get("loops") or []:
         accepted = _accept_loop(item, user_message, speaker=speaker, roster=roster,
-                                principal=principal, solo=solo)
+                                principal=principal, solo=solo,
+                                principal_verified=principal_verified)
         if isinstance(accepted, str):
             dropped.append({"kind": "open", "reason": accepted})
             continue
@@ -882,6 +916,7 @@ def _accept_loop(
     roster: list[Any],
     principal: Any | None,
     solo: bool = False,
+    principal_verified: bool = False,
 ) -> tuple[Any, str, str] | str:
     """``(owner, text, kind)`` for an acceptable loop, else a drop reason."""
     from openexecutive.memory.episodic import _is_valid_user_commitment
@@ -925,9 +960,14 @@ def _accept_loop(
             # The principal's own commitments are the episodic extractor's job.
             return "principal_commitment"
         # Solo: nobody else chases the principal's promises, so a DATED one is
-        # a loop they own. The date must be stated — a real due_date, backed
-        # by date words in the quote — never `_resolve_due`'s default, or
-        # every "I'll look into it" would be chased in two days.
+        # a loop they own — but only from a surface that verified the speaker
+        # is the principal: an email's sender is its From header, so a spoofed
+        # "I'll wire the deposit Friday" must not become their own promise.
+        if not principal_verified:
+            return "principal_commitment_unverified"
+        # The date must be stated — a real due_date, backed by date words in
+        # the quote — never `_resolve_due`'s default, or every "I'll look into
+        # it" would be chased in two days.
         if _stated_due_date(item.get("due_date")) is None or not _STATED_DUE_HINT.search(quote):
             return "principal_commitment_undated"
     return owner, text, str(kind)
@@ -940,13 +980,16 @@ def schedule_open_loop_pass(
     person_id: int | None,
     session_id: str = "",
     workspace_mode: str | None = None,
+    principal_verified: bool = False,
 ) -> None:
     """Fire-and-forget :func:`run_open_loop_pass` for an attributed turn.
 
     ``person_id`` must be the resolved speaker (never a session owner's
     fallback); None — an unrostered sender — does nothing. ``workspace_mode``
     is the turn's pinned mode, so the pass judges the turn in the mode it ran
-    in. Safe to call from sync or async context, like ``schedule_extraction``."""
+    in; ``principal_verified`` says the surface verified the principal (the
+    Executive computes both from the turn's session). Safe to call from sync
+    or async context, like ``schedule_extraction``."""
     if person_id is None or not user_message.strip():
         return
     from openexecutive.config import get_settings
@@ -975,7 +1018,7 @@ def schedule_open_loop_pass(
         with set_turn(session_id=audit_sid or session_id or None, turn_id=audit_tid):
             await run_open_loop_pass(
                 user_message, assistant_response, person_id=person_id, session_id=session_id,
-                workspace_mode=workspace_mode,
+                workspace_mode=workspace_mode, principal_verified=principal_verified,
             )
 
     try:

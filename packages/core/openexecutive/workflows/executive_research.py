@@ -1207,9 +1207,6 @@ _SYNTHESIS_EXCLUDED_TOOLS = frozenset({
     # the very context this pass reasons over. The alert review closes alerts,
     # with evidence; a research run does not.
     "ack_alert",
-    # A goal is set by what the user said; research findings are not that,
-    # and create_goal can also create an area. The user sets goals in chat.
-    "create_goal",
 })
 
 

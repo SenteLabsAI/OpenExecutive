@@ -7,20 +7,23 @@ setback ("we lost the Acme deal"). They close the loop that Phase A's
 `department_check_in` workflow opened — chat-driven activity now feeds
 the same `last_reviewed_at` column the cadence-driven review writes to.
 
-`create_goal` starts tracking a NEW goal the user states ("20 paying
-clients by the end of Q4"), filed under an area / department named by
-slug or title — creating that area when none matches, which only the
-principal on a verified surface may do (the roster tools' rule). Its
-schema is static (the area is free text, not an enum of the current
-departments), so adding an area never changes the cached tool prefix.
+`create_goal` starts tracking a NEW goal the principal states ("20
+paying clients by the end of Q4"), filed under an area / department named
+by slug or title — creating that area when none matches. Only the
+principal, on a surface that verified it is them, may call it (the roster
+tools' rule): a goal renders in every turn's org block as one of the
+principal's own, so a goal from an inbound email, a teammate or an
+unattended run would be text with the principal's authority. Its schema is
+static (the area is free text, not an enum of the current departments), so
+adding an area never changes the cached tool prefix.
 
 Sit alongside `people_tools`, `schedule_tools`, `broadcast_tools`, and
 `alert_tools` in the Executive's main tool loop. No authority gate —
 the goal-mutation surface is principal-editable at any time through the
 UI, so a chat-turn change is no riskier than a manual edit; the audit
-row carries `rationale` for accountability. Neither unattended pass
-(reflection, research) is offered `create_goal`: a goal is set by what
-the user said, and those passes see only inbound text.
+row carries `rationale` for accountability. No unattended run
+(reflection, research, the scheduler's proactive trigger) is offered
+`create_goal` (`schedule_tools.UNATTENDED_WITHHELD_TOOLS`).
 """
 from __future__ import annotations
 
@@ -50,6 +53,13 @@ _PERIOD_VALUE_MAX = 64
 # this is the code-side backstop to the prompt's one-goal-per-stated-target
 # rule. Keyed on the audit turn id, so it applies to chat turns only.
 _MAX_GOALS_PER_TURN = 5
+# Goals an area may hold before create_goal refuses (the goal routes and the
+# UI are not capped — that is the principal's explicit choice). Common goal
+# practice keeps 3-5 key results per objective, so 8 is headroom for real use;
+# and every goal renders in the cached org block (capped at 4000 chars, cut at
+# a section boundary), so a runaway area cannot crowd the other areas out of
+# it — 8 goals at a typical ~150 chars is ~1.2k, under a third of the block.
+_MAX_GOALS_PER_AREA = 8
 _TURN_COUNTS_MAX = 256
 _goals_created_by_turn: dict[tuple[str | None, str], int] = {}
 
@@ -149,12 +159,13 @@ UPDATE_DEPARTMENT_GOAL_TOOL: dict[str, Any] = {
 CREATE_GOAL_TOOL: dict[str, Any] = {
     "name": "create_goal",
     "description": (
-        "Start tracking a NEW goal the user just stated for themselves or "
-        "the business — a concrete target in their own words: 'get to 20 "
-        "paying clients by the end of Q4', 'ship the mobile app this "
-        "quarter'. Files it under an area (a department) named by slug or "
-        "title; an area that does not exist yet is created (only when the "
-        "principal asks). If the goal may "
+        "Start tracking a NEW goal the principal just stated — a concrete "
+        "target in their own words: 'get to 20 paying clients by the end of "
+        "Q4', 'ship the mobile app this quarter'. Only the principal can set "
+        "goals, and only from a conversation that confirms it is them; for "
+        "anyone else it is refused. Files it under an area (a department) "
+        "named by slug or title; an area that does not exist yet is created. "
+        "If the goal may "
         "already be tracked, check with list_department_goals first and "
         "use update_department_goal to change an existing goal's status or "
         "progress instead. Creates ONE goal per call, each backed by a "
@@ -294,7 +305,7 @@ async def handle_list_department_goals(tool_input: dict[str, Any]) -> str:
             {"department_slug": slug, "error": str(exc)[:300]},
             department=slug,
         )
-        return json.dumps({"error": str(exc)})
+        return _failure("list_department_goals", exc)
 
     out = [
         {
@@ -412,7 +423,7 @@ async def handle_update_department_goal(tool_input: dict[str, Any]) -> str:
             {"department_slug": slug, "goal_id": goal_id, "error": str(exc)[:300]},
             department=slug,
         )
-        return json.dumps({"error": str(exc)})
+        return _failure("update_department_goal", exc)
 
     if not updated:
         # Shouldn't happen — we just confirmed the row exists above — but
@@ -496,7 +507,7 @@ def _area_title(area: str) -> str:
     """A title for a new area: as given, except a bare slug the model passed
     ("customer_success") reads as words ("Customer Success")."""
     if " " not in area and area == area.lower() and re.search(r"[-_]", area):
-        return " ".join(w.capitalize() for w in re.split(r"[-_]+", area) if w)
+        return " ".join(w.capitalize() for w in re.split(r"[-_]+", area) if w) or area
     return area
 
 
@@ -520,12 +531,38 @@ def _count_turn_goal(key: tuple[str | None, str] | None) -> None:
         _goals_created_by_turn.pop(next(iter(_goals_created_by_turn)))
 
 
-def _may_add_area() -> bool:
-    """Whether this turn may create an area (a department): only the principal
-    on a surface that verified it is them — the roster tools' rule. A goal in
-    an EXISTING area stays as open as update_department_goal, but a new
-    department is org structure, and create_goal is offered on turns an
-    inbound email or a teammate started. Fails closed."""
+def _failure(tool: str, exc: BaseException) -> str:
+    """The error tool_result for a store failure: the exception's TYPE only,
+    as ``executive._tool_error_result`` does — its message can carry paths or
+    echo the input, and anything in model context can be quoted back to the
+    user. The full exception stays in the log (``logger.exception``)."""
+    return json.dumps({
+        "error": (
+            f"{tool} failed with {type(exc).__name__}. The failure is "
+            "recorded; do not retry the same call unchanged."
+        )
+    })
+
+
+def _caller_context() -> dict[str, Any]:
+    """Who asked, for a refused call's audit row (as people_tools records)."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    return {
+        "caller_person_id": getattr(session, "caller_person_id", None),
+        "origin_channel": getattr(session, "origin_channel", "") or None,
+        "from_web_chat": bool(getattr(session, "from_web_chat", False)),
+        "unattended": bool(getattr(session, "unattended", False)),
+    }
+
+
+def _principal_asked() -> bool:
+    """Whether this turn is the principal on a surface that verified it is
+    them — the roster tools' rule (``people_tools.is_principal_on_verified_
+    surface``): the web chat, their own Slack or Discord, a private Telegram
+    chat with a valid webhook secret. Email, Google Chat, the CLI, the MCP
+    server, teammates and unattended runs are not. Fails closed."""
     from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
     from openexecutive.orchestrator.schedule_tools import current_session
 
@@ -549,6 +586,19 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
             department=extra.get("department_slug"),
         )
         return json.dumps({"error": err})
+
+    # ---- Who is asking ----
+    # A goal renders in every turn's org block as one of the principal's own,
+    # so only they set one: never an inbound email, a teammate, or a run
+    # nobody is watching.
+    if not _principal_asked():
+        return _bad(
+            "refused: only the principal can set a goal, and this request did "
+            "not come from a conversation that confirms it is them. Tell whoever "
+            "asked that the principal needs to add it — in the web app, or by "
+            "asking there or in their own Slack or Discord.",
+            refused=True, **_caller_context(),
+        )
 
     # ---- Input validation ----
     area = _optional_text(tool_input, "area")
@@ -625,16 +675,15 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
                     "call update_department_goal with that goal_id to change it",
                     department_slug=slug, goal_id=dupe.id,
                 )
-        else:
-            if not _may_add_area():
+            if len(state.goals) >= _MAX_GOALS_PER_AREA:
                 return _bad(
-                    f"refused: no area matches {area!r}, and only the principal, "
-                    "asking from a surface that confirms it is them, can add an "
-                    "area. File the goal under one of the existing areas in your "
-                    "context, or tell whoever asked that the principal needs to "
-                    "add this area.",
-                    area=area, refused=True,
+                    f"refused: {title!r} already tracks {len(state.goals)} goals "
+                    f"(the most this tool adds to one area is {_MAX_GOALS_PER_AREA}). "
+                    "Ask the principal which existing goal this replaces, or to "
+                    "add it on the Goals page.",
+                    department_slug=slug, refused=True,
                 )
+        else:
             title = _area_title(area)
             candidate = dept_store.specialist_key_for_area(title)
             # One department per specialist: a second would make the
@@ -658,10 +707,10 @@ async def handle_create_goal(tool_input: dict[str, Any]) -> str:
         logger.exception("create_goal: store write failed area=%s", area)
         _audit(
             "create_goal", "write", False,
-            f"create_goal FAILED area={area}: {exc}",
-            {"area": area, "error": str(exc)[:300]},
+            f"create_goal FAILED area={area}: {type(exc).__name__}",
+            {"area": area, "error": repr(exc)[:300]},
         )
-        return json.dumps({"error": str(exc)})
+        return _failure("create_goal", exc)
 
     _count_turn_goal(turn)
     try:

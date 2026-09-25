@@ -597,9 +597,15 @@ def _dated_commitment(due: str | None, quote: str = "I'll send Northwind the pro
                        "due_date": due, "quote": quote}], "closed": []}
 
 
-async def _run_mode(msg: str, person_id: int, mode: str | None) -> dict[str, int]:
+async def _run_mode(
+    msg: str, person_id: int, mode: str | None, *, verified: bool = True
+) -> dict[str, int]:
+    # `verified` = the turn is the principal on a surface that verified it is
+    # them (the web chat, their own Slack or Discord) — the Executive computes
+    # it with people_tools.is_principal_on_verified_surface.
     return await open_loops.run_open_loop_pass(
-        msg, "Noted.", person_id=person_id, session_id="s1", workspace_mode=mode
+        msg, "Noted.", person_id=person_id, session_id="s1", workspace_mode=mode,
+        principal_verified=verified,
     )
 
 
@@ -617,6 +623,43 @@ async def test_solo_dated_principal_commitment_opens_a_loop_they_own(
     assert fake.calls[0]["system"] == open_loops._SYSTEM_SOLO
     assert any(d.get("op") == "loop_opened" and d.get("owner_person_id") == team.principal
                for _s, d in _isolated)
+
+
+async def test_solo_principal_commitment_from_an_unverified_surface_is_dropped(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, _isolated: list[tuple[str, dict]]
+) -> None:
+    """An email's sender is its From header: a spoofed "I'll wire the deposit
+    Friday" from the principal's address must not become their own promise."""
+    due = (date.today() + timedelta(days=3)).isoformat()
+    _install_provider(monkeypatch, _dated_commitment(due))
+    counts = await _run_mode(
+        "I'll send Northwind the proposal by Friday.", team.principal, "solo", verified=False
+    )
+    assert counts == {"opened": 0, "closed": 0, "dropped": 1}
+    assert open_loops.list_open_loops() == []
+    [extract] = [d for _s, d in _isolated if d.get("op") == "extract"]
+    assert extract["dropped_items"] == [
+        {"kind": "open", "reason": "principal_commitment_unverified"}
+    ]
+    # The default is fail-closed: a caller that does not say drops it too.
+    counts = await open_loops.run_open_loop_pass(
+        "I'll send Northwind the proposal by Friday.", "Noted.", person_id=team.principal,
+        workspace_mode="solo",
+    )
+    assert counts["opened"] == 0
+
+
+async def test_solo_contacts_loops_need_no_principal_verification(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verified-principal rule is for the principal's OWN commitments;
+    what a contact promises opens as it does in team mode."""
+    due = (date.today() + timedelta(days=3)).isoformat()
+    _install_provider(monkeypatch, {"loops": [{
+        "owner": "me", "kind": "commitment", "text": "send the invoice",
+        "due_date": due, "quote": "I'll send the invoice by Friday"}], "closed": []})
+    counts = await _run_mode("I'll send the invoice by Friday.", team.sara, "solo", verified=False)
+    assert counts["opened"] == 1
 
 
 async def test_solo_undated_principal_commitment_stays_dropped(
@@ -698,10 +741,32 @@ def test_stated_due_date_versus_default() -> None:
     assert open_loops._stated_due_date(" 2026-10-02T17:00") == date(2026, 10, 2)
     for raw in (None, "", "Friday", 20261002):
         assert open_loops._stated_due_date(raw) is None
-    for quote in ("by Friday", "on the 14th", "tomorrow", "end of Q4", "in 3 days", "by 10/14"):
-        assert open_loops._STATED_DUE_HINT.search(quote), quote
-    for quote in ("I'll look into pricing", "I will review the budget"):
-        assert not open_loops._STATED_DUE_HINT.search(quote), quote
+
+
+@pytest.mark.parametrize("quote", [
+    "I'll send it by Friday", "I'll send it Friday", "tomorrow", "on the 14th",
+    "by the 14th of October", "by the 30th.", "until the 2nd", "by Oct 3", "Oct. 3",
+    "3 October", "on 3rd October", "before May 3", "by May", "2026-10-03", "10/03",
+    "10/03/2026", "by 10/3", "end of Q4", "by Q1", "in 3 days", "next week", "by Wed",
+    "on Sat", "this Fri", "due Thursday", "end of the month",
+])
+def test_stated_due_hint_matches_a_stated_date(quote: str) -> None:
+    assert open_loops._STATED_DUE_HINT.search(quote), quote
+
+
+@pytest.mark.parametrize("quote", [
+    # Ambiguous words with no due word before them.
+    "I may send the proposal", "I'll not mar the finish", "I march on", "I sat down to write it",
+    "I'll get some sun first", "we'll wed the two plans", "q1 numbers look fine",
+    # Ordinals that name a thing, not a day; ratios.
+    "I'll send the 1st draft", "I'll work on the 1st draft", "I'll fix the 3rd section",
+    "It's a 50/50 call", "half is 1/2 done",
+    # No date at all.
+    "I'll look into pricing", "I will review the budget", "by the way I'll send it",
+])
+def test_stated_due_hint_ignores_ambiguous_tokens(quote: str) -> None:
+    match = open_loops._STATED_DUE_HINT.search(quote)
+    assert match is None, (quote, match.group(0) if match else None)
 
 
 def test_schedule_forwards_the_turns_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -714,13 +779,15 @@ def test_schedule_forwards_the_turns_mode(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(open_loops, "run_open_loop_pass", _fake_pass)
     open_loops.schedule_open_loop_pass(
-        "I'll send it by Friday", "ok", person_id=1, workspace_mode="solo"
+        "I'll send it by Friday", "ok", person_id=1, workspace_mode="solo",
+        principal_verified=True,
     )
     for _ in range(50):
         if seen:
             break
         threading.Event().wait(0.02)
     assert seen and seen[0]["workspace_mode"] == "solo"
+    assert seen[0]["principal_verified"] is True
 
 
 def test_principal_owned_overdue_loop_is_chased_with_the_principal(team: SimpleNamespace) -> None:
@@ -867,6 +934,15 @@ def test_solo_morning_brief_carries_the_due_items(
         return "BRIEF"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
+    # The brief's bookkeeping reads other stores; keep them out of this test
+    # (and out of ./episodic_memory.db).
+    from openexecutive.briefing import brief_state
+
+    monkeypatch.setattr(brief_state, "since_for",
+                        lambda kind, now=None: datetime.now(UTC) - timedelta(days=1))
+    monkeypatch.setattr(brief_state, "last_delivered", lambda kind: None)
+    monkeypatch.setattr(brief_state, "handled_since", lambda since, limit=20: [])
+    monkeypatch.setattr(brief_state, "pending_watch_suggestions", lambda: 0)
     monkeypatch.setattr(today_route, "_build_today",
                         lambda: TodayResponse(departments=[], people=[], proposals=[]))
     monkeypatch.setattr(today_route, "_build_activity",

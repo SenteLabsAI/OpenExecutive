@@ -1524,6 +1524,27 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# What NO unattended run gets, in either mode: the scheduler's proactive
+# trigger (a chat-loop run on a Session with `unattended=True`), reflection and
+# research. These are the principal's own decisions, and those runs have
+# stored or inbound text in their context and nobody watching. create_goal
+# also refuses anyone but the principal on a verified surface; this keeps it
+# out of the unattended toolkits altogether.
+UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "create_goal",
+})
+
+
+def unattended_withheld_error(tool_name: str) -> str:
+    """The JSON error tool_result for a call an unattended run may not make."""
+    return json.dumps({
+        "error": (
+            f"{tool_name} is not available in an unattended run: only the "
+            "principal can do this, from a conversation. Do not retry."
+        )
+    })
+
+
 def handlers_for_offered_tools(
     tools: list[dict[str, Any]], handlers: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1543,13 +1564,15 @@ def unattended_toolkit(
     """``(tools, handlers)`` for an unattended pass (reflection, research).
 
     ``tools`` is the pass's own list (already narrowed to what it offers and
-    to the configured channels). Solo withholds the team-only tools and
+    to the configured channels). Both modes withhold
+    ``UNATTENDED_WITHHELD_TOOLS``. Solo also withholds the team-only tools and
     ``SOLO_UNATTENDED_WITHHELD_TOOLS``, and its ``message_person`` reaches the
     principal only. Either mode, the handler map is built from the list that
     is returned, so a name the model emits without being offered it is
     skipped as unknown instead of run. Order is preserved.
     """
     tools = filter_tools_for_workspace_mode(tools, mode)
+    tools = [t for t in tools if t.get("name", "") not in UNATTENDED_WITHHELD_TOOLS]
     if mode == "solo":
         tools = [t for t in tools if t.get("name", "") not in SOLO_UNATTENDED_WITHHELD_TOOLS]
     offered = handlers_for_offered_tools(tools, handlers)

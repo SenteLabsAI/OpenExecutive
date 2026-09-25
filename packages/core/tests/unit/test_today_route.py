@@ -1987,3 +1987,45 @@ def test_alert_raises_never_reach_the_synthesizer(
     assert "Approve the Q3 budget" not in seen["summaries"]
     assert "decision_logged" in seen["kinds"]  # feed is non-empty
     assert "alert_raised" not in seen["kinds"]
+
+
+def test_solo_today_names_the_principal_for_the_due_soon_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The solo Briefing's "Due soon" card finds the principal's id in
+    /today's `people` (the UI's principalIdOf) and reads their loops from
+    GET /people/{id}/open-loops — so solo must keep the principal in
+    `people`, and the principal must be able to read their own loops."""
+    from openexecutive.api.routes import people as people_route
+    from openexecutive.attunement import open_loops
+    from openexecutive.audit import AuditLogger, set_audit_logger
+    from openexecutive.memory import workspace_settings as ws
+
+    db = tmp_path / "solo-today.db"
+    _setup_isolated_db(db, monkeypatch)
+    set_audit_logger(AuditLogger(db_path=db))
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo"))
+    principal = people_store.upsert_person(
+        full_name="Pat Lee", is_principal=True, email="pat@example.com"
+    )
+    loop_id = open_loops.open_loop(
+        owner_person_id=principal,
+        description="Pat Lee committed to: send the proposal",
+        due_at=datetime.now(UTC) + timedelta(days=2),
+    )
+
+    app = FastAPI()
+    app.include_router(today_route.router)
+    app.include_router(people_route.router)
+    client = TestClient(app)
+    headers = {"x-caller-email": "pat@example.com"}
+    try:
+        people = client.get("/today", headers=headers).json()["people"]
+        loops = client.get(f"/people/{principal}/open-loops", headers=headers)
+    finally:
+        set_audit_logger(None)
+        people_registry.invalidate()
+    principals = [p["id"] for p in people if p["is_principal"]]
+    assert principals == [principal]
+    assert loops.status_code == 200
+    assert [lp["loop_id"] for lp in loops.json()] == [loop_id]
