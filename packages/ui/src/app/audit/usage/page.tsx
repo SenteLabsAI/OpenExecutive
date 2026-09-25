@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import SpendingMeter from "@/components/spending/SpendingMeter";
 import {
   getAuditUsage,
+  getSpending,
   type UsageByDay,
   type UsageBySource,
   type UsageByModel,
   type UsageSummary,
   type UsageTotals,
 } from "@/lib/api";
+import type { SpendingSummary } from "@/lib/spending";
 
 function fmtInt(n: number): string {
   return (n ?? 0).toLocaleString();
@@ -22,6 +25,12 @@ function fmtCost(n: number): string {
   const v = n ?? 0;
   if (v === 0) return "$0";
   return `$${v.toFixed(v < 1 ? 4 : 2)}`;
+}
+
+// The estimate (reported charges plus list prices); an older backend sends
+// only what was charged.
+function estimatedCost(u: UsageTotals): number {
+  return u.estimated_cost_usd ?? u.cost_usd;
 }
 
 // Cache-hit ratio: prompt input served from cache as a fraction of ALL prompt
@@ -60,12 +69,12 @@ function UsageRowCells({ u }: { u: UsageTotals }) {
       <td className="px-3 py-1.5 text-right tabular-nums">{fmtInt(u.output_tokens)}</td>
       <td className="px-3 py-1.5 text-right tabular-nums">{fmtInt(u.web_search_requests ?? 0)}</td>
       <td className="px-3 py-1.5 text-right tabular-nums">{cacheHitPct(u)}%</td>
-      <td className="px-3 py-1.5 text-right tabular-nums">{fmtCost(u.cost_usd)}</td>
+      <td className="px-3 py-1.5 text-right tabular-nums">{fmtCost(estimatedCost(u))}</td>
     </>
   );
 }
 
-const COL_HEADERS = ["Calls", "Input", "Cache read", "Cache write", "Output", "Searches", "Cached", "Cost"];
+const COL_HEADERS = ["Calls", "Input", "Cache read", "Cache write", "Output", "Searches", "Cached", "Est. cost"];
 
 // Debounce window for refetching as the date-range filter changes (matches
 // the /audit list page).
@@ -77,6 +86,16 @@ export default function TokenUsagePage() {
   const [error, setError] = useState<string | null>(null);
   const [since, setSince] = useState<string>("");
   const [until, setUntil] = useState<string>("");
+  const [spending, setSpending] = useState<SpendingSummary | null>(null);
+
+  // This month against the limit: independent of the date filter.
+  useEffect(() => {
+    const controller = new AbortController();
+    getSpending(controller.signal)
+      .then(setSpending)
+      .catch(() => { /* the usage tables below still load */ });
+    return () => controller.abort();
+  }, []);
 
   const debounceRef = useRef<number | null>(null);
   const params = useMemo(
@@ -130,10 +149,28 @@ export default function TokenUsagePage() {
           </div>
           <p className="mt-1 text-sm text-fg-muted">
             Aggregate token usage and cost across all sessions, summed from the
-            audit log. Days are UTC. Cost is the actual OpenRouter charge captured
-            per call — it accrues from when cost tracking went live, so calls
-            logged before then count tokens but $0.
+            audit log. Days are UTC. Cost is an estimate: what the provider
+            reported charging where it does (OpenRouter), and every other call
+            priced from its tokens at its model&apos;s list price. Your AI
+            provider&apos;s bill is the final word.
           </p>
+
+          {spending ? (
+            <section className="mt-5 rounded-xl border border-line bg-surface-elevated/40 px-4 py-3">
+              <div className="flex items-start justify-between gap-4">
+                <h2 className="text-sm font-medium text-fg">This month</h2>
+                <Link
+                  href="/settings#monthly-limit"
+                  className="text-xs text-indigo-400 hover:text-indigo-300 whitespace-nowrap"
+                >
+                  {spending.can_change_limit ? "Set the monthly limit" : "Monthly limit"}
+                </Link>
+              </div>
+              <div className="mt-2 max-w-xl">
+                <SpendingMeter spending={spending} />
+              </div>
+            </section>
+          ) : null}
 
           {/* Date-range filter */}
           <div className="mt-5 grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -180,7 +217,15 @@ export default function TokenUsagePage() {
           {/* Totals */}
           {totals ? (
             <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              <StatCard label="Cost (USD)" value={fmtCost(totals.cost_usd)} hint="actual charged" />
+              <StatCard
+                label="Estimated cost (USD)"
+                value={fmtCost(estimatedCost(totals))}
+                hint={
+                  totals.unpriced_calls
+                    ? `${fmtInt(totals.unpriced_calls)} call${totals.unpriced_calls === 1 ? "" : "s"} without a known price not included`
+                    : "at list prices, or as charged"
+                }
+              />
               <StatCard label="Calls" value={fmtInt(totals.calls)} />
               <StatCard label="Cache hit" value={`${cacheHitPct(totals)}%`} hint="of prompt input served from cache" />
               <StatCard label="Output tokens" value={fmtInt(totals.output_tokens)} />

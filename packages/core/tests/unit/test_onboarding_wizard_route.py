@@ -18,12 +18,21 @@ from openexecutive.api.models import ONBOARD_ANSWER_MAX_CHARS
 from openexecutive.api.routes import onboarding as route
 from openexecutive.onboarding import profile_builder
 from openexecutive.onboarding.wizard import TOTAL_STEPS
+from openexecutive.people import store as people_store
 
 
 @pytest.fixture()
-def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     async def _no_research(session_id: str) -> None:
         return None
+
+    # The final answer checks the caller against the roster and fails closed
+    # when it can't be read — as the shared ./episodic_memory.db briefly can't
+    # while another test process builds it. An empty roster of its own (no
+    # owner yet) lets the final answer through.
+    roster = tmp_path / "episodic.db"
+    monkeypatch.setattr(people_store, "DB_PATH", roster)
+    people_store.initialize_db(roster)
 
     monkeypatch.setattr(route, "_fire_post_onboarding_research", _no_research)
     monkeypatch.setattr(route, "_wizard_sessions", {})

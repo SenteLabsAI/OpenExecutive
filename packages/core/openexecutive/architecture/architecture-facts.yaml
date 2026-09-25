@@ -76,7 +76,7 @@ system:
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
     - The workspace mode (memory.workspace_settings, `workspace_settings` table) is per install and defaults to team. Solo (one person using Open Executive just for themselves) runs no department check-ins anywhere — bootstrap_cadences and enqueue_next are no-ops and the runner cancels a stray dept_cadence row without running or chaining it — but department rows are kept, so switching back is instant. A Session may carry an explicit `workspace_mode` override (read via effective_workspace_mode) so a caller running several conversations on one Executive, such as evals, can pick the mode per session; otherwise the install-wide mode is read fresh at the start of each turn and pinned on the session for that turn only (Session.turn_workspace_mode, via pin_turn_workspace_mode), so every tool handler in the turn uses the mode its persona and tools were built in. The same row holds the principal's role (role_kind owner | in_house | independent | other, role_title, reports_to, remit, measured_on; all nullable) — solo is about who uses Open Executive, not the principal's level. Only solo mode reads it (the solo org block's role lines and the specialists' <principal_role> tag), and team output is byte-identical whether a role is stored or not. A Session may carry a `principal_role` override (effective_principal_role) for the same reason as the mode override.
-    - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it.
+    - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it. The owner's monthly AI limit (audit.spending) pauses through the same switch, marked paused_by = "monthly AI limit", and only ever lifts that pause — never a person's.
     - Each specialist gets its own RAG fetch filtered by its declared domain alias.
     - System-prompt blocks marked with cache_control must remain byte-identical across turns — any dynamic content in them breaks Anthropic prompt caching and roughly 10× the cost.
     - Total cache_control blocks must stay ≤ 4 (the Anthropic API hard limit). The current layout uses 2 of those slots for the system prompt (see `caching.block_order`), leaving headroom for the rolling-history ephemeral marker on the penultimate assistant turn.
@@ -2487,6 +2487,20 @@ departments:
     role — so a workflow the turn starts, whose specialists read the role
     via router.load_principal_role, sees the org block's role even after a
     mid-turn PUT; the next turn re-resolves).
+    set_monthly_budget(value) stores `monthly_budget_usd` (REAL, NULL = no
+    limit, the default; validate_monthly_budget: a finite number from
+    BUDGET_MIN_USD 1 to BUDGET_MAX_USD 1,000,000, rounded to cents; a stored
+    value that no longer validates reads as no limit). Added additively like
+    the role columns. audit.spending compares this month's estimated spend
+    with it; PUT /workspace applies a change at once (enforce_budget).
+    Fixture loads and unloads keep it as it is (cli.fixture_loader.
+    _apply_workspace carries the live value over the reset; workspace.yaml
+    never holds it): the usage log it is checked against (audit_log) carries
+    across them too, so a demo never lifts the owner's limit on real spend.
+    Client slots swap it with the rest of the row, as they swap audit_log.
+    The load/unload response's `workspace` key carries the mode and zone
+    only. validate_monthly_budget also turns an int too big for a float
+    into a 422, not a 500.
     HTTP: GET /workspace, PUT /workspace
     (principal-only, open before a principal exists; the role fields are
     optional in the PUT body like timezone, null/blank clears one). GET
@@ -2839,7 +2853,10 @@ scheduler:
     stopped (red); failed = red; waiting_for_company = amber with a link
     to /onboard. The pause switch is checked AFTER liveness, from its own
     row: a paused loop still beats, so a dead one reads as stopped (red),
-    not paused. run_scheduler also clears _last_tick on entry, so a
+    not paused. A pause the monthly AI limit started (paused_by =
+    audit.spending.BUDGET_PAUSED_BY) reads amber with a fix pointing at the
+    limit in Settings (link /settings) instead of the Resume button, which
+    answers 409 while the limit is reached. run_scheduler also clears _last_tick on entry, so a
     restart in one process never reports the previous run's last tick.
     Due actions run as their own tasks (_inflight), so a slow action
     never ages the heartbeat — only a stuck or dead loop does.
@@ -2873,6 +2890,38 @@ scheduler:
     clients.slots._GLOBAL_TABLES; _ensure_schemas creates the table
     before the restore). GET /executive/status adds `held_actions` —
     due pending rows that fire on resume.
+    Budget pause (audit.spending): the API lifespan runs
+    run_budget_watch(), which calls enforce_budget() in a thread once a
+    minute (WATCH_INTERVAL_SECONDS). With a monthly_budget_usd set, once
+    this month's estimated spend (current_spending: from midnight on the
+    1st in get_user_timezone(), AuditLogger.estimated_spend) reaches it
+    and nothing is paused, it calls pause_if_running(BUDGET_PAUSED_BY =
+    "monthly AI limit", reason naming spend and limit) — an upsert whose
+    UPDATE only applies WHERE paused = 0, so a person's pause that lands
+    after the read is never claimed and two concurrent checks pause (and
+    audit executive_paused, actor the limit) once. When spend is under the limit again (the 1st, or the
+    limit raised) or the limit is removed, it lifts ONLY its own pause via
+    resume_if_paused_by(BUDGET_PAUSED_BY) — one compare-and-set UPDATE
+    (WHERE paused = 1 AND paused_by = ?), so a person's pause that lands
+    in between is never lifted — and audits executive_resumed. A person's
+    pause is never relabelled by the limit. A person who pauses while the
+    limit's pause holds takes it over (POST /executive/pause →
+    take_over_pause: one UPDATE WHERE paused_by = BUDGET_PAUSED_BY; audited
+    executive_paused with details.took_over_from), so the limit lifting its
+    own pause on the 1st never releases work they asked to hold. If they
+    resume a pause of theirs while over the limit,
+    POST /executive/resume calls enforce_budget() in the same request, so
+    the limit's pause takes over at once rather than at the next check (the
+    audit shows executive_resumed by them, then executive_paused by the
+    limit). POST /executive/resume answers 409
+    while the limit's pause holds and spending_blocks_resume() (spend still
+    at or over the limit; fails closed when it can't be read), and status
+    carries paused_for_budget with can_resume false then. Spend can pass
+    the limit by one minute of background work; chat is never limited. The
+    switch is install-wide while spend and limit are per company (both swap
+    with a client slot), so the active company's limit applies — a pause
+    the previous company's limit started lifts after a switch when the new
+    one is under its limit or has none.
   runner: openexecutive.scheduler.runner — asyncio task started in the FastAPI lifespan. Polls every 30s; `claim_due_actions` uses an UPDATE…RETURNING claim so a row is fired at most once per process. Single-worker assumption (do not run two scheduler processes against the same DB). Each poll is gated on an active company profile via `_company_profile_active()` (true when `load_or_create_profile().is_empty()` is false) — when no profile is configured the poll loop claims and dispatches no scheduled actions, so every due row (including the recurring principal-brief rows seeded once in the startup prologue) stays `pending` and fires only once a company profile is saved (the Executive has no company context to act on before then). The hold is logged once per gap and once on resume, not every poll.
   table: |
     scheduled_actions (in episodic_memory.db). Schema (see
@@ -3412,7 +3461,7 @@ audit:
     - alert — alert created by the triage pipeline
     - integration_inbound — Slack / Discord / email / Telegram / Google Chat message received. `details.outcome` distinguishes the non-reply paths — `rejected_unknown_sender` (not on the People roster), `skipped_gate` (response gate said no), and `handler_error` (the turn raised; the user got the generic apology). The error row carries the same `session_id` as the inbound row, so /audit can join a failed turn to the message that caused it.
     - knowledge_retrieval — one row per `knowledge.retriever.retrieve()` call; details carry chunk counts + domains, full payload carries each chunk's source, distance, and text preview so the session view shows "which RAG chunks influenced this response"
-    - cache_event — one row per model call, from every call site (`audit.usage.log_model_usage`): Executive iterations and the committee revision pass (`actor` executive / committee_revision), `BaseAgent.analyze` callers — chat-turn consults via `route_parallel` (`actor` specialist), workflow steps and other direct `route_to_specialist` callers (specialist_workflow), the MCP `consult_specialist` tool (specialist_mcp), and both Council test boxes (agent_test) — `BaseAgent.analyze_with_tools` callers (specialist_research, query_watch, signal_enrichment), the research synthesis and watchlist passes (research_synthesis / research_watchlist), triage, and the chat memory extractor (memory_extractor). Captures `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `cost_usd`, `web_search_requests` (from `usage.server_tool_use`), `stop_reason`, and — inside a research run — the run's `run_id`, so prompt-cache hits are visible per turn, plus `cost_usd` — the actual USD OpenRouter charged for the call (read from `usage.cost`; null on the Anthropic-direct path or for rows logged before cost capture shipped). This is the token-usage + cost source of truth aggregated by both `/audit/sessions/{id}` (per session) and `/audit/usage` (cross-session).
+    - cache_event — one row per model call, from every call site (`audit.usage.log_model_usage`): Executive iterations and the committee revision pass (`actor` executive / committee_revision), `BaseAgent.analyze` callers — chat-turn consults via `route_parallel` (`actor` specialist), workflow steps and other direct `route_to_specialist` callers (specialist_workflow), the MCP `consult_specialist` tool (specialist_mcp), and both Council test boxes (agent_test) — `BaseAgent.analyze_with_tools` callers (specialist_research, query_watch, signal_enrichment), the research synthesis and watchlist passes (research_synthesis / research_watchlist), triage, the chat memory extractor (memory_extractor), and the background calls (alert_review, briefing_narrative, end_of_day_digest, reflection, committee_review, response_gate, person_insight, initiatives_consolidation, inbound_resolver, reply_parser, session_title, suggested_prompts / followup_suggestion for chat's fast JSON calls, weekly_review, eval_judge and fixture_generator). Captures `input_tokens`, `output_tokens`, `cache_creation_input_tokens` with its split by lifetime (`cache_creation_5m_input_tokens` / `cache_creation_1h_input_tokens`, from `usage.cache_creation`; 0 when the provider sends none, as OpenRouter does), `cache_read_input_tokens`, `cost_usd`, `web_search_requests` (from `usage.server_tool_use`), `stop_reason`, and — inside a research run — the run's `run_id`, so prompt-cache hits are visible per turn, plus `cost_usd` — the actual USD OpenRouter charged for the call (read from `usage.cost`; null on the Anthropic-direct path or for rows logged before cost capture shipped). This is the token-usage + cost source of truth aggregated by both `/audit/sessions/{id}` (per session) and `/audit/usage` (cross-session).
     - memory_snapshot — one row at Executive turn entry; captures the system-block layout, conversation history length, episodic context (full text in `full_json`), and a company-profile hash so the session view can render "what the agent saw" before any API call
     - committee_review — one row per committee-reviewed turn; carries draft length, final length, per-reviewer critiques and timings (previously emitted but newly declared as a recognised event_type)
     - peer_memory — one row per `openexecutive.memory.honcho_client` call (prefetch / sync_turn / seed_identity / directional_chat / prefetch_department / sync_department_turn / append_department_note); carries `op`, `person_id`, optional `department_slug`, `outcome` (ok / timeout / error / disabled / no_person / no_department / no_loop / empty), `duration_ms`, plus op-specific details (query preview, reasoning_level, peer count, co_present_person_ids, co_present_department_slugs, originating_person_id, target_person_id, session_id, kind) so the flow-chart view renders the peer_memory path alongside `<retrieved_context>` and `<past_decisions>`. Disabled / no-Person / no-Department turns still emit (outcome marker) so audit absence equals "code path never ran" instead of "the provider was down."
@@ -3427,19 +3476,59 @@ audit:
     - watchlist_suggestion_approved / watchlist_suggestion_declined / watchlist_suggestion_expired — the principal's verdict on a research suggestion (`POST /watchlist/{slug}/approve|decline`, reason on decline) or the sweep removing one unreviewed after WATCHLIST_PROPOSAL_TTL_DAYS. Each also writes a `watchlist_policy_outcomes` row so the policy calibrates.
     - watchlist_auto_disabled — the sweep disabled a research-origin watch (`reason`: dismissed N of M alerts with low trust; no signals in 30 days; 3 consecutive poll failures). Renders in the HANDLED block as `stopped_watching`; re-enable from /watchlist.
     - auth_login / auth_logout — admin auth events
-    - executive_paused / executive_resumed — the operator pause switch flipped (scheduler.pause). actor is the caller's email (else "api"); details carry the reason on pause, and paused_at / paused_by / held_actions on resume. Re-pausing or re-resuming writes nothing.
+    - executive_paused / executive_resumed — the operator pause switch flipped (scheduler.pause). actor is the caller's email (else "api"); details carry the reason on pause, and paused_at / paused_by / held_actions on resume. Re-pausing or re-resuming writes nothing. When the monthly AI limit pauses or lifts it (audit.spending), actor is "monthly AI limit" and details carry action (paused / lifted), limit_usd and, unless the limit was removed, spent_usd and month.
     - scheduled_action_cancelled — a pending scheduled action cancelled via DELETE /scheduled/{id} (the Pulse page's Cancel, or a script). actor is the signed-in caller's email, "admin-token" or "local"; details carry action_id, kind, channel and department. A refused or 409 cancel writes nothing.
     - decision_class_mode_changed — a decision class's mode changed (propose ↔ auto_execute) via PUT /decisions/classes/meeting_scheduling. actor is the caller's x-caller-email or "api"; details carry decision_class and mode as from/to. Setting the current mode writes nothing.
-    - workspace_settings_changed — solo/team mode, the user's time zone or the principal's role changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed. The summary names only what moved ("mode A → B, time zone X → Y" and/or "principal's role updated"). A PUT that changes nothing writes nothing.
+    - workspace_settings_changed — solo/team mode, the user's time zone, the principal's role or the monthly AI limit changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed, and monthly_budget_usd as from/to when the limit changed. The summary names only what moved ("mode A → B, time zone X → Y", "principal's role updated" and/or "monthly AI limit $A → $B"). A PUT that changes nothing writes nothing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
-  read_path: openexecutive.api.routes.audit — `GET /audit/logs` (filtered list), `GET /audit/logs/{id}` (un-truncated `full_json` drill-down), `GET /audit/sessions/{session_id}` (full ordered timeline + server-derived graph of nodes/edges for the /audit/session/[id] flow-chart view), and `GET /audit/usage` (cross-session token + cost aggregate — totals plus by-day and by-model breakdowns, summed from cache_event rows in SQL via `AuditLogger.usage_summary()` so it scales past the 1000-row `query()` cap). For a caller who is not the principal every route leaves out rows private to the principal (see `private_rows`) — the list and its total, the usage totals, a session's timeline (404 when nothing is left) — and a private row's id answers 404 exactly like a missing one.
+  read_path: openexecutive.api.routes.audit — `GET /audit/logs` (filtered list), `GET /audit/logs/{id}` (un-truncated `full_json` drill-down), `GET /audit/sessions/{session_id}` (full ordered timeline + server-derived graph of nodes/edges for the /audit/session/[id] flow-chart view), `GET /audit/usage` (cross-session token + cost aggregate — totals plus by-day, by-model and by-source breakdowns, summed from cache_event rows in SQL via `AuditLogger.usage_summary()` so it scales past the 1000-row `query()` cap; every total and row carries cost_usd, estimated_cost_usd and unpriced_calls — see costs), and `GET /audit/spending` (this month's estimate against the monthly AI limit, audit.spending.current_spending, plus can_change_limit for the caller). For a caller who is not the principal every route leaves out rows private to the principal (see `private_rows`) — the list and its total, the usage totals, a session's timeline (404 when nothing is left) — and a private row's id answers 404 exactly like a missing one. `GET /audit/spending` is the exception — it counts every call, private ones included, for every caller, because the limit acts on the month's whole spend and a total says nothing about what any call was for.
+  costs: |
+    What model calls cost, and the monthly AI limit.
+    Integrity: the estimate SQL clamps every count and charge at 0, and
+    POST /audit/log refuses cache_event rows (403) — the limit pauses and
+    resumes background work on these rows, so nothing outside the backend
+    may write one. providers.translator reports input_tokens as Anthropic
+    does (prompt_tokens minus cached_tokens and cache_write_tokens), so an
+    OpenAI-format response's cached tokens are not counted or priced twice.
+    openexecutive.audit.pricing — list prices in USD per million tokens
+    (ModelPrice: input, output, cache_read; cache writes are 1.25× input
+    for 5-minute entries and 2× for 1-hour ones; WEB_SEARCH_USD = $0.01
+    per search; web fetch is free and 4.6+ models have no long-context
+    surcharge). Cache reads are 0.1× input except where the price list
+    says otherwise (Fable 5.1 / Mythos 5.1 0.025×, Opus 5.5 0.05×).
+    normalize_model maps recorded names to keys EXACTLY — lowercased,
+    `[…]` and `@…` suffixes, OpenRouter's `anthropic/` prefix (dots to
+    dashes), the Bedrock `(xx.)anthropic.` prefix and `-vN:M` suffix and a
+    `-YYYYMMDD` date stripped — so a new model is never priced like an
+    older relative; an unknown model (a local one) has no price.
+    AuditLogger.usage_summary adds, to the totals and every by-day /
+    by-model / by-source row, estimated_cost_usd (the cost_usd a provider
+    reported for a call when it did — OpenRouter; else the call's tokens at
+    its model's list price, grouped per day × source × model in one extra
+    SQL query; a cache write recorded without its lifetime counts as a
+    1-hour write, the dearer one) and unpriced_calls (calls with neither a
+    reported charge nor a list price — counted, never treated as free).
+    cost_usd keeps its old meaning: only what was reported charged, so it
+    stays 0 on the Anthropic-direct path. estimated_spend(since=) returns
+    the same totals in one query for the minute-by-minute check, private
+    rows included (usage_summary's include_private only narrows a reader's view).
+    openexecutive.audit.spending — current_spending(now) is this month's
+    estimate from midnight on the 1st in get_user_timezone(), the limit
+    (workspace_settings.monthly_budget_usd), a forecast (spend × month
+    length / elapsed, after the first 72 h), state (no_limit | ok | near
+    from NEAR_LIMIT_SHARE 0.8 | reached) and paused_for_budget.
+    enforce_budget / run_budget_watch / spending_blocks_resume: see
+    scheduler → pause. Surfaces: GET /audit/spending, Settings → Monthly AI
+    limit, the Token usage page, the Briefing notice at 80%, the paused
+    banner, and Setup status's AI spending light.
   redaction: openexecutive.audit.redaction strips secrets and bounds detail blobs (`_DETAILS_MAX_LEN`) so a runaway tool input never bloats the index.
   ui_surfaces:
     - /audit — filterable list with optional "Group by session" toggle, clickable session pills, and a per-group mini node-strip with "Open full view →" link
     - /audit/session/[id] — three-pane flow-chart view (React Flow canvas + selected-node detail + collapsible JSON drawer)
-    - /audit/usage — cross-session token-usage dashboard (totals cards incl. cost + cache-hit %, by-source, by-model and by-day tables with a UTC date-range filter; the by-source table groups on the row's `actor` and shows server-side searches); reached from the Settings hub (ADVANCED_ITEMS), not the primary nav
+    - /audit/usage — cross-session token-usage dashboard (a This month panel from /audit/spending — spend against the monthly limit, the forecast, a link to the limit in Settings — then totals cards incl. estimated cost + cache-hit %, by-source, by-model and by-day tables with a UTC date-range filter and an estimated-cost column; the by-source table groups on the row's `actor` and shows server-side searches); reached from the Settings hub (ADVANCED_ITEMS), not the primary nav
+    - Settings → Monthly AI limit (components/settings/SpendingCard) — this month's spend and the limit field (owner only; PUT /workspace monthly_budget_usd); the Briefing's SpendingNotice warns the owner from 80% of the limit (lib/spending.spendingNotice), and the paused banner and sidebar switch name a budget pause and point at the limit instead of Resume
   invariants:
     - Audit is append-only — no UPDATE or DELETE paths from product code.
     - summary is the searchable column (LIKE on indexed text), capped at ~300 chars; details_json carries opaque structured fields and is NOT searched.
@@ -5356,7 +5445,7 @@ integrations:
     api/setup_checks.py) backs the UI's Settings → Setup status page:
     one light per part of the install, state ok | warn | error | off,
     with a plain-language summary and fix, an optional in-app link
-    (/people, /onboard) and last_activity (latest integration_inbound
+    (/people, /onboard, /settings) and last_activity (latest integration_inbound
     audit ts for the channel's actor). Order = setup_checks.LABELS. The
     UI adds its own sign-in light (lib/setupStatus.ts signInCheck, from
     the UI's env) and sorts worst-first.
@@ -5404,6 +5493,13 @@ integrations:
     and each brief's next time in the user's zone. gather_snapshot reads
     the outcome, runner.email_ready(), runner.next_brief_runs() and the
     zone, so the check itself does no I/O.
+    AI spending (check_spending, id "spending", after the daily brief)
+    reads Snapshot.spending (audit.spending.current_spending, gathered
+    once; None when it can't be read = amber "couldn't be worked out"):
+    amber with no limit (link /settings); red once the limit is reached,
+    saying background work is paused until next month and chat still
+    works; amber from 80% of the limit; else ok with the forecast. Every
+    state says how many calls couldn't be priced (unpriced_calls).
     Sample values from .env.example (setup_checks.EXAMPLE_VALUES,
     RFC 2606 example domains for emails) are named as samples and never
     sent; test_setup_checks.py fails if .env.example ships a sample the

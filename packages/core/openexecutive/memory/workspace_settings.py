@@ -20,6 +20,10 @@ One row (``id = 1``) in the ``workspace_settings`` table of the episodic DB:
   how the Executive and its specialists learn which. Only solo mode reads it
   (the solo org block and the specialists' ``<principal_role>`` tag); it is
   kept, not cleared, in team mode.
+- ``monthly_budget_usd`` — the owner's monthly AI spending limit in USD, or
+  NULL for none. ``audit.spending`` pauses background work once this month's
+  estimated spend reaches it. Per company like the rest of the row: the usage
+  it is compared with (``audit_log``) swaps with a client slot too.
 
 The row lives in its own table rather than on ``CompanyProfile`` on purpose:
 onboarding's commit and the form wizard rebuild the profile from scratch,
@@ -35,6 +39,7 @@ DB leave no trace.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +84,10 @@ ROLE_KIND_PHRASE: dict[str, str] = {
     "independent": "an independent or fractional executive who serves clients",
 }
 
+# The monthly AI limit: whole cents, between $1 and $1M.
+BUDGET_MIN_USD = 1.0
+BUDGET_MAX_USD = 1_000_000.0
+
 _CREATE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -89,7 +98,8 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     role_title TEXT,
     reports_to TEXT,
     remit TEXT,
-    measured_on TEXT
+    measured_on TEXT,
+    monthly_budget_usd REAL
 )
 """
 
@@ -115,10 +125,12 @@ class PrincipalRole(BaseModel):
 
 
 class WorkspaceSettings(PrincipalRole):
-    """The one settings row: mode, zone, and the principal's role."""
+    """The one settings row: mode, zone, the principal's role, and the
+    monthly AI limit."""
 
     mode: WorkspaceMode = DEFAULT_MODE
     timezone: str | None = None
+    monthly_budget_usd: float | None = None
 
 
 def _resolve_db_path(db_path: Path | None) -> Path:
@@ -138,16 +150,17 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the table if missing and add the role columns to one created
-    before they existed (additive ALTERs; a duplicate-column error from a
-    concurrent boot counts as success)."""
+    """Create the table if missing and add the role and budget columns to one
+    created before they existed (additive ALTERs; a duplicate-column error from
+    a concurrent boot counts as success)."""
     conn.execute(_CREATE_SQL)
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({TABLE})")}
-    for col in ROLE_FIELDS:
+    added = [(col, "TEXT") for col in ROLE_FIELDS] + [("monthly_budget_usd", "REAL")]
+    for col, sql_type in added:
         if col in existing:
             continue
         try:
-            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} TEXT")
+            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {sql_type}")
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():
                 raise
@@ -234,6 +247,44 @@ def validate_role_field(field: str, value: object) -> str | None:
     if field == "role_kind":
         return validate_role_kind(value)
     return validate_role_text(field, value)
+
+
+def validate_monthly_budget(value: object) -> float | None:
+    """``value`` as a monthly AI limit in USD, rounded to cents, or None for
+    "no limit" (None or blank). Raises ``ValueError`` for anything that is not
+    a finite number between BUDGET_MIN_USD and BUDGET_MAX_USD."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            value = float(value)
+        except ValueError:
+            raise ValueError("monthly_budget_usd must be a number") from None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("monthly_budget_usd must be a number")
+    try:
+        amount = float(value)
+    except OverflowError:  # an int too big for a float
+        amount = math.inf
+    if not math.isfinite(amount) or not BUDGET_MIN_USD <= amount <= BUDGET_MAX_USD:
+        raise ValueError(
+            f"monthly_budget_usd must be between {BUDGET_MIN_USD:,.0f} and {BUDGET_MAX_USD:,.0f}"
+        )
+    return round(amount, 2)
+
+
+def _stored_budget(row: sqlite3.Row) -> float | None:
+    """The stored monthly limit if it still validates, else None (logged). A
+    table not migrated yet has no such column. Never raises."""
+    if "monthly_budget_usd" not in set(row.keys()):
+        return None
+    try:
+        return validate_monthly_budget(row["monthly_budget_usd"])
+    except ValueError:
+        logger.warning("workspace: ignoring an invalid stored monthly_budget_usd")
+        return None
 
 
 def _stored_role(row: sqlite3.Row) -> dict[str, str | None]:
@@ -328,7 +379,12 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
         logger.warning("workspace: ignoring unknown stored mode %r", mode)
         mode = DEFAULT_MODE
     return WorkspaceSettings.model_validate(
-        {"mode": mode, "timezone": _stored_zone(row["timezone"]), **_stored_role(row)}
+        {
+            "mode": mode,
+            "timezone": _stored_zone(row["timezone"]),
+            "monthly_budget_usd": _stored_budget(row),
+            **_stored_role(row),
+        }
     )
 
 
@@ -438,11 +494,11 @@ def pin_turn_principal_role(session: Session, mode: str) -> PrincipalRole:
     return role
 
 
-def _upsert(db_path: Path | None, **columns: str | None) -> None:
+def _upsert(db_path: Path | None, **columns: str | float | None) -> None:
     """Write the given columns of the row (``mode`` / ``timezone`` / the role
-    fields), leaving the others as they are. Creates the table, any missing
-    column and the row as needed."""
-    unknown = set(columns) - {"mode", "timezone", *ROLE_FIELDS}
+    fields / ``monthly_budget_usd``), leaving the others as they are. Creates
+    the table, any missing column and the row as needed."""
+    unknown = set(columns) - {"mode", "timezone", "monthly_budget_usd", *ROLE_FIELDS}
     if unknown:
         raise ValueError(f"unknown workspace column(s): {sorted(unknown)}")
     names = list(columns)
@@ -543,6 +599,15 @@ def set_principal_role(**fields: object) -> WorkspaceSettings:
     return get_workspace()
 
 
+def set_monthly_budget(value: object) -> WorkspaceSettings:
+    """Store the monthly AI limit (None or blank removes it). Raises
+    ``ValueError`` before anything is written for a value that does not
+    validate. Nothing else happens here: ``PUT /workspace`` asks
+    ``audit.spending`` to apply the new limit at once."""
+    _upsert(None, monthly_budget_usd=validate_monthly_budget(value))
+    return get_workspace()
+
+
 def restore_workspace_settings(
     settings: WorkspaceSettings, db_path: Path | None = None
 ) -> None:
@@ -553,12 +618,14 @@ def restore_workspace_settings(
         db_path,
         mode=settings.mode,
         timezone=validate_timezone(settings.timezone),
+        monthly_budget_usd=validate_monthly_budget(settings.monthly_budget_usd),
         **{f: validate_role_field(f, getattr(settings, f)) for f in ROLE_FIELDS},
     )
 
 
 def reset_workspace_settings(db_path: Path | None = None) -> None:
-    """Back to the defaults (team, no zone, no role). No scheduler side effects.
+    """Back to the defaults (team, no zone, no role, no monthly limit). No
+    scheduler side effects.
 
     A DB file that does not exist has nothing to reset and is not created.
     """

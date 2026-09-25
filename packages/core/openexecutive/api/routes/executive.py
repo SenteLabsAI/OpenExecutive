@@ -13,6 +13,16 @@ check, so resume is then open rather than leaving a pause no one can lift.
 
 ``paused_by`` comes from the ``x-caller-email`` the UI proxy stamps from the
 signed-in session; direct API callers fall back to ``"api"``.
+
+A pause the monthly AI limit started (``audit.spending``: ``paused_by`` is
+``BUDGET_PAUSED_BY``) reads as ``paused_for_budget``. Resuming it is refused
+with 409 while this month's spend is still at or over the limit — the next
+check would only pause again — so the way out is raising or removing the
+limit (``PUT /workspace``), which lifts it at once. Resuming a person's pause
+while the limit is reached hands over to the limit's pause in the same
+request, rather than at the watch's next check a minute later. Pausing while
+the limit's pause holds takes it over, so it stays until that person
+resumes rather than lifting on the 1st.
 """
 from __future__ import annotations
 
@@ -37,8 +47,11 @@ class ExecutiveStatus(BaseModel):
     reason: str | None = None
     # Pending scheduled actions already due — what fires on resume.
     held_actions: int = 0
-    # Whether THIS caller may resume (principal-only once one exists).
+    # Whether THIS caller may resume (principal-only once one exists), and
+    # resuming would hold (not while the monthly limit is still reached).
     can_resume: bool = False
+    # The pause is the monthly AI limit's (audit.spending), not a person's.
+    paused_for_budget: bool = False
 
 
 class PauseBody(BaseModel):
@@ -58,11 +71,15 @@ def _may_resume(request: Request) -> bool:
 
 
 def _status(request: Request) -> ExecutiveStatus:
+    from openexecutive.audit.spending import is_budget_pause, spending_blocks_resume
+
     state = pause_store.get_pause_state()
+    for_budget = is_budget_pause(state)
     return ExecutiveStatus(
         **state.model_dump(),
         held_actions=pause_store.count_held_actions(),
-        can_resume=_may_resume(request),
+        can_resume=_may_resume(request) and not (for_budget and spending_blocks_resume()),
+        paused_for_budget=for_budget,
     )
 
 
@@ -75,13 +92,25 @@ def get_executive_status(request: Request) -> ExecutiveStatus:
 def pause_executive(request: Request, body: PauseBody | None = None) -> ExecutiveStatus:
     """Hold all autonomous work. Idempotent — re-pausing keeps the original
     start time and reason."""
-    reason = ((body.reason if body else None) or "").strip() or None
-    was_paused = pause_store.get_pause_state().paused
-    actor = _caller(request)
-    pause_store.pause(actor, reason)
-    if not was_paused:
-        from openexecutive.audit import log_event as audit_log
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.audit.spending import BUDGET_PAUSED_BY, is_budget_pause
 
+    reason = ((body.reason if body else None) or "").strip() or None
+    prior = pause_store.get_pause_state()
+    actor = _caller(request)
+    # Pausing while the monthly limit's pause holds makes it this caller's:
+    # the limit lifts only its own pause, so theirs outlasts the month.
+    if is_budget_pause(prior) and pause_store.take_over_pause(BUDGET_PAUSED_BY, actor, reason):
+        audit_log(
+            "executive_paused",
+            "Executive paused — taking over the monthly AI limit's pause"
+            + (f": {reason}" if reason else ""),
+            actor=actor,
+            details={"reason": reason, "took_over_from": BUDGET_PAUSED_BY},
+        )
+        return _status(request)
+    pause_store.pause(actor, reason)
+    if not prior.paused:
         audit_log(
             "executive_paused",
             "Executive paused — autonomous work on hold"
@@ -98,6 +127,16 @@ def resume_executive(request: Request) -> ExecutiveStatus:
     Principal only (see module docstring)."""
     if not _may_resume(request):
         raise HTTPException(status_code=403, detail="Only the principal can resume the Executive")
+    from openexecutive.audit.spending import spending_blocks_resume
+
+    if spending_blocks_resume():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This month's AI spending has reached your monthly limit. Raise or "
+                "remove the limit in Settings to resume."
+            ),
+        )
     prior = pause_store.get_pause_state()
     actor = _caller(request)
     held = pause_store.count_held_actions()
@@ -115,4 +154,12 @@ def resume_executive(request: Request) -> ExecutiveStatus:
                 "held_actions": held,
             },
         )
+    # A person's pause lifted while this month's spend is over the limit:
+    # the limit's pause takes over now rather than at the next check.
+    from openexecutive.audit.spending import enforce_budget
+
+    try:
+        enforce_budget()
+    except Exception:
+        logger.exception("executive: applying the monthly AI limit after a resume failed")
     return _status(request)

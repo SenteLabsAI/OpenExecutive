@@ -465,6 +465,7 @@ async def _llm_disambiguate(
         import asyncio
 
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.config import get_settings
         from openexecutive.providers import get_provider
 
@@ -477,6 +478,7 @@ async def _llm_disambiguate(
             ),
             timeout=get_settings().utility_fast_timeout_s,
         )
+        log_model_usage(response, model=model, actor="inbound_resolver")
         raw_text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
         raw = raw_text_blocks[0].text.strip() if raw_text_blocks else ""
         if raw.startswith("```"):

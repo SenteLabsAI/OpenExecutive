@@ -1,5 +1,6 @@
 import type { AnswerSources } from "@/lib/answerSources";
 import type { SetupStatus } from "@/lib/setupStatus";
+import type { SpendingSummary } from "@/lib/spending";
 
 const API_BASE = "/api/backend";
 
@@ -1234,8 +1235,12 @@ export interface ExecutiveStatus {
   reason: string | null;
   // Pending scheduled actions already due — they fire on resume.
   held_actions: number;
-  // Whether the signed-in viewer may resume (principal-only once one exists).
+  // Whether the signed-in viewer may resume (principal-only once one exists),
+  // and resuming would hold (not while the monthly AI limit is still reached).
   can_resume: boolean;
+  // The pause is the monthly AI limit's, not a person's: raising or removing
+  // the limit in Settings lifts it. Absent on an older backend.
+  paused_for_budget?: boolean;
 }
 
 export async function getExecutiveStatus(signal?: AbortSignal): Promise<ExecutiveStatus> {
@@ -1265,13 +1270,20 @@ export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> 
 export async function resumeExecutive(): Promise<ExecutiveStatus> {
   const res = await fetch(`${API_BASE}/executive/resume`, { method: "POST" });
   if (res.status === 403) throw new Error("Only the principal can resume the Executive.");
+  if (res.status === 409) {
+    // The monthly AI limit is still reached; the API says what to do.
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    throw new Error(
+      typeof body.detail === "string" ? body.detail : "The monthly AI limit has been reached.",
+    );
+  }
   if (!res.ok) throw new Error("Failed to resume the Executive");
   return res.json();
 }
 
 // ----------------------------------------------------------------------------
-// Workspace settings — solo / team mode, the user's time zone, and the
-// principal's role.
+// Workspace settings — solo / team mode, the user's time zone, the
+// principal's role, and the monthly AI limit.
 // ----------------------------------------------------------------------------
 
 // "solo": one person using Open Executive just for themselves (no department
@@ -1299,13 +1311,18 @@ export interface WorkspaceSettings extends PrincipalRole {
   timezone: string | null;
   // The zone in effect: `timezone`, else the server's USER_TIMEZONE, else UTC.
   effective_timezone: string;
+  // The monthly AI spending limit in USD, or null for none. Absent on an
+  // older backend.
+  monthly_budget_usd?: number | null;
 }
 
 // Partial update: only the fields present change. `timezone: null` (or "")
-// clears the stored zone; the role fields clear the same way.
+// clears the stored zone; the role fields clear the same way, and
+// `monthly_budget_usd: null` removes the limit ($1 to $1,000,000 otherwise).
 export interface WorkspaceUpdate extends Partial<PrincipalRole> {
   mode?: WorkspaceMode;
   timezone?: string | null;
+  monthly_budget_usd?: number | null;
 }
 
 export async function getWorkspace(signal?: AbortSignal): Promise<WorkspaceSettings> {
@@ -2542,8 +2559,10 @@ export async function getAuditSession(
 
 // Cross-session token-usage aggregate used by /audit/usage. Totals plus by-day,
 // by-model and by-source breakdowns, summed from cache_event rows. `cost_usd` is
-// the actual OpenRouter charge captured per call (0 for rows that predate
-// capture); `web_search_requests` counts server-side searches the calls made.
+// only what a provider reported charging (OpenRouter does; the Anthropic API
+// doesn't); `estimated_cost_usd` adds every other call at its model's list
+// price, and `unpriced_calls` counts the calls it couldn't price.
+// `web_search_requests` counts server-side searches the calls made.
 
 export interface UsageTotals {
   calls: number;
@@ -2554,6 +2573,9 @@ export interface UsageTotals {
   // Absent on rows written before searches were recorded.
   web_search_requests?: number;
   cost_usd: number;
+  // Absent on an older backend.
+  estimated_cost_usd?: number;
+  unpriced_calls?: number;
 }
 
 export interface UsageByDay extends UsageTotals {
@@ -2590,6 +2612,13 @@ export async function getAuditUsage(
   }
   const res = await fetch(`${API_BASE}/audit/usage?${qs.toString()}`);
   if (!res.ok) throw new Error("Failed to load token usage");
+  return res.json();
+}
+
+// This month's estimated AI spending against the monthly limit.
+export async function getSpending(signal?: AbortSignal): Promise<SpendingSummary> {
+  const res = await fetch(`${API_BASE}/audit/spending`, { signal, cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load this month's AI spending");
   return res.json();
 }
 

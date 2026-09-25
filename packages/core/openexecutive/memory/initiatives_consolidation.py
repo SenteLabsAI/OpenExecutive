@@ -90,6 +90,7 @@ async def propose_clusters(
     Returns (all_initiatives, clusters). Empty cluster list means nothing
     worth merging.
     """
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.config import get_settings
     from openexecutive.providers import get_provider
 
@@ -116,6 +117,7 @@ async def propose_clusters(
             }
         ],
     )
+    log_model_usage(response, model=routing_model, actor="initiatives_consolidation")
 
     clusters: list[Cluster] = []
     valid_ids = {i.id for i in initiatives}

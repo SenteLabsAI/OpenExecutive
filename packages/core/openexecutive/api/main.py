@@ -533,6 +533,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     email_poller_task: asyncio.Task[None] | None = None
     scheduler_task: asyncio.Task[None] | None = None
     resumer_task: asyncio.Task[None] | None = None
+    budget_watch_task: asyncio.Task[None] | None = None
     catalog_refresh_task: asyncio.Task[None] | None = None
 
     # Live OpenRouter model catalog for the Council dropdown. Awaited so the
@@ -574,6 +575,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # constraint — do not run in more than one process against the same DB).
     from openexecutive.workflows.resumer import run_resumer
     resumer_task = asyncio.create_task(run_resumer())
+
+    # Apply the owner's monthly AI limit once a minute (audit.spending): it
+    # pauses background work once this month's spend reaches it. Same
+    # single-worker constraint as the scheduler.
+    from openexecutive.audit.spending import run_budget_watch
+    budget_watch_task = asyncio.create_task(run_budget_watch())
 
     # Discord gateway bot. Embedded in the lifespan (rather than a sibling
     # service) because the bot needs direct access to the same SQLite + ChromaDB
@@ -756,6 +763,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resumer_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await resumer_task
+
+    if budget_watch_task is not None:
+        budget_watch_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await budget_watch_task
 
     if catalog_refresh_task is not None:
         catalog_refresh_task.cancel()

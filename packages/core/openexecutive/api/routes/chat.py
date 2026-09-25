@@ -1616,6 +1616,7 @@ async def _fast_json_call(
     malformed or non-object JSON) — callers fall back rather than raise.
     """
     from openexecutive.agents.utility_fast import get_fast_model
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.config import get_settings
     from openexecutive.providers import get_provider
 
@@ -1630,6 +1631,7 @@ async def _fast_json_call(
             ),
             timeout=get_settings().utility_fast_timeout_s,
         )
+        log_model_usage(response, model=model, actor=log_tag)
         text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
         raw = text_blocks[0].text.strip() if text_blocks else ""
         if raw.startswith("```"):

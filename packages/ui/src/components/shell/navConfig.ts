@@ -222,7 +222,7 @@ export const ADVANCED_ITEMS: NavItem[] = [
     label: "Token usage",
     icon: "activity",
     description:
-      "Aggregate token usage and cost across all sessions — totals, by day, and by model.",
+      "Estimated AI costs and token usage — this month against your limit, then totals by day, model and source.",
   },
   {
     href: "/guide",

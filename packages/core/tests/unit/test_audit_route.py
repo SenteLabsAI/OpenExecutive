@@ -97,6 +97,19 @@ def test_post_audit_log_rejects_unknown_event_type(client: TestClient) -> None:
     assert r.status_code == 422
 
 
+def test_post_audit_log_refuses_usage_rows(client: TestClient) -> None:
+    """The monthly AI limit acts on cache_event rows, so a caller could lift
+    the owner's budget pause with a negative cost, or hold it forever with a
+    huge one."""
+    r = client.post(
+        "/audit/log",
+        json={"event_type": "cache_event", "summary": "x",
+              "details": {"model": "claude-sonnet-5", "cost_usd": -1_000_000}},
+    )
+    assert r.status_code == 403
+    assert client.get("/audit/logs", params={"event_type": "cache_event"}).json()["total"] == 0
+
+
 def _session_client(tmp_path: Path) -> TestClient:
     app = FastAPI()
     audit = AuditLogger(tmp_path / "audit.db")

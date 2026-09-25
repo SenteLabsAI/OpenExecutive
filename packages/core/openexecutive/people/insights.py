@@ -158,6 +158,7 @@ async def generate_person_insight(
     """
     try:
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.providers import get_provider
 
         honcho = (await _honcho_snippet(person)).strip()
@@ -173,6 +174,7 @@ async def generate_person_insight(
             system=_INSIGHT_SYSTEM,
             messages=[{"role": "user", "content": content}],
         )
+        log_model_usage(response, model=model, actor="person_insight")
         raw = "".join(
             getattr(b, "text", "") for b in response.content
             if getattr(b, "type", "") == "text"

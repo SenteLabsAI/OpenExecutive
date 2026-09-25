@@ -746,7 +746,7 @@ def from_openai_response(body: dict[str, Any]) -> SimpleNamespace:
         stop_reason=stop_reason,
         stop_sequence=None,
         usage=SimpleNamespace(
-            input_tokens=usage.get("prompt_tokens", 0),
+            input_tokens=_uncached_prompt_tokens(usage, cache_read, cache_create),
             output_tokens=usage.get("completion_tokens", 0),
             cache_creation_input_tokens=cache_create,
             cache_read_input_tokens=cache_read,
@@ -756,6 +756,19 @@ def from_openai_response(body: dict[str, Any]) -> SimpleNamespace:
             server_tool_use=_server_tool_usage(usage),
         ),
     )
+
+
+def _uncached_prompt_tokens(usage: dict[str, Any], cache_read: int, cache_create: int) -> int:
+    """Anthropic's ``input_tokens``: the prompt tokens neither read from nor
+    written to the cache. OpenAI-format ``prompt_tokens`` counts all of them
+    (OpenRouter's ``cached_tokens`` and ``cache_write_tokens`` are part of
+    it), so the cache counts come off — otherwise the usage log counts them
+    twice, and prices them twice when the call reports no charge."""
+    try:
+        prompt = int(usage.get("prompt_tokens") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, prompt - cache_read - cache_create)
 
 
 def _server_tool_usage(usage: dict[str, Any]) -> SimpleNamespace:
@@ -979,7 +992,7 @@ class StreamAccumulator:
             ),
             stop_sequence=None,
             usage=SimpleNamespace(
-                input_tokens=self._usage.get("prompt_tokens", 0),
+                input_tokens=_uncached_prompt_tokens(self._usage, cache_read, cache_create),
                 output_tokens=self._usage.get("completion_tokens", 0),
                 cache_creation_input_tokens=cache_create,
                 cache_read_input_tokens=cache_read,

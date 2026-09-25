@@ -16,7 +16,7 @@ private row's id answers 404 exactly like a missing one.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -123,10 +123,37 @@ class CostSummary(TokenCounts):
 class UsageTotals(TokenCounts):
     """Token + cost totals over a window, summed across all `cache_event` rows.
 
-    `cost_usd` is the actual OpenRouter-charged amount captured per call; rows
-    that predate cost capture (or non-OpenRouter calls) contribute 0, so the
-    figure accrues from go-live rather than being a back-estimated guess."""
+    `cost_usd` is only what a provider reported charging (OpenRouter does;
+    the Anthropic API does not, so on the standard setup it stays 0).
+    `estimated_cost_usd` is the figure to show: those charges, plus every
+    other call priced from its tokens at its model's list price
+    (`audit.pricing`). `unpriced_calls` counts calls of a model with no list
+    price and no reported charge; they add nothing, so the estimate is short
+    by whatever they cost."""
     cost_usd: float
+    estimated_cost_usd: float = 0.0
+    unpriced_calls: int = 0
+
+
+class SpendingResponse(BaseModel):
+    """This month's AI spending against the owner's monthly limit
+    (`audit.spending`). `month` and the month's start follow the user's time
+    zone (`zone`). `spent_usd` is the usage estimate since then;
+    `forecast_usd` the month-end spend at that pace (null in the first 72
+    hours); `limit_usd` null when no limit is set. `state`: `no_limit`, `ok`,
+    `near` (80% of the limit or more), `reached`. `paused_for_budget` is true
+    while background work is paused for the limit; `can_change_limit` whether
+    this caller may change it (`PUT /workspace`: the principal, or anyone
+    before there is one)."""
+    month: str
+    zone: str
+    spent_usd: float
+    forecast_usd: float | None
+    limit_usd: float | None
+    unpriced_calls: int
+    state: Literal["no_limit", "ok", "near", "reached"]
+    paused_for_budget: bool
+    can_change_limit: bool
 
 
 class UsageByDay(UsageTotals):
@@ -215,10 +242,20 @@ class AuditLogRequest(BaseModel):
     details: dict[str, Any] | None = None
 
 
+# Usage rows are the backend's own record of what each model call cost, and
+# the monthly AI limit pauses and resumes background work on them
+# (audit.spending), so nobody writes one from outside.
+_BACKEND_ONLY_EVENT_TYPES = frozenset({"cache_event"})
+
+
 @router.post("/audit/log", status_code=201)
 def create_audit_log(body: AuditLogRequest, request: Request) -> dict[str, int | None]:
     if body.event_type not in EVENT_TYPES:
         raise HTTPException(status_code=422, detail=f"Unknown event_type: {body.event_type!r}")
+    if body.event_type in _BACKEND_ONLY_EVENT_TYPES:
+        raise HTTPException(
+            status_code=403, detail=f"{body.event_type} rows are written by the backend only"
+        )
     audit = _resolve_logger(request)
     row_id = audit.log(
         body.event_type,
@@ -626,3 +663,22 @@ def get_audit_usage(
     )
 
 
+@router.get("/audit/spending", response_model=SpendingResponse)
+def get_audit_spending(request: Request) -> SpendingResponse:
+    """This month's estimated AI spending against the monthly limit — the
+    Token usage page, Settings and the Briefing's notice read it."""
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+    from openexecutive.audit.spending import current_spending
+
+    spending = current_spending(audit=_resolve_logger(request))
+    return SpendingResponse(
+        month=spending.month,
+        zone=spending.zone,
+        spent_usd=spending.spent_usd,
+        forecast_usd=spending.forecast_usd,
+        limit_usd=spending.limit_usd,
+        unpriced_calls=spending.unpriced_calls,
+        state=spending.state,
+        paused_for_budget=spending.paused_for_budget,
+        can_change_limit=_caller_is_principal_or_unclaimed(request),
+    )

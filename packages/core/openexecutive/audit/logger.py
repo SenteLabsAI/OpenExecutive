@@ -30,6 +30,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from openexecutive.audit.pricing import estimate_cost
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(os.environ.get("EPISODIC_DB_PATH") or "./episodic_memory.db")
@@ -192,7 +194,12 @@ _USAGE_INT_FIELDS: tuple[str, ...] = (
 
 
 def _zero_usage() -> dict[str, float | int]:
-    return {**{k: 0 for k in _USAGE_INT_FIELDS}, "cost_usd": 0.0}
+    return {
+        **{k: 0 for k in _USAGE_INT_FIELDS},
+        "cost_usd": 0.0,
+        "estimated_cost_usd": 0.0,
+        "unpriced_calls": 0,
+    }
 
 
 def _row_to_usage(row: sqlite3.Row) -> dict[str, float | int]:
@@ -201,6 +208,9 @@ def _row_to_usage(row: sqlite3.Row) -> dict[str, float | int]:
     # what zeroes those out, so this stays correct with no caller-side None.
     out: dict[str, float | int] = {k: int(row[k] or 0) for k in _USAGE_INT_FIELDS}
     out["cost_usd"] = float(row["cost_usd"] or 0.0)
+    # Filled in by _add_estimates, which prices every model separately.
+    out["estimated_cost_usd"] = 0.0
+    out["unpriced_calls"] = 0
     return out
 
 
@@ -216,6 +226,92 @@ _USAGE_SUM_COLS = """
     SUM(COALESCE(CAST(json_extract(details_json,'$.web_search_requests') AS INTEGER),0)) AS web_search_requests,
     SUM(COALESCE(CAST(json_extract(details_json,'$.cost_usd') AS REAL),0)) AS cost_usd
 """
+
+
+def _uncharged_sum(field: str) -> str:
+    """SUM of ``field`` over the rows no provider reported a charge for — the
+    ones audit.pricing estimates. ``field`` is one of the constant names below.
+    A negative count adds nothing: the monthly limit acts on this sum."""
+    return (
+        "SUM(CASE WHEN json_extract(details_json,'$.cost_usd') IS NULL "
+        f"THEN MAX(COALESCE(CAST(json_extract(details_json,'$.{field}') AS INTEGER),0),0) "
+        f"ELSE 0 END) AS {field}"
+    )
+
+
+# The group keys usage_summary() reports by, shared with the estimate query
+# so its rows land on the same keys.
+_DAY_KEY = "substr(ts,1,10)"
+_MODEL_KEY = "COALESCE(json_extract(details_json,'$.model'),'unknown')"
+_SOURCE_KEY = "COALESCE(actor,'unknown')"
+
+# Per (day, source, model): the provider-reported charges, and the counts the
+# rest need to be priced (a cache write's lifetime is recorded since
+# audit.usage started reading it; older writes count as unsplit).
+_ESTIMATE_COLS = ",\n    ".join([
+    "SUM(CASE WHEN json_extract(details_json,'$.cost_usd') IS NULL THEN 1 ELSE 0 END)"
+    " AS uncharged_calls",
+    "SUM(MAX(COALESCE(CAST(json_extract(details_json,'$.cost_usd') AS REAL),0),0))"
+    " AS charged_usd",
+    *(
+        _uncharged_sum(f)
+        for f in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "cache_creation_5m_input_tokens",
+            "cache_creation_1h_input_tokens",
+            "web_search_requests",
+        )
+    ),
+])
+
+
+def _estimate_group(row: sqlite3.Row) -> tuple[float, int]:
+    """(estimated USD, unpriced calls) for one (day, source, model) group: the
+    charges providers reported, plus the other calls at the model's list price
+    (audit.pricing). A cache write whose lifetime was not recorded is priced
+    as a 1-hour write, the dearer one. The other calls of a model without a
+    list price are counted as unpriced and add nothing."""
+    charged = float(row["charged_usd"] or 0.0)
+    uncharged = int(row["uncharged_calls"] or 0)
+    if not uncharged:
+        return charged, 0
+    write_5m = int(row["cache_creation_5m_input_tokens"] or 0)
+    write_1h = int(row["cache_creation_1h_input_tokens"] or 0)
+    unsplit = max(0, int(row["cache_creation_input_tokens"] or 0) - write_5m - write_1h)
+    estimate = estimate_cost(
+        str(row["model"]),
+        input_tokens=int(row["input_tokens"] or 0),
+        output_tokens=int(row["output_tokens"] or 0),
+        cache_read_tokens=int(row["cache_read_input_tokens"] or 0),
+        cache_write_5m_tokens=write_5m,
+        cache_write_1h_tokens=write_1h + unsplit,
+        web_searches=int(row["web_search_requests"] or 0),
+    )
+    if estimate is None:
+        return charged, uncharged
+    return charged + estimate, 0
+
+
+def _add_estimates(result: dict[str, Any], groups: list[sqlite3.Row]) -> None:
+    """Sum the per-group estimates into the totals and every breakdown row."""
+    rows_by_key: dict[str, dict[str, dict[str, Any]]] = {
+        "day": {r["day"]: r for r in result["by_day"]},
+        "model": {r["model"]: r for r in result["by_model"]},
+        "source": {r["source"]: r for r in result["by_source"]},
+    }
+    for group in groups:
+        usd, unpriced = _estimate_group(group)
+        targets = [result["totals"]] + [
+            rows_by_key[k][group[k]] for k in rows_by_key if group[k] in rows_by_key[k]
+        ]
+        for target in targets:
+            target["estimated_cost_usd"] += usd
+            target["unpriced_calls"] += unpriced
+    for target in [result["totals"], *result["by_day"], *result["by_model"], *result["by_source"]]:
+        target["estimated_cost_usd"] = round(target["estimated_cost_usd"], 6)
 
 
 class AuditLogger:
@@ -553,8 +649,13 @@ class AuditLogger:
                 f"FROM audit_log {where} GROUP BY source ORDER BY input_tokens DESC",
                 params,
             ).fetchall()
+            estimate_groups = conn.execute(
+                f"SELECT {_DAY_KEY} AS day, {_SOURCE_KEY} AS source, {_MODEL_KEY} AS model, "
+                f"{_ESTIMATE_COLS} FROM audit_log {where} GROUP BY day, source, model",
+                params,
+            ).fetchall()
 
-        return {
+        result: dict[str, Any] = {
             "totals": _row_to_usage(totals_row),
             "by_day": [{"day": r["day"], **_row_to_usage(r)} for r in by_day_rows],
             "by_model": [{"model": r["model"], **_row_to_usage(r)} for r in by_model_rows],
@@ -562,6 +663,27 @@ class AuditLogger:
                 {"source": r["source"], **_row_to_usage(r)} for r in by_source_rows
             ],
         }
+        _add_estimates(result, estimate_groups)
+        return result
+
+    def estimated_spend(self, *, since: str) -> tuple[float, int]:
+        """(estimated USD, unpriced calls) of the `cache_event` rows from
+        ``since`` on: ``usage_summary``'s estimate totals in one query, for
+        the monthly-limit check (``audit.spending``) that runs every minute."""
+        if not self._db_path.exists():
+            return 0.0, 0
+        with _get_conn(self._db_path) as conn:
+            groups = conn.execute(
+                f"SELECT {_MODEL_KEY} AS model, {_ESTIMATE_COLS} FROM audit_log "
+                "WHERE event_type = 'cache_event' AND ts >= ? GROUP BY model",
+                (since,),
+            ).fetchall()
+        usd, unpriced = 0.0, 0
+        for group in groups:
+            group_usd, group_unpriced = _estimate_group(group)
+            usd += group_usd
+            unpriced += group_unpriced
+        return round(usd, 6), unpriced
 
 
 # --------------------------------------------------------------------------- #

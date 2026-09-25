@@ -238,6 +238,8 @@ def test_usage_summary_empty_db_returns_zeros(tmp_path: Path) -> None:
         "output_tokens": 0,
         "web_search_requests": 0,
         "cost_usd": 0.0,
+        "estimated_cost_usd": 0.0,
+        "unpriced_calls": 0,
     }
     assert s["by_day"] == []
     assert s["by_model"] == []

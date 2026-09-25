@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from openexecutive.audit.usage import log_model_usage
 from openexecutive.providers import get_provider
 
 # The judge routes through the provider abstraction (like every other LLM call),
@@ -114,6 +115,7 @@ Respond in JSON format:
         max_tokens=500,
         messages=[{"role": "user", "content": judge_prompt}],
     )
+    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
     text = message.content[0].text  # type: ignore[union-attr]
     try:
         start = text.find("{")
@@ -159,6 +161,7 @@ Respond in JSON:
         max_tokens=500,
         messages=[{"role": "user", "content": judge_prompt}],
     )
+    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
     text = message.content[0].text  # type: ignore[union-attr]
     try:
         start = text.find("{")
@@ -238,6 +241,7 @@ Respond in JSON:
         max_tokens=500,
         messages=[{"role": "user", "content": judge_prompt}],
     )
+    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
     text = message.content[0].text  # type: ignore[union-attr]
     try:
         start = text.find("{")

@@ -39,13 +39,16 @@ from openexecutive.api.setup_checks import (
     check_owner,
     check_scheduler,
     check_slack,
+    check_spending,
     check_telegram,
     is_example_email,
     run_checks,
 )
 from openexecutive.audit import AuditEvent
+from openexecutive.audit.spending import BUDGET_PAUSED_BY, Spending
 from openexecutive.config import Settings
 from openexecutive.people.models import Person
+from openexecutive.scheduler.pause import PauseState
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -721,9 +724,21 @@ def test_scheduler(
 def test_scheduler_off_and_paused(heartbeat: Callable[..., None], monkeypatch: pytest.MonkeyPatch) -> None:
     heartbeat(NOW, (NOW, "paused"))
     assert check_scheduler(make_snap(make_settings(SCHEDULER_ENABLED=False))).state == "off"
-    monkeypatch.setattr("openexecutive.scheduler.pause.get_pause_state", lambda: SimpleNamespace(paused=True))
+    monkeypatch.setattr(
+        "openexecutive.scheduler.pause.get_pause_state",
+        lambda: PauseState(paused=True, paused_by="ceo@acme.io"),
+    )
     paused = check_scheduler(make_snap())
     assert paused.state == "warn" and "Resume" in (paused.fix or "")
+
+    # The monthly limit's pause: Resume is refused, so point at the limit.
+    monkeypatch.setattr(
+        "openexecutive.scheduler.pause.get_pause_state",
+        lambda: PauseState(paused=True, paused_by=BUDGET_PAUSED_BY),
+    )
+    budget = check_scheduler(make_snap())
+    assert budget.state == "warn" and "monthly limit" in budget.summary
+    assert (budget.fix or "").startswith("Raise or remove the limit") and budget.link == "/settings"
 
     # Paused and dead: Resume wouldn't help, so say it has stopped.
     heartbeat(NOW - timedelta(hours=1), (NOW - timedelta(minutes=30), "paused"))
@@ -736,6 +751,44 @@ def test_scheduler_stale_window_follows_the_poll_interval(heartbeat: Callable[..
     heartbeat(NOW - timedelta(hours=1), (NOW - timedelta(minutes=4), "ran"))
     slow = make_settings(SCHEDULER_POLL_INTERVAL_SECONDS=300)
     assert check_scheduler(make_snap(slow)).state == "ok"
+
+
+def _spending(spent: float, limit: float | None, state: str, **fields: Any) -> Spending:
+    values: dict[str, Any] = {
+        "month": "2026-09", "zone": "UTC", "since": "2026-09-01T00:00:00+00:00",
+        "spent_usd": spent, "forecast_usd": None, "limit_usd": limit, "unpriced_calls": 0,
+        "state": state, "paused_for_budget": False,
+    }
+    values.update(fields)
+    return Spending(**values)
+
+
+@pytest.mark.parametrize(
+    ("spending", "state", "summary", "link"),
+    [
+        (None, "warn", "couldn't be worked out", None),
+        (_spending(12.5, None, "no_limit"), "warn", "About $12.50 so far this month, with no monthly limit.", "/settings"),
+        (_spending(20, 100, "ok", forecast_usd=62), "ok",
+         "About $20.00 of your $100.00 monthly limit used so far this month, on pace for about $62.00.",
+         None),
+        (_spending(85, 100, "near"), "warn", "Background work pauses when it's reached.", "/settings"),
+        (_spending(1_250, 1_000, "reached", paused_for_budget=True), "error",
+         "about $1,250.00) reached your $1,000.00 monthly limit, so background work is paused", "/settings"),
+        # Reached, but the limit's pause isn't the one in place (yet).
+        (_spending(12, 10, "reached"), "error", "so background work pauses until next month", "/settings"),
+    ],
+)
+def test_spending(spending: Spending | None, state: str, summary: str, link: str | None) -> None:
+    check = check_spending(make_snap(spending=spending))
+    assert (check.state, check.link) == (state, link)
+    assert summary in check.summary
+
+
+def test_spending_says_when_calls_could_not_be_priced() -> None:
+    one = check_spending(make_snap(spending=_spending(3, 10, "ok", unpriced_calls=1)))
+    assert "1 call used a model with no known price" in one.summary
+    two = check_spending(make_snap(spending=_spending(3, None, "no_limit", unpriced_calls=2)))
+    assert "2 calls used a model with no known price" in two.summary
 
 
 @pytest.mark.parametrize(

@@ -503,6 +503,7 @@ async def _next_weeks_top_three(body: str, period: str) -> str:
     """Next week's top three, as a numbered list, from one fast-model call
     that follows the weekly-review playbook. "" on any failure."""
     from openexecutive.agents.utility_fast import get_fast_model
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers import get_provider
     from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
@@ -522,6 +523,7 @@ async def _next_weeks_top_three(body: str, period: str) -> str:
     except Exception:
         logger.exception("weekly_review: top three call failed — using the ranked pick")
         return ""
+    log_model_usage(response, model=model, actor="weekly_review")
     text = "".join(
         getattr(b, "text", "") for b in getattr(response, "content", []) or []
         if getattr(b, "type", "") == "text"

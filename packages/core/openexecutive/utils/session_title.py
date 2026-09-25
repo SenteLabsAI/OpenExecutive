@@ -40,6 +40,7 @@ async def generate_session_title(
     """
     try:
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.providers import get_provider
 
         model = get_fast_model()
@@ -58,6 +59,7 @@ async def generate_session_title(
                 }
             ],
         )
+        log_model_usage(response, model=model, actor="session_title")
         raw = "".join(
             getattr(b, "text", "") for b in response.content
             if getattr(b, "type", "") == "text"

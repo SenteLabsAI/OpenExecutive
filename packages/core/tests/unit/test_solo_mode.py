@@ -296,6 +296,26 @@ def test_snapshot_round_trip_restores_the_users_settings(tmp_path: Path) -> None
     assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="Europe/Dublin")
 
 
+def test_fixture_load_and_unload_leave_the_monthly_limit_alone(tmp_path: Path) -> None:
+    """The limit is checked against the usage log, which fixture swaps carry
+    across, so a demo must not lift it."""
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", monthly_budget_usd=150.0))
+    backup = tmp_path / "backup" / "workspace.yaml"
+    backup.parent.mkdir()
+    fixture_loader._dump_workspace(backup)
+    assert "monthly_budget_usd" not in backup.read_text()
+
+    demo = tmp_path / "workspace.yaml"
+    demo.write_text("mode: team\ntimezone: Asia/Tokyo\nmonthly_budget_usd: 5\n")
+    out = _apply_file(demo)  # load
+    assert out == {"mode": "team", "timezone": "Asia/Tokyo"}  # mode and zone only
+    assert ws.get_workspace().monthly_budget_usd == 150.0
+    assert _apply_file(tmp_path / "none.yaml")["mode"] == "team"  # a fixture with no file
+    assert ws.get_workspace().monthly_budget_usd == 150.0
+    _apply_file(backup, keep_when_missing=True)  # unload
+    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", monthly_budget_usd=150.0)
+
+
 def _top_level_calls(fn: Any) -> set[str]:
     """Names called by top-level statements of ``fn`` (not inside an if/for)."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))

@@ -1222,7 +1222,8 @@ def _read_workspace_file(workspace_path: Path) -> WorkspaceSettings | None:
     """The settings an optional ``workspace.yaml`` asks for (``mode:
     solo|team``, ``timezone: <IANA zone>``, and the principal's role:
     ``role_kind``, ``role_title``, ``reports_to``, ``remit``,
-    ``measured_on`` — each optional), or None when there is no file.
+    ``measured_on`` — each optional), or None when there is no file. Not the
+    monthly AI limit, which a fixture never changes (see ``_apply_workspace``).
 
     Never raises: an unreadable file, a non-mapping or a value that does not
     validate is logged and skipped (reading as the default for that field).
@@ -1287,9 +1288,13 @@ def _apply_workspace(
     (who they report to, what they are measured on — shown by ``GET
     /workspace`` to the principal only) is left out of it. It is still
     applied.
+
+    The monthly AI limit is kept as it is, whatever ``wanted`` says: it is
+    checked against the usage log (``audit_log``), which a fixture load or
+    unload carries across too, so a demo must not lift the owner's limit on
+    the owner's real API spend.
     """
     from openexecutive.memory.workspace_settings import (
-        ROLE_FIELDS,
         WorkspaceSettings,
         get_workspace,
         reset_workspace_settings,
@@ -1300,12 +1305,16 @@ def _apply_workspace(
         logger.info("fixture: no workspace.yaml in the backup — keeping the current settings")
     else:
         try:
+            limit = get_workspace().monthly_budget_usd
+            wanted = (wanted or WorkspaceSettings()).model_copy(
+                update={"monthly_budget_usd": limit}
+            )
             reset_workspace_settings()
-            if wanted is not None and wanted != WorkspaceSettings():
+            if wanted != WorkspaceSettings():
                 restore_workspace_settings(wanted)
         except Exception:
             logger.exception("fixture: applying the workspace settings failed")
-    return get_workspace().model_dump(exclude=set(ROLE_FIELDS))
+    return get_workspace().model_dump(include={"mode", "timezone"})
 
 
 def _dump_workspace(workspace_path: Path) -> None:
@@ -1315,7 +1324,8 @@ def _dump_workspace(workspace_path: Path) -> None:
     from openexecutive.memory.workspace_settings import get_workspace
 
     workspace_path.write_text(
-        yaml.safe_dump(get_workspace().model_dump(), sort_keys=True),
+        # Not the monthly AI limit: loads and unloads keep it as it is.
+        yaml.safe_dump(get_workspace().model_dump(exclude={"monthly_budget_usd"}), sort_keys=True),
         encoding="utf-8",
     )
 
