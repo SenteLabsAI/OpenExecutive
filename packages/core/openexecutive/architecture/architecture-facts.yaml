@@ -799,7 +799,9 @@ routing:
     decides, so an archived principal is refused too. Everything else gets
     `{"status": "refused", "detail": ...}` — a rostered teammate on any
     surface, a signed-in web user whose email is on no People row (told to
-    link their email on the People page), and every unverified surface:
+    sign in with the email on their own entry, or re-run the setup
+    interview to fill in a missing one — the People page refuses them
+    too), and every unverified surface:
     email (the poller resolves the From header, which proves nothing —
     even the principal's address), Google Chat (no sender identity), the
     CLI, the MCP server, and unattended runs (no `current_session`). Why:
@@ -809,8 +811,8 @@ routing:
     address that can then sign in and receive mail, or grant themselves
     WILDCARD. Refusals are audited (`tool_invocation`, ok=false,
     refused=true, with caller / origin_channel / from_web_chat) and render
-    no action chip. `list_people` stays open. The People page (behind the
-    web sign-in) is unaffected.
+    no action chip. `list_people` stays open. The People page's own
+    routes apply the same owner rule (see `people.api`).
   department_tools: |
     `list_department_goals` and `update_department_goal`
     (openexecutive.orchestrator.department_tools) let the Executive
@@ -2551,7 +2553,26 @@ people:
     GET /people/by-scope/{token} — e.g. "ceo", "head-of-marketing",
     "department:engineering". The Executive uses this through the
     `lookup_person` tool when a user asks "tell the head of X".
-  api: /people — CRUD plus by-scope lookup and archive.
+  api: |
+    /people — CRUD plus by-scope lookup and archive. Adding, editing and
+    archiving (POST /people, PATCH /people/{id}, POST /people/{id}/archive)
+    are the principal's only, via `_require_roster_owner` →
+    `chat._caller_is_principal_or_unclaimed` (the check behind PUT
+    /workspace and resuming the Executive): the caller resolves to the
+    principal (a request with no x-caller-email — the CLI, local login —
+    does), or no one is principal yet, so a first setup from the People
+    page can add its owner. Fails closed when the roster can't be read.
+    Anyone else gets 403 "Only the principal can change the People list",
+    checked before the id lookup so it can't probe ids. Why: a People row
+    is the web sign-in allow-list, the outbound-email allow-list and
+    approval routing, so a teammate who could PATCH the principal's email
+    to an address they sign in with would be resolved as the principal.
+    Deliberately no self-service either: a person's email and chat ids are
+    how they sign in and are reached, and name, role, departments,
+    reporting line, authority, leave, hours, reply time and channel decide
+    approvals and chasing — the owner's call, as for the Executive's
+    roster tools. Their working style and open loops stay theirs
+    (principal-or-self; see `attunement`).
   executive_write_access: |
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
@@ -5646,6 +5667,29 @@ company_onboarding:
     renamed owner included), the caller — resolved from x-caller-email; no
     header means the principal — must be the principal, else 403. Keeping
     the owner, or a first setup, stays open.
+    Owner email on such a re-run: commit.owner_email_blocked, after
+    check_owner_email and before any write — a caller who is not the
+    principal may fill in the owner's MISSING email only with their own
+    x-caller-email (403 otherwise; the owner's current email is a no-op and
+    passes). Why: the roster is the web sign-in allow-list, so an address
+    of the caller's choosing on an email-less owner row would let them sign
+    in with it and resolve to the principal — the takeover the People
+    routes closed by going owner-only. Their own address stays allowed
+    because that is the way in for an owner the app can't recognise yet
+    (the review screen pre-fills it; Setup status's owner light and the
+    roster tools' refusal send them here, since the People page refuses
+    them); a rostered teammate's own address is on their own entry, which
+    check_owner_email refuses. Decision: re-running setup stays open to
+    anyone signed in who keeps the owner — PATCH /company-profile and the
+    department routes already let them change the same profile and
+    departments, so closing setup alone would protect nothing and would
+    remove that way in. So anyone let in by ALLOWED_EMAILS who is on no
+    entry can claim an owner entry that has no email (docs/auth.md says so).
+    The form wizard (POST /onboard/answer) is different: its final answer
+    adds people WITH emails and a principal (profile_builder
+    ._save_wizard_people), so once there is an owner only they may send it
+    (chat._caller_is_principal_or_unclaimed; 403, and the session is
+    rolled back like a failed build so the owner can still finish it).
   org_structure_is_derived: |
     profile.org_structure.departments and .leadership_team are computed from
     the reviewed people and department tables at commit time

@@ -27,6 +27,12 @@ Neither one overrides the other. Adding people to the roster cannot revoke an
 `ALLOWED_EMAILS` entry, and leaving `ALLOWED_EMAILS` blank is fine once the roster is
 populated.
 
+While the owner's People entry has no email, someone let in by `ALLOWED_EMAILS` who is
+on no entry can re-run the setup interview and add the address they signed in with to
+the owner's entry. That is how an owner who set up with local login links theirs, and
+it makes them the owner. So keep `ALLOWED_EMAILS` to people you would trust as the owner, or
+make sure the owner's entry has an email. Only the owner can change the People list itself.
+
 Membership is re-checked on every request the middleware gates, not just at sign-in, so a
 roster removal takes effect within the cache window rather than waiting out the 24h JWT.
 
