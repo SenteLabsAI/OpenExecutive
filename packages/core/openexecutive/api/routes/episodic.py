@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
 from openexecutive.memory.episodic import (
@@ -129,23 +129,59 @@ def remove_advice(advice_id: int) -> Response:
 # --- People (peer memory) ---
 
 
+def _caller_is_principal(request: Request) -> bool:
+    from openexecutive.api.routes.people import caller_is_principal
+
+    return caller_is_principal(request)
+
+
+def _is_principal_id(person_id: int) -> bool:
+    """Whether ``person_id`` is a principal row. Fails closed (True): an
+    unreadable roster must not open the principal's memory to others."""
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(person_id)
+    except Exception:
+        return True
+    return bool(person is not None and person.is_principal)
+
+
 @router.get("/memories/people", response_model=PeopleMemory)
-async def list_people_memory(recent: int = Query(5, ge=1, le=50)) -> PeopleMemory:
+async def list_people_memory(
+    request: Request, recent: int = Query(5, ge=1, le=50)
+) -> PeopleMemory:
     """What peer memory knows about each rostered person: card, conclusion
     count, last-learned time and the ``recent`` newest conclusions. Read-only
-    and LLM-free; ``status`` is ``disabled`` when peer memory is off."""
-    return await people_overview(recent=recent)
+    and LLM-free; ``status`` is ``disabled`` when peer memory is off.
+
+    The principal's own entry is shown to the principal only: it is drawn
+    from all their conversations, including about their contacts, which are
+    private to them."""
+    overview = await people_overview(recent=recent)
+    if _caller_is_principal(request):
+        return overview
+    people = [p for p in overview.people if not p.is_principal]
+    return overview.model_copy(update={
+        "people": people,
+        "conclusion_total": sum(p.conclusion_count for p in people),
+    })
 
 
 @router.get("/memories/people/{person_id}/conclusions", response_model=PersonConclusionsPage)
 async def list_person_conclusions(
     person_id: int,
+    request: Request,
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=PERSON_CONCLUSIONS_MAX_PAGE),
 ) -> PersonConclusionsPage:
     """One page of every conclusion peer memory holds about one person,
     newest first. Read-only and LLM-free; 404 when the person is not on the
-    roster or peer memory has no peer for them yet."""
+    roster or peer memory has no peer for them yet — and, for anyone but
+    the principal, for the principal (their memory covers their contacts,
+    which are private to them)."""
+    if _is_principal_id(person_id) and not _caller_is_principal(request):
+        raise HTTPException(status_code=404, detail="Person not found in peer memory")
     result = await person_conclusions(person_id, page=page, size=size)
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found in peer memory")

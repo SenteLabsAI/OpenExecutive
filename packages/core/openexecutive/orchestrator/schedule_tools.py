@@ -276,6 +276,15 @@ def _record_outbound_context(
         # lost reply thread is invisible, an extra row is not.
         if getattr(session, "from_web_chat", False) is True:
             return
+        # Never for one of the principal's contacts. They cannot message the
+        # bot, and hydrating their email reply with this backstory would quote
+        # the principal's conversation into an unattended turn — whose opening
+        # the audit log (readable by everyone) records — and set that turn
+        # apart from any other outside sender's.
+        from openexecutive.people.store import find_person_by_channel_ref
+
+        if _is_contact_ref(channel, channel_ref, find_person_by_channel_ref):
+            return
         originating_session_id = getattr(session, "session_id", None)
         recipient_person_id = _resolve_recipient_person_id(channel, channel_ref)
         from openexecutive.memory.episodic import insert_outbound_context
@@ -1382,10 +1391,12 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
 
     if is_contact:
         # A contact cannot sign in, so an alert routed to them reaches no one.
+        # The text names neither them nor their kind: tool results land in
+        # the audit log, which every signed-in user can read.
         return json.dumps({"error": (
-            f"could not reach {person.full_name!r} (a contact) on a chat channel "
-            f"({last_error or 'none configured for them'}). Email them instead "
-            "if they have an address."
+            f"could not deliver to person_id {person_id} on any configured chat "
+            f"channel ({last_error or 'no reachable channel'}). Email them "
+            "instead if they have an address."
         )})
 
     # No channel delivered (none usable, or every attempt failed). Don't drop

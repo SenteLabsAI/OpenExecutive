@@ -109,6 +109,12 @@ from openexecutive.providers.translator import reasoning_replay_block
 logger = logging.getLogger(__name__)
 
 
+def _private_to_principal(session: Any) -> bool:
+    """Whether this turn is about the principal's private mail (set by the
+    email poller for mail from a contact and mail the principal forwarded)."""
+    return getattr(session, "private_to_principal", False) is True
+
+
 def _contacts_in_prompt(session: Any) -> bool:
     """Whether this turn's system prompt lists the principal's contacts.
 
@@ -933,25 +939,31 @@ class Executive:
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
             # wrapper no-ops when person_id is None or Honcho is disabled.
-            from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
-            _honcho_sync(
-                speaker_text,
-                full_response,
-                person_id=person_id,
-                session_id=session.session_id,
-                co_present_person_ids=co_present_person_ids,
-            )
-            # Per-dept mirror for every department whose specialist contributed
-            # this turn. Runs after the person-side sync so dept and person
-            # syncs are visible in the audit log as a related pair.
-            _sync_consulted_departments_to_honcho(
-                consulted,
-                speaker_text,
-                full_response,
-                person_id=person_id,
-                session_id=session.session_id,
-                co_present_person_ids=co_present_person_ids,
-            )
+            # Never for a turn private to the principal (mail from one of
+            # their contacts, mail they forwarded): the reply summarises that
+            # mail, and peer and department memory are read on other people's
+            # turns.
+            if not _private_to_principal(session):
+                from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+                _honcho_sync(
+                    speaker_text,
+                    full_response,
+                    person_id=person_id,
+                    session_id=session.session_id,
+                    co_present_person_ids=co_present_person_ids,
+                )
+                # Per-dept mirror for every department whose specialist
+                # contributed this turn. Runs after the person-side sync so
+                # dept and person syncs are visible in the audit log as a
+                # related pair.
+                _sync_consulted_departments_to_honcho(
+                    consulted,
+                    speaker_text,
+                    full_response,
+                    person_id=person_id,
+                    session_id=session.session_id,
+                    co_present_person_ids=co_present_person_ids,
+                )
 
     async def stream_chat_with_committee(
         self,
@@ -1383,23 +1395,24 @@ class Executive:
         schedule_style_pass(person_id, session_id=session.session_id)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
-        # rationale). Fire-and-forget; no-ops when person_id is None.
-        from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
-        _honcho_sync(
-            speaker_text,
-            final_response,
-            person_id=person_id,
-            session_id=session.session_id,
-            co_present_person_ids=co_present_person_ids,
-        )
-        _sync_consulted_departments_to_honcho(
-            consulted,
-            speaker_text,
-            final_response,
-            person_id=person_id,
-            session_id=session.session_id,
-            co_present_person_ids=co_present_person_ids,
-        )
+        # rationale, and for why a turn private to the principal is not).
+        if not _private_to_principal(session):
+            from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+            _honcho_sync(
+                speaker_text,
+                final_response,
+                person_id=person_id,
+                session_id=session.session_id,
+                co_present_person_ids=co_present_person_ids,
+            )
+            _sync_consulted_departments_to_honcho(
+                consulted,
+                speaker_text,
+                final_response,
+                person_id=person_id,
+                session_id=session.session_id,
+                co_present_person_ids=co_present_person_ids,
+            )
 
         # Reset audit ContextVars at normal completion. The abandoned-stream
         # case (SSE client drop mid-yield) doesn't reach here — accept that

@@ -405,18 +405,37 @@ def test_create_alert_does_not_route_to_a_contact(roster: SimpleNamespace) -> No
     assert alert_tools._routable_person(99999) is True  # unknown ids route as before
 
 
-def test_department_head_cannot_be_a_contact(roster: SimpleNamespace) -> None:
+@pytest.mark.parametrize("caller", [TEAM_EMAIL, OWNER_EMAIL])
+def test_department_head_cannot_be_a_contact_and_says_nothing_about_one(
+    roster: SimpleNamespace, caller: str
+) -> None:
     from openexecutive.api.routes import departments as departments_route
 
     dept_store.seed_default_departments()
     app = FastAPI()
     app.include_router(departments_route.router)
     client = TestClient(app)
-    refused = client.patch("/departments/finance", json={"head_person_id": roster.contact})
-    assert refused.status_code == 422
-    assert "contact" in refused.json()["detail"]
-    ok = client.patch("/departments/finance", json={"head_person_id": roster.teammate})
+    headers = {"x-caller-email": caller}
+    refused = client.patch(
+        "/departments/finance", json={"head_person_id": roster.contact}, headers=headers
+    )
+    unknown = client.patch(
+        "/departments/finance", json={"head_person_id": 99999}, headers=headers
+    )
+    # A contact's id gets exactly what an id that does not exist gets, and
+    # neither names anyone.
+    assert refused.status_code == unknown.status_code == 422
+    assert refused.json()["detail"] == unknown.json()["detail"].replace("99999", str(roster.contact))
+    assert "Jordan" not in refused.text and "contact" not in refused.text
+    ok = client.patch(
+        "/departments/finance", json={"head_person_id": roster.teammate}, headers=headers
+    )
     assert ok.status_code == 200
+    # Saving other settings never re-checks the head already in place.
+    assert client.patch(
+        "/departments/finance",
+        json={"head_person_id": roster.teammate, "headcount": 3}, headers=headers,
+    ).status_code == 200
 
 
 # --------------------------------------------------------------------------- #
@@ -781,7 +800,9 @@ def test_set_department_head_refuses_a_contact(roster: SimpleNamespace) -> None:
     dept_store.seed_default_departments()
     out = _tool(handle_set_department_head,
                 {"department_slug": "finance", "person_id": roster.contact}, _principal_web(roster))
-    assert "contact" in out["error"]
+    assert "not found on the team" in out["error"]
+    head = dept_store.get_department("finance")
+    assert head is not None and head.config.head_person_id is None
 
 
 # --------------------------------------------------------------------------- #
@@ -839,7 +860,9 @@ FORWARDED_BODY = (
 )
 
 
-def _poller_turn(from_addr: str, raw: str) -> dict[str, Any]:
+def _poller_turn(
+    from_addr: str, raw: str, *, message_id: str = "m1", thread_id: str = "t1"
+) -> dict[str, Any]:
     import openexecutive.integrations.email_poller as poller
     from openexecutive.memory import company_profile
 
@@ -862,7 +885,7 @@ def _poller_turn(from_addr: str, raw: str) -> dict[str, Any]:
         patch.object(poller, "get_settings", return_value=settings),
     ):
         asyncio.run(poller._run_executive(
-            AsyncMock(), raw, message_id="m1", thread_id="t1",
+            AsyncMock(), raw, message_id=message_id, thread_id=thread_id,
             from_addr=from_addr, session_id=f"email:{from_addr}",
         ))
     return captured
@@ -875,7 +898,6 @@ def test_mail_from_a_contact_gets_the_contact_notice(roster: SimpleNamespace) ->
     assert "Jordan Client (Head of Procurement, Acme)" in message
     assert "one of the principal's contacts" in message
     assert f"Do not reply to {CONTACT_EMAIL} unless the principal asks you to" in message
-    assert "NOT on your team's People roster" not in message
     # Not a speaker the Executive keeps memory for or acts for.
     assert turn["person_id"] is None
     assert "<forwarded_by_principal>" not in message
@@ -905,22 +927,46 @@ def test_a_teammates_forward_is_not_framed_as_the_principals(roster: SimpleNames
     assert "<forwarded_by_principal>" not in message
 
 
-def test_contact_mail_is_audited_as_a_contact(roster: SimpleNamespace) -> None:
+def _poller_audit_rows() -> list[tuple[str, str, dict[str, Any]]]:
     import openexecutive.integrations.email_poller as poller
 
-    audited: list[dict[str, Any]] = []
+    audited: list[tuple[str, str, dict[str, Any]]] = []
     gateway = AsyncMock()
     gateway.call_tool = AsyncMock(return_value=_raw(f"Jordan <{CONTACT_EMAIL}>"))
     settings = SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)
     with (
         patch("openexecutive.audit.log_event",
-              side_effect=lambda _t, _s, **kw: audited.append(kw.get("details") or {})),
+              side_effect=lambda t, summary, **kw: audited.append((t, summary, kw.get("details") or {}))),
         patch.object(poller, "get_settings", return_value=settings),
         patch.object(poller, "_run_executive", new=AsyncMock()),
         patch.object(poller, "_mark_read", new=AsyncMock()),
     ):
         asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
-    assert any(d.get("outcome") == "accepted_contact" for d in audited)
+    return audited
+
+
+def test_contact_mail_is_audited_exactly_like_any_outside_sender(roster: SimpleNamespace) -> None:
+    as_contact = _poller_audit_rows()
+    people_store.archive_person(roster.contact)  # the same address, now nobody's
+    as_stranger = _poller_audit_rows()
+    assert as_contact == as_stranger
+    assert any(d.get("outcome") == "accepted_non_roster" for _t, _s, d in as_contact)
+    assert "contact" not in json.dumps(as_contact)
+
+
+def test_contact_notice_opens_exactly_like_the_outside_sender_notice(roster: SimpleNamespace) -> None:
+    # The turn's opening is what the audit log records (memory_snapshot's
+    # user_message_preview, 160 characters) for every signed-in user to read.
+    def _opening() -> str:
+        turn = _poller_turn(
+            CONTACT_EMAIL, _raw(f"Jordan <{CONTACT_EMAIL}>"),
+            message_id="18c0ffee00000001", thread_id="18c0ffee00000002",
+        )
+        return str(turn["user_message"])[:160]
+
+    as_contact = _opening()
+    people_store.archive_person(roster.contact)
+    assert _opening() == as_contact
 
 
 def test_the_forward_eval_uses_the_notice_the_poller_sends() -> None:
@@ -1461,3 +1507,200 @@ def test_unattended_passes_never_reach_a_contact(roster: SimpleNamespace, mode: 
         found = json.loads(asyncio.run(handlers["lookup_person"]({"query": "Jordan"})))
     assert "error" in out and "Jordan" not in out["error"]
     assert found["matches"] == []
+
+
+# --- Nothing contact-specific in the audit log (readable by everyone) -------
+
+
+def _captured_audit(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    rows: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda _t, summary, **kw: rows.append((summary, kw.get("details") or {})),
+    )
+    return rows
+
+
+def test_list_people_audit_is_the_same_on_the_principals_turn(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.people_tools import handle_list_people
+
+    rows = _captured_audit(monkeypatch)
+    principal_out = _tool(handle_list_people, {}, _principal_web(roster))
+    assert principal_out["count"] == 3  # the principal does see the contact
+    principal_rows = list(rows)
+    rows.clear()
+    _tool(handle_list_people, {}, Session(from_web_chat=True, caller_person_id=roster.teammate))
+    assert principal_rows == rows
+    assert rows[0][1]["count"] == 2
+
+
+def test_upsert_person_audit_is_name_and_kind_free(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.people_tools import handle_upsert_person
+
+    rows = _captured_audit(monkeypatch)
+    contact = _tool(handle_upsert_person, {"full_name": "Quinn Client", "kind": "contact"},
+                    _principal_web(roster))
+    teammate = _tool(handle_upsert_person, {"full_name": "Riley Hire", "kind": "team"},
+                     _principal_web(roster))
+    (c_summary, c_details), (t_summary, t_details) = rows
+    assert "Quinn" not in json.dumps(rows) and "Riley" not in json.dumps(rows)
+    assert "contact" not in json.dumps(rows) and "team" not in json.dumps(rows)
+    assert c_summary == t_summary.replace(str(teammate["person_id"]), str(contact["person_id"]))
+    assert c_details.keys() == t_details.keys()
+
+
+def test_roster_tools_are_redacted_in_the_executives_audit_rows() -> None:
+    from openexecutive.audit.redaction import (
+        audit_tool_input,
+        audit_tool_input_full,
+        audit_tool_result,
+        audit_tool_result_full,
+    )
+
+    listing = json.dumps({"people": [{"full_name": "Jordan Client", "kind": "contact"}]})
+    for tool in ("list_people", "upsert_person"):
+        payload = {"full_name": "Jordan Client", "kind": "contact"}
+        for rendered in (
+            audit_tool_input(tool, payload), audit_tool_input_full(tool, payload),
+            audit_tool_result(tool, listing), audit_tool_result_full(tool, listing),
+        ):
+            assert "Jordan" not in str(rendered) and "contact" not in str(rendered)
+
+
+def test_set_department_head_answers_a_contact_like_an_unknown_id(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.people_tools import handle_set_department_head
+
+    dept_store.seed_default_departments()
+    rows = _captured_audit(monkeypatch)
+    contact = _tool(handle_set_department_head,
+                    {"department_slug": "finance", "person_id": roster.contact}, _principal_web(roster))
+    unknown = _tool(handle_set_department_head,
+                    {"department_slug": "finance", "person_id": 99999}, _principal_web(roster))
+    assert contact["error"] == unknown["error"].replace("99999", str(roster.contact))
+    assert rows[0][0] == rows[1][0].replace("99999", str(roster.contact))
+    assert "Jordan" not in json.dumps([contact, rows]) and "contact" not in json.dumps([contact, rows])
+
+
+def test_undeliverable_contact_message_names_nobody(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import schedule_tools
+
+    monkeypatch.setattr(schedule_tools, "configured_integrations", lambda _s: set())
+    with _turn(_principal_web(roster)):
+        out = json.loads(asyncio.run(schedule_tools.handle_message_person(
+            {"person_id": roster.contact, "text": "Contract attached"}
+        )))
+    assert "Jordan" not in out["error"] and "contact" not in out["error"]
+
+
+def test_no_reply_linkage_is_recorded_for_a_contact(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import schedule_tools
+
+    linked: list[str] = []
+    monkeypatch.setattr(
+        "openexecutive.memory.episodic.insert_outbound_context",
+        lambda **kw: linked.append(kw["channel_ref"]) or 1,
+    )
+    monkeypatch.setattr("openexecutive.attunement.outcomes.record_send", lambda **_kw: None)
+    with _turn(Session(origin_channel="slack", caller_person_id=roster.principal)):
+        schedule_tools._record_outbound_context(channel="email", channel_ref=CONTACT_EMAIL, text="hi")
+        schedule_tools._record_outbound_context(channel="email", channel_ref=TEAM_EMAIL, text="hi")
+    assert linked == [TEAM_EMAIL]
+
+
+def test_a_workflow_owner_moved_to_contacts_is_not_asked_to_approve(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows import approved_targets
+
+    monkeypatch.setattr("openexecutive.workflows.dynamic_store.get_owner", lambda _name: roster.contact)
+    assert approved_targets.approver_for("wf") == roster.principal
+    monkeypatch.setattr("openexecutive.workflows.dynamic_store.get_owner", lambda _name: roster.teammate)
+    assert approved_targets.approver_for("wf") == roster.teammate
+
+
+# --- Peer memory: the principal's is theirs alone ---------------------------
+
+
+def test_ask_about_the_principal_answers_only_the_principal(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import people_tools
+
+    monkeypatch.setattr(people_tools, "directional_chat", AsyncMock(return_value="Renewing Acme"))
+    question = {"person_id": roster.principal, "question": "What about Acme?"}
+    teammate = _tool(people_tools.handle_ask_about_person, question,
+                     Session(from_web_chat=True, caller_person_id=roster.teammate))
+    unattended = _tool(people_tools.handle_ask_about_person, question, None)
+    principal = _tool(people_tools.handle_ask_about_person, question, _principal_web(roster))
+    empty = {"person_id": roster.principal, "target_person_id": None, "answer": "", "found": False}
+    assert teammate == empty and unattended == empty
+    assert principal["answer"] == "Renewing Acme"
+    # A teammate's own view of the principal is the teammate's memory.
+    own_view = _tool(people_tools.handle_ask_about_person,
+                     {"person_id": roster.teammate, "target_person_id": roster.principal,
+                      "question": "?"}, Session(from_web_chat=True, caller_person_id=roster.teammate))
+    assert own_view["found"] is True
+
+
+def test_memories_people_shows_the_principals_entry_to_the_principal_only(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes import episodic as episodic_route
+    from openexecutive.memory.honcho_client import PeopleMemory, PersonMemory
+
+    def _entry(pid: int, principal: bool) -> PersonMemory:
+        return PersonMemory(person_id=pid, full_name="x", is_principal=principal, card=[],
+                            conclusion_count=2, last_observed_at=None, recent=[])
+
+    overview = PeopleMemory(status="ok", people=[_entry(roster.principal, True),
+                                                 _entry(roster.teammate, False)], conclusion_total=4)
+    monkeypatch.setattr(episodic_route, "people_overview", AsyncMock(return_value=overview))
+    monkeypatch.setattr(episodic_route, "person_conclusions", AsyncMock(return_value=None))
+    app = FastAPI()
+    app.include_router(episodic_route.router)
+    client = TestClient(app)
+
+    as_teammate = client.get("/memories/people", headers=_as(TEAM_EMAIL)).json()
+    assert [p["person_id"] for p in as_teammate["people"]] == [roster.teammate]
+    assert as_teammate["conclusion_total"] == 2
+    as_owner = client.get("/memories/people", headers=_as(OWNER_EMAIL)).json()
+    assert [p["person_id"] for p in as_owner["people"]] == [roster.principal, roster.teammate]
+    assert client.get(
+        f"/memories/people/{roster.principal}/conclusions", headers=_as(TEAM_EMAIL)
+    ).status_code == 404
+
+
+@pytest.mark.parametrize(("private", "synced"), [(True, False), (False, True)])
+def test_a_private_turn_writes_nothing_to_peer_or_department_memory(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, private: bool, synced: bool
+) -> None:
+    from openexecutive.orchestrator import executive as executive_module
+    from tests.unit.test_executive_memory_text import _provider
+
+    person_syncs: list[str] = []
+    dept_syncs: list[str] = []
+    monkeypatch.setattr(executive_module, "audit_log", lambda *a, **kw: None)
+    monkeypatch.setattr(executive_module, "get_provider", lambda *_a, **_k: _provider())
+    monkeypatch.setattr("openexecutive.memory.honcho_client.sync_turn",
+                        lambda text, *_a, **_k: person_syncs.append(text))
+    monkeypatch.setattr(executive_module, "_sync_consulted_departments_to_honcho",
+                        lambda _c, text, *_a, **_k: dept_syncs.append(text))
+    monkeypatch.setattr("openexecutive.memory.episodic.schedule_extraction", lambda *_a, **_k: None)
+    monkeypatch.setattr("openexecutive.attunement.open_loops.schedule_open_loop_pass",
+                        lambda *_a, **_k: None)
+    session = Session(session_id="email:t1", caller_person_id=roster.principal,
+                      private_to_principal=private)
+    asyncio.run(executive_module.Executive().chat(
+        "Can you deal with this?", session, person_id=roster.principal, peer_memory_context="",
+    ))
+    assert bool(person_syncs) is synced and bool(dept_syncs) is synced

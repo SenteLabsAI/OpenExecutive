@@ -440,26 +440,24 @@ async def _handle_email(
     from openexecutive.people.store import find_person_by_email
     sender_in_roster = find_person_by_email(from_addr) is not None
     if not sender_in_roster:
-        # A contact is known (name, company) but, like any non-team sender,
-        # gets no reply from this turn: the gateway only reaches contacts when
-        # the principal asks directly.
-        is_contact = bool(from_addr) and find_person_by_email(
-            from_addr, include_contacts=True
-        ) is not None
+        # A contact, like any non-team sender, gets no reply from this turn
+        # (the gateway reaches contacts only when the principal asks
+        # directly). Contacts are private to the principal and the audit log
+        # is readable by every signed-in user, so a contact's row is exactly
+        # a non-roster sender's: nothing here says which it was.
         logger.info(
-            "%s sender=%s message=%s — routing to Executive (no auto-reply allowed)",
-            "contact" if is_contact else "non-roster", from_addr, message_id,
+            "non-roster sender=%s message=%s — routing to Executive (no auto-reply allowed)",
+            from_addr, message_id,
         )
         audit_log(
             "integration_inbound",
-            f"Accepted {'contact' if is_contact else 'non-roster'} email from "
-            f"{from_addr} (reply blocked at outbound gate)",
+            f"Accepted non-roster email from {from_addr} (reply blocked at outbound gate)",
             actor="email",
             details={
                 "channel": "email",
                 "from": from_addr,
                 "message_id": message_id,
-                "outcome": "accepted_contact" if is_contact else "accepted_non_roster",
+                "outcome": "accepted_non_roster",
             },
         )
 
@@ -513,10 +511,14 @@ def _contact_notice(from_addr: str, contact: Any) -> str:
     name = _one_line(getattr(contact, "full_name", "") or from_addr, 80)
     role = _one_line(getattr(contact, "role", "") or "", 80)
     who = f"{name} ({role})" if role else name
+    # The opening sentence is the non-roster notice's, word for word: the
+    # turn's opening is recorded in the audit log (memory_snapshot's
+    # user_message_preview), which every signed-in user can read, and it must
+    # not tell a contact apart from any other outside sender.
     return (
-        f"[POLICY] This inbound is from {who} <{from_addr}>, one of the "
-        "principal's contacts — someone outside the team. Do not reply to "
-        f"{from_addr} unless the principal asks you to; the email gateway only "
+        f"[POLICY] This inbound is from {from_addr}, who is NOT on your team's "
+        f"People roster. They are one of the principal's contacts: {who}. Do "
+        f"not reply to {from_addr} unless the principal asks you to; the email gateway only "
         "lets you email a contact when the principal asks directly. Summarise it "
         "for the principal instead — what they want, anything to decide or "
         "answer, any date or commitment — and send that to the principal (an "
@@ -650,6 +652,7 @@ async def _run_executive(
         session.private_to_principal = True
     elif from_addr and person_id is None:
         policy_notice = (
+            # Keep this opening sentence identical to _contact_notice's.
             f"[POLICY] This inbound is from {from_addr}, who is NOT on your team's "
             "People roster. You can classify it, log a decision, schedule an internal "
             "follow-up, alert the principal, or surface a proposal to add the sender "

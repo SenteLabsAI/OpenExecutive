@@ -160,7 +160,13 @@ def approver_for(workflow_name: str) -> int | None:
     owner_id = get_owner(workflow_name)
     if owner_id is not None:
         owner = get_person(owner_id)
-        if owner is not None and not getattr(owner, "archived", False):
+        # A creator since moved to the principal's contacts is no longer on
+        # the team: they are never asked to approve anything.
+        if (
+            owner is not None
+            and not getattr(owner, "archived", False)
+            and getattr(owner, "kind", "team") == "team"
+        ):
             return owner_id
     principal = find_principal_person()
     return principal.id if principal is not None and principal.id is not None else None

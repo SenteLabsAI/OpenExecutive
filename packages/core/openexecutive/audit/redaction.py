@@ -44,6 +44,13 @@ _SENSITIVE_SUBSTRINGS = (
     "get_thread",
     "search_threads",
     "get_event",
+    # Roster tools: on the principal's turn they carry the principal's
+    # contacts (names, kind, addresses), which are private to the principal,
+    # and the audit log is readable by every signed-in user. Redacted for
+    # every call, team or contact, so the redaction itself says nothing; the
+    # tools write their own name-free rows (people_tools._audit).
+    "list_people",
+    "upsert_person",
 )
 
 # Keys inside a tool_input dict whose values are stripped before being

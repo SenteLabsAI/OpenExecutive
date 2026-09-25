@@ -2489,6 +2489,26 @@ people:
     and their bulk sweep skips it. DMs to a contact are not written to
     the activity rail.
 
+    THE AUDIT LOG (/audit, readable by every signed-in user) carries no
+    contact-specific signal: contact mail is logged exactly like any
+    outside sender's (`accepted_non_roster`, and the contact notice opens
+    with the non-roster notice's sentence so memory_snapshot's
+    user_message_preview matches); `upsert_person` rows are name- and
+    kind-free for everyone (person_id + action); `list_people` rows count
+    the team only; `list_people` / `upsert_person` inputs and results are
+    redacted in the Executive's tool rows (`audit.redaction`, every call);
+    `set_department_head` and `PATCH /departments/{slug}` answer a contact
+    exactly like an unknown id, with no name; no outbound reply linkage is
+    recorded for a contact (their reply would otherwise be hydrated with
+    the principal's conversation). PEER MEMORY: a private turn writes
+    nothing to peer or department memory, and the principal's own peer
+    memory answers only the principal (`ask_about_person` returns the empty
+    answer on anyone else's turn; `/memories/people` and `/conclusions`
+    leave the principal out for anyone else). Still open: the audit log
+    records every turn's reply and tool inputs in full, the principal's
+    included, so what the principal says about a contact in conversation
+    is visible there — closing that needs a principal-only audit scope.
+
     Prompt block: `departments.prompt_block.render_org_block(include_contacts=...)`
     renders contacts in a compact `## Contacts` section after "People You
     Coordinate With" — name, role/company, email on file or not; no
@@ -4687,9 +4707,9 @@ integrations:
         the People roster, the poller prepends a [POLICY] notice to
         the body the Executive sees explaining that outbound reply
         will be blocked. Audit ``integration_inbound`` row carries
-        ``details.outcome="accepted_non_roster"`` for observability
-        (``accepted_contact`` when the sender is one of the principal's
-        contacts — see ``email_poller``).
+        ``details.outcome="accepted_non_roster"`` for observability —
+        the same row for one of the principal's contacts, who are private
+        to the principal (see ``people.kind``).
       • Discord, Slack, Telegram: still roster-gated on inbound. A
         sender's channel ID must match a non-archived TEAM member's row
         (discord_user_id / slack_user_id / telegram_chat_id) — a

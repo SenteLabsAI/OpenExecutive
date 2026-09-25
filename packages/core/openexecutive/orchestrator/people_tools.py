@@ -456,10 +456,13 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
         }
         for p in people
     ]
+    # The audit log is readable by every signed-in user: count the team only,
+    # so the principal's turn logs exactly what anyone else's would.
+    team_count = sum(1 for p in people if p.kind == "team")
     _audit(
         "list_people", "read", True,
-        f"list_people returned {len(out)}",
-        {"count": len(out), "include_archived": include_archived},
+        f"list_people returned {team_count}",
+        {"count": team_count, "include_archived": include_archived},
     )
     return json.dumps({"people": out, "count": len(out)})
 
@@ -591,27 +594,23 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         # Always invalidate — a partial write (e.g. row inserted but scopes
         # failed) must not leave the registry serving stale data.
         people_registry.invalidate()
+        # No name or kind in the audit row (readable by everyone): a contact
+        # is private to the principal, and a team row must look the same.
         _audit(
             "upsert_person", "write", False,
-            f"upsert_person FAILED: {exc}",
-            {"error": str(exc)[:300], "action": action, "full_name": full_name},
+            f"upsert_person FAILED: {type(exc).__name__}",
+            {"error": type(exc).__name__, "action": action, "person_id": person_id},
         )
         return json.dumps({"error": str(exc)})
     people_registry.invalidate()
 
+    # Name-free and kind-free for every person (the audit log is readable by
+    # every signed-in user and a contact is private to the principal): the
+    # id and the action are what an audit reader needs.
     _audit(
         "upsert_person", "write", True,
-        f"upsert_person {action} id={new_id} name={full_name!r}",
-        {
-            "person_id": new_id,
-            "action": action,
-            "full_name": full_name,
-            "kind": kind,
-            "department_slugs": department_slugs or [],
-            "authority_scopes_set": (
-                [s.value for s in authority_scopes] if authority_scopes is not None else None
-            ),
-        },
+        f"upsert_person {action} id={new_id}",
+        {"person_id": new_id, "action": action},
     )
     stored = people_store.get_person(new_id)
     return json.dumps({
@@ -695,23 +694,18 @@ async def handle_set_department_head(tool_input: dict[str, Any]) -> str:
             return json.dumps({"error": "person_id must be an integer or null"})
 
     head = people_store.get_person(person_id) if person_id is not None else None
-    if person_id is not None and head is None:
+    # Only a team member can head a department. A contact is answered exactly
+    # like an unknown id — result and audit row alike — since the audit log is
+    # readable by everyone and contacts are private to the principal.
+    if person_id is not None and (head is None or head.kind != "team"):
         _audit(
             "set_department_head", "write", False,
             f"set_department_head: person {person_id} not found",
             {"department_slug": department_slug, "person_id": person_id},
         )
-        return json.dumps({"error": f"person {person_id} not found"})
-    if head is not None and head.kind != "team":
-        _audit(
-            "set_department_head", "write", False,
-            f"set_department_head: person {person_id} is a contact",
-            {"department_slug": department_slug, "person_id": person_id},
-        )
         return json.dumps({"error": (
-            f"{head.full_name} is a contact, not on the team — only a team member "
-            "can head a department. Make them a team member first (upsert_person "
-            "with kind \"team\") if the principal wants that."
+            f"person {person_id} not found on the team — only a team member can "
+            "head a department"
         )})
 
     # Pre-check the department exists so we don't create a head-persona
@@ -765,6 +759,18 @@ async def handle_set_department_head(tool_input: dict[str, Any]) -> str:
     })
 
 
+def _is_principal_person(person_id: int) -> bool:
+    """Whether ``person_id`` is a principal row. Fails closed (True)."""
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(person_id)
+    except Exception:
+        logger.exception("ask_about_person: principal lookup failed — answering nothing")
+        return True
+    return bool(person is not None and person.is_principal)
+
+
 async def handle_ask_about_person(input: dict[str, Any]) -> str:
     """Query Honcho's per-person memory via the directional_chat wrapper.
 
@@ -792,6 +798,17 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
     reasoning_level = input.get("reasoning_level", "medium")
     if reasoning_level not in ("minimal", "low", "medium", "high", "max"):
         reasoning_level = "medium"
+    # The principal's own peer memory is drawn from all their conversations,
+    # including about their contacts, which are private to them: it answers
+    # only on the principal's own verified turn. Anyone else gets exactly the
+    # "no data" answer (``target_person_id`` = the principal is someone
+    # else's view of them — their memory, not the principal's).
+    if _is_principal_person(person_id) and not contacts_reachable_now():
+        return json.dumps(
+            {"person_id": person_id, "target_person_id": target_person_id,
+             "answer": "", "found": False},
+            ensure_ascii=False,
+        )
     answer = await directional_chat(
         person_id,
         question,
