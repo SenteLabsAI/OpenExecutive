@@ -598,6 +598,22 @@ def get_alert_by_external(
     return _row_to_alert(row) if row else None
 
 
+def has_open_alert(source: str, dedup_key: str, db_path: Path | None = None) -> bool:
+    """True when an ``unread`` alert with this ``(source, dedup_key)`` exists —
+    the row ``coalesce_alert`` would fold a repeat into. Read-only: lets a
+    caller that re-evaluates every few minutes leave an open card alone
+    instead of bumping its occurrence count each pass."""
+    if not dedup_key or not _resolve_db_path(db_path).exists():
+        return False
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM alerts WHERE source = ? AND dedup_key = ? "
+            "AND status = 'unread' LIMIT 1",
+            (source, dedup_key),
+        ).fetchone()
+    return row is not None
+
+
 def set_status_by_external(
     source: str, external_id: str, status: str, db_path: Path | None = None
 ) -> bool:

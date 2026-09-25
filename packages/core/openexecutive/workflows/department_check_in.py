@@ -18,7 +18,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -30,7 +30,15 @@ from openexecutive.workflows.base import (
     WorkflowStepDef,
 )
 
+if TYPE_CHECKING:
+    from openexecutive.departments.models import DepartmentState
+
 logger = logging.getLogger(__name__)
+
+# Actor on the check-in's own `goal_status_review` audit row. `needs_check_in`
+# ignores that row: it lands after the Goals are stamped reviewed, so counting
+# it as "new" would re-run every check-in.
+_CHECK_IN_ACTOR = "department_check_in"
 
 
 class DepartmentCheckInInput(BaseModel):
@@ -252,7 +260,7 @@ class DepartmentCheckInWorkflow(Workflow):
                 get_audit_logger().log(
                     "goal_status_review",
                     f"{state.config.title}: reviewed {len(transitions)} goal(s)",
-                    actor="department_check_in",
+                    actor=_CHECK_IN_ACTOR,
                     department=slug,
                     details={"period": period, "transitions": transitions},
                 )
@@ -379,6 +387,75 @@ class DepartmentCheckInWorkflow(Workflow):
         except Exception:  # noqa: BLE001 - mirror must not break the workflow.
             pass
         yield WorkflowEvent(type="artifact", content=artifact)
+
+
+# --------------------------------------------------------------------------- #
+# Skip rule — asked by the scheduler before it creates a run
+# --------------------------------------------------------------------------- #
+
+def needs_check_in(state: DepartmentState, now: datetime) -> str | None:
+    """Why a scheduled check-in for ``state`` can be skipped, or None to run it.
+
+    The scheduler asks before it creates the run, so a department with nothing
+    to review costs no specialist calls and leaves no empty run in the activity
+    rail. Skips when:
+
+    - the department has no ``specialist_key`` (informational only; the
+      workflow would stop at the goal step anyway);
+    - it has no Goals (nothing to grade);
+    - nothing is new since the oldest Goal's ``last_reviewed_at``: no
+      decision or audit row tagged to the department (the check-in's own
+      review row excluded), and no Goal whose content changed after it was
+      last graded.
+
+    A Goal that was never reviewed always runs the check-in. Reads the same
+    sources as the ``load_context`` step and fails open: a source that cannot
+    be read counts as "something may be new".
+    """
+    from openexecutive.alerts.lifecycle import parse_aware
+
+    slug = state.config.slug
+    if not state.config.specialist_key:
+        return "informational department (no specialist agent)"
+    if not state.goals:
+        return "no Goals to review"
+
+    reviewed = [parse_aware(g.last_reviewed_at) for g in state.goals]
+    if any(r is None for r in reviewed):
+        return None  # a Goal was never graded
+    baseline = min(r for r in reviewed if r is not None)
+
+    for goal, goal_reviewed in zip(state.goals, reviewed, strict=True):
+        edited = parse_aware(goal.updated_at)
+        if edited is not None and goal_reviewed is not None and edited > goal_reviewed:
+            return None
+
+    try:
+        from openexecutive.memory import episodic
+        from openexecutive.memory.episodic import has_department_decision_since
+
+        if has_department_decision_since(slug, baseline, db_path=episodic.DB_PATH):
+            return None
+    except Exception:
+        logger.warning("check_in: decisions unreadable for %s — running", slug, exc_info=True)
+        return None
+
+    try:
+        from openexecutive.audit.logger import get_audit_logger
+
+        rows = get_audit_logger().query(
+            department=slug,
+            since=baseline.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),  # audit ts format
+            limit=200,
+        )
+    except Exception:
+        logger.warning("check_in: audit unreadable for %s — running", slug, exc_info=True)
+        return None
+    if any(row.actor != _CHECK_IN_ACTOR for row in rows):
+        return None
+
+    days = max(0, (now - baseline).days)
+    return f"nothing new since the Goals were last reviewed ({days}d ago)"
 
 
 # --------------------------------------------------------------------------- #

@@ -351,6 +351,7 @@ class AuditLogger:
         until: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        department: str | None = None,
     ) -> list[AuditEvent]:
         limit = max(1, min(limit, 1000))
         offset = max(0, offset)
@@ -366,6 +367,12 @@ class AuditLogger:
         if actor:
             clauses.append("actor = ?")
             params.append(actor)
+        if department:
+            # Filtered in SQL, not over the newest page: department rows are a
+            # sliver of the log, so a Python filter over `limit` rows misses
+            # them on a busy day (the department check-in's skip rule).
+            clauses.append("department = ?")
+            params.append(department)
         if since:
             clauses.append("ts >= ?")
             params.append(since)

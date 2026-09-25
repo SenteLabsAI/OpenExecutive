@@ -1969,7 +1969,8 @@ departments:
     `propose_only` departments route scheduled actions to an approver as a
     briefing alert (`propose_via_alert`) instead of executing immediately;
     the scheduled_actions row is then marked done and the pending-ness lives
-    on the alert. This is NOT the `wait_for_human` workflow gate — that is a
+    on the alert. A `dept_cadence` fire is exempt (see `cadence`): the
+    check-in sends nothing and gates each action it proposes. This is NOT the `wait_for_human` workflow gate — that is a
     separate primitive with its own table (`workflow_runs.status`), delivery
     path and resolver; an earlier version of this note conflated the two.
     Autonomous departments fire actions directly. The approver is
@@ -1987,9 +1988,43 @@ departments:
     `PATCH /departments/{slug}` rejects a spec that does not parse (bad
     format, unknown DOW, out-of-range time) with a 422 naming the valid
     formats (`is_valid_cadence_spec`); an empty spec means no cadence.
-    The scheduler runner enqueues a `department_check_in` workflow
-    when a cadence is due, then `enqueue_next()` chains the following
-    occurrence. Lifecycle cleanup: deleting a department cancels its
+    The scheduler runner runs the `department_check_in` workflow when a
+    cadence is due, then `enqueue_next()` chains the following
+    occurrence. The fire is NOT passed through the authority gate
+    (`kind != "dept_cadence"` in `_execute_action`): cadence rows always
+    carry their department and the seeded departments are propose_only,
+    so gating it turned each check-in into a one-shot proposal card,
+    marked the row done and never chained — the chain died until the next
+    boot. The check-in has no outbound side effect (goal verdicts, one
+    audit row, a Honcho note), and each action it proposes still gets a
+    `gate_action` verdict in the artifact. Skip rule, evaluated BEFORE
+    `create_run` so an idle department costs no specialist calls and
+    leaves no empty run in the activity rail
+    (`department_check_in.needs_check_in`): skip when the department has
+    no `specialist_key`, has no Goals, or nothing is new since the oldest
+    Goal's `last_reviewed_at` — no decision tagged to the department
+    (`episodic.has_department_decision_since`) or audit row tagged to it
+    (the check-in's own `goal_status_review` row, actor
+    `department_check_in`, excluded; `AuditLogger.query(department=…)`),
+    both filtered in SQL so other departments' volume cannot hide them,
+    and no Goal whose `updated_at` is later than its own
+    `last_reviewed_at`. A never-reviewed Goal always runs it; an
+    unreadable source fails open (runs). A skipped occurrence still
+    chains and is recorded `cancelled` with `skipped: <reason>` in
+    `last_error` — NOT `done`, because `nudge_engine._dept_cadence_recent`
+    reads a done cadence row as a check-in that covered the department's
+    idle initiatives. A check-in that keeps failing is retried with
+    backoff (`mark_action_failed_or_retry`); once it returns `failed` the
+    runner chains the next occurrence anyway (unless this attempt already
+    chained before failing), so one broken department does not drop out
+    of the daily cycle. Chaining is idempotent (`runner._chain_dept_cadence`
+    adds nothing while a `pending` dept_cadence row for the department
+    exists), so a row that chained and then failed to record its outcome
+    — left `running`, requeued by the boot sweep — never duplicates the
+    next occurrence. Cost note: with the gate bug
+    fixed, check-ins actually run — about three specialist calls each —
+    bounded by the skip rule (seeded departments have no Goals, so they
+    skip until someone adds one). Lifecycle cleanup: deleting a department cancels its
     pending `dept_cadence` rows in the same transaction, and the
     lifespan runs `cancel_orphaned_cadences()` on boot (before
     `bootstrap_cadences`) to cancel pending cadences whose department no
@@ -2175,13 +2210,13 @@ scheduler:
     nudge engine's dedup lookup.
   kinds:
     - ad_hoc — user-facing follow-ups created by the Executive's `schedule_followup` tool. Default kind.
-    - dept_cadence — internal action fired by department cadences; the runner invokes the `department_check_in` workflow and re-enqueues the next occurrence via `cadence.enqueue_next`. Pending rows are cancelled when their department is deleted, and orphaned rows (department no longer exists) are swept by `cadence.cancel_orphaned_cadences` on lifespan boot.
+    - "dept_cadence — internal action fired by department cadences. Not authority-gated (the check-in sends nothing). The runner first applies the skip rule (`department_check_in.needs_check_in` — no specialist, no Goals, or nothing new since the Goals were last reviewed; see `departments.cadence`) before creating any run; otherwise it invokes the `department_check_in` workflow. Every outcome re-enqueues the next occurrence via `cadence.enqueue_next` (idempotently) — a run, a skip, and a failure once its retries are spent. A skip is recorded `cancelled` with `skipped: <reason>` in `last_error`, so it never counts as a check-in that ran. Pending rows are cancelled when their department is deleted, and orphaned rows (department no longer exists) are swept by `cadence.cancel_orphaned_cadences` on lifespan boot."
     - awaiting_human — placed by the `wait_for_human` workflow step; the run resumes when an inbound message matches.
     - "dynamic_workflow — cadence-fired run of a user-created (dynamic) workflow. Enqueued by `workflows.dynamic_cadence.schedule_dynamic_workflow_cadence` (channel=`__internal__`, channel_ref=the workflow name, assigned_to_person_id=the delivery recipient). The runner's `_run_dynamic_workflow` resolves the stored definition, runs the generic `DynamicWorkflow`, DMs the artifact to the recipient via `handle_message_person`, and re-chains the next occurrence — same crash-survival pattern as the principal briefs. Saving/updating/deleting/deactivating the definition reconciles its pending rows via `dynamic_cadence.cancel_cadence_rows`. See the `workflows:` → `dynamic_user_created` key."
     - nudge_scan — internal heartbeat row owned by the nudge engine; the runner calls `nudge_engine.run_nudge_scan()` and chains the next tick via `nudge_engine.enqueue_next_scan()`. Bypasses outbound dispatch. Emission is also capped per `scope_key` at `NUDGE_MAX_PER_SCOPE` (default 3) delivered nudges (`episodic.count_nudges_for_scope`), so a parked item is not chased forever.
     - "alert_review_scan — internal heartbeat row owned by the Executive alert review (`alerts.review`). Bootstrapped idempotently at scheduler startup when `ALERT_REVIEW_ENABLED`, fires every `ALERT_REVIEW_INTERVAL_HOURS` (default 6); the runner calls `run_alert_review(reason='heartbeat')`, marks done, and chains the next tick — same crash-resilient shape as nudge_scan. `_run_principal_brief` also runs a `pre_brief` pass before the morning brief so the brief reflects fresh verdicts (a review failure never blocks the brief). Bypasses outbound dispatch itself; the moves it makes go through the real DM / draft handlers. See the `alert_review:` key. Not a kind but loop-level: the runner also calls `_maybe_sweep_alerts` (alert TTL expiry, `alerts.lifecycle.expire_stale_alerts`) once at boot and every 15 min at the top of the tick — BEFORE the company-profile and rotation gates, so an old backlog expires even pre-onboarding — pure DB hygiene, no heartbeat row."
     - proactive_nudge — per-channel nudge action emitted by `run_nudge_scan`. Carries a `scope_key` for cooldown dedup and `assigned_to_person_id` for a dispatch-time on-leave re-check that runs BEFORE the ad-hoc dispatch path: if the assignee has gone unreachable since the scan, the runner reschedules into the next available slot (clamped to fall after on_leave_until) or drops the nudge with an audit event rather than dispatching to a deaf channel.
-    - "principal_brief_morning — Shift 3 recurring row that runs the `morning_brief` workflow and DMs the artifact to the principal via their preferred channel. Seeded once per database at scheduler startup via `seed_principal_briefs()`; each fire chains the next occurrence in `_run_principal_brief()` so the recurring rhythm survives crashes. Time-of-day reads `PRINCIPAL_BRIEF_MORNING_TIME` (HH:MM UTC, default 08:00). Single-timezone for v1."
+    - "principal_brief_morning — Shift 3 recurring row that runs the `morning_brief` workflow and sends the artifact to the principal via `_deliver_to_principal` (preferred channel honoured, email through the MCP gateway; see `workflows` → morning_brief). When no channel can reach the principal the brief is still generated and stored as a run with its artifact (a web-only principal reads it on the Artifacts page); it is just not delivered, which is audited, and the next occurrence is chained. Seeded once per database at scheduler startup via `seed_principal_briefs()`; each fire chains the next occurrence in `_run_principal_brief()` so the recurring rhythm survives crashes. Time-of-day reads `PRINCIPAL_BRIEF_MORNING_TIME` (HH:MM UTC, default 08:00). Single-timezone for v1."
     - "principal_brief_eod — same shape as morning_brief, fires once per day at `PRINCIPAL_BRIEF_EOD_TIME` (default 18:00 UTC). Runs `end_of_day_digest` workflow. Both brief kinds bypass the per-channel anti-spam guards because the principal is by definition deliverable (channel_ref=`principal`, channel=`__internal__` triggers the workflow run rather than a direct send)."
     - "executive_reflection — Shift 5 recurring row. Seeded alongside the principal briefs (idempotent via `_has_pending_brief`), default 07:30 UTC, override via `PRINCIPAL_REFLECTION_TIME`. The scheduler runs `_run_executive_reflection`: invokes the `executive_reflection` workflow, stores the artifact via `complete_run`, audits the outcome, then chains the next occurrence — same crash-survival pattern as principal briefs. Unlike the briefs, the artifact is NOT delivered to the principal — the morning brief that fires 30 minutes later surfaces what reflection decided via the existing /today/activity rail."
     - "external_monitor_scan — heartbeat owned by the external-condition monitoring layer. Default every 5 min via EXTERNAL_MONITOR_SCAN_INTERVAL_MINUTES. The runner calls `monitoring.pipeline.run_external_monitor_scan()` which walks enabled watchlist rows whose `last_polled_at` is stale enough, fires the matching adapter (vendor_status, rss, stock, the billed standing-query `query` adapter, the `edgar` SEC-filings adapter, and the stateful `page_watch` change-detector), enriches promotable signals with capture-time relevance, writes `external_signals` rows, and promotes qualifying signals into the alerts pipeline. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`external_monitor`). Chains the next tick via `enqueue_next_external_monitor_scan` after firing — same idempotent / crash-resilient pattern as `nudge_scan`."
@@ -2223,10 +2258,10 @@ scheduler:
     backoff and, once the retries are spent, marks it `failed` (logged as
     an error) — never `done`. `escalate` used to raise the alert AND dispatch, which
     contradicted the UI's "the specialist will not act" and sent the
-    action twice once the card was approved. A gated `dept_cadence` row
-    becomes a card and does not chain its next occurrence (re-bootstrapped
-    at startup) — true of propose_only departments before this change too.
-    Nudge engine emissions set `department=""` to bypass the gate — they
+    action twice once the card was approved. A `dept_cadence` row is not
+    gated at all: the check-in it runs sends nothing, and gating it used to
+    turn every check-in into a one-shot card that never chained its next
+    occurrence. Nudge engine emissions set `department=""` to bypass the gate — they
     are about reaching the approver, not a dept-scoped operation.
     Cancelling: DELETE /scheduled/{id} (the Pulse page's Cancel) soft-
     cancels a `pending` row (409 otherwise; the UPDATE is itself guarded
@@ -2256,8 +2291,32 @@ scheduler:
          production set `awaiting_response_since`, so this source was idle.
       c) Idle initiatives — active initiatives untouched for
          NUDGE_INITIATIVE_IDLE_DAYS, owner resolved via the department's
-         `head_person_id`. Skipped when the owning department's
-         `dept_cadence` fired within the idle window.
+         `head_person_id`. With no head to resolve (no department — which
+         is what the episodic extractor stores — an unknown department, or
+         no head) the principal owns it (`people.store.find_principal_person`),
+         and a principal recipient (also when the head IS the principal)
+         gets self-addressed wording: "<title>" has not moved since
+         <date>, still active, done, or dropped? No principal → skipped.
+         When channel routing cannot reach the principal (no channel ref,
+         or unreachable beyond NUDGE_MAX_DEFER_DAYS) the nudge becomes an
+         unrouted Briefing card (`propose_via_alert(person_id=None,
+         dedup_on=<scope_key>, external_id_suffix=<ISO year-week>)`, tag
+         `initiative`, and no `department:` tag when the initiative has no
+         department — `propose_via_alert` now omits an empty one, which
+         "mute this topic" would pick and which would substring-match, and
+         so mute, every department card) — at most one per initiative per
+         week; while one is still unread the scan leaves it alone
+         (`alerts.store.has_open_alert` on `authority.proposal_dedup_key`)
+         rather than coalescing into it every 15 minutes. Cost note: this source used to never fire on
+         installs without department heads; it now reaches the principal,
+         bounded by the per-scan / per-person caps, the 7-day cooldown and
+         NUDGE_MAX_PER_SCOPE. Skipped when the owning department's
+         `dept_cadence` ran within the idle window (a done/running row); a
+         skipped check-in is recorded `cancelled`, so it does not count.
+         The card wording is neutral ("I couldn't reach you about this
+         directly") since the cause may be leave or availability windows,
+         not a missing channel, and it is filed in the scan's own database
+         (`db_path` passed to `has_open_alert` / `propose_via_alert`).
     Each candidate is routed via `people.channel.prefer_channel_for` —
     honouring preferred channel + availability windows. Persons currently
     outside their window are deferred into `next_available_window` up to
@@ -2549,6 +2608,7 @@ audit:
   purpose: Persistent, searchable record of valuable events. Separate from episodic memory (which biases future LLM behaviour) — audit is for humans to inspect what the system did.
   db: ./episodic_memory.db (shares the SQLite file used by episodic/alerts/cache — one file to look in)
   table: audit_log (id, ts, event_type, session_id, turn_id, actor, summary, details_json, full_json, department)
+  department_filter: AuditLogger.query(department=…) filters on the department column in SQL. The department check-in skip rule uses it; a Python filter over the newest page missed department rows on a busy day.
   event_types:
     - chat_turn — one row per user-facing turn (latency, tokens, session)
     - specialist_consult — one row per consult_specialist tool call; full payload includes `active_prompt_blocks` so the flow-chart view can show which cached system blocks were live
@@ -3913,7 +3973,7 @@ workflows:
     - inbound_resolver — matches human replies back to paused workflow runs.
     - crisis_comms — drafts incident response messaging.
     - churn_deep_dive — structured customer-loss analysis.
-    - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 UTC, override via PRINCIPAL_BRIEF_MORNING_TIME env var). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Artifact is DM'd via the principal's preferred_channel (slack_dm → discord_dm → telegram → email fallback chain)."
+    - "morning_brief — Shift 3 recurring workflow. Fires once per day from the scheduler (default 08:00 UTC, override via PRINCIPAL_BRIEF_MORNING_TIME env var). Targets the principal: utility_fast model renders a ≤200-word Markdown briefing. CHANGE-AWARE: the window is 'since the last DELIVERED morning brief' (`briefing.brief_state.since_for`, 24 h on a cold store, clamped to 7 d); activity comes from `_build_activity(20, since=…)`; proposals (action category only) split into NEW SINCE LAST BRIEF (enumerated, with why_now / next move) vs a one-line CARRIED OVER count (with the likely-stale count); a REWRITTEN block lists carried items the review rewrote in the window (`brief_state.rewritten_since`: verdict `changed`, still open — reported under 'what changed', never as done); a HANDLED OVERNIGHT block lists the alert review's completed moves (`brief_state.handled_since`, `changed` excluded). Section order: top call → what changed → handled overnight → needs you (new only) → waiting on → at risk. A fingerprint of the inputs (`build_brief_fingerprint`, date-free) is compared to the last delivered one: unchanged ⇒ the artifact is the one-liner 'Nothing new since yesterday's brief — N items still waiting on you.' and no model call (`PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED`, bypass with `force_full=true` on a manual run). The workflow yields a `result` event `{brief_fingerprint, suppressed, since}`; only `_run_principal_brief` records the fingerprint, after a successful delivery (`brief_state.record_delivered`, stored in `briefing_narrative` under scope `brief:<kind>`). Delivery (`scheduler.runner._deliver_to_principal`, also used for the client-rotation digest): the principal's `preferred_channel` (slack / discord / telegram / email / any) maps to slack_dm / discord_dm / telegram / email and is tried first, then the other chat channels they have an id for in the order slack_dm → discord_dm → telegram. Email goes through the active MCP gateway (`google_workspace__send_gmail_message`, `user_google_email` = the Executive's own address, `to` = the principal's email, subject `<workflow title> — <date>`; an in-band error counts as failed, `workflows.action_step.looks_like_error`) and is used only when the preference is `email` (tried first) or `any` with no chat channel (tried last) — an owner linked by email at setup has `any` and keeps their chat delivery without extra emails. Email is not a DM, so the per-Person outbound guard does not apply; the gateway's roster egress gate does. When no channel can deliver (e.g. a web-only principal, or email-only with no gateway) the brief is still generated and stored as a run with its artifact, exactly as before; it is not delivered (audited `delivery_failed`), so the window and fingerprint do not advance, and the next occurrence is chained."
     - "end_of_day_digest — Shift 3 recurring workflow. Fires once per day from the scheduler (default 18:00 UTC, override via PRINCIPAL_BRIEF_EOD_TIME). Same shape as morning_brief but framed as a recap since the last DELIVERED digest (`brief_state.since_for`, 24 h on a cold store): what OE did today (activity since), alerts it handled today (completed moves only; rewritten-but-open items render as a REWRITTEN block under still pending), what's still pending (NEW SINCE LAST BRIEF, action category only, carried-over as one line), what's at risk for tomorrow, one optional 'sleep on this' question. Same fingerprint / one-liner suppression and `force_full` as morning_brief, under scope `brief:principal_brief_eod`."
     - "executive_reflection — Shift 5 recurring workflow. Fires once per day ~30 minutes before the morning brief (default 07:30 UTC, override via PRINCIPAL_REFLECTION_TIME). The first workflow OE runs ON ITSELF — not for a department, not for the principal, but for its own org-coordination judgment. Three steps: (1) gather /today + /today/activity + recent open alerts, (2) single LLM call with the full outbound toolkit (schedule_followup, send_*_dm, send_department_message, send_company_broadcast, suggest_workflow, create_alert, etc.) bounded to ≤4 iterations — the model decides per signal whether to act now, notify the right audience via the persona's 'Choosing Who to Tell' rule, raise it for the morning brief, or ignore, (3) emit a short Markdown summary with a structured tool-call log. MEMORY: the context carries a YESTERDAY'S STANDUP block (the previous done run's artifact, capped at 1500 chars) and the prompt forbids re-acting on or re-notifying about anything listed there unless it changed; open alerts render with `alert_id`, the review verdict, note and recommended move. Reflection never closes alerts (the alert review does, with evidence) — the prompt does not instruct `ack_alert`. The artifact is stored via complete_run but NOT DM'd — the morning brief surfaces what was decided via /today/activity. This operationalizes the 'When You Notice Something on Your Own' persona section (Shift 1)."
 
@@ -4854,7 +4914,13 @@ integrations:
     through the integration named on the scheduled_actions row's
     `channel` column (`telegram`, `slack_dm`, `email` via MCP, etc.),
     so a single runner can deliver messages across all integrations
-    without per-channel dispatch logic.
+    without per-channel dispatch logic. The principal briefs and the
+    client-rotation digest use `_deliver_to_principal` instead: Slack /
+    Discord / Telegram through the DM handlers, and email through the
+    active MCP gateway's `google_workspace__send_gmail_message` (from the
+    Executive's own mailbox to the principal's address) when the principal
+    prefers email, or prefers "any" and has no chat channel — see
+    `workflows` → morning_brief.
   outbound_reply_context: |
     Cross-session DM context linkage — fixes the failure where the
     principal tells OE "DM Alex about X" in one session, OE sends the

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openexecutive.alerts import store as alert_store
+from openexecutive.audit import logger as audit_logger_module
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
 from openexecutive.departments.models import AuthorityLevel
@@ -17,6 +18,9 @@ from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.people.models import AuthorityScope, AvailabilityWindow
 from openexecutive.scheduler.runner import _execute_action
+from openexecutive.workflows import persistence as wf_persistence
+from openexecutive.workflows.base import WorkflowEvent
+from openexecutive.workflows.department_check_in import DepartmentCheckInWorkflow
 
 
 @pytest.fixture(autouse=True)
@@ -26,9 +30,14 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(people_store, "DB_PATH", db)
     monkeypatch.setattr(episodic, "DB_PATH", db)
     monkeypatch.setattr(alert_store, "DB_PATH", db)
+    monkeypatch.setattr(wf_persistence, "DB_PATH", db)
     # Dispatch writes a "delivered" audit row; keep it out of the default
     # ./episodic_memory.db, where it leaks into other modules' assertions.
+    # Goal writes audit too (via the Honcho mirror), and the check-in skip
+    # rule reads the log — both go to a per-test audit DB.
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    audit_log = audit_logger_module.AuditLogger(tmp_path / "audit.db")
+    monkeypatch.setattr(audit_logger_module, "get_audit_logger", lambda: audit_log)
 
     dept_registry.invalidate()
     people_registry.invalidate()
@@ -37,6 +46,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     people_store.initialize_db(db)
     alert_store.initialize_db(db)
     episodic.initialize_db(db)
+    wf_persistence.initialize_runs_db(db)
 
     yield
 
@@ -422,3 +432,221 @@ def test_no_department_bypasses_gate() -> None:
         asyncio.run(_execute_action(action, gateway=None))
 
     mock_chat.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# dept_cadence — not gated; the check-in runs, is skipped when idle, and
+# always chains its next occurrence
+# ---------------------------------------------------------------------------
+
+
+class _NoStore:
+    def __init__(self, **_kwargs: object) -> None: ...
+
+
+def _check_in_calls(monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> list[str]:
+    """Stub the check-in workflow (and the vector store it is handed)."""
+    calls: list[str] = []
+
+    async def _run(self: DepartmentCheckInWorkflow, inputs, store):  # type: ignore[no-untyped-def]
+        calls.append(inputs.department_slug)
+        if fail:
+            yield WorkflowEvent(type="error", message="specialist unavailable")
+            return
+        yield WorkflowEvent(type="artifact", content="# Finance — Check-In Report")
+
+    monkeypatch.setattr(DepartmentCheckInWorkflow, "run", _run)
+    monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", _NoStore)
+    return calls
+
+
+def _cadence_action(slug: str = "finance", *, attempts: int | None = None) -> episodic.ScheduledAction:
+    episodic.insert_scheduled_action(
+        run_at=(_now() - timedelta(seconds=10)).isoformat(),
+        channel="__internal__",
+        channel_ref=slug,
+        intent_text=f"Department check-in: {slug}",
+        department=slug,
+        kind="dept_cadence",
+    )
+    (action,) = episodic.claim_due_actions(_now())
+    if attempts is not None:
+        with episodic._get_conn(episodic.DB_PATH) as conn:
+            conn.execute(
+                "UPDATE scheduled_actions SET attempts = ? WHERE id = ?", (attempts, action.id),
+            )
+    return action
+
+
+def _pending_cadences(slug: str = "finance") -> list[episodic.ScheduledAction]:
+    return [
+        a for a in episodic.list_scheduled_actions(status="pending", limit=50)
+        if a.kind == "dept_cadence" and a.department == slug
+    ]
+
+
+def _status(action: episodic.ScheduledAction) -> str:
+    assert action.id is not None
+    row = episodic.get_scheduled_action(action.id)
+    assert row is not None
+    return row.status
+
+
+def _last_error(action: episodic.ScheduledAction) -> str:
+    assert action.id is not None
+    row = episodic.get_scheduled_action(action.id)
+    assert row is not None
+    return row.last_error
+
+
+def test_propose_only_check_in_runs_the_workflow_files_no_card_and_chains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()  # seeded departments are propose_only
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == ["finance"]
+    assert alert_store.list_alerts() == []  # used to be a one-shot proposal card
+    assert _status(action) == "done"
+    assert len(_pending_cadences()) == 1  # the chain survives
+    runs = wf_persistence.list_runs(workflow_name="department_check_in")
+    assert [r["status"] for r in runs] == ["done"]
+
+
+def test_check_in_without_goals_is_skipped_and_chained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()
+    dept_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == []
+    # Recorded as skipped, not done: a done cadence row reads as a check-in
+    # that ran (and would suppress this department's initiative nudges).
+    assert _status(action) == "cancelled"
+    assert _last_error(action).startswith("skipped: no Goals")
+    assert len(_pending_cadences()) == 1
+    # Skipped before create_run: no empty run lands in the activity rail.
+    assert wf_persistence.list_runs(workflow_name="department_check_in") == []
+
+
+def test_check_in_for_an_informational_department_is_skipped_and_chained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = dept_store.create_department("Volunteer Coordination")
+    slug = state.config.slug
+    dept_store.update_department(slug, cadences={"check_in": "daily@09:00"})
+    dept_store.insert_goal(slug, period_value="Q3 2026", key_result="Staff events", target="4")
+    dept_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+
+    action = _cadence_action(slug)
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == []
+    assert _status(action) == "cancelled"
+    assert "no specialist" in _last_error(action)
+    assert len(_pending_cadences(slug)) == 1
+
+
+def test_check_in_failure_retries_without_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch, fail=True)
+
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+
+    # Retried with backoff: the row itself is the one pending occurrence.
+    assert _status(action) == "pending"
+    assert [a.id for a in _pending_cadences()] == [action.id]
+
+
+def test_check_in_failure_after_retries_still_chains(monkeypatch: pytest.MonkeyPatch) -> None:
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch, fail=True)
+
+    action = _cadence_action(attempts=3)  # this was the last attempt
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert _status(action) == "failed"
+    pending = _pending_cadences()
+    assert len(pending) == 1 and pending[0].id != action.id
+
+
+def test_final_attempt_that_chained_before_failing_does_not_chain_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check-in ran and chained, then marking the row done raised on the
+    last attempt: the failure path must not queue a second next occurrence."""
+    from openexecutive.scheduler import runner
+
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch)
+
+    def _db_locked(_action_id: int, db_path: object = None) -> bool:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(runner, "mark_action_done", _db_locked)
+    action = _cadence_action(attempts=3)
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert _status(action) == "failed"
+    assert len(_pending_cadences()) == 1
+
+
+def test_skip_that_could_not_be_recorded_does_not_chain_twice_on_refire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chain, then recording the skip fails: the row stays `running`, the boot
+    sweep requeues it, and the re-fire finds the next occurrence queued."""
+    from openexecutive.scheduler import runner
+
+    dept_store.seed_default_departments()
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch)
+    record = runner._mark_check_in_skipped
+    failures = [RuntimeError("database is locked")]
+
+    def _flaky(action_id: int, reason: str) -> None:
+        if failures:
+            raise failures.pop()
+        record(action_id, reason)
+
+    monkeypatch.setattr(runner, "_mark_check_in_skipped", _flaky)
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+    assert _status(action) == "running"
+    assert len(_pending_cadences()) == 1
+
+    assert episodic.requeue_orphaned_running() == 1  # the boot sweep
+    (refired,) = episodic.claim_due_actions(_now())
+    assert refired.id == action.id
+    asyncio.run(_execute_action(refired, gateway=None))
+
+    assert _status(action) == "cancelled"
+    assert len(_pending_cadences()) == 1

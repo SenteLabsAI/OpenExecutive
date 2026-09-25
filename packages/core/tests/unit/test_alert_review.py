@@ -690,7 +690,7 @@ def test_pre_brief_review_runs_before_morning_brief_and_never_blocks_it(db: Path
 
     monkeypatch.setattr(kstore, "ChromaDBStore", _Store)
 
-    async def _deliver(text: str) -> tuple[bool, str]:
+    async def _deliver(text: str, **_kw: Any) -> tuple[bool, str]:
         order.append("deliver")
         return True, "ok"
 

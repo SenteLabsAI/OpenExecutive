@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from openexecutive.memory.episodic import (
     ScheduledAction,
@@ -23,6 +24,9 @@ from openexecutive.memory.episodic import (
 from openexecutive.orchestrator.mcp_gateway import MCPGateway
 from openexecutive.scheduler.pause import is_paused
 from openexecutive.workflows.gate import ensure_workflow_event
+
+if TYPE_CHECKING:
+    from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
 
@@ -255,8 +259,17 @@ async def _execute_action(
 
     # ------------------------------------------------------------------
     # Authority gate — only applies to department-scoped actions.
+    #
+    # A `dept_cadence` row always carries its department, and the seeded
+    # departments are propose_only, so gating it turned every check-in into
+    # a one-shot proposal card, marked the row done and never chained the
+    # next occurrence. The check-in itself sends nothing: it grades Goals
+    # and runs each action it proposes through `gate_action` as an
+    # annotation (see `department_check_in._gate_proposed_actions`), so the
+    # authority level still governs what it proposes — the fire does not
+    # need gating.
     # ------------------------------------------------------------------
-    if action.department:
+    if action.department and action.kind != "dept_cadence":
         from openexecutive.departments.authority import (
             escalate_via_alert,
             gate_action,
@@ -390,15 +403,35 @@ async def _execute_action(
     if action.kind == "dept_cadence":
         slug = action.channel_ref  # set by cadence.enqueue_next / bootstrap_cadences
         logger.info("scheduler: dept_cadence firing for dept=%r (action %d)", slug, action.id)
+        # Skip rule first, BEFORE create_run: a department with nothing to
+        # review costs no specialist calls and leaves no empty run in the
+        # activity rail. A skipped occurrence still chains the next one, and
+        # is recorded `cancelled` (reason in last_error), not `done`: a done
+        # cadence row reads as "the check-in ran", which the nudge engine
+        # takes as covering the department's idle initiatives.
+        skip_reason = _dept_check_in_skip_reason(slug, now)
+        if skip_reason is not None:
+            logger.info("scheduler: dept_cadence %r skipped — %s", slug, skip_reason)
+            _chain_dept_cadence(slug)
+            try:
+                _mark_check_in_skipped(action.id, skip_reason)
+            except Exception:
+                # The row stays `running` until the boot sweep requeues it;
+                # the chain is idempotent, so that re-fire adds no duplicate.
+                logger.exception(
+                    "scheduler: dept_cadence %r (action %d) — could not record the skip",
+                    slug, action.id,
+                )
+            return
         # Assign run_id before the try block so the except handler can always
         # reference it.  An empty string means create_run never ran, so fail_run
         # will be guarded below.
         run_id = ""
+        chained = False
         try:
             import uuid as _uuid
 
             from openexecutive.config import get_settings as _get_settings
-            from openexecutive.departments.cadence import enqueue_next
             from openexecutive.knowledge.store import ChromaDBStore as _ChromaDBStore
             from openexecutive.workflows.department_check_in import (
                 DepartmentCheckInInput,
@@ -435,10 +468,10 @@ async def _execute_action(
                     raise RuntimeError(event.message)
 
             complete_run(run_id, artifact or "(no artifact)")
-            # Capture wall-clock time AFTER the workflow completes so that
-            # enqueue_next always schedules strictly in the future, even when
-            # the workflow took longer than (target_time − tick_time).
-            enqueue_next(slug, after=datetime.now(UTC))
+            # Chained AFTER the workflow completes (at wall-clock time) so the
+            # next occurrence is always strictly in the future, even when the
+            # workflow took longer than (target_time − tick_time).
+            chained = _chain_dept_cadence(slug)
             mark_action_done(action.id)
             logger.info(
                 "scheduler: dept_cadence %r done — run_id=%s artifact=%d chars",
@@ -450,6 +483,10 @@ async def _execute_action(
             )
             new_status = mark_action_failed_or_retry(action.id, str(exc))
             logger.info("scheduler: action %d → %s", action.id, new_status)
+            if new_status == "failed" and not chained:
+                # Retries are spent. Chain anyway so one broken department
+                # does not fall out of the daily cycle until the next boot.
+                _chain_dept_cadence(slug)
             if run_id:
                 try:
                     from openexecutive.workflows.persistence import fail_run
@@ -564,7 +601,7 @@ async def _execute_action(
                 digest = result.get("digest") or ""
                 if digest:
                     try:
-                        await _deliver_to_principal(digest)
+                        await _deliver_to_principal(digest, label="Across your clients")
                     except Exception:
                         logger.exception(
                             "scheduler: client_rotation digest delivery failed"
@@ -922,6 +959,84 @@ async def _execute_action(
 
 
 # --------------------------------------------------------------------------- #
+# Department cadence helpers
+# --------------------------------------------------------------------------- #
+
+def _dept_check_in_skip_reason(slug: str, now: datetime) -> str | None:
+    """Why this department's scheduled check-in can be skipped, or None.
+
+    Delegates to ``department_check_in.needs_check_in``. Fails open: if the
+    check itself breaks, the check-in runs as before.
+    """
+    try:
+        from openexecutive.departments import registry as dept_registry
+        from openexecutive.workflows.department_check_in import needs_check_in
+
+        state = dept_registry.get_state(slug)
+        if state is None:
+            return f"department {slug!r} not found"
+        return needs_check_in(state, now)
+    except Exception:
+        logger.exception(
+            "scheduler: dept_cadence %r skip check failed — running the check-in", slug
+        )
+        return None
+
+
+def _pending_dept_cadence_exists(slug: str) -> bool:
+    """True when a `pending` dept_cadence row for ``slug`` is already queued.
+
+    Only `pending`: the row being handled is `running` (or `failed`), so it
+    never counts itself.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    with _get_conn(_resolve_db_path(None)) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM scheduled_actions WHERE kind = 'dept_cadence' "
+            "AND department = ? AND status = 'pending' LIMIT 1",
+            (slug,),
+        ).fetchone()
+    return row is not None
+
+
+def _chain_dept_cadence(slug: str) -> bool:
+    """Enqueue the department's next check-in. Never raises.
+
+    Idempotent: when a next occurrence is already pending (an earlier attempt
+    chained, then failed to mark its row, and the row fired again) nothing is
+    added. True when a next occurrence is queued afterwards.
+    """
+    try:
+        from openexecutive.departments.cadence import enqueue_next
+
+        if _pending_dept_cadence_exists(slug):
+            return True
+        return enqueue_next(slug, after=datetime.now(UTC)) is not None
+    except Exception:
+        logger.exception(
+            "scheduler: failed to chain the next dept_cadence for %r — it "
+            "resumes at the next boot (bootstrap_cadences)", slug,
+        )
+        return False
+
+
+def _mark_check_in_skipped(action_id: int, reason: str) -> None:
+    """Record a skipped check-in as `cancelled`, with the reason in last_error.
+
+    Not `done`: `nudge_engine._dept_cadence_recent` counts a done cadence row
+    as a check-in that covered the department's initiatives.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    with _get_conn(_resolve_db_path(None)) as conn:
+        conn.execute(
+            "UPDATE scheduled_actions SET status = 'cancelled', last_error = ? WHERE id = ?",
+            (f"skipped: {reason}"[:500], action_id),
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Principal briefs (Shift 3)
 # --------------------------------------------------------------------------- #
 
@@ -1116,37 +1231,106 @@ def _delivered_ok(result_json: str) -> bool:
     return isinstance(parsed, dict) and "error" not in parsed and parsed.get("status") == "sent"
 
 
-async def _deliver_to_principal(text: str) -> tuple[bool, str]:
-    """Send ``text`` to the principal on their preferred channel.
+# `Person.preferred_channel` values (people/models.py PreferredChannel) mapped
+# to the delivery channels below. "any" has no entry: it keeps the fallback
+# order.
+_PREFERRED_TO_DELIVERY: dict[str, str] = {
+    "slack": "slack_dm",
+    "discord": "discord_dm",
+    "telegram": "telegram",
+    "email": "email",
+}
+# Chat fallback order after the preferred channel. Email is never a fallback
+# for a chat preference — see `_delivery_order`.
+_CHAT_DELIVERY_ORDER: tuple[str, ...] = ("slack_dm", "discord_dm", "telegram")
 
-    Returns (ok, detail). Picks the channel from the principal Person
-    row's preferred_channel + matching channel id. Falls back to other
-    channels in fixed order if the preferred is unconfigured (e.g. the
-    principal prefers Slack but has no slack_user_id set). Returns
-    (False, ...) when no deliverable channel is configured at all —
-    caller still marks the action done (no point retrying the same
-    misconfiguration) but audits the failure.
+
+def _delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
+    """The channels a message can reach ``principal`` on, in the order to try.
+
+    Chat channels the principal has an id for come first — the preferred one
+    ahead of the rest (slack, discord, telegram). Email (it needs the MCP
+    gateway, ``email_ready``) is used only when the preference is ``email``
+    (tried first), or when it is ``any`` and no chat channel resolves (tried
+    last): an owner linked by email at setup has preference ``any``, and must
+    not start getting two extra emails a day on top of a working Slack.
+    Empty when nothing can deliver — e.g. a principal who only uses the web UI.
     """
+    if principal is None:
+        return []
+    ids = {
+        "slack_dm": principal.slack_user_id,
+        "discord_dm": principal.discord_user_id,
+        "telegram": principal.telegram_chat_id,
+    }
+    chat = [c for c in _CHAT_DELIVERY_ORDER if ids[c]]
+    pref = (principal.preferred_channel or "any").lower()
+    preferred = _PREFERRED_TO_DELIVERY.get(pref)
+    order = ([preferred] if preferred in chat else []) + [c for c in chat if c != preferred]
+    if email_ready and principal.email:
+        if pref == "email":
+            order.insert(0, "email")
+        elif pref == "any" and not chat:
+            order.append("email")
+    return order
+
+
+def _principal_delivery_plan() -> tuple[Person | None, list[str]]:
+    """The principal Person row and the channels to try, in order."""
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.people.store import find_principal_person
 
     principal = find_principal_person()
+    return principal, _delivery_order(
+        principal, email_ready=get_active_gateway() is not None
+    )
+
+
+async def _email_principal(principal: Person, text: str, label: str) -> bool:
+    """Send ``text`` to the principal's address through the active MCP gateway.
+
+    Sent as the Executive's own mailbox (the principal is on the roster, so
+    the gateway's egress gate allows it). False when there is no gateway or
+    the tool reports an error in-band.
+    """
+    from openexecutive.config import get_settings
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.workflows.action_step import looks_like_error
+
+    gateway = get_active_gateway()
+    if gateway is None or not principal.email:
+        return False
+    result = await gateway.call_tool({
+        "name": "google_workspace__send_gmail_message",
+        "arguments": {
+            "user_google_email": get_settings().exec_email_address,
+            "to": principal.email,
+            "subject": f"{label} — {datetime.now(UTC).strftime('%Y-%m-%d')}",
+            "body": text,
+        },
+    })
+    if looks_like_error(result):
+        logger.warning("scheduler: email to the principal failed: %s", result[:300])
+        return False
+    return True
+
+
+async def _deliver_to_principal(text: str, *, label: str = "Update") -> tuple[bool, str]:
+    """Send ``text`` to the principal on their preferred channel.
+
+    Returns (ok, detail). Tries the channels from ``_principal_delivery_plan``
+    in order until one sends; ``label`` names the message in the email
+    subject. Returns (False, ...) when no channel is configured or every
+    send failed — the caller still marks the action done (no point retrying
+    the same misconfiguration) but audits the failure.
+    """
+    principal, plan = _principal_delivery_plan()
     if principal is None:
         return False, "no principal Person row found"
+    if not plan:
+        return False, "no deliverable channel configured for principal"
 
-    # Try preferred channel first, then ranked fallbacks.
-    pref = (principal.preferred_channel or "").lower()
-    ordered_channels = [pref] + [
-        c for c in ("slack_dm", "discord_dm", "telegram", "email") if c != pref
-    ]
-    for channel in ordered_channels:
-        if not channel:
-            continue
-        # Email requires the MCP gateway (Gmail send tool is an MCP tool)
-        # and isn't wired up for the brief path yet — explicit skip so
-        # this branch reads as intentional rather than an oversight.
-        # TODO(v2): wire email delivery via the existing MCP gateway.
-        if channel == "email":
-            continue
+    for channel in plan:
         try:
             if channel == "slack_dm" and principal.slack_user_id:
                 from openexecutive.orchestrator.schedule_tools import handle_send_slack_dm
@@ -1171,10 +1355,12 @@ async def _deliver_to_principal(text: str) -> tuple[bool, str]:
                 })
                 if _delivered_ok(result):
                     return True, f"telegram → {principal.telegram_chat_id}"
+            elif channel == "email" and await _email_principal(principal, text, label):
+                return True, f"email → {principal.email}"
         except Exception:
             logger.exception("scheduler: delivery via %s failed", channel)
 
-    return False, "no deliverable channel configured for principal"
+    return False, f"delivery failed on every channel ({', '.join(plan)})"
 
 
 async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
@@ -1340,7 +1526,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         complete_run(run_id, artifact or "(no artifact)")
 
         if artifact:
-            ok, detail = await _deliver_to_principal(artifact)
+            ok, detail = await _deliver_to_principal(artifact, label=workflow.title)
             if ok:
                 logger.info("scheduler: %s delivered (%s)", kind, detail)
                 audit_log(
