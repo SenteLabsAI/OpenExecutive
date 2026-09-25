@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Strong refs so GC cannot cancel in-flight tasks mid-execution.
 _inflight: set[asyncio.Task[None]] = set()
 
-# Liveness for the Setup status page (onboarding/setup_checks.py): when this
+# Liveness for the Setup status page (api/setup_checks.py): when this
 # loop started, and when its last tick finished and how. Every tick ends by
 # recording itself, so an old value means the loop has stopped or is stuck.
 _started_at: datetime | None = None
@@ -116,8 +116,9 @@ async def run_scheduler(
     poll_interval_seconds: int = 30,
 ) -> None:
     """Poll for due scheduled actions and dispatch them through the Executive."""
-    global _started_at
+    global _started_at, _last_tick
     _started_at = datetime.now(UTC)
+    _last_tick = None
     # Sweep any rows left in 'running' by a previous crash back to 'pending'
     # so they can be re-tried. Without this they would stay stuck forever.
     try:

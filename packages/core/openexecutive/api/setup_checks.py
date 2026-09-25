@@ -51,8 +51,10 @@ _SCHEDULER_STALE_FLOOR_S = 90
 # seconds; a scheduler with no tick this long after starting is stuck.
 _SCHEDULER_STARTUP_GRACE_S = 300
 # Telegram reports its last failed delivery until the next one fails. Older
-# than this, it says nothing about whether delivery works now.
-_TELEGRAM_ERROR_RECENT_S = 24 * 60 * 60
+# than this, it says nothing about whether delivery works now. The same
+# window applies to a message turned away because its sender wasn't on the
+# team list: after a day it is history, not something to fix.
+_RECENT_FAILURE_S = 24 * 60 * 60
 # Longest service-supplied text (a Telegram error, a Slack workspace name)
 # echoed back. The UI renders it as plain text; this only keeps it one line.
 _ECHO_MAX_CHARS = 160
@@ -68,6 +70,8 @@ EXAMPLE_VALUES: frozenset[str] = frozenset(
 _EXAMPLE_EMAIL_DOMAINS = frozenset({"example.com", "example.org", "example.net"})
 
 _TELEGRAM_TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]{30,}")
+# What setWebhook accepts as a secret_token.
+_TELEGRAM_SECRET_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
 _SLACK_ERROR_CODE_RE = re.compile(r"[a-z_]{1,40}")
 # The sender id in the "Rejected: …" audit summaries the channel adapters
 # write when someone off the team list messages the Executive.
@@ -325,7 +329,9 @@ async def _fetch(
     http: httpx.AsyncClient, method: str, url: str, **kwargs: Any
 ) -> tuple[int, dict[str, Any]] | None:
     """``(status, JSON object or {})``, or ``None`` when the service couldn't
-    be reached. Never raises and never logs the URL, which can hold a token."""
+    be reached. Never raises, and never logs the URL, which can hold a token
+    (Telegram's does). httpx's own per-request log line would print it at
+    INFO; api.main._configure_logging holds the ``httpx`` logger at WARNING."""
     try:
         response = await asyncio.wait_for(http.request(method, url, **kwargs), PROBE_TIMEOUT_S)
     except (httpx.HTTPError, TimeoutError) as exc:
@@ -346,6 +352,28 @@ class _Roster:
     id_name: str
 
 
+def _turned_away_sender(snap: Snapshot, last: AuditEvent | None, roster: _Roster) -> str | None:
+    """The sender of a message the channel turned away in the last day, when
+    they still aren't on the team list — ``""`` when the audit row doesn't
+    name them. ``None`` when there is nothing left to fix."""
+    if last is None or not last.summary.startswith("Rejected"):
+        return None
+    try:
+        at = datetime.fromisoformat(last.ts)
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    if (snap.now - at).total_seconds() > _RECENT_FAILURE_S:
+        return None
+    match = _REJECTED_SENDER_RE.search(last.summary)
+    if match is None:
+        return ""
+    sender = match.group(1)
+    rostered = any(str(getattr(person, roster.field) or "") == sender for person in snap.people)
+    return None if rostered else sender
+
+
 def _channel_ready(
     snap: Snapshot, check_id: str, summary: str, *, actor: str, roster: _Roster | None
 ) -> SetupCheck:
@@ -364,13 +392,13 @@ def _channel_ready(
                 link="/people",
                 last_activity=last_at,
             )
-        if last is not None and last.summary.startswith("Rejected"):
-            match = _REJECTED_SENDER_RE.search(last.summary)
-            sender = f" (from {roster.id_name} {match.group(1)})" if match else ""
+        sender = _turned_away_sender(snap, last, roster)
+        if sender is not None:
+            named = f" (from {roster.id_name} {sender})" if sender else ""
             return _result(
                 check_id,
                 "warn",
-                f"{summary} The last message{sender} was ignored because its sender isn't on the team list.",
+                f"{summary} The last message{named} was ignored because its sender isn't on the team list.",
                 f"If that was you, add that {roster.id_name} to your entry on the People page.",
                 link="/people",
                 last_activity=last_at,
@@ -492,15 +520,6 @@ async def check_discord(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
         )
 
     bot, task = snap.discord_bot, snap.discord_bot_task
-    if bot is not None and bot.is_ready():
-        name = _clip(str(bot.user)) if bot.user is not None else "the bot"
-        return _channel_ready(
-            snap,
-            "discord",
-            f"Connected as {name}.",
-            actor="discord",
-            roster=_Roster("discord_user_id", "Discord user ID"),
-        )
     if task is not None and task.done():
         stopped_by = None if task.cancelled() else task.exception()
         kind = type(stopped_by).__name__ if stopped_by is not None else ""
@@ -518,6 +537,26 @@ async def check_discord(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "error",
             "The Discord bot didn't start.",
             f'The API log says why — look for "Discord bot". Fix that, {_RESTART}',
+        )
+    if bot.is_ready():
+        # discord.py stays "ready" through a dropped connection while it
+        # reconnects; only the gateway socket says whether messages arrive.
+        name = _clip(str(bot.user)) if bot.user is not None else "the bot"
+        if not getattr(bot.ws, "open", False):
+            return _result(
+                "discord",
+                "warn",
+                f"Signed in as {name}, but the connection to Discord dropped and the bot is "
+                "reconnecting.",
+                "Check again in a minute. If it stays like this, check this computer's internet connection "
+                "and the API log.",
+            )
+        return _channel_ready(
+            snap,
+            "discord",
+            f"Connected as {name}.",
+            actor="discord",
+            roster=_Roster("discord_user_id", "Discord user ID"),
         )
 
     # Still connecting: test the token, so a bad one is named now rather than
@@ -556,7 +595,17 @@ async def check_telegram(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "TELEGRAM_BOT_TOKEN isn't a Telegram bot token — those are digits, a colon, then letters.",
             f"Copy the token @BotFather gave you into .env, {_RESTART}",
         )
-    if snap.local_login and not settings.telegram_webhook_secret:
+    secret = settings.telegram_webhook_secret
+    if secret and not _TELEGRAM_SECRET_RE.fullmatch(secret):
+        return _result(
+            "telegram",
+            "error",
+            "TELEGRAM_WEBHOOK_SECRET has characters Telegram won't accept, so every message is "
+            "turned away.",
+            "Use 1–256 letters, digits, _ or - (openssl rand -hex 32 makes one), restart the app, "
+            "and register the webhook again with it (docs/telegram_setup.md).",
+        )
+    if snap.local_login and not secret:
         return _result(
             "telegram",
             "error",
@@ -606,7 +655,7 @@ async def check_telegram(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "Register the webhook again with this app's address — see docs/telegram_setup.md.",
         )
     error_at = info.get("last_error_date")
-    if isinstance(error_at, int) and snap.now.timestamp() - error_at < _TELEGRAM_ERROR_RECENT_S:
+    if isinstance(error_at, int) and snap.now.timestamp() - error_at < _RECENT_FAILURE_S:
         reason = _clip(str(info.get("last_error_message") or "no reason given"))
         return _result(
             "telegram",
@@ -616,7 +665,7 @@ async def check_telegram(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "TELEGRAM_WEBHOOK_SECRET — register the webhook again (docs/telegram_setup.md). "
             "Otherwise, check this app can be reached at that address.",
         )
-    if not settings.telegram_webhook_secret:
+    if not secret:
         return _result(
             "telegram",
             "warn",
@@ -759,13 +808,8 @@ def check_scheduler(snap: Snapshot) -> SetupCheck:
             "Turned off, so no briefs, reminders or follow-ups go out.",
             f"Set SCHEDULER_ENABLED=true in .env, {_RESTART}",
         )
-    if get_pause_state().paused:
-        return _result(
-            "scheduler",
-            "warn",
-            "Paused: briefs, reminders and email checks wait until you resume.",
-            "Press Resume in the banner at the top of the page.",
-        )
+    # Liveness first: a paused scheduler still ticks, so one that has
+    # stopped needs a restart, not the Resume button.
     started_at, last_tick = scheduler_heartbeat()
     restart_fix = 'Restart the app, and look in the API log for lines from "scheduler".'
     if started_at is None:
@@ -803,6 +847,13 @@ def check_scheduler(snap: Snapshot) -> SetupCheck:
             "error",
             "The scheduler's last check hit an error.",
             'Look in the API log for "scheduler tick failed" to see why.',
+        )
+    if get_pause_state().paused:
+        return _result(
+            "scheduler",
+            "warn",
+            "Paused: briefs, reminders and email checks wait until you resume.",
+            "Press Resume in the banner at the top of the page.",
         )
     if outcome == "waiting_for_company":
         return _result(

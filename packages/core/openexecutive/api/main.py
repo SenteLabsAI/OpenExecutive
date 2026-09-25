@@ -540,7 +540,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     discord_bot_task: asyncio.Task[None] | None = None
     slack_handler: Any = None
     slack_connect_task: asyncio.Task[None] | None = None
-    # Read by the Setup status page (onboarding/setup_checks.py) to tell a
+    # Read by the Setup status page (api/setup_checks.py) to tell a
     # connected bot from one that is still trying or has given up.
     app.state.discord_bot = None
     app.state.discord_bot_task = None

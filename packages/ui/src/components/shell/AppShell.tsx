@@ -43,6 +43,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   onboard: "Setup",
   watchlist: "Watch list",
   settings: "Settings",
+  status: "Setup status",
   guide: "User Guide",
   clients: "Client Companies",
 };

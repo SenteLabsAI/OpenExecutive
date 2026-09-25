@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -403,6 +403,25 @@ async def test_slack_last_message_was_turned_away() -> None:
     assert "(from Slack member ID U999) was ignored" in check.summary
 
 
+@pytest.mark.parametrize(
+    ("people_ids", "rejected_at"),
+    [
+        (["U1", "U999"], "2026-09-25T11:50:00.000000Z"),  # the sender has since been added
+        (["U1"], "2026-09-23T11:50:00.000000Z"),  # turned away days ago
+    ],
+)
+async def test_slack_turned_away_message_stops_warning(people_ids: list[str], rejected_at: str) -> None:
+    snap = make_snap(
+        slack_settings(),
+        slack_handler=listening_handler(),
+        people=[Person(id=i, full_name=f"P{i}", slack_user_id=uid) for i, uid in enumerate(people_ids, 1)],
+        last_inbound={"slack": inbound("slack", "Rejected: slack user=U999 not in People roster", rejected_at)},
+    )
+    async with Recorder(slack_ok).client() as c:
+        check = await check_slack(snap, c)
+    assert check.state == "ok"
+
+
 # ---------------------------------------------------------------------------
 # Discord
 # ---------------------------------------------------------------------------
@@ -415,7 +434,7 @@ def failed_task(exc_name: str) -> asyncio.Future[None]:
 
 
 async def test_discord_connected() -> None:
-    bot = SimpleNamespace(is_ready=lambda: True, user="exec-bot#0001")
+    bot = SimpleNamespace(is_ready=lambda: True, user="exec-bot#0001", ws=SimpleNamespace(open=True))
     snap = make_snap(
         make_settings(DISCORD_BOT_TOKEN=DISCORD),
         discord_bot=bot,
@@ -424,6 +443,16 @@ async def test_discord_connected() -> None:
     async with Recorder(never_called).client() as c:
         check = await check_discord(snap, c)
     assert (check.state, check.summary) == ("ok", "Connected as exec-bot#0001.")
+
+
+async def test_discord_ready_but_reconnecting_is_not_green() -> None:
+    # discord.py keeps is_ready() through a dropped connection; the closed
+    # gateway socket is what says no messages can arrive.
+    bot = SimpleNamespace(is_ready=lambda: True, user="exec-bot#0001", ws=SimpleNamespace(open=False))
+    snap = make_snap(make_settings(DISCORD_BOT_TOKEN=DISCORD), discord_bot=bot)
+    async with Recorder(never_called).client() as c:
+        check = await check_discord(snap, c)
+    assert check.state == "warn" and "reconnecting" in check.summary
 
 
 @pytest.mark.parametrize(
@@ -685,6 +714,11 @@ def test_scheduler_off_and_paused(heartbeat: Callable[..., None], monkeypatch: p
     paused = check_scheduler(make_snap())
     assert paused.state == "warn" and "Resume" in (paused.fix or "")
 
+    # Paused and dead: Resume wouldn't help, so say it has stopped.
+    heartbeat(NOW - timedelta(hours=1), (NOW - timedelta(minutes=30), "paused"))
+    dead = check_scheduler(make_snap())
+    assert dead.state == "error" and "has stopped" in dead.summary
+
 
 def test_scheduler_stale_window_follows_the_poll_interval(heartbeat: Callable[..., None]) -> None:
     # A 5-minute poll interval: four minutes of silence is just between ticks.
@@ -717,11 +751,32 @@ async def test_memory(monkeypatch: pytest.MonkeyPatch, probe: dict[str, Any], st
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def check_logs() -> Iterator[list[str]]:
+    """Messages logged by api/setup_checks.py. ``caplog`` listens on the
+    root logger and would miss them once another test has run
+    ``main._configure_logging``, which stops the ``openexecutive`` tree
+    propagating — so this attaches to the module's logger directly."""
+    messages: list[str] = []
+
+    class Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    handler = Collect(level=logging.INFO)
+    setup_logger = logging.getLogger(setup_checks.__name__)
+    setup_logger.addHandler(handler)
+    try:
+        yield messages
+    finally:
+        setup_logger.removeHandler(handler)
+
+
 async def test_run_checks_keeps_order_and_contains_a_crash(
     monkeypatch: pytest.MonkeyPatch,
     fake_anthropic: Callable[..., FakeAnthropic],
     heartbeat: Callable[..., None],
-    caplog: pytest.LogCaptureFixture,
+    check_logs: list[str],
 ) -> None:
     fake_anthropic()
     heartbeat(NOW - timedelta(minutes=5), (NOW, "ran"))
@@ -735,13 +790,12 @@ async def test_run_checks_keeps_order_and_contains_a_crash(
         raise RuntimeError("token=abc123 leaked into a message")
 
     monkeypatch.setattr(setup_checks, "check_company", explode)
-    with caplog.at_level(logging.WARNING, logger="openexecutive.api.setup_checks"):
-        async with Recorder(never_called).client() as c:
-            checks = await run_checks(make_snap(), c)
+    async with Recorder(never_called).client() as c:
+        checks = await run_checks(make_snap(), c)
     assert [c.id for c in checks] == list(LABELS)
     company = checks[list(LABELS).index("company")]
     assert (company.state, company.summary) == ("error", "This check couldn't run.")
-    assert "RuntimeError" in caplog.text and "abc123" not in caplog.text
+    assert check_logs == ["setup status: the company check crashed (RuntimeError)"]
     assert all(c.label == LABELS[c.id] for c in checks)
 
 
@@ -749,8 +803,6 @@ async def test_run_checks_keeps_order_and_contains_a_crash(
 def route_calls(monkeypatch: pytest.MonkeyPatch) -> list[Snapshot]:
     for var in ("OE_LOCAL_LOGIN", "OE_PUBLIC_DEPLOYMENT", "BACKEND_SHARED_SECRET"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(setup_route, "_last_run", None)
-    monkeypatch.setattr(setup_route, "_current_run", None)
     calls: list[Snapshot] = []
 
     def gather(settings: Settings, *, local_login: bool, app_state: Any) -> Snapshot:
@@ -791,6 +843,14 @@ def test_route_answers_and_reuses_a_recent_run(
 
     monkeypatch.setattr(setup_route, "_REUSE_FOR_S", 0.0)
     client.get("/setup/status")
+    assert len(route_calls) == 2
+
+
+def test_route_runs_are_kept_per_app(route_calls: list[Snapshot]) -> None:
+    from openexecutive.api.main import create_app
+
+    TestClient(create_app()).get("/setup/status")
+    TestClient(create_app()).get("/setup/status")
     assert len(route_calls) == 2
 
 
@@ -838,7 +898,6 @@ def test_env_example_samples_are_recognised() -> None:
     "field",
     [
         "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_WEBHOOK_SECRET",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
         "DISCORD_BOT_TOKEN",
@@ -852,6 +911,21 @@ def test_a_comment_left_as_a_value_means_unset(field: str) -> None:
     settings = make_settings(**{field: "# from @BotFather"})
     assert getattr(settings, field.lower()) is None
     assert getattr(make_settings(**{field: "real-value"}), field.lower()) == "real-value"
+
+
+def test_a_comment_left_as_the_webhook_secret_still_refuses_updates() -> None:
+    # Read as unset, it would switch the webhook's check off; kept, it
+    # refuses every update — and the Setup status page says why.
+    settings = make_settings(TELEGRAM_BOT_TOKEN=TELEGRAM, TELEGRAM_WEBHOOK_SECRET="# from step 2")
+    assert settings.telegram_webhook_secret == "# from step 2"
+
+
+async def test_telegram_secret_telegram_would_refuse_is_red() -> None:
+    settings = make_settings(TELEGRAM_BOT_TOKEN=TELEGRAM, TELEGRAM_WEBHOOK_SECRET="# from step 2")
+    async with Recorder(never_called).client() as c:
+        check = await check_telegram(make_snap(settings), c)
+    assert check.state == "error" and "characters Telegram won't accept" in check.summary
+    assert_no_secret(check, "# from step 2")
 
 
 def test_a_comment_value_read_from_a_dotenv_file_means_unset(
@@ -926,6 +1000,23 @@ async def test_every_tick_records_itself(
     assert started is not None
     assert tick is not None and tick[1] == outcome
     assert started <= tick[0] <= datetime.now(UTC)
+
+
+async def test_a_restart_forgets_the_last_run_s_tick(
+    scheduler_loop: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.scheduler import runner
+
+    monkeypatch.setattr(runner, "_last_tick", (datetime(2020, 1, 1, tzinfo=UTC), "ran"))
+    seen_at_boot: list[Any] = []
+
+    def requeue() -> int:
+        seen_at_boot.append(runner.scheduler_heartbeat()[1])
+        return 0
+
+    monkeypatch.setattr(runner, "requeue_orphaned_running", requeue)
+    await _one_tick()
+    assert seen_at_boot == [None]
 
 
 async def test_a_paused_tick_records_itself(scheduler_loop: dict[str, Any]) -> None:

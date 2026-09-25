@@ -502,15 +502,17 @@ class Settings(BaseSettings):
 
     @field_validator(
         "slack_bot_token", "slack_app_token", "telegram_bot_token",
-        "telegram_webhook_secret", "discord_bot_token", "discord_app_id",
-        "google_chat_project_number", "google_chat_service_account_file",
-        "google_chat_service_account_email", mode="before",
+        "discord_bot_token", "discord_app_id", "google_chat_project_number",
+        "google_chat_service_account_file", "google_chat_service_account_email",
+        mode="before",
     )
     @classmethod
     def _unset_if_comment(cls, v: Any) -> Any:
         # `KEY=   # note` reaches us as "# note": python-dotenv only strips a
         # comment that follows a value. Left alone, that note would count as
-        # a token and switch the channel on with it.
+        # a token and switch the channel on with it. TELEGRAM_WEBHOOK_SECRET
+        # is deliberately not here: a junk secret refuses every update, and
+        # reading it as unset would switch the webhook's check off instead.
         return None if _blank_or_comment(v) else v
 
     # ---- Tool results ----

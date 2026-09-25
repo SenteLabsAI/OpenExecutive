@@ -2124,7 +2124,10 @@ scheduler:
     _SCHEDULER_STARTUP_GRACE_S (300 s) after start = stuck (red, amber
     before that); last tick older than max(3 × poll interval, 90 s) =
     stopped (red); failed = red; waiting_for_company = amber with a link
-    to /onboard. The pause switch is checked first, from its own row.
+    to /onboard. The pause switch is checked AFTER liveness, from its own
+    row: a paused loop still beats, so a dead one reads as stopped (red),
+    not paused. run_scheduler also clears _last_tick on entry, so a
+    restart in one process never reports the previous run's last tick.
     Due actions run as their own tasks (_inflight), so a slow action
     never ages the heartbeat — only a stuck or dead loop does.
   module: openexecutive.scheduler
@@ -4403,13 +4406,17 @@ integrations:
     …/webhook/telegram, or a last_error_date within 24 h = amber);
     Discord GET /users/@me only while the bot is not ready and its task
     hasn't died. Liveness from app.state, which the lifespan sets:
-    slack_handler (client.is_connected()), discord_bot (is_ready(),
-    user) + discord_bot_task (exception class LoginFailure /
-    PrivilegedIntentsRequired mapped to fixes), mcp_gateway.
+    slack_handler (client.is_connected()), discord_bot (is_ready() AND
+    ws.open — discord.py keeps _ready set through a dropped connection
+    while it reconnects; only close() clears it) + discord_bot_task (a
+    finished task is red; LoginFailure / PrivilegedIntentsRequired map to
+    their own fixes), mcp_gateway.
     Roster: a connected Slack/Discord/Telegram is amber while no
     non-archived Person has its id field, or when the latest inbound row
-    is "Rejected: …" (the sender id is extracted; message text from
-    inbound summaries is never echoed). Local login without
+    is a "Rejected: …" from the last 24 h whose sender id (extracted from
+    the summary) is still not on the roster — so the light clears as soon
+    as the fix is made, and one stranger can't leave it amber for good.
+    Message text from inbound summaries is never echoed. Local login without
     TELEGRAM_WEBHOOK_SECRET is red (the local-login gate refuses the
     webhook). Google Chat: numeric project number, one of the SA
     settings, and a readable SA key file (≤64 KiB JSON with
@@ -4431,7 +4438,9 @@ integrations:
     run" light (class name logged), not a 500. Runs are shared: a
     request within _REUSE_FOR_S (5 s) of the last run gets its answer,
     and concurrent requests await one shielded task — so "Check again"
-    can't become a stream of calls to those services. Same auth as
+    can't become a stream of calls to those services. Both live on
+    app.state (setup_status_runs), not module globals, and a task from
+    another event loop is never awaited. Same auth as
     every route (shared secret; local-login host gate).
     Comment-as-value: python-dotenv reads `KEY=   # note` as "# note"
     (it strips only a comment that follows a value). Settings maps such
@@ -4439,7 +4448,10 @@ integrations:
     credentials (config._unset_if_comment → _blank_or_comment), so a
     copied .env.example no longer switches Telegram and Google Chat on
     with their comments as tokens; the example's notes now sit on their
-    own lines.
+    own lines. TELEGRAM_WEBHOOK_SECRET is deliberately NOT covered: a
+    junk secret fails closed (every update refused), while None would
+    skip the webhook's header check. Setup status instead flags a secret
+    outside setWebhook's charset ([A-Za-z0-9_-]{1,256}) as red.
   attachments: |
     openexecutive.integrations.attachments — cross-platform attachment
     handling for the web chat, Discord, and Telegram. Inbound images are
