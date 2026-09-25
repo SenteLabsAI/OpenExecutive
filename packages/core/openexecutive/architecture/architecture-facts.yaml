@@ -3338,6 +3338,17 @@ audit:
         surface(caller) — the Executive binds the caller to the session only
         inside stream_chat. Covers the integration_inbound row, the
         knowledge retrieval and alert triage, which all ran with no session.
+        A sender lookup that fails counts as not the principal (logged with
+        its exception type), as is_principal_on_verified_surface answers on
+        an error, so those rows keep the ordinary rule.
+      - unscoped_audit_rows clears both for unattended work started inside
+        a scope, which copies the context but is not part of the turn: the
+        run a chat reply resumes (resumer._kick_resume's task) and each
+        scheduled action (run_scheduler starts every task under it). The
+        poll loops (resumer, scheduler) start from the lifespan with no
+        scope anyway. Work that belongs to the turn keeps it: its alert
+        triage, post-turn passes, a workflow run_workflow runs inline, the
+        title rename.
     Known signal, accepted: audit ids are one AUTOINCREMENT sequence, so a
     reader who is not the principal can see a gap where a private row was
     written (that one was, and roughly when), never what it says.
@@ -4381,7 +4392,13 @@ workflows:
     immediately, via a task `apply_resolution` kicks off so a Slack approval
     starts in seconds, and from `_tick` every 60s as the durable backstop.
     Both share the claim, so a run executes exactly once even with two
-    resumers against one database. `_tick` runs the executor AFTER the
+    resumers against one database. The kicked task is created inside the
+    inbound handler that recorded the answer, so it starts under
+    `set_session(None)` and `audit.context.unscoped_audit_rows()`: it must
+    not act as the approver, and it must not inherit the approver's audit
+    scope — with the principal's scope every row of the run naming a contact
+    would turn private, and whoever started the run would see them vanish
+    after the approval. `_tick` runs the executor AFTER the
     timeout loop, which is what finally makes `on_timeout='auto_proceed'` do
     what its name says: `_handle_timeout` resolves the run and the same tick
     executes it.

@@ -120,7 +120,8 @@ def set_turn(
 # A task or an `asyncio.to_thread` call started inside inherits the scope
 # (both copy the context), so a background pass stays private too; a bare
 # `threading.Thread` would not. Neither scope changes who the turn may reach:
-# that stays with the bound session.
+# that stays with the bound session. Unattended work started inside (a resumed
+# workflow run, a scheduled action) clears both with `unscoped_audit_rows`.
 _rows_private: ContextVar[bool] = ContextVar("audit_rows_private", default=False)
 _rows_on_principal_turn: ContextVar[bool] = ContextVar(
     "audit_rows_on_principal_turn", default=False
@@ -161,3 +162,24 @@ def principal_turn_rows(active: bool = True) -> Iterator[None]:
         yield
     finally:
         _rows_on_principal_turn.set(prior)
+
+
+@contextlib.contextmanager
+def unscoped_audit_rows() -> Iterator[None]:
+    """Clear both scopes above for the block, and put them back after.
+
+    For unattended work started from inside a scoped stretch — a workflow
+    run a chat reply resumes, a scheduled action: it copies the caller's
+    context but is not part of that turn, so its rows must follow its own
+    rule. Inherited, the principal's scope would hide every row of the run
+    that names a contact, and whoever started the run would notice the gap.
+    Save/restore, as in ``set_turn``."""
+    prior_private = _rows_private.get()
+    prior_principal = _rows_on_principal_turn.get()
+    _rows_private.set(False)
+    _rows_on_principal_turn.set(False)
+    try:
+        yield
+    finally:
+        _rows_private.set(prior_private)
+        _rows_on_principal_turn.set(prior_principal)

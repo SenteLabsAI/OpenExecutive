@@ -250,14 +250,18 @@ def _kick_resume(run_id: str, db_path: Path | None = None) -> None:
         return
 
     async def _run() -> None:
+        from openexecutive.audit.context import unscoped_audit_rows
         from openexecutive.orchestrator.schedule_tools import set_session
 
         # The task copies the caller's context, which on an inbound handler
         # holds that person's live chat session. A resumed run is unattended —
         # the poll loop runs it with no session — so run it the same way here,
         # or it would act with the approver's identity (e.g. reach the
-        # principal's contacts because the principal answered on Slack).
-        with set_session(None):
+        # principal's contacts because the principal answered on Slack). The
+        # handler's audit scope goes too: inherited, the principal's scope
+        # would hide every row of the run that names a contact from whoever
+        # started it, and so tell them that name is a contact.
+        with set_session(None), unscoped_audit_rows():
             try:
                 claim = _wf_persistence.claim_run_for_resume(run_id, db_path=db_path)
                 if claim is None:

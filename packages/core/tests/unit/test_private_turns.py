@@ -643,6 +643,145 @@ def test_an_unverified_telegram_chat_is_not_the_principals_turn(roster: SimpleNa
     assert flags["integration_inbound"] == {False}
 
 
+def test_a_failed_sender_lookup_counts_as_not_the_principal(roster: SimpleNamespace) -> None:
+    # As the turn's own check answers on an error: the rows keep the
+    # ordinary rule, and the handler still runs.
+    from openexecutive.integrations import discord_bot
+    from openexecutive.people import store
+
+    real = store.find_person_by_discord_id
+    calls: list[str] = []
+
+    def _first_lookup_fails(ref: str, *a: Any, **k: Any) -> Any:
+        calls.append(ref)
+        if len(calls) == 1:  # the decorator's lookup comes first
+            raise OSError("roster unreadable")
+        return real(ref, *a, **k)
+
+    before = {e.id for e in _audit().query(limit=1000)}
+    with (
+        _chat_adapter_stubs(),
+        patch.object(store, "find_person_by_discord_id", _first_lookup_fails),
+    ):
+        asyncio.run(discord_bot._handle_message(
+            text=_NAMES_A_CONTACT, discord_user_id="1001", discord_channel="dm-1",
+            message_id="m1", thread_id=None, send_fn=AsyncMock(), is_dm=True,
+            session_id="discord:user:1001", session_title="DM",
+        ))
+    assert len(calls) > 1  # the handler went on past the failed lookup
+    flags = _flags_by_type(_new_rows(before))
+    assert flags["integration_inbound"] == {False}
+    assert flags["knowledge_retrieval"] == {False}
+
+
+def test_unscoped_audit_rows_clears_both_scopes_and_puts_them_back(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.audit.context import (
+        principal_turn_rows,
+        private_rows,
+        rows_on_principal_turn,
+        rows_private,
+        unscoped_audit_rows,
+    )
+
+    with private_rows(), principal_turn_rows():
+        with unscoped_audit_rows():
+            assert not rows_private() and not rows_on_principal_turn()
+            log_event("workflow_tool_call", f"emailed {CONTACT_EMAIL} for the quote")
+        assert rows_private() and rows_on_principal_turn()
+    assert _private_flags() == {f"emailed {CONTACT_EMAIL} for the quote": False}
+
+
+def test_a_run_the_principals_chat_reply_resumes_keeps_its_rows_public(
+    roster: SimpleNamespace,
+) -> None:
+    """The principal approves a teammate's workflow on Discord, naming a
+    contact. Their message's rows are private; the run it resumes is
+    unattended, so its rows keep the ordinary rule — hiding the ones that name
+    the vendor would tell whoever started the run that the vendor is a
+    contact."""
+    from openexecutive.integrations import discord_bot
+    from openexecutive.workflows import resumer
+
+    async def _execute_resume(*_a: Any, **_k: Any) -> None:
+        log_event("workflow_tool_call", f"vendor-intake/ask: emailed {CONTACT_EMAIL}")
+
+    async def _resolve(**_k: Any) -> bool:
+        resumer._kick_resume("run-1")
+        return True
+
+    async def _go() -> None:
+        await discord_bot._handle_message(
+            text=f"Approved, go ahead with {CONTACT_EMAIL}", discord_user_id="1001",
+            discord_channel="dm-1", message_id="m1", thread_id=None, send_fn=AsyncMock(),
+            is_dm=True, session_id="discord:user:1001", session_title="DM",
+        )
+        await asyncio.gather(*list(resumer._KICK_TASKS))
+
+    before = {e.id for e in _audit().query(limit=1000)}
+    with (
+        _chat_adapter_stubs(),
+        patch("openexecutive.workflows.inbound_resolver.resolve_and_acknowledge", new=_resolve),
+        patch.object(resumer._wf_persistence, "claim_run_for_resume", return_value={"n": 1}),
+        patch.object(resumer, "_load_resumable_row", return_value={"run_id": "run-1"}),
+        patch.object(resumer, "_execute_resume", new=_execute_resume),
+    ):
+        asyncio.run(_go())
+    flags = {e.summary: e.private for e in _new_rows(before)}
+    [inbound] = [k for k in flags if k.startswith("Inbound discord")]
+    assert flags[inbound] is True
+    assert flags[f"vendor-intake/ask: emailed {CONTACT_EMAIL}"] is False
+
+
+def test_a_scheduled_action_starts_with_no_audit_scope(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.audit.context import (
+        principal_turn_rows,
+        private_rows,
+        rows_on_principal_turn,
+        rows_private,
+    )
+    from openexecutive.scheduler import runner
+
+    seen: list[tuple[bool, bool]] = []
+
+    async def _execute(_row: Any, _gateway: Any) -> None:
+        seen.append((rows_private(), rows_on_principal_turn()))
+
+    claimed = [SimpleNamespace(id=1)]
+    for name, value in {
+        "requeue_orphaned_running": lambda: 0,
+        "seed_principal_briefs": lambda: 0,
+        "_maybe_sweep_alerts": lambda _now: 0,
+        "is_paused": lambda: False,
+        "_company_profile_active": lambda: True,
+        "_rotation_pause_active": lambda: False,
+        "claim_due_actions": lambda _now: [claimed.pop()] if claimed else [],
+        "_execute_action": _execute,
+    }.items():
+        monkeypatch.setattr(runner, name, value)
+    monkeypatch.setattr("openexecutive.clients.rotation.clear_stale_rotation_marker",
+                        lambda _s: False)
+    monkeypatch.setattr("openexecutive.clients.rotation.seed_client_rotation", lambda: None)
+
+    async def _go() -> None:
+        # However the loop itself was started, its actions run unscoped.
+        with private_rows(), principal_turn_rows():
+            loop_task = asyncio.create_task(runner.run_scheduler(poll_interval_seconds=60))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if seen:
+                break
+        loop_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await loop_task
+
+    asyncio.run(_go())
+    assert seen == [(False, False)]
+
+
 # =========================================================================== #
 # M1: who can read them — every /audit read route
 # =========================================================================== #

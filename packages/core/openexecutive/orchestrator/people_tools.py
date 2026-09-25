@@ -415,9 +415,10 @@ def audit_rows_on_senders_turn(
 
     ``sender_ref`` picks the sender's user or chat id out of the handler's
     arguments (by name), and ``find_sender`` resolves it to a Person, off the
-    event loop. A lookup that fails keeps such rows private. This decides
-    audit visibility only: contacts stay unreachable until the session is
-    bound.
+    event loop. A lookup that fails counts as not the principal, as
+    ``is_principal_on_verified_surface`` answers on an error, so rows keep
+    the ordinary rule. This decides audit visibility only: contacts stay
+    unreachable until the session is bound.
     """
 
     def decorate(handler: Callable[_P, Awaitable[None]]) -> Callable[_P, Awaitable[None]]:
@@ -433,12 +434,13 @@ def audit_rows_on_senders_turn(
                 ref = sender_ref(dict(bound.arguments))
                 sender = await asyncio.to_thread(find_sender, ref) if ref else None
                 principal = sent_by_principal(channel, ref, sender)
-            except Exception:
-                logger.exception(
-                    "people_tools: could not tell who sent an inbound %s message — "
-                    "its rows naming a contact are kept private", channel,
+            except Exception as exc:
+                logger.warning(
+                    "people_tools: could not tell who sent an inbound %s message (%s) — "
+                    "its audit rows follow the ordinary rule", channel, type(exc).__name__,
+                    exc_info=True,
                 )
-                principal = True
+                principal = False
             with principal_turn_rows(principal):
                 await handler(*args, **kwargs)
 
