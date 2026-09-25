@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,11 +37,12 @@ def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture()
-def session_with_telegram_ref() -> Session:
+def session_with_telegram_ref() -> Iterator[Session]:
     s = Session()
     s.seen_channel_refs.add(("telegram", "42"))
-    current_session.set(s)
-    return s
+    token = current_session.set(s)
+    yield s
+    current_session.reset(token)
 
 
 def _future_iso(seconds: int = 600) -> str:
