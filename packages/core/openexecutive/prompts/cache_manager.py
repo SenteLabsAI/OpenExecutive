@@ -11,7 +11,7 @@ from openexecutive.prompts.executive_persona import (
 if TYPE_CHECKING:
     from openexecutive.memory.company_profile import CompanyProfile
 
-KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base covering executive frameworks across strategy, finance, HR, legal, operations, marketing, and board communications. When relevant, you retrieve specific frameworks and best practices to ground your analysis. This knowledge base reflects MBA-level and practitioner-level expertise across all core business domains."""
+KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base covering executive frameworks across strategy, finance, HR, legal, operations, marketing, product, sales, and board communications. When relevant, you retrieve specific frameworks and best practices to ground your analysis. This knowledge base reflects MBA-level and practitioner-level expertise across all core business domains."""
 
 _VOICE_PERSONA_PLACEHOLDER = "{VOICE_PERSONA}"
 

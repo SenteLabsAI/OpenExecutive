@@ -23,10 +23,11 @@ DOMAIN_MAP: dict[str, str] = {
     "marketing": "marketing",
     "board": "board",
     "product": "product",
+    "sales": "sales",
 }
 
 # The catch-all domain for company documents the uploader didn't classify.
-# Unlike the eight specialist domains it maps to no single specialist — every
+# Unlike the specialist domains it maps to no single specialist — every
 # specialist retrieves it (see ``retriever.retrieve``), so an unclassified
 # upload is visible to all rather than to none.
 GENERAL_DOMAIN = "general"
@@ -585,60 +586,121 @@ def migrate_attachments_out_of_company_docs(store: ChromaDBStore) -> int:
     return deleted
 
 
+def _builtin_relative_source(source: str) -> str | None:
+    """POSIX path, relative to ``knowledge/builtin/``, of a stored ``source``.
+
+    Built-in chunks store the ABSOLUTE path of their file as ``source``, so
+    the value records where the package was installed when the chunk was
+    written. An upgrade that moves the install (a new virtualenv, another
+    Python version in the site-packages path, a rebuilt image layout) must
+    still recognise those rows as the same shipped file: comparing absolute
+    paths would re-index every doc under fresh chunk ids and duplicate the
+    whole collection. So the key is the part after the last
+    ``knowledge/builtin`` pair of components, which is stable across installs.
+
+    None for a value that is not under a ``knowledge/builtin`` tree.
+    """
+    parts = Path(source).parts
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i] == "builtin" and parts[i - 1] == "knowledge":
+            return "/".join(parts[i + 1 :])
+    return None
+
+
+def _missing_shipped_files(
+    store: ChromaDBStore, collection: str, *, chunk_type: str, failures: bool
+) -> list[Path]:
+    """Shipped docs for ``collection`` that have no chunks in it yet.
+
+    Driven by ``SHIPPED_BUILTIN_FILES``, never by scanning the tree: a user's
+    own upload lands in the same directory and is indexed by the endpoint
+    that wrote it, so the tree cannot tell shipped content from theirs. A
+    manifest entry whose file is absent on disk is skipped, not resurrected.
+
+    The scan is one metadata-only read narrowed to ``chunk_type``, so the
+    external OER rows that share BUILTIN (``type=external``, potentially far
+    more of them) are never pulled. A complete store costs that one read and
+    indexes nothing.
+    """
+    from openexecutive.knowledge.shipped_manifest import SHIPPED_BUILTIN_FILES
+
+    rows = store.iter_chunk_metadata(collection, where={"type": chunk_type})
+    if not rows:
+        # Nothing carries the tag (rows from a build that did not write
+        # `type`, or only external rows so far): fall back to a full scan
+        # rather than read "untagged" as "absent" and re-index everything.
+        rows = store.iter_chunk_metadata(collection)
+
+    indexed: set[str] = set()
+    for _chunk_id, metadata in rows:
+        source = metadata.get("source")
+        if isinstance(source, str):
+            rel = _builtin_relative_source(source)
+            if rel:
+                indexed.add(rel)
+
+    missing: list[Path] = []
+    for rel in sorted(SHIPPED_BUILTIN_FILES):
+        if rel.startswith("failures/") != failures or rel in indexed:
+            continue
+        path = BUILTIN_KNOWLEDGE_PATH / rel
+        # A blank file yields no chunks (``ingest_builtin_file`` skips it), so
+        # it would read as missing, and be re-read, on every boot.
+        if path.is_file() and path.read_text(encoding="utf-8").strip():
+            missing.append(path)
+    return missing
+
+
+async def _ingest_files(
+    files: list[Path],
+    store: ChromaDBStore,
+    *,
+    best_effort: bool,
+    **ingest_kwargs: Any,
+) -> int:
+    """Ingest ``files``; on a top-up (``best_effort``) a failure never raises.
+
+    A top-up runs on the boot after an upgrade and embeds only the newly
+    shipped docs. If embedding fails there (no model available, a store
+    error), the install must still boot with the index it already has: the
+    failure is logged and the file stays missing, so the next boot retries
+    it. First-boot seeding and ``force=True`` keep raising, as before.
+    """
+    total = 0
+    for md_file in files:
+        if not best_effort:
+            total += await ingest_builtin_file(md_file, store, **ingest_kwargs)
+            continue
+        try:
+            total += await ingest_builtin_file(md_file, store, **ingest_kwargs)
+        except Exception:
+            logger.warning(
+                "knowledge seed: could not index %s; will retry on next boot",
+                md_file,
+                exc_info=True,
+            )
+    return total
+
+
 async def seed_builtin_knowledge(
     store: ChromaDBStore | None = None,
     force: bool = False,
 ) -> int:
-    if store is None:
-        from openexecutive.config import get_settings
+    """Index the built-in playbook docs into BUILTIN. Returns chunks written.
 
-        settings = get_settings()
-        store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    Safe to run on every boot:
 
-    if not force and store.get_collection_count(ChromaDBStore.BUILTIN_COLLECTION) > 0:
-        return 0
-
-    total = 0
-    for md_file in BUILTIN_KNOWLEDGE_PATH.rglob("*.md"):
-        # Skills live under builtin/skills/ but are indexed into a separate
-        # collection by openexecutive.knowledge.skills_index.seed_builtin_skills.
-        if any(p in md_file.relative_to(BUILTIN_KNOWLEDGE_PATH).parts for p in ("skills", "failures")):
-            continue
-        domain = infer_domain_from_path(md_file, root=BUILTIN_KNOWLEDGE_PATH)
-        text = md_file.read_text(encoding="utf-8")
-        chunks = chunk_text(text)
-
-        metadatas: list[dict[str, Any]] = [
-            {
-                "domain": domain,
-                "filename": md_file.name,
-                "source": str(md_file),
-                "chunk_index": i,
-                "type": "builtin",
-            }
-            for i in range(len(chunks))
-        ]
-        ids = [_make_chunk_id(str(md_file), i) for i in range(len(chunks))]
-        store.add_documents(
-            texts=chunks,
-            metadatas=metadatas,
-            ids=ids,
-            collection=ChromaDBStore.BUILTIN_COLLECTION,
-        )
-        total += len(chunks)
-
-    return total
-
-
-async def seed_failures(
-    store: ChromaDBStore | None = None,
-    force: bool = False,
-) -> int:
-    """Index all failure case studies from builtin/failures/<domain>/*.md.
-
-    Idempotent: skipped if the failures collection is already non-empty,
-    unless force=True. Uses a smaller chunk size (400 words) to preserve
-    the narrative arc of each section (situation/root-cause/lessons).
+    - Empty collection (first boot) or ``force=True``: index every ``*.md``
+      under ``knowledge/builtin/`` except ``skills/`` (their own collection,
+      see ``skills_index.seed_builtin_skills``) and ``failures/`` (see
+      ``seed_failures``). Chunk ids derive from the path, so ``force``
+      re-upserts in place.
+    - Otherwise: index only the SHIPPED docs with no chunks yet, so a doc
+      added in a later release reaches an install seeded by an earlier one.
+      This used to return early on any non-empty collection, which left
+      every later-shipped doc unretrievable on existing installs. A top-up
+      is best-effort: a doc that fails to index is logged and retried on the
+      next boot instead of failing startup.
     """
     if store is None:
         from openexecutive.config import get_settings
@@ -646,37 +708,77 @@ async def seed_failures(
         settings = get_settings()
         store = ChromaDBStore(persist_directory=settings.vector_store_path)
 
-    if not force and store.get_collection_count(ChromaDBStore.FAILURES_COLLECTION) > 0:
-        return 0
+    full = force or store.get_collection_count(ChromaDBStore.BUILTIN_COLLECTION) == 0
+    if full:
+        files = sorted(
+            md_file
+            for md_file in BUILTIN_KNOWLEDGE_PATH.rglob("*.md")
+            if not any(
+                p in md_file.relative_to(BUILTIN_KNOWLEDGE_PATH).parts
+                for p in ("skills", "failures")
+            )
+        )
+    else:
+        files = _missing_shipped_files(
+            store,
+            ChromaDBStore.BUILTIN_COLLECTION,
+            chunk_type="builtin",
+            failures=False,
+        )
+        if files:
+            logger.info(
+                "seed_builtin_knowledge: indexing %d shipped doc(s) missing from %s",
+                len(files),
+                ChromaDBStore.BUILTIN_COLLECTION,
+            )
+
+    return await _ingest_files(files, store, best_effort=not full)
+
+
+async def seed_failures(
+    store: ChromaDBStore | None = None,
+    force: bool = False,
+) -> int:
+    """Index the failure case studies from builtin/failures/<domain>/*.md.
+
+    Same contract as ``seed_builtin_knowledge``: everything on an empty
+    collection or with ``force=True``, otherwise only the shipped case
+    studies with no chunks yet. Uses a smaller chunk size (400 words) to
+    preserve the narrative arc of each section (situation/root-cause/lessons).
+    """
+    if store is None:
+        from openexecutive.config import get_settings
+
+        settings = get_settings()
+        store = ChromaDBStore(persist_directory=settings.vector_store_path)
 
     if not FAILURES_KNOWLEDGE_PATH.is_dir():
         logger.warning("failures knowledge path not found, skipping: %s", FAILURES_KNOWLEDGE_PATH)
         return 0
 
-    total = 0
-    for md_file in FAILURES_KNOWLEDGE_PATH.rglob("*.md"):
-        domain = infer_domain_from_path(md_file, root=BUILTIN_KNOWLEDGE_PATH)
-        text = md_file.read_text(encoding="utf-8")
-        if not text.strip():
-            continue
-        chunks = chunk_text(text, chunk_size=400, overlap=40)
-        metadatas: list[dict[str, Any]] = [
-            {
-                "domain": domain,
-                "filename": md_file.name,
-                "source": str(md_file),
-                "chunk_index": i,
-                "type": "failure_case",
-            }
-            for i in range(len(chunks))
-        ]
-        ids = [_make_chunk_id(str(md_file), i) for i in range(len(chunks))]
-        store.add_documents(
-            texts=chunks,
-            metadatas=metadatas,
-            ids=ids,
-            collection=ChromaDBStore.FAILURES_COLLECTION,
+    full = force or store.get_collection_count(ChromaDBStore.FAILURES_COLLECTION) == 0
+    if full:
+        files = sorted(FAILURES_KNOWLEDGE_PATH.rglob("*.md"))
+    else:
+        files = _missing_shipped_files(
+            store,
+            ChromaDBStore.FAILURES_COLLECTION,
+            chunk_type="failure_case",
+            failures=True,
         )
-        total += len(chunks)
+        if files:
+            logger.info(
+                "seed_failures: indexing %d shipped case stud(ies) missing from %s",
+                len(files),
+                ChromaDBStore.FAILURES_COLLECTION,
+            )
 
-    return total
+    return await _ingest_files(
+        files,
+        store,
+        best_effort=not full,
+        collection=ChromaDBStore.FAILURES_COLLECTION,
+        chunk_type="failure_case",
+        chunk_size=400,
+        overlap=40,
+    )

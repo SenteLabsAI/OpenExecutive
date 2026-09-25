@@ -20,7 +20,7 @@ A walkthrough of Open Executive in action — [watch on YouTube](https://youtu.b
 
 ## What It Does
 
-Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a single coherent executive voice backed by eight specialist AI agents:
+Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a single coherent executive voice backed by nine specialist AI agents:
 
 - **Chief Strategy Officer** — competitive analysis, M&A, market positioning, OKRs
 - **Chief Financial Officer** — financial modeling, fundraising, unit economics, cash flow
@@ -29,6 +29,7 @@ Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a sing
 - **Chief Operating Officer** — process design, vendor management, operational scaling
 - **Chief Marketing Officer** — GTM strategy, brand, communications, PR
 - **Chief Product Officer** — roadmap, prioritization, product strategy
+- **Head of Sales** — pipeline and qualification, founder-led sales, pricing conversations, proposals, forecasting
 - **Board Communications Director** — board decks, investor relations, governance
 
 All responses come from one consistent executive voice. The internal agent architecture is never exposed to the user. Beyond Q&A, the system maintains episodic memory of past decisions and initiatives across sessions, and a built-in scheduler can proactively surface follow-ups and time-sensitive actions.
@@ -79,7 +80,7 @@ openexecutive/
 │   ├── core/
 │   │   └── openexecutive/
 │   │       ├── orchestrator/     # Executive persona + routing loop
-│   │       ├── agents/           # 8 specialist agents
+│   │       ├── agents/           # 9 specialist agents
 │   │       ├── knowledge/        # ChromaDB store + RAG pipeline
 │   │       ├── memory/           # Company profile + episodic memory
 │   │       ├── onboarding/       # Wizard state machine + profile builder
@@ -273,7 +274,7 @@ claude mcp add --transport http open-executive http://localhost:8000/mcp \
 Connected clients get eight read-only resources (company profile, today's
 briefing and activity, people roster, department state, and episodic memory for
 decisions, initiatives and advice) and four tools, of which `consult_specialist`
-is the primary one: domain analysis from any of the nine specialists, each
+is the primary one: domain analysis from any of the ten specialists, each
 grounded in your company's knowledge base. The full inventory is on the **MCP
 Server** section of the `/architecture` page.
 

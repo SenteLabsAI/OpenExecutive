@@ -1594,11 +1594,20 @@ class Executive:
             session_id = getattr(current_session.get(), "session_id", None)
             if specialist_calls:
                 spec_t0 = time.monotonic()
+                # Specialists get the stage from the same profile the
+                # Executive reasons over; no session profile → the router
+                # reads it from disk.
+                session_stage = getattr(
+                    getattr(current_session.get(), "company_profile", None), "stage", None
+                )
                 specialist_results = await route_parallel(
                     run_calls,
                     episodic_context=episodic_context,
                     session_id=session_id,
                     debug_collector=debug_collector,
+                    company_stage=(
+                        session_stage if isinstance(session_stage, str) else None
+                    ),
                 )
                 spec_ms = round((time.monotonic() - spec_t0) * 1000)
                 for tu, result in zip(

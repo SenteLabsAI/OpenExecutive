@@ -19,7 +19,10 @@ from openexecutive.orchestrator.router import (  # noqa: E402
 )
 
 
-def test_route_to_specialist_passes_episodic_to_analyze() -> None:
+def test_route_to_specialist_passes_episodic_to_analyze(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.router.load_company_stage", lambda: ""
+    )
     analyze_mock = AsyncMock(return_value="analysis result")
     with patch.object(SPECIALIST_REGISTRY["cso"], "analyze", analyze_mock):
         result = asyncio.run(
@@ -39,6 +42,7 @@ def test_route_to_specialist_passes_episodic_to_analyze() -> None:
         episodic_context="EPISODIC",
         failure_cases="",
         department_memory="",
+        company_stage="",
         actor="specialist_workflow",
     )
 

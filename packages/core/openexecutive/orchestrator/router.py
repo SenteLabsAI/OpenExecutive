@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -15,8 +16,11 @@ from openexecutive.agents.legal import LegalAgent
 from openexecutive.agents.marketing import MarketingAgent
 from openexecutive.agents.operations import OperationsAgent
 from openexecutive.agents.product import ProductAgent
+from openexecutive.agents.sales import SalesAgent
 from openexecutive.agents.strategy import StrategyAgent
 from openexecutive.agents.triage import TriageAgent
+
+logger = logging.getLogger(__name__)
 
 SPECIALIST_REGISTRY: dict[str, BaseAgent] = {
     "cso": StrategyAgent(),
@@ -26,6 +30,7 @@ SPECIALIST_REGISTRY: dict[str, BaseAgent] = {
     "coo": OperationsAgent(),
     "cmo": MarketingAgent(),
     "cpo": ProductAgent(),
+    "sales": SalesAgent(),
     "board_comms": BoardCommsAgent(),
     "triage": TriageAgent(),
 }
@@ -38,6 +43,7 @@ SPECIALIST_DESCRIPTIONS = {
     "coo": "Chief Operating Officer — process design, vendor management, operational scaling, metrics",
     "cmo": "Chief Marketing Officer — GTM strategy, brand, messaging, PR, crisis communications",
     "cpo": "Chief Product Officer — product roadmap, prioritization frameworks, product strategy",
+    "sales": "Head of Sales — pipeline and qualification, discovery, founder-led sales, pricing conversations and discounting, proposals/SOWs, follow-up, forecasting",
     "board_comms": "Board Communications Director — board decks, investor relations, governance",
     "triage": "Chief of Staff — evaluates inbound events (email/Slack/docs) for significance and decides alerting",
 }
@@ -73,6 +79,25 @@ SPECIALIST_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def load_company_stage() -> str:
+    """The company's stage from the profile on disk, read fresh each call.
+
+    For callers with no session — workflow steps, the MCP server's
+    ``consult_specialist`` — so a profile edit reaches the next consult
+    without a restart. A chat turn passes its session's profile stage
+    instead (see ``route_parallel``). Never raises: a missing or unreadable
+    profile means no ``<company_stage>`` tag, not a failed consult.
+    """
+    try:
+        from openexecutive.onboarding.profile_builder import load_or_create_profile
+
+        return load_or_create_profile().stage.strip()
+    except Exception as exc:
+        # Type name only: a YAML error message can quote the profile's text.
+        logger.warning("company stage unavailable for specialists (%s)", type(exc).__name__)
+        return ""
+
+
 async def route_to_specialist(
     specialist_name: str,
     query: str,
@@ -82,6 +107,7 @@ async def route_to_specialist(
     failure_cases: str = "",
     department_memory: str = "",
     actor: str = "specialist_workflow",
+    company_stage: str | None = None,
 ) -> str:
     """Run one specialist and return its prose analysis.
 
@@ -90,10 +116,16 @@ async def route_to_specialist(
     ``route_parallel`` passes ``specialist`` for the Executive's chat-turn
     consults so the two stay separable in the ``/audit/usage`` by-source
     breakdown.
+
+    ``company_stage`` becomes the specialist's ``<company_stage>`` user-turn
+    tag (skipped when empty). ``None`` means "not supplied": it is read
+    fresh from the profile on disk.
     """
     agent = SPECIALIST_REGISTRY.get(specialist_name)
     if agent is None:
         return f"Unknown specialist: {specialist_name}"
+    if company_stage is None:
+        company_stage = await asyncio.to_thread(load_company_stage)
     return await agent.analyze(
         query=query,
         context=context,
@@ -101,6 +133,7 @@ async def route_to_specialist(
         episodic_context=episodic_context,
         failure_cases=failure_cases,
         department_memory=department_memory,
+        company_stage=company_stage,
         actor=actor,
     )
 
@@ -201,6 +234,7 @@ async def route_parallel(
     episodic_context: str = "",
     session_id: str | None = None,
     debug_collector: DebugCollector | None = None,
+    company_stage: str | None = None,
 ) -> list[str]:
     """Execute multiple specialist calls concurrently.
 
@@ -220,9 +254,18 @@ async def route_parallel(
     representation; specialists without an owning department (e.g.
     ``triage``) skip the prefetch entirely.
 
+    ``company_stage`` is per-turn like ``episodic_context``: every
+    specialist in the batch gets the same ``<company_stage>`` tag. The chat
+    turn passes its session's profile stage — the profile the Executive
+    itself reasons over, and the one an eval scenario injects — and ``None``
+    (no session profile) reads it once from disk for the whole batch.
+
     Returns results in the same order as ``calls`` so callers can zip
     with tool_use_ids.
     """
+    if company_stage is None:
+        company_stage = await asyncio.to_thread(load_company_stage)
+
     if retrieved_knowledge_map is None:
         knowledge_futures = [_retrieve_for_call(c) for c in calls]
         failures_futures = [_retrieve_failures_for_call(c) for c in calls]
@@ -266,6 +309,7 @@ async def route_parallel(
             failure_cases=failures_per_call[idx],
             department_memory=dept_memory_per_call[idx],
             actor="specialist",
+            company_stage=company_stage,
         )
         if debug_collector:
             debug_collector.emit("specialist_done", {
