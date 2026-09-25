@@ -178,6 +178,111 @@ def _build_reflection_system(configured: set[str], has_roster: bool = True) -> s
     )
 
 
+def _build_reflection_system_solo() -> str:
+    """The reflection system prompt in solo mode: one person (the principal)
+    uses Open Executive, so there is no audience to choose — everything is
+    for the principal, and nobody else hears from this unattended pass."""
+    return (
+        "You are the principal's Executive on your morning solo standup. The "
+        "principal is the one person you work for — they may run their own "
+        "business, lead a function inside a larger organisation, or work "
+        "independently; their role is in the context, so never assume it. "
+        "They are the only person who uses Open Executive and the only one "
+        "you take direction from. The people in their world — their manager, "
+        "their team, peers, clients, vendors — are contacts you never message "
+        "from this standup. You are reviewing the principal's work — goals "
+        "at risk in each area, decisions waiting on them, commitments coming "
+        "due, open alerts, and what moved outside (stock, news, vendor "
+        "status, competitor changelogs) — and deciding what to act on BEFORE "
+        "the principal opens their morning brief.\n\n"
+        "Audience rule: everything is for the principal. You have no "
+        "department channel and no company broadcast.\n"
+        "  • Something the principal must decide or act on → `create_alert`, "
+        "assigned to the person_id on the YOUR PRINCIPAL line in the turn — "
+        "it lands in the brief's Needs you list. Prefer this.\n"
+        "  • Something to chase at a set time → `schedule_followup` to the "
+        "principal, on a channel and ref from the YOUR PRINCIPAL line.\n"
+        "  • Never message anyone else. Their contacts hear from you only "
+        "when the principal asks in conversation — never from this standup. "
+        "If someone else needs to hear something, flag it for the principal "
+        "to raise with them.\n\n"
+        "Decision rule (from `## When You Notice Something on Your "
+        "Own`): act on small things; put anything that commits money, speaks "
+        "for the principal to someone else, or cannot be undone in front of "
+        "them; say so plainly when you don't know.\n\n"
+        "Cross-signal synthesis: look for patterns that connect signals "
+        "from different sources before flagging. A competitor "
+        "announcement + a stock move + a support-ticket spike likely "
+        "tell ONE story, not three — synthesize first, then raise one "
+        "alert rather than three. When you cite an EXTERNAL signal, "
+        "include the source's provenance_url so the principal can verify "
+        "in one click.\n\n"
+        "Memory: the block YESTERDAY'S STANDUP lists what you already did "
+        "on the previous run. Do NOT re-act on or re-raise a signal listed "
+        "there unless the input shows it changed since — repeating an alert "
+        "or a follow-up a day later is noise, not diligence. OPEN LOOPS are "
+        "commitments made in conversation; the nudge engine already chases "
+        "overdue ones, so use them to connect signals or to flag a slipped "
+        "promise that matters for the brief. Open alerts carry the review "
+        "verdict of your alert-review job (relevant / changed / likely_stale) "
+        "and its recommended move; you never close alerts here (that job "
+        "does, with evidence).\n\n"
+        "Per signal in the input, decide one of:\n"
+        "  (a) ACT NOW — call a tool: an alert for the principal, a "
+        "follow-up to the principal, a goal update backed by evidence in the "
+        "input, or a workflow suggestion.\n"
+        "  (b) RAISE IN MORNING BRIEF — passive: don't call a tool, just note "
+        "in your final summary that the principal should see this.\n"
+        "  (c) IGNORE — quiet signals don't need action.\n\n"
+        "When you're done calling tools, emit a SHORT Markdown summary "
+        "(≤200 words) of what you did and what you flagged for the "
+        "morning brief. Format:\n\n"
+        "  **Acted on:** (bullets — one per tool call you made)\n"
+        "  **Flagged for the brief:** (bullets — anything to surface "
+        "without acting on it yet)\n"
+        "  **Quiet:** (one line — how much you ignored, e.g. 'Nothing "
+        "else worth acting on this morning.')\n\n"
+        "Skip headers for sections with no content. Be terse — this is "
+        "an internal note, not a board memo."
+    )
+
+
+def _find_principal() -> Any:
+    """The principal: ``people.store.find_principal_person`` (the oldest
+    non-archived principal), the same rule as every other solo check. None
+    when there is none or the roster cannot be read."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        return find_principal_person()
+    except Exception:
+        logger.exception("reflection: principal lookup failed")
+        return None
+
+
+def _render_principal_line(principal: Any) -> str:
+    """Solo: the principal's person_id and follow-up refs, in place of the
+    team roster — the model needs them for create_alert / schedule_followup,
+    and this pass addresses nobody else."""
+    if principal is None or getattr(principal, "id", None) is None:
+        return ""
+    refs: list[str] = []
+    if getattr(principal, "email", None):
+        refs.append(f"email={principal.email}")
+    if getattr(principal, "slack_user_id", None):
+        refs.append(f"slack_dm={principal.slack_user_id}")
+    if getattr(principal, "telegram_chat_id", None):
+        refs.append(f"telegram={principal.telegram_chat_id}")
+    line = f"YOUR PRINCIPAL: person_id={principal.id} — {_one_line(principal.full_name)}"
+    if refs:
+        line += " — follow-up channel refs: " + ", ".join(_one_line(r) for r in refs)
+    return line + "\n"
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _render_reflection_context(
     *,
     period_label: str,
@@ -188,6 +293,7 @@ def _render_reflection_context(
     previous_reflection: str | None = None,
     open_loops: list[str] | None = None,
     outreach: list[str] | None = None,
+    mode: str = "team",
 ) -> str:
     """Pack /today + activity + open alerts + external signals into a
     single user-turn block for the LLM to reason over.
@@ -202,10 +308,22 @@ def _render_reflection_context(
     surface here.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
+    solo = mode == "solo"
 
     depts = today_data.get("departments", [])
     at_risk = [d for d in depts if d.get("at_risk_count", 0) or d.get("off_track_count", 0)]
-    if at_risk:
+    if at_risk and solo:
+        # Solo: a department row is one of the principal's areas; no authority
+        # levels and nobody else awaiting.
+        parts.append("AREAS WITH GOALS AT RISK:")
+        for d in at_risk:
+            parts.append(
+                f"- {d['title']} (area slug={d['slug']}): "
+                f"at_risk={d.get('at_risk_count', 0)} "
+                f"off_track={d.get('off_track_count', 0)}"
+            )
+        parts.append("")
+    elif at_risk:
         parts.append("DEPARTMENTS WITH RISK:")
         for d in at_risk:
             parts.append(
@@ -225,7 +343,10 @@ def _render_reflection_context(
         parts.append("")
 
     people = today_data.get("people", [])
-    awaiting = [p for p in people if p.get("awaiting_count", 0)]
+    # Solo: the Executive coordinates nobody but the principal, so there is
+    # no one-to-one "waiting on" roster — every proposal is the principal's
+    # and is already listed above.
+    awaiting = [] if solo else [p for p in people if p.get("awaiting_count", 0)]
     if awaiting:
         parts.append("PEOPLE WAITING ON SOMEONE:")
         for p in awaiting:
@@ -501,6 +622,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         # workflow doesn't analyse, it acts). We avoid an import-time
         # cycle by deferring this.
         from openexecutive.config import get_settings
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
         from openexecutive.orchestrator.executive import (
             _ALL_SKILL_HANDLERS,
             _ALL_SKILL_TOOLS,
@@ -509,6 +631,7 @@ class ExecutiveReflectionWorkflow(Workflow):
             configured_integrations,
             current_session,
             filter_tools_for_configured_channels,
+            unattended_toolkit,
         )
         from openexecutive.orchestrator.session import Session
         from openexecutive.people.store import list_people
@@ -524,6 +647,12 @@ class ExecutiveReflectionWorkflow(Workflow):
             logger.exception("reflection: list_people failed — guard runs with empty seen set")
             people = []
 
+        # Solo / team for this run. A caller's session override (evals) is
+        # read before the reflection binds its own session below.
+        outer_session = current_session.get()
+        mode = effective_workspace_mode(outer_session)
+        solo = mode == "solo"
+
         user_content = _render_reflection_context(
             period_label=period,
             today_data=today_data,
@@ -533,8 +662,11 @@ class ExecutiveReflectionWorkflow(Workflow):
             previous_reflection=_previous_reflection_artifact(),
             open_loops=_open_loop_lines(),
             outreach=_outreach_lines(),
+            mode=mode,
         )
-        roster = _render_team_roster(people)
+        # Solo has no team roster: only the principal's own line.
+        principal = _find_principal() if solo else None
+        roster = _render_principal_line(principal) if solo else _render_team_roster(people)
         if roster:
             user_content = roster + "\n" + user_content
 
@@ -545,8 +677,10 @@ class ExecutiveReflectionWorkflow(Workflow):
         # People roster means reflection can only schedule follow-ups to
         # channels that correspond to a real Person — same invariant the
         # chat path enforces via session.seen_channel_refs.
+        # Solo seeds only the principal's refs: this unattended pass never
+        # schedules anything to a contact.
         seen: set[tuple[str, str]] = set()
-        for person in people:
+        for person in ([principal] if principal is not None else []) if solo else people:
             if person.slack_user_id:
                 seen.add(("slack_dm", person.slack_user_id))
             if person.discord_user_id:
@@ -556,7 +690,8 @@ class ExecutiveReflectionWorkflow(Workflow):
             if person.email:
                 seen.add(("email", person.email))
 
-        reflection_session = Session(seen_channel_refs=seen)
+        # Pin the run's mode so its tool handlers agree with its toolkit.
+        reflection_session = Session(seen_channel_refs=seen, turn_workspace_mode=mode)
         ctx_token = current_session.set(reflection_session)
 
         # Sort tools by name for prompt-cache stability (same convention
@@ -591,9 +726,17 @@ class ExecutiveReflectionWorkflow(Workflow):
         # can't route into a DM tool whose integration has no token.
         configured = configured_integrations(settings)
         tools = filter_tools_for_configured_channels(tools, settings)
+        # Dispatch only what was offered (a withheld name the model emits
+        # anyway is skipped as unknown). Solo also withholds the team tools,
+        # meeting booking and run_workflow, and messages only the principal.
+        tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
         # Build the system prompt for the SAME configured set, so the
         # audience rule never names a DM channel the model can't use.
-        reflection_system = _build_reflection_system(configured, bool(roster))
+        reflection_system = (
+            _build_reflection_system_solo()
+            if solo
+            else _build_reflection_system(configured, bool(roster))
+        )
         model = settings.routing_model
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": user_content}
@@ -623,7 +766,7 @@ class ExecutiveReflectionWorkflow(Workflow):
                 from openexecutive.attunement.outcomes import SOURCE_REFLECTION, tag_proactive
 
                 with tag_proactive(SOURCE_REFLECTION):
-                    iter_summaries = await _execute_tool_calls(response, _ALL_SKILL_HANDLERS)
+                    iter_summaries = await _execute_tool_calls(response, handlers)
                 tool_call_summaries.extend(iter_summaries)
 
                 text = _extract_artifact_from_response(response)

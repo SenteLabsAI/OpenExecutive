@@ -1,0 +1,95 @@
+# In solo mode each "department" is one of the principal's areas: a place to
+# group their goals, headed by the principal. No cadences, no channels.
+departments:
+  - slug: strategy
+    title: Strategy
+    specialist_key: cso
+    head_person_name: Maya Lindqvist
+    authority_level: propose_only
+    charter:
+      mission: Decide what the studio sells, to whom, and at what price — and
+        keep the pricing move to fixed-fee sprints on track.
+      scope:
+        - Pricing and packaging (sprint packages, retainers)
+        - Which clients and projects to take on
+        - Positioning against agencies and freelancers
+      out_of_scope:
+        - Day-to-day delivery
+    goals:
+      - period_type: quarter
+        period_value: Q4 2026
+        key_result: Move all new clients onto fixed-fee sprint packages
+        target: 100% of new contracts on sprint pricing
+        current: 2 of 3 new contracts on sprints
+        status: on_track
+
+  - slug: finance
+    title: Finance
+    specialist_key: cfo
+    head_person_name: Maya Lindqvist
+    authority_level: propose_only
+    charter:
+      mission: Keep cash predictable — invoices out on time, a buffer in the
+        bank, and no surprises at tax time.
+      scope:
+        - Cash buffer and runway
+        - Invoicing and collections
+        - Taxes and bookkeeping
+      out_of_scope:
+        - Pricing decisions (Strategy)
+    goals:
+      - period_type: quarter
+        period_value: Q4 2026
+        key_result: Build a three-month cash buffer
+        target: 3 months of expenses in reserve
+        current: 2.1 months
+        status: at_risk
+      - period_type: ongoing
+        period_value: Ongoing
+        key_result: Collect every invoice within 30 days
+        target: 0 invoices past 30 days
+        current: 1 invoice at 41 days (Brightwell)
+        status: at_risk
+
+  - slug: marketing
+    title: Marketing
+    specialist_key: cmo
+    head_person_name: Maya Lindqvist
+    authority_level: propose_only
+    charter:
+      mission: Keep a steady flow of the right founders asking for a sprint,
+        mostly through referrals and the case-study newsletter.
+      scope:
+        - Referral program and past-client outreach
+        - Case studies and the monthly newsletter
+        - Portfolio site
+      out_of_scope:
+        - Paid advertising
+    goals:
+      - period_type: quarter
+        period_value: Q4 2026
+        key_result: Book two new sprint clients a month from referrals
+        target: 6 new clients this quarter
+        current: 2 booked
+        status: on_track
+
+  - slug: product
+    title: Product
+    specialist_key: cpo
+    head_person_name: Maya Lindqvist
+    authority_level: propose_only
+    charter:
+      mission: Ship the template kit as a small second income line without
+        stealing time from client sprints.
+      scope:
+        - Template kit scope, build and launch
+        - Pricing of the kit
+      out_of_scope:
+        - Client project delivery
+    goals:
+      - period_type: quarter
+        period_value: Q4 2026
+        key_result: Launch the brand template kit to the waitlist
+        target: Kit live and 40 sales by quarter end
+        current: 60% built; launch slipped two weeks
+        status: at_risk

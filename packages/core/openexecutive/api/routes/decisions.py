@@ -9,13 +9,15 @@ Routes:
   GET  /decisions/{id}       — single instance detail
   POST /decisions/{id}/approve — approve (optionally with edited payload)
   POST /decisions/{id}/reject  — reject
+  GET  /decisions/classes/meeting_scheduling — the class's autonomy mode
+  PUT  /decisions/classes/meeting_scheduling — set it (principal only)
   GET  /audit/reliability    — per-class reliability card (also in audit.py router)
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -28,10 +30,12 @@ from openexecutive.memory.decision_ledger import (
     DecisionInstance,
     ReliabilityCard,
     aggregate_reliability,
+    get_class_mode,
     get_decision_instance,
     list_instances,
     mark_resolved,
     mark_reversed,
+    set_class_mode,
 )
 
 router = APIRouter()
@@ -56,6 +60,20 @@ class ApproveBody(BaseModel):
 
 class RejectBody(BaseModel):
     reason: str = ""
+
+
+ClassMode = Literal["propose", "auto_execute"]
+
+
+class DecisionClassMode(BaseModel):
+    """How the Executive handles a decision class: ``propose`` puts each one
+    on the briefing for approval, ``auto_execute`` does it straight away."""
+    decision_class: str
+    mode: ClassMode
+
+
+class DecisionClassModeUpdate(BaseModel):
+    mode: ClassMode
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +338,82 @@ async def cancel_decision(instance_id: int, request: Request) -> DecisionInstanc
     if updated is None:
         raise HTTPException(status_code=500, detail="Instance vanished after update")
     return updated
+
+
+def _class_mode_response(decision_class: str) -> DecisionClassMode:
+    # An unknown stored value reads as the fail-safe default, like the gate.
+    mode = get_class_mode(decision_class)
+    return DecisionClassMode(
+        decision_class=decision_class,
+        mode="auto_execute" if mode == "auto_execute" else "propose",
+    )
+
+
+def _has_active_principal() -> bool:
+    """Whether a non-archived principal is on the roster. Fails closed."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        return find_principal_person() is not None
+    except Exception:
+        logger.exception("decisions: principal lookup failed — treating as none")
+        return False
+
+
+@router.get(
+    f"/decisions/classes/{_CALENDAR_CLASS}", response_model=DecisionClassMode
+)
+def get_meeting_class_mode() -> DecisionClassMode:
+    """Whether the Executive proposes meetings for approval or books them."""
+    return _class_mode_response(_CALENDAR_CLASS)
+
+
+@router.put(
+    f"/decisions/classes/{_CALENDAR_CLASS}", response_model=DecisionClassMode
+)
+def set_meeting_class_mode(
+    request: Request, body: DecisionClassModeUpdate
+) -> DecisionClassMode:
+    """Set the meeting class mode. Principal only — the same rule as the
+    workspace settings (``chat._caller_is_principal_or_unclaimed``): letting
+    the Executive book meetings on its own is the principal's call. While no
+    principal exists (when that rule lets anyone in) only ``propose`` can be
+    set — ``auto_execute`` is a 409. Every change is audited."""
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    if not _caller_is_principal_or_unclaimed(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the principal can change how meetings are scheduled",
+        )
+    if body.mode == "auto_execute" and not _has_active_principal():
+        # Before anyone is the principal the PUT is open to every caller (so
+        # first-run setup is never locked out), and auto-booking would then
+        # be switched on by nobody in particular. Propose stays allowed.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Meetings can only be booked automatically once someone is set "
+                "as the principal (the owner) on the People page. Until then "
+                "they are proposed for approval."
+            ),
+        )
+    before = _class_mode_response(_CALENDAR_CLASS).mode
+    if body.mode != before:
+        set_class_mode(_CALENDAR_CLASS, body.mode)
+        from openexecutive.audit import log_event as audit_log
+
+        caller = (request.headers.get("x-caller-email") or "").strip()[:200] or "api"
+        audit_log(
+            "decision_class_mode_changed",
+            f"Meeting scheduling mode changed: {before} → {body.mode}",
+            actor=caller,
+            details={
+                "decision_class": _CALENDAR_CLASS,
+                "mode": {"from": before, "to": body.mode},
+            },
+        )
+    return _class_mode_response(_CALENDAR_CLASS)
 
 
 @router.get("/audit/reliability", response_model=ReliabilityCard)

@@ -134,6 +134,7 @@ def resolve_channels(
     severity: AlertSeverity,
     prefs: UserPreferences,
     now: datetime | None = None,
+    workspace_mode: str | None = None,
 ) -> list[AlertChannel]:
     """Apply user controls to a Triage-suggested channel set.
 
@@ -141,7 +142,18 @@ def resolve_channels(
     channels when below severity threshold or inside quiet hours (unless urgent).
     Broadcast channels (department_channel / company_broadcast) survive the
     `channels_enabled` filter — they're org-routing, not personal preference.
+
+    In solo mode (``workspace_mode``, else the workspace setting) the
+    broadcast channels are dropped instead: one person using Open Executive
+    for themselves has no department room or company channel, whatever the
+    triage model suggested.
     """
+    if workspace_mode is None:
+        from openexecutive.memory.workspace_settings import get_workspace
+
+        workspace_mode = get_workspace().mode
+    if workspace_mode == "solo":
+        requested = [c for c in requested if c not in _BROADCAST_CHANNELS]
     enabled = set(prefs.channels_enabled)
     enabled.add(AlertChannel.PERSISTED)  # always persist
     intersected = [

@@ -51,6 +51,11 @@ class Session:
     # one Executive, so they set it here instead of flipping the global. Read
     # it through `memory.workspace_settings.effective_workspace_mode`.
     workspace_mode: str | None = None
+    # The mode resolved for the turn in progress, pinned at its start by
+    # `workspace_settings.pin_turn_workspace_mode` (Executive.stream_chat and
+    # the committee path) so the tool handlers use the same mode as the
+    # persona and tool list. Re-resolved every turn; never an override.
+    turn_workspace_mode: str | None = None
     # True for a turn about something private to the principal (mail from one
     # of their contacts, mail they forwarded): an alert raised on it is
     # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it

@@ -1356,6 +1356,9 @@ export async function setDecisionClassMode(
     body: JSON.stringify({ mode }),
   });
   if (res.status === 403) throw new Error("Only the principal can change this setting.");
+  // 409: auto-booking can't be turned on before a principal exists; the
+  // backend's detail says so in plain words.
+  if (res.status === 409) throw await onboardError(res, "This setting can't be turned on yet.");
   if (!res.ok) throw new Error("Failed to save the setting");
   return res.json();
 }
@@ -3327,6 +3330,24 @@ export interface Today {
 export async function getToday(): Promise<Today> {
   const res = await fetch(`${API_BASE}/today`);
   if (!res.ok) throw new Error(`Failed to load today: ${res.statusText}`);
+  return res.json();
+}
+
+// The latest morning brief or end-of-day digest that didn't reach the owner,
+// and what fixes it. Null while briefs are going out, and for anyone but the
+// owner.
+export interface BriefDeliveryNotice {
+  brief: string;
+  at: string;
+  problem: string;
+  fix: string;
+  // False when it couldn't be written, so there is nothing to read.
+  readable: boolean;
+}
+
+export async function getBriefDelivery(signal?: AbortSignal): Promise<BriefDeliveryNotice | null> {
+  const res = await fetch(`${API_BASE}/today/brief-delivery`, { signal });
+  if (!res.ok) throw new Error(`Failed to load brief delivery: ${res.statusText}`);
   return res.json();
 }
 

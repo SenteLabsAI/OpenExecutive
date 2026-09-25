@@ -37,7 +37,11 @@ async def run_eval(scenario: dict, executive, session_factory) -> dict:
     if ctx.get("runway_months"):
         profile.financials.runway_months = ctx["runway_months"]
 
-    session = Session(company_profile=profile)
+    # `workspace_mode: solo` runs the scenario as solo mode on this session
+    # only (see openexecutive.evals.runner); unset uses the install's mode.
+    session = Session(
+        company_profile=profile, workspace_mode=scenario.get("workspace_mode")
+    )
 
     response = await executive.chat(
         user_message=scenario["query"],

@@ -289,20 +289,9 @@ def _is_verified_speaker_surface(session: Any) -> bool:
     return get_settings().telegram_webhook_secret_valid and chat_ref.isdigit()
 
 
-def principal_on_verified_surface(session: Any) -> bool:
-    """Whether this turn was started by the principal on a surface that
-    verified it is them — the roster-write rule, reused for contact egress.
-    Fails closed on any error."""
-    try:
-        return _roster_refusal_reason(session) is None
-    except Exception:
-        logger.exception("people_tools: principal/surface check failed — treating as not the principal")
-        return False
-
-
 # Set only around an action the principal took themselves outside a chat turn
 # (approving a proposed meeting in the web app): those run with no session, so
-# `principal_on_verified_surface` alone would always say no.
+# `is_principal_on_verified_surface` alone would always say no.
 _contact_egress_granted: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "contact_egress_granted", default=False
 )
@@ -340,7 +329,7 @@ def contacts_reachable_now() -> bool:
         return True
     from openexecutive.orchestrator.schedule_tools import current_session
 
-    return principal_on_verified_surface(current_session.get())
+    return is_principal_on_verified_surface(current_session.get())
 
 
 def turn_is_private_to_principal() -> bool:
@@ -389,6 +378,21 @@ def _roster_refusal_reason(session: Any) -> str | None:
         "department heads, and this request came from someone else. Tell them "
         "the owner needs to make this change."
     )
+
+
+def is_principal_on_verified_surface(session: Any) -> bool:
+    """Whether this turn was started by the principal on a surface that
+    verified it is them — the rule for roster writes above, as a yes/no for
+    other principal-only actions (e.g. solo mode's meeting auto-booking, and
+    whether the principal's private contacts exist for this turn — see
+    ``contacts_reachable_now``).
+    Fails closed: no session, an unverified surface, someone else, or an
+    unreadable roster all answer False."""
+    try:
+        return _roster_refusal_reason(session) is None
+    except Exception:
+        logger.exception("people_tools: verified-surface check failed — answering no")
+        return False
 
 
 def _refuse_unless_owner(tool: str) -> str | None:

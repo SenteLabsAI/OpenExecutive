@@ -1422,3 +1422,42 @@ def test_poller_marks_contact_mail_and_forwards_private(
 ) -> None:
     turn = _poller_turn(sender, _raw(sender, body))
     assert turn["session"].private_to_principal is private
+
+
+# --- Composed with solo mode (#225) -----------------------------------------
+
+
+def test_solo_block_adds_contacts_only_on_the_principals_turn(roster: SimpleNamespace) -> None:
+    from openexecutive.departments.prompt_block import render_org_block
+
+    def _solo(include_contacts: bool) -> str:
+        people_registry.invalidate()
+        dept_registry.invalidate()
+        return render_org_block(mode="solo", include_contacts=include_contacts)
+
+    non_principal = _solo(False)
+    principal = _solo(True)
+    people_store.archive_person(roster.contact)
+    no_contacts = _solo(False)
+    assert non_principal == no_contacts
+    assert "## Your Principal" in non_principal and "## Contacts" not in non_principal
+    assert principal.startswith(non_principal)
+    assert "## Your Principal" in principal and "## Contacts" in principal
+    assert "- Jordan Client — Head of Procurement, Acme — email on file" in principal
+
+
+@pytest.mark.parametrize("mode", ["solo", "team"])
+def test_unattended_passes_never_reach_a_contact(roster: SimpleNamespace, mode: str) -> None:
+    from openexecutive.orchestrator.schedule_tools import SCHEDULE_TOOL_HANDLERS, unattended_toolkit
+
+    tools = [{"name": "message_person"}, {"name": "lookup_person"}]
+    _, handlers = unattended_toolkit(tools, dict(SCHEDULE_TOOL_HANDLERS), mode)
+    # Reflection and research run on their own synthetic session: never the
+    # principal's verified turn, so contacts do not exist there.
+    with _turn(Session(seen_channel_refs=set())):
+        out = json.loads(asyncio.run(handlers["message_person"](
+            {"person_id": roster.contact, "text": "Checking in"}
+        )))
+        found = json.loads(asyncio.run(handlers["lookup_person"]({"query": "Jordan"})))
+    assert "error" in out and "Jordan" not in out["error"]
+    assert found["matches"] == []

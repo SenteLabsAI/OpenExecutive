@@ -280,12 +280,12 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
     """
     trusted: list[int] = []
     try:
-        from openexecutive.orchestrator.people_tools import principal_on_verified_surface
+        from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
         block = format_open_alerts_for_prompt(
             db_path=db_path, trusted_ids=trusted,
             # Alerts private to the principal only on their own verified turn.
-            include_private=principal_on_verified_surface(session),
+            include_private=is_principal_on_verified_surface(session),
         )
     except Exception:
         logger.exception("briefing_context.render_and_trust_failed")

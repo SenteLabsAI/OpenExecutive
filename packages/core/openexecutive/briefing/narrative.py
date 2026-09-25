@@ -70,6 +70,44 @@ STANDALONE_BRIEF_SYSTEM = (
 )
 
 
+# Solo variant of the standalone brief: one person (the principal) uses Open
+# Executive, whatever their role — so no departments and no "waiting on"
+# roster; goals are grouped by area. Used when the workspace (or the caller's
+# session) is in solo mode.
+STANDALONE_BRIEF_SOLO_SYSTEM = (
+    "You are the principal's Executive. The principal is the one person who "
+    "uses Open Executive — they may run their own business, lead a function "
+    "inside a larger organisation, or work independently. You are writing "
+    "their daily brief — a short message they read "
+    "on its own (delivered as a DM; there is no other list beside it, so this "
+    "message must stand alone). Write as their right hand, peer-to-peer. The "
+    "context is a DELTA since the last brief you sent, so never re-tell "
+    "yesterday's news.\n\n"
+    "Output ≤200 words of Markdown with these sections, in this order, each "
+    "only included when there is real content for it:\n"
+    "  1. **Top call** — the single decision you'd recommend the principal "
+    "focus on today, with your suggested move. One or two sentences.\n"
+    "  2. **What changed** — anything NEW since the last brief: a goal that "
+    "flipped, a reply that landed, an external signal that moved. One bullet "
+    "per item, terse.\n"
+    "  3. **Handled overnight** — what you already completed on your own from "
+    "the HANDLED block. One bullet each, past tense. Items under REWRITTEN are "
+    "still open — they belong in 'What changed', never here.\n"
+    "  4. **Needs you** — the open decisions: ONLY the items under NEW SINCE "
+    "LAST BRIEF, most time-sensitive first, each with its why-now when given. "
+    "If the context has a CARRIED OVER line, add exactly one sentence after "
+    "the list ('N older items still open — see /today'); never re-list "
+    "carried items.\n"
+    "  5. **Goals at risk** — goals trending off-track, named with their area, "
+    "that the principal hasn't already been briefed on.\n\n"
+    "This brief is for one person: name goals by their area, never a "
+    "department, and add no sections about a team roster or people waiting "
+    "on the principal. Skip headers entirely for sections with no "
+    "content. If everything is genuinely quiet, output one line: '"
+    + QUIET_PRINCIPAL + "'"
+)
+
+
 # Synthesis system prompt for the /today header. The actionable items render as
 # cards BELOW this header, so the narrative must NOT re-list them — it adds the
 # connective tissue a list can't: how items relate, what's most urgent and why,
@@ -106,6 +144,40 @@ BRIEFING_NARRATIVE_SYSTEM = (
     "sentences, plain words over jargon, and when a domain term is unavoidable "
     "state its consequence plainly. Reference specifics by name. If it's "
     "genuinely quiet, output one line: '" + QUIET_PRINCIPAL + "'"
+)
+
+
+# Solo variant of the /today header: the same synthesis for the one person who
+# uses Open Executive, with goals by area instead of departments.
+BRIEFING_NARRATIVE_SOLO_SYSTEM = (
+    "You are the principal's Executive. The principal is the one person who "
+    "uses Open Executive — they may run their own business, lead a function "
+    "inside a larger organisation, or work independently. You are writing "
+    "the 'What's going on' header they read first — a brief, scannable "
+    "SYNTHESIS of their work right now. The actionable "
+    "items (open decisions, in-flight work, goals at risk) render as cards "
+    "BELOW this header, so do NOT re-list them — synthesize.\n\n"
+    "Output ≤120 words of Markdown in this shape:\n"
+    "1. A bold one-line bottom-line opener — the single most important read, as "
+    "ONE plain sentence anyone can grasp at a glance. Vary the actual wording "
+    "day to day (e.g. '**The launch is on track — pricing is the one call "
+    "still open.**').\n"
+    "2. 2–4 short bullets — the situational read, NOT a to-do list. ONE idea "
+    "per bullet, written as a plain, complete sentence: name the thing, then "
+    "say in plain words why it matters or what it's blocking. Bold the subject "
+    "(e.g. '- **Onboarding goal** — two trials stalled at setup, so the "
+    "conversion target slips unless the checklist ships this week.'). Do NOT "
+    "stack multiple clauses into one bullet and do NOT use '→' shorthand.\n"
+    "3. A final line starting '**Move today:**' — the single action you'd "
+    "recommend, in one plain sentence, and what stays secondary until it's "
+    "cleared.\n\n"
+    "Name goals by their area, never a department, and write nothing about "
+    "a team roster or anyone waiting on the principal. VOICE: peer-to-peer "
+    "with energy and a clear point of view — a sharp right hand talking to "
+    "the principal, not a status report. Vary your phrasing from day to day. "
+    "CLARITY comes first: short sentences, plain words over jargon. Reference "
+    "specifics by name. If it's genuinely quiet, output one line: '"
+    + QUIET_PRINCIPAL + "'"
 )
 
 
@@ -149,6 +221,7 @@ def render_briefing_context(
     since: datetime | None = None,
     handled: list[dict[str, Any]] | None = None,
     pending_watch_suggestions: int = 0,
+    mode: str = "team",
 ) -> str:
     """Pack the structured /today + activity inputs into a single user-turn block.
 
@@ -156,13 +229,26 @@ def render_briefing_context(
     LAST BRIEF vs a one-line CARRIED OVER count, and ``handled`` (autonomous
     alert-review moves in the window) renders as its own block. With both
     unset the output is byte-identical to the legacy /today header context.
+
+    ``mode="solo"`` renders goals at risk by area and drops the people
+    block — the Executive coordinates nobody but the principal there, so
+    there is no "waiting on" roster to render.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
     now = datetime.now(UTC)
+    solo = mode == "solo"
 
     depts = today_data.get("departments", [])
     at_risk = [d for d in depts if d.get("at_risk_count", 0) or d.get("off_track_count", 0)]
-    if at_risk:
+    if at_risk and solo:
+        parts.append("GOALS AT RISK BY AREA:")
+        for d in at_risk:
+            parts.append(
+                f"- {d['title']}: at_risk={d.get('at_risk_count', 0)} "
+                f"off_track={d.get('off_track_count', 0)}"
+            )
+        parts.append("")
+    elif at_risk:
         parts.append("DEPARTMENTS WITH RISK:")
         for d in at_risk:
             parts.append(
@@ -225,7 +311,7 @@ def render_briefing_context(
             parts.append("")
 
     people = today_data.get("people", [])
-    awaiting = [p for p in people if p.get("awaiting_count", 0)]
+    awaiting = [] if solo else [p for p in people if p.get("awaiting_count", 0)]
     if awaiting:
         parts.append("PEOPLE WAITING ON YOU:")
         for p in awaiting:
@@ -258,7 +344,11 @@ def render_briefing_context(
 
     if len(parts) == 1:
         # Only the PERIOD line — genuinely quiet day.
-        parts.append("(No org activity, proposals, or at-risk goals this period.)")
+        parts.append(
+            "(No activity, open decisions, or at-risk goals this period.)"
+            if solo
+            else "(No org activity, proposals, or at-risk goals this period.)"
+        )
 
     return "\n".join(parts)
 
@@ -274,11 +364,16 @@ async def synthesize_briefing_narrative(
     handled: list[dict[str, Any]] | None = None,
     pending_watch_suggestions: int = 0,
     rendered_context: str | None = None,
+    mode: str = "team",
 ) -> str:
     """Synthesize the briefing narrative. Returns Markdown, or "" when empty.
 
     Prompt selection:
     ``rendered_context`` overrides the context render (see below).
+    ``mode="solo"`` uses the solo variants of the whole-business prompts
+    (``STANDALONE_BRIEF_SOLO_SYSTEM`` / ``BRIEFING_NARRATIVE_SOLO_SYSTEM``)
+    and the solo context render; the viewer prompt has no team framing and
+    is shared.
 
       - ``standalone=True`` → the enumerated whole-company DM brief
         (morning_brief): a self-contained message with no cards beside it, so
@@ -295,12 +390,13 @@ async def synthesize_briefing_narrative(
     from openexecutive.agents.utility_fast import get_fast_model
     from openexecutive.providers import get_provider
 
+    solo = mode == "solo"
     if standalone:
-        system = STANDALONE_BRIEF_SYSTEM
+        system = STANDALONE_BRIEF_SOLO_SYSTEM if solo else STANDALONE_BRIEF_SYSTEM
     elif viewer:
         system = _viewer_system_prompt(viewer["name"], viewer["role"])
     else:
-        system = BRIEFING_NARRATIVE_SYSTEM
+        system = BRIEFING_NARRATIVE_SOLO_SYSTEM if solo else BRIEFING_NARRATIVE_SYSTEM
     # `rendered_context` lets a caller hand in the exact block it already
     # rendered. The /today header path does, because it hashes that string as
     # its cache key — re-rendering here could quietly drift from what was
@@ -309,6 +405,7 @@ async def synthesize_briefing_narrative(
         period_label=period_label, today_data=today_data, activity=activity,
         since=since, handled=handled,
         pending_watch_suggestions=pending_watch_suggestions,
+        mode=mode,
     )
     model = get_fast_model()
     response = await get_provider(model).messages_create(
@@ -322,9 +419,11 @@ async def synthesize_briefing_narrative(
 
 
 __all__ = [
+    "BRIEFING_NARRATIVE_SOLO_SYSTEM",
     "BRIEFING_NARRATIVE_SYSTEM",
     "QUIET_PRINCIPAL",
     "QUIET_VIEWER",
+    "STANDALONE_BRIEF_SOLO_SYSTEM",
     "STANDALONE_BRIEF_SYSTEM",
     "render_briefing_context",
     "synthesize_briefing_narrative",

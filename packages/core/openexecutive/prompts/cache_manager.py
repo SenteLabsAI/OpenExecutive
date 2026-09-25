@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.prompts.executive_persona import (
-    EXECUTIVE_PERSONA_PROMPT,
     MCP_ADDENDUM,
     WEB_SEARCH_ADDENDUM,
+    default_persona,
 )
 
 if TYPE_CHECKING:
@@ -21,6 +21,7 @@ def build_system_blocks(
     mcp_enabled: bool = False,
     persona_override: str | None = None,
     voice_persona_body: str | None = None,
+    workspace_mode: str = "team",
     *,
     include_contacts: bool = False,
 ) -> list[dict[str, Any]]:
@@ -33,17 +34,23 @@ def build_system_blocks(
 
     RAG context is injected into the user turn, NOT here.
 
-    persona_override replaces EXECUTIVE_PERSONA_PROMPT when the Agent Council
+    persona_override replaces the built-in persona when the Agent Council
     has a saved override for the "executive" agent_id.
+
+    workspace_mode ("team" / "solo", from ``effective_workspace_mode``) picks
+    the built-in persona — EXECUTIVE_PERSONA_PROMPT or
+    EXECUTIVE_PERSONA_SOLO_PROMPT, both constants — and the org block variant.
+    An override still wins as-is in either mode. The mode is stable per
+    install, so each mode keeps its own warm cache; a switch misses once.
 
     voice_persona_body is substituted into the {VOICE_PERSONA} placeholder in
     the assembled base prompt. If the placeholder is absent (user removed it),
     the body is appended at the end of the prompt so it is never silently dropped.
 
     include_contacts adds the principal's private Contacts section to block 1.
-    The caller passes it only for the principal's own verified turn, so block 1
-    has exactly two stable variants (with and without contacts) — never
-    anything per-request.
+    The caller passes it only for the principal's own verified turn, so per
+    mode block 1 has exactly two stable variants (with and without contacts)
+    — never anything per-request.
     """
     # Inject the user's zone so the Executive can resolve relative times
     # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup. Read
@@ -87,7 +94,9 @@ def build_system_blocks(
         f"themselves — do not author it under their name. You always communicate as {exec_name}."
     )
 
-    base_persona = persona_override if persona_override is not None else EXECUTIVE_PERSONA_PROMPT
+    base_persona = (
+        persona_override if persona_override is not None else default_persona(workspace_mode)
+    )
 
     # Substitute voice persona body into the {VOICE_PERSONA} placeholder.
     # If absent (user removed it from a custom prompt), append at the end.
@@ -129,7 +138,7 @@ def build_system_blocks(
 
     from openexecutive.departments.prompt_block import render_org_block
 
-    org_text = render_org_block(include_contacts=include_contacts)
+    org_text = render_org_block(mode=workspace_mode, include_contacts=include_contacts)
     if org_text:
         context_parts.append(org_text)
 
