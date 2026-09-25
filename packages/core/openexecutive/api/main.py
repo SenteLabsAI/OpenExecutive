@@ -773,7 +773,8 @@ def _is_local_owner_mode() -> bool:
 
 
 # A raw Host header naming this machine, with an optional port — the same rule
-# as isLoopbackHost in packages/ui/src/lib/localOwner.ts.
+# as isLoopbackHost in packages/ui/src/lib/localOwner.ts, and
+# packages/ui/scripts/localOwner.test.mjs fails if the two ever disagree.
 _LOOPBACK_HOST_RE = re.compile(r"(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?", re.IGNORECASE)
 
 

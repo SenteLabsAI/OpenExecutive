@@ -83,6 +83,24 @@ test("other machines and look-alike names are refused", () => {
   }
 });
 
+test("the API's loopback rule accepts exactly the hosts the UI's does", () => {
+  // In one-person mode both apps gate on "addressed to this computer". The API
+  // keeps its own regex (api/main.py _LOOPBACK_HOST_RE, used with fullmatch
+  // after strip); this runs one corpus through both so they cannot drift.
+  const mainPy = readFileSync(new URL("../../core/openexecutive/api/main.py", import.meta.url), "utf8");
+  const literal = /_LOOPBACK_HOST_RE = re\.compile\(r"([^"]+)", re\.IGNORECASE\)/.exec(mainPy);
+  assert.ok(literal, "_LOOPBACK_HOST_RE not found in api/main.py");
+  const apiRule = new RegExp(`^(?:${literal[1]})$`, "i");
+  for (const host of [
+    "localhost", "localhost:3000", "LOCALHOST:8000", "127.0.0.1", "127.0.0.1:8000", "[::1]", "[::1]:8000",
+    " localhost:3000 ", "localhost:", "localhost:123456", "localhost.", "localhost.example.com",
+    "127.0.0.1.nip.io", "127.0.0.2", "0.0.0.0", "::1", "[::ffff:127.0.0.1]", "192.168.1.20:3000",
+    "evil.com", "localhost:3000@evil.com", "",
+  ]) {
+    assert.equal(apiRule.test(host.trim()), isLoopbackHost(host), JSON.stringify(host));
+  }
+});
+
 test("a missing Host header is refused", () => {
   assert.equal(isLoopbackHost(null), false);
   assert.equal(isLoopbackHost(undefined), false);
