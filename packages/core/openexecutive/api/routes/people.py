@@ -2,7 +2,8 @@
 
 Phase 3 surface: CRUD + archive + approver lookup.
 All mutations invalidate the 60s registry cache so the next
-Executive turn picks up the change.
+Executive turn picks up the change. Adding, editing and archiving
+people are the principal's alone (``_require_roster_owner``).
 """
 from __future__ import annotations
 
@@ -101,8 +102,33 @@ def get_person(person_id: int) -> Person:
 # Mutation routes
 # --------------------------------------------------------------------------- #
 
+def _require_roster_owner(request: Request) -> None:
+    """403 unless the caller may change the roster: the principal, or anyone
+    while no one is principal yet, so a first setup can add its owner.
+
+    A People row is also the web sign-in allow-list, the outbound-email
+    allow-list and approval routing, so without this any signed-in teammate
+    could put their own address on the principal's row and sign in as them.
+    The same owner rule as the workspace settings; the Executive's roster
+    tools (``orchestrator.people_tools``) are the principal's too.
+
+    A person can't edit their own row either: its email and chat ids are how
+    they sign in and how the Executive reaches them, and the rest decides
+    their approvals and how they are chased. Their working style and open
+    loops, further down, stay theirs.
+
+    Called before the id lookup, so a refused caller can't probe which ids
+    exist.
+    """
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    if not _caller_is_principal_or_unclaimed(request):
+        raise HTTPException(status_code=403, detail="Only the principal can change the People list")
+
+
 @router.post("/people", response_model=Person, status_code=status.HTTP_201_CREATED)
-def create_person(body: PersonCreate) -> Person:
+def create_person(body: PersonCreate, request: Request) -> Person:
+    _require_roster_owner(request)
     pid = people_store.upsert_person(
         full_name=body.full_name,
         role=body.role,
@@ -129,7 +155,8 @@ def create_person(body: PersonCreate) -> Person:
 
 
 @router.patch("/people/{person_id}", response_model=Person)
-def patch_person(person_id: int, body: PersonPatch) -> Person:
+def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
+    _require_roster_owner(request)
     if people_store.get_person(person_id) is None:
         raise HTTPException(status_code=404, detail="Person not found")
 
@@ -166,7 +193,8 @@ def patch_person(person_id: int, body: PersonPatch) -> Person:
 
 
 @router.post("/people/{person_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
-def archive_person(person_id: int) -> Response:
+def archive_person(person_id: int, request: Request) -> Response:
+    _require_roster_owner(request)
     if people_store.get_person(person_id) is None:
         raise HTTPException(status_code=404, detail="Person not found")
     people_store.archive_person(person_id)

@@ -2986,12 +2986,17 @@ export interface PersonCreate {
   availability?: AvailabilityWindow[];
 }
 
+// Adding, editing and archiving people is the principal's alone (403 for anyone
+// else): the People list is also who can sign in and who the Executive emails.
+const PEOPLE_PRINCIPAL_ONLY = "Only the principal can change the People list.";
+
 export async function createPerson(body: PersonCreate): Promise<Person> {
   const res = await fetch(`${API_BASE}/people`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (!res.ok) throw new Error(`Failed to create person: ${res.statusText}`);
   return res.json();
 }
@@ -3018,12 +3023,14 @@ export async function updatePerson(id: number, patch: PersonPatch): Promise<Pers
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
+  if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (!res.ok) throw new Error(`Failed to update person: ${res.statusText}`);
   return res.json();
 }
 
 export async function archivePerson(id: number): Promise<void> {
   const res = await fetch(`${API_BASE}/people/${id}/archive`, { method: "POST" });
+  if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (!res.ok) throw new Error(`Failed to archive person: ${res.statusText}`);
 }
 

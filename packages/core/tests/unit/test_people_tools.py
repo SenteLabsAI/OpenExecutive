@@ -423,7 +423,8 @@ def test_unlinked_web_user_is_told_how_to_prove_they_are_the_owner() -> None:
     with _turn(Session(from_web_chat=True, caller_person_id=None)):
         result = _call(handle_upsert_person, {"full_name": "Cindy Lee"})
     assert result["status"] == "refused"
-    assert "People page" in result["detail"]
+    # Not "add it on the People page": that page refuses them too.
+    assert "setup interview" in result["detail"]
     assert "Cindy Lee" not in _names()
 
 
