@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -24,14 +25,20 @@ from openexecutive.orchestrator.department_tools import (
 
 
 @pytest.fixture(autouse=True)
-def shared_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolated SQLite for each test, shared by all stores like in prod."""
+def shared_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Isolated SQLite for each test, shared by all stores like in prod —
+    audit rows included, so none land in ./episodic_memory.db."""
+    from openexecutive.audit import AuditLogger, set_audit_logger
+
     db_path = tmp_path / "episodic.db"
     monkeypatch.setattr(dept_store, "DB_PATH", db_path)
     monkeypatch.setattr(episodic_module, "DB_PATH", db_path)
     dept_store.initialize_db()
     dept_registry.invalidate()
-    return db_path
+    set_audit_logger(AuditLogger(db_path=db_path))
+    yield db_path
+    set_audit_logger(None)
+    dept_registry.invalidate()
 
 
 def _call(coro_fn, payload: dict[str, Any]) -> dict[str, Any]:
@@ -577,6 +584,21 @@ def test_create_goal_chip_names_the_area_and_links_it() -> None:
     assert chip is not None
     assert chip["summary"] == "Added a new Sales area goal: Paying clients"
     assert chip["link"] == "/departments/sales"
+    # Solo's nav has Goals, not Departments.
+    solo = summarize_action(
+        tool_name="create_goal",
+        tool_input={"area": "sales", "key_result": "Paying clients"},
+        tool_result=json.dumps({"status": "ok", "goal_id": 3, "area_slug": "sales",
+                                "area_title": "Sales", "area_created": False}),
+        workspace_mode="solo",
+    )
+    assert solo is not None and solo["link"] == "/goals"
+    assert solo["summary"] == "Added a Sales goal: Paying clients"
+    team = summarize_action(
+        tool_name="create_goal", tool_input={"area": "sales", "key_result": "x"},
+        tool_result=json.dumps({"status": "ok", "area_slug": "sales"}), workspace_mode="team",
+    )
+    assert team is not None and team["link"] == "/departments/sales"
     refused = summarize_action(
         tool_name="create_goal", tool_input={"area": "sales"},
         tool_result=json.dumps({"error": "refused"}),
@@ -668,3 +690,59 @@ def test_only_the_verified_principal_may_add_an_area(
     assert added.get("status") == "ok", added
     assert added["area_created"] is True
     people_registry.invalidate()
+
+
+
+@pytest.mark.parametrize(("mode", "link"), [("solo", "/goals"), ("team", "/departments/engineering")])
+def test_agent_loop_chip_links_by_the_turns_mode(mode: str, link: str, shared_db: Path) -> None:
+    """A create_goal run through the Executive's tool loop yields a chip whose
+    link follows the turn's mode: /goals in solo, the department in team."""
+    from types import SimpleNamespace
+
+    from openexecutive.orchestrator.executive import Executive
+
+    dept_store.create_department("Engineering")
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name="create_goal",
+        input={"area": "engineering", "key_result": "Ship the app", "target": "Nov 15",
+               "rationale": "User set the app launch for Nov 15."},
+    )
+    finals = [
+        SimpleNamespace(content=[tool_use], stop_reason="tool_use", usage=None),
+        SimpleNamespace(content=[SimpleNamespace(type="text", text="Tracked.")],
+                        stop_reason="end_turn", usage=None),
+    ]
+
+    class _Stream:
+        def __init__(self, final: Any) -> None:
+            self._final = final
+
+        async def __aenter__(self) -> _Stream:
+            return self
+
+        async def __aexit__(self, *_a: Any) -> None:
+            return None
+
+        def __aiter__(self) -> _Stream:
+            return self
+
+        async def __anext__(self) -> Any:
+            raise StopAsyncIteration
+
+        async def get_final_message(self) -> Any:
+            return self._final
+
+    provider = SimpleNamespace(messages_stream=lambda **_kw: _Stream(finals.pop(0)))
+
+    async def _go() -> list[Any]:
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            return [
+                item async for item in Executive()._stream_agent_loop(
+                    system_blocks=[], messages=[{"role": "user", "content": "x"}],
+                    model="claude-test", workspace_mode=mode,
+                )
+            ]
+
+    items = asyncio.run(_go())
+    chips = [i for i in items if isinstance(i, dict) and i.get("type") == "action_taken"]
+    assert [c["link"] for c in chips] == [link]

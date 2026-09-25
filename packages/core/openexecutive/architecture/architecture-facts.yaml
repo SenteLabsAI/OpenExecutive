@@ -848,7 +848,9 @@ routing:
     Audited as `tool_invocation` with `details.tool="create_goal"`,
     department_slug, goal_id, area_created, specialist_key and the
     rationale; invalidates the department registry. Chip: "Added a {area}
-    goal: {key_result}". Withheld from reflection and research synthesis (a
+    goal: {key_result}", linking to /goals in solo (the turn's mode reaches
+    `summarize_action(workspace_mode=...)`) and /departments/{slug} in team.
+    Withheld from reflection and research synthesis (a
     goal is set by what the user said; those passes see only inbound text).
     The solo persona teaches it (`_SOLO_CREATE_GOAL`); team mode learns it
     from the tool description, so the team persona stays byte-identical.

@@ -1798,6 +1798,7 @@ class Executive:
                         tool_input=tu["input"],
                         tool_result=result,
                         iteration=iteration,
+                        workspace_mode=workspace_mode,
                     )
                     if chip is not None:
                         yield chip

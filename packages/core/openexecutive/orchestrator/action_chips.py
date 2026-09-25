@@ -132,8 +132,13 @@ def summarize_action(
     tool_input: dict[str, Any],
     tool_result: str,
     iteration: int | None = None,
+    workspace_mode: str | None = None,
 ) -> dict[str, Any] | None:
     """Build an `action_taken` event payload, or None if the call should be skipped.
+
+    ``workspace_mode`` is the turn's mode; only links that differ by mode read
+    it (solo has no Departments page in its nav, so a goal chip opens /goals).
+    None is treated as team.
 
     Returns None when:
       • `tool_name` is not in SIDE_EFFECTING_TOOLS
@@ -278,7 +283,10 @@ def summarize_action(
         else:
             payload["summary"] = "Added a goal"
         payload["target"] = slug or None
-        if slug:
+        if workspace_mode == "solo":
+            # Solo's nav has Goals (every goal grouped by area), not Departments.
+            payload["link"] = "/goals"
+        elif slug:
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")
