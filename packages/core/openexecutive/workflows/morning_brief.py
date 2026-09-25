@@ -137,6 +137,13 @@ class MorningBriefWorkflow(Workflow):
         except Exception:
             logger.exception("morning_brief: /today aggregation failed")
             today_data = {"departments": [], "people": [], "proposals": []}
+        if mode == "solo":
+            # What the principal owns that is due this week or overdue — their
+            # dated commitments. It lands here even when no channel reaches
+            # them for a nudge. Never raises (reads as empty on failure).
+            from openexecutive.attunement.open_loops import principal_due_soon
+
+            today_data["due_soon"] = principal_due_soon()
 
         try:
             activity_response = today_route._build_activity(20, since=since)

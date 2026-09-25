@@ -79,6 +79,7 @@ _LABELS: dict[str, str] = {
     # Departments
     "list_department_goals": "Reviewing department goals…",
     "update_department_goal": "Updating a department goal…",
+    "create_goal": "Adding a goal…",
 
     # Broadcast channels
     "send_department_message": "Posting to a department channel…",
@@ -150,6 +151,7 @@ _PRIORITY: tuple[frozenset[str], ...] = (
         "archive_person",
         "set_department_head",
         "update_department_goal",
+        "create_goal",
         "close_open_loop",
     }),
     frozenset({

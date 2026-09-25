@@ -903,6 +903,10 @@ async def _execute_action(
         session = Session(
             company_profile=profile if not profile.is_empty() else None,
             seen_channel_refs={(action.channel, action.channel_ref)},
+            # Nobody is watching this run and its prompt quotes stored intent
+            # text: the loop withholds the principal-only tools
+            # (schedule_tools.UNATTENDED_WITHHELD_TOOLS, e.g. create_goal).
+            unattended=True,
         )
 
         retrieved_context = retrieve(query=action.intent_text)

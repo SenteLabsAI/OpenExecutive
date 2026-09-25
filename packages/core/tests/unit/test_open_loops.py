@@ -577,3 +577,394 @@ def test_get_open_loop_and_archive_close_beyond_list_limit(team: SimpleNamespace
     assert open_loops.get_open_loop(ids[-1]).owner_person_id == team.sara  # type: ignore[union-attr]
     assert open_loops.close_loops_for_person(team.sara, reason="owner_archived") == 3
     assert open_loops.get_open_loop(ids[-1]) is None
+
+
+# --------------------------------------------------------------------------- #
+# Solo mode: the principal's own DATED commitments become loops they own
+# --------------------------------------------------------------------------- #
+
+import hashlib  # noqa: E402
+
+from openexecutive.memory import workspace_settings as ws  # noqa: E402
+
+# sha256 of the team extraction prompt before solo existed — team is unchanged.
+_TEAM_SYSTEM_SHA256 = "37a9be531f3175994bdb3af8f71e447ff36accc3c78160a8d091f540fec263f3"
+
+
+def _dated_commitment(due: str | None, quote: str = "I'll send Northwind the proposal by Friday",
+                      text: str = "send Northwind the proposal") -> dict[str, Any]:
+    return {"loops": [{"owner": "me", "kind": "commitment", "text": text,
+                       "due_date": due, "quote": quote}], "closed": []}
+
+
+async def _run_mode(
+    msg: str, person_id: int, mode: str | None, *, verified: bool = True
+) -> dict[str, int]:
+    # `verified` = the turn is the principal on a surface that verified it is
+    # them (the web chat, their own Slack or Discord) — the Executive computes
+    # it with people_tools.is_principal_on_verified_surface.
+    return await open_loops.run_open_loop_pass(
+        msg, "Noted.", person_id=person_id, session_id="s1", workspace_mode=mode,
+        principal_verified=verified,
+    )
+
+
+async def test_solo_dated_principal_commitment_opens_a_loop_they_own(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, _isolated: list[tuple[str, dict]]
+) -> None:
+    due = (date.today() + timedelta(days=3)).isoformat()
+    fake = _install_provider(monkeypatch, _dated_commitment(due))
+    counts = await _run_mode("I'll send Northwind the proposal by Friday.", team.principal, "solo")
+    assert counts == {"opened": 1, "closed": 0, "dropped": 0}
+    [loop] = open_loops.list_open_loops(person_id=team.principal)
+    assert loop.owner_person_id == team.principal
+    assert loop.description == "Pat Principal committed to: send Northwind the proposal"
+    assert loop.due_at[:10] in {due, (date.fromisoformat(due) + timedelta(days=1)).isoformat()}
+    assert fake.calls[0]["system"] == open_loops._SYSTEM_SOLO
+    assert any(d.get("op") == "loop_opened" and d.get("owner_person_id") == team.principal
+               for _s, d in _isolated)
+
+
+async def test_solo_principal_commitment_from_an_unverified_surface_is_dropped(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, _isolated: list[tuple[str, dict]]
+) -> None:
+    """An email's sender is its From header: a spoofed "I'll wire the deposit
+    Friday" from the principal's address must not become their own promise."""
+    due = (date.today() + timedelta(days=3)).isoformat()
+    _install_provider(monkeypatch, _dated_commitment(due))
+    counts = await _run_mode(
+        "I'll send Northwind the proposal by Friday.", team.principal, "solo", verified=False
+    )
+    assert counts == {"opened": 0, "closed": 0, "dropped": 1}
+    assert open_loops.list_open_loops() == []
+    [extract] = [d for _s, d in _isolated if d.get("op") == "extract"]
+    assert extract["dropped_items"] == [
+        {"kind": "open", "reason": "principal_commitment_unverified"}
+    ]
+    # The default is fail-closed: a caller that does not say drops it too.
+    counts = await open_loops.run_open_loop_pass(
+        "I'll send Northwind the proposal by Friday.", "Noted.", person_id=team.principal,
+        workspace_mode="solo",
+    )
+    assert counts["opened"] == 0
+
+
+async def test_solo_contacts_loops_need_no_principal_verification(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verified-principal rule is for the principal's OWN commitments;
+    what a contact promises opens as it does in team mode."""
+    due = (date.today() + timedelta(days=3)).isoformat()
+    _install_provider(monkeypatch, {"loops": [{
+        "owner": "me", "kind": "commitment", "text": "send the invoice",
+        "due_date": due, "quote": "I'll send the invoice by Friday"}], "closed": []})
+    counts = await _run_mode("I'll send the invoice by Friday.", team.sara, "solo", verified=False)
+    assert counts["opened"] == 1
+
+
+async def test_solo_undated_principal_commitment_stays_dropped(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, _isolated: list[tuple[str, dict]]
+) -> None:
+    _install_provider(monkeypatch, _dated_commitment(
+        None, quote="I'll look into pricing", text="look into pricing"))
+    counts = await _run_mode("I'll look into pricing.", team.principal, "solo")
+    assert counts == {"opened": 0, "closed": 0, "dropped": 1}
+    assert open_loops.list_open_loops() == []
+    [extract] = [d for _s, d in _isolated if d.get("op") == "extract"]
+    assert extract["dropped_items"] == [{"kind": "open", "reason": "principal_commitment_undated"}]
+
+
+async def test_solo_needs_the_date_in_the_quote_not_only_from_the_model(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The model guessed a due date the principal never stated.
+    guessed = (date.today() + timedelta(days=2)).isoformat()
+    _install_provider(monkeypatch, _dated_commitment(
+        guessed, quote="I'll draft the pitch deck", text="draft the pitch deck"))
+    counts = await _run_mode("I'll draft the pitch deck.", team.principal, "solo")
+    assert counts["opened"] == 0 and counts["dropped"] == 1
+
+
+async def test_solo_unparseable_due_date_is_not_a_stated_one(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_provider(monkeypatch, _dated_commitment("Friday"))
+    counts = await _run_mode("I'll send Northwind the proposal by Friday.", team.principal, "solo")
+    assert counts["opened"] == 0 and counts["dropped"] == 1
+
+
+async def test_team_still_drops_a_dated_principal_commitment(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, _isolated: list[tuple[str, dict]]
+) -> None:
+    due = (date.today() + timedelta(days=3)).isoformat()
+    fake = _install_provider(monkeypatch, _dated_commitment(due))
+    counts = await _run_mode("I'll send Northwind the proposal by Friday.", team.principal, "team")
+    assert counts == {"opened": 0, "closed": 0, "dropped": 1}
+    assert fake.calls[0]["system"] == open_loops._SYSTEM
+    [extract] = [d for _s, d in _isolated if d.get("op") == "extract"]
+    assert extract["dropped_items"] == [{"kind": "open", "reason": "principal_commitment"}]
+
+
+async def test_solo_teammate_loops_behave_as_in_team(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A contact's own undated commitment is still a loop (default due date).
+    _install_provider(monkeypatch, {"loops": [{
+        "owner": "me", "kind": "commitment", "text": "send the invoice",
+        "due_date": None, "quote": "I'll send the invoice"}], "closed": []})
+    counts = await _run_mode("I'll send the invoice.", team.sara, "solo")
+    assert counts["opened"] == 1
+    assert open_loops.list_open_loops()[0].owner_person_id == team.sara
+
+
+async def test_pass_reads_the_workspace_when_no_mode_is_passed(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    due = (date.today() + timedelta(days=3)).isoformat()
+    fake = _install_provider(monkeypatch, _dated_commitment(due))
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo"))
+    counts = await _run_mode("I'll send Northwind the proposal by Friday.", team.principal, None)
+    assert counts["opened"] == 1
+    assert fake.calls[0]["system"] == open_loops._SYSTEM_SOLO
+
+
+def test_team_extraction_prompt_is_unchanged_and_solo_differs() -> None:
+    assert hashlib.sha256(open_loops._SYSTEM.encode()).hexdigest() == _TEAM_SYSTEM_SHA256
+    assert open_loops._SYSTEM_SOLO != open_loops._SYSTEM
+    assert "or the principal's own commitments." in open_loops._SYSTEM
+    assert "does not say when it is due" in open_loops._SYSTEM_SOLO
+    assert "{" not in open_loops._SYSTEM_SOLO  # a constant, never formatted
+
+
+def test_stated_due_date_versus_default() -> None:
+    assert open_loops._stated_due_date("2026-10-02") == date(2026, 10, 2)
+    assert open_loops._stated_due_date(" 2026-10-02T17:00") == date(2026, 10, 2)
+    for raw in (None, "", "Friday", 20261002):
+        assert open_loops._stated_due_date(raw) is None
+
+
+@pytest.mark.parametrize("quote", [
+    "I'll send it by Friday", "I'll send it Friday", "tomorrow", "on the 14th",
+    "by the 14th of October", "by the 30th.", "until the 2nd", "by Oct 3", "Oct. 3",
+    "3 October", "on 3rd October", "before May 3", "by May", "2026-10-03", "10/03",
+    "10/03/2026", "by 10/3", "end of Q4", "by Q1", "in 3 days", "next week", "by Wed",
+    "on Sat", "this Fri", "due Thursday", "end of the month",
+])
+def test_stated_due_hint_matches_a_stated_date(quote: str) -> None:
+    assert open_loops._STATED_DUE_HINT.search(quote), quote
+
+
+@pytest.mark.parametrize("quote", [
+    # Ambiguous words with no due word before them.
+    "I may send the proposal", "I'll not mar the finish", "I march on", "I sat down to write it",
+    "I'll get some sun first", "we'll wed the two plans", "q1 numbers look fine",
+    # Ordinals that name a thing, not a day; ratios.
+    "I'll send the 1st draft", "I'll work on the 1st draft", "I'll fix the 3rd section",
+    "It's a 50/50 call", "half is 1/2 done",
+    # No date at all.
+    "I'll look into pricing", "I will review the budget", "by the way I'll send it",
+])
+def test_stated_due_hint_ignores_ambiguous_tokens(quote: str) -> None:
+    match = open_loops._STATED_DUE_HINT.search(quote)
+    assert match is None, (quote, match.group(0) if match else None)
+
+
+def test_schedule_forwards_the_turns_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()  # drop conftest's no-op patch for this module-level fn
+    seen: list[dict[str, Any]] = []
+
+    async def _fake_pass(*a: Any, **k: Any) -> dict[str, int]:
+        seen.append(k)
+        return {}
+
+    monkeypatch.setattr(open_loops, "run_open_loop_pass", _fake_pass)
+    open_loops.schedule_open_loop_pass(
+        "I'll send it by Friday", "ok", person_id=1, workspace_mode="solo",
+        principal_verified=True,
+    )
+    for _ in range(50):
+        if seen:
+            break
+        threading.Event().wait(0.02)
+    assert seen and seen[0]["workspace_mode"] == "solo"
+    assert seen[0]["principal_verified"] is True
+
+
+def test_principal_owned_overdue_loop_is_chased_with_the_principal(team: SimpleNamespace) -> None:
+    now = datetime.now(UTC)
+    loop_id = open_loops.open_loop(
+        owner_person_id=team.principal,
+        description="Pat Principal committed to: send Northwind the proposal",
+        due_at=now - timedelta(hours=1),
+    )
+    out = nudge_engine._select_stale_commitment_candidates(now, stale_days=3, cooldown_hours=48)
+    assert [c.scope_key for c in out] == [f"{nudge_engine.SCOPE_PREFIX_COMMITMENT}:{loop_id}"]
+    assert out[0].person_id == team.principal
+
+
+# --------------------------------------------------------------------------- #
+# Solo brief: DUE THIS WEEK
+# --------------------------------------------------------------------------- #
+
+
+def _principal_loop(team: SimpleNamespace, text: str, due: datetime) -> int:
+    loop_id = open_loops.open_loop(
+        owner_person_id=team.principal, description=f"Pat Principal committed to: {text}",
+        due_at=due,
+    )
+    assert loop_id is not None
+    return loop_id
+
+
+def test_principal_due_soon_lists_overdue_and_this_week_only(team: SimpleNamespace) -> None:
+    now = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+    late = _principal_loop(team, "renew the domain", now - timedelta(days=2))
+    today = _principal_loop(team, "send the proposal", now + timedelta(hours=3))
+    soon = _principal_loop(team, "file the VAT return", now + timedelta(days=3))
+    _principal_loop(team, "plan the offsite", now + timedelta(days=10))
+    open_loops.open_loop(owner_person_id=team.sara, description="Sara Kim committed to: x y z",
+                         due_at=now + timedelta(days=1))
+    due = open_loops.principal_due_soon(now=now)
+    assert [(d["loop_id"], d["state"]) for d in due] == [
+        (late, "overdue"), (today, "today"), (soon, "soon"),
+    ]
+    assert due[0]["due_date"] == "2026-09-23"
+    assert due[1]["description"] == "Pat Principal committed to: send the proposal"
+    assert open_loops.principal_due_soon(now=now, limit=1) == due[:1]
+
+
+def test_principal_due_soon_is_empty_without_a_principal() -> None:
+    people_store.upsert_person(full_name="Sara Kim")
+    assert open_loops.principal_due_soon() == []
+
+
+def _due_rows() -> list[dict[str, Any]]:
+    return [
+        {"loop_id": 4, "description": "Pat Principal committed to: renew the domain",
+         "due_at": "2026-09-23T17:00:00+00:00", "due_date": "2026-09-23", "state": "overdue"},
+        {"loop_id": 5, "description": "Pat Principal committed to: send the proposal",
+         "due_at": "2026-09-28T17:00:00+00:00", "due_date": "2026-09-28", "state": "soon"},
+    ]
+
+
+def test_brief_context_renders_due_this_week_in_solo_only() -> None:
+    from openexecutive.briefing.narrative import render_briefing_context
+
+    data = {"departments": [], "people": [], "proposals": [], "due_soon": _due_rows()}
+    solo = render_briefing_context(period_label="p", today_data=data, activity=[], mode="solo")
+    assert "DUE THIS WEEK" in solo
+    assert "- OVERDUE (was due 2026-09-23): Pat Principal committed to: renew the domain" in solo
+    assert "- due Mon 2026-09-28: Pat Principal committed to: send the proposal" in solo
+    team = render_briefing_context(period_label="p", today_data=data, activity=[])
+    assert "DUE THIS WEEK" not in team
+    assert team == render_briefing_context(
+        period_label="p", today_data={**data, "due_soon": []}, activity=[]
+    )
+    quiet = render_briefing_context(
+        period_label="p", today_data={**data, "due_soon": []}, activity=[], mode="solo"
+    )
+    assert "DUE THIS WEEK" not in quiet
+
+
+def test_solo_standalone_brief_prompt_has_a_due_section() -> None:
+    from openexecutive.briefing.narrative import (
+        BRIEFING_NARRATIVE_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SYSTEM,
+    )
+
+    assert "**Due this week**" in STANDALONE_BRIEF_SOLO_SYSTEM
+    assert "DUE THIS WEEK" in STANDALONE_BRIEF_SOLO_SYSTEM
+    assert "Due this week" not in STANDALONE_BRIEF_SYSTEM
+    assert "what's due this week" in BRIEFING_NARRATIVE_SOLO_SYSTEM
+
+
+def test_today_header_counts_due_items_in_solo(team: SimpleNamespace) -> None:
+    from openexecutive.api.routes import today as today_route
+
+    _principal_loop(team, "send the proposal", datetime.now(UTC) + timedelta(days=1))
+    empty: dict[str, Any] = {"departments": [], "people": [], "proposals": []}
+    solo = today_route._with_due_soon(empty, "solo", None)
+    assert [d["state"] for d in solo["due_soon"]] == ["soon"]
+    assert "due_soon" not in empty  # a copy
+    assert today_route._nothing_needs_attention(solo, "solo") is False
+    assert today_route._nothing_needs_attention(empty, "solo") is True
+    # Team, and a teammate's scoped view, never get the block.
+    assert today_route._with_due_soon(empty, "team", None) is empty
+    assert today_route._with_due_soon(empty, "solo", {"name": "x", "role": "y"}) is empty
+    ctx, _activity = today_route._narrative_context(empty, None, None, "team")
+    assert "DUE THIS WEEK" not in ctx
+
+
+def test_brief_fingerprint_moves_with_due_items_in_solo_only() -> None:
+    from openexecutive.briefing.brief_state import build_brief_fingerprint
+
+    base: dict[str, Any] = {"departments": [], "people": [], "proposals": []}
+    kw: dict[str, Any] = dict(activity=[], handled=[], since=None)
+    with_due = {**base, "due_soon": _due_rows()}
+    assert build_brief_fingerprint(today_data=with_due, **kw) == build_brief_fingerprint(
+        today_data=base, **kw
+    )
+    solo_none = build_brief_fingerprint(today_data=base, mode="solo", **kw)
+    solo_due = build_brief_fingerprint(today_data=with_due, mode="solo", **kw)
+    assert solo_due != solo_none
+    assert build_brief_fingerprint(today_data={**base, "due_soon": []}, mode="solo", **kw) == solo_none
+    went_overdue = [dict(r, state="overdue") for r in _due_rows()]
+    assert build_brief_fingerprint(
+        today_data={**base, "due_soon": went_overdue}, mode="solo", **kw
+    ) != solo_due
+
+
+def test_solo_morning_brief_carries_the_due_items(
+    team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.api.routes.today import ActivityResponse, TodayResponse
+    from openexecutive.briefing import narrative as briefing_narrative
+    from openexecutive.workflows.morning_brief import MorningBriefInput, MorningBriefWorkflow
+
+    _principal_loop(team, "send the proposal", datetime.now(UTC) + timedelta(days=1))
+    captured: dict[str, Any] = {}
+
+    async def _synth(**kw: Any) -> str:
+        captured.update(kw)
+        return "BRIEF"
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
+    # The brief's bookkeeping reads other stores; keep them out of this test
+    # (and out of ./episodic_memory.db).
+    from openexecutive.briefing import brief_state
+
+    monkeypatch.setattr(brief_state, "since_for",
+                        lambda kind, now=None: datetime.now(UTC) - timedelta(days=1))
+    monkeypatch.setattr(brief_state, "last_delivered", lambda kind: None)
+    monkeypatch.setattr(brief_state, "handled_since", lambda since, limit=20: [])
+    monkeypatch.setattr(brief_state, "pending_watch_suggestions", lambda: 0)
+    monkeypatch.setattr(today_route, "_build_today",
+                        lambda: TodayResponse(departments=[], people=[], proposals=[]))
+    monkeypatch.setattr(today_route, "_build_activity",
+                        lambda limit, since=None: ActivityResponse(items=[]))
+
+    async def _drain(mode: str) -> None:
+        captured.clear()
+        ws.restore_workspace_settings(ws.WorkspaceSettings(mode=mode))  # type: ignore[arg-type]
+        [e async for e in MorningBriefWorkflow().run(MorningBriefInput(force_full=True), MagicMock())]
+
+    asyncio.run(_drain("solo"))
+    assert [d["description"] for d in captured["today_data"]["due_soon"]] == [
+        "Pat Principal committed to: send the proposal"
+    ]
+    asyncio.run(_drain("team"))
+    assert "due_soon" not in captured["today_data"]
+
+
+def test_solo_commitment_eval_scenario_is_shipped_and_valid() -> None:
+    from openexecutive.evals.scenarios import validate_scenario_yaml
+
+    path = Path(open_loops.__file__).parents[1] / "evals" / "_scenarios" / "attunement_002.yaml"
+    scenario = validate_scenario_yaml(path.read_text(encoding="utf-8"))
+    assert scenario["workspace_mode"] == "solo"
+    assert "by Friday" in scenario["query"]

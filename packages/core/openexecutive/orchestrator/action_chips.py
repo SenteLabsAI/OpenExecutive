@@ -49,6 +49,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "close_open_loop",
     # Department goal mutations (Phase B — chat-driven progress updates)
     "update_department_goal",
+    # A new goal (and, when its area did not exist, a new area)
+    "create_goal",
     # Skills mutations
     "create_skill",
     "update_skill",
@@ -130,8 +132,13 @@ def summarize_action(
     tool_input: dict[str, Any],
     tool_result: str,
     iteration: int | None = None,
+    workspace_mode: str | None = None,
 ) -> dict[str, Any] | None:
     """Build an `action_taken` event payload, or None if the call should be skipped.
+
+    ``workspace_mode`` is the turn's mode; only links that differ by mode read
+    it (solo has no Departments page in its nav, so a goal chip opens /goals).
+    None is treated as team.
 
     Returns None when:
       • `tool_name` is not in SIDE_EFFECTING_TOOLS
@@ -260,6 +267,26 @@ def summarize_action(
             payload["summary"] = "Updated a department goal"
         payload["target"] = slug or None
         if slug:
+            payload["link"] = f"/departments/{slug}"
+    elif tool_name == "create_goal":
+        # The handler's result names the area the goal landed in — which may
+        # be one it just created — so prefer it over the model's input.
+        slug = str((parsed or {}).get("area_slug") or "")
+        area = str((parsed or {}).get("area_title") or tool_input.get("area", "") or "")
+        key_result = str(tool_input.get("key_result", "") or "")[:80]
+        created = bool((parsed or {}).get("area_created"))
+        where = f"new {area} area" if created and area else area
+        if where and key_result:
+            payload["summary"] = f"Added a {where} goal: {key_result}"
+        elif key_result:
+            payload["summary"] = f"Added a goal: {key_result}"
+        else:
+            payload["summary"] = "Added a goal"
+        payload["target"] = slug or None
+        if workspace_mode == "solo":
+            # Solo's nav has Goals (every goal grouped by area), not Departments.
+            payload["link"] = "/goals"
+        elif slug:
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")

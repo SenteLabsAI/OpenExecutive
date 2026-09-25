@@ -7,23 +7,61 @@ setback ("we lost the Acme deal"). They close the loop that Phase A's
 `department_check_in` workflow opened — chat-driven activity now feeds
 the same `last_reviewed_at` column the cadence-driven review writes to.
 
+`create_goal` starts tracking a NEW goal the principal states ("20
+paying clients by the end of Q4"), filed under an area / department named
+by slug or title — creating that area when none matches. Only the
+principal, on a surface that verified it is them, may call it (the roster
+tools' rule): a goal renders in every turn's org block as one of the
+principal's own, so a goal from an inbound email, a teammate or an
+unattended run would be text with the principal's authority. Its schema is
+static (the area is free text, not an enum of the current departments), so
+adding an area never changes the cached tool prefix.
+
 Sit alongside `people_tools`, `schedule_tools`, `broadcast_tools`, and
 `alert_tools` in the Executive's main tool loop. No authority gate —
 the goal-mutation surface is principal-editable at any time through the
 UI, so a chat-turn change is no riskier than a manual edit; the audit
-row carries `rationale` for accountability.
+row carries `rationale` for accountability. No unattended run
+(reflection, research, the scheduler's proactive trigger) is offered
+`create_goal` (`schedule_tools.UNATTENDED_WITHHELD_TOOLS`).
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from openexecutive.departments.models import GoalStatus, PeriodType
 
 logger = logging.getLogger(__name__)
 
 _VALID_GOAL_STATUSES = ("on_track", "at_risk", "off_track")
+_VALID_PERIOD_TYPES = ("week", "month", "quarter", "year", "ongoing")
+
+# Field caps — the same limits the goal and department routes enforce
+# (api/routes/departments.py GoalCreate / DepartmentCreate).
+_AREA_MAX = 128
+_GOAL_TEXT_MAX = 512
+_PERIOD_VALUE_MAX = 64
+
+# Goals one turn may create. A user can state a few goals in one message;
+# a sweep ("set up goals for every department") is not a stated goal, and
+# this is the code-side backstop to the prompt's one-goal-per-stated-target
+# rule. Keyed on the audit turn id, so it applies to chat turns only.
+_MAX_GOALS_PER_TURN = 5
+# Goals an area may hold before create_goal refuses (the goal routes and the
+# UI are not capped — that is the principal's explicit choice). Common goal
+# practice keeps 3-5 key results per objective, so 8 is headroom for real use;
+# and every goal renders in the cached org block (capped at 4000 chars, cut at
+# a section boundary), so a runaway area cannot crowd the other areas out of
+# it — 8 goals at a typical ~150 chars is ~1.2k, under a third of the block.
+_MAX_GOALS_PER_AREA = 8
+_TURN_COUNTS_MAX = 256
+_goals_created_by_turn: dict[tuple[str | None, str], int] = {}
 
 
 LIST_DEPARTMENT_GOALS_TOOL: dict[str, Any] = {
@@ -118,9 +156,93 @@ UPDATE_DEPARTMENT_GOAL_TOOL: dict[str, Any] = {
 }
 
 
+CREATE_GOAL_TOOL: dict[str, Any] = {
+    "name": "create_goal",
+    "description": (
+        "Start tracking a NEW goal the principal just stated — a concrete "
+        "target in their own words: 'get to 20 paying clients by the end of "
+        "Q4', 'ship the mobile app this quarter'. Only the principal can set "
+        "goals, and only from a conversation that confirms it is them; for "
+        "anyone else it is refused. Files it under an area (a department) "
+        "named by slug or title; an area that does not exist yet is created. "
+        "If the goal may "
+        "already be tracked, check with list_department_goals first and "
+        "use update_department_goal to change an existing goal's status or "
+        "progress instead. Creates ONE goal per call, each backed by a "
+        "target the user actually gave: never invent goals, never turn your "
+        "own suggestions or advice into goals, and do not action a blanket "
+        "'set up goals for everything' / 'give every department some "
+        "goals' request — ask which goal and what target instead. Every "
+        "call is audited with the rationale you provide, and the user can "
+        "edit or delete the goal in the UI at any time."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "area": {
+                "type": "string",
+                "description": (
+                    "The area or department the goal belongs to: its slug "
+                    "('finance') or its title ('Marketing', 'Client work'). "
+                    "When none matches, a new area with this title is created."
+                ),
+            },
+            "key_result": {
+                "type": "string",
+                "description": (
+                    "What the goal is, as a short phrase "
+                    "('Paying clients', 'Launch the mobile app')."
+                ),
+            },
+            "target": {
+                "type": "string",
+                "description": (
+                    "The measurable target the user stated "
+                    "('20 by Dec 31', 'live in the App Store by Nov 15')."
+                ),
+            },
+            "period_type": {
+                "type": "string",
+                "enum": list(_VALID_PERIOD_TYPES),
+                "description": "The goal's timeframe. Defaults to quarter.",
+            },
+            "period_value": {
+                "type": "string",
+                "description": (
+                    "Which period, e.g. 'Q4 2026', 'November 2026', '2026', "
+                    "'Ongoing'. Omit for the current one."
+                ),
+            },
+            "current": {
+                "type": "string",
+                "description": (
+                    "Where it stands today, only if the user said "
+                    "('12 paying clients'). Omit otherwise."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "enum": list(_VALID_GOAL_STATUSES),
+                "description": "Defaults to on_track.",
+            },
+            "rationale": {
+                "type": "string",
+                "description": (
+                    "One short sentence: what the user said that sets this "
+                    "goal. Required. Stored in the audit log (not on the goal "
+                    "row) so future readers can see where the goal came from."
+                ),
+            },
+        },
+        "required": ["area", "key_result", "target", "rationale"],
+    },
+}
+
+
 DEPARTMENT_TOOLS: list[dict[str, Any]] = [
     LIST_DEPARTMENT_GOALS_TOOL,
     UPDATE_DEPARTMENT_GOAL_TOOL,
+    CREATE_GOAL_TOOL,
 ]
 
 
@@ -183,7 +305,7 @@ async def handle_list_department_goals(tool_input: dict[str, Any]) -> str:
             {"department_slug": slug, "error": str(exc)[:300]},
             department=slug,
         )
-        return json.dumps({"error": str(exc)})
+        return _failure("list_department_goals", exc)
 
     out = [
         {
@@ -301,7 +423,7 @@ async def handle_update_department_goal(tool_input: dict[str, Any]) -> str:
             {"department_slug": slug, "goal_id": goal_id, "error": str(exc)[:300]},
             department=slug,
         )
-        return json.dumps({"error": str(exc)})
+        return _failure("update_department_goal", exc)
 
     if not updated:
         # Shouldn't happen — we just confirmed the row exists above — but
@@ -348,7 +470,284 @@ async def handle_update_department_goal(tool_input: dict[str, Any]) -> str:
     })
 
 
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December",
+)
+
+
+def _today_local() -> date:
+    """Today in the user's zone (the workspace setting, else USER_TIMEZONE)."""
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    return datetime.now(get_user_timezone()).date()
+
+
+def default_period_value(period_type: str, today: date) -> str:
+    """The current period's label, in the shape the goal editor suggests
+    (``TimeframePicker.suggestPeriodValue``): "Week of Sep 21",
+    "September 2026", "Q3 2026", "2026", "Ongoing"."""
+    if period_type == "week":
+        monday = today - timedelta(days=today.weekday())
+        return f"Week of {_MONTH_NAMES[monday.month - 1][:3]} {monday.day}"
+    if period_type == "month":
+        return f"{_MONTH_NAMES[today.month - 1]} {today.year}"
+    if period_type == "year":
+        return str(today.year)
+    if period_type == "ongoing":
+        return "Ongoing"
+    return f"Q{(today.month - 1) // 3 + 1} {today.year}"
+
+
+def _norm_goal_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _area_title(area: str) -> str:
+    """A title for a new area: as given, except a bare slug the model passed
+    ("customer_success") reads as words ("Customer Success")."""
+    if " " not in area and area == area.lower() and re.search(r"[-_]", area):
+        return " ".join(w.capitalize() for w in re.split(r"[-_]+", area) if w) or area
+    return area
+
+
+def _turn_key() -> tuple[str | None, str] | None:
+    from openexecutive.audit.context import get_active_ids
+
+    session_id, turn_id = get_active_ids()
+    return (session_id, turn_id) if turn_id else None
+
+
+def _turn_cap_reached(key: tuple[str | None, str] | None) -> bool:
+    return key is not None and _goals_created_by_turn.get(key, 0) >= _MAX_GOALS_PER_TURN
+
+
+def _count_turn_goal(key: tuple[str | None, str] | None) -> None:
+    if key is None:
+        return
+    _goals_created_by_turn[key] = _goals_created_by_turn.get(key, 0) + 1
+    while len(_goals_created_by_turn) > _TURN_COUNTS_MAX:
+        # Oldest turn first (dicts keep insertion order).
+        _goals_created_by_turn.pop(next(iter(_goals_created_by_turn)))
+
+
+def _failure(tool: str, exc: BaseException) -> str:
+    """The error tool_result for a store failure: the exception's TYPE only,
+    as ``executive._tool_error_result`` does — its message can carry paths or
+    echo the input, and anything in model context can be quoted back to the
+    user. The full exception stays in the log (``logger.exception``)."""
+    return json.dumps({
+        "error": (
+            f"{tool} failed with {type(exc).__name__}. The failure is "
+            "recorded; do not retry the same call unchanged."
+        )
+    })
+
+
+def _caller_context() -> dict[str, Any]:
+    """Who asked, for a refused call's audit row (as people_tools records)."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    return {
+        "caller_person_id": getattr(session, "caller_person_id", None),
+        "origin_channel": getattr(session, "origin_channel", "") or None,
+        "from_web_chat": bool(getattr(session, "from_web_chat", False)),
+        "unattended": bool(getattr(session, "unattended", False)),
+    }
+
+
+def _principal_asked() -> bool:
+    """Whether this turn is the principal on a surface that verified it is
+    them — the roster tools' rule (``people_tools.is_principal_on_verified_
+    surface``): the web chat, their own Slack or Discord, a private Telegram
+    chat with a valid webhook secret. Email, Google Chat, the CLI, the MCP
+    server, teammates and unattended runs are not. Fails closed."""
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    return is_principal_on_verified_surface(current_session.get())
+
+
+def _optional_text(tool_input: dict[str, Any], name: str) -> str:
+    raw = tool_input.get(name)
+    return "" if raw is None else " ".join(str(raw).split())
+
+
+async def handle_create_goal(tool_input: dict[str, Any]) -> str:
+    from openexecutive.departments import registry as dept_registry
+    from openexecutive.departments import store as dept_store
+
+    def _bad(err: str, **extra: Any) -> str:
+        _audit(
+            "create_goal", "write", False,
+            f"create_goal bad input: {err}",
+            {"error": err[:300], **extra},
+            department=extra.get("department_slug"),
+        )
+        return json.dumps({"error": err})
+
+    # ---- Who is asking ----
+    # A goal renders in every turn's org block as one of the principal's own,
+    # so only they set one: never an inbound email, a teammate, or a run
+    # nobody is watching.
+    if not _principal_asked():
+        return _bad(
+            "refused: only the principal can set a goal, and this request did "
+            "not come from a conversation that confirms it is them. Tell whoever "
+            "asked that the principal needs to add it — in the web app, or by "
+            "asking there or in their own Slack or Discord.",
+            refused=True, **_caller_context(),
+        )
+
+    # ---- Input validation ----
+    area = _optional_text(tool_input, "area")
+    if not area:
+        return _bad("area is required (an area / department slug or title)")
+    if len(area) > _AREA_MAX:
+        return _bad(f"area must be at most {_AREA_MAX} characters")
+
+    key_result = _optional_text(tool_input, "key_result")
+    target = _optional_text(tool_input, "target")
+    if not key_result or not target:
+        return _bad("key_result and target are both required", area=area)
+    current = _optional_text(tool_input, "current")
+    for name, value in (("key_result", key_result), ("target", target), ("current", current)):
+        if len(value) > _GOAL_TEXT_MAX:
+            return _bad(f"{name} must be at most {_GOAL_TEXT_MAX} characters", area=area)
+
+    rationale = _optional_text(tool_input, "rationale")
+    if not rationale:
+        return _bad(
+            "rationale is required (one sentence: what the user said that sets this goal)",
+            area=area,
+        )
+
+    raw_period_type = tool_input.get("period_type") or "quarter"
+    if raw_period_type not in _VALID_PERIOD_TYPES:
+        return _bad(
+            f"period_type must be one of {list(_VALID_PERIOD_TYPES)}; got {raw_period_type!r}",
+            area=area,
+        )
+    period_type = cast("PeriodType", raw_period_type)
+    raw_status = tool_input.get("status") or "on_track"
+    if raw_status not in _VALID_GOAL_STATUSES:
+        return _bad(
+            f"status must be one of {list(_VALID_GOAL_STATUSES)}; got {raw_status!r}",
+            area=area,
+        )
+    status = cast("GoalStatus", raw_status)
+    period_value = _optional_text(tool_input, "period_value")
+    if not period_value:
+        try:
+            period_value = default_period_value(period_type, _today_local())
+        except Exception:  # noqa: BLE001 - a zone read must not fail the tool.
+            period_value = default_period_value(period_type, datetime.now(UTC).date())
+    if len(period_value) > _PERIOD_VALUE_MAX:
+        return _bad(f"period_value must be at most {_PERIOD_VALUE_MAX} characters", area=area)
+
+    turn = _turn_key()
+    if _turn_cap_reached(turn):
+        return _bad(
+            f"refused: {_MAX_GOALS_PER_TURN} goals were already created this turn. "
+            "Goals are created one per target the user actually stated — ask "
+            "which other goals they want tracked and what each target is.",
+            area=area, refused=True,
+        )
+
+    # ---- Resolve (or create) the area ----
+    try:
+        dept_store.initialize_db()
+        existing = dept_store.list_departments()
+        match = dept_store.match_department(area, [d.config for d in existing])
+        created = False
+        specialist_key: str | None = None
+        if match is not None:
+            slug, title = match.slug, match.title
+            state = next(d for d in existing if d.config.slug == slug)
+            wanted = _norm_goal_text(key_result)
+            dupe = next(
+                (g for g in state.goals if _norm_goal_text(g.key_result) == wanted), None
+            )
+            if dupe is not None:
+                return _bad(
+                    f"goal {dupe.id} in {slug!r} already tracks {dupe.key_result!r} — "
+                    "call update_department_goal with that goal_id to change it",
+                    department_slug=slug, goal_id=dupe.id,
+                )
+            if len(state.goals) >= _MAX_GOALS_PER_AREA:
+                return _bad(
+                    f"refused: {title!r} already tracks {len(state.goals)} goals "
+                    f"(the most this tool adds to one area is {_MAX_GOALS_PER_AREA}). "
+                    "Ask the principal which existing goal this replaces, or to "
+                    "add it on the Goals page.",
+                    department_slug=slug, refused=True,
+                )
+        else:
+            title = _area_title(area)
+            candidate = dept_store.specialist_key_for_area(title)
+            # One department per specialist: a second would make the
+            # specialist -> department mapping ambiguous.
+            if candidate and not any(d.config.specialist_key == candidate for d in existing):
+                specialist_key = candidate
+            new_state = dept_store.create_department(title, specialist_key=specialist_key)
+            slug, title = new_state.config.slug, new_state.config.title
+            created = True
+
+        goal_id = dept_store.insert_goal(
+            slug,
+            period_type=period_type,
+            period_value=period_value,
+            key_result=key_result,
+            target=target,
+            current=current,
+            status=status,
+        )
+    except Exception as exc:
+        logger.exception("create_goal: store write failed area=%s", area)
+        _audit(
+            "create_goal", "write", False,
+            f"create_goal FAILED area={area}: {type(exc).__name__}",
+            {"area": area, "error": repr(exc)[:300]},
+        )
+        return _failure("create_goal", exc)
+
+    _count_turn_goal(turn)
+    try:
+        dept_registry.invalidate()
+    except Exception:  # noqa: BLE001 - cache-invalidate must not break the tool.
+        logger.warning("create_goal: registry invalidate failed", exc_info=True)
+
+    _audit(
+        "create_goal", "write", True,
+        f"create_goal {slug}/{goal_id}"
+        + (" (new area)" if created else "")
+        + f": {key_result[:80]}",
+        {
+            "department_slug": slug,
+            "goal_id": goal_id,
+            "area_created": created,
+            "specialist_key": specialist_key,
+            "key_result": key_result[:280],
+            "target": target[:280],
+            "period": f"{period_type} {period_value}",
+            "status": status,
+            "rationale": rationale[:280],
+        },
+        department=slug,
+    )
+    return json.dumps({
+        "status": "ok",
+        "goal_id": goal_id,
+        "area_slug": slug,
+        "area_title": title,
+        "area_created": created,
+        "period": f"{period_type} {period_value}",
+    })
+
+
 DEPARTMENT_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
     "list_department_goals": handle_list_department_goals,
     "update_department_goal": handle_update_department_goal,
+    "create_goal": handle_create_goal,
 }
