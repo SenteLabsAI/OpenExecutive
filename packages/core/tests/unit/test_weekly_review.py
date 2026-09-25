@@ -29,6 +29,7 @@ from openexecutive.workflows.weekly_review import (
     WeeklyReviewInput,
     WeeklyReviewWorkflow,
     decisions_to_revisit,
+    summarize_review,
 )
 
 KIND = runner.WEEKLY_REVIEW_KIND
@@ -322,6 +323,30 @@ def test_top_three_keeps_only_three_list_items(
     top = _artifact(_run()).split("## Next week's top 3", 1)[1]
     assert "1. one — a\n2. two — b\n3. three — c" in top
     assert "four" not in top and "Thanks" not in top and "Here you go" not in top
+
+
+def test_the_briefing_reads_the_top_three_back_from_the_artifact(
+    _isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``summarize_review`` (the solo Briefing's card) reads the artifact
+    this workflow writes: the period, and next week's top three as plain
+    text — or the section's own note when nothing was picked."""
+    _stub_models(monkeypatch, top_three="1. **Close** the buffer gap — at risk\n2. Chase it — due")
+    artifact = _artifact(_run(WeeklyReviewInput(period_label="Week of Sep 21")))
+    assert summarize_review(artifact) == {
+        "period": "Week of Sep 21",
+        "top_three": ["Close the buffer gap — at risk", "Chase it — due"],
+        "excerpt": "",
+    }
+    _stub_models(monkeypatch, top_three="")
+    quiet = summarize_review(_artifact(_run(WeeklyReviewInput(period_label="Week of Sep 21"))))
+    assert quiet["top_three"] == []
+    assert quiet["excerpt"] == "Nothing stands out — a good week to get ahead."
+    # Without the section (not this workflow's shape), the first lines stand in.
+    assert summarize_review("# Weekly review — W\n\n## Goals\n\n### A\n- **x** — y\n- z\n- q\n- r") == {
+        "period": "W", "top_three": [], "excerpt": "x — y\nz\nq",
+    }
+    assert summarize_review("(no artifact)") == {"period": "", "top_three": [], "excerpt": ""}
 
 
 def test_a_failing_specialist_leaves_the_area_ungraded(

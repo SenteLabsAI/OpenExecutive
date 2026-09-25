@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,10 @@ REVISIT_AFTER_DAYS = 30
 REVISIT_MAX = 3
 _MAX_LISTED = 10
 _TOP_THREE_MAX_TOKENS = 400
+# The artifact's title line and its last section. `summarize_review` (the
+# solo Briefing's "This week's review" card) reads them back.
+TITLE_PREFIX = "# Weekly review — "
+TOP_THREE_HEADING = "## Next week's top 3"
 
 WEEKLY_TOP_THREE_SYSTEM = (
     "You are the principal's Executive, closing out their week. The principal "
@@ -234,7 +239,7 @@ class WeeklyReviewWorkflow(Workflow):
         if not top_three:
             top_three = _fallback_top_three(areas=list(areas), due=due, quiet=quiet, now=now)
         artifact = (
-            f"# Weekly review — {period}\n\n{body}\n## Next week's top 3\n\n"
+            f"{TITLE_PREFIX}{period}\n\n{body}\n{TOP_THREE_HEADING}\n\n"
             f"{top_three or '_Nothing stands out — a good week to get ahead._'}\n"
         )
         yield WorkflowEvent(
@@ -524,19 +529,88 @@ async def _next_weeks_top_three(body: str, period: str) -> str:
     return _numbered_items(text)
 
 
-def _numbered_items(text: str, limit: int = 3) -> str:
-    """The first ``limit`` list items of ``text``, renumbered 1..n. Anything
-    else the model wrote (a heading, a preamble) is dropped."""
-    import re
+_LIST_ITEM_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.*\S)\s*$")
 
+
+def _list_items(text: str, limit: int = 3) -> list[str]:
+    """The first ``limit`` list items of ``text``, markers removed."""
     items: list[str] = []
     for line in text.splitlines():
-        m = re.match(r"^\s*(?:\d+[.)]|[-*•])\s+(.*\S)\s*$", line)
+        m = _LIST_ITEM_RE.match(line)
         if m:
             items.append(m.group(1))
         if len(items) >= limit:
             break
+    return items
+
+
+def _numbered_items(text: str, limit: int = 3) -> str:
+    """The first ``limit`` list items of ``text``, renumbered 1..n. Anything
+    else the model wrote (a heading, a preamble) is dropped."""
+    items = _list_items(text, limit)
     return "\n".join(f"{n}. {item}" for n, item in enumerate(items, start=1))
+
+
+# --------------------------------------------------------------------------- #
+# Reading a stored review back (the solo Briefing's card)
+# --------------------------------------------------------------------------- #
+
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_MARKS_RE = re.compile(r"\*\*|__|`|~~")
+_TOP_THREE_SPLIT_RE = re.compile(rf"^{re.escape(TOP_THREE_HEADING)}[ \t]*$", re.MULTILINE)
+_EXCERPT_LINES = 3
+_EXCERPT_LINE_MAX = 240
+
+
+def _plain(line: str) -> str:
+    """One Markdown line as plain text: links become their text, bold,
+    code and strike marks go, and a line wrapped in ``_`` or ``*`` loses
+    them."""
+    text = _MD_MARKS_RE.sub("", _MD_LINK_RE.sub(r"\1", line)).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "_*":
+        text = text[1:-1].strip()
+    return " ".join(text.split())[:_EXCERPT_LINE_MAX]
+
+
+def summarize_review(artifact: str) -> dict[str, Any]:
+    """What the Briefing shows of a stored review, as plain text.
+
+    ``period`` is the title line's label ("Week of Sep 21"; "" without one).
+    ``top_three`` is the "Next week's top 3" list, up to three items.
+    ``excerpt`` stands in for it when that list is empty: the section's own
+    line ("Nothing stands out …"), else the review's first lines (headings
+    skipped, list markers dropped). An empty or placeholder artifact gives
+    all three empty. Never raises."""
+    text = (artifact or "").strip()
+    if not text or text == "(no artifact)":
+        return {"period": "", "top_three": [], "excerpt": ""}
+    first, _, rest = text.partition("\n")
+    period = ""
+    if first.startswith(TITLE_PREFIX):
+        period = _plain(first[len(TITLE_PREFIX):])
+        text = rest
+    # The heading on a line of its own (each line quoting the principal's
+    # data starts with a list marker, emphasis or a deeper heading), and the
+    # last one, since it is the review's last section.
+    parts = _TOP_THREE_SPLIT_RE.split(text)
+    found = len(parts) > 1
+    body = parts[0]
+    section = parts[-1] if found else ""
+    top = [t for t in (_plain(i) for i in _list_items(section)) if t]
+    if top:
+        return {"period": period, "top_three": top, "excerpt": ""}
+    source = section if found and section.strip() else body
+    lines: list[str] = []
+    for raw in source.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        m = _LIST_ITEM_RE.match(raw)
+        line = _plain(m.group(1) if m else raw)
+        if line:
+            lines.append(line)
+        if len(lines) >= _EXCERPT_LINES:
+            break
+    return {"period": period, "top_three": [], "excerpt": "\n".join(lines)}
 
 
 def _fallback_top_three(
@@ -571,10 +645,13 @@ __all__ = [
     "REVIEW_ACTOR",
     "REVISIT_AFTER_DAYS",
     "REVISIT_MAX",
+    "TITLE_PREFIX",
+    "TOP_THREE_HEADING",
     "WEEKLY_TOP_THREE_SYSTEM",
     "WeeklyReviewInput",
     "WeeklyReviewWorkflow",
     "decisions_to_revisit",
     "quiet_projects",
+    "summarize_review",
     "weeks_decisions",
 ]

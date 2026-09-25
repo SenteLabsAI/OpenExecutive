@@ -13,6 +13,8 @@ import {
   deleteInitiative,
   getPersonOpenLoops,
   getToday,
+  getTopThree,
+  getWeeklyReview,
   listInitiatives,
   rejectDecision,
   reopenAlert,
@@ -27,10 +29,13 @@ import {
   type ClientCockpitCard,
   type ProposalItem,
   type Today,
+  type TopThreeToday,
+  type WeeklyReviewSummary,
 } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
-import { dueSoon, principalIdOf } from "@/lib/dueSoon";
+import { dueSoon, loopText, principalIdOf } from "@/lib/dueSoon";
+import { reviewExcerpt, reviewRanLabel, topThreeSlot, topThreeWhy } from "@/lib/rhythmCards";
 import {
   HANDLED_REOPENABLE,
   groupHandled,
@@ -481,6 +486,8 @@ const SECTION_IDS = {
   practice: "sec-practice",
   projects: "sec-projects",
   dueSoon: "sec-due-soon",
+  topThree: "sec-top-three",
+  weeklyReview: "sec-weekly-review",
 } as const;
 
 // Smooth-scroll to the first rendered (visible) section in `ids`, popping open
@@ -1368,6 +1375,143 @@ function DueSoonPanel({ principalId, id }: { principalId: number; id?: string })
   );
 }
 
+// A numbered row's number, shared by the two solo focus cards below.
+function RankBadge({ n }: { n: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="mt-0.5 flex-shrink-0 w-5 h-5 rounded-full bg-indigo-500/15 text-indigo-300 text-[11px] font-semibold tabular-nums flex items-center justify-center"
+    >
+      {n}
+    </span>
+  );
+}
+
+// Solo only: the three things to focus on today — the same pick, order and
+// free slots as the morning brief (GET /today/top-three), so a user no
+// channel reaches still sees them. It loads on its own after the Briefing,
+// since it may wait on the calendar (up to 4 s), and hides when there is
+// nothing to pick or the viewer isn't the owner (the API returns null).
+// `ownerName` turns a commitment's stored text into "you" wording, as the
+// Due soon card does.
+function TopThreePanel({ ownerName, id }: { ownerName: string; id?: string }) {
+  const [top, setTop] = useState<TopThreeToday | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getTopThree(controller.signal)
+      .then(setTop)
+      .catch(() => { /* no card is better than a broken one */ });
+    return () => controller.abort();
+  }, []);
+
+  if (!top || top.items.length === 0) return null;
+  return (
+    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
+      <div className="flex items-center gap-1.5">
+        <SectionHeading title="Top three today" icon="bolt" />
+        <InfoTip align="left">
+          The three things to focus on today, picked from what&apos;s overdue or due, goals
+          that are slipping and your active projects — the same three your morning brief
+          opens with. When the Executive can read your calendar, each gets a free slot in
+          today&apos;s working hours.
+        </InfoTip>
+      </div>
+      <ol className="divide-y divide-line">
+        {top.items.map((item, i) => {
+          const text =
+            item.kind === "commitment" && ownerName
+              ? loopText({ description: item.text, owner_name: ownerName })
+              : item.text;
+          const slot = topThreeSlot(item);
+          return (
+            <li key={item.key} className="py-3 flex items-start gap-3">
+              <RankBadge n={i + 1} />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-fg break-words">{text}</div>
+                <div className="text-xs text-fg-muted mt-0.5">{topThreeWhy(item)}</div>
+              </div>
+              {slot && (
+                <span
+                  className={`flex-shrink-0 mt-0.5 text-xs tabular-nums ${
+                    item.slot ? "text-indigo-300" : "text-fg-muted"
+                  }`}
+                >
+                  {slot}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+// Solo only: the latest weekly review (GET /today/weekly-review) — when it
+// ran and next week's top three, with a link to the whole review on its run
+// page. The scheduler only sends it by chat or email, so without either this
+// is where a solo user finds it. Loads on its own; hidden until a review has
+// run, and for anyone but the owner.
+function WeeklyReviewPanel({ id }: { id?: string }) {
+  const [review, setReview] = useState<WeeklyReviewSummary | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getWeeklyReview(controller.signal)
+      .then(setReview)
+      .catch(() => { /* no card is better than a broken one */ });
+    return () => controller.abort();
+  }, []);
+
+  if (!review) return null;
+  const excerpt = reviewExcerpt(review);
+  const meta = [review.period, reviewRanLabel(review.completed_at)].filter(Boolean).join(" · ");
+  return (
+    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <SectionHeading title="This week's review" icon="clipboard" />
+          <InfoTip align="left">
+            Once a week the Executive looks back on your week — your goals by area, what&apos;s
+            due, projects that went quiet and the decisions you made — and picks next
+            week&apos;s top three. It&apos;s also sent to you when a chat app or email is
+            connected.
+          </InfoTip>
+        </div>
+        <Link
+          href={`/jobs/runs/${encodeURIComponent(review.run_id)}`}
+          className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300"
+        >
+          Read the review →
+        </Link>
+      </div>
+      {meta && <p className="-mt-2 mb-2 text-xs text-fg-muted">{meta}</p>}
+      {excerpt.heading && (
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">
+          {excerpt.heading}
+        </div>
+      )}
+      {excerpt.numbered ? (
+        <ol className="divide-y divide-line">
+          {excerpt.lines.map((line, i) => (
+            <li key={i} className="py-2 flex items-start gap-3">
+              <RankBadge n={i + 1} />
+              <span className="min-w-0 flex-1 text-sm text-fg break-words">{line}</span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        excerpt.lines.map((line, i) => (
+          <p key={i} className="py-0.5 text-sm text-fg-muted break-words">
+            {line}
+          </p>
+        ))
+      )}
+    </section>
+  );
+}
+
 // Multi-client practice mode only: rollup cards for PARKED client slots so
 // the operator sees the whole practice from the active client's brief. The
 // backend sends [] for single-company installs (0-1 slots), so this renders
@@ -1982,6 +2126,9 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
     : 0;
   // Solo's "Due soon" card reads the principal's own open loops.
   const principalId = solo ? principalIdOf(today?.people ?? []) : null;
+  // …and the top three words a commitment as theirs ("you").
+  const principalName =
+    (principalId != null && today?.people.find((p) => p.id === principalId)?.full_name) || "";
   const statPills: StatPill[] = today
     ? briefingStats({
         needsYou: mineProposals.length,
@@ -2251,6 +2398,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                     </details>
                   </section>
 
+                  {solo && <TopThreePanel ownerName={principalName} id={SECTION_IDS.topThree} />}
+
                   {solo && principalId != null && (
                     <DueSoonPanel principalId={principalId} id={SECTION_IDS.dueSoon} />
                   )}
@@ -2277,6 +2426,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
 
                 {/* RIGHT — awareness (org health + ambient signals) */}
                 <div className="min-w-0 space-y-8">
+                  {solo && <WeeklyReviewPanel id={SECTION_IDS.weeklyReview} />}
+
                   {solo && <ProjectsPanel id={SECTION_IDS.projects} />}
 
                   {/* Departments — only those needing attention get a row;

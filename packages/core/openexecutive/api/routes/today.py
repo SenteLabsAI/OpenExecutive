@@ -16,6 +16,11 @@ GET /today/activity returns the Executive's recent self-initiated activity —
 fired scheduled_actions (DMs sent, follow-ups dispatched, cadences run),
 plus decisions and advice the system has logged. Powers the "Recent
 activity" rail on the briefing-first landing.
+
+GET /today/top-three and GET /today/weekly-review feed two solo-only
+Briefing cards — today's top three (as the morning brief picks them) and the
+latest completed weekly review — for the principal alone; null in team mode
+and for anyone else.
 """
 from __future__ import annotations
 
@@ -1564,6 +1569,112 @@ async def get_brief_delivery(request: Request) -> BriefDeliveryNotice | None:
     if not await asyncio.to_thread(_caller_is_principal_or_unclaimed, request):
         return None
     return await asyncio.to_thread(_brief_delivery_notice)
+
+
+# --------------------------------------------------------------------------- #
+# Solo Briefing cards: today's top three and the latest weekly review
+# --------------------------------------------------------------------------- #
+
+
+class TopThreeItem(BaseModel):
+    """One of today's three, as the solo morning brief lists it
+    (``briefing.top_three``)."""
+
+    key: str
+    kind: str  # "commitment" | "goal" | "project"
+    text: str
+    why: str
+    # A free block today in the user's zone ("10:00–11:00") when a calendar
+    # was read on a business day; "" when no block is left for it; null when
+    # no calendar was read (none connected, a failure, a weekend).
+    slot: str | None = None
+
+
+class TopThreeToday(BaseModel):
+    items: list[TopThreeItem]
+
+
+class WeeklyReviewSummary(BaseModel):
+    """The latest completed weekly review, for the solo Briefing's card."""
+
+    run_id: str
+    completed_at: str  # ISO — when the run finished
+    period: str  # "Week of Sep 21"; "" when the review has no title line
+    # Next week's top three, as written (plain text, list markers removed).
+    top_three: list[str]
+    # Stands in when top_three is empty: the review's own note, or its
+    # first lines.
+    excerpt: str
+
+
+def _solo_principal_view(request: Request) -> bool:
+    """Whether this caller gets the solo Briefing's own cards: the workspace
+    is solo and the caller is the principal by the rule for starting a
+    principal-only run (``workflows._caller_is_the_principal``) — their own
+    email on the roster, or no caller header; never "nobody is principal
+    yet". Team mode reads no roster."""
+    from openexecutive.api.routes.workflows import _caller_is_the_principal
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
+
+    if effective_workspace_mode() != "solo":
+        return False
+    return _caller_is_the_principal(request)
+
+
+@router.get(
+    "/today/top-three",
+    response_model=TopThreeToday | None,
+    tags=["today"],
+)
+async def get_top_three(request: Request) -> TopThreeToday | None:
+    """Solo only: today's top three for the principal — the same items, order
+    and free slot the morning brief lists, from the same inputs
+    (``open_loops.principal_due_soon`` → ``top_three.build_top_three``). Null
+    in team mode and for anyone else. Kept off ``GET /today`` so the
+    Briefing never waits on the calendar read (one call, 4 s cap; no
+    calendar or a failure means no slots)."""
+    if not await asyncio.to_thread(_solo_principal_view, request):
+        return None
+    from openexecutive.attunement.open_loops import principal_due_soon
+    from openexecutive.briefing.top_three import build_top_three
+
+    due_soon = await asyncio.to_thread(principal_due_soon)
+    items, _calendar = await build_top_three(due_soon)
+    return TopThreeToday(items=[TopThreeItem(**item) for item in items])
+
+
+def _latest_weekly_review() -> WeeklyReviewSummary | None:
+    from openexecutive.workflows.persistence import get_run, list_runs
+    from openexecutive.workflows.weekly_review import WeeklyReviewWorkflow, summarize_review
+
+    try:
+        latest = list_runs(workflow_name=WeeklyReviewWorkflow.name, status="done", limit=1)
+        run = get_run(latest[0]["run_id"]) if latest else None
+    except Exception:
+        logger.warning("today: weekly review runs unreadable", exc_info=True)
+        return None
+    if run is None:
+        return None
+    return WeeklyReviewSummary(
+        run_id=str(run["run_id"]),
+        completed_at=str(run["updated_at"]),
+        **summarize_review(str(run.get("artifact") or "")),
+    )
+
+
+@router.get(
+    "/today/weekly-review",
+    response_model=WeeklyReviewSummary | None,
+    tags=["today"],
+)
+async def get_weekly_review(request: Request) -> WeeklyReviewSummary | None:
+    """Solo only: the latest completed weekly review — its run id, when it
+    finished, and next week's top three (or a short excerpt) — so a
+    principal no channel reaches still sees it. Null with no completed run,
+    in team mode and for anyone but the principal."""
+    if not await asyncio.to_thread(_solo_principal_view, request):
+        return None
+    return await asyncio.to_thread(_latest_weekly_review)
 
 
 @router.get(

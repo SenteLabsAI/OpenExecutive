@@ -3356,6 +3356,48 @@ export async function getBriefDelivery(signal?: AbortSignal): Promise<BriefDeliv
   return res.json();
 }
 
+// Solo only: today's top three, as the morning brief picks them. Null in
+// team mode and for anyone but the owner. Loaded apart from /today because
+// it may read the calendar (up to 4 s).
+export interface TopThreeItem {
+  key: string;
+  kind: "commitment" | "goal" | "project";
+  text: string;
+  why: string;
+  // "10:00–11:00" (local) when a calendar was read on a business day; ""
+  // when no free block is left for it; null when no calendar was read.
+  slot: string | null;
+}
+
+export interface TopThreeToday {
+  items: TopThreeItem[];
+}
+
+export async function getTopThree(signal?: AbortSignal): Promise<TopThreeToday | null> {
+  const res = await fetch(`${API_BASE}/today/top-three`, { signal });
+  if (!res.ok) throw new Error(`Failed to load the top three: ${res.statusText}`);
+  return res.json();
+}
+
+// Solo only: the latest completed weekly review. Null when none has run, in
+// team mode and for anyone but the owner. The full review is its run page
+// (/jobs/runs/{run_id}).
+export interface WeeklyReviewSummary {
+  run_id: string;
+  completed_at: string;
+  period: string;
+  // Next week's top three, plain text.
+  top_three: string[];
+  // Shown when top_three is empty: the review's own note, or its first lines.
+  excerpt: string;
+}
+
+export async function getWeeklyReview(signal?: AbortSignal): Promise<WeeklyReviewSummary | null> {
+  const res = await fetch(`${API_BASE}/today/weekly-review`, { signal });
+  if (!res.ok) throw new Error(`Failed to load the weekly review: ${res.statusText}`);
+  return res.json();
+}
+
 // Mark an alert as read/ack/dismissed. Used by the briefing's
 // Approve/Dismiss affordance to groom the "Needs you" queue: any
 // non-unread status drops the alert from /today's proposals list.
