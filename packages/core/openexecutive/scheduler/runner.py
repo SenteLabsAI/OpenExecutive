@@ -308,19 +308,38 @@ async def _execute_action(
             # to a human", and the card's "If you approve: … right away" line
             # is what sends it — dispatching here as well acted before anyone
             # agreed, then acted again on approval. Unlike `propose`, an
-            # escalation is never deferred to the approver's window.
-            if decision.assignee_person_id is not None:
+            # escalation is never deferred to the approver's window. Since the
+            # card is now the only trace of the action, it must always land:
+            # unrouted when nobody holds the scope and no principal is set;
+            # deduped on the full intent, not a 60-char summary prefix another
+            # escalation could share; folded into an open identical card but
+            # re-minted once that card was handled (the action-id suffix); and
+            # retried, not marked done, if the card cannot be written.
+            try:
                 propose_via_alert(
                     department_slug=action.department,
                     person_id=decision.assignee_person_id,
                     summary=f"[ESCALATION] {action.intent_text[:140]}",
                     body=action.intent_text,
                     suggested_action=_proposed_action_phrase(urgent=True),
+                    severity="high",
+                    dedup_on=action.intent_text,
+                    external_id_suffix=str(action.id),
+                    raise_errors=True,
                 )
-            else:
+            except Exception as exc:
+                logger.exception(
+                    "scheduler: escalation card for action %d could not be filed",
+                    action.id,
+                )
+                mark_action_failed_or_retry(
+                    action.id, f"escalation card could not be filed: {exc}"
+                )
+                return
+            if decision.assignee_person_id is None:
                 logger.warning(
-                    "scheduler: escalate for dept=%r has no assignee — "
-                    "nobody to ask, action %d not dispatched",
+                    "scheduler: escalate for dept=%r has no approver — "
+                    "action %d filed as an unrouted card",
                     action.department, action.id,
                 )
             mark_action_done(action.id)

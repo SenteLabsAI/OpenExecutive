@@ -11,6 +11,7 @@ deterministic and easy to test without time mocking.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Literal
@@ -168,17 +169,22 @@ def _route_proposal(
 
 def propose_via_alert(
     department_slug: str,
-    person_id: int,
+    person_id: int | None,
     summary: str,
     body: str,
     suggested_action: str = "",
     extra_tags: list[str] | None = None,
     *,
     external_id_suffix: str = "",
+    severity: str = "medium",
+    dedup_on: str | None = None,
+    raise_errors: bool = False,
 ) -> int | None:
     """Persist a proposal as an alert routed to a specific Person.
 
-    Returns the alert id, or None if a duplicate was suppressed.
+    Returns the alert id, or None if a duplicate was suppressed. A store
+    failure is logged and also returns None, unless ``raise_errors`` — for a
+    caller whose card is the only trace of the work and must not be lost.
 
     topic_tags carries both department and person identifiers so the UI
     and future resolvers can filter/match without parsing the body;
@@ -193,25 +199,38 @@ def propose_via_alert(
     the proposal is one-shot and a repeat with the same summary is
     suppressed for good. Coalescing keeps the open card's routing: a head
     change re-routes it only once the current card has been handled.
+
+    ``person_id=None`` files the card unrouted: the Briefing lists every
+    unread card, so a held action with nobody to route to still reaches a
+    person. ``dedup_on`` keys the dedup on that text instead of the summary's
+    first 60 characters, so two proposals that merely share an opening stay
+    two cards while an identical repeat is still suppressed.
     """
     from openexecutive.alerts.store import coalesce_alert, insert_alert
 
-    topic_tags = [f"department:{department_slug}", f"person:{person_id}"]
+    topic_tags = [f"department:{department_slug}"]
+    if person_id is not None:
+        topic_tags.append(f"person:{person_id}")
     for tag in extra_tags or []:
         if tag not in topic_tags:
             topic_tags.append(tag)
-    dedup_key = f"proposal:{department_slug}:{person_id}:{summary[:60]}"
+    route_key = "unrouted" if person_id is None else str(person_id)
+    subject = (
+        summary[:60] if dedup_on is None
+        else hashlib.sha256(dedup_on.encode()).hexdigest()[:16]
+    )
+    dedup_key = f"proposal:{department_slug}:{route_key}:{subject}"
     external_id = f"{dedup_key}:{external_id_suffix}" if external_id_suffix else dedup_key
 
     try:
         if external_id_suffix and coalesce_alert(
-            source="authority_gate", dedup_key=dedup_key, severity="medium", body=body,
+            source="authority_gate", dedup_key=dedup_key, severity=severity, body=body,
         ):
             return None
         return insert_alert(
             source="authority_gate",
             external_id=external_id,
-            severity="medium",
+            severity=severity,
             headline=summary,
             body=body,
             suggested_action=suggested_action,
@@ -220,8 +239,10 @@ def propose_via_alert(
             routed_to_person_id=person_id,
         )
     except Exception:
+        if raise_errors:
+            raise
         logger.exception(
-            "authority_gate: propose_via_alert failed for dept=%r person=%d",
+            "authority_gate: propose_via_alert failed for dept=%r person=%s",
             department_slug, person_id,
         )
         return None

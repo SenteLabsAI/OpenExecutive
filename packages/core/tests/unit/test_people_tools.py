@@ -375,6 +375,39 @@ def test_unverified_surfaces_cannot_change_the_roster(
     assert "Mallory" not in _names()
 
 
+def test_owner_in_a_private_telegram_chat_can_change_the_roster(
+    owner_id: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "hook-secret")
+    session = Session(origin_channel="telegram", origin_channel_ref="424242",
+                      caller_person_id=owner_id)
+    with _turn(session):
+        result = _call(handle_upsert_person, {"full_name": "Cindy Lee"})
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize(("secret", "chat_ref"), [
+    # No webhook secret: /webhook/telegram accepts anyone's POST naming any
+    # chat id, so a Telegram "principal" proves nothing.
+    (None, "424242"),
+    # A group chat (negative id) is every member of the group.
+    ("hook-secret", "-100424242"),
+], ids=["no_webhook_secret", "group_chat"])
+def test_unverifiable_telegram_cannot_change_the_roster(
+    owner_id: int, monkeypatch: pytest.MonkeyPatch, secret: str | None, chat_ref: str
+) -> None:
+    if secret is None:
+        monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", secret)
+    session = Session(origin_channel="telegram", origin_channel_ref=chat_ref,
+                      caller_person_id=owner_id)
+    with _turn(session):
+        result = _call(handle_upsert_person, {"full_name": "Mallory"})
+    assert result["status"] == "refused"
+    assert "Mallory" not in _names()
+
+
 def test_background_run_with_no_conversation_cannot_change_the_roster() -> None:
     with _turn(None):
         result = _call(handle_upsert_person, {"full_name": "Mallory"})

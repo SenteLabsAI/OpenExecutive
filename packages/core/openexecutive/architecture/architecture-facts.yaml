@@ -625,8 +625,13 @@ routing:
     The three WRITE tools are the principal's alone, and only on a surface
     that verified the speaker (`_refuse_unless_owner`): the web chat
     (`Session.from_web_chat`, the signed-in Google account) or the
-    principal's own Slack / Discord / Telegram (`origin_channel`, the
-    platform's user or chat id). `is_principal_or_self(caller, None)`
+    principal's own Slack / Discord (`origin_channel`, the platform's user
+    id over an authenticated connection), or a PRIVATE Telegram chat only
+    when TELEGRAM_WEBHOOK_SECRET is set — Telegram identifies the chat, not
+    the sender (a group is all its members), and /webhook/telegram is
+    exempt from the shared secret, so without the webhook secret anyone
+    can post an update naming the principal's chat id
+    (`_is_verified_speaker_surface`). `is_principal_or_self(caller, None)`
     decides, so an archived principal is refused too. Everything else gets
     `{"status": "refused", "detail": ...}` — a rostered teammate on any
     surface, a signed-in web user whose email is on no People row (told to
@@ -2081,8 +2086,9 @@ people:
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
     `set_department_head` tools (openexecutive.orchestrator.people_tools) —
-    but only when the principal asks from the web chat or their own
-    Slack / Discord / Telegram; anyone and anything else is refused.
+    but only when the principal asks from the web chat, their own Slack or
+    Discord, or a private Telegram chat with TELEGRAM_WEBHOOK_SECRET set;
+    anyone and anything else is refused.
     See `routing.people_tools` for details.
   brief_insights: |
     openexecutive.people.insights generates a one-line per-person note for the
@@ -2184,7 +2190,16 @@ scheduler:
     they are outside it) or `escalate` (an urgent "[ESCALATION]" alert to
     the approver right away, never deferred, and NOT dispatched — the row
     is marked done and the card's "If you approve: … right away" line is
-    what sends it). `escalate` used to raise the alert AND dispatch, which
+    what sends it). Because that card is the action's only trace, it
+    always lands: severity high, filed unrouted when nobody holds the
+    scope and no principal is set (the Briefing lists every unread card),
+    and deduped on the full intent (`propose_via_alert(dedup_on=...)`)
+    rather than the summary's first 60 characters, so another escalation
+    that shares an opening cannot swallow it. An identical escalation folds
+    into a still-open card and gets a fresh one once that card was handled
+    (the action id is the external-id suffix), and a card that cannot be
+    written (`raise_errors=True`) retries the row with backoff instead of
+    marking it done. `escalate` used to raise the alert AND dispatch, which
     contradicted the UI's "the specialist will not act" and sent the
     action twice once the card was approved. A gated `dept_cadence` row
     becomes a card and does not chain its next occurrence (re-bootstrapped
@@ -2192,7 +2207,9 @@ scheduler:
     Nudge engine emissions set `department=""` to bypass the gate — they
     are about reaching the approver, not a dept-scoped operation.
     Cancelling: DELETE /scheduled/{id} (the Pulse page's Cancel) soft-
-    cancels a `pending` row (409 otherwise). Like pause it only stops
+    cancels a `pending` row (409 otherwise; the UPDATE is itself guarded
+    on status='pending', so a row the scheduler claimed in between is
+    never overwritten). Like pause it only stops
     work, so any signed-in user may: `require_cancel_permission` accepts
     a matching X-Admin-Token (SCHEDULED_ADMIN_TOKEN, scripts), a signed-in
     user through the UI proxy — `x-caller-email` trusted only when the

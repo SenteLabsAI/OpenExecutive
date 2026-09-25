@@ -226,6 +226,7 @@ def test_escalate_creates_urgent_alert_and_holds() -> None:
     alerts = alert_store.list_alerts()
     assert len(alerts) == 1
     assert alerts[0].headline.startswith("[ESCALATION]")
+    assert alerts[0].severity == "high"  # ranks above routine proposals
     assert alerts[0].routed_to_person_id == principal_id
     assert "department:legal" in alerts[0].topic_tags
     # Escalation phrasing is the concrete action with an urgency tail — what
@@ -269,7 +270,9 @@ def test_escalate_is_not_deferred_to_approver_window() -> None:
     assert updated.status == "done"  # not rescheduled back to pending
 
 
-def test_escalate_with_nobody_to_ask_does_not_dispatch() -> None:
+def test_escalate_with_nobody_to_ask_files_an_unrouted_card() -> None:
+    """No approver and no principal: the held action must still reach the
+    Briefing (which lists unrouted cards), never vanish with a log line."""
     dept_store.seed_default_departments()
     dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
     dept_registry.invalidate()
@@ -284,10 +287,99 @@ def test_escalate_with_nobody_to_ask_does_not_dispatch() -> None:
         asyncio.run(_execute_action(action, gateway=None))
 
     mock_chat.assert_not_called()
-    assert alert_store.list_alerts() == []
+    alerts = alert_store.list_alerts()
+    assert len(alerts) == 1
+    assert alerts[0].headline.startswith("[ESCALATION]")
+    assert alerts[0].routed_to_person_id is None
+    assert not any(t.startswith("person:") for t in alerts[0].topic_tags)
     updated = episodic.get_scheduled_action(action.id)
     assert updated is not None
     assert updated.status == "done"
+
+
+def _escalate(intent_text: str) -> None:
+    episodic.insert_scheduled_action(
+        run_at=(_now() - timedelta(seconds=10)).isoformat(),
+        channel="slack_dm",
+        channel_ref="U123",
+        intent_text=intent_text,
+        department="legal",
+    )
+    (action,) = episodic.claim_due_actions(_now())
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+    mock_chat.assert_not_called()
+
+
+def test_escalations_sharing_an_opening_are_separate_cards() -> None:
+    """With nothing sent before approval, the card is the action's only trace:
+    two escalations whose first 60 characters match must not dedup."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+    opening = "Send the NDA redline follow-up to Acme's counsel regarding section "
+
+    _escalate(opening + "4")
+    _escalate(opening + "7")
+    _escalate(opening + "7")  # an identical repeat folds into the open card
+
+    bodies = sorted(a.body for a in alert_store.list_alerts())
+    assert bodies == [opening + "4", opening + "7"]
+
+
+def test_repeat_escalation_after_its_card_was_handled_gets_a_new_card() -> None:
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    _escalate("Department check-in: Legal")
+    (first,) = alert_store.list_alerts()
+    alert_store.set_status(first.id, "ack")  # the principal approved it
+
+    _escalate("Department check-in: Legal")  # next time: must not be swallowed
+
+    cards = alert_store.list_alerts()
+    assert len(cards) == 2
+    assert sorted(c.status for c in cards) == ["ack", "unread"]
+
+
+def test_escalation_is_retried_not_marked_done_when_its_card_cannot_be_filed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    def _store_down(**_kwargs: object) -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(alert_store, "insert_alert", _store_down)
+    action = _make_action(department="legal")
+
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_not_called()
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "pending"  # rescheduled with backoff, not lost
+    assert updated.attempts == 1
+    assert "escalation card could not be filed" in updated.last_error
 
 
 # ---------------------------------------------------------------------------

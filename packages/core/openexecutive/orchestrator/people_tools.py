@@ -239,11 +239,30 @@ def _audit(tool: str, kind: str, ok: bool, summary: str, details: dict[str, Any]
 
 
 # Surfaces that verify who sent every message: the web chat (the signed-in
-# Google account, stamped by the UI proxy) and the Slack / Discord / Telegram
-# adapters (the platform's own user or chat id, matched to the roster). Email
-# (an unauthenticated From header), Google Chat (no sender identity), the CLI,
-# the MCP server and unattended runs (scheduler, workflows, alert review) don't.
-_VERIFIED_SPEAKER_CHANNELS = frozenset({"slack", "discord", "telegram"})
+# Google account, stamped by the UI proxy), and Slack / Discord (the platform's
+# own user id, over an authenticated connection). Email (an unauthenticated
+# From header), Google Chat (no sender identity), the CLI, the MCP server and
+# unattended runs (scheduler, workflows, alert review) don't. Telegram only
+# sometimes — see `_is_verified_speaker_surface`.
+_VERIFIED_SPEAKER_CHANNELS = frozenset({"slack", "discord"})
+
+
+def _is_verified_speaker_surface(session: Any) -> bool:
+    if bool(getattr(session, "from_web_chat", False)):
+        return True
+    channel = str(getattr(session, "origin_channel", "") or "")
+    if channel in _VERIFIED_SPEAKER_CHANNELS:
+        return True
+    if channel != "telegram":
+        return False
+    # Telegram identifies the chat, not the sender, and its webhook is exempt
+    # from the shared secret: an update is only proven to come from Telegram
+    # when TELEGRAM_WEBHOOK_SECRET is set (otherwise anyone can post one naming
+    # the principal's chat id). A group (negative id) is everyone in it.
+    from openexecutive.config import get_settings
+
+    chat_ref = str(getattr(session, "origin_channel_ref", "") or "")
+    return bool(get_settings().telegram_webhook_secret) and chat_ref.isdigit()
 
 
 def _roster_refusal_reason(session: Any) -> str | None:
@@ -251,13 +270,12 @@ def _roster_refusal_reason(session: Any) -> str | None:
     from openexecutive.people.store import is_principal_or_self
 
     from_web = bool(getattr(session, "from_web_chat", False))
-    channel = str(getattr(session, "origin_channel", "") or "")
-    if session is None or not (from_web or channel in _VERIFIED_SPEAKER_CHANNELS):
+    if session is None or not _is_verified_speaker_surface(session):
         return (
             "Only the company's owner can change the People list, and this request "
             "did not come from somewhere I can confirm it is them. Tell whoever "
             "asked that the owner needs to make this change, from the web app or "
-            "their own Slack, Discord or Telegram."
+            "their own Slack or Discord."
         )
     caller = getattr(session, "caller_person_id", None)
     try:

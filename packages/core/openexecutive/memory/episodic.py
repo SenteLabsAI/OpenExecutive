@@ -1470,10 +1470,16 @@ def cancel_scheduled_action(action_id: int, db_path: Path | None = None) -> str:
         current = row["status"]
         if current != "pending":
             return "not_cancellable"
-        conn.execute(
-            "UPDATE scheduled_actions SET status = 'cancelled' WHERE id = ?",
+        # Guard the write too: the scheduler's claim can flip the row to
+        # 'running' between the SELECT and here, and a cancel must never
+        # overwrite a claimed row (the dispatch would go ahead regardless).
+        cursor = conn.execute(
+            "UPDATE scheduled_actions SET status = 'cancelled' "
+            "WHERE id = ? AND status = 'pending'",
             (action_id,),
         )
+        if cursor.rowcount == 0:
+            return "not_cancellable"
         return "cancelled"
 
 
