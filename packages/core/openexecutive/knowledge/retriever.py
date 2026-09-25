@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 from openexecutive.audit import get_active_ids
 from openexecutive.audit import log_event as _audit_log
@@ -13,6 +16,8 @@ from openexecutive.knowledge.review_store import (
     ReviewStore,
 )
 from openexecutive.knowledge.store import ChromaDBStore
+
+logger = logging.getLogger(__name__)
 
 # Cosine distance threshold for the main retrieve() path. Hits with a
 # distance > this are dropped before the top-K slice. Mirrors the value
@@ -224,7 +229,14 @@ def retrieve(
     review_store: ReviewStore | None = None,
     distance_threshold: float | None = None,
     builtin_distance_threshold: float | None = None,
+    record_source: Callable[..., None] | None = None,
 ) -> str:
+    """Retrieve knowledge for ``query`` as a prompt-ready block ("" for none).
+
+    ``record_source(kind, title, url=None)`` is told about each document the
+    block quotes — the web chat lists them under the answer (see
+    ``orchestrator.answer_sources``).
+    """
     effective_domains = domain_filter
     if effective_domains is None and specialist_name:
         effective_domains = DOMAIN_ALIASES.get(specialist_name)
@@ -379,6 +391,11 @@ def retrieve(
     ):
         return ""
 
+    if record_source is not None:
+        _record_sources(
+            record_source, company_results, notion_results, research_results, builtin_results
+        )
+
     parts: list[str] = []
 
     if company_results:
@@ -439,6 +456,39 @@ def retrieve(
             parts.append(f"[SME annotation] {ann.correction}")
 
     return "\n\n".join(parts)
+
+
+def _record_sources(
+    record: Callable[..., None],
+    company: list[dict[str, Any]],
+    notion: list[dict[str, Any]],
+    research: list[dict[str, Any]],
+    builtin: list[dict[str, Any]],
+) -> None:
+    """Name each document the retrieved block quotes. Never raises: a label
+    shown under the answer must not cost the answer its knowledge."""
+    from openexecutive.orchestrator.answer_sources import title_from_filename
+
+    try:
+        for r in company:
+            record("company", r["metadata"].get("filename", ""))
+        for r in notion:
+            record("notion", r["metadata"].get("filename", ""))
+        for r in research:
+            meta = r["metadata"]
+            if meta.get("type") == "artifact" and meta.get("artifact_id"):
+                record(
+                    "document",
+                    meta.get("title") or "An earlier document",
+                    f"/artifacts/{quote(str(meta['artifact_id']), safe='')}",
+                )
+            else:
+                day = str(meta.get("created_at", ""))[:10]
+                record("research", f"Research notes from {day}" if day else "Research notes")
+        for r in builtin:
+            record("knowledge", title_from_filename(str(r["metadata"].get("filename", ""))))
+    except Exception:
+        logger.warning("recording answer sources failed", exc_info=True)
 
 
 def retrieve_failures(

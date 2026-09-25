@@ -1,3 +1,4 @@
+import type { AnswerSources } from "@/lib/answerSources";
 import type { SetupStatus } from "@/lib/setupStatus";
 
 const API_BASE = "/api/backend";
@@ -128,12 +129,20 @@ export interface FormPatch {
   iteration?: number;
 }
 
+// Sent once after the reply: what it looked at, and which part of the
+// analysis it had to leave out (see lib/answerSources.ts).
+export interface SourcesEvent extends AnswerSources {
+  type: "sources";
+  session_id?: string;
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
   | ActionTaken
   | FormPatch
-  | Activity;
+  | Activity
+  | SourcesEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -972,6 +981,10 @@ export interface ChatMessage {
   // `chat_messages.stopped`, so the marker survives a reload rather than
   // letting a truncated reply read as a complete one.
   stopped?: boolean;
+  // Assistant rows only: what the reply looked at and which part of the
+  // analysis it left out — from the stream's `sources` event, and persisted
+  // to `chat_messages.sources` so a reloaded chat still shows it.
+  sources?: AnswerSources;
   // Assistant rows only: the persisted row id (from the stream's `done`
   // event, or from a reloaded session) and any 👍/👎 on it. The id is what
   // lets the reply be rated.

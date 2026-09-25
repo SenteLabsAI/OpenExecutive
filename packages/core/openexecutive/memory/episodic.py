@@ -263,6 +263,17 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
                 if "duplicate column" not in str(exc).lower():
                     raise
 
+        # Additive migration: what an assistant reply looked at and which part
+        # of the analysis it had to leave out (orchestrator/answer_sources.py),
+        # shown under the reply in the web chat. Nullable JSON TEXT
+        # {"sources": [...], "unavailable": [...]}; legacy rows stay NULL.
+        if "sources" not in _cm_existing:
+            try:
+                conn.execute("ALTER TABLE chat_messages ADD COLUMN sources TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
         # Additive migration: flag an assistant message the user stopped
         # mid-stream, so the "Stopped" marker survives a reload instead of a
         # truncated reply reading as a complete one. Legacy rows default to 0.

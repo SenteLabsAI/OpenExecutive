@@ -30,6 +30,7 @@ from openexecutive.orchestrator.alert_tools import (
     CREATE_ALERT_TOOL,
     handle_create_alert,
 )
+from openexecutive.orchestrator.answer_sources import TurnSources, record_web_sources
 from openexecutive.orchestrator.artifact_tools import (
     DRAFT_ARTIFACT_TOOL_HANDLERS,
     DRAFT_ARTIFACT_TOOLS,
@@ -649,8 +650,13 @@ class Executive:
         page_context_block: str = "",
         turn_id: str | None = None,
         memory_text: str | None = None,
+        turn_sources: TurnSources | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Stream a response from the Executive, routing to specialists as needed.
+
+        ``turn_sources`` (the web chat route passes one) collects what the
+        answer looked at and which areas it had to leave out; see
+        ``orchestrator.answer_sources``. Other callers pass nothing.
 
         ``person_id`` (when provided) keys the Honcho per-person memory
         prefetch + post-turn sync. The integration adapters (Slack,
@@ -799,6 +805,7 @@ class Executive:
                 debug_collector=debug_collector,
                 consulted_out=consulted,
                 turn_id=turn_id,
+                turn_sources=turn_sources,
             ):
                 if isinstance(item, str) and item != self._THINKING:
                     full_response += item
@@ -932,8 +939,12 @@ class Executive:
         page_context_block: str = "",
         turn_id: str | None = None,
         memory_text: str | None = None,
+        turn_sources: TurnSources | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Committee-reviewed variant of stream_chat.
+
+        ``turn_sources`` is as in ``stream_chat``: the draft's searches and
+        specialists record into it.
 
         Flow: drafting (silent — text chunks accumulated, debug events
         passed through) → reviewing (3 parallel critique calls) →
@@ -1077,6 +1088,7 @@ class Executive:
             consulted_out=consulted,
             specialist_outputs_out=specialist_outputs,
             turn_id=turn_id,
+            turn_sources=turn_sources,
         ):
             # Swallow draft text and the THINKING sentinel — the user sees
             # only the revised stream. Pass debug-event dicts through so the
@@ -1370,12 +1382,17 @@ class Executive:
         consulted_out: list[str] | None = None,
         specialist_outputs_out: dict[str, str] | None = None,
         turn_id: str | None = None,
+        turn_sources: TurnSources | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Tool-use loop that yields text deltas as they arrive.
 
         Yields _THINKING before each specialist call round so callers can send
         keepalive/progress events while the blocking specialist calls run.
         Also yields debug event dicts when a debug_collector is provided.
+
+        ``turn_sources`` collects the documents and web pages the turn looked
+        at, and which specialists failed or answered; its owner (the web chat
+        route) sends it once the reply is over.
         """
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
@@ -1473,6 +1490,8 @@ class Executive:
                     # OpenRouter reasoning continuity across tool iterations
                     # (replayed as ``reasoning_details`` by the translator).
                     response_content.append(replay)
+            if turn_sources is not None:
+                record_web_sources(turn_sources, final_msg.content)
 
             last_full_text = full_text
 
@@ -1594,6 +1613,7 @@ class Executive:
             session_id = getattr(current_session.get(), "session_id", None)
             if specialist_calls:
                 spec_t0 = time.monotonic()
+                failed_calls: list[int] = []
                 # Specialists get the stage from the same profile the
                 # Executive reasons over; no session profile → the router
                 # reads it from disk.
@@ -1608,7 +1628,29 @@ class Executive:
                     company_stage=(
                         session_stage if isinstance(session_stage, str) else None
                     ),
+                    record_source=turn_sources.add if turn_sources is not None else None,
+                    failed_calls_out=failed_calls,
+                    # The web chat shows a missing area under the reply;
+                    # everywhere else the reply itself has to say so.
+                    tell_user_when_unavailable=not getattr(
+                        current_session.get(), "from_web_chat", False
+                    ),
                 )
+                # Only a specialist that actually answered counts as
+                # consulted: the committee picks its critics from that list,
+                # and each consulted department's memory records the turn.
+                answered = [
+                    (call, result)
+                    for i, (call, result) in enumerate(
+                        zip(run_calls, specialist_results, strict=True)
+                    )
+                    if i not in failed_calls
+                ]
+                if turn_sources is not None:
+                    for i in failed_calls:
+                        turn_sources.mark_unavailable(run_calls[i]["specialist"])
+                    for call, _ in answered:
+                        turn_sources.mark_answered(call["specialist"])
                 spec_ms = round((time.monotonic() - spec_t0) * 1000)
                 for tu, result in zip(
                     run_tool_uses, specialist_results, strict=True
@@ -1624,13 +1666,13 @@ class Executive:
                         fanout_cap,
                         len(skipped_results),
                     )
+                # Every dispatched call, failed ones too: this list only marks
+                # the next round as the synthesis pass in the debug panel.
                 specialists_consulted.extend(c["specialist"] for c in run_calls)
                 if consulted_out is not None:
-                    consulted_out.extend(c["specialist"] for c in run_calls)
+                    consulted_out.extend(call["specialist"] for call, _ in answered)
                 if specialist_outputs_out is not None:
-                    for call, result in zip(
-                        run_calls, specialist_results, strict=True
-                    ):
+                    for call, result in answered:
                         # Last-write-wins if the same specialist is consulted
                         # in multiple iterations — committee only needs a
                         # representative excerpt per domain.
