@@ -39,7 +39,7 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,48}$")
 # workflows -> orchestrator -> workflows; validate_definition cross-checks the
 # live registry lazily so a newly added specialist is picked up automatically.
 _FALLBACK_SPECIALISTS = frozenset(
-    {"cso", "cfo", "chro", "gc", "coo", "cmo", "cpo", "board_comms", "triage"}
+    {"cso", "cfo", "chro", "gc", "coo", "cmo", "cpo", "sales", "board_comms", "triage"}
 )
 
 # Bounds that keep a single definition (and its runs) cheap to store, render,

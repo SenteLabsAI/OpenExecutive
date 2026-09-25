@@ -23,6 +23,7 @@ SKILL_CATEGORIES: tuple[str, ...] = (
     "marketing",
     "product",
     "board",
+    "sales",
     "general",
 )
 

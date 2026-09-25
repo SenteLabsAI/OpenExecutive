@@ -159,16 +159,24 @@ class ChromaDBStore(KnowledgeStore):
         except Exception:
             pass
 
-    def iter_chunk_metadata(self, collection: str) -> list[tuple[str, dict[str, Any]]]:
+    def iter_chunk_metadata(
+        self, collection: str, where: dict[str, Any] | None = None
+    ) -> list[tuple[str, dict[str, Any]]]:
         """Return every ``(chunk_id, metadata)`` pair in *collection*.
 
         Chroma's ``where`` has no prefix/substring operator, so metadata
         patterns (rather than exact matches) have to be filtered in Python.
-        Only used against the small ``company_docs`` collection.
+        ``where`` (an exact-match filter) narrows the scan first, for a
+        collection that also holds rows the caller never needs — the built-in
+        seed reads only ``type=builtin`` rows, not the external OER corpus
+        that shares BUILTIN.
         """
         try:
             col = self._get_or_create_collection(collection)
-            rows = col.get(include=["metadatas"])
+            if where:
+                rows = col.get(where=where, include=["metadatas"])
+            else:
+                rows = col.get(include=["metadatas"])
         except Exception:
             return []
         ids = rows.get("ids") or []

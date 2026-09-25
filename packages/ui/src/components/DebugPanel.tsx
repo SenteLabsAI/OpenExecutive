@@ -18,6 +18,7 @@ const SPECIALIST_LABELS: Record<string, string> = {
   coo: "COO",
   cmo: "CMO",
   cpo: "CPO",
+  sales: "Sales",
   board_comms: "BoardComms",
 };
 

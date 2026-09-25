@@ -379,6 +379,33 @@ routing:
     carries requested_count / cap / dispatched_count / skipped_count so the
     fan-out width is observable per turn.
   retrieval_per_call: Each parallel tool call runs its own domain-filtered ChromaDB query before the specialist sees the question.
+  specialist_user_turn: |
+    BaseAgent.analyze assembles each specialist's USER turn from per-call
+    blocks, outermost first: <company_stage>, <department_memory>,
+    <past_decisions>, <failure_cases>, <relevant_knowledge>,
+    <conversation_context>, then the query. The specialist's system prompt is
+    its static domain constant under one cache_control block and never carries
+    per-call or per-company content.
+
+    <company_stage> is the profile's `stage` field, collapsed to one line and
+    skipped when empty. Specialists never see the company profile (it lives in
+    the Executive's cached system block), yet stage decides which benchmarks
+    apply. CFO_PROMPT, CSO_PROMPT and SALES_PROMPT key on the tag: a
+    bootstrapped, self-funded, "default alive" or solo company gets cash-first
+    advice (cash net of tax owed, runway at current burn, receivables, pricing,
+    owner pay, tax set-aside) instead of venture fundraising benchmarks, and
+    raising is presented as an option only if the founder wants it.
+
+    Where the stage comes from: route_parallel takes `company_stage` per turn,
+    like episodic_context. Executive._stream_agent_loop passes the stage of
+    the session's company_profile — the profile the Executive's own system
+    block renders, and the one the eval runner injects per scenario — or None
+    when the session has no profile, in which case the router reads it once
+    per batch from disk (router.load_company_stage). Session-less callers of
+    route_to_specialist (workflow steps, the MCP server's consult_specialist)
+    read it fresh from disk on every call, so a profile edit reaches them
+    without a restart. load_company_stage never raises: a missing or
+    unreadable profile means no tag, not a failed consult.
   committee_review: |
     Optional 3-phase response synthesis exposed via
     Executive.stream_chat_with_committee():
@@ -946,7 +973,41 @@ knowledge:
     otherwise follow the playbook inline.
   collections:
     - name: BUILTIN
-      what: Curated MBA-style domain knowledge shipped with the repo.
+      what: |
+        Curated MBA-style domain knowledge shipped with the repo, one directory
+        per DOMAIN_MAP domain (sales included: founder-led sales,
+        qualification and pipeline, proposals and pricing conversations,
+        follow-up and forecasting), plus solo-founder guides in finance,
+        marketing, legal and hr.
+
+        SEEDING. loader.seed_builtin_knowledge (BUILTIN) and
+        loader.seed_failures (FAILURES) run on every boot. On an empty
+        collection, or with force=True, they index the whole tree. Otherwise
+        they top up: every SHIPPED_BUILTIN_FILES entry with no chunks in the
+        collection is indexed, once. Both used to return early on any
+        non-empty collection, so a doc added in a later release shipped,
+        registered as an approved trusted default, and was never retrievable
+        on an install seeded by an earlier release.
+
+        Presence is judged from each row's `source` relative to
+        knowledge/builtin/ (loader._builtin_relative_source), NOT the absolute
+        path: `source` and the chunk id both embed the absolute install path,
+        so an upgrade that moves the install would otherwise re-index every
+        doc under fresh ids and duplicate the collection. The check is one
+        metadata-only scan narrowed by `where={"type": "builtin"}` (or
+        `failure_case`), so the external OER rows sharing BUILTIN
+        (`type=external`) are never pulled; a complete store indexes nothing.
+        If no row carries the tag (rows from a build that did not write
+        `type`), it falls back to a full scan rather than reading untagged
+        rows as absent.
+        The top-up is manifest-driven, never a tree scan: a user's own upload
+        in the same tree is indexed by the endpoint that wrote it, and a
+        manifest entry missing on disk is skipped rather than resurrected.
+        Changed content of an already-indexed shipped doc is NOT re-indexed by
+        this path. The top-up is best-effort: a doc that fails to embed is
+        logged and stays missing, so the next boot retries it, and startup
+        never fails on it. First-boot seeding and force=True still raise.
+        Blank shipped files never count as missing.
     - name: COMPANY
       what: |
         Customer-supplied documents ingested via the /documents endpoint. The
@@ -1053,7 +1114,7 @@ knowledge:
   domain_aliases_source: openexecutive.knowledge.retriever.DOMAIN_ALIASES
   dedupe_note: Multi-domain chunks can fan out to multiple rows; the retriever dedupes by text before returning.
   upload_domains: |
-    POST /documents accepts the eight DOMAIN_MAP domains plus `general`
+    POST /documents accepts the nine DOMAIN_MAP domains (sales included) plus `general`
     (loader.UPLOAD_DOMAINS) and returns 400 for anything else. Unvalidated, a
     typo like `domain=finanace` returned 200 and indexed the document under a
     value no specialist filters on — issue #114, silent and only observable by
