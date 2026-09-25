@@ -650,8 +650,13 @@ class Executive:
         page_context_block: str = "",
         turn_id: str | None = None,
         memory_text: str | None = None,
+        turn_sources: TurnSources | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Stream a response from the Executive, routing to specialists as needed.
+
+        ``turn_sources`` (the web chat route passes one) collects what the
+        answer looked at and which areas it had to leave out; see
+        ``orchestrator.answer_sources``. Other callers pass nothing.
 
         ``person_id`` (when provided) keys the Honcho per-person memory
         prefetch + post-turn sync. The integration adapters (Slack,
@@ -743,7 +748,6 @@ class Executive:
 
         t0 = time.monotonic()
         full_response = ""
-        turn_sources = TurnSources()
         with set_turn(session_id=session.session_id, turn_id=turn_id):
             # Per-person prefetch from Honcho. Runs once per turn (NOT inside
             # the tool-call loop) so a long multi-tool turn doesn't accrue
@@ -813,10 +817,6 @@ class Executive:
                 "response_length": len(full_response),
             })
             yield debug_collector.to_sse_dict(evt)
-        # What the answer looked at and what it had to leave out, for the web
-        # chat to show under it. Other channels ignore the event.
-        if not turn_sources.is_empty():
-            yield turn_sources.event(session.session_id)
 
         session.add_user_message(user_message)
         session.add_assistant_message(full_response)
@@ -939,8 +939,12 @@ class Executive:
         page_context_block: str = "",
         turn_id: str | None = None,
         memory_text: str | None = None,
+        turn_sources: TurnSources | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Committee-reviewed variant of stream_chat.
+
+        ``turn_sources`` is as in ``stream_chat``: the draft's searches and
+        specialists record into it.
 
         Flow: drafting (silent — text chunks accumulated, debug events
         passed through) → reviewing (3 parallel critique calls) →
@@ -1060,7 +1064,6 @@ class Executive:
         draft = ""
         consulted: list[str] = []
         specialist_outputs: dict[str, str] = {}
-        turn_sources = TurnSources()
         _emit_memory_snapshot(
             session_id=session.session_id,
             turn_id=turn_id,
@@ -1121,8 +1124,6 @@ class Executive:
             }
             fallback = "I was unable to complete the analysis. Please try again."
             yield fallback
-            if not turn_sources.is_empty():
-                yield turn_sources.event(session.session_id)
             session.add_user_message(user_message)
             session.add_assistant_message(fallback)
             # Reset audit ContextVars so this task doesn't leak the turn_id
@@ -1263,8 +1264,6 @@ class Executive:
                 "revision_ms": revision_ms,
             })
             yield debug_collector.to_sse_dict(evt)
-        if not turn_sources.is_empty():
-            yield turn_sources.event(session.session_id)
 
         session.add_user_message(user_message)
         # Guard against a revision pass that produced no text (only tool_use
@@ -1392,8 +1391,8 @@ class Executive:
         Also yields debug event dicts when a debug_collector is provided.
 
         ``turn_sources`` collects the documents and web pages the turn looked
-        at, and the areas whose specialist couldn't answer; the caller sends
-        it once the reply is complete.
+        at, and which specialists failed or answered; its owner (the web chat
+        route) sends it once the reply is over.
         """
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
@@ -1614,23 +1613,35 @@ class Executive:
             session_id = getattr(current_session.get(), "session_id", None)
             if specialist_calls:
                 spec_t0 = time.monotonic()
-                unavailable: list[str] = []
+                failed_calls: list[int] = []
                 specialist_results = await route_parallel(
                     run_calls,
                     episodic_context=episodic_context,
                     session_id=session_id,
                     debug_collector=debug_collector,
                     record_source=turn_sources.add if turn_sources is not None else None,
-                    unavailable_out=unavailable,
+                    failed_calls_out=failed_calls,
                     # The web chat shows a missing area under the reply;
                     # everywhere else the reply itself has to say so.
                     tell_user_when_unavailable=not getattr(
                         current_session.get(), "from_web_chat", False
                     ),
                 )
+                # Only a specialist that actually answered counts as
+                # consulted: the committee picks its critics from that list,
+                # and each consulted department's memory records the turn.
+                answered = [
+                    (call, result)
+                    for i, (call, result) in enumerate(
+                        zip(run_calls, specialist_results, strict=True)
+                    )
+                    if i not in failed_calls
+                ]
                 if turn_sources is not None:
-                    for specialist in unavailable:
-                        turn_sources.mark_unavailable(specialist)
+                    for i in failed_calls:
+                        turn_sources.mark_unavailable(run_calls[i]["specialist"])
+                    for call, _ in answered:
+                        turn_sources.mark_answered(call["specialist"])
                 spec_ms = round((time.monotonic() - spec_t0) * 1000)
                 for tu, result in zip(
                     run_tool_uses, specialist_results, strict=True
@@ -1646,13 +1657,11 @@ class Executive:
                         fanout_cap,
                         len(skipped_results),
                     )
-                specialists_consulted.extend(c["specialist"] for c in run_calls)
+                specialists_consulted.extend(call["specialist"] for call, _ in answered)
                 if consulted_out is not None:
-                    consulted_out.extend(c["specialist"] for c in run_calls)
+                    consulted_out.extend(call["specialist"] for call, _ in answered)
                 if specialist_outputs_out is not None:
-                    for call, result in zip(
-                        run_calls, specialist_results, strict=True
-                    ):
+                    for call, result in answered:
                         # Last-write-wins if the same specialist is consulted
                         # in multiple iterations — committee only needs a
                         # representative excerpt per domain.

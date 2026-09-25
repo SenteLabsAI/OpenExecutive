@@ -256,7 +256,7 @@ async def route_parallel(
     debug_collector: DebugCollector | None = None,
     *,
     record_source: Callable[..., None] | None = None,
-    unavailable_out: list[str] | None = None,
+    failed_calls_out: list[int] | None = None,
     tell_user_when_unavailable: bool = True,
 ) -> list[str]:
     """Execute multiple specialist calls concurrently.
@@ -281,14 +281,25 @@ async def route_parallel(
     with tool_use_ids.
 
     One specialist that raises, or returns no text, no longer fails the
-    batch: its result becomes `specialist_unavailable_result`, its name is
-    appended to ``unavailable_out``, and the others' results stand.
+    batch: its result becomes `specialist_unavailable_result`, its index in
+    ``calls`` goes into ``failed_calls_out`` (in call order), and the others'
+    results stand.
     Cancellation (the user pressing Stop) still propagates. ``record_source``
-    receives each document the specialists' knowledge retrieval returned (see
-    ``orchestrator.answer_sources``).
+    receives each document the knowledge retrieval of a specialist that
+    answered returned, in call order (see ``orchestrator.answer_sources``).
+    A failed specialist's documents never reached the answer, so they are
+    not recorded.
     """
+    # Each call's documents wait here until the batch is done.
+    held_sources: list[list[tuple[tuple[Any, ...], dict[str, Any]]]] = [[] for _ in calls]
+
+    def hold_for(idx: int) -> Callable[..., None] | None:
+        if record_source is None:
+            return None
+        return lambda *args, **kwargs: held_sources[idx].append((args, kwargs))
+
     if retrieved_knowledge_map is None:
-        knowledge_futures = [_retrieve_for_call(c, record_source) for c in calls]
+        knowledge_futures = [_retrieve_for_call(c, hold_for(i)) for i, c in enumerate(calls)]
         failures_futures = [_retrieve_failures_for_call(c) for c in calls]
         all_results = await asyncio.gather(*knowledge_futures, *failures_futures)
         mid = len(calls)
@@ -309,6 +320,20 @@ async def route_parallel(
             *(_prefetch_department_for_call(c, session_id) for c in calls)
         )
     )
+
+    failed: set[int] = set()
+
+    def unavailable(idx: int, specialist: str, reason: str, t_start: float) -> str:
+        failed.add(idx)
+        if debug_collector:
+            debug_collector.emit("specialist_unavailable", {
+                "specialist": specialist,
+                "reason": reason,
+                "duration_ms": round((time.monotonic() - t_start) * 1000),
+            })
+        return specialist_unavailable_result(
+            specialist, reason, tell_user=tell_user_when_unavailable
+        )
 
     async def call_one(idx: int, call: dict[str, str]) -> str:
         specialist = call["specialist"]
@@ -332,24 +357,13 @@ async def route_parallel(
                 department_memory=dept_memory_per_call[idx],
                 actor="specialist",
             )
-            reason = "" if result.strip() else "it returned no analysis"
         except Exception as exc:
             logger.warning(
                 "specialist %s failed; answering without it", specialist, exc_info=True
             )
-            result, reason = "", f"it failed with {type(exc).__name__}"
-        if reason:
-            if unavailable_out is not None:
-                unavailable_out.append(specialist)
-            if debug_collector:
-                debug_collector.emit("specialist_unavailable", {
-                    "specialist": specialist,
-                    "reason": reason,
-                    "duration_ms": round((time.monotonic() - t_start) * 1000),
-                })
-            return specialist_unavailable_result(
-                specialist, reason, tell_user=tell_user_when_unavailable
-            )
+            return unavailable(idx, specialist, f"it failed with {type(exc).__name__}", t_start)
+        if not result.strip():
+            return unavailable(idx, specialist, "it returned no analysis", t_start)
         if debug_collector:
             debug_collector.emit("specialist_done", {
                 "specialist": specialist,
@@ -359,4 +373,15 @@ async def route_parallel(
             })
         return result
 
-    return list(await asyncio.gather(*(call_one(i, c) for i, c in enumerate(calls))))
+    results = list(await asyncio.gather(*(call_one(i, c) for i, c in enumerate(calls))))
+    if failed_calls_out is not None:
+        failed_calls_out.extend(sorted(failed))
+    if record_source is not None:
+        try:
+            for idx, held in enumerate(held_sources):
+                if idx not in failed:
+                    for args, kwargs in held:
+                        record_source(*args, **kwargs)
+        except Exception:
+            logger.warning("recording answer sources failed", exc_info=True)
+    return results

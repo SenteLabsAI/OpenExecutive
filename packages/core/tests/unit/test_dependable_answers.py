@@ -2,12 +2,14 @@
 
   * One specialist that raises, or returns nothing, no longer loses the whole
     reply — its tool_result says it is unavailable, the others' stand, and the
-    missing area (never the specialist) is reported.
+    missing area (never the specialist) is reported unless another call
+    covered it.
   * A failed knowledge retrieval leaves a specialist without context rather
     than failing the turn.
-  * The documents and web pages a turn looked at are collected, sent once as
-    a ``sources`` event after the reply, saved on the assistant row, and
-    returned when the chat is reloaded.
+  * The documents and web pages a turn looked at (the Executive's own search
+    and every specialist that answered) are collected by the web chat route,
+    sent once as a ``sources`` event after the reply, stopped or timed out
+    too, saved on the assistant row, and returned when the chat is reloaded.
 """
 from __future__ import annotations
 
@@ -70,6 +72,34 @@ def test_web_sources_cannot_crowd_out_documents() -> None:
     assert "company" in kinds
 
 
+def test_pages_the_reply_cites_are_kept_when_the_lists_are_full() -> None:
+    # An early round fills every list; the reply cites two pages later on.
+    sources = TurnSources()
+    for i in range(MAX_SOURCES + 3):
+        sources.add("company", f"doc {i}")
+    for i in range(10):
+        sources.add("web", f"Result {i}", f"https://r.example/{i}")
+    sources.add("web", "Result 7", "https://r.example/7", cited=True)
+    sources.add("web", "Cited page", "https://cited.example/a", cited=True)
+
+    listed = sources.payload()["sources"]
+    assert len(listed) == MAX_SOURCES
+    assert [s["title"] for s in listed if s["kind"] == "web"] == ["Result 7", "Cited page"]
+    assert [s["title"] for s in listed if s["kind"] == "company"] == [f"doc {i}" for i in range(10)]
+
+
+def test_search_results_fill_the_room_that_is_left() -> None:
+    sources = TurnSources()
+    sources.add("company", "Board deck.pdf")
+    for i in range(10):
+        sources.add("web", f"Result {i}", f"https://r.example/{i}")
+    sources.add("web", "Result 2", "https://r.example/2", cited=True)  # listed once
+    listed = sources.payload()["sources"]
+    assert [s["title"] for s in listed] == [
+        "Result 2", "Board deck.pdf", "Result 0", "Result 1", "Result 3", "Result 4", "Result 5",
+    ]
+
+
 @pytest.mark.parametrize(
     ("url", "kept"),
     [
@@ -81,17 +111,26 @@ def test_web_sources_cannot_crowd_out_documents() -> None:
         ("//evil.example/x", None),
         ("/\\evil.example", None),
         ("/artifacts/../x", None),
+        ("/artifacts/", None),
+        ("/artifacts/a/b", None),
+        ("/settings", None),
         ("ftp://example.org/f", None),
         ("https://", None),
         ("", None),
         (None, None),
     ],
 )
-def test_only_http_links_and_in_app_paths_survive(url: str | None, kept: str | None) -> None:
+def test_only_http_links_and_in_app_documents_survive(url: str | None, kept: str | None) -> None:
     assert safe_link(url) == kept
     sources = TurnSources()
-    sources.add("web", "A page", url)
+    sources.add("document", "A document", url)
     assert sources.payload()["sources"][0]["url"] == kept
+
+
+def test_a_web_page_never_links_inside_the_app() -> None:
+    sources = TurnSources()
+    sources.add("web", "A page", "/artifacts/alert%3A12")
+    assert sources.payload()["sources"] == [{"kind": "web", "title": "A page", "url": None}]
 
 
 def test_long_and_empty_titles() -> None:
@@ -116,6 +155,15 @@ def test_unavailable_areas_never_name_a_specialist() -> None:
     for specialist in router.SPECIALIST_REGISTRY:
         area = area_for(specialist)
         assert specialist not in area and "specialist" not in area
+
+
+def test_an_area_is_missing_only_if_nothing_answered_for_it() -> None:
+    # e.g. one of two finance questions failed, or a retry went through.
+    sources = TurnSources()
+    sources.mark_unavailable("cfo")
+    sources.mark_unavailable("gc")
+    sources.mark_answered("cfo")
+    assert sources.payload()["unavailable"] == ["legal"]
 
 
 def test_threads_can_record_at_once_and_the_cap_holds() -> None:
@@ -297,18 +345,36 @@ def _calls(*specialists: str) -> list[dict[str, str]]:
 
 
 def test_one_failing_specialist_leaves_the_others(fake_specialists: dict[str, Any]) -> None:
-    fake_specialists["answers"].update({"cfo": RuntimeError("overloaded"), "cso": "Strategy view"})
-    unavailable: list[str] = []
+    fake_specialists["answers"].update({"cso": "Strategy view", "cfo": RuntimeError("overloaded")})
+    failed: list[int] = []
     sources = TurnSources()
     results = asyncio.run(
-        router.route_parallel(_calls("cfo", "cso"), record_source=sources.add, unavailable_out=unavailable)
+        router.route_parallel(_calls("cso", "cfo"), record_source=sources.add, failed_calls_out=failed)
     )
-    assert results[1] == "Strategy view"
-    assert results[0].startswith("UNAVAILABLE: the cfo specialist could not answer")
-    assert "RuntimeError" in results[0] and "overloaded" not in results[0]
-    assert "In your reply, say in one short sentence" in results[0]
-    assert unavailable == ["cfo"]
-    assert {s["title"] for s in sources.payload()["sources"]} == {"cfo notes.pdf", "cso notes.pdf"}
+    assert results[0] == "Strategy view"
+    assert results[1].startswith("UNAVAILABLE: the cfo specialist could not answer")
+    assert "RuntimeError" in results[1] and "overloaded" not in results[1]
+    assert "In your reply, say in one short sentence" in results[1]
+    assert failed == [1]
+    # The failed specialist's documents never reached the answer.
+    assert [s["title"] for s in sources.payload()["sources"]] == ["cso notes.pdf"]
+
+
+def test_documents_are_recorded_in_call_order(
+    fake_specialists: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_specialists["answers"].update({"cso": "Strategy view", "cmo": "Marketing view"})
+    real = router.route_to_specialist
+
+    async def cso_is_slow(**kwargs: Any) -> str:
+        if kwargs["specialist_name"] == "cso":
+            await asyncio.sleep(0.05)
+        return await real(**kwargs)
+
+    monkeypatch.setattr(router, "route_to_specialist", cso_is_slow)
+    sources = TurnSources()
+    asyncio.run(router.route_parallel(_calls("cso", "cmo"), record_source=sources.add))
+    assert [s["title"] for s in sources.payload()["sources"]] == ["cso notes.pdf", "cmo notes.pdf"]
 
 
 def test_on_the_web_chat_the_reply_need_not_mention_it(fake_specialists: dict[str, Any]) -> None:
@@ -320,9 +386,9 @@ def test_on_the_web_chat_the_reply_need_not_mention_it(fake_specialists: dict[st
 
 def test_an_empty_analysis_counts_as_unavailable(fake_specialists: dict[str, Any]) -> None:
     fake_specialists["answers"]["cfo"] = "   "
-    unavailable: list[str] = []
-    [result] = asyncio.run(router.route_parallel(_calls("cfo"), unavailable_out=unavailable))
-    assert "it returned no analysis" in result and unavailable == ["cfo"]
+    failed: list[int] = []
+    [result] = asyncio.run(router.route_parallel(_calls("cfo"), failed_calls_out=failed))
+    assert "it returned no analysis" in result and failed == [0]
 
 
 def test_cancellation_still_stops_the_batch(fake_specialists: dict[str, Any]) -> None:
@@ -402,7 +468,7 @@ def no_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("openexecutive.orchestrator.executive.audit_log", lambda *a, **k: None)
 
 
-def _run_loop(provider: _Provider, sources: TurnSources, session: Session | None) -> None:
+def _run_loop(provider: _Provider, sources: TurnSources, session: Session | None, **loop_kwargs: Any) -> None:
     async def go() -> None:
         token = current_session.set(session)  # type: ignore[arg-type]
         try:
@@ -412,6 +478,7 @@ def _run_loop(provider: _Provider, sources: TurnSources, session: Session | None
                     messages=[{"role": "user", "content": "what now?"}],
                     model="claude-test",
                     turn_sources=sources,
+                    **loop_kwargs,
                 ):
                     pass
         finally:
@@ -444,7 +511,52 @@ def test_the_turn_survives_a_failed_specialist(
     assert results["tu-cfo"].startswith("UNAVAILABLE")
     assert ("In your reply" in results["tu-cfo"]) is told_to_mention
     assert sources.payload()["unavailable"] == ["finance"]
-    assert {s["title"] for s in sources.payload()["sources"]} == {"cfo notes.pdf", "cso notes.pdf"}
+    assert [s["title"] for s in sources.payload()["sources"]] == ["cso notes.pdf"]
+
+
+def test_an_area_that_answers_on_a_later_round_is_not_missing(
+    fake_specialists: dict[str, Any], no_audit: None
+) -> None:
+    outcomes = iter([RuntimeError("529"), "Finance view"])
+
+    async def flaky_cfo(*, specialist_name: str, **_k: Any) -> str:
+        outcome = next(outcomes)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return str(outcome)
+
+    provider = _Provider(
+        [
+            _Final([_ToolUse("tu-1", "cfo")], "tool_use"),
+            _Final([_ToolUse("tu-2", "cfo")], "tool_use"),
+            _Final([_text("Here is the plan.")], "end_turn"),
+        ]
+    )
+    sources = TurnSources()
+    with patch.object(router, "route_to_specialist", flaky_cfo):
+        _run_loop(provider, sources, Session(session_id="s", from_web_chat=True))
+    assert len(provider.calls) == 3
+    assert sources.payload()["unavailable"] == []
+    assert [s["title"] for s in sources.payload()["sources"]] == ["cfo notes.pdf"]
+
+
+def test_a_failed_specialist_is_not_counted_as_consulted(
+    fake_specialists: dict[str, Any], no_audit: None
+) -> None:
+    # The committee picks its critics from the consulted list, and department
+    # memory records the turn for each one, so a failure must not count.
+    fake_specialists["answers"].update({"cfo": RuntimeError("529"), "cso": "Strategy view"})
+    consulted: list[str] = []
+    outputs: dict[str, str] = {}
+    _run_loop(
+        _consult_then_answer(),
+        TurnSources(),
+        Session(session_id="s", from_web_chat=True),
+        consulted_out=consulted,
+        specialist_outputs_out=outputs,
+    )
+    assert consulted == ["cso"]
+    assert outputs == {"cso": "Strategy view"}
 
 
 def test_web_pages_the_reply_used_are_recorded(fake_specialists: dict[str, Any], no_audit: None) -> None:
@@ -492,7 +604,7 @@ def test_web_pages_the_reply_used_are_recorded(fake_specialists: dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
-# The sources event, on both paths
+# stream_chat and the committee path record into the route's collector
 # ---------------------------------------------------------------------------
 
 
@@ -515,48 +627,32 @@ def _drain(gen: AsyncIterator[Any]) -> list[Any]:
     return asyncio.run(go())
 
 
-def test_stream_chat_sends_sources_once_after_the_reply(isolated_turn: None) -> None:
+def test_stream_chat_records_into_the_callers_collector(isolated_turn: None) -> None:
     async def loop(*_a: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
         kwargs["turn_sources"].add("company", "Q3 plan.pdf")
-        kwargs["turn_sources"].mark_unavailable("gc")
         yield "Answer."
 
+    sources = TurnSources()
     session = Session(session_id="s-1", company_profile=CompanyProfile())
     with patch.object(Executive, "_stream_agent_loop", new=loop):
-        items = _drain(Executive().stream_chat(user_message="Hi", session=session))
-    events = [i for i in items if isinstance(i, dict) and i.get("type") == "sources"]
-    assert events == [
-        {
-            "type": "sources",
-            "session_id": "s-1",
-            "sources": [{"kind": "company", "title": "Q3 plan.pdf", "url": None}],
-            "unavailable": ["legal"],
-        }
-    ]
-    assert items.index(events[0]) > items.index("Answer.")
-
-
-def test_stream_chat_sends_nothing_when_nothing_was_looked_at(isolated_turn: None) -> None:
-    async def loop(*_a: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
-        yield "Hello."
-
-    session = Session(session_id="s-2", company_profile=CompanyProfile())
-    with patch.object(Executive, "_stream_agent_loop", new=loop):
-        items = _drain(Executive().stream_chat(user_message="Hi", session=session))
+        items = _drain(Executive().stream_chat(user_message="Hi", session=session, turn_sources=sources))
+    assert "Answer." in items
+    # The web chat route sends the event, however the reply ends; never the Executive.
     assert not [i for i in items if isinstance(i, dict) and i.get("type") == "sources"]
+    assert sources.payload()["sources"] == [{"kind": "company", "title": "Q3 plan.pdf", "url": None}]
 
 
-def test_committee_path_sends_sources_even_when_the_draft_is_empty(isolated_turn: None) -> None:
+def test_the_committee_draft_records_into_the_callers_collector(isolated_turn: None) -> None:
     async def loop(*_a: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
         kwargs["turn_sources"].mark_unavailable("cfo")
         if False:
             yield ""
 
+    sources = TurnSources()
     session = Session(session_id="s-3", company_profile=CompanyProfile())
     with patch.object(Executive, "_stream_agent_loop", new=loop):
-        items = _drain(Executive().stream_chat_with_committee(user_message="Hi", session=session))
-    events = [i for i in items if isinstance(i, dict) and i.get("type") == "sources"]
-    assert [e["unavailable"] for e in events] == [["finance"]]
+        _drain(Executive().stream_chat_with_committee(user_message="Hi", session=session, turn_sources=sources))
+    assert sources.payload()["unavailable"] == ["finance"]
 
 
 # ---------------------------------------------------------------------------
@@ -605,47 +701,136 @@ def test_an_existing_database_gains_the_column(tmp_path: Path) -> None:
     assert "sources" in columns
 
 
-def test_the_chat_route_forwards_and_saves_sources(temp_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+# ---------------------------------------------------------------------------
+# The web chat route sends and saves them, however the reply ends
+# ---------------------------------------------------------------------------
+
+CLIENT_TURN = "sources-turn-0001"
+
+
+@pytest.fixture
+def chat_route_with(temp_db: Path, isolated_turn: None, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Runs one web chat turn. The route's own search finds "Q3 plan.pdf";
+    ``reply`` stands in for the Executive's stream and gets its keyword
+    arguments. Returns the SSE events and the saved assistant row's sources."""
     from openexecutive.api.routes import chat as chat_route
     from openexecutive.onboarding import profile_builder
     from openexecutive.orchestrator import executive as exec_mod
     from openexecutive.utils import session_title
 
     chat_route._sessions.clear()
+    chat_route._active_stops.clear()
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(profile_builder, "load_or_create_profile", lambda: CompanyProfile())
-    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda *a, **k: "")
+
+    def retrieve(*, record_source: Any = None, **_k: Any) -> str:
+        if record_source is not None:
+            record_source("company", "Q3 plan.pdf")
+        return "[Q3 plan.pdf] Hiring freeze until Q4."
+
+    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", retrieve)
 
     async def no_title(*_a: Any, **_k: Any) -> None:
         return None
 
     monkeypatch.setattr(session_title, "generate_session_title", no_title)
-    event = {
-        "type": "sources",
-        "session_id": "ignored",
-        "sources": [{"kind": "web", "title": "Rate decision", "url": "https://bank.example/rates"}],
+
+    def run(reply: Any) -> tuple[list[dict[str, Any]], Any]:
+        class FakeExecutive:
+            _THINKING = exec_mod.Executive._THINKING
+
+            def __init__(self, **_k: Any) -> None:
+                pass
+
+            def stream_chat(self, **kwargs: Any) -> AsyncIterator[Any]:
+                return reply(**kwargs)  # type: ignore[no-any-return]
+
+        monkeypatch.setattr(exec_mod, "Executive", FakeExecutive)
+        app = FastAPI()
+        app.include_router(chat_route.router)
+        response = TestClient(app).post("/chat", json={"message": "hi", "client_turn_id": CLIENT_TURN})
+        assert response.status_code == 200
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        with sqlite3.connect(temp_db) as conn:
+            rows = conn.execute("SELECT sources FROM chat_messages WHERE role = 'assistant'").fetchall()
+        saved = json.loads(rows[0][0]) if rows and rows[0][0] else None
+        return events, saved
+
+    return run
+
+
+def _types(events: list[dict[str, Any]]) -> list[str]:
+    return [e["type"] for e in events]
+
+
+def test_the_route_sends_and_saves_what_the_reply_looked_at(chat_route_with: Any) -> None:
+    async def reply(*, turn_sources: TurnSources, **_k: Any) -> AsyncIterator[Any]:
+        turn_sources.add("web", "Rate decision", "https://bank.example/rates", cited=True)
+        turn_sources.mark_unavailable("cfo")
+        yield "Here you go."
+
+    events, saved = chat_route_with(reply)
+    expected = {
+        "sources": [
+            {"kind": "web", "title": "Rate decision", "url": "https://bank.example/rates"},
+            # The route's own search, which the Executive answered from.
+            {"kind": "company", "title": "Q3 plan.pdf", "url": None},
+        ],
         "unavailable": ["finance"],
     }
+    [event] = [e for e in events if e["type"] == "sources"]
+    assert {k: event[k] for k in expected} == expected
+    types = _types(events)
+    assert types.index("chunk") < types.index("sources") < types.index("done")
+    assert saved == expected
 
-    class FakeExecutive:
-        _THINKING = exec_mod.Executive._THINKING
 
-        def __init__(self, **_k: Any) -> None:
-            pass
+def test_a_stopped_reply_keeps_its_sources(chat_route_with: Any) -> None:
+    from openexecutive.api.routes import chat as chat_route
 
-        async def stream_chat(self, **_k: Any) -> AsyncIterator[Any]:
-            yield "Here you go."
-            yield event
+    async def reply(*, turn_sources: TurnSources, **_k: Any) -> AsyncIterator[Any]:
+        turn_sources.mark_unavailable("gc")
+        yield "Partial answer"
+        chat_route._request_stop(CLIENT_TURN, "local")
+        await asyncio.sleep(30)
+        yield "never sent"
 
-    monkeypatch.setattr(exec_mod, "Executive", FakeExecutive)
-    app = FastAPI()
-    app.include_router(chat_route.router)
-    response = TestClient(app).post("/chat", json={"message": "hi"})
-    assert response.status_code == 200
-    sent = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-    assert event in sent
-    assert [e["type"] for e in sent].index("sources") < [e["type"] for e in sent].index("done")
+    events, saved = chat_route_with(reply)
+    types = _types(events)
+    assert types.index("sources") < types.index("stopped") < types.index("done")
+    assert saved == {"sources": [{"kind": "company", "title": "Q3 plan.pdf", "url": None}], "unavailable": ["legal"]}
 
-    with sqlite3.connect(temp_db) as conn:
-        [(stored,)] = conn.execute("SELECT sources FROM chat_messages WHERE role = 'assistant'").fetchall()
-    assert json.loads(stored) == {"sources": event["sources"], "unavailable": ["finance"]}
+
+def test_a_timed_out_reply_keeps_its_sources(chat_route_with: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.config import Settings
+
+    original_init = Settings.__init__
+
+    def short_timeout(self: Settings, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        object.__setattr__(self, "chat_stream_timeout_s", 0.3)
+
+    monkeypatch.setattr(Settings, "__init__", short_timeout)
+
+    async def reply(*, turn_sources: TurnSources, **_k: Any) -> AsyncIterator[Any]:
+        turn_sources.mark_unavailable("cfo")
+        yield "Partial answer"
+        await asyncio.sleep(30)
+        yield "never sent"
+
+    events, saved = chat_route_with(reply)
+    types = _types(events)
+    assert types.index("sources") < types.index("error") < types.index("done")
+    assert saved == {"sources": [{"kind": "company", "title": "Q3 plan.pdf", "url": None}], "unavailable": ["finance"]}
+
+
+def test_a_reply_that_looked_at_nothing_sends_nothing(
+    chat_route_with: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_k: "")
+
+    async def reply(**_k: Any) -> AsyncIterator[Any]:
+        yield "Hello."
+
+    events, saved = chat_route_with(reply)
+    assert "sources" not in _types(events) and saved is None

@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 
 import Icon from "@/components/Icon";
 import {
+  answerSourcesFrom,
   groupSources,
   missingNote,
   sourceLink,
@@ -46,9 +47,11 @@ function SourceItem({ source }: { source: AnswerSource }) {
 export default function AnswerSourcesFooter({ sources }: { sources: AnswerSources }) {
   const [open, setOpen] = useState(false);
   const listId = useId();
-  const groups = groupSources(sources.sources ?? []);
+  // Saved replies come back as stored, so read them as carefully as the event.
+  const { sources: listed, unavailable } = answerSourcesFrom(sources);
+  const groups = groupSources(listed);
   const count = groups.reduce((n, group) => n + group.items.length, 0);
-  const note = missingNote(sources.unavailable ?? []);
+  const note = missingNote(unavailable);
   if (count === 0 && !note) return null;
 
   return (

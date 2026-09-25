@@ -22,7 +22,7 @@ import {
   setMessageFeedback,
   streamChat,
 } from "@/lib/api";
-import type { AnswerSources } from "@/lib/answerSources";
+import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
 
 interface ChatProps {
@@ -304,7 +304,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           turnActions.push(item);
           setStreamingActions([...turnActions]);
         } else if (item.type === "sources") {
-          turnSources = { sources: item.sources ?? [], unavailable: item.unavailable ?? [] };
+          turnSources = answerSourcesFrom(item);
         } else if (item.type === "stopped") {
           // The server acknowledged the stop and is winding the turn down
           // itself; `done` follows over the same stream. Stand the abort
@@ -374,6 +374,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               content: accumulated,
               actions: turnActions.length > 0 ? turnActions : undefined,
               stopped: true,
+              sources: turnSources,
             },
           ]);
         }

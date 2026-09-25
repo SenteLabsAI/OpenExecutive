@@ -1,6 +1,7 @@
 // Web chat: what an answer looked at, and which part of the analysis it had
-// to leave out. Sent after the reply as a `sources` stream event and saved
-// with it (see packages/core/openexecutive/orchestrator/answer_sources.py).
+// to leave out. Sent after the reply as a `sources` stream event, stopped and
+// timed-out replies included, and saved with it (see
+// packages/core/openexecutive/orchestrator/answer_sources.py).
 //
 // No imports, so `npm test` can exercise this under
 // `node --experimental-strip-types` (see scripts/answerSources.test.mjs).
@@ -36,6 +37,29 @@ export interface SourceGroup {
   items: AnswerSource[];
 }
 
+function isSource(value: unknown): value is AnswerSource {
+  const source = value as AnswerSource | null;
+  return (
+    typeof source === "object" &&
+    source !== null &&
+    typeof source.kind === "string" &&
+    typeof source.title === "string" &&
+    (source.url == null || typeof source.url === "string")
+  );
+}
+
+/** The sources from a `sources` event or a saved reply. Anything malformed is
+ * left out rather than trusted. */
+export function answerSourcesFrom(value: { sources?: unknown; unavailable?: unknown } | null | undefined): AnswerSources {
+  const raw: { sources?: unknown; unavailable?: unknown } = value ?? {};
+  return {
+    sources: Array.isArray(raw.sources) ? raw.sources.filter(isSource) : [],
+    unavailable: Array.isArray(raw.unavailable)
+      ? raw.unavailable.filter((area): area is string => typeof area === "string")
+      : [],
+  };
+}
+
 /** The sources under their headings, in display order; empty groups and
  * unknown kinds are left out. */
 export function groupSources(sources: readonly AnswerSource[]): SourceGroup[] {
@@ -46,9 +70,11 @@ export function groupSources(sources: readonly AnswerSource[]): SourceGroup[] {
   })).filter((group) => group.items.length > 0);
 }
 
-// An in-app page such as /artifacts/alert%3A12 — nothing a browser could
-// read as another site ("//host", "/\host").
-const IN_APP_PATH = /^\/(?!\/)[A-Za-z0-9_%~/-]*$/;
+// The one in-app page a source links to: an earlier document, e.g.
+// /artifacts/alert%3A12. One segment of plain characters, so nothing a browser
+// could read as another site ("//host", "/\host") or another page. The same
+// pattern as `_IN_APP_PATH_RE` in answer_sources.py (a test checks).
+export const IN_APP_PATH = /^\/artifacts\/[A-Za-z0-9_%~-]+$/;
 
 /** Where a source links to, or null when it shouldn't be a link at all. */
 export function sourceLink(url: string | null | undefined): { href: string; external: boolean } | null {

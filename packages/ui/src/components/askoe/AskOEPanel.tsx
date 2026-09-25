@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import Message from "@/components/Message";
 import { useAskOE } from "@/components/askoe/AskOEContext";
-import type { AnswerSources } from "@/lib/answerSources";
+import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken, FormPatch } from "@/lib/api";
 import { setMessageFeedback, streamChat } from "@/lib/api";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
@@ -178,7 +178,7 @@ export default function AskOEPanel() {
           } else if (item.type === "action_taken") {
             actions.push(item);
           } else if (item.type === "sources") {
-            sources = { sources: item.sources ?? [], unavailable: item.unavailable ?? [] };
+            sources = answerSourcesFrom(item);
           } else if (item.type === "error") {
             setError(item.message ?? "Something went wrong.");
           } else if (item.type === "stopped") {
