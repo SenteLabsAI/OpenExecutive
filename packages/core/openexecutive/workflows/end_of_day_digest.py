@@ -75,6 +75,35 @@ _EOD_DIGEST_SYSTEM = (
 )
 
 
+# Solo variant: one person (the principal) uses Open Executive, whatever their
+# role — no "waiting on" roster, and goals are grouped by area, not department.
+_EOD_DIGEST_SOLO_SYSTEM = (
+    "You are the principal's Executive. The principal is the one person who "
+    "uses Open Executive — they may run their own business, lead a function "
+    "inside a larger organisation, or work independently. You are writing "
+    "their end-of-day digest — a short message they read before logging off. "
+    "Audience is the principal alone (DM only); write as their right hand, "
+    "peer-to-peer.\n\n"
+    "Output ≤200 words of Markdown with these sections, in order, each "
+    "only included when there is real content:\n"
+    "  1. **What I did today** — actions you took without prompting "
+    "(follow-ups scheduled, workflows queued, alerts flagged, goals "
+    "updated). One bullet per item, terse.\n"
+    "  2. **Open decisions** — ONLY the NEW items listed under NEW SINCE LAST "
+    "BRIEF (say what each one needs from the principal). If the context has a "
+    "CARRIED OVER line, add exactly one sentence ('N older items still "
+    "open — see /today'); never re-list carried items.\n"
+    "  3. **Goals at risk tomorrow** — goals, named with their area, that "
+    "might trip if nothing happens overnight or first thing.\n"
+    "  4. **Sleep on this** — at most ONE open question worth the "
+    "principal mulling overnight. Skip if there isn't one.\n\n"
+    "This digest is for one person: name goals by their area, never a "
+    "department, and add no sections about a team roster or people waiting "
+    "on the principal. Skip headers for empty sections. If the day was "
+    "genuinely quiet, output one line: 'Quiet day — nothing carrying forward.'"
+)
+
+
 def _render_eod_context(
     *,
     period_label: str,
@@ -82,14 +111,17 @@ def _render_eod_context(
     activity: list[dict[str, Any]],
     since: datetime | None = None,
     handled: list[dict[str, Any]] | None = None,
+    mode: str = "team",
 ) -> str:
     """Pack /today + activity into the user-turn block.
 
     Same structure as morning_brief's renderer but framed as end-of-day
     state. Activity items are explicitly labeled as "today's actions"
-    since this is the recap, not the look-ahead.
+    since this is the recap, not the look-ahead. ``mode="solo"`` renders
+    goals at risk by area and drops the people-waiting block.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
+    solo = mode == "solo"
 
     if activity:
         parts.append("WHAT OE DID TODAY (most recent first):")
@@ -151,7 +183,11 @@ def _render_eod_context(
     depts = today_data.get("departments", [])
     at_risk = [d for d in depts if d.get("at_risk_count", 0) or d.get("off_track_count", 0)]
     if at_risk:
-        parts.append("DEPARTMENTS WITH RISK CARRIED FORWARD:")
+        parts.append(
+            "GOALS AT RISK BY AREA, CARRIED FORWARD:"
+            if solo
+            else "DEPARTMENTS WITH RISK CARRIED FORWARD:"
+        )
         for d in at_risk:
             parts.append(
                 f"- {d['title']}: at_risk={d.get('at_risk_count', 0)} "
@@ -160,7 +196,7 @@ def _render_eod_context(
         parts.append("")
 
     people = today_data.get("people", [])
-    awaiting = [p for p in people if p.get("awaiting_count", 0)]
+    awaiting = [] if solo else [p for p in people if p.get("awaiting_count", 0)]
     if awaiting:
         parts.append("PEOPLE STILL WAITING ON YOU:")
         for p in awaiting:
@@ -171,7 +207,11 @@ def _render_eod_context(
             )
 
     if len(parts) == 1:
-        parts.append("(No actions taken, no pending proposals, no at-risk goals today.)")
+        parts.append(
+            "(No actions taken, no open decisions, no at-risk goals today.)"
+            if solo
+            else "(No actions taken, no pending proposals, no at-risk goals today.)"
+        )
 
     return "\n".join(parts)
 
@@ -222,10 +262,14 @@ class EndOfDayDigestWorkflow(Workflow):
 
         from openexecutive.api.routes import today as today_route
         from openexecutive.briefing import brief_state
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
+        from openexecutive.orchestrator.schedule_tools import current_session
 
         # A recap since the last DELIVERED digest (24 h on a cold store,
         # clamped to 7 d) — same window rule as the morning brief.
         since = brief_state.since_for(BRIEF_KIND)
+        # Solo / team (a caller's session override, e.g. evals, wins).
+        mode = effective_workspace_mode(current_session.get())
 
         try:
             today_response = today_route._build_today()
@@ -250,6 +294,7 @@ class EndOfDayDigestWorkflow(Workflow):
         handled = brief_state.handled_since(since)
         fingerprint = brief_state.build_brief_fingerprint(
             today_data=today_data, activity=activity, handled=handled, since=since,
+            mode=mode,
         )
         previous = brief_state.last_delivered(BRIEF_KIND)
         suppressed = (
@@ -299,7 +344,7 @@ class EndOfDayDigestWorkflow(Workflow):
 
         user_content = _render_eod_context(
             period_label=period, today_data=today_data, activity=activity,
-            since=since, handled=handled,
+            since=since, handled=handled, mode=mode,
         )
 
         try:
@@ -307,7 +352,7 @@ class EndOfDayDigestWorkflow(Workflow):
             response = await get_provider(model).messages_create(
                 model=model,
                 max_tokens=600,
-                system=_EOD_DIGEST_SYSTEM,
+                system=_EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM,
                 messages=[{"role": "user", "content": user_content}],
             )
             text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]

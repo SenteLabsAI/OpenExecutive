@@ -121,6 +121,9 @@ def validate_scenario_yaml(raw: str) -> dict[str, Any]:
     if "/" in s["id"] or " " in s["id"]:
         raise ValueError("`id` must not contain '/' or whitespace")
 
+    if s.get("workspace_mode") is not None and s["workspace_mode"] not in ("solo", "team"):
+        raise ValueError("`workspace_mode` must be 'solo' or 'team'")
+
     k = scenario_kind(s)
     if k == "chat" and not s.get("query"):
         raise ValueError("chat scenarios require a `query` field")

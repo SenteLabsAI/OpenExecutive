@@ -528,6 +528,41 @@ def _validate_prefill_leaves(
     return f"prefilled value at {path!r} has unsupported type {type(value).__name__}"
 
 
+# schedule_followup channel → the Person field that holds that channel's ref.
+_FOLLOWUP_CHANNEL_FIELD: dict[str, str] = {
+    "email": "email",
+    "slack_dm": "slack_user_id",
+    "telegram": "telegram_chat_id",
+}
+
+
+def _is_principal_recipient(
+    channel: str, channel_ref: str, assigned_to_person_id: int | None
+) -> bool:
+    """Whether a follow-up is addressed to the principal: ``channel_ref`` is
+    the principal's own ref on ``channel``, and it is not assigned to anyone
+    else. Fails closed — an unreadable roster answers False, which leaves the
+    follow-up to the authority gate as before."""
+    try:
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+    except Exception:
+        logger.warning("schedule_followup: principal lookup failed", exc_info=True)
+        return False
+    if principal is None:
+        return False
+    if assigned_to_person_id is not None and assigned_to_person_id != principal.id:
+        return False
+    field = _FOLLOWUP_CHANNEL_FIELD.get(channel)
+    own_ref = str(getattr(principal, field, "") or "").strip() if field else ""
+    if not own_ref:
+        return False
+    if channel == "email":
+        return own_ref.lower() == channel_ref.strip().lower()
+    return own_ref == channel_ref.strip()
+
+
 async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
     from openexecutive.memory.episodic import (
@@ -611,6 +646,19 @@ async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
         })
 
     session_id = getattr(session, "session_id", None) if session is not None else None
+
+    # Solo: a follow-up to the principal goes straight to them. A department
+    # or scope would send it through the authority gate, which files a
+    # proposal card asking the principal to approve a message to themselves
+    # — so both are dropped when the recipient is the principal.
+    if department or required_scope:
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
+
+        if effective_workspace_mode(session) == "solo" and _is_principal_recipient(
+            channel, channel_ref, assigned_to_person_id
+        ):
+            department = ""
+            required_scope = None
 
     try:
         action_id = insert_scheduled_action(
@@ -1399,6 +1447,128 @@ def configured_integrations(settings: Any) -> set[str]:
         if get_active_gateway() is not None:
             configured.add("calendar")
     return configured
+
+
+# Tools that coordinate a team through Open Executive: posting to a
+# department's room, broadcasting to the whole company, naming a department
+# head. In solo mode only one person (the principal) uses Open Executive —
+# the people in their world are contacts, not a team wired to it — so these
+# are not offered in any toolkit: chat, reflection, research. The principal
+# still adds and messages their own contacts (upsert_person, list_people,
+# message_person).
+SOLO_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "send_company_broadcast",
+    "send_department_message",
+    "set_department_head",
+})
+
+
+def tools_withheld_in_mode(mode: str) -> frozenset[str]:
+    """Tool names not offered in workspace ``mode`` ("solo" / "team")."""
+    return SOLO_WITHHELD_TOOLS if mode == "solo" else frozenset()
+
+
+def filter_tools_for_workspace_mode(
+    tools: list[dict[str, Any]], mode: str
+) -> list[dict[str, Any]]:
+    """Return ``tools`` minus the ones not offered in workspace ``mode``.
+
+    Order is preserved (a sorted list stays sorted) and the tool dicts are
+    not copied or mutated. Team mode returns every tool.
+    """
+    withheld = tools_withheld_in_mode(mode)
+    return [t for t in tools if t.get("name", "") not in withheld]
+
+
+def principal_only_handlers(handlers: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``handlers`` whose ``message_person`` refuses anyone but the
+    principal. For solo mode's unattended passes (reflection, research): the
+    principal's contacts hear from the Executive only when the principal asks
+    in conversation, and those passes run with inbound text in their context
+    and nobody watching, so the rule is enforced here rather than left to the
+    prompt. Fails closed when the roster cannot be read."""
+    inner = handlers.get("message_person")
+    if inner is None:
+        return dict(handlers)
+
+    async def _message_principal_only(tool_input: dict[str, Any]) -> str:
+        from openexecutive.people.store import find_principal_person
+
+        try:
+            principal = find_principal_person()
+            person_id = int(tool_input.get("person_id"))  # type: ignore[arg-type]
+        except Exception:
+            principal, person_id = None, -1
+        if principal is None or principal.id != person_id:
+            return json.dumps({
+                "error": (
+                    "message_person refused: in solo mode this pass messages "
+                    "only your principal. Raise it for them instead."
+                )
+            })
+        return str(await inner(tool_input))
+
+    return {**handlers, "message_person": _message_principal_only}
+
+
+# What a solo install's UNATTENDED passes (reflection, research) additionally
+# never get: booking a meeting reaches its attendees, and starting a workflow
+# can do anything its steps do. Those passes run with inbound mail and chat in
+# their context and nobody watching, so injected text ("book a sync with X")
+# must not be able to reach a contact. The principal books meetings and starts
+# workflows from chat, where they are in the room.
+SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "create_calendar_event",
+    "create_instant_meeting",
+    "run_workflow",
+})
+
+
+def handlers_for_offered_tools(
+    tools: list[dict[str, Any]], handlers: dict[str, Any]
+) -> dict[str, Any]:
+    """The handlers for exactly the tools in ``tools`` — nothing else.
+
+    A dispatcher that looks names up in the full handler registry runs a tool
+    the model was never offered whenever the model emits its name anyway (from
+    a guess, or from text injected into its context). Building the map from
+    the offered list makes "not offered" mean "cannot run"."""
+    offered = {t.get("name", "") for t in tools}
+    return {name: h for name, h in handlers.items() if name in offered}
+
+
+def unattended_toolkit(
+    tools: list[dict[str, Any]], handlers: dict[str, Any], mode: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """``(tools, handlers)`` for an unattended pass (reflection, research).
+
+    ``tools`` is the pass's own list (already narrowed to what it offers and
+    to the configured channels). Solo withholds the team-only tools and
+    ``SOLO_UNATTENDED_WITHHELD_TOOLS``, and its ``message_person`` reaches the
+    principal only. Either mode, the handler map is built from the list that
+    is returned, so a name the model emits without being offered it is
+    skipped as unknown instead of run. Order is preserved.
+    """
+    tools = filter_tools_for_workspace_mode(tools, mode)
+    if mode == "solo":
+        tools = [t for t in tools if t.get("name", "") not in SOLO_UNATTENDED_WITHHELD_TOOLS]
+    offered = handlers_for_offered_tools(tools, handlers)
+    if mode == "solo":
+        offered = principal_only_handlers(offered)
+    return tools, offered
+
+
+def withheld_tool_error(tool_name: str, mode: str) -> str:
+    """The JSON error tool_result for a call to a tool this mode does not
+    offer. The model can still emit one (from an earlier turn, or a guess),
+    so every dispatch site answers with this instead of running it."""
+    return json.dumps({
+        "error": (
+            f"{tool_name} is not available: this workspace is in {mode} mode, "
+            "so Open Executive has no department room or company channel to "
+            "post to. Say it to your principal directly instead."
+        )
+    })
 
 
 def filter_tools_for_configured_channels(

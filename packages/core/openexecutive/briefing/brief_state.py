@@ -336,10 +336,15 @@ def build_brief_fingerprint(
     handled: list[dict[str, Any]],
     since: datetime | None,
     pending_watch_suggestions: int = 0,
+    mode: str = "team",
 ) -> str:
     """Stable hash of everything the brief would say. Deliberately free of
     dates and timestamps so an unchanged day yields the same fingerprint
-    tomorrow (activity is keyed by kind + summary, never by its stamp)."""
+    tomorrow (activity is keyed by kind + summary, never by its stamp).
+
+    ``mode="solo"`` leaves out who is awaiting (the solo brief never says)
+    and carries the mode, so switching mode never suppresses the first brief
+    in the new one as "unchanged". Team fingerprints are unchanged."""
     new, carried = split_proposals(today_data.get("proposals", []), since)
     payload = {
         "new": sorted(int(p.get("alert_id") or 0) for p in new),
@@ -367,6 +372,9 @@ def build_brief_fingerprint(
         ),
         "watch_suggestions": int(pending_watch_suggestions),
     }
+    if mode == "solo":
+        payload.pop("awaiting")
+        payload["mode"] = mode
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

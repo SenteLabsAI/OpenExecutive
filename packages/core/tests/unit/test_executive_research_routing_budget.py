@@ -170,12 +170,17 @@ async def test_synthesis_routes_after_lookups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The original failure: iteration 1 looks up five department heads,
-    iteration 2 DMs one of them. Lookups must NOT consume the routing
-    budget, so the DM in iteration 2 actually fires.
+    iteration 2 routes the finding. Lookups must NOT consume the routing
+    budget, so the outbound call in iteration 2 actually fires.
 
     Pre-fix, the five lookups counted as five 'ok' routing calls, the
     budget (5) was exhausted, and the loop terminated after iteration 1 —
-    the DM was never even requested. Post-fix, the DM fires.
+    the outbound call was never even requested. Post-fix, it fires.
+
+    The outbound call is `create_alert`, a tool this pass offers. (It used
+    to be `send_slack_dm`, which the pass withholds — the test only passed
+    because a withheld tool still ran when emitted; see
+    test_synthesis_skips_a_tool_it_did_not_offer.)
     """
     fired: list[str] = []
 
@@ -183,14 +188,14 @@ async def test_synthesis_routes_after_lookups(
         fired.append("lookup_person")
         return '{"matches": [{"slack_user_id": "U1"}]}'
 
-    async def _dm(inp: dict[str, Any]) -> str:
-        fired.append("send_slack_dm")
-        return json.dumps({"status": "sent", "to": inp.get("user_id", "")})
+    async def _route(inp: dict[str, Any]) -> str:
+        fired.append("create_alert")
+        return json.dumps({"status": "created", "headline": inp.get("headline", "")})
 
     from openexecutive.orchestrator import executive
 
     monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "lookup_person", _lookup)
-    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "send_slack_dm", _dm)
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "create_alert", _route)
     # Keep the synthetic-Session seeding independent of any real DB.
     monkeypatch.setattr("openexecutive.people.store.list_people", lambda: [])
 
@@ -202,8 +207,8 @@ async def test_synthesis_routes_after_lookups(
     )
     iter2 = _Resp(
         [
-            _ToolUse("send_slack_dm", {"user_id": "U1", "text": "heads up"}, "d1"),
-            _Text("**Acted on:**\n- DM'd the head of sales."),
+            _ToolUse("create_alert", {"headline": "Competitor cut prices"}, "d1"),
+            _Text("**Acted on:**\n- Flagged the price cut."),
         ],
         "end_turn",
     )
@@ -214,15 +219,15 @@ async def test_synthesis_routes_after_lookups(
 
     narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
 
-    # The DM fired exactly once, AFTER the five lookups.
+    # The outbound call fired exactly once, AFTER the five lookups.
     assert fired.count("lookup_person") == 5
-    assert fired.count("send_slack_dm") == 1
+    assert fired.count("create_alert") == 1
 
-    dm_calls = [t for t in tool_calls if t["tool"] == "send_slack_dm"]
-    assert len(dm_calls) == 1
-    assert dm_calls[0]["ok"] is True
-    # The DM was NOT refused as over-budget.
-    assert dm_calls[0]["result_preview"] != "over budget — skipped"
+    routed = [t for t in tool_calls if t["tool"] == "create_alert"]
+    assert len(routed) == 1
+    assert routed[0]["ok"] is True
+    # It was NOT refused as over-budget.
+    assert routed[0]["result_preview"] != "over budget — skipped"
     assert "Acted on" in narrative
 
 
@@ -235,13 +240,13 @@ async def test_synthesis_stops_when_iteration_makes_no_progress(
     a failed outbound iteration reset its budget on the next round."""
     call_count = {"n": 0}
 
-    async def _failing_dm(_inp: dict[str, Any]) -> str:
+    async def _failing_route(_inp: dict[str, Any]) -> str:
         call_count["n"] += 1
-        return '{"error": "slack not configured"}'
+        return '{"error": "alerts store unavailable"}'
 
     from openexecutive.orchestrator import executive
 
-    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "send_slack_dm", _failing_dm)
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "create_alert", _failing_route)
     monkeypatch.setattr("openexecutive.people.store.list_people", lambda: [])
 
     provider_calls = {"n": 0}
@@ -249,10 +254,10 @@ async def test_synthesis_stops_when_iteration_makes_no_progress(
     class _CountingProvider:
         async def messages_create(self, **_kwargs: Any) -> Any:
             provider_calls["n"] += 1
-            # Always asks for one (failing) DM and never wraps up — left
-            # to its own devices this would run the full iteration ceiling.
+            # Always asks for one (failing) outbound call and never wraps
+            # up — left to itself this would run the full iteration ceiling.
             return _Resp(
-                [_ToolUse("send_slack_dm", {"user_id": "U1", "text": "x"}, "d")],
+                [_ToolUse("create_alert", {"headline": "x"}, "d")],
                 "tool_use",
             )
 
@@ -263,10 +268,58 @@ async def test_synthesis_stops_when_iteration_makes_no_progress(
     _narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
 
     # Loop stopped after the first no-progress iteration: one provider
-    # call, one (failed) DM attempt — not the full 3-iteration ceiling.
+    # call, one (failed) outbound attempt — not the full 3-iteration ceiling.
     assert provider_calls["n"] == 1
     assert call_count["n"] == 1
     assert all(not t["ok"] for t in tool_calls)
+
+
+@pytest.mark.asyncio
+async def test_synthesis_skips_a_tool_it_did_not_offer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tool the pass withholds (here the raw `send_slack_dm`, which has no
+    roster check; likewise the watchlist writes, `ack_alert`, `run_workflow`)
+    must not run when the model emits it anyway — e.g. from injected text in
+    a finding. The handler map is built from the offered list, so it is
+    skipped as unknown."""
+    ran: list[str] = []
+
+    async def _dm(_inp: dict[str, Any]) -> str:
+        ran.append("send_slack_dm")
+        return '{"status": "sent"}'
+
+    async def _watch(_inp: dict[str, Any]) -> str:
+        ran.append("add_watchlist_entry")
+        return '{"status": "added"}'
+
+    from openexecutive.orchestrator import executive
+
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "send_slack_dm", _dm)
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "add_watchlist_entry", _watch)
+    monkeypatch.setattr("openexecutive.people.store.list_people", lambda: [])
+
+    seq = _SequenceProvider([
+        _Resp(
+            [
+                _ToolUse("send_slack_dm", {"user_id": "U0XXXX", "text": "hi"}, "a"),
+                _ToolUse("add_watchlist_entry", {"slug": "x"}, "b"),
+            ],
+            "tool_use",
+        ),
+        _Resp([_Text("done")], "end_turn"),
+    ])
+    from openexecutive import providers
+
+    monkeypatch.setattr(providers, "get_provider", lambda _model: seq)
+
+    _narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
+
+    assert ran == []
+    assert {t["tool"]: t["result_preview"] for t in tool_calls} == {
+        "send_slack_dm": "unknown tool — skipped",
+        "add_watchlist_entry": "unknown tool — skipped",
+    }
 
 
 def _finding(title: str = "Competitor cut prices") -> er.ResearchFinding:

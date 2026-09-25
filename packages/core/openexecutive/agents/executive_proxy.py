@@ -20,6 +20,8 @@ class ExecutiveProxy(BaseAgent):
     use_deep_reasoning = False
 
     def get_system_prompt(self) -> str:
-        from openexecutive.prompts.executive_persona import EXECUTIVE_PERSONA_PROMPT
+        # The built-in persona for this install's workspace mode (team / solo).
+        from openexecutive.memory.workspace_settings import get_workspace
+        from openexecutive.prompts.executive_persona import default_persona
 
-        return EXECUTIVE_PERSONA_PROMPT
+        return default_persona(get_workspace().mode)

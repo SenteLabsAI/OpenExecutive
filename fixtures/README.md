@@ -9,6 +9,7 @@ Pre-built company data suites for demos, evals, and development. Each fixture co
 | `tandem_robotics` | Tandem Robotics | Humanoid Robotics / Warehouse Automation | Series C | $90M |
 | `halcyon_motors` | Halcyon Motors | Electric Vehicles / Automotive | Series C | $140M |
 | `meridian_petroleum` | Meridian Petroleum | Oil & Gas — Refining / Crude Trading | Private / PE-backed | $3.2B |
+| `solo_studio` | Tallgrass Studio | Independent Brand & Product Design Studio | Bootstrapped, owner-run | $310K |
 
 `tandem_robotics`, `halcyon_motors`, and `meridian_petroleum` are clean-baseline
 research demo fixtures (see the callouts below). All three are fictional companies that
@@ -44,6 +45,20 @@ Discord IDs — so nothing in these fixtures maps to a real person.
 > synthetic (placeholder emails + non-routable Discord IDs), shared with the other demo
 > fixtures.
 
+> **`solo_studio`** is a reference fixture for **solo mode** — one person using
+> Open Executive just for themselves. Solo principals can be at any level (a business
+> owner, an executive inside a larger organisation, an independent); this fixture is
+> one example: Tallgrass Studio, a fictional one-person design studio. `people.yaml`
+> holds only the principal (its owner, wildcard authority), `departments.yaml` holds
+> four *areas* (strategy, finance, marketing, product) headed by the principal with one
+> or two goals each, and `workspace.yaml` sets `mode: solo`. Loaded, the Executive works
+> for that one person: no department check-ins or channels, goals grouped by area, and
+> nobody else contacted unless the principal asks. Its eval scenarios are the built-in
+> `solo_001`–`solo_003` (`packages/core/openexecutive/evals/_scenarios/`), which run as
+> solo mode through their `workspace_mode: solo` key; load this fixture first for the
+> matching goals and memory. `solo_004` covers an in-house executive and needs no
+> fixture. It stages no scheduled actions, so nothing fires on load.
+
 ## Loading a Fixture
 
 ### Via the UI
@@ -72,7 +87,10 @@ Loading a fixture replaces:
 
 ## Running Fixture-Specific Evals
 
-Each fixture ships with 2 eval scenarios in `fixtures/companies/<name>/scenarios/`.
+Each team fixture ships with 2 eval scenarios in `fixtures/companies/<name>/scenarios/`
+(`solo_studio` uses the built-in `solo_*` scenarios instead — see above).
+A scenario can set `workspace_mode: solo` (or `team`) to run as that mode without
+changing the install's own setting.
 
 ```bash
 cd evals

@@ -21,6 +21,10 @@ from openexecutive.audit.redaction import (
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
+from openexecutive.memory.workspace_settings import (
+    effective_workspace_mode,
+    pin_turn_workspace_mode,
+)
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -76,6 +80,9 @@ from openexecutive.orchestrator.schedule_tools import (
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
     current_session,
+    filter_tools_for_workspace_mode,
+    tools_withheld_in_mode,
+    withheld_tool_error,
 )
 from openexecutive.orchestrator.session import Session
 from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS, SKILL_TOOLS
@@ -726,11 +733,17 @@ class Executive:
             voice_persona_body = _get_voice_body(_ov.voice_persona_slug if _ov else None)
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
+        # Solo / team, resolved once per turn and pinned on the session, so the
+        # persona, the org block, the toolkit the loop offers and every tool
+        # handler agree even if the setting flips mid-turn (Session override →
+        # workspace).
+        workspace_mode = pin_turn_workspace_mode(session)
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
+            workspace_mode=workspace_mode,
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -806,6 +819,7 @@ class Executive:
                 consulted_out=consulted,
                 turn_id=turn_id,
                 turn_sources=turn_sources,
+                workspace_mode=workspace_mode,
             ):
                 if isinstance(item, str) and item != self._THINKING:
                     full_response += item
@@ -990,11 +1004,13 @@ class Executive:
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
 
+        workspace_mode = pin_turn_workspace_mode(session)
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
             persona_override=persona_override,
             voice_persona_body=voice_persona_body,
+            workspace_mode=workspace_mode,
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.
@@ -1089,6 +1105,7 @@ class Executive:
             specialist_outputs_out=specialist_outputs,
             turn_id=turn_id,
             turn_sources=turn_sources,
+            workspace_mode=workspace_mode,
         ):
             # Swallow draft text and the THINKING sentinel — the user sees
             # only the revised stream. Pass debug-event dicts through so the
@@ -1383,6 +1400,7 @@ class Executive:
         specialist_outputs_out: dict[str, str] | None = None,
         turn_id: str | None = None,
         turn_sources: TurnSources | None = None,
+        workspace_mode: str | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Tool-use loop that yields text deltas as they arrive.
 
@@ -1393,7 +1411,14 @@ class Executive:
         ``turn_sources`` collects the documents and web pages the turn looked
         at, and which specialists failed or answered; its owner (the web chat
         route) sends it once the reply is over.
+
+        ``workspace_mode`` is the turn's solo/team mode (the caller resolves it
+        once, for the system blocks too); None resolves it from the current
+        session. Solo withholds the team-only tools and refuses a call to one.
         """
+        if workspace_mode is None:
+            workspace_mode = effective_workspace_mode(current_session.get())
+        withheld_tools = tools_withheld_in_mode(workspace_mode)
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
@@ -1422,8 +1447,13 @@ class Executive:
             # last one carries the cache_control marker. Anthropic server-side
             # tools (e.g. web_search) are appended after — they use a `type`
             # field instead of input_schema and cannot accept cache_control.
+            # Solo withholds the team-only tools before the sort, so each mode
+            # has its own stable, sorted tool prefix.
             client_tools = sorted(
-                [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
+                filter_tools_for_workspace_mode(
+                    [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
+                    workspace_mode,
+                ),
                 key=lambda t: t["name"],
             )
             tools_with_cache: list[dict[str, Any]] = [
@@ -1527,6 +1557,13 @@ class Executive:
 
             specialist_tool_uses = [tu for tu in tool_uses if tu["name"] == "consult_specialist"]
             skill_tool_uses = [tu for tu in tool_uses if tu["name"] in _ALL_SKILL_HANDLERS]
+            # Dispatch guard: a tool this mode does not offer never runs, even
+            # if the model emits it anyway — it gets an error tool_result.
+            withheld_uses = [tu for tu in skill_tool_uses if tu["name"] in withheld_tools]
+            if withheld_uses:
+                skill_tool_uses = [
+                    tu for tu in skill_tool_uses if tu["name"] not in withheld_tools
+                ]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
 
             specialist_calls = [
@@ -1611,6 +1648,11 @@ class Executive:
 
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
+            for tu in withheld_uses:
+                logger.warning(
+                    "skill:%s refused — not offered in %s mode", tu["name"], workspace_mode
+                )
+                results_by_id[tu["id"]] = withheld_tool_error(tu["name"], workspace_mode)
             if specialist_calls:
                 spec_t0 = time.monotonic()
                 failed_calls: list[int] = []

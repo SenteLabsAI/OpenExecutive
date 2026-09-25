@@ -200,16 +200,42 @@ def get_user_timezone(db_path: Path | None = None) -> ZoneInfo:
     return zone if zone is not None else _configured_timezone()
 
 
+def _valid_mode(value: object) -> WorkspaceMode | None:
+    if value == "solo":
+        return "solo"
+    if value == "team":
+        return "team"
+    return None
+
+
 def effective_workspace_mode(session: Session | None = None) -> WorkspaceMode:
     """The mode a turn runs in: the session's override when it carries a valid
     one (evals run scenarios concurrently on one Executive, so they cannot
-    flip the install-wide setting), else the workspace's."""
-    override = session.workspace_mode if session is not None else None
-    if override == "solo":
-        return "solo"
-    if override == "team":
-        return "team"
+    flip the install-wide setting), else the mode pinned for the session's
+    current turn (``pin_turn_workspace_mode``), else the workspace's."""
+    if session is not None:
+        override = _valid_mode(getattr(session, "workspace_mode", None))
+        if override is not None:
+            return override
+        pinned = _valid_mode(getattr(session, "turn_workspace_mode", None))
+        if pinned is not None:
+            return pinned
     return get_workspace().mode
+
+
+def pin_turn_workspace_mode(session: Session) -> WorkspaceMode:
+    """Resolve the mode for a NEW turn and pin it on the session.
+
+    The override, else the workspace read fresh — never the previous turn's
+    pin, so a switch applies from the next turn. Every later
+    ``effective_workspace_mode(session)`` in the turn (the tool handlers:
+    schedule_followup, create_calendar_event, the loop's dispatch guard)
+    then returns this same mode, so a switch made mid-turn cannot leave the
+    persona and tool list in one mode and a handler in the other.
+    """
+    mode = _valid_mode(getattr(session, "workspace_mode", None)) or get_workspace().mode
+    session.turn_workspace_mode = mode
+    return mode
 
 
 def _upsert(db_path: Path | None, **columns: str | None) -> None:

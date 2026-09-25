@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openexecutive.departments.authority import GateDecision
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +451,45 @@ def _propose_via_decision_alert(
         )
 
 
+def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
+    """The meeting gate in solo mode. No department is consulted — the
+    install's departments are only the principal's areas, not an
+    organisation with an operations team — so the ``meeting_scheduling``
+    class mode (the principal's own setting, PUT
+    /decisions/classes/meeting_scheduling) decides, and ``auto_execute``
+    books right away only when the principal started this turn on a surface
+    that verified it is them (the roster-write rule,
+    ``people_tools.is_principal_on_verified_surface``). Anything else — an
+    inbound email, a contact's message, an unattended run — is proposed to
+    the principal on the briefing, so text someone else wrote cannot put a
+    meeting on the principal's calendar."""
+    from openexecutive.departments.authority import GateDecision
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+    if class_mode == "auto_execute" and is_principal_on_verified_surface(session):
+        return GateDecision(
+            allowed=True, action="execute", reason="solo: meeting_scheduling is auto_execute"
+        )
+    principal_id: int | None = None
+    try:
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        principal_id = principal.id if principal is not None else None
+    except Exception:
+        logger.warning("calendar_tools: principal lookup failed", exc_info=True)
+    return GateDecision(
+        allowed=False,
+        action="propose",
+        assignee_person_id=principal_id,
+        reason=(
+            "solo: meeting_scheduling proposes to the principal"
+            if class_mode != "auto_execute"
+            else "solo: auto_execute needs the principal on a verified surface — proposing"
+        ),
+    )
+
+
 async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     """Propose (or auto-execute when promoted) a calendar meeting."""
     from openexecutive.config import get_settings
@@ -461,6 +503,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         mark_executed,
         mark_resolved,
     )
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.schedule_tools import current_session
     from openexecutive.people.models import AuthorityScope
@@ -559,13 +602,19 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     # 10. Authority gate.
     session = current_session.get()
     session_id = getattr(session, "session_id", None) if session is not None else None
+    class_mode = get_class_mode("meeting_scheduling")
 
-    gate_decision = gate_action(
-        "operations",
-        "meeting_scheduling",
-        required_scope=AuthorityScope.MEETING_SCHEDULING,
-        now=now,
-    )
+    if effective_workspace_mode(session) == "solo":
+        # Solo: the principal is the only approver and there is no operations
+        # department to consult — the class mode decides.
+        gate_decision = _solo_meeting_gate(class_mode, session)
+    else:
+        gate_decision = gate_action(
+            "operations",
+            "meeting_scheduling",
+            required_scope=AuthorityScope.MEETING_SCHEDULING,
+            now=now,
+        )
 
     # A Google Meet link is requested by default; the model can opt out for an
     # in-person meeting via add_google_meet=false.
@@ -583,8 +632,6 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         "description": description,
         "add_google_meet": add_google_meet,
     }
-
-    class_mode = get_class_mode("meeting_scheduling")
 
     # 11. Record in the ledger.
     try:

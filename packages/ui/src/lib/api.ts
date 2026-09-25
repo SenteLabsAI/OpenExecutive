@@ -1356,6 +1356,9 @@ export async function setDecisionClassMode(
     body: JSON.stringify({ mode }),
   });
   if (res.status === 403) throw new Error("Only the principal can change this setting.");
+  // 409: auto-booking can't be turned on before a principal exists; the
+  // backend's detail says so in plain words.
+  if (res.status === 409) throw await onboardError(res, "This setting can't be turned on yet.");
   if (!res.ok) throw new Error("Failed to save the setting");
   return res.json();
 }
