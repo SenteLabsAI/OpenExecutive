@@ -183,6 +183,14 @@ See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no defa
 > "handled overnight" block). Patch it in an autouse fixture, and delete a
 > stray `packages/core/episodic_memory.db` (gitignored) if one appears.
 
+> **ContextVar leaks between tests:** a *sync* fixture or test that sets
+> `current_session` (or any module-level ContextVar) and doesn't reset it
+> leaves that value bound for every later test in the process.
+> pytest-asyncio isolates only async tests and fixtures. Use
+> `token = var.set(...)`, `yield`, `var.reset(token)`. CI's `-n auto --dist
+> loadfile` usually puts the leaking file and the one it breaks on different
+> workers, so only a serial run (no `-n`) shows it.
+
 > **Pre-existing ruff hits in `tests/unit/test_attachments.py`** (unsorted
 > imports, unused `asyncio`): `make lint` only checks `openexecutive/`, so CI
 > is unaffected — lint the specific test files you touched rather than
