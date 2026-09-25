@@ -70,7 +70,13 @@ def test_meta_serializes_section_as_string() -> None:
     assert meta["section"] == "Board"
 
 
-_BACKGROUND = {"morning_brief", "end_of_day_digest", "executive_reflection", "executive_research"}
+_BACKGROUND = {
+    "morning_brief",
+    "end_of_day_digest",
+    "weekly_review",
+    "executive_reflection",
+    "executive_research",
+}
 
 
 def test_background_flag_marks_only_the_system_workflows() -> None:

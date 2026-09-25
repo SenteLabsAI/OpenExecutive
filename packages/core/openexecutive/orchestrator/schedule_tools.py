@@ -1527,11 +1527,12 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # What NO unattended run gets, in either mode: the scheduler's proactive
 # trigger (a chat-loop run on a Session with `unattended=True`), reflection and
 # research. These are the principal's own decisions, and those runs have
-# stored or inbound text in their context and nobody watching. create_goal
-# also refuses anyone but the principal on a verified surface; this keeps it
-# out of the unattended toolkits altogether.
+# stored or inbound text in their context and nobody watching. create_goal and
+# record_decision_outcome also refuse anyone but the principal on a verified
+# surface; this keeps them out of the unattended toolkits altogether.
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_goal",
+    "record_decision_outcome",
 })
 
 

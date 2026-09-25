@@ -38,6 +38,8 @@ EXPECTED = {
     "competitive_teardown": ("competitive-teardown",),
     "fundraising_prep": ("fundraise-narrative",),
     "exec_search_brief": ("role-scorecard",),
+    # The weekly review's top three follows its own playbook.
+    "weekly_review": ("weekly-review",),
 }
 
 

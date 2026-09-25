@@ -1,0 +1,37 @@
+id: workflow_weekly_review_001
+domain: operations
+type: workflow
+workspace_mode: solo
+description: "Weekly review for a principal in solo mode (an owner-run design studio). The review grades each area's goals from evidence, lists what is due or overdue, flags projects that went quiet, reads back the week's decisions, asks how older decisions turned out, and ends with next week's top three drawn from that content."
+# Runs the weekly_review workflow as solo mode (the scenario's workspace_mode
+# binds a Session carrying it). The workflow reads live state, so run it on an
+# install with the solo_studio fixture loaded: four areas with goals (two
+# Finance goals at risk), three active initiatives and three decisions from
+# August. The company context below mirrors that fixture.
+workflow: weekly_review
+company_context:
+  name: Tallgrass Studio
+  industry: Independent Brand & Product Design Studio
+  stage: Bootstrapped, owner-run
+  headcount: 1
+  arr: 310000
+  monthly_burn: 6500
+  runway_months: 2.1
+workflow_inputs: {}
+expected_artifact_sections:
+  - "Goals by area"
+  - "Commitments due"
+  - "Projects that went quiet"
+  - "This week's decisions"
+  - "How did these turn out?"
+  - "Next week's top 3"
+required_routing:
+  - cfo
+quality_criteria:
+  every_goal_grade_names_its_evidence: true
+  goals_are_grouped_by_area_never_department: true
+  top_three_has_at_most_three_items: true
+  top_three_items_come_from_the_review_content: true
+  asks_how_older_decisions_turned_out: true
+  no_team_roster_or_broadcast_language: true
+  no_fabricated_numbers: true

@@ -267,6 +267,14 @@ _SOLO_CREATE_GOAL = """When the principal states a new goal of their own with a 
 """
 
 
+# Solo: recording how a past decision turned out (the weekly review asks). One
+# line, its own literal like `_SOLO_CREATE_GOAL`; team mode learns the tool from
+# its description alone, which keeps the pinned team prompt byte-identical.
+_SOLO_DECISION_OUTCOME = """When the principal tells you how a past decision turned out — often answering the weekly review's "how did these turn out?" list, where each shows as `[decision N]` — call `record_decision_outcome` with that id, the outcome in their words, and a one-sentence `rationale`; record only what they reported, never your own assessment.
+
+"""
+
+
 EXECUTIVE_PERSONA_PROMPT = (
     _PERSONA_HEAD + _TEAM_NOTICE + _PERSONA_BODY + _TEAM_SECTIONS + _PERSONA_TAIL
 )
@@ -276,6 +284,7 @@ EXECUTIVE_PERSONA_SOLO_PROMPT = (
     + _PERSONA_BODY
     + _SOLO_SECTIONS
     + _SOLO_CREATE_GOAL
+    + _SOLO_DECISION_OUTCOME
     + _PERSONA_TAIL
 )
 

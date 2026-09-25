@@ -219,55 +219,9 @@ class DepartmentCheckInWorkflow(Workflow):
 
         verdicts, narrative_text = _parse_verdicts(goal_status_text)
 
-        # Persist verdicts back to the goal rows. Always overwrites — the
-        # audit row below preserves prior status for the diff trail, and
-        # the principal retains the manual UI edit path as the final
-        # override. Hallucinated goal_ids (specialist referenced an id not
-        # in `state.goals`) are silently dropped.
-        from openexecutive.departments import registry as _dept_registry
-        from openexecutive.departments import store as _dept_store
-
-        goals_by_id = {g.id: g for g in state.goals if g.id is not None}
-        transitions: list[dict[str, Any]] = []
-        for v in verdicts:
-            goal = goals_by_id.get(v["goal_id"])
-            if goal is None:
-                continue
-            prior_status = goal.status
-            try:
-                _dept_store.record_goal_review(
-                    v["goal_id"],
-                    status=v["status"],
-                    last_reviewed_at=now.isoformat(),
-                )
-            except Exception:  # noqa: BLE001 - persistence is best-effort; artifact must still ship.
-                logger.exception(
-                    "check_in: record_goal_review failed slug=%s goal_id=%s",
-                    slug, v["goal_id"],
-                )
-                continue
-            transitions.append({
-                "goal_id": v["goal_id"],
-                "from": prior_status,
-                "to": v["status"],
-                "rationale": v["rationale"],
-            })
-
-        if transitions:
-            # Single audit row per workflow run keeps audit volume sane
-            # (~8 rows/day default across the seeded departments).
-            try:
-                get_audit_logger().log(
-                    "goal_status_review",
-                    f"{state.config.title}: reviewed {len(transitions)} goal(s)",
-                    actor=_CHECK_IN_ACTOR,
-                    department=slug,
-                    details={"period": period, "transitions": transitions},
-                )
-            except Exception:  # noqa: BLE001 - audit must not break the workflow.
-                logger.warning("check_in: audit log failed", exc_info=True)
-            # Invalidate the registry cache so the UI's next read sees fresh status.
-            _dept_registry.invalidate()
+        transitions = persist_goal_verdicts(
+            state, verdicts, now=now, period=period, actor=_CHECK_IN_ACTOR
+        )
 
         yield WorkflowEvent(
             type="step_done",
@@ -584,6 +538,73 @@ def _parse_verdicts(text: str) -> tuple[list[dict[str, Any]], str]:
             "rationale": str(rationale_raw)[:280],
         })
     return valid, narrative
+
+
+def persist_goal_verdicts(
+    state: DepartmentState,
+    verdicts: list[dict[str, Any]],
+    *,
+    now: datetime,
+    period: str,
+    actor: str,
+) -> list[dict[str, Any]]:
+    """Write parsed verdicts (``_parse_verdicts``) back to ``state``'s goals.
+
+    Shared by the department check-in and the weekly review. Always
+    overwrites — the one ``goal_status_review`` audit row (tagged with
+    ``actor``) keeps each prior status for the diff trail, and the principal
+    keeps the manual UI edit as the final override. A verdict for a goal id
+    not in ``state.goals`` (a hallucinated id) is dropped, and a failed write
+    skips that goal: persistence is best-effort, the artifact still ships.
+    Returns one ``{goal_id, from, to, rationale}`` per goal written.
+    """
+    from openexecutive.audit.logger import get_audit_logger
+    from openexecutive.departments import registry as _dept_registry
+    from openexecutive.departments import store as _dept_store
+
+    slug = state.config.slug
+    goals_by_id = {g.id: g for g in state.goals if g.id is not None}
+    transitions: list[dict[str, Any]] = []
+    for v in verdicts:
+        goal = goals_by_id.get(v["goal_id"])
+        if goal is None:
+            continue
+        prior_status = goal.status
+        try:
+            _dept_store.record_goal_review(
+                v["goal_id"],
+                status=v["status"],
+                last_reviewed_at=now.isoformat(),
+            )
+        except Exception:  # noqa: BLE001 - persistence is best-effort; artifact must still ship.
+            logger.exception(
+                "check_in: record_goal_review failed slug=%s goal_id=%s",
+                slug, v["goal_id"],
+            )
+            continue
+        transitions.append({
+            "goal_id": v["goal_id"],
+            "from": prior_status,
+            "to": v["status"],
+            "rationale": v["rationale"],
+        })
+
+    if transitions:
+        # Single audit row per workflow run keeps audit volume sane
+        # (~8 rows/day default across the seeded departments).
+        try:
+            get_audit_logger().log(
+                "goal_status_review",
+                f"{state.config.title}: reviewed {len(transitions)} goal(s)",
+                actor=actor,
+                department=slug,
+                details={"period": period, "transitions": transitions},
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the workflow.
+            logger.warning("check_in: audit log failed", exc_info=True)
+        # Invalidate the registry cache so the UI's next read sees fresh status.
+        _dept_registry.invalidate()
+    return transitions
 
 
 def _gate_proposed_actions(

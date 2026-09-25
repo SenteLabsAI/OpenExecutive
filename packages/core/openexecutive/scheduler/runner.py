@@ -840,11 +840,12 @@ async def _execute_action(
 
     # ------------------------------------------------------------------
     # Principal briefs (Shift 3) — run the morning_brief / end_of_day_digest
-    # workflow, then deliver the artifact via DM to the principal on their
-    # preferred channel. Must come BEFORE the generic __internal__ short-
-    # circuit because the brief rows use channel="__internal__" too.
+    # workflow (and, in solo mode, the weekly_review), then deliver the
+    # artifact via DM to the principal on their preferred channel. Must come
+    # BEFORE the generic __internal__ short-circuit because the brief rows
+    # use channel="__internal__" too.
     # ------------------------------------------------------------------
-    if action.kind in ("principal_brief_morning", "principal_brief_eod"):
+    if action.kind in _PRINCIPAL_WORKFLOWS:
         await _run_principal_brief(action, now)
         return
 
@@ -1078,6 +1079,11 @@ _DEFAULT_EOD_TIME = "18:00"
 # Executive reflection runs ~30 minutes before the morning brief so OE
 # has acted on whatever it could before the principal opens the brief.
 _DEFAULT_REFLECTION_TIME = "07:30"
+# Solo mode's weekly review: Friday afternoon in the user's zone. Its env
+# var takes a whole weekly spec (`weekly@DOW@HH:MM`), read as UTC like the
+# other pinned times.
+WEEKLY_REVIEW_KIND = "principal_weekly_review"
+_DEFAULT_WEEKLY_REVIEW_SPEC = "weekly@fri@16:00"
 
 
 def _rotation_pause_active() -> bool:
@@ -1147,23 +1153,71 @@ def _has_pending_brief(kind: str) -> bool:
     return row is not None
 
 
-# Recurring principal kinds → (env var overriding the time of day, default).
+# Recurring principal kinds → (env var overriding the time, default). The
+# default is a time of day (HH:MM, daily) or, for a weekly kind, a weekly spec.
 _RECURRING_KIND_ENV: dict[str, tuple[str, str]] = {
     "principal_brief_morning": ("PRINCIPAL_BRIEF_MORNING_TIME", _DEFAULT_MORNING_TIME),
     "principal_brief_eod": ("PRINCIPAL_BRIEF_EOD_TIME", _DEFAULT_EOD_TIME),
     # Reflection runs alongside the briefs — same seed-once-per-DB pattern
     # and chain-next mechanism, just on its own time of day.
     "executive_reflection": ("PRINCIPAL_REFLECTION_TIME", _DEFAULT_REFLECTION_TIME),
+    # Solo only (see _SOLO_ONLY_KINDS): seeded in solo, cancelled on a switch
+    # to team, retired without running if one fires in team anyway.
+    WEEKLY_REVIEW_KIND: ("PRINCIPAL_WEEKLY_REVIEW_TIME", _DEFAULT_WEEKLY_REVIEW_SPEC),
 }
+# Kinds that recur weekly (the rest are daily).
+_WEEKLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND})
+# Kinds that exist only in a solo workspace.
+_SOLO_ONLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND})
+# The recurring principal kinds that run a workflow and deliver its artifact
+# to the principal (see _run_principal_brief).
+_PRINCIPAL_WORKFLOWS: dict[str, str] = {
+    "principal_brief_morning": "morning_brief",
+    "principal_brief_eod": "end_of_day_digest",
+    WEEKLY_REVIEW_KIND: "weekly_review",
+}
+
+
+def _strict_weekly(spec: str) -> str | None:
+    """A valid ``weekly@DOW@HH:MM`` spec, normalised to lower case, or None."""
+    from openexecutive.departments.cadence import _DOW_MAP, _WEEKLY_RE
+
+    raw = spec.strip().lower()
+    m = _WEEKLY_RE.match(raw)
+    if m is None or m.group(1) not in _DOW_MAP:
+        return None
+    return raw if _strict_hhmm(f"{m.group(2)}:{m.group(3)}") is not None else None
+
+
+def _kind_runs_in(kind: str, mode: str) -> bool:
+    """Whether ``kind`` belongs in a workspace in ``mode``."""
+    return mode == "solo" or kind not in _SOLO_ONLY_KINDS
+
+
+def _workspace_mode() -> str:
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    return get_workspace().mode
+
+
+def _pinned_spec(kind: str, raw: str) -> str | None:
+    """The cadence spec an operator's env value pins, or None if it is not
+    a valid one: ``HH:MM`` for a daily kind, ``weekly@DOW@HH:MM`` for a
+    weekly one."""
+    if kind in _WEEKLY_KINDS:
+        return _strict_weekly(raw)
+    pinned = _strict_hhmm(raw)
+    return f"daily@{pinned[0]:02d}:{pinned[1]:02d}" if pinned is not None else None
 
 
 def _next_principal_run_at(kind: str, after: datetime) -> datetime | None:
     """Next fire time of a recurring principal kind, strictly after ``after``.
 
-    The default time of day is local to the user's zone (DST-safe, via the
-    cadence parser). A valid time the operator set in the kind's env var is
-    read as UTC, exactly as before zones existed; a malformed one is logged
-    and ignored, like an unset one. None for an unknown kind.
+    The default time is local to the user's zone (DST-safe, via the cadence
+    parser): a time of day for the daily kinds, Friday 16:00 for the weekly
+    review. A valid value the operator set in the kind's env var is read as
+    UTC, exactly as before zones existed; a malformed one is logged and
+    ignored, like an unset one. None for an unknown kind.
     """
     import os
 
@@ -1173,21 +1227,25 @@ def _next_principal_run_at(kind: str, after: datetime) -> datetime | None:
     env_pair = _RECURRING_KIND_ENV.get(kind)
     if env_pair is None:
         return None
-    env_name, default_time = env_pair
+    env_name, default = env_pair
     raw = os.environ.get(env_name, "").strip()
-    pinned = _strict_hhmm(raw) if raw else None
+    pinned = _pinned_spec(kind, raw) if raw else None
     if pinned is not None:
-        hh, mm = pinned
+        spec = pinned
         zone: tzinfo = UTC
     else:
         if raw:
             logger.warning(
                 "scheduler: invalid %s=%r — using %s in the user's zone",
-                env_name, raw, default_time,
+                env_name, raw, default,
             )
-        hh, mm = _parse_hhmm(default_time, default_time)
+        if kind in _WEEKLY_KINDS:
+            spec = default
+        else:
+            hh, mm = _parse_hhmm(default, default)
+            spec = f"daily@{hh:02d}:{mm:02d}"
         zone = get_user_timezone()
-    return _parse_cadence_spec(f"daily@{hh:02d}:{mm:02d}", after, zone)
+    return _parse_cadence_spec(spec, after, zone)
 
 
 def _brief_intent(kind: str) -> str:
@@ -1197,52 +1255,98 @@ def _brief_intent(kind: str) -> str:
     )
 
 
+def _seed_kind(kind: str, now: datetime) -> bool:
+    """Enqueue the next row of ``kind`` unless one is pending or running.
+    True when a row was inserted. Never raises."""
+    from openexecutive.memory.episodic import insert_scheduled_action
+
+    try:
+        if _has_pending_brief(kind):
+            logger.info("scheduler: %s already pending, not re-seeding", kind)
+            return False
+        run_at = _next_principal_run_at(kind, now)
+        if run_at is None:
+            return False
+        action_id = insert_scheduled_action(
+            run_at=run_at.isoformat(),
+            channel="__internal__",
+            channel_ref="principal",
+            intent_text=_brief_intent(kind),
+            kind=kind,
+        )
+    except Exception:
+        logger.exception("scheduler: failed to seed %s", kind)
+        return False
+    logger.info("scheduler: seeded %s at %s (id=%d)", kind, run_at.isoformat(), action_id)
+    return True
+
+
 def seed_principal_briefs() -> int:
-    """Idempotently enqueue the next morning brief, EoD digest and reflection.
+    """Idempotently enqueue the next morning brief, EoD digest and reflection
+    — and, in a solo workspace, the weekly review.
 
     Called at scheduler startup (and after a reset, a blank client slot or a
     change of the user's zone). Returns the number of rows newly inserted
-    (0–3). When a row of a kind is already pending or running, no new row is
+    (0–4). When a row of a kind is already pending or running, no new row is
     added — the existing one will fire and chain its successor via
     ``_run_principal_brief`` / ``_run_executive_reflection``.
 
-    Times of day default to 08:00 / 18:00 / 07:30 in the user's zone; see
-    ``_next_principal_run_at`` for the env-var overrides.
+    Times default to 08:00 / 18:00 / 07:30 daily and Friday 16:00 weekly, in
+    the user's zone; see ``_next_principal_run_at`` for the env-var overrides.
     """
-    from openexecutive.memory.episodic import insert_scheduled_action
-
     now = datetime.now(UTC)
-    inserted = 0
+    mode = _workspace_mode()
+    return sum(
+        1 for kind in _RECURRING_KIND_ENV
+        if _kind_runs_in(kind, mode) and _seed_kind(kind, now)
+    )
 
-    for kind in _RECURRING_KIND_ENV:
-        if _has_pending_brief(kind):
-            logger.info("scheduler: %s already pending, not re-seeding", kind)
-            continue
-        run_at = _next_principal_run_at(kind, now)
-        if run_at is None:
-            continue
-        try:
-            action_id = insert_scheduled_action(
-                run_at=run_at.isoformat(),
-                channel="__internal__",
-                channel_ref="principal",
-                intent_text=_brief_intent(kind),
-                kind=kind,
-            )
-            inserted += 1
-            logger.info(
-                "scheduler: seeded %s at %s (id=%d)", kind, run_at.isoformat(), action_id
-            )
-        except Exception:
-            logger.exception("scheduler: failed to seed %s", kind)
 
-    return inserted
+def seed_weekly_review() -> int:
+    """Enqueue the next weekly review if none is pending (a switch to solo).
+    Returns 0 or 1. Never raises."""
+    return int(_seed_kind(WEEKLY_REVIEW_KIND, datetime.now(UTC)))
+
+
+def cancel_weekly_reviews() -> int:
+    """Cancel every pending weekly review (a switch to team). A running one
+    finishes and does not chain another in team. Returns the count
+    cancelled; never raises."""
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    try:
+        resolved = _resolve_db_path(None)
+        if not resolved.exists():
+            return 0
+        with _get_conn(resolved) as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+            ).fetchone() is None:
+                return 0
+            cancelled = int(conn.execute(
+                "UPDATE scheduled_actions SET status = 'cancelled', "
+                "last_error = 'team workspace: the weekly review runs in solo mode' "
+                "WHERE kind = ? AND status = 'pending'",
+                (WEEKLY_REVIEW_KIND,),
+            ).rowcount)
+    except Exception:
+        logger.exception("scheduler: cancelling the weekly review failed")
+        return 0
+    if cancelled:
+        logger.info("scheduler: cancelled %d pending weekly review(s)", cancelled)
+    return cancelled
 
 
 # Two runs of one recurring principal kind are never closer than this, even
 # across a change of zone — so a zone change can neither send a second brief
 # the same local day nor, by moving a row more than this far, skip one.
 _PRINCIPAL_MIN_GAP = timedelta(hours=12)
+# The same for a weekly kind: half its period.
+_WEEKLY_MIN_GAP = timedelta(days=3, hours=12)
+
+
+def _min_gap(kind: str) -> timedelta:
+    return _WEEKLY_MIN_GAP if kind in _WEEKLY_KINDS else _PRINCIPAL_MIN_GAP
 
 
 def _parse_run_at(raw: object) -> datetime | None:
@@ -1258,13 +1362,14 @@ def _parse_run_at(raw: object) -> datetime | None:
 
 def _chain_after(action: ScheduledAction) -> datetime:
     """The ``after`` a recurring principal row chains from: now, but never
-    within ``_PRINCIPAL_MIN_GAP`` of the occurrence that just fired. In a
-    steady zone this changes nothing (the next occurrence is ~24h out); it
-    matters when the zone changed while the row ran — without it the next
-    local time could land a few hours later, a second brief the same day."""
+    within the kind's minimum gap (``_min_gap``: 12h daily, 3.5 days weekly)
+    of the occurrence that just fired. In a steady zone this changes nothing
+    (the next occurrence is a full period out); it matters when the zone
+    changed while the row ran — without it the next local time could land a
+    few hours later, a second brief the same day."""
     now = datetime.now(UTC)
     fired = _parse_run_at(action.run_at)
-    return max(now, fired + _PRINCIPAL_MIN_GAP) if fired is not None else now
+    return max(now, fired + _min_gap(action.kind)) if fired is not None else now
 
 
 def reschedule_principal_rhythm(now: datetime | None = None) -> int:
@@ -1279,10 +1384,12 @@ def reschedule_principal_rhythm(now: datetime | None = None) -> int:
     alone: that run chains its successor in the new zone itself.
 
     The new time is the kind's next occurrence in the new zone after
-    ``max(now, last fired run + _PRINCIPAL_MIN_GAP)`` — never a second run
-    the same day. If that is more than ``_PRINCIPAL_MIN_GAP`` later than the
-    row's current time, moving it would skip a day, so the row keeps its
-    time for this one occurrence and the chain picks up the new zone.
+    ``max(now, last fired run + gap)`` — never a second run the same day (or,
+    for the weekly review, the same half-week). ``gap`` is ``_min_gap``: 12h
+    for a daily kind, 3.5 days for a weekly one. If the new time is more than
+    ``gap`` later than the row's current time, moving it would skip a run, so
+    the row keeps its time for this one occurrence and the chain picks up
+    the new zone.
     """
     from openexecutive.memory.episodic import _get_conn, _resolve_db_path
 
@@ -1308,12 +1415,13 @@ def reschedule_principal_rhythm(now: datetime | None = None) -> int:
     # through its own connection.
     moves: list[tuple[int, str, str]] = []
     for kind in kinds:
+        gap = _min_gap(kind)
         fired = [
             t for r in rows
             if r["kind"] == kind and r["status"] in ("running", "done")
             and (t := _parse_run_at(r["run_at"])) is not None
         ]
-        floor = max(now, max(fired) + _PRINCIPAL_MIN_GAP) if fired else now
+        floor = max(now, max(fired) + gap) if fired else now
         for r in rows:
             if r["kind"] != kind or r["status"] != "pending":
                 continue
@@ -1323,7 +1431,7 @@ def reschedule_principal_rhythm(now: datetime | None = None) -> int:
             new = _next_principal_run_at(kind, floor)
             if new is None or new == old:
                 continue
-            if new - old > _PRINCIPAL_MIN_GAP:
+            if new - old > gap:
                 logger.info(
                     "scheduler: keeping %s at %s once (the new zone's %s would skip a day)",
                     kind, old.isoformat(), new.isoformat(),
@@ -1347,8 +1455,8 @@ def reschedule_principal_rhythm(now: datetime | None = None) -> int:
 
 
 def _enqueue_next_principal_brief(kind: str, after: datetime) -> int | None:
-    """Insert the next occurrence of a principal brief / reflection 24h
-    after ``after``.
+    """Insert the next occurrence of a principal brief / reflection / weekly
+    review after ``after``.
 
     Returns the new action id, or None on failure. Mirrors
     ``departments.cadence.enqueue_next`` for the daily-recurring case.
@@ -1440,10 +1548,10 @@ def delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
     return order
 
 
-def email_ready() -> bool:
-    """Whether the Executive can send email: the MCP gateway is up and the
-    Google Workspace server (its Gmail tools) is one it runs. Another MCP
-    server alone does not count."""
+def google_workspace_ready() -> bool:
+    """Whether the Executive can reach Google Workspace tools (Gmail,
+    Calendar): the MCP gateway is up and the Google Workspace server is one
+    it runs. Another MCP server alone does not count."""
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.mcp_gateway import (
         configured_server_names,
@@ -1453,6 +1561,12 @@ def email_ready() -> bool:
     if get_active_gateway() is None:
         return False
     return "google_workspace" in configured_server_names(get_settings().mcp_servers_config_path)
+
+
+def email_ready() -> bool:
+    """Whether the Executive can send email: ``google_workspace_ready`` (its
+    Gmail tools)."""
+    return google_workspace_ready()
 
 
 def principal_delivery_plan() -> tuple[Person | None, list[str]]:
@@ -1683,11 +1797,15 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
 
 
 async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
-    """Run the matching brief workflow and dispatch the artifact to the principal.
+    """Run the kind's workflow (``_PRINCIPAL_WORKFLOWS``: the morning brief,
+    the end-of-day digest, the weekly review) and dispatch the artifact to
+    the principal.
 
-    Chains the next occurrence 24h forward regardless of delivery outcome
-    — a single failed brief shouldn't break the recurring rhythm. Mirrors
-    the dept_cadence handler's pattern.
+    Chains the next occurrence regardless of delivery outcome — a single
+    failed brief shouldn't break the recurring rhythm. Mirrors the
+    dept_cadence handler's pattern. A solo-only kind (the weekly review)
+    that fires in a team workspace is retired without running and without
+    chaining — the backstop for a row the switch to team did not cancel.
     """
     import uuid
 
@@ -1704,11 +1822,13 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
 
     assert action.id is not None
     kind = action.kind
-    workflow_name = (
-        "morning_brief"
-        if kind == "principal_brief_morning"
-        else "end_of_day_digest"
-    )
+    if not _kind_runs_in(kind, _workspace_mode()):
+        from openexecutive.memory.episodic import mark_action_cancelled
+
+        mark_action_cancelled(action.id, "team workspace: the weekly review runs in solo mode")
+        logger.info("scheduler: %s action %d retired — team workspace", kind, action.id)
+        return
+    workflow_name = _PRINCIPAL_WORKFLOWS[kind]
     workflow = WORKFLOW_REGISTRY[workflow_name]
     input_cls = workflow.input_model()
     wf_inputs = input_cls()
@@ -1793,9 +1913,13 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
 
     # Always chain the next occurrence + mark this row done, so a single
     # bad brief doesn't kill the recurring rhythm. Worst case the next
-    # tick re-attempts on the same shape of input.
+    # tick re-attempts on the same shape of input. A solo-only kind whose
+    # workspace switched to team while it ran does not chain.
     mark_action_done(action.id)
-    _enqueue_next_principal_brief(kind, after=_chain_after(action))
+    if _kind_runs_in(kind, _workspace_mode()):
+        _enqueue_next_principal_brief(kind, after=_chain_after(action))
+    else:
+        logger.info("scheduler: %s not chained — the workspace is now in team mode", kind)
 
 
 def _outreach_source(action: ScheduledAction) -> tuple[str, str]:

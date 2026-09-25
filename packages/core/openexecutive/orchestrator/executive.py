@@ -48,6 +48,10 @@ from openexecutive.orchestrator.calendar_tools import (
     CALENDAR_TOOLS,
 )
 from openexecutive.orchestrator.debug_events import DebugCollector
+from openexecutive.orchestrator.decision_tools import (
+    DECISION_TOOL_HANDLERS,
+    DECISION_TOOLS,
+)
 from openexecutive.orchestrator.department_tools import (
     DEPARTMENT_TOOL_HANDLERS,
     DEPARTMENT_TOOLS,
@@ -333,6 +337,7 @@ _ALL_SKILL_TOOLS = [
     *PEOPLE_TOOLS,
     *OPEN_LOOP_TOOLS,
     *DEPARTMENT_TOOLS,
+    *DECISION_TOOLS,
     *BROADCAST_TOOLS,
     *WATCHLIST_TOOLS,
     *RESEARCH_TOOLS,
@@ -349,6 +354,7 @@ _ALL_SKILL_HANDLERS = {
     **PEOPLE_TOOL_HANDLERS,
     **OPEN_LOOP_TOOL_HANDLERS,
     **DEPARTMENT_TOOL_HANDLERS,
+    **DECISION_TOOL_HANDLERS,
     **BROADCAST_TOOL_HANDLERS,
     **WATCHLIST_TOOL_HANDLERS,
     **RESEARCH_TOOL_HANDLERS,

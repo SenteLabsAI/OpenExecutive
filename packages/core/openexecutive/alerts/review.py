@@ -288,7 +288,9 @@ def _workflow_matches(alert: Alert, limit: int = 4) -> list[str]:
     text = f"{alert.headline} {alert.body} {alert.suggested_action}".lower()
     hits: list[str] = []
     for name, wf in WORKFLOW_REGISTRY.items():
-        if name in {"morning_brief", "end_of_day_digest", "executive_reflection", "executive_research"}:
+        # The system's own background workflows (briefs, weekly review,
+        # reflection, research) are never a suggestion for an alert.
+        if getattr(wf, "background", False):
             continue
         words = {w for w in f"{name} {getattr(wf, 'title', '')}".lower().replace("_", " ").split() if len(w) > 3}
         if words and sum(1 for w in words if w in text) >= max(1, len(words) - 1):

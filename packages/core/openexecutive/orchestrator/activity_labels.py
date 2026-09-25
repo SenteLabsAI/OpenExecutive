@@ -80,6 +80,7 @@ _LABELS: dict[str, str] = {
     "list_department_goals": "Reviewing department goals…",
     "update_department_goal": "Updating a department goal…",
     "create_goal": "Adding a goal…",
+    "record_decision_outcome": "Recording how a decision turned out…",
 
     # Broadcast channels
     "send_department_message": "Posting to a department channel…",
@@ -152,6 +153,7 @@ _PRIORITY: tuple[frozenset[str], ...] = (
         "set_department_head",
         "update_department_goal",
         "create_goal",
+        "record_decision_outcome",
         "close_open_loop",
     }),
     frozenset({

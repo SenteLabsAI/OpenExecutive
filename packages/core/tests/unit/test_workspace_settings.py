@@ -261,7 +261,10 @@ def test_switch_to_solo_cancels_only_dept_cadence_rows(_isolated: Path) -> None:
     ws.set_workspace_mode("solo")
 
     assert ws.get_workspace().mode == "solo"
-    assert _kinds(_isolated) == ["ad_hoc", "nudge_scan", "principal_brief_morning"]
+    # Solo also schedules its weekly review (test_weekly_review.py covers it).
+    assert _kinds(_isolated) == [
+        "ad_hoc", "nudge_scan", "principal_brief_morning", "principal_weekly_review",
+    ]
     assert _kinds(_isolated, "cancelled") == ["dept_cadence"] * 8
     assert _kinds(_isolated, "running") == ["dept_cadence"]
     # Department rows stay, so switching back is instant.

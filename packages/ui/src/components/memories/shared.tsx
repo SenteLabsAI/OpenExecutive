@@ -90,6 +90,12 @@ export const KIND_META: Record<string, KindMeta> = {
     group: "daily",
     blurb: "What landed today and what's still open.",
   },
+  // Solo mode only: scheduled weekly, Friday afternoon by default.
+  principal_weekly_review: {
+    label: "Weekly review",
+    group: "daily",
+    blurb: "Goals graded, what's due, and next week's top three.",
+  },
   dept_cadence: { label: "Check-in", group: "departments" },
   awaiting_human: { label: "Awaiting a human reply", group: "awaiting" },
   proactive_nudge: { label: "Nudge", group: "awaiting" },

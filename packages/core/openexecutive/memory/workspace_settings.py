@@ -7,7 +7,8 @@ One row (``id = 1``) in the ``workspace_settings`` table of the episodic DB:
   department check-ins do not run — see ``set_workspace_mode``).
 - ``timezone`` — the user's IANA zone, or NULL to fall back to the
   ``USER_TIMEZONE`` setting (and then UTC). It drives the default times of
-  the morning brief, end-of-day digest and reflection, the zone the Executive
+  the morning brief, end-of-day digest, reflection and (solo) weekly
+  review, the zone the Executive
   resolves "tomorrow at 9" in, open-loop due dates, and the alert quiet
   hours when no zone was stored for them.
 
@@ -267,10 +268,11 @@ def set_timezone(tz: str | None) -> WorkspaceSettings:
     for an unknown zone.
 
     When the zone in effect changes, the pending morning brief, end-of-day
-    digest and reflection rows are re-timed to the new zone in place
-    (``scheduler.runner.reschedule_principal_rhythm``: nothing inserted,
-    never two runs of a kind within 12h, never a skipped day); a brief that
-    is running right now finishes and chains its successor in the new zone.
+    digest, reflection and weekly review rows are re-timed to the new zone in
+    place (``scheduler.runner.reschedule_principal_rhythm``: nothing
+    inserted, never two runs of a kind within 12h — 3.5 days for the weekly
+    review — never a skipped run); a brief that is running right now
+    finishes and chains its successor in the new zone.
     The re-time is best-effort: if it fails, it is logged and each brief
     moves to the new zone after it next fires (every link reads the zone
     fresh), so the stored setting is never rolled back.
@@ -293,11 +295,13 @@ def set_timezone(tz: str | None) -> WorkspaceSettings:
 def set_workspace_mode(mode: str) -> WorkspaceSettings:
     """Switch between ``"solo"`` and ``"team"``. Raises ``ValueError`` otherwise.
 
-    Solo cancels every pending department check-in (``dept_cadence``); team
-    re-bootstraps them. Department rows themselves are left in place, so
-    switching back is instant. Both are idempotent and best-effort: a
-    failure is logged, and the backstops hold — the scheduler retires a
-    check-in that fires in solo, and boot re-bootstraps them in team.
+    Solo cancels every pending department check-in (``dept_cadence``) and
+    schedules the weekly review; team re-bootstraps the check-ins and
+    cancels the pending weekly review. Department rows themselves are left
+    in place, so switching back is instant. All of it is idempotent and
+    best-effort: a failure is logged, and the backstops hold — the scheduler
+    retires a check-in that fires in solo and a weekly review that fires in
+    team, and boot re-seeds what the mode is missing.
     """
     if mode not in WORKSPACE_MODES:
         raise ValueError(f"mode must be one of {', '.join(WORKSPACE_MODES)}")
@@ -306,6 +310,7 @@ def set_workspace_mode(mode: str) -> WorkspaceSettings:
         bootstrap_cadences,
         cancel_pending_cadences,
     )
+    from openexecutive.scheduler.runner import cancel_weekly_reviews, seed_weekly_review
 
     try:
         if mode == "solo":
@@ -316,6 +321,11 @@ def set_workspace_mode(mode: str) -> WorkspaceSettings:
             logger.info("workspace: team mode — scheduled %d department check-in(s)", inserted)
     except Exception:
         logger.exception("workspace: updating department check-ins for %s mode failed", mode)
+    # Both never raise.
+    if mode == "solo":
+        seed_weekly_review()
+    else:
+        cancel_weekly_reviews()
     return get_workspace()
 
 

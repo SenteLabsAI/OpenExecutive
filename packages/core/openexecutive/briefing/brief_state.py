@@ -133,8 +133,11 @@ def record_delivered(kind: str, fingerprint: str, text: str) -> None:
 DeliveryReason = Literal["delivered", "no_owner", "no_channel", "send_failed", "not_written"]
 _DELIVERY_REASONS: frozenset[str] = frozenset(get_args(DeliveryReason))
 DELIVERY_SCOPE_PREFIX = "brief_delivery:"
-# The recurring briefs whose runs are recorded.
+# The daily briefs (their send times show on the Setup status page).
 BRIEF_KINDS: tuple[str, ...] = ("principal_brief_morning", "principal_brief_eod")
+# Every recurring message to the owner whose runs are recorded: the daily
+# briefs, and solo mode's weekly review.
+DELIVERY_KINDS: tuple[str, ...] = (*BRIEF_KINDS, "principal_weekly_review")
 # Delivery channels (scheduler.runner.delivery_order) as the app names them.
 CHANNEL_NAMES: dict[str, str] = {
     "email": "email",
@@ -201,10 +204,11 @@ def record_delivery_outcome(
 
 
 def last_delivery_outcome() -> DeliveryOutcome | None:
-    """The latest run of either recurring brief, or None when neither has run
-    yet (or the store can't be read). Never raises."""
+    """The latest run of any recorded message (``DELIVERY_KINDS``: the two
+    briefs and the weekly review), or None when none has run yet (or the
+    store can't be read). Never raises."""
     latest: DeliveryOutcome | None = None
-    for kind in BRIEF_KINDS:
+    for kind in DELIVERY_KINDS:
         try:
             row = narrative_cache.get(f"{DELIVERY_SCOPE_PREFIX}{kind}")
         except Exception:
@@ -348,7 +352,10 @@ def build_brief_fingerprint(
 
     Solo also carries ``due_soon`` (the DUE THIS WEEK items) as
     ``(loop_id, state)`` pairs — no dates — so a new item, a closed one, or
-    one that falls due today or goes overdue un-suppresses the brief."""
+    one that falls due today or goes overdue un-suppresses the brief. And
+    the TOP THREE TODAY items by key (in order — no dates, no slot times),
+    plus only a coarse hash of today's calendar (``top_three.calendar_hash``)
+    when one was read, so an unchanged day still suppresses."""
     new, carried = split_proposals(today_data.get("proposals", []), since)
     payload = {
         "new": sorted(int(p.get("alert_id") or 0) for p in new),
@@ -386,6 +393,12 @@ def build_brief_fingerprint(
             payload["due_soon"] = sorted(
                 (int(d.get("loop_id") or 0), str(d.get("state", ""))) for d in due
             )
+        top = today_data.get("top_three") or []
+        if top:
+            payload["top_three"] = [str(t.get("key", "")) for t in top]
+        calendar = today_data.get("today_calendar")
+        if isinstance(calendar, dict) and calendar.get("hash"):
+            payload["calendar"] = str(calendar["hash"])
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -420,6 +433,7 @@ def pending_watch_suggestions() -> int:
 __all__ = [
     "BRIEF_KINDS",
     "CHANNEL_NAMES",
+    "DELIVERY_KINDS",
     "DELIVERY_PROBLEMS",
     "HANDLED_EVENT_KINDS",
     "REVIEW_EVENT_TYPES",

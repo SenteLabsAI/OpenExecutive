@@ -333,7 +333,7 @@ AlertEvent (source, subject, body, external_id)
 
 Pre-built multi-step executive deliverables. Each workflow is a subclass of `WorkflowBase` that streams `WorkflowEvent` objects — plan steps first, then intermediate summaries, then a final Markdown artifact.
 
-### Available workflows (18)
+### Available workflows (19)
 
 | Workflow | Section |
 |---|---|
@@ -344,6 +344,7 @@ Pre-built multi-step executive deliverables. Each workflow is a subclass of `Wor
 | `annual_plan` | Operating Cadence |
 | `quarterly_plan` | Operating Cadence |
 | `mbr` (monthly business review) | Operating Cadence |
+| `weekly_review` (a system workflow: in solo mode the scheduler runs it every Friday afternoon and sends it to the principal — goals graded by area, what's due, quiet projects, the week's decisions, older decisions to revisit, next week's top three) | Operating Cadence |
 | `competitive_teardown` | Growth & GTM |
 | `gtm_launch` | Growth & GTM |
 | `pricing_review` | Growth & GTM |
@@ -578,6 +579,7 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | `UI_BASE_URL` | No | `http://localhost:3000` | Base URL for UI links in notifications |
 | `USER_TIMEZONE` | No | `UTC` | Fallback IANA zone when the user has not set one through `PUT /workspace`: brief and reflection times, "tomorrow at 9" in chat, open-loop due dates, default alert quiet hours |
 | `PRINCIPAL_BRIEF_MORNING_TIME` / `PRINCIPAL_BRIEF_EOD_TIME` / `PRINCIPAL_REFLECTION_TIME` | No | `08:00` / `18:00` / `07:30` local | Unset (or not a valid `HH:MM`): that time in the user's zone. Set to a valid `HH:MM`: read as **UTC**, as before zones existed |
+| `PRINCIPAL_WEEKLY_REVIEW_TIME` | No | `weekly@fri@16:00` local | Solo mode only. Unset (or not a valid `weekly@DOW@HH:MM`): Friday 16:00 in the user's zone. Set to a valid spec: read as **UTC**, like the times above |
 
 See [../.env.example](../.env.example) for the full list.
 

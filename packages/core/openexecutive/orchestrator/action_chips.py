@@ -51,6 +51,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "update_department_goal",
     # A new goal (and, when its area did not exist, a new area)
     "create_goal",
+    # How a past decision turned out (the weekly review's "how did it go?")
+    "record_decision_outcome",
     # Skills mutations
     "create_skill",
     "update_skill",
@@ -288,6 +290,16 @@ def summarize_action(
             payload["link"] = "/goals"
         elif slug:
             payload["link"] = f"/departments/{slug}"
+    elif tool_name == "record_decision_outcome":
+        # The handler's result names the decision it wrote to.
+        decision = str((parsed or {}).get("decision") or "")[:80]
+        payload["summary"] = (
+            f"Recorded how it turned out: {decision}" if decision
+            else "Recorded how a decision turned out"
+        )
+        decision_id = (parsed or {}).get("decision_id", tool_input.get("decision_id"))
+        payload["target"] = f"decision {decision_id}" if decision_id else None
+        payload["link"] = "/memories"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")
         payload["summary"] = f"Drafted playbook: {name}" if name else "Drafted a playbook"

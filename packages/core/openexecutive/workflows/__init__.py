@@ -46,6 +46,7 @@ from openexecutive.workflows.pricing_review import PricingReviewWorkflow
 from openexecutive.workflows.product_strategy import ProductStrategyWorkflow
 from openexecutive.workflows.quarterly_plan import QuarterlyPlanWorkflow
 from openexecutive.workflows.risk_register import RiskRegisterWorkflow
+from openexecutive.workflows.weekly_review import WeeklyReviewWorkflow
 
 WORKFLOW_REGISTRY: dict[str, Workflow] = {
     "annual_plan": AnnualPlanWorkflow(),
@@ -61,6 +62,11 @@ WORKFLOW_REGISTRY: dict[str, Workflow] = {
     # and dispatches the artifact via DM.
     "morning_brief": MorningBriefWorkflow(),
     "end_of_day_digest": EndOfDayDigestWorkflow(),
+    # `weekly_review` is the principal's weekly rhythm: goals graded by area,
+    # commitments due, quiet projects, the week's decisions and older ones to
+    # revisit, next week's top three. The scheduler fires it weekly in solo
+    # mode (`principal_weekly_review`) and delivers it like the briefs.
+    "weekly_review": WeeklyReviewWorkflow(),
     # `executive_reflection` is the first workflow OE runs ON ITSELF —
     # not targeting a department or the principal but its own org
     # coordination decisions. Fires ~30 minutes before the morning

@@ -761,6 +761,56 @@ def has_department_decision_since(
     return row is not None
 
 
+def _utc_bound(moment: datetime) -> str:
+    """``moment`` as the UTC ISO text decisions are stamped with (a naive
+    value is read as UTC), for text comparison in SQL."""
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return aware.astimezone(UTC).isoformat()
+
+
+def decisions_since(
+    since: datetime,
+    *,
+    limit: int = 20,
+    db_path: Path | None = None,
+) -> list[Decision]:
+    """Decisions logged after ``since``, newest first (the weekly review's
+    "this week's decisions"). Filtered in SQL, compared as UTC ISO text like
+    ``has_department_decision_since``."""
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return []
+    with _get_conn(resolved) as conn:
+        rows = conn.execute(
+            "SELECT * FROM decisions WHERE timestamp > ? ORDER BY timestamp DESC LIMIT ?",
+            (_utc_bound(since), limit),
+        ).fetchall()
+    return [Decision(**dict(row)) for row in rows]
+
+
+def decisions_awaiting_outcome(
+    older_than: datetime,
+    *,
+    limit: int = 3,
+    db_path: Path | None = None,
+) -> list[Decision]:
+    """Decisions logged before ``older_than`` with no outcome recorded yet,
+    newest first — the weekly review asks "how did this turn out?" about
+    these, and ``record_decision_outcome`` fills the outcome in. An outcome
+    of only whitespace counts as empty."""
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return []
+    with _get_conn(resolved) as conn:
+        rows = conn.execute(
+            "SELECT * FROM decisions WHERE timestamp < ? "
+            "AND TRIM(COALESCE(outcome, '')) = '' "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (_utc_bound(older_than), limit),
+        ).fetchall()
+    return [Decision(**dict(row)) for row in rows]
+
+
 def get_active_initiatives(db_path: Path = DB_PATH) -> list[Initiative]:
     if not db_path.exists():
         return []
