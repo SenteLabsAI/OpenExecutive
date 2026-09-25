@@ -5903,8 +5903,13 @@ trust_ledger: |
   AuthorityScope.MEETING_SCHEDULING added to people/models.py.
   Department: operations (default; changeable per org structure).
 
-  Solo mode: create_calendar_event gates on the class mode alone —
-  auto_execute books now, anything else is proposed to the founder (the
-  principal) as a briefing card — with no gate_action("operations", …)
-  call, so it works with no operations department. Team is unchanged
-  (department gate AND class mode).
+  Solo mode: create_calendar_event gates on the class mode, with no
+  gate_action("operations", …) call, so it works with no operations
+  department (calendar_tools._solo_meeting_gate). auto_execute books now
+  ONLY when the turn was started by the principal on a verified surface
+  (people_tools.is_principal_on_verified_surface — the roster-write rule:
+  web chat, their own Slack/Discord, private Telegram with a valid webhook
+  secret; fails closed); an inbound email, a contact's turn or an
+  unattended run gets a proposal to the founder instead, so injected text
+  cannot book a meeting. propose always proposes to the founder. Team is
+  unchanged (department gate AND class mode).

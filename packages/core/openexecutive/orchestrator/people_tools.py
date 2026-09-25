@@ -298,6 +298,19 @@ def _roster_refusal_reason(session: Any) -> str | None:
     )
 
 
+def is_principal_on_verified_surface(session: Any) -> bool:
+    """Whether this turn was started by the principal on a surface that
+    verified it is them — the rule for roster writes above, as a yes/no for
+    other principal-only actions (e.g. solo mode's meeting auto-booking).
+    Fails closed: no session, an unverified surface, someone else, or an
+    unreadable roster all answer False."""
+    try:
+        return _roster_refusal_reason(session) is None
+    except Exception:
+        logger.exception("people_tools: verified-surface check failed — answering no")
+        return False
+
+
 def _refuse_unless_owner(tool: str) -> str | None:
     """The refusal tool result when this turn may not change the roster, else None.
 

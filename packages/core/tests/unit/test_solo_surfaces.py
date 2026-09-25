@@ -760,13 +760,19 @@ def _calendar_settings() -> Any:
         calendar_max_attendees=8, calendar_meet_links_enabled=True,
         calendar_instant_meeting_minutes=30, calendar_post_meeting_followup_enabled=True,
         slack_bot_token=None, discord_bot_token=None, telegram_bot_token=None,
+        telegram_webhook_secret_valid=False,
     )
 
 
-def _book(class_mode: str) -> tuple[dict[str, Any], Any]:
+def _book(class_mode: str, session: Session | None = None) -> tuple[dict[str, Any], Any]:
+    """Run create_calendar_event with ``session`` bound as the turn's session
+    (None = no session, like an unattended caller)."""
     from openexecutive.orchestrator.calendar_tools import handle_create_calendar_event
 
-    guest = people_store.upsert_person(full_name="Client Contact", email="client@example.com")
+    guest = people_store.find_person_by_email("client@example.com")
+    guest_id = guest.id if guest is not None else people_store.upsert_person(
+        full_name="Client Contact", email="client@example.com"
+    )
     start = _next_weekday_at_10()
     gw = MagicMock()
     gw.call_tool = AsyncMock(return_value=json.dumps({"id": "evt-1"}))
@@ -779,22 +785,53 @@ def _book(class_mode: str) -> tuple[dict[str, Any], Any]:
         patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=gw),
         patch("openexecutive.departments.authority.gate_action", new=_no_gate),
         patch("openexecutive.memory.decision_ledger.get_class_mode", return_value=class_mode),
+        set_session(session),
     ):
         raw = asyncio.run(handle_create_calendar_event({
             "title": "Kickoff", "start": start.isoformat(),
             "end": start.replace(hour=11).isoformat(),
-            "attendee_person_ids": [guest], "confidence": 0.9,
+            "attendee_person_ids": [guest_id], "confidence": 0.9,
         }))
     return json.loads(raw), gw
 
 
-def test_solo_meeting_auto_executes_on_the_class_mode_alone() -> None:
+def test_solo_meeting_auto_executes_for_the_founder_on_a_verified_surface() -> None:
     _solo()
-    _founder()
+    pid = _founder()
     # No departments exist at all — nothing named "operations" to gate on.
-    result, gw = _book("auto_execute")
+    result, gw = _book("auto_execute", Session(from_web_chat=True, caller_person_id=pid))
     assert result["status"] == "created"
     gw.call_tool.assert_awaited()
+
+
+@pytest.mark.parametrize("who", ["email_poller", "contact_on_web", "no_session", "unverified_telegram"])
+def test_solo_auto_execute_proposes_unless_the_founder_asked_on_a_verified_surface(
+    who: str,
+) -> None:
+    """auto_execute books only for the founder on a surface that verified
+    it is them. An inbound email (the poller's session: no channel, not web),
+    a contact's web turn, an unattended caller or a Telegram chat without a
+    webhook secret gets a proposal to the founder instead of a booking."""
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    _solo()
+    pid = _founder()
+    contact = people_store.upsert_person(full_name="Client Contact", email="client@example.com")
+    session = {
+        "email_poller": Session(caller_person_id=pid),
+        "contact_on_web": Session(from_web_chat=True, caller_person_id=contact),
+        "no_session": None,
+        "unverified_telegram": Session(
+            origin_channel="telegram", origin_channel_ref="555", caller_person_id=pid
+        ),
+    }[who]
+    result, gw = _book("auto_execute", session)
+    assert result["status"] == "proposed"
+    gw.call_tool.assert_not_awaited()
+    instance = get_decision_instance(result["decision_instance_id"])
+    assert instance is not None
+    assert instance.gate_mode == "propose"
+    assert instance.approver_person_id == pid
 
 
 def test_solo_meeting_proposes_to_the_founder_otherwise(_isolated: Path) -> None:

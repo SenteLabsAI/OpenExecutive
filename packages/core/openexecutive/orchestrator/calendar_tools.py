@@ -451,16 +451,21 @@ def _propose_via_decision_alert(
         )
 
 
-def _solo_meeting_gate(class_mode: str) -> GateDecision:
-    """The meeting gate in solo mode: the ``meeting_scheduling`` class mode
-    alone decides — ``auto_execute`` books now, anything else is proposed to
-    the founder (the principal) on the briefing. No department is consulted:
-    one person using Open Executive for themselves has no operations team,
-    and the class mode is the founder's own setting (PUT
-    /decisions/classes/meeting_scheduling)."""
+def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
+    """The meeting gate in solo mode. No department is consulted — one person
+    using Open Executive for themselves has no operations team — so the
+    ``meeting_scheduling`` class mode (the founder's own setting, PUT
+    /decisions/classes/meeting_scheduling) decides, and ``auto_execute``
+    books right away only when the founder started this turn on a surface
+    that verified it is them (the roster-write rule,
+    ``people_tools.is_principal_on_verified_surface``). Anything else — an
+    inbound email, a contact's message, an unattended run — is proposed to
+    the founder on the briefing, so text someone else wrote cannot put a
+    meeting on the founder's calendar."""
     from openexecutive.departments.authority import GateDecision
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
-    if class_mode == "auto_execute":
+    if class_mode == "auto_execute" and is_principal_on_verified_surface(session):
         return GateDecision(
             allowed=True, action="execute", reason="solo: meeting_scheduling is auto_execute"
         )
@@ -476,7 +481,11 @@ def _solo_meeting_gate(class_mode: str) -> GateDecision:
         allowed=False,
         action="propose",
         assignee_person_id=principal_id,
-        reason="solo: meeting_scheduling proposes to the founder",
+        reason=(
+            "solo: meeting_scheduling proposes to the founder"
+            if class_mode != "auto_execute"
+            else "solo: auto_execute needs the founder on a verified surface — proposing"
+        ),
     )
 
 
@@ -597,7 +606,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     if effective_workspace_mode(session) == "solo":
         # Solo: the founder is the only approver and there is no operations
         # department to consult — the class mode alone decides.
-        gate_decision = _solo_meeting_gate(class_mode)
+        gate_decision = _solo_meeting_gate(class_mode, session)
     else:
         gate_decision = gate_action(
             "operations",
