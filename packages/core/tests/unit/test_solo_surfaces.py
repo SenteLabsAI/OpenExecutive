@@ -873,13 +873,19 @@ def test_solo_founder_fixture_is_one_founder_with_areas() -> None:
 def test_solo_founder_fixture_seeds_a_solo_workspace() -> None:
     from openexecutive.cli import fixture_loader
 
+    # The same two steps _apply_state_from_source runs on a fixture load:
+    # workspace.yaml is read and validated up front, then applied after the
+    # people and departments are seeded (a fixture, so not keep_when_missing).
+    wanted = fixture_loader._read_workspace_file(SOLO_FIXTURE / "workspace.yaml")
+    assert wanted == ws.WorkspaceSettings(mode="solo", timezone="Europe/Stockholm")
     assert fixture_loader._seed_people(SOLO_FIXTURE / "people.yaml") == 1
     assert fixture_loader._seed_departments(SOLO_FIXTURE / "departments.yaml") == 4
-    fixture_loader._apply_workspace_file(SOLO_FIXTURE / "workspace.yaml")
+    applied = fixture_loader._apply_workspace(wanted, keep_when_missing=False)
     dept_registry.invalidate()
     people_registry.invalidate()
 
-    assert ws.get_workspace().mode == "solo"
+    assert applied == {"mode": "solo", "timezone": "Europe/Stockholm"}
+    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="Europe/Stockholm")
     principal = people_store.find_principal_person()
     assert principal is not None and principal.full_name == "Maya Lindqvist"
     states = dept_store.list_departments()
