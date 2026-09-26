@@ -186,6 +186,14 @@ See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no defa
 > "handled overnight" block). Patch it in an autouse fixture, and delete a
 > stray `packages/core/episodic_memory.db` (gitignored) if one appears.
 
+> **Patching `episodic.DB_PATH` isn't enough:** most readers in
+> `memory/episodic.py` (`format_for_prompt`, `get_active_initiatives`, …)
+> bind `DB_PATH` as a default argument at import, and the audit logger keeps
+> its own path, so both still use `./episodic_memory.db`. If a stray copy of
+> that file lacks the `decisions` table, the test fails with "no such table"
+> depending on what ran before it. Point them at the test DB too, as the `db`
+> fixture in `tests/integration/test_scheduler_runner.py` does.
+
 > **ContextVar leaks between tests:** a *sync* fixture or test that sets
 > `current_session` (or any module-level ContextVar) and doesn't reset it
 > leaves that value bound for every later test in the process.
