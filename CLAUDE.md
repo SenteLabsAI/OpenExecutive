@@ -86,7 +86,7 @@ RAG context goes in the **user turn**, not the system prompt.
 
 4. Add knowledge docs to `knowledge/your_domain/`
 
-5. Add `evals/scenarios/your_domain_001.yaml` and `your_domain_002.yaml`
+5. Add `packages/core/openexecutive/evals/_scenarios/your_domain_001.yaml` and `your_domain_002.yaml`
 
 6. If the agent introduces a new pattern (new tool, new routing path, new memory contract), update `packages/core/openexecutive/architecture/architecture-facts.yaml`. Pure additions to `SPECIALIST_REGISTRY` are auto-reflected in the `agents` section without YAML edits.
 
@@ -209,7 +209,7 @@ pytest packages/core/tests/unit/ -v
 pytest packages/core/tests/integration/ -v
 
 # Eval suite
-cd evals && python run_evals.py --scenarios scenarios/ --output results/
+make eval   # runs packages/core/openexecutive/evals/_scenarios/*.yaml, writes evals/results/
 ```
 
 ## PR Requirements

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Eval runner for Open Executive.
 
-Usage:
-    python run_evals.py --scenarios scenarios/ --output results/
+Usage (or just `make eval`), from packages/core:
+    uv run python ../../evals/run_evals.py --scenarios openexecutive/evals/_scenarios/ --output ../../evals/results/
 """
 from __future__ import annotations
 

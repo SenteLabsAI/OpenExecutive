@@ -636,7 +636,7 @@ class YourAgent(BaseAgent):
 
 5. Add knowledge docs to `knowledge/builtin/your_domain/`
 
-6. Add at least 2 eval scenarios to `evals/scenarios/`
+6. Add at least 2 eval scenarios to `packages/core/openexecutive/evals/_scenarios/`
 
 7. Submit PR — CI requires all of the above.
 
