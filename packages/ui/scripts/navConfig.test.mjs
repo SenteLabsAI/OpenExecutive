@@ -16,7 +16,7 @@ const TEAM = [
   {
     key: "company",
     label: "Company",
-    items: ["Departments → /departments", "People → /people", "Company profile → /company-profile"],
+    items: ["Departments → /departments", "Goals → /goals", "People → /people", "Company profile → /company-profile"],
   },
   { key: "knowledge", label: "Knowledge", items: ["Knowledge base → /knowledge"] },
 ];
@@ -27,8 +27,13 @@ test("team nav is unchanged, and team is the default", () => {
   assert.deepEqual(shape(buildPrimaryNav()), TEAM);
   assert.deepEqual(buildPrimaryNav({ mode: "team" }), buildPrimaryNav());
   const notOnboarded = shape(buildPrimaryNav({ isOnboarded: false }));
-  assert.deepEqual(notOnboarded[1].items, ["Departments → /departments", "People → /people", "Set up company → /onboard"]);
-  const profile = buildPrimaryNav()[1].items[2];
+  assert.deepEqual(notOnboarded[1].items, [
+    "Departments → /departments",
+    "Goals → /goals",
+    "People → /people",
+    "Set up company → /onboard",
+  ]);
+  const profile = buildPrimaryNav()[1].items[3];
   assert.equal(profile.description, "Your company's identity and strategy — set up once, edited any time.");
 });
 

@@ -3019,13 +3019,29 @@ export async function deleteDepartment(slug: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete department: ${res.statusText}`);
 }
 
+// Only `key_result` is required: the server fills a missing `period_value`
+// with the current period for `period_type`, and `target` may be empty.
 export interface GoalCreate {
   period_type?: PeriodType;
-  period_value: string;
+  period_value?: string;
   key_result: string;
-  target: string;
+  target?: string;
   current?: string;
   status?: Goal["status"];
+}
+
+// The server's reason when it gives one — a string `detail`, or the first
+// FastAPI validation message — else `fallback`.
+async function goalError(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  if (typeof body.detail === "string") return new Error(body.detail);
+  const first = Array.isArray(body.detail) ? (body.detail[0] as { msg?: unknown; loc?: unknown }) : undefined;
+  if (typeof first?.msg === "string") {
+    const loc = Array.isArray(first.loc) ? first.loc[first.loc.length - 1] : undefined;
+    const field = typeof loc === "string" && loc !== "body" ? `${loc.replace(/_/g, " ")}: ` : "";
+    return new Error(`${fallback} — ${field}${first.msg.replace(/^Value error, /, "")}`);
+  }
+  return new Error(`${fallback} (${res.status})`);
 }
 
 export async function createGoal(slug: string, body: GoalCreate): Promise<Goal> {
@@ -3034,7 +3050,7 @@ export async function createGoal(slug: string, body: GoalCreate): Promise<Goal> 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Failed to create Goal: ${res.statusText}`);
+  if (!res.ok) throw await goalError(res, "Couldn't add the goal");
   return res.json();
 }
 
@@ -3053,7 +3069,7 @@ export async function updateGoal(slug: string, goalId: number, patch: GoalPatch)
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`Failed to update Goal: ${res.statusText}`);
+  if (!res.ok) throw await goalError(res, "Couldn't save the goal");
   return res.json();
 }
 

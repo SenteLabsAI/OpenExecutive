@@ -54,7 +54,7 @@ lint:
 
 eval:
 	cd packages/core && uv run python ../../evals/run_evals.py \
-		--scenarios ../../evals/scenarios/ \
+		--scenarios openexecutive/evals/_scenarios/ \
 		--output ../../evals/results/
 
 # --env-file makes ${VAR} interpolation in docker-compose.yml read the

@@ -71,6 +71,20 @@ def test_insert_goal_fires_created_mirror(
     assert "Target: $1.2M monthly" in c["body"]
 
 
+def test_mirror_omits_an_empty_target(
+    db: Path, mirror_calls: list[dict[str, Any]]
+) -> None:
+    store.insert_goal(
+        department_slug="finance",
+        period_value="Q3 2026",
+        key_result="Close Series A",
+        target="",
+        db_path=db,
+    )
+    assert len(mirror_calls) == 1
+    assert "Target:" not in mirror_calls[0]["body"]
+    assert "Close Series A" in mirror_calls[0]["body"]
+
 def test_update_goal_fires_updated_mirror(
     db: Path, mirror_calls: list[dict[str, Any]]
 ) -> None:

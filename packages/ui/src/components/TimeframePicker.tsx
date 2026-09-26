@@ -63,6 +63,59 @@ export function suggestPeriodValue(periodType: PeriodType, today: Date = new Dat
   }
 }
 
+const CHIP_LABELS: Record<PeriodType, string> = {
+  week: "This week",
+  month: "This month",
+  quarter: "This quarter",
+  year: "This year",
+  ongoing: "Ongoing",
+};
+
+/**
+ * One-click timeframe for a new goal: each chip picks a period type and the
+ * current period's label (`suggestPeriodValue`), so there is nothing to type.
+ * Editing an existing goal uses the full picker below, where the label is
+ * free text ("H2 FY27").
+ */
+export function TimeframeChips({
+  periodType,
+  onChange,
+}: {
+  periodType: PeriodType;
+  onChange: (periodType: PeriodType, periodValue: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs text-fg-muted" id="timeframe-chips-label">
+        Timeframe
+      </span>
+      <div role="radiogroup" aria-labelledby="timeframe-chips-label" className="flex flex-wrap gap-1.5">
+        {PERIOD_TYPES.map((p) => {
+          const selected = p.value === periodType;
+          return (
+            <button
+              key={p.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => onChange(p.value, suggestPeriodValue(p.value))}
+              title={p.value === "ongoing" ? undefined : suggestPeriodValue(p.value)}
+              className={
+                "px-2.5 py-1 rounded-full border text-xs transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500/50 " +
+                (selected
+                  ? "border-indigo-500/70 bg-indigo-500/10 text-fg font-medium"
+                  : "border-line text-fg-muted hover:text-fg hover:border-line-strong")
+              }
+            >
+              {CHIP_LABELS[p.value]}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface TimeframePickerProps {
   periodType: PeriodType;
   periodValue: string;

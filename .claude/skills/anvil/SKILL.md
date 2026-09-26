@@ -757,7 +757,7 @@ Run these in 5b and INSERT each:
   (`check_name='eval-scenarios'`, FAIL if missing): if the diff adds a file under
   `packages/core/openexecutive/agents/` or modifies
   `prompts/domain_prompts.py`, it must also add/modify a file under
-  `evals/scenarios/`. Reference the `CLAUDE.md` "Adding a New Specialist Agent"
+  `packages/core/openexecutive/evals/_scenarios/`. Reference the `CLAUDE.md` "Adding a New Specialist Agent"
   checklist in the failure message.
 - **Tests for new behavior** (`check_name='tests-present'`, WARN — Medium
   confidence, not a hard block): if non-trivial logic changed under

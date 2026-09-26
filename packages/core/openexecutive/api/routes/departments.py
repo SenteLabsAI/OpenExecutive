@@ -12,9 +12,10 @@ headers, same shape as Phase A's /morning-brief).
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openexecutive.departments import registry, store
 from openexecutive.departments.cadence import CADENCE_FORMATS_HINT, is_valid_cadence_spec
@@ -100,18 +101,28 @@ class DepartmentPatch(BaseModel):
 
 
 class GoalCreate(BaseModel):
+    """Only `key_result` (the goal itself) is required. A missing or blank
+    `period_value` is filled with the current period for `period_type`, and
+    `target` may be left empty. Text is stripped first, so whitespace alone
+    counts as blank."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     period_type: PeriodType = "quarter"
-    period_value: str = Field(min_length=1, max_length=64)
+    period_value: str | None = Field(default=None, max_length=64)
     key_result: str = Field(min_length=1, max_length=512)
-    target: str = Field(min_length=1, max_length=512)
+    target: str = Field(default="", max_length=512)
     current: str = Field(default="", max_length=512)
     status: GoalStatus = "on_track"
 
 
 class GoalPatch(BaseModel):
+    # Stripped first, so a whitespace-only goal or period is rejected like "".
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     period_type: PeriodType | None = None
-    period_value: str | None = Field(default=None, max_length=64)
-    key_result: str | None = Field(default=None, max_length=512)
+    period_value: str | None = Field(default=None, min_length=1, max_length=64)
+    key_result: str | None = Field(default=None, min_length=1, max_length=512)
     target: str | None = Field(default=None, max_length=512)
     current: str | None = Field(default=None, max_length=512)
     status: GoalStatus | None = None
@@ -241,13 +252,29 @@ def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentState:
 # Goal routes (primary)
 # --------------------------------------------------------------------------- #
 
+def _current_period_value(period_type: str) -> str:
+    """The current period's label in the user's zone — what the goal editor
+    and `create_goal` fill in when no period is given."""
+    from openexecutive.orchestrator.department_tools import (
+        _today_local,
+        default_period_value,
+    )
+
+    try:
+        today = _today_local()
+    except Exception:  # noqa: BLE001 - a zone read must not fail the create.
+        today = datetime.now(UTC).date()
+    return default_period_value(period_type, today)
+
+
 def _create_goal(slug: str, body: GoalCreate) -> Goal:
     if store.get_department(slug) is None:
         raise HTTPException(status_code=404, detail="Unknown department")
+    period_value = (body.period_value or "").strip() or _current_period_value(body.period_type)
     goal_id = store.insert_goal(
         slug,
         period_type=body.period_type,
-        period_value=body.period_value,
+        period_value=period_value,
         key_result=body.key_result,
         target=body.target,
         current=body.current,
