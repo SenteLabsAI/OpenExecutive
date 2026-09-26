@@ -132,6 +132,13 @@ _BLANK_WIPE_TABLES = (
     "proactive_outcomes",
     "attunement_profiles",
     "attunement_profile_history",
+    # Act as me (delegation/): who has it on and each person's "How I write"
+    # — per company like the roster it is keyed on, so a blank client starts
+    # with it off and no profile. (Each person's own-Gmail credential is a
+    # file, not a table, and is re-checked against the roster on every use.)
+    "delegation_settings",
+    "delegation_voice",
+    "delegation_voice_history",
     # Legacy talent / staff-onboarding tables. Both features are gone and
     # nothing writes these any more, but the rows may still exist on upgraded
     # installs and they carry candidate PII (names, employers, screening

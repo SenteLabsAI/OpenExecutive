@@ -34,8 +34,9 @@ export interface LocalLoginEnv {
   publicDeployment: string | undefined;
 }
 
-// Mirrors api/main.py's _FALSEY_ENV, so both apps read OE_PUBLIC_DEPLOYMENT
-// alike; scripts/localLogin.test.mjs fails if the two drift apart.
+// Mirrors the API's FALSEY_ENV (packages/core/openexecutive/utils/deployment.py),
+// so both apps read OE_PUBLIC_DEPLOYMENT alike; scripts/localLogin.test.mjs
+// fails if the two drift apart.
 export const FALSEY_ENV: ReadonlySet<string> = new Set(["", "0", "false", "no", "off"]);
 
 export function localLoginEnabled(env: LocalLoginEnv): boolean {

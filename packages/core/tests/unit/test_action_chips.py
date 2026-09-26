@@ -338,6 +338,7 @@ def _all_registered_tool_names() -> set[str]:
     from openexecutive.orchestrator.artifact_tools import DRAFT_ARTIFACT_TOOL_HANDLERS
     from openexecutive.orchestrator.broadcast_tools import BROADCAST_TOOL_HANDLERS
     from openexecutive.orchestrator.decision_tools import DECISION_TOOL_HANDLERS
+    from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_HANDLERS
     from openexecutive.orchestrator.department_tools import DEPARTMENT_TOOL_HANDLERS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
     from openexecutive.orchestrator.open_loop_tools import OPEN_LOOP_TOOL_HANDLERS
@@ -357,6 +358,8 @@ def _all_registered_tool_names() -> set[str]:
         | set(DRAFT_ARTIFACT_TOOL_HANDLERS)
         | set(MCP_TOOL_NAMES)
         | set(WORKFLOW_RUN_TOOL_HANDLERS)
+        # Act as me: its own registry, offered per turn (never _ALL_SKILL_TOOLS).
+        | set(DELEGATION_TOOL_HANDLERS)
         # `create_alert` is in chat module rather than a HANDLERS dict.
         | {"create_alert"}
     )

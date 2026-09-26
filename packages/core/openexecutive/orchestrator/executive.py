@@ -9,7 +9,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from openexecutive.audit import bind_turn, clear_turn, set_turn
+from openexecutive.audit import bind_turn, clear_turn, private_rows, set_turn
 from openexecutive.audit import log_event as audit_log
 from openexecutive.audit.redaction import (
     ERROR_DETAIL_LEN,
@@ -20,6 +20,11 @@ from openexecutive.audit.redaction import (
 )
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
+from openexecutive.delegation.settings import (
+    block0_delegation_on,
+    pin_turn_delegation,
+    turn_delegation,
+)
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
 from openexecutive.memory.workspace_settings import (
     effective_principal_role,
@@ -53,6 +58,11 @@ from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.decision_tools import (
     DECISION_TOOL_HANDLERS,
     DECISION_TOOLS,
+)
+from openexecutive.orchestrator.delegation_tools import (
+    DELEGATION_TOOL_HANDLERS,
+    DELEGATION_TOOL_NAMES,
+    DELEGATION_TOOLS,
 )
 from openexecutive.orchestrator.department_tools import (
     DEPARTMENT_TOOL_HANDLERS,
@@ -785,6 +795,9 @@ class Executive:
         # starts describe the same role. Team pins an empty role and renders
         # none.
         principal_role = pin_turn_principal_role(session, workspace_mode)
+        # Act as me, pinned with the mode so the tool list, the handler and
+        # the turn's audit privacy agree even if the setting flips mid-turn.
+        delegation_pin = pin_turn_delegation(session, _speaker_text(memory_text, user_message))
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -793,6 +806,7 @@ class Executive:
             workspace_mode=workspace_mode,
             principal_role=principal_role if workspace_mode == "solo" else None,
             include_contacts=_contacts_in_prompt(session),
+            delegation=block0_delegation_on(session),
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -884,6 +898,11 @@ class Executive:
 
         session.add_user_message(user_message)
         session.add_assistant_message(full_response)
+        # A turn that read or drafted in the speaker's own mailbox (Act as me)
+        # stays private to them from here on, and teaches no memory: its reply
+        # quotes a draft built from other people's mail. Read from this turn's
+        # own pin (a concurrent turn on the session has its own).
+        touched_mail = delegation_pin.touched_mail
 
         # Audit the Executive's outbound response. Without this, the audit
         # log only records the *inputs* to a turn (inbound message, memory
@@ -910,6 +929,7 @@ class Executive:
                     "committee": False,
                 },
                 full={"response": full_response},
+                private=touched_mail,
             )
 
         from openexecutive.memory.episodic import (
@@ -922,8 +942,11 @@ class Executive:
         # quote from this text, and peer memory records it as what the person
         # said. A quoted Executive email or a briefing card's body in the
         # prompt would otherwise satisfy that quote gate with the Executive's
-        # own words.
-        speaker_text = _speaker_text(memory_text, user_message)
+        # own words. A turn that touched the speaker's own mailbox (Act as me)
+        # has none to learn from: its reply quotes a draft built from other
+        # people's mail, so should_extract refuses the empty text and every
+        # other pass below is skipped outright.
+        speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
 
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
@@ -932,7 +955,9 @@ class Executive:
         # to None by now). Without this wrapper, every extraction /
         # sync_turn / sync_department_turn audit row would land with
         # session_id=NULL and be invisible in the per-session audit view.
-        with set_turn(session_id=session.session_id, turn_id=turn_id):
+        # private_rows: the passes scheduled here copy the context, so a turn
+        # that touched the speaker's mailbox keeps their rows private too.
+        with set_turn(session_id=session.session_id, turn_id=turn_id), private_rows(touched_mail):
             # Inside the wrapper: schedule_extraction snapshots the vars at
             # call time, so scheduling it out here would snapshot (None,
             # None) and the memory_extractor's model call would record
@@ -952,20 +977,22 @@ class Executive:
             # unrostered sender (None) records nothing.
             from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
-            schedule_open_loop_pass(
-                speaker_text, full_response, person_id=person_id,
-                session_id=session.session_id,
-                # The turn's pinned mode: solo opens the principal's own
-                # dated commitments, team does not — and only when this
-                # surface verified the speaker is the principal.
-                workspace_mode=workspace_mode,
-                principal_verified=is_principal_on_verified_surface(session),
-            )
+            if not touched_mail:
+                schedule_open_loop_pass(
+                    speaker_text, full_response, person_id=person_id,
+                    session_id=session.session_id,
+                    # The turn's pinned mode: solo opens the principal's own
+                    # dated commitments, team does not — and only when this
+                    # surface verified the speaker is the principal.
+                    workspace_mode=workspace_mode,
+                    principal_verified=is_principal_on_verified_surface(session),
+                )
             # Re-learn this speaker's working style once enough new
             # messages have arrived (paced and budgeted inside).
             from openexecutive.attunement.style import schedule_style_pass
 
-            schedule_style_pass(person_id, session_id=session.session_id)
+            if not touched_mail:
+                schedule_style_pass(person_id, session_id=session.session_id)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -973,8 +1000,8 @@ class Executive:
             # Never for a turn private to the principal (mail from one of
             # their contacts, mail they forwarded): the reply summarises that
             # mail, and peer and department memory are read on other people's
-            # turns.
-            if not _private_to_principal(session):
+            # turns. Nor for a turn that touched the speaker's own mailbox.
+            if not _private_to_principal(session) and not touched_mail:
                 from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
                 _honcho_sync(
                     speaker_text,
@@ -1067,6 +1094,7 @@ class Executive:
 
         workspace_mode = pin_turn_workspace_mode(session)
         principal_role = pin_turn_principal_role(session, workspace_mode)
+        delegation_pin = pin_turn_delegation(session, _speaker_text(memory_text, user_message))
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -1075,6 +1103,7 @@ class Executive:
             workspace_mode=workspace_mode,
             principal_role=principal_role if workspace_mode == "solo" else None,
             include_contacts=_contacts_in_prompt(session),
+            delegation=block0_delegation_on(session),
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.
@@ -1348,6 +1377,9 @@ class Executive:
             yield debug_collector.to_sse_dict(evt)
 
         session.add_user_message(user_message)
+        # Act as me: a turn that touched the speaker's mailbox stays private
+        # and teaches no memory (see stream_chat).
+        touched_mail = delegation_pin.touched_mail
         # Guard against a revision pass that produced no text (only tool_use
         # blocks, model_stop, etc.). Persisting an empty assistant turn
         # corrupts the in-memory history with a phantom turn that future
@@ -1375,6 +1407,7 @@ class Executive:
                     "draft_length": len(draft),
                 },
                 full={"response": final_response, "draft": draft},
+                private=touched_mail,
             )
 
         audit_log(
@@ -1383,6 +1416,7 @@ class Executive:
             session_id=session.session_id,
             turn_id=_committee_turn_id,
             actor="committee",
+            private=touched_mail,
             details={
                 "draft_length": len(draft),
                 "final_length": len(final_response),
@@ -1406,32 +1440,38 @@ class Executive:
             should_extract,
         )
         # The speaker's own words, for extraction, open loops and peer
-        # memory alike — see stream_chat.
-        speaker_text = _speaker_text(memory_text, user_message)
-        if should_extract(
-            speaker_text,
-            origin_channel=session.origin_channel,
-            person_id=person_id,
-        ):
-            schedule_extraction(
-                speaker_text, final_response, session_id=session.session_id
-            )
+        # memory alike — none for a turn that touched their mailbox; see
+        # stream_chat.
+        speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
+        # private_rows: see stream_chat — the scheduled passes copy it.
+        with private_rows(touched_mail):
+            if should_extract(
+                speaker_text,
+                origin_channel=session.origin_channel,
+                person_id=person_id,
+            ):
+                schedule_extraction(
+                    speaker_text, final_response, session_id=session.session_id
+                )
 
-        # Open loops — see stream_chat.
-        from openexecutive.attunement.open_loops import schedule_open_loop_pass
+            # Open loops — see stream_chat.
+            from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
-        schedule_open_loop_pass(
-            speaker_text, final_response, person_id=person_id,
-            session_id=session.session_id, workspace_mode=workspace_mode,
-            principal_verified=is_principal_on_verified_surface(session),
-        )
-        from openexecutive.attunement.style import schedule_style_pass
+            if not touched_mail:
+                schedule_open_loop_pass(
+                    speaker_text, final_response, person_id=person_id,
+                    session_id=session.session_id, workspace_mode=workspace_mode,
+                    principal_verified=is_principal_on_verified_surface(session),
+                )
+            from openexecutive.attunement.style import schedule_style_pass
 
-        schedule_style_pass(person_id, session_id=session.session_id)
+            if not touched_mail:
+                schedule_style_pass(person_id, session_id=session.session_id)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
-        # rationale, and for why a turn private to the principal is not).
-        if not _private_to_principal(session):
+        # rationale, and for why a turn private to the principal — or one
+        # that touched the speaker's own mailbox — is not).
+        if not _private_to_principal(session) and not touched_mail:
             from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
             _honcho_sync(
                 speaker_text,
@@ -1514,6 +1554,19 @@ class Executive:
         private_withheld = PRIVATE_TURN_WITHHELD_TOOLS if private_turn else frozenset()
         not_offered = unattended_withheld | private_withheld
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
+        # Act as me: ghostwrite_email joins the toolkit only on a turn
+        # pin_turn_delegation offered it to. Its own registry, never
+        # _ALL_SKILL_TOOLS, and a per-turn handler map built from it — so on
+        # any other turn a call to it is an unknown tool, not a refusal to argue
+        # with.
+        pinned_delegation = turn_delegation(current_session.get())
+        ghostwrite_offered = pinned_delegation is not None and pinned_delegation.offered
+        delegation_tools = DELEGATION_TOOLS if ghostwrite_offered else []
+        turn_handlers = (
+            {**_ALL_SKILL_HANDLERS, **DELEGATION_TOOL_HANDLERS}
+            if ghostwrite_offered
+            else _ALL_SKILL_HANDLERS
+        )
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
@@ -1548,7 +1601,7 @@ class Executive:
             client_tools = sorted(
                 (
                     t for t in filter_tools_for_workspace_mode(
-                        [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools],
+                        [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools, *delegation_tools],
                         workspace_mode,
                     )
                     if t["name"] not in not_offered
@@ -1655,7 +1708,7 @@ class Executive:
                 return
 
             specialist_tool_uses = [tu for tu in tool_uses if tu["name"] == "consult_specialist"]
-            skill_tool_uses = [tu for tu in tool_uses if tu["name"] in _ALL_SKILL_HANDLERS]
+            skill_tool_uses = [tu for tu in tool_uses if tu["name"] in turn_handlers]
             # Dispatch guard: a tool this mode does not offer never runs, even
             # if the model emits it anyway — it gets an error tool_result.
             withheld_uses = [tu for tu in skill_tool_uses if tu["name"] in withheld_tools]
@@ -1895,7 +1948,7 @@ class Executive:
                 # return_exceptions=True: one crashing handler must not abort
                 # the whole turn. See `_tool_error_result`.
                 skill_results = await asyncio.gather(
-                    *(_ALL_SKILL_HANDLERS[tu["name"]](tu["input"]) for tu in skill_tool_uses),
+                    *(turn_handlers[tu["name"]](tu["input"]) for tu in skill_tool_uses),
                     return_exceptions=True,
                 )
                 # `raw` rather than `result` so the narrowed value keeps the
@@ -1926,6 +1979,8 @@ class Executive:
                                 "ok": False,
                                 "error": repr(raw)[:ERROR_DETAIL_LEN],
                             },
+                            # Act as me reads the speaker's own mailbox.
+                            private=tu["name"] in DELEGATION_TOOL_NAMES,
                         )
                         # Hand the model an error tool_result and move on. No
                         # chip: summarize_action must never see an exception.
@@ -1982,6 +2037,7 @@ class Executive:
                             "result": audit_tool_result_full(tu["name"], result),
                             "active_prompt_blocks": _system_block_names(system_blocks),
                         },
+                        private=tu["name"] in DELEGATION_TOOL_NAMES,
                     )
 
             if mcp_tool_uses and self._mcp_gateway is not None:

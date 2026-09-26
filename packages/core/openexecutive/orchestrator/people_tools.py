@@ -374,8 +374,12 @@ def audit_row_private_to_principal(*payloads: Any) -> bool:
     sent the message — see ``audit_rows_on_senders_turn``).
     """
     from openexecutive.audit.context import rows_on_principal_turn, rows_private
+    from openexecutive.delegation.settings import turn_touched_delegate_mail
 
-    if turn_is_private_to_principal() or rows_private():
+    # A turn that read or drafted in the speaker's own mailbox (Act as me):
+    # every row after that is theirs alone. Phase 1 lets only the principal
+    # turn it on, so "private to the principal" is the right visibility.
+    if turn_is_private_to_principal() or rows_private() or turn_touched_delegate_mail():
         return True
     if not (contacts_reachable_now() or rows_on_principal_turn()):
         return False

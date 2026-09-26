@@ -72,7 +72,9 @@ system:
       claude-opus-5 within the same turn.
   invariants:
     - The internal sub-agent architecture is NEVER exposed to the end user — there is one voice (the Executive).
-    - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only.
+    - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only. The single exception is Act as me (delegation) — with the person's own switch on and on their own verified turn in a conversation private to them, `ghostwrite_email` writes an email in their voice as a DRAFT in their own Gmail, never sent, never from the Executive's own account or bots, and never for anyone who has not turned it on (only the principal can, for now). The identity addendum itself is unchanged; the constant DELEGATION_ADDENDUM after it names the exception.
+    - Voice follows the account. Text written as a person leaves only from that person's own Gmail (for now only as a draft they review and send themselves); the Executive's own mailbox and bots always sign as the Executive.
+    - The model cannot reach a delegated mailbox. delegation.gmail.DelegateGmail talks to the Gmail REST API directly and is never registered with the MCP gateway, so only typed handlers (ghostwrite_email, the voice learner) call it, and its credential never lives in WORKSPACE_MCP_CREDENTIALS_DIR. Every google_workspace__* call through the gateway acts as the Executive's own account (mcp_gateway._check_acting_account refuses any other user_google_email).
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
     - The workspace mode (memory.workspace_settings, `workspace_settings` table) is per install and defaults to team. Solo (one person using Open Executive just for themselves) runs no department check-ins anywhere — bootstrap_cadences and enqueue_next are no-ops and the runner cancels a stray dept_cadence row without running or chaining it — but department rows are kept, so switching back is instant. A Session may carry an explicit `workspace_mode` override (read via effective_workspace_mode) so a caller running several conversations on one Executive, such as evals, can pick the mode per session; otherwise the install-wide mode is read fresh at the start of each turn and pinned on the session for that turn only (Session.turn_workspace_mode, via pin_turn_workspace_mode), so every tool handler in the turn uses the mode its persona and tools were built in. The same row holds the principal's role (role_kind owner | in_house | independent | other, role_title, reports_to, remit, measured_on; all nullable) — solo is about who uses Open Executive, not the principal's level. Only solo mode reads it (the solo org block's role lines and the specialists' <principal_role> tag), and team output is byte-identical whether a role is stored or not. A Session may carry a `principal_role` override (effective_principal_role) for the same reason as the mode override.
@@ -119,7 +121,9 @@ caching:
         override, which wins as-is in either mode +
         {VOICE_PERSONA} substitution + conditional WEB_SEARCH_ADDENDUM and
         MCP_ADDENDUM + identity addendum (exec name/email, impersonation
-        guard) + timezone addendum + KNOWLEDGE_INDEX_SUMMARY.
+        guard) + DELEGATION_ADDENDUM (Act as me — a constant, only while
+        anyone on the install has it on) + timezone addendum +
+        KNOWLEDGE_INDEX_SUMMARY.
         The timezone addendum names the user's zone from
         memory.workspace_settings.get_user_timezone() (the workspace's zone,
         else USER_TIMEZONE, else UTC), read fresh on every build.
@@ -130,6 +134,11 @@ caching:
         changes the addendum, so the 1h block misses once on that change
         and is warm again from the next turn — accepted, since the zone
         changes about never and a stale zone would mis-schedule follow-ups.
+        Act as me works the same way: build_system_blocks(delegation=...)
+        is passed delegation.settings.block0_delegation_on(session) — the
+        install-level setting (or an eval session's override), never a
+        per-turn or per-speaker value — so switching it misses the 1h block
+        once. Off, block 0 is byte-identical to an install without it.
     - id: company_and_org
       ttl: 5m
       what: |
@@ -182,6 +191,18 @@ caching:
     the last tool, and private turns in a mode share that one stable prefix. The
     system blocks are unchanged: such a turn comes from email, which is never
     the principal's verified surface, so block 1 is the no-contacts variant.
+  delegation_tool_prefix: |
+    Act as me adds a tool instead of withholding one. ghostwrite_email lives
+    in its own registry (orchestrator.delegation_tools.DELEGATION_TOOLS),
+    never _ALL_SKILL_TOOLS. On a turn delegation.settings.pin_turn_delegation
+    offered it to (the principal's own verified, attended turn in a private
+    conversation, with it on) it joins the pool BEFORE the sort, so those turns share one
+    more sorted prefix with the 1h marker on the last tool, and every other
+    turn's list is byte-identical to before. The offer deliberately ignores
+    the Gmail connection (the handler checks it per call), so a lapsed token
+    never flips the prefix. The ghostwriter's own call carries no cache
+    markers: a short constant GHOSTWRITER_PROMPT plus the person's voice
+    block, sent only when a draft is written.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
   intra_turn_cache: |
     executive._apply_loop_cache_marker moves a single ephemeral marker onto
@@ -3394,6 +3415,14 @@ audit:
         on current_session): the chat_turn reply, tool_invocation rows,
         cache_event rows, and background passes whose task inherited the
         turn's context.
+      - True for every row written once an Act as me turn has touched the
+        speaker's own mailbox (delegation.settings.turn_touched_delegate_mail
+        — TurnDelegation.touched_mail, which ghostwrite_email sets before its
+        first read): the tool_invocation row, the chat_turn reply carrying the
+        draft's preview, cache_event rows, and the post-turn passes, which the
+        turn starts under private_rows(touched_mail) (it runs no learning
+        passes). Only the principal can have Act as me for now, so private to the principal is the right
+        visibility; a teammate phase needs rows private to that person.
       - While contacts are reachable (contacts_reachable_now: the
         principal's own verified turn, or grant_contact_egress), True for
         a row that names one of their contacts: their email address or
@@ -3480,6 +3509,10 @@ audit:
     - scheduled_action_cancelled — a pending scheduled action cancelled via DELETE /scheduled/{id} (the Pulse page's Cancel, or a script). actor is the signed-in caller's email, "admin-token" or "local"; details carry action_id, kind, channel and department. A refused or 409 cancel writes nothing.
     - decision_class_mode_changed — a decision class's mode changed (propose ↔ auto_execute) via PUT /decisions/classes/meeting_scheduling. actor is the caller's x-caller-email or "api"; details carry decision_class and mode as from/to. Setting the current mode writes nothing.
     - workspace_settings_changed — solo/team mode, the user's time zone, the principal's role or the monthly AI limit changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed, and monthly_budget_usd as from/to when the limit changed. The summary names only what moved ("mode A → B, time zone X → Y", "principal's role updated" and/or "monthly AI limit $A → $B"). A PUT that changes nothing writes nothing.
+    - delegation_settings_changed — a person turned Act as me on or off for themselves via PUT /delegation. actor "user"; details carry person_id and enabled. Always private. Setting the current value writes nothing.
+    - delegation_gmail_verified — their own Gmail was checked (connected, and the mailbox on their People entry) just before Act as me was turned on. details carry person_id and status. Always private.
+    - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice (actor "user"). details carry op (learn, edit or reset), person_id, and counts or the names of the fields changed — never their text. Always private.
+    - delegation_drafted — one per draft ghostwrite_email saved in someone's own Gmail. details carry person_id, thread_id, draft_id, reply, the recipient count and flags — never the draft, the intent or the thread. Always private; the daily draft cap counts these rows.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
@@ -5486,6 +5519,12 @@ integrations:
     process's env (GOOGLE_OAUTH_CLIENT_ID + _SECRET, or a
     GOOGLE_SERVICE_ACCOUNT_KEY_* with GWORKSPACE_AUTH_MODE=
     service_account) — that env is what the gateway forwards.
+    Your own Gmail (your_gmail, Act as me): off with no owner email; else
+    delegation.gmail.gmail_status under asyncio.wait_for(PROBE_TIMEOUT_S)
+    — a token refresh and GET users/me/profile, only once the owner's
+    credential file exists. connected is ok; no credential is off, or
+    amber while Act as me is on; shared_mailbox is off while it is off; any
+    other status is amber, or red while it is on; a timeout is amber.
     Secrets: no token in a response or log line — probes report a status
     code, a Slack error code matching [a-z_]{1,40}, or an exception class
     name; _fetch never logs a URL (Telegram's carries the token), and the
@@ -5683,6 +5722,18 @@ integrations:
     _FORWARDED_ENV_VARS so extensible-mcp can interpolate the $VAR placeholders in
     the child's env block from its own environment. No separate service, deploy
     credential, or deploy job. See docs/deployment.md.
+
+    Acting-account pin: workspace-mcp takes the acting Google account per
+    call (user_google_email). Nothing checked it, so a model-chosen address
+    could open another mailbox the server holds a credential for, or under
+    GWORKSPACE_AUTH_MODE=service_account (domain-wide delegation) possibly
+    anyone's in the domain. MCPGateway.call_tool now runs
+    _check_acting_account first for every google_workspace__* call: a
+    present user_google_email that is not the exec address (case- and
+    space-insensitive) is refused with an error tool_result and an
+    integration_outbound_blocked audit row (field user_google_email). An
+    absent value stays allowed. Someone's own mailbox is reached only
+    through delegation.gmail (Act as me), never through the gateway.
 
     Pinned gateway: extensible-mcp is launched as `uvx --exclude-newer <cutoff>
     --from git+...@<commit>` (_EXTENSIBLE_MCP_LAUNCH_ARGS in
@@ -5910,6 +5961,25 @@ integrations:
     existing outbound→inbound DM context linkage; no Meet/Drive transcript
     integration is involved. Skipped silently when no attendee has a reachable
     DM channel. Failure to schedule never blocks the booking.
+  own_gmail: |
+    Act as me (delegation) connects a second, separate Gmail — the
+    principal's own — read and drafted into by delegation.gmail.DelegateGmail
+    over the Gmail REST API, never the MCP gateway. Credential: one file per
+    person in DELEGATION_GOOGLE_CREDENTIALS_DIR (company/delegation_google/,
+    /data/delegation_google in Docker), named from sha256 of the lowercased
+    address, 0600 in a 0700 directory, minted by scripts/connect-own-gmail.py
+    (loopback OAuth on the Executive's own Desktop client; scopes
+    gmail.readonly + gmail.compose; the API serves no OAuth callback, as
+    for the exec token). Never in WORKSPACE_MCP_CREDENTIALS_DIR:
+    workspace-mcp picks a credential there by address, which would hand the
+    model the mailbox. gmail_status re-checks on every use that the
+    credential opens the mailbox on the person's People email, and refuses
+    the exec address outright (shared_mailbox). Drafts are threaded
+    (In-Reply-To, References, threadId) and stamped X-OE-Ghostwritten; no
+    send method. email_poller.sender_new_text (the poller's quoted-reply
+    stripper, made public) keeps only each sender's own words for the voice
+    learner and the ghostwriter's thread.
+
   mcp_server: |
     openexecutive.mcp_server — Open Executive exposed AS an MCP server, the
     inverse of `mcp_gateway:` above (gateway = OE consumes remote MCP servers;
@@ -6545,6 +6615,12 @@ clients:
       saved slot carries its row in state.db and a blank slot's wipe
       (_BLANK_WIPE_TABLES) returns it to the defaults before the briefs and
       cadences are re-seeded.
+    - Act as me's tables (delegation_settings, delegation_voice,
+      delegation_voice_history) are per company too - in _BLANK_WIPE_TABLES
+      and reset_all_state - so a blank client starts with it off and no
+      writing profile. The per-person Gmail credential is a file outside the
+      slot, re-checked against the live roster on every use, and no verbatim
+      exemplars are learned while a slot is active.
     - First activation with no active client auto-snapshots the user's
       original company to _user_backup (same restore point the fixture
       switcher uses; POST /fixtures/unload brings it back).
@@ -6618,6 +6694,189 @@ clients:
     see nothing anywhere. Deliberately NOT doing periodic autosave: the
     active card is always live-fresh; parked staleness is inherent until
     the v2 overnight-rotation phase.
+
+delegation:
+  module: openexecutive.delegation
+  intent: |
+    Act as me — the one place the Executive writes AS a person instead of as
+    itself. Everywhere else it has its own Google account and bots and signs
+    as itself. Here, only when the person asks, it writes an email in their
+    voice and saves it as a DRAFT in their own Gmail for them to review and
+    send. Phase 1 only drafts (nothing in the package can send) and only the
+    principal may turn it on. Off by default; off changes nothing — prompts,
+    tool lists and prompt caches are byte-identical to an install without it.
+  who: |
+    delegation.settings.can_delegate(person) is the single rule: a
+    non-archived team member flagged is_principal. The rails a teammate's
+    mailbox needs do not exist yet — audit rows private to THAT person (a row
+    is either visible to every signed-in user or private to the principal),
+    guards on the /agents and /personas write routes (any teammate can edit
+    the Executive's prompt today), and per-seat Gmail credentials — so
+    everything is keyed by person_id and the teammate phase widens that one
+    function. A person turns it on for themselves (PUT /delegation); nobody
+    turns it on for anyone else. delegation_settings holds one row per
+    person; missing, unreadable or 0 is off (is_enabled never raises).
+  turn_pin: |
+    pin_turn_delegation(session, speaker_text) runs at the start of every
+    chat turn (stream_chat and the committee path, beside
+    pin_turn_workspace_mode) and pins a TurnDelegation on
+    Session.turn_delegation — enabled, offered, touched_mail, drafts,
+    speaker_text, person_id — read fresh every turn, so switching it off
+    applies from the next message. offered requires ALL of: can_delegate and
+    enabled for the speaker; is_principal_on_verified_surface(session) (web
+    chat, own Slack or Discord, verified Telegram); on the web,
+    Session.web_caller_signed_in (the request carried x-caller-email) or
+    local login (utils.deployment.is_local_login, the same function api.main
+    uses) — a request with no caller header is not a sign-in and never gets
+    it, while the header itself is trusted from whoever holds
+    BACKEND_SHARED_SECRET (the UI proxy), as on every principal-only route; a
+    conversation private to the speaker (the web chat, a Slack or Discord DM
+    by session id slack:dm: / discord:dm:, a verified private Telegram chat)
+    and never a shared channel or thread, where the draft's preview and the
+    matching threads would be posted for everyone and other people's
+    messages sit in the model's context; and a turn that is neither
+    unattended nor private_to_principal (the email poller), so inbound text
+    never reaches it. The pin is also set in a ContextVar for the turn's
+    task (turn_delegation prefers it when it names the same session), so two
+    turns running at once on one session each read their own. The Gmail connection is
+    NOT part of the offer (the handler checks it per call), so the cached
+    tool prefix never flips when a token lapses. speaker_text is pinned
+    because the turn's message joins the session history only after the
+    turn, and a new email may go to an address typed this turn — outside any
+    tag block an adapter added (settings.typed_addresses drops the
+    <outbound_reply_context> backstory hydrated into a DM, and counts none
+    at all when the message carries an attachment — an "[Attached: …]"
+    document label or a "(Attached …" / "(Skipped …" / "(Could not …" note,
+    matched anywhere: none has an end mark, and a filename is chosen by
+    whoever sent the file).
+    Session.delegation_override (evals and tests only) replaces the speaker,
+    the setting and the mailbox with a fake; the surface checks are skipped
+    and the tool is offered only when a fake mailbox is supplied.
+  tool: |
+    ghostwrite_email (orchestrator.delegation_tools), input {intent,
+    thread_id?, find?, to?, reply_all?}. Own registry DELEGATION_TOOLS /
+    DELEGATION_TOOL_HANDLERS, NEVER _ALL_SKILL_TOOLS (reflection, research,
+    workflows and tests enumerate that list). _stream_agent_loop adds it to
+    the pool before the sort and builds a per-turn handler map only when the
+    pin says offered; otherwise a call is an unknown tool. The handler
+    re-checks the pin and (without an override) the verified surface, then
+    the caps — 5 drafts per turn, and DELEGATION_MAX_DRAFTS_PER_DAY (default
+    50, at most 1000 = one audit query page) per person per UTC day counted
+    from delegation_drafted rows (with an in-process count as a floor, since
+    log_event swallows a failed write), refusing when they cannot be counted.
+    Each slot is reserved synchronously before the first await and handed
+    back when nothing was drafted: _stream_agent_loop gathers a round's tool
+    calls, so a check-then-count-later cap let every parallel call through.
+    Then it sets touched_mail BEFORE the first mailbox read and runs
+    gmail_status. A search with several matches returns status choose with
+    candidates (subject, sender, date; no text) and drafts nothing.
+    Recipients are decided in code: a reply goes to the last inbound From,
+    never Reply-To (flag reply_to_ignored), with cc only on reply_all (minus
+    the writer and the sender; beyond 10 trimmed and flagged cc_trimmed);
+    References from gmail.references_header — whole ids only, the parent
+    last, the oldest after the root dropped to fit one header; a new email goes only to roster people
+    (contacts only when contacts_reachable_now) or addresses in
+    speaker_text. Result {status drafted, draft_id, gmail_link, to, cc,
+    subject, preview, flags, open_questions, note}; the link is built from a
+    fixed https://mail.google.com/ prefix and the note marks the preview as
+    data. action_chips gives it a chip only for status drafted.
+  ghostwriter: |
+    delegation.ghostwriter.compose — the only text the Executive produces
+    under someone else's name. System = the constant GHOSTWRITER_PROMPT +
+    the person's <voice> block (no cache markers: short, and rare). User
+    turn = <writer>, <recipients>, <thread> (the last 6 messages, each only
+    its sender's new text via email_poller.sender_new_text, every line
+    through scrub_block_line), <intent>. NO tools but the forced
+    compose_reply; no company profile, memory or roster. Not a Council
+    agent: PATCH /agents and /personas have no principal check. Model
+    DELEGATION_COMPOSER_MODEL, else the default model;
+    log_model_usage(actor="ghostwriter"). lint() runs in code after it — a
+    URL or email address survives only if it appears in the intent, the
+    signature or the recipients (flags removed_link / removed_address), the
+    exec name is flagged (names_the_executive) and the body is capped at
+    6000 characters (shortened; cut at a paragraph, line or word break in
+    the last fifth). A body lint leaves empty is a ComposeError. asks_if_ai on the last inbound message
+    adds an open question for the person to answer themselves.
+  voice: |
+    delegation.voice — "How I write", learned from the person's OWN sent
+    mail on request (POST /delegation/voice/learn), unlike attunement.style,
+    which learns how to write TO someone. Up to 40 sent messages; quoted
+    text stripped (sender_new_text); automatic mail, the package's own
+    X-OE-Ghostwritten drafts and every thread it drafted into (its private
+    delegation_drafted rows) skipped; at least 5 samples; at most once per
+    10 minutes; one pass at a time per person (in_progress); never over a
+    locked profile, and a lock or edit made while it runs wins (the learned
+    profile is dropped: locked / changed). One forced-tool call
+    (record_voice_profile), then validate_profile in code — greetings per
+    audience (team / contact / other) and a sign-off (short; no links,
+    handles, amounts or markup), length and formality from fixed lists, up
+    to 8 habits and 6 avoid rules through attunement.style's deny-list plus
+    a writing-topic check and a roster-name check, and up to 3 exemplars
+    (each verbatim from a sample, emails and phones masked, none while a
+    client slot is active). The signature comes from Gmail sendAs, never
+    the model. Tables delegation_voice and delegation_voice_history (every
+    change kept).
+  gmail_client: |
+    delegation.gmail.DelegateGmail — direct Gmail REST (httpx), never
+    registered with the MCP gateway. Methods profile_email, search_threads
+    (metadata only), get_thread, list_sent, send_as_signature and
+    create_draft. NO send method (a unit test fails if one appears).
+    gmail_status answers connected, not_configured, needs_reconnect
+    (invalid_grant, a 401/403 or a missing scope; tokens of an app in
+    Testing mode expire after 7 days — a 403 whose reason is a rate limit,
+    and any 429, is a GmailError to retry instead), mismatch, no_email, shared_mailbox
+    (the person's address is the exec address; refused before asking
+    Google) or error. Credentials per person, see integrations.own_gmail.
+  privacy: |
+    From the moment ghostwrite_email sets touched_mail,
+    people_tools.audit_row_private_to_principal answers True, so every row
+    the turn writes after it is private to the principal; the chat_turn
+    reply (it carries the preview), the committee rows and both
+    tool_invocation rows also pass private explicitly, and anything the turn
+    starts afterwards runs under private_rows(touched_mail). The turn teaches
+    no memory: episodic extraction, the open-loop pass, the working-style
+    pass and the Honcho peer and department syncs are all skipped, because
+    its reply quotes a draft built from other people's mail (the extractor's
+    summaries are free text, so quote-gating alone would not keep it out). "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
+    so the tool rows carry no input or result text. The four delegation_*
+    events are always private and metadata-only (see audit.event_types).
+  prompt: |
+    DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
+    nobody) follows the unchanged identity addendum in block 0 while
+    block0_delegation_on(session) — the install-level setting, or an eval
+    session's override. See caching.block_order.persona_and_knowledge and
+    caching.delegation_tool_prefix.
+  api: |
+    /delegation — GET, PUT {enabled}; /delegation/voice — GET, PUT (edit,
+    lock), DELETE (reset); POST /delegation/voice/learn (409 in_progress /
+    locked / too_soon / not_enough_mail / no_profile / changed). The
+    caller's OWN delegation only. 403 not_available_yet for a caller can_delegate
+    refuses (the Settings card hides); 403 sign_in_required with no
+    x-caller-email unless local login; turning it on needs gmail_status
+    connected (409 gmail_not_connected / gmail_needs_reconnect /
+    gmail_mismatch / no_email / shared_mailbox / gmail_error). Every change
+    writes a private audit row.
+  surfaces: |
+    Settings → Act as me (ActAsMeCard): the Gmail status with the connect
+    command and Check again, the Write drafts as me switch, and How I write.
+    Setup status light your_gmail. The chat chip "Drafted an email as you
+    to … — in your Gmail Drafts" opens the draft (target=_blank,
+    rel=noopener noreferrer). Evals: a scenario's delegation block runs the
+    turn against evals.mailbox.ScenarioMailbox and hands the saved drafts to
+    the judge (delegation_001-003).
+  config: |
+    DELEGATION_GOOGLE_CREDENTIALS_DIR, DELEGATION_COMPOSER_MODEL,
+    DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50).
+  state: |
+    delegation_settings, delegation_voice and delegation_voice_history in
+    the episodic DB (created by memory.episodic.initialize_db via
+    delegation.schema.ensure_schema); per company — in
+    clients.slots._BLANK_WIPE_TABLES and cli.fixture_loader.reset_all_state.
+  later_phases: |
+    Each is its own change behind its own switch, off by default: send after
+    a tap from a private card; act within per-category rules, with a hold and
+    a disclosure footer on unreviewed sends; stand in on positions the person
+    approved; teammates, once audit rows can be private to any person.
 
 diagram_style:
   required_classdefs: [entry, compute, storage, cache, external, hot]

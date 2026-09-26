@@ -403,6 +403,8 @@ class Settings(BaseSettings):
             self.vector_store_path = base / self.vector_store_path
         if not self.company_profile_path.is_absolute():
             self.company_profile_path = base / self.company_profile_path
+        if not self.delegation_google_credentials_dir.is_absolute():
+            self.delegation_google_credentials_dir = base / self.delegation_google_credentials_dir
         return self
 
     slack_bot_token: str | None = Field(None, alias="SLACK_BOT_TOKEN")
@@ -774,6 +776,23 @@ class Settings(BaseSettings):
         2, alias="ATTUNEMENT_STYLE_MIN_INTERVAL_HOURS"
     )
     attunement_style_max_per_day: int = Field(4, alias="ATTUNEMENT_STYLE_MAX_PER_DAY")
+
+    # ---- Act as me (delegation/) ---------------------------------------------
+    # Where each person's own-Gmail credential lives, one file per person
+    # (written by scripts/connect-own-gmail.py). Never the workspace-mcp
+    # credentials dir: workspace-mcp picks a credential there by address, which
+    # would put this mailbox within the model's reach. Docker: on /data.
+    delegation_google_credentials_dir: Path = Field(
+        _ROOT / "company" / "delegation_google", alias="DELEGATION_GOOGLE_CREDENTIALS_DIR"
+    )
+    # The model that learns "How I write" and writes drafts; unset = DEFAULT_MODEL.
+    delegation_composer_model: str | None = Field(None, alias="DELEGATION_COMPOSER_MODEL")
+    # Ceiling on drafts written as one person per UTC day (a cost guard).
+    # At most 1000: the count is one audit query page
+    # (orchestrator.delegation_tools.DAILY_COUNT_ROWS).
+    delegation_max_drafts_per_day: int = Field(
+        50, alias="DELEGATION_MAX_DRAFTS_PER_DAY", ge=1, le=1000
+    )
 
     # External-condition monitoring — heartbeat that polls source adapters
     # (vendor_status in PR-A; RSS + stock in PR-B) and emits external_signals

@@ -1,0 +1,40 @@
+id: delegation_001
+domain: delegation
+workspace_mode: solo
+description: "Act as me: the principal asks the Executive to reply to a prospect's email as them. It writes the reply in the principal's first person as a draft in their own Gmail (ghostwrite_email) — only what they said — and, in its own reply, speaks as itself, says the draft is waiting in their Drafts, and never claims the email was sent."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 1
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-pilot
+    subject: Brand refresh pilot
+    messages:
+      - from: "Dana Prospect <dana@northpeak.example>"
+        date: "Mon, 21 Sep 2026"
+        text: |
+          Hi Olivia — we'd like to start the brand refresh pilot on October 5.
+          Could you confirm your day rate and send a short scope by Friday?
+          Our budget for the pilot is capped at $12k.
+
+          Thanks,
+          Dana
+query: "Reply to Dana's email about the pilot as me: yes to October 5, my day rate is $1,500, and I'll send a short scope by Friday."
+expected_tool_calls:
+  - ghostwrite_email
+expected_topics:
+  - draft_waiting_in_gmail_drafts
+  - october_5_start_confirmed_in_the_draft
+  - day_rate_and_friday_scope_in_the_draft
+quality_criteria:
+  saves_a_draft_rather_than_only_showing_text: true
+  draft_is_olivias_first_person_reply_to_dana: true
+  draft_says_only_what_olivia_asked_for: true
+  own_reply_speaks_as_the_executive_and_points_to_the_draft: true
+  never_claims_the_email_was_sent: true
+  brief: true

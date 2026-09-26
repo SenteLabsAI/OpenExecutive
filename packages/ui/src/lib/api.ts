@@ -1352,6 +1352,116 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
 }
 
 // ----------------------------------------------------------------------------
+// Act as me — the Executive drafts email AS you, in your own Gmail Drafts,
+// when you ask it to. It never sends. Only the owner can have it for now.
+// ----------------------------------------------------------------------------
+export type DelegationGmailStatus =
+  | "connected"
+  | "not_configured"
+  | "needs_reconnect"
+  | "mismatch"
+  | "no_email"
+  | "shared_mailbox"
+  | "error";
+
+export interface DelegationSettings {
+  enabled: boolean;
+  gmail: {
+    status: DelegationGmailStatus;
+    message: string;
+    email: string | null;
+    // How to connect your own Gmail (the token is minted locally).
+    connect_command: string;
+  };
+}
+
+// "How I write": learned from your own sent mail; you can edit and lock it.
+export interface VoiceProfile {
+  greetings: Record<string, string>;
+  sign_off: string;
+  signature: string;
+  length: string;
+  formality: string;
+  habits: string[];
+  avoid: string[];
+  exemplars: string[];
+  locked: boolean;
+  learned_at: string | null;
+  sample_count: number;
+  updated_at: string | null;
+}
+
+export interface VoiceUpdate {
+  greetings?: Record<string, string>;
+  sign_off?: string;
+  length?: string;
+  formality?: string;
+  habits?: string[];
+  avoid?: string[];
+  locked?: boolean;
+  clear_exemplars?: boolean;
+  clear_signature?: boolean;
+}
+
+// The route's errors carry `detail: {code, message}` (or FastAPI's list).
+async function delegationError(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = body.detail;
+  if (typeof detail === "string") return new Error(detail);
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return new Error(message);
+  }
+  return new Error(fallback);
+}
+
+// null when this viewer can't have it (403) or the backend predates it (404).
+export async function getDelegation(signal?: AbortSignal): Promise<DelegationSettings | null> {
+  const res = await fetch(`${API_BASE}/delegation`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load Act as me.");
+  return res.json();
+}
+
+export async function setDelegationEnabled(enabled: boolean): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change Act as me.");
+  return res.json();
+}
+
+export async function getVoiceProfile(signal?: AbortSignal): Promise<VoiceProfile> {
+  const res = await fetch(`${API_BASE}/delegation/voice`, { signal });
+  if (!res.ok) throw await delegationError(res, "Couldn't load how you write.");
+  return res.json();
+}
+
+export async function learnVoiceProfile(): Promise<VoiceProfile> {
+  const res = await fetch(`${API_BASE}/delegation/voice/learn`, { method: "POST" });
+  if (!res.ok) throw await delegationError(res, "Couldn't learn how you write.");
+  return res.json();
+}
+
+export async function updateVoiceProfile(update: VoiceUpdate): Promise<VoiceProfile> {
+  const res = await fetch(`${API_BASE}/delegation/voice`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't save how you write.");
+  return res.json();
+}
+
+export async function resetVoiceProfile(): Promise<VoiceProfile> {
+  const res = await fetch(`${API_BASE}/delegation/voice`, { method: "DELETE" });
+  if (!res.ok) throw await delegationError(res, "Couldn't reset how you write.");
+  return res.json();
+}
+
+// ----------------------------------------------------------------------------
 // Decision classes — whether the Executive acts on a class of decision on its
 // own ("auto_execute") or proposes it for approval first ("propose").
 // ----------------------------------------------------------------------------

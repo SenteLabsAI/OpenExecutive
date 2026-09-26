@@ -137,6 +137,9 @@ ENV TRANSFORMERS_OFFLINE=1
 # same values (and the per-install GWORKSPACE_AUTH_MODE / Google secrets).
 ENV WORKSPACE_MCP_CREDENTIALS_DIR=/data/google_credentials
 ENV WORKSPACE_MCP_TOOL_TIER=complete
+# Act as me: each person's own-Gmail credential (scripts/connect-own-gmail.py),
+# on the volume too, and deliberately NOT inside the workspace-mcp dir above.
+ENV DELEGATION_GOOGLE_CREDENTIALS_DIR=/data/delegation_google
 
 EXPOSE 8000
 

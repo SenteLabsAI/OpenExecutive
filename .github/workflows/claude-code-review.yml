@@ -87,8 +87,13 @@ jobs:
             stub markers, eval scenarios).
 
             Put each finding as an inline comment on the line it concerns,
-            with a concrete failing input or scenario. Finish with one
-            short PR comment summarizing the findings, or saying none were
-            found. Do not approve or request changes.
+            with a concrete failing input or scenario. Start every inline
+            comment with exactly one marker:
+              🔴 must fix before merge: a bug, security issue, CLAUDE.md
+                 invariant break, or missing test for new behavior
+              🟡 optional: a real but minor improvement
+              🟣 pre-existing: a problem this PR didn't introduce
+            Finish with one short PR comment giving the count per marker,
+            or saying none were found. Do not approve or request changes.
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"

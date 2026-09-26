@@ -383,6 +383,12 @@ def initialize_db(db_path: Path = DB_PATH) -> None:
             "ON attunement_profile_history(person_id, id)"
         )
 
+        # Act as me: who has it on, and each person's "How I write" profile
+        # with its history (delegation/). Per company, like the rest.
+        from openexecutive.delegation.schema import ensure_schema as _ensure_delegation_schema
+
+        _ensure_delegation_schema(conn)
+
         # Attunement outcome ledger: one row per proactive DM to a rostered
         # person, resolved replied / acted / void / ignored
         # (attunement/outcomes.py).

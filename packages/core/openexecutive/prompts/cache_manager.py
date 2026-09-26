@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.prompts.executive_persona import (
+    DELEGATION_ADDENDUM,
     MCP_ADDENDUM,
     WEB_SEARCH_ADDENDUM,
     default_persona,
@@ -26,6 +27,7 @@ def build_system_blocks(
     principal_role: PrincipalRole | None = None,
     *,
     include_contacts: bool = False,
+    delegation: bool = False,
 ) -> list[dict[str, Any]]:
     """Build system prompt blocks with correct cache_control ordering.
 
@@ -58,6 +60,13 @@ def build_system_blocks(
     The caller passes it only for the principal's own verified turn, so per
     mode block 1 has exactly two stable variants (with and without contacts)
     — never anything per-request.
+
+    delegation appends the constant DELEGATION_ADDENDUM (Act as me) after the
+    identity addendum, which stays exactly as it is. The caller passes the
+    install-level "anyone has it on" flag
+    (``delegation.settings.block0_delegation_on``), never a per-turn or
+    per-speaker value, so block 0 changes only when the setting does; off, it
+    is byte-identical to before.
     """
     # Inject the user's zone so the Executive can resolve relative times
     # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup. Read
@@ -120,6 +129,7 @@ def build_system_blocks(
         + (WEB_SEARCH_ADDENDUM if settings.enable_web_search else "")
         + (MCP_ADDENDUM if mcp_enabled else "")
         + identity_addendum
+        + (DELEGATION_ADDENDUM if delegation else "")
         + tz_addendum
     )
     # Knowledge index is appended inline — no separate cache breakpoint needed

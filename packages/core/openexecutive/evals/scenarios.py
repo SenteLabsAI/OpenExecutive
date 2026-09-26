@@ -134,6 +134,76 @@ def scenario_principal_role(scenario: dict[str, Any]) -> PrincipalRole | None:
     return role
 
 
+def scenario_delegation(scenario: dict[str, Any]) -> Any:
+    """The scenario's ``delegation`` block (Act as me) as a
+    ``delegation.settings.DelegationOverride`` over a fresh in-memory mailbox
+    (``evals.mailbox.ScenarioMailbox``), or None when it has none.
+
+    Shape::
+
+        delegation:
+          person: {full_name: Olivia Owner, email: olivia@fernway.example}
+          thread:            # or threads: [...]
+            id: t-pilot
+            subject: Brand refresh pilot
+            messages:
+              - {from: "Dana <dana@northpeak.example>", text: "...", date: "...",
+                 reply_to: "...", cc: ["..."]}
+
+    Raises ValueError on a malformed block, so a typo fails the scenario."""
+    from email.utils import getaddresses
+
+    from openexecutive.delegation.gmail import MailMessage, MailThread, valid_id
+    from openexecutive.delegation.settings import DelegationOverride
+    from openexecutive.evals.mailbox import ScenarioMailbox
+    from openexecutive.people.models import Person
+
+    raw = scenario.get("delegation")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("delegation must be a mapping")
+    person_raw = raw.get("person")
+    if not isinstance(person_raw, dict) or not person_raw.get("full_name") or "@" not in str(person_raw.get("email") or ""):
+        raise ValueError("delegation.person needs full_name and email")
+    email = str(person_raw["email"]).strip().lower()
+    threads_raw = raw.get("threads") if raw.get("threads") is not None else (
+        [raw["thread"]] if raw.get("thread") is not None else []
+    )
+    if not isinstance(threads_raw, list):
+        raise ValueError("delegation.threads must be a list")
+    threads: list[MailThread] = []
+    for t in threads_raw:
+        if not isinstance(t, dict) or not valid_id(t.get("id")) or not isinstance(t.get("messages"), list):
+            raise ValueError("each delegation thread needs an id and a messages list")
+        messages = []
+        for i, m in enumerate(t["messages"], 1):
+            if not isinstance(m, dict) or not m.get("from") or not isinstance(m.get("text"), str):
+                raise ValueError("each delegation message needs from and text")
+            sender = getaddresses([str(m["from"])])
+            name, addr = sender[0] if sender else ("", "")
+            messages.append(MailMessage(
+                id=f"{t['id']}-{i}",
+                thread_id=str(t["id"]),
+                from_addr=addr.strip().lower(),
+                from_name=name.strip(),
+                to=[email],
+                cc=[str(c).strip().lower() for c in m.get("cc") or []],
+                reply_to=str(m.get("reply_to") or "").strip().lower(),
+                subject=str(t.get("subject") or ""),
+                date=str(m.get("date") or ""),
+                message_id_header=f"<{t['id']}-{i}@eval.example>",
+                labels=["SENT"] if addr.strip().lower() == email else ["INBOX"],
+                text=m["text"],
+            ))
+        threads.append(MailThread(id=str(t["id"]), messages=messages))
+    return DelegationOverride(
+        enabled=raw.get("enabled", True) is not False,
+        gmail=ScenarioMailbox(email, threads),
+        person=Person(id=0, full_name=str(person_raw["full_name"]), email=email, is_principal=True),
+    )
+
+
 def builtin_scenario_ids() -> set[str]:
     return {s["id"] for s in _load_builtin_scenarios()}
 
@@ -163,6 +233,11 @@ def validate_scenario_yaml(raw: str) -> dict[str, Any]:
             scenario_principal_role(s)
         except ValueError as e:
             raise ValueError(f"`principal_role`: {e}") from e
+    if s.get("delegation") is not None:
+        try:
+            scenario_delegation(s)
+        except ValueError as e:
+            raise ValueError(f"`delegation`: {e}") from e
 
     k = scenario_kind(s)
     if k == "chat" and not s.get("query"):

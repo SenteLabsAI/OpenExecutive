@@ -104,6 +104,7 @@ LABELS: dict[str, str] = {
     "exec_email": "The Executive's email address",
     "api_secret": "API protection",
     "gmail": "Email (Gmail)",
+    "your_gmail": "Your own Gmail (Act as me)",
     "slack": "Slack",
     "discord": "Discord",
     "telegram": "Telegram",
@@ -806,6 +807,53 @@ def check_gmail(snap: Snapshot) -> SetupCheck:
     return _channel_ready(snap, "gmail", summary, actor="email", roster=None)
 
 
+async def check_your_gmail(snap: Snapshot) -> SetupCheck:
+    """The owner's own Gmail, for Act as me (optional). Only a connected
+    credential reaches Google: a missing one is reported without a call."""
+    from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
+    from openexecutive.delegation.settings import is_enabled
+
+    owner = snap.principal
+    if owner is None or not owner.email:
+        return _result(
+            "your_gmail",
+            "off",
+            "Not set up (optional): Act as me needs an owner with an email on the team list.",
+        )
+    on = await asyncio.to_thread(is_enabled, owner.id)
+    try:
+        status = await asyncio.wait_for(gmail_status(owner.email), PROBE_TIMEOUT_S)
+    except TimeoutError:
+        return _result(
+            "your_gmail",
+            "warn",
+            f"Google didn't answer within {PROBE_TIMEOUT_S:.0f} seconds.",
+            "Click Check again in a moment.",
+            link="/settings",
+        )
+    if status == "connected":
+        summary = f"Connected to {owner.email}. " + (
+            "Act as me is on: the Executive can draft replies as you, in your own Gmail."
+            if on
+            else "Turn Act as me on in Settings to let the Executive draft replies as you."
+        )
+        return _result("your_gmail", "ok", summary, link="/settings")
+    if status == "not_configured":
+        return _result(
+            "your_gmail",
+            "warn" if on else "off",
+            "Not set up (optional): the Executive can't draft emails as you in your own Gmail.",
+            "Signed in as yourself, run scripts/connect-own-gmail.py (see .env.example → "
+            "Act as me), then put the file it writes in DELEGATION_GOOGLE_CREDENTIALS_DIR.",
+            link="/settings",
+        )
+    if status == "shared_mailbox" and not on:
+        # Not a fault while it's off: the owner simply uses the Executive's
+        # own address, and Act as me can't be turned on that way.
+        return _result("your_gmail", "off", "Not set up (optional): " + STATUS_MESSAGES[status], link="/settings")
+    return _result("your_gmail", "error" if on else "warn", STATUS_MESSAGES[status], link="/settings")
+
+
 # ---------------------------------------------------------------------------
 # What runs in the background
 # ---------------------------------------------------------------------------
@@ -1118,6 +1166,7 @@ def _check_runners(
         "exec_email": off_loop(check_exec_email),
         "api_secret": off_loop(check_api_protection),
         "gmail": off_loop(check_gmail),
+        "your_gmail": lambda: check_your_gmail(snap),
         "slack": lambda: check_slack(snap, http),
         "discord": lambda: check_discord(snap, http),
         "telegram": lambda: check_telegram(snap, http),

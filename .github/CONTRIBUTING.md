@@ -36,10 +36,13 @@ All PRs must:
    and is dropped only when a change genuinely spans the repo.
    Say what changed rather than what it is about — `fix(memory): stop the
    extractor dropping short approvals`, not `fix(memory): extractor bug`.
-7. **A completed PR description using the template** — what changed, why, and
-   how it works, with the checklist filled in. PRs submitted with an empty
-   template will be closed; you're welcome to resubmit with the sections
-   completed.
+7. **A completed PR description using the template**: three sections and
+   nothing else. **Problem** says what is broken or missing and how it shows
+   up. **Approach** says what the change does, calling out anything
+   non-obvious. **Checklist** is filled in. Keep it to one screen: rationale
+   and alternatives go in the commit message, open questions in the review
+   thread. PRs submitted with an empty template will be closed; you're
+   welcome to resubmit with the sections completed.
 8. **Address the automated review.** Claude reviews each non-draft PR opened
    from a branch in this repo and leaves inline comments. Fix each finding or
    reply saying why not. PRs from forks don't get it, because GitHub doesn't

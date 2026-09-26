@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 
 import pytest
 
+from openexecutive.audit import logger as audit_logger
+from openexecutive.memory import episodic
 from openexecutive.memory.episodic import (
     ScheduledAction,
     claim_due_actions,
@@ -27,6 +30,16 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "episodic.db"
     initialize_db(db_path)
     monkeypatch.setattr("openexecutive.memory.episodic.DB_PATH", db_path)
+    # Patching DB_PATH misses two things _execute_action touches:
+    # format_for_prompt() bound DB_PATH as a default argument at import, and
+    # the audit logger keeps its own path. Both fell back to
+    # ./episodic_memory.db in the working directory, so the retry test failed
+    # with "no such table: decisions" whenever that file held only the audit
+    # rows an earlier test had written there.
+    monkeypatch.setattr(
+        episodic, "format_for_prompt", partial(episodic.format_for_prompt, db_path=db_path)
+    )
+    monkeypatch.setattr(audit_logger, "_default_logger", audit_logger.AuditLogger(db_path=db_path))
     return db_path
 
 
@@ -208,7 +221,7 @@ def test_scheduler_dispatches_due_actions_when_company_profile_active(
     assert action_id in dispatched
 
 
-def test_runner_loop_cancellable() -> None:
+def test_runner_loop_cancellable(db: Path) -> None:
     """The loop must respect asyncio cancellation."""
 
     async def _runner() -> None:

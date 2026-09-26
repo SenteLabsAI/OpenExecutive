@@ -67,6 +67,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # MCP — generic, classified by underlying tool name at runtime
     "call_tool",
     "load_mcp_server",
+    # Act as me: a draft saved in the speaker's own Gmail (nothing sent)
+    "ghostwrite_email",
 })
 
 
@@ -200,6 +202,21 @@ def summarize_action(
             f"Sent Telegram message to {chat_id}" if chat_id else "Sent Telegram message"
         )
         payload["target"] = str(chat_id) if chat_id is not None else None
+    elif tool_name == "ghostwrite_email":
+        # Only a saved draft earns a chip; "choose" / "not_found" drafted nothing.
+        if (parsed or {}).get("status") != "drafted":
+            return None
+        to = (parsed or {}).get("to")
+        first = str(to[0]) if isinstance(to, list) and to else ""
+        payload["summary"] = (
+            f"Drafted an email as you to {first} — in your Gmail Drafts"
+            if first else "Drafted an email as you — in your Gmail Drafts"
+        )
+        payload["target"] = first or None
+        link = (parsed or {}).get("gmail_link")
+        # Built server-side from a fixed prefix (delegation.gmail.gmail_link).
+        if isinstance(link, str) and link.startswith("https://mail.google.com/"):
+            payload["link"] = link
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")
         payload["summary"] = (
