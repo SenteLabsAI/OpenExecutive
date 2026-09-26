@@ -42,6 +42,8 @@ from urllib.parse import quote
 
 import httpx
 
+from openexecutive.utils.html_tags import strip_tags
+
 logger = logging.getLogger(__name__)
 
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -269,21 +271,6 @@ _DECIMAL_REF_RE = re.compile(r"&#(\d+)(;?)")
 _EDGE = "\x00"
 
 
-def _strip_tags(text: str) -> str:
-    """``text`` without its tags — each "<" through the next ">", with
-    something between — in one forward pass."""
-    out: list[str] = []
-    at = 0
-    while (lt := text.find("<", at)) != -1:
-        gt = text.find(">", lt + 1)
-        if gt == -1:
-            break  # nothing after this closes a tag
-        out.append(text[at:gt + 1] if gt == lt + 1 else text[at:lt])
-        at = gt + 1
-    out.append(text[at:])
-    return "".join(out)
-
-
 def _short_decimal_ref(match: re.Match[str]) -> str:
     # html.unescape turns the digits into an int, and Python refuses more than
     # 4,300 of them (ValueError). Beyond seven significant digits the value is
@@ -316,7 +303,7 @@ def html_to_text(markup: str) -> str:
     ``<div><br></div>`` a blank line."""
     text = _drop_hidden(markup.replace(_EDGE, ""))
     text = _BLOCK_EDGE_RE.sub(_EDGE, _BR_RE.sub("\n", text))
-    text = html.unescape(_DECIMAL_REF_RE.sub(_short_decimal_ref, _strip_tags(text)))
+    text = html.unescape(_DECIMAL_REF_RE.sub(_short_decimal_ref, strip_tags(text)))
     out: list[str] = []
     has_text = False
     for piece in re.split(f"({_EDGE}|\n)", text):
