@@ -294,6 +294,14 @@ def _new_text_lines(body: list[str]) -> tuple[list[str], bool]:
     return kept, False
 
 
+def sender_new_text(body: str) -> str:
+    """A message body without the quoted replies or forwarded message below
+    it — just what its sender wrote. Act as me's voice learner reads the
+    principal's own sent mail through this (``delegation.voice``)."""
+    lines, _forwarded = _new_text_lines(body.splitlines())
+    return "\n".join(lines).strip()
+
+
 def _email_memory_text(raw: str) -> str:
     """What peer memory should record as the sender's own words for an email.
 

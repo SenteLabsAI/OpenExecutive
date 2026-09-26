@@ -251,6 +251,17 @@ SECTIONS: list[SectionSpec] = [
         wants_mermaid=True,
         diagram_kind="flowchart",
     ),
+    # `delegation` — Act as me: the Executive writing as a person, as a
+    # draft in their own Gmail. New top-level module; see `delegation:` in
+    # architecture-facts.yaml.
+    SectionSpec(
+        id="delegation",
+        title="Act as Me (Delegation)",
+        sub="The one place the Executive writes as a person instead of itself: drafts in the principal's own Gmail, in their voice, offered only on their own verified turn and never sent.",
+        kb_query="act as me delegation ghostwrite draft own gmail voice profile how I write principal verified turn",
+        wants_mermaid=True,
+        diagram_kind="flowchart",
+    ),
 ]
 
 

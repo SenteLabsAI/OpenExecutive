@@ -108,6 +108,9 @@ _LABELS: dict[str, str] = {
     # Ask OE panel form fill
     "propose_form_values": "Filling in the form…",
 
+    # Act as me: a draft in the speaker's own Gmail (never sent)
+    "ghostwrite_email": "Drafting an email in your voice…",
+
     # MCP gateway. `call_tool` is dynamic and handled in `_label_for`.
     "search_tools": "Looking for the right tool…",
     "load_mcp_server": "Connecting a tool server…",

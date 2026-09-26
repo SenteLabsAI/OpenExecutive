@@ -26,6 +26,7 @@ from openexecutive.api.routes import (
     clients,
     company_profile,
     decisions,
+    delegation,
     departments,
     documents,
     episodic,
@@ -923,6 +924,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts.router, tags=["alerts"])
     app.include_router(artifacts.router, tags=["artifacts"])
     app.include_router(decisions.router, tags=["decisions"])
+    app.include_router(delegation.router, tags=["delegation"])
     app.include_router(audit.router, tags=["audit"])
     app.include_router(departments.router, tags=["departments"])
     app.include_router(people.router, tags=["people"])

@@ -80,6 +80,20 @@ function ActionChip({ action }: { action: ActionTaken }) {
     </span>
   );
   if (action.link) {
+    // A draft in your own Gmail (Act as me) opens in a new tab; every other
+    // chip links inside the app.
+    if (action.link.startsWith("https://mail.google.com/")) {
+      return (
+        <a
+          href={action.link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:opacity-80 transition-opacity"
+        >
+          {inner}
+        </a>
+      );
+    }
     return (
       <Link href={action.link} className="hover:opacity-80 transition-opacity">
         {inner}

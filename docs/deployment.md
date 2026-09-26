@@ -231,6 +231,27 @@ too. The launcher fails fast if neither the key nor `USER_GOOGLE_EMAIL` is set.)
 Outbound egress is gated either way: the Executive can only email, invite, or
 share with People on the roster.
 
+Every Google Workspace call acts as the Executive's own account: the gateway
+refuses a call whose `user_google_email` names any other address.
+
+### Your own Gmail (Act as me, optional)
+
+Act as me lets the Executive draft replies **as the owner**, in the owner's
+own Gmail Drafts, when they ask it to — it never sends. It uses a separate
+credential for the owner's mailbox, read by the API directly and never handed
+to workspace-mcp, so it must not live in the credentials directory above.
+
+```bash
+# On a machine with a browser, with the same OAuth client exported:
+uv run --with google-auth-oauthlib python scripts/connect-own-gmail.py --email you@example.com
+docker compose exec api mkdir -p /data/delegation_google
+docker compose cp delegation-credentials/<file>.json api:/data/delegation_google/
+```
+
+No restart is needed. The address must be the owner's email on the People
+page, and it must not be the Executive's own `EXEC_EMAIL_ADDRESS`. Then turn
+it on in Settings → Act as me; the setup status page shows the connection.
+
 ---
 
 ## Operations

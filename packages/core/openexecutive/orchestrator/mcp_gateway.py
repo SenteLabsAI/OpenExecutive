@@ -246,6 +246,42 @@ def _block(field: str, addr: str, tool: str, *, reason: str | None = None) -> st
     })
 
 
+def _check_acting_account(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Refuse a Google Workspace call naming an account other than the
+    Executive's own; None when it may run.
+
+    workspace-mcp takes the acting account per call (``user_google_email``),
+    and nothing checked it, so a model-chosen address could open another
+    mailbox the server holds a credential for — or, under
+    ``GWORKSPACE_AUTH_MODE=service_account`` (domain-wide delegation),
+    possibly anyone's in the domain. Someone's own mailbox is reached only
+    through ``delegation.gmail`` (Act as me), never through here. Absent
+    means the server's own account and stays allowed."""
+    value = arguments.get("user_google_email")
+    if value is None:
+        return None
+    exec_address = get_settings().exec_email_address.strip().lower()
+    if isinstance(value, str) and value.strip().lower() == exec_address:
+        return None
+    from openexecutive.audit import log_event as audit_log
+
+    shown = (value if isinstance(value, str) else repr(value))[:200]
+    logger.warning("blocked google workspace call as another account: tool=%s", tool)
+    audit_log(
+        "integration_outbound_blocked",
+        f"Blocked a Google Workspace call as another account (tool={tool})",
+        actor="mcp_gateway",
+        details={"tool": tool, "field": "user_google_email", "address": shown},
+    )
+    return json.dumps({
+        "error": (
+            f"Google Workspace tools act only as the Executive's own account "
+            f"({exec_address}); refusing user_google_email={shown!r}. Leave it out "
+            "or use that address. Do not retry with another account."
+        ),
+    })
+
+
 def _roster_allow_set() -> set[str]:
     """The set of lowercased addresses the Executive may reach outbound.
 
@@ -900,6 +936,11 @@ class MCPGateway:
                 arguments = {}
         tool_name = tool_input.get("name", "")
         attached_artifacts: list[str] = []
+        # Every Google Workspace call acts as the Executive's own account.
+        if isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX) and isinstance(arguments, dict):
+            blocked = _check_acting_account(tool_name, arguments)
+            if blocked is not None:
+                return blocked
         if tool_name in _GATED_GMAIL_TOOLS:
             blocked = _check_gmail_recipients(tool_name, arguments)
             if blocked is not None:

@@ -51,6 +51,9 @@ def test_sections_have_unique_stable_ids() -> None:
         # `clients` — named client-company slots for fractional / multi-client
         # use (save-back switching, per-client MCP config). New top-level module.
         "clients",
+        # `delegation` — Act as me: drafts written as the principal in their own
+        # Gmail. New top-level module.
+        "delegation",
     ]
 
 

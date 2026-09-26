@@ -766,6 +766,10 @@ async def _run_chat_turn(
         _session_starters.setdefault(
             session.session_id, _caller_keys(request, caller_person_id)
         )
+    # Per turn, like the caller: whether this request carried a sign-in (the UI
+    # proxy stamps x-caller-email from it). A header-less request resolves to
+    # the principal but is no sign-in, so it never gets Act as me.
+    session.web_caller_signed_in = bool((request.headers.get("x-caller-email") or "").strip())
     is_first_turn = len(session.conversation_history) == 0
 
     logger.info(

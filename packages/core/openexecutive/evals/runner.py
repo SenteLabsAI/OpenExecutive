@@ -28,6 +28,11 @@ A scenario may likewise set a ``principal_role`` mapping (``role_kind``,
 settings' role fields) to play a principal with that role. It goes on the
 session (``Session.principal_role``) the same way, never into the
 install-wide settings row, which concurrent scenarios would share.
+
+A chat scenario may set a ``delegation`` block (Act as me: the asker, their
+threads) to run with ``ghostwrite_email`` offered against an in-memory
+mailbox (``scenarios.scenario_delegation``); the drafts it saves go to the
+judge alongside the reply.
 """
 from __future__ import annotations
 
@@ -36,10 +41,15 @@ import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from dataclasses import asdict
 from typing import Any
 
 from openexecutive.evals.judges import judge_chat, judge_triage, judge_workflow
-from openexecutive.evals.scenarios import load_scenarios, scenario_principal_role
+from openexecutive.evals.scenarios import (
+    load_scenarios,
+    scenario_delegation,
+    scenario_principal_role,
+)
 from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
@@ -381,10 +391,14 @@ def _make_chat_runner(
                         profile.financials.burn_rate_monthly = ctx["monthly_burn"]
                     if ctx.get("runway_months"):
                         profile.financials.runway_months = ctx["runway_months"]
+                    # Act as me: a fresh in-memory mailbox for the asker,
+                    # whose drafts the judge reads (nothing reaches Google).
+                    delegation = scenario_delegation(scenario)
                     session = Session(
                         company_profile=profile,
                         workspace_mode=scenario_workspace_mode(scenario),
                         principal_role=scenario_principal_role(scenario),
+                        delegation_override=delegation,
                     )
                     query = scenario["query"]
                     response = await executive.chat(
@@ -396,7 +410,11 @@ def _make_chat_runner(
                         # Executive USES peer memory. None keeps chat()'s default.
                         peer_memory_context=scenario.get("peer_memory_context"),
                     )
-                    scores = await judge_chat(scenario, response)
+                    if delegation is not None:
+                        drafts = [asdict(d) for d in delegation.gmail.drafts]
+                        scores = await judge_chat(scenario, response, drafts=drafts)
+                    else:
+                        scores = await judge_chat(scenario, response)
                     ok = float(scores.get("overall", 0)) >= _PASS_THRESHOLD
                     if ok:
                         passed[0] += 1

@@ -51,6 +51,11 @@ _SENSITIVE_SUBSTRINGS = (
     # tools write their own name-free rows (people_tools._audit).
     "list_people",
     "upsert_person",
+    # Act as me: ghostwrite_email carries what someone asked to say in their
+    # own name and returns their draft. The turn's rows are private anyway
+    # (delegation.settings.turn_touched_delegate_mail); this keeps the text
+    # out of them too — the tool writes its own metadata-only row.
+    "ghostwrite",
 )
 
 # Keys inside a tool_input dict whose values are stripped before being

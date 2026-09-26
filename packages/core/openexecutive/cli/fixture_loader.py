@@ -832,7 +832,10 @@ async def reset_all_state(
         if EPISODIC_DB_PATH.exists():
             with sqlite3.connect(str(EPISODIC_DB_PATH)) as _conn:
                 for _table in ("attunement_usage", "proactive_outcomes",
-                               "attunement_profiles", "attunement_profile_history"):
+                               "attunement_profiles", "attunement_profile_history",
+                               # Act as me: who has it on, and "How I write".
+                               "delegation_settings", "delegation_voice",
+                               "delegation_voice_history"):
                     if _conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_table,)
                     ).fetchone():

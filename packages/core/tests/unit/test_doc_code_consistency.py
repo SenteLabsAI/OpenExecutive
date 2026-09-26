@@ -152,3 +152,44 @@ def test_attachment_isolation_doc_and_code_agree() -> None:
         "Attachment isolation disagrees between integrations/attachments.py "
         "and architecture-facts.yaml (integrations.attachments). Update both."
     )
+
+
+def _delegation_facts() -> dict[str, Any]:
+    facts: dict[str, Any] = _load_facts()["delegation"]
+    return facts
+
+
+def test_act_as_me_send_claim_and_code_agree() -> None:
+    """Act as me drafts and never sends. The page says so; the Gmail client
+    must have no send path. Whoever adds sending (a later phase) updates
+    architecture-facts.yaml (delegation.gmail_client) and this test together."""
+    import re
+
+    from openexecutive.delegation import gmail
+
+    doc_says_no_send = "NO send method" in _delegation_facts()["gmail_client"]
+    code_can_send = re.search(
+        r"/(messages|drafts)/send\b", Path(gmail.__file__).read_text()
+    ) is not None
+    assert doc_says_no_send != code_can_send, (
+        "Whether Act as me can send disagrees between delegation/gmail.py and "
+        "architecture-facts.yaml (delegation.gmail_client). Update both."
+    )
+
+
+def test_act_as_me_tool_registry_claim_and_code_agree() -> None:
+    """The facts say ghostwrite_email never joins _ALL_SKILL_TOOLS — the list
+    reflection, research and workflow toolkits are built from. Couple that
+    claim to the registry itself."""
+    from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_NAMES
+    from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
+
+    doc_says_separate = "NEVER _ALL_SKILL_TOOLS" in _delegation_facts()["tool"]
+    code_is_separate = not (
+        DELEGATION_TOOL_NAMES & {t["name"] for t in _ALL_SKILL_TOOLS}
+        or DELEGATION_TOOL_NAMES & set(_ALL_SKILL_HANDLERS)
+    )
+    assert doc_says_separate and code_is_separate, (
+        "ghostwrite_email must stay out of _ALL_SKILL_TOOLS / _ALL_SKILL_HANDLERS, "
+        "as architecture-facts.yaml (delegation.tool) says."
+    )

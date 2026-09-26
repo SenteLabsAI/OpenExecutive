@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import Icon from "@/components/Icon";
+import ActAsMeCard from "@/components/settings/ActAsMeCard";
 import WorkspaceCard from "@/components/settings/WorkspaceCard";
 import { ADVANCED_ITEMS } from "@/components/shell/navConfig";
 
@@ -27,6 +28,9 @@ export default function SettingsPage() {
         <div className="mt-3">
           <WorkspaceCard />
         </div>
+
+        {/* Renders nothing for anyone who can't have Act as me (only the owner can). */}
+        <ActAsMeCard />
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
           {ADVANCED_ITEMS.map((item) => (

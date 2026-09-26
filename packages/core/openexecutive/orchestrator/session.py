@@ -81,6 +81,20 @@ class Session:
     # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it
     # may not draft a team-visible artifact. Set by the email poller.
     private_to_principal: bool = False
+    # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
+    # pinned at its start by ``pin_turn_delegation``: whether the speaker has
+    # it on, whether ``ghostwrite_email`` is offered, and whether the turn has
+    # touched their mailbox (every audit row it writes after that is private).
+    # Re-resolved every turn; never an override.
+    turn_delegation: Any = None
+    # True when this web request carried a signed-in caller (``x-caller-email``,
+    # stamped by the UI proxy from the sign-in), set per turn by the chat
+    # route. A header-less request resolves to the principal but is no
+    # sign-in: Act as me needs one (or local login).
+    web_caller_signed_in: bool = False
+    # Evals and tests only (``delegation.settings.DelegationOverride``): run
+    # as if the speaker had Act as me, against a fake mailbox.
+    delegation_override: Any = None
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})
