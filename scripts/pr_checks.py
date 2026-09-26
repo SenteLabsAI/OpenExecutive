@@ -26,6 +26,7 @@ Stdlib only, so it runs without the project's virtualenv.
 from __future__ import annotations
 
 import argparse
+import codecs
 import os
 import re
 import subprocess
@@ -74,7 +75,11 @@ SECTIONS_FOR: dict[str, set[str]] = {
     "guide": {"user_guide"},
 }
 
-WAIVER_RE = re.compile(r"^\s*Arch-Docs:\s*n/?a\b", re.IGNORECASE | re.MULTILINE)
+# Needs a reason after the n/a: "Arch-Docs: n/a - renamed a helper".
+WAIVER_RE = re.compile(
+    r"^[ \t]*Arch-Docs:[ \t]*n/?a\b[ \t]*[-\u2013\u2014:][ \t]*\S.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 STUB_RE = re.compile(
     r"\bTODO\b|\bFIXME\b|raise NotImplementedError|pass\s+#\s*stub|\.\.\.\s*#\s*stub"
 )
@@ -89,6 +94,8 @@ class Change:
 
     changed: set[str]
     added: set[str] = field(default_factory=set)
+    # new paths of moved files: new to a module, but not new code
+    renamed: set[str] = field(default_factory=set)
     # path -> lines the diff adds to that file
     added_lines: dict[str, list[str]] = field(default_factory=dict)
     waiver_text: str = ""
@@ -122,7 +129,7 @@ def check_arch_drift(c: Change) -> Result:
         return Result(name, "PASS", "no documented module changed")
     new_modules = {
         m
-        for p in c.added
+        for p in c.added | c.renamed
         if p.startswith(PKG) and p.endswith("/__init__.py") and p.count("/") == 4
         for m in [_module_of(p)]
         if m and m not in NON_DOC
@@ -146,7 +153,7 @@ def check_arch_drift(c: Change) -> Result:
     if not missing:
         return Result(name, "PASS", f"modules={modules} sections={sorted(touched)}")
     if waived := WAIVER_RE.search(c.waiver_text):
-        waiver = c.waiver_text[waived.start() :].splitlines()[0].strip()
+        waiver = waived.group(0).strip()
         return Result(name, "PASS", f"waived ({waiver}); would need: {'; '.join(missing)}")
     return Result(
         name,
@@ -172,7 +179,10 @@ def check_no_stubs(c: Change) -> Result:
 
 
 def check_eval_scenarios(c: Change) -> Result:
-    new_agent = any(p.startswith(AGENTS) and p.endswith(".py") for p in c.added)
+    new_agent = any(
+        p.startswith(AGENTS) and p.endswith(".py") and not p.rsplit("/", 1)[-1].startswith("_")
+        for p in c.added
+    )
     prompt_change = DOMAIN_PROMPTS in c.changed
     if not (new_agent or prompt_change):
         return Result("eval-scenarios", "PASS", "no new agent or domain-prompt change")
@@ -214,19 +224,36 @@ def run_checks(c: Change) -> list[Result]:
 
 
 def _git(*args: str) -> str:
+    # Pin the output format against user config (quotePath, noprefix, renames,
+    # external diff tools), and never crash on a non-UTF-8 file.
+    cmd = ["git", "-c", "core.quotePath=false", *args]
     return subprocess.run(
-        ["git", *args], check=True, capture_output=True, text=True
+        cmd, check=True, capture_output=True, encoding="utf-8", errors="replace"
     ).stdout
+
+
+def _unquote(path: str) -> str:
+    """Undo git's C-style quoting of a path with a tab, quote or backslash."""
+    if not (path.startswith('"') and path.endswith('"')):
+        return path
+    raw = codecs.escape_decode(path[1:-1].encode("utf-8"))[0]
+    return raw.decode("utf-8", errors="replace")
 
 
 def _parse_added_lines(diff: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     current: str | None = None
+    in_header = False
     for line in diff.splitlines():
-        if line.startswith("+++ "):
-            target = line[4:]
+        if line.startswith("diff --git "):
+            in_header, current = True, None
+        elif in_header and line.startswith("+++ "):
+            # git ends a path containing a space with a tab
+            target = _unquote(line[4:].rstrip("\t"))
             current = target[2:] if target.startswith("b/") else None
-        elif current and line.startswith("+"):
+        elif line.startswith("@@"):
+            in_header = False
+        elif current and not in_header and line.startswith("+"):
             out.setdefault(current, []).append(line[1:])
     return out
 
@@ -236,26 +263,38 @@ def collect(base: str, extra_waiver: Iterable[str] = ()) -> Change:
     merge_base = _git("merge-base", base, "HEAD").strip()
     changed: set[str] = set()
     added: set[str] = set()
-    for row in _git("diff", "--name-status", "-M", merge_base).splitlines():
-        status, *paths = row.split("\t")
+    renamed: set[str] = set()
+    fields = _git("diff", "-z", "--name-status", "-M", merge_base).split("\0")
+    i = 0
+    while i < len(fields) - 1:
+        status = fields[i]
+        n = 2 if status[:1] in ("R", "C") else 1
+        paths = fields[i + 1 : i + 1 + n]
+        i += 1 + n
         changed.update(paths)
         if status.startswith("A"):
             added.add(paths[-1])
-        elif status.startswith("R"):
-            added.add(paths[-1])  # a moved file is new at its new path
-    added_lines = _parse_added_lines(_git("diff", "-U0", "--no-color", merge_base))
+        elif status.startswith(("R", "C")):
+            renamed.add(paths[-1])
+    diff = _git(
+        "diff", "-U0", "-M", "--no-color", "--no-ext-diff",
+        "--src-prefix=a/", "--dst-prefix=b/", merge_base,
+    )
+    added_lines = _parse_added_lines(diff)
 
-    for path in _git("ls-files", "--others", "--exclude-standard").splitlines():
+    for path in _git("ls-files", "-z", "--others", "--exclude-standard").split("\0"):
+        if not path:
+            continue
         changed.add(path)
         added.add(path)
         try:
-            with open(path, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 added_lines[path] = fh.read().splitlines()
-        except (OSError, UnicodeDecodeError):
+        except OSError:
             pass
 
     waiver = _git("log", "--format=%B", f"{merge_base}..HEAD")
-    return Change(changed, added, added_lines, "\n".join([waiver, *extra_waiver]))
+    return Change(changed, added, renamed, added_lines, "\n".join([waiver, *extra_waiver]))
 
 
 def main(argv: list[str] | None = None) -> int:

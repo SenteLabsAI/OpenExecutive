@@ -90,8 +90,10 @@ def test_drift_waiver_line_passes(text: str) -> None:
     assert _level(pr_checks.check_arch_drift, changed=changed, waiver_text=text) == "PASS"
 
 
-def test_drift_waiver_must_start_a_line() -> None:
-    text = "we did not add Arch-Docs: n/a here"
+@pytest.mark.parametrize(
+    "text", ["we did not add Arch-Docs: n/a - here", "Arch-Docs: n/a", "Arch-Docs: na -"]
+)
+def test_drift_waiver_needs_own_line_and_reason(text: str) -> None:
     changed = {PKG + "integrations/slack.py"}
     assert _level(pr_checks.check_arch_drift, changed=changed, waiver_text=text) == "FAIL"
 
@@ -134,6 +136,41 @@ def test_eval_scenarios_required_for_domain_prompt_change() -> None:
 def test_eval_scenarios_not_required_for_editing_existing_agent() -> None:
     changed = {PKG + "agents/finance.py"}
     assert _level(pr_checks.check_eval_scenarios, changed=changed) == "PASS"
+
+
+def test_eval_scenarios_not_required_for_rename_or_private_module() -> None:
+    renamed = {PKG + "agents/finance_agent.py"}
+    assert _level(pr_checks.check_eval_scenarios, changed=renamed, renamed=renamed) == "PASS"
+    added = {PKG + "agents/_helpers.py", PKG + "agents/__init__.py"}
+    assert _level(pr_checks.check_eval_scenarios, added=added) == "PASS"
+
+
+def test_parse_added_lines_only_trusts_headers() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/x.py b/x.py",
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1 +1,3 @@",
+            "+++ a",  # an added line that reads "++ a"
+            "++++ b/other.py",
+            "+y = 2  # TODO",
+            'diff --git "a/t\\tab.py" "b/t\\tab.py"',
+            "--- /dev/null",
+            '+++ "b/t\\tab.py"',
+            "@@ -0,0 +1 @@",
+            "+z = 1",
+            "diff --git a/gone.py b/gone.py",
+            "--- a/gone.py",
+            "+++ /dev/null",
+            "@@ -1 +0,0 @@",
+            "-old",
+        ]
+    )
+    assert pr_checks._parse_added_lines(diff) == {
+        "x.py": ["++ a", "+++ b/other.py", "y = 2  # TODO"],
+        "t\tab.py": ["z = 1"],
+    }
 
 
 # --- tests-present -----------------------------------------------------------
@@ -189,7 +226,41 @@ def test_collect_and_main_against_a_real_repo(
     monkeypatch.setenv("PR_BODY", "")
     assert pr_checks.main(["--base", "main"]) == 1  # eval scenarios still missing
     out = capsys.readouterr().out
-    assert "PASS  arch-doc-drift  waived" in out and "FAIL  eval-scenarios" in out
+    assert "waived (Arch-Docs: n/a - test fixture)" in out and "FAIL  eval-scenarios" in out
+
+    monkeypatch.setenv("PR_BODY", "## Problem\n\nArch-Docs: n/a - from the PR body\n")
+    _git(repo, "commit", "-q", "--amend", "-m", "add sales")
+    pr_checks.main(["--base", "main"])
+    assert "waived (Arch-Docs: n/a - from the PR body)" in capsys.readouterr().out
+
+
+def test_collect_survives_odd_files_and_git_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", "diff.noprefix", "true")
+    _git(repo, "config", "diff.renames", "false")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(repo, "checkout", "-qb", "feature")
+    integ = repo / PKG / "integrations"
+    integ.mkdir(parents=True)
+    (integ / "caf\u00e9.py").write_text("# TODO\n")
+    (integ / "latin1.txt").write_bytes(b"caf\xe9\n")
+    (integ / "sp ace.py").write_text("raise NotImplementedError\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "odd files")
+    monkeypatch.chdir(repo)
+
+    change = pr_checks.collect("main")
+    assert PKG + "integrations/caf\u00e9.py" in change.added
+    assert change.added_lines[PKG + "integrations/caf\u00e9.py"] == ["# TODO"]
+    assert change.added_lines[PKG + "integrations/sp ace.py"] == ["raise NotImplementedError"]
+    assert PKG + "integrations/latin1.txt" in change.changed
+    assert pr_checks.check_no_stubs(change).level == "FAIL"
+    assert pr_checks.check_arch_drift(change).level == "FAIL"
 
 
 def test_main_reports_missing_base(
