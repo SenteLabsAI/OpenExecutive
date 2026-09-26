@@ -58,7 +58,7 @@ lint:
 BASE ?= origin/main
 check: lint
 	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT \
-		uv run pytest tests/unit/ -n auto --dist loadfile -q
+		uv run pytest tests/unit/ tests/integration/ -n auto --dist loadfile -q
 	@if ! git diff --quiet $$(git merge-base $(BASE) HEAD) -- packages/ui \
 		|| [ -n "$$(git ls-files --others --exclude-standard packages/ui)" ]; then \
 		cd packages/ui && npm run build; \
