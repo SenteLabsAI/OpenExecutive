@@ -122,3 +122,16 @@ def test_the_prompt_is_a_constant() -> None:
     # never tells the writer to reveal who wrote the draft.
     assert "{" not in gw.GHOSTWRITER_PROMPT
     assert "Never mention an assistant" in gw.GHOSTWRITER_PROMPT
+
+
+def test_a_long_draft_is_cut_near_the_limit_not_at_its_first_line() -> None:
+    body = "Hi Dana,\n" + "word " * 2000
+    text, flags = gw.lint(body, allowed_text="", exec_name="")
+    assert "shortened" in flags
+    assert gw.MAX_BODY_CHARS * 4 // 5 <= len(text) <= gw.MAX_BODY_CHARS
+
+
+def test_a_draft_that_was_only_a_planted_link_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    _model(monkeypatch, {"subject": "Re: x", "body": "https://pay.example/deposit"})
+    with pytest.raises(ComposeError):
+        _compose()

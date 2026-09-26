@@ -279,3 +279,48 @@ def test_the_block_describes_the_voice_and_cannot_be_closed_early() -> None:
     assert block.count("</voice>") == 1
     assert "Best,\\nOlivia" in block and "Keeps emails short" in block
     assert "NOT IN THE BLOCK" not in block
+
+
+def test_one_learn_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    person = _principal()
+    monkeypatch.setattr(dvoice, "_client_slot_active", lambda: False)
+    _model_returns(monkeypatch, {"habits": ["Keeps emails to two or three short sentences"]})
+
+    class Slow(FakeMailbox):
+        async def list_sent(self, limit: int) -> list[MailMessage]:
+            await asyncio.sleep(0)  # the second request arrives meanwhile
+            return await super().list_sent(limit)
+
+    mailbox = Slow([_sent(i, _WORDS) for i in range(6)])
+
+    async def both() -> list[Any]:
+        return list(await asyncio.gather(
+            learn_from_sent_mail(person, mailbox), learn_from_sent_mail(person, mailbox),
+            return_exceptions=True,
+        ))
+
+    results = asyncio.run(both())
+    assert sum(isinstance(r, VoiceError) and r.code == "in_progress" for r in results) == 1
+    assert not dvoice._LEARNING
+
+
+@pytest.mark.parametrize(("meanwhile", "code"), [("lock", "locked"), ("edit", "changed")])
+def test_a_lock_or_edit_made_while_learning_wins(
+    monkeypatch: pytest.MonkeyPatch, meanwhile: str, code: str
+) -> None:
+    person = _principal()
+    assert person.id is not None
+    person_id = person.id
+    monkeypatch.setattr(dvoice, "_client_slot_active", lambda: False)
+
+    async def model(model: str, turn: str) -> dict[str, Any]:
+        # The person acts in Settings while the model is still thinking.
+        save_voice(person_id, VoiceProfile(habits=["Writes in short plain sentences"]),
+                   locked=(meanwhile == "lock"), updated_by="me")
+        return {"habits": ["Keeps emails to two or three short sentences"]}
+
+    monkeypatch.setattr(dvoice, "_call_model", model)
+    with pytest.raises(VoiceError) as err:
+        asyncio.run(learn_from_sent_mail(person, FakeMailbox([_sent(i, _WORDS) for i in range(6)])))
+    assert err.value.code == code
+    assert get_voice(person_id).profile.habits == ["Writes in short plain sentences"]

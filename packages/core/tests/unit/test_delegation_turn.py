@@ -66,9 +66,21 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     people_registry.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def fresh_draft_counters() -> Iterator[None]:
+    """Per-person draft counts live at module level; start each test at zero."""
+    from openexecutive.orchestrator import delegation_tools as dt
+
+    dt._SAVED_TODAY.clear()
+    dt._IN_FLIGHT.clear()
+    yield
+    dt._SAVED_TODAY.clear()
+    dt._IN_FLIGHT.clear()
+
+
 @pytest.fixture
 def hooks(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
-    seen: dict[str, list[Any]] = {"sync": [], "extraction_private": []}
+    seen: dict[str, list[Any]] = {"sync": [], "extraction_private": [], "open_loops": [], "style": []}
 
     async def no_prefetch(*_a: Any, **_kw: Any) -> str:
         return ""
@@ -82,6 +94,14 @@ def hooks(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     monkeypatch.setattr(
         "openexecutive.memory.episodic.schedule_extraction",
         lambda *a, **kw: seen["extraction_private"].append(rows_private()),
+    )
+    monkeypatch.setattr(
+        "openexecutive.attunement.open_loops.schedule_open_loop_pass",
+        lambda *a, **kw: seen["open_loops"].append(a),
+    )
+    monkeypatch.setattr(
+        "openexecutive.attunement.style.schedule_style_pass",
+        lambda *a, **kw: seen["style"].append(a),
     )
 
     async def composer(model: str, system: str, turn: str) -> dict[str, Any]:
@@ -123,14 +143,17 @@ def _chat_turn_rows() -> list[Any]:
     ]
 
 
-def test_a_turn_that_drafted_stays_private_and_teaches_no_shared_memory(
+def test_a_turn_that_drafted_stays_private_and_teaches_no_memory(
     hooks: dict[str, list[Any]],
 ) -> None:
     session = _turn([ToolUseBlock("tu1", "ghostwrite_email", {"intent": "Yes.", "thread_id": "t1"})])
     assert session.turn_delegation.touched_mail is True
     assert [r.private for r in _chat_turn_rows()] == [True]
+    # Its reply quotes a draft built from other people's mail: no pass learns
+    # from it — not peer memory, extraction, open loops or working style.
     assert hooks["sync"] == []
-    assert hooks["extraction_private"] == [True]
+    assert hooks["extraction_private"] == []
+    assert hooks["open_loops"] == [] and hooks["style"] == []
 
 
 def test_a_turn_that_did_not_is_as_before(hooks: dict[str, list[Any]]) -> None:
@@ -139,6 +162,7 @@ def test_a_turn_that_did_not_is_as_before(hooks: dict[str, list[Any]]) -> None:
     assert [r.private for r in _chat_turn_rows()] == [False]
     assert len(hooks["sync"]) == 1
     assert hooks["extraction_private"] == [False]
+    assert len(hooks["open_loops"]) == 1 and len(hooks["style"]) == 1
 
 
 def test_the_system_prompt_carries_the_addendum_only_when_on(hooks: dict[str, list[Any]]) -> None:

@@ -56,6 +56,7 @@ from openexecutive.api.routes import (
 )
 from openexecutive.integrations.google_chat import router as google_chat_router
 from openexecutive.integrations.telegram_bot import router as telegram_router
+from openexecutive.utils.deployment import is_local_login, is_public_deployment
 
 if TYPE_CHECKING:
     from openexecutive.config import Settings
@@ -771,26 +772,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Cleanup if needed (ChromaDB handles persistence)
 
 
-# Values that explicitly mean "not a public deployment". Anything else
-# non-empty arms the guard: for a fail-closed check, an unrecognised value
-# must err toward requiring the secret, never toward skipping it.
-_FALSEY_ENV = frozenset({"", "0", "false", "no", "off"})
-
-
-def _is_public_deployment() -> bool:
-    """Whether this process is serving an internet-reachable deployment.
-
-    Driven by the explicit ``OE_PUBLIC_DEPLOYMENT`` env var rather than any
-    hosting provider's injected variables, so the check works identically on
-    every platform (and in plain Docker). See docs/deployment.md.
-    """
-    return os.environ.get("OE_PUBLIC_DEPLOYMENT", "").strip().lower() not in _FALSEY_ENV
-
-
-def _is_local_login() -> bool:
-    """Whether `make dev` started this API for local login (no sign-in; see
-    packages/ui/src/lib/localLogin.ts). Never on a public deployment."""
-    return os.environ.get("OE_LOCAL_LOGIN", "").strip() == "1" and not _is_public_deployment()
+# The deployment flags live in utils.deployment, shared with code that must
+# not import this module (it builds the app at import). Kept under their
+# old names here for the guards below and their callers.
+_is_public_deployment = is_public_deployment
+_is_local_login = is_local_login
 
 
 # A raw Host header naming this machine, with an optional port — the same rule

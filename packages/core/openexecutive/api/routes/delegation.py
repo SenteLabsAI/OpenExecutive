@@ -10,14 +10,19 @@ A request with no ``x-caller-email`` is not a sign-in: it would resolve to the
 principal (the CLI / curl rule in ``chat._resolve_caller_person_id``), but a
 setting that lets the Executive write in someone's name needs the person
 themselves. Such a request is refused (403 ``sign_in_required``) unless the
-API runs under local login (``make dev``, never on a public deployment).
+API runs under local login (``make dev``, never on a public deployment). The
+header is stamped by the UI proxy from the Google sign-in; whoever holds
+``BACKEND_SHARED_SECRET`` is trusted as that proxy, as on every principal-only
+route.
 
 Routes:
   GET    /delegation              — on/off and the Gmail connection
   PUT    /delegation              — {enabled}; turning it on needs the caller's
                                     own Gmail connected (409 otherwise)
   GET    /delegation/voice        — "How I write"
-  POST   /delegation/voice/learn  — learn it from the caller's sent mail
+  POST   /delegation/voice/learn  — learn it from the caller's sent mail (409
+                                    in_progress / locked / too_soon /
+                                    not_enough_mail / no_profile / changed)
   PUT    /delegation/voice        — edit fields, lock / unlock
   DELETE /delegation/voice        — forget it (history kept)
 

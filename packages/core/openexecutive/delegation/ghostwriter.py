@@ -112,7 +112,9 @@ def asks_if_ai(text: str) -> bool:
     return bool(_ASKS_IF_AI.search(text or ""))
 
 
-def _one_line(value: str, cap: int) -> str:
+def one_line(value: str, cap: int) -> str:
+    """``value`` on one line — control characters and runs of whitespace
+    collapsed to single spaces — cut to ``cap`` characters."""
     cleaned = "".join(ch if ch >= " " else " " for ch in (value or ""))
     return " ".join(cleaned.split())[:cap]
 
@@ -144,10 +146,22 @@ def lint(
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if len(text) > MAX_BODY_CHARS:
-        cut = text[:MAX_BODY_CHARS]
-        text = (cut.rsplit("\n", 1)[0] if "\n" in cut else cut).rstrip()
+        text = _shorten(text, MAX_BODY_CHARS)
         flags.append("shortened")
     return text, flags
+
+
+def _shorten(text: str, cap: int) -> str:
+    """``text`` cut to at most ``cap`` characters at the last paragraph or
+    line break, else the last space, in the final fifth — so a cut never
+    drops more than a fifth of what fits."""
+    cut = text[:cap]
+    floor = cap * 4 // 5
+    for mark in ("\n\n", "\n", " "):
+        at = cut.rfind(mark)
+        if at >= floor:
+            return cut[:at].rstrip()
+    return cut.rstrip()
 
 
 def _render_user_turn(
@@ -167,16 +181,16 @@ def _render_user_turn(
         return f"<{tag}>\n" + "\n".join(lines).strip() + f"\n{close}"
 
     people = "\n".join(
-        f"- {_one_line(r.name, 80) or '(no name)'} <{r.email}>"
+        f"- {one_line(r.name, 80) or '(no name)'} <{r.email}>"
         + (f" — {r.relation}" if r.relation else "")
         for r in recipients
     )
     parts = [
-        block("writer", f"Name: {_one_line(writer_name, 120)}\nToday: {today}"),
+        block("writer", f"Name: {one_line(writer_name, 120)}\nToday: {today}"),
         block("recipients", people or "(none)"),
     ]
     if thread_text is not None:
-        header = f"Subject: {_one_line(reply_subject or '', MAX_SUBJECT_CHARS)}\n\n"
+        header = f"Subject: {one_line(reply_subject or '', MAX_SUBJECT_CHARS)}\n\n"
         parts.append(block("thread", header + thread_text))
     else:
         parts.append(block("thread", "(none — this is a new email, not a reply)"))
@@ -236,15 +250,18 @@ async def compose(
         raise ComposeError("the composer returned no draft")
     allowed = "\n".join([intent, signature, *(r.email for r in recipients)])
     body, flags = lint(raw_body.replace("\r", ""), allowed_text=allowed, exec_name=exec_name)
+    if not body:
+        # Everything it wrote was a link or an address the intent never gave.
+        raise ComposeError("the draft had nothing left once links and addresses were checked")
     if signature.strip() and signature.strip() not in body:
         body = f"{body}\n\n{signature.strip()}"
     subject = reply_subject if thread_text is not None and reply_subject else payload.get("subject")
     questions = payload.get("open_questions")
     return ComposedDraft(
-        subject=_one_line(str(subject or ""), MAX_SUBJECT_CHARS),
+        subject=one_line(str(subject or ""), MAX_SUBJECT_CHARS),
         body=body,
         open_questions=[
-            _one_line(str(q), 300) for q in (questions if isinstance(questions, list) else [])
+            one_line(str(q), 300) for q in (questions if isinstance(questions, list) else [])
             if str(q).strip()
         ][:MAX_OPEN_QUESTIONS],
         flags=flags,

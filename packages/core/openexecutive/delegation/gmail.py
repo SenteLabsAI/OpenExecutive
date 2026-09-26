@@ -337,6 +337,23 @@ def clean_header(value: str) -> str:
     return " ".join(cleaned.split())[:_MAX_HEADER]
 
 
+_MESSAGE_ID = re.compile(r"<[^<>\s]+>")
+
+
+def references_header(prior: str, parent: str) -> str | None:
+    """The References of a reply to ``parent`` (a Message-ID) whose own
+    References were ``prior``: whole ids only, the parent always last. When
+    the chain is too long for one header, the oldest ids after the thread's
+    first one go — never half an id, and never the parent."""
+    ids = list(dict.fromkeys([*_MESSAGE_ID.findall(prior or ""), *_MESSAGE_ID.findall(parent or "")]))
+    if not ids:
+        return None
+    while len(ids) > 2 and len(" ".join(ids)) > _MAX_HEADER:
+        del ids[1]
+    joined = " ".join(ids)
+    return joined if len(joined) <= _MAX_HEADER else ids[-1][:_MAX_HEADER]
+
+
 def build_raw(sender: str, spec: DraftSpec) -> str:
     """The draft as a base64url RFC 2822 message (Gmail's ``raw``)."""
     msg = EmailMessage()
@@ -373,6 +390,19 @@ def valid_id(value: object) -> bool:
 # --------------------------------------------------------------------------- #
 # Client
 # --------------------------------------------------------------------------- #
+
+
+# Gmail answers some quota errors with 403, not 429: slow down, don't reconnect.
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded", "quotaExceeded"})
+
+
+def _rate_limited(resp: httpx.Response) -> bool:
+    """Whether a 403 is Gmail's rate limit rather than a refused sign-in."""
+    try:
+        errors = resp.json().get("error", {}).get("errors", [])
+    except (ValueError, AttributeError):
+        return False
+    return any(isinstance(e, dict) and e.get("reason") in _RATE_LIMIT_REASONS for e in errors or [])
 
 
 def _token_key(cred: GmailCredential) -> str:
@@ -471,7 +501,7 @@ class DelegateGmail:
         if resp.status_code == 401:
             _TOKENS.pop(_token_key(self._cred()), None)
             raise GmailAuthError("unauthorized")
-        if resp.status_code == 403:
+        if resp.status_code == 403 and not _rate_limited(resp):
             raise GmailAuthError("forbidden")
         if resp.status_code >= 400:
             raise GmailError(f"gmail {method} returned {resp.status_code}")

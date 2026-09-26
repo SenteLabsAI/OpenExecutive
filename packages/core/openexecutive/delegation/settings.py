@@ -12,16 +12,24 @@ widening that one function is what the teammate phase changes.
 
 **Per turn.** ``pin_turn_delegation`` runs at the start of every chat turn
 (``Executive.stream_chat`` and the committee path), next to the workspace-mode
-pin, and records a ``TurnDelegation`` on the session: whether the speaker has
-it on, whether ``ghostwrite_email`` is offered this turn, and — set by the tool
-— whether the turn has touched the speaker's mailbox (every audit row the turn
-writes after that is private). It is offered only when all of these hold:
+pin, and records a ``TurnDelegation``: whether the speaker has it on, whether
+``ghostwrite_email`` is offered this turn, and — set by the tool — whether the
+turn has touched the speaker's mailbox (every audit row the turn writes after
+that is private). The pin is held in a context variable for the turn's task as
+well as on the session, so two turns running at once on one session (a second
+browser tab) each read their own. It is offered only when all of these hold:
 
 - the speaker may have it (``can_delegate``) and turned it on;
 - the speaker is the principal on a surface that verified it is them
-  (``people_tools.is_principal_on_verified_surface``) — and a web turn also
-  carried a signed-in caller, or runs under local login, so a bare API call
-  with the shared secret never gets it;
+  (``people_tools.is_principal_on_verified_surface``), and a web turn also
+  carried a signed-in caller (``x-caller-email``) or runs under local login.
+  A request with no caller header is not a sign-in and never gets it. Whoever
+  holds ``BACKEND_SHARED_SECRET`` is trusted as the UI proxy that stamps that
+  header, as on every principal-only route;
+- the conversation is private to the speaker: the web chat, a Slack or
+  Discord DM, or a verified private Telegram chat — never a shared channel or
+  thread, where a draft's preview or the matching threads would be posted for
+  everyone and other people's messages sit in the model's context;
 - the turn is not unattended and not private to the principal (the email
   poller's turns), so inbound text can never reach it.
 
@@ -36,8 +44,9 @@ setting does, never per turn or per speaker.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
-import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,14 +54,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.delegation.schema import SETTINGS_TABLE, ensure_schema
+from openexecutive.utils.deployment import is_local_login as local_login
 
 if TYPE_CHECKING:
     from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
-
-# The same falsy spellings as api.main._FALSEY_ENV.
-_FALSEY_ENV = frozenset({"", "0", "false", "no", "off"})
 
 
 @dataclass
@@ -83,6 +90,17 @@ class TurnDelegation:
     # message joins the session history only once the turn ends.
     speaker_text: str = ""
     person_id: int | None = None
+    # The session this pin was made for, so a pin left in a task's context
+    # never answers for another session.
+    session_id: str | None = None
+
+
+# The pin for the turn this task is running. Concurrent turns on one session
+# run in separate tasks, so each reads its own even though the session object
+# (and its ``turn_delegation`` attribute) is shared.
+_TURN: contextvars.ContextVar[TurnDelegation | None] = contextvars.ContextVar(
+    "delegation_turn", default=None
+)
 
 
 def can_delegate(person: Person | None) -> bool:
@@ -178,14 +196,6 @@ def block0_delegation_on(session: Any) -> bool:
     return enabled_for_install()
 
 
-def local_login() -> bool:
-    """Whether this API runs under ``make dev`` local login (no sign-in) —
-    the same rule as ``api.main._is_local_login``, which a unit test keeps
-    this in step with. Never on a public deployment."""
-    public = os.environ.get("OE_PUBLIC_DEPLOYMENT", "").strip().lower() not in _FALSEY_ENV
-    return os.environ.get("OE_LOCAL_LOGIN", "").strip() == "1" and not public
-
-
 def _speaker(session: Any) -> Person | None:
     person_id = getattr(session, "caller_person_id", None)
     if not isinstance(person_id, int):
@@ -199,16 +209,28 @@ def _speaker(session: Any) -> Person | None:
         return None
 
 
-def _offered(session: Any, person: Person | None, enabled: bool) -> bool:
-    if not enabled:
-        return False
-    if getattr(session, "unattended", False) is True:
-        return False
-    if getattr(session, "private_to_principal", False) is True:
-        return False
-    override = getattr(session, "delegation_override", None)
-    if isinstance(override, DelegationOverride):
-        return override.gmail is not None
+# Slack and Discord sessions for a direct message (the adapters' session ids).
+_DM_SESSION_PREFIXES = {"slack": "slack:dm:", "discord": "discord:dm:"}
+
+
+def _private_conversation(session: Any) -> bool:
+    """Whether only the speaker (and the Executive) can read this
+    conversation: the web chat, a Slack or Discord DM, or a Telegram chat
+    (``is_principal_on_verified_surface`` already accepts only a private one)."""
+    if getattr(session, "from_web_chat", False) is True:
+        return True
+    channel = str(getattr(session, "origin_channel", "") or "")
+    if channel == "telegram":
+        return True
+    prefix = _DM_SESSION_PREFIXES.get(channel)
+    session_id = str(getattr(session, "session_id", "") or "")
+    return prefix is not None and session_id.startswith(prefix)
+
+
+def speaker_surface_ok(session: Any, person: Person | None) -> bool:
+    """Whether ``session``'s turn comes from ``person`` themselves, verified,
+    in a conversation private to them — the surface half of the offer, which
+    ``ghostwrite_email`` checks again on every call. Never raises."""
     if not can_delegate(person):
         return False
     try:
@@ -219,9 +241,24 @@ def _offered(session: Any, person: Person | None, enabled: bool) -> bool:
     except Exception:
         logger.warning("delegation: surface check failed — not offering it", exc_info=True)
         return False
+    if not _private_conversation(session):
+        return False
     if getattr(session, "from_web_chat", False) is True:
         return getattr(session, "web_caller_signed_in", False) is True or local_login()
     return True
+
+
+def _offered(session: Any, person: Person | None, enabled: bool) -> bool:
+    if not enabled:
+        return False
+    if getattr(session, "unattended", False) is True:
+        return False
+    if getattr(session, "private_to_principal", False) is True:
+        return False
+    override = getattr(session, "delegation_override", None)
+    if isinstance(override, DelegationOverride):
+        return override.gmail is not None
+    return speaker_surface_ok(session, person)
 
 
 def pin_turn_delegation(session: Any, speaker_text: str) -> TurnDelegation:
@@ -243,15 +280,38 @@ def pin_turn_delegation(session: Any, speaker_text: str) -> TurnDelegation:
         offered=_offered(session, person, enabled),
         speaker_text=speaker_text,
         person_id=person.id if person is not None else None,
+        session_id=getattr(session, "session_id", None),
     )
     session.turn_delegation = pinned
+    _TURN.set(pinned)
     return pinned
 
 
 def turn_delegation(session: Any) -> TurnDelegation | None:
-    """The pinned state for ``session``'s current turn, or None."""
-    pinned = getattr(session, "turn_delegation", None)
-    return pinned if isinstance(pinned, TurnDelegation) else None
+    """The pinned state for ``session``'s current turn, or None: this task's
+    own pin when it was made for ``session``, else the one on the session."""
+    pinned = _TURN.get()
+    if (
+        isinstance(pinned, TurnDelegation)
+        and session is not None
+        and pinned.session_id == getattr(session, "session_id", None)
+    ):
+        return pinned
+    stored = getattr(session, "turn_delegation", None)
+    return stored if isinstance(stored, TurnDelegation) else None
+
+
+# Tag blocks the adapters add around the speaker's words (e.g. the
+# ``<outbound_reply_context>`` backstory hydrated into a Slack or Discord DM).
+_INJECTED_BLOCK = re.compile(r"<([a-z_]+)\b[^>]*>.*?</\1\s*>", re.DOTALL)
+_ADDRESS = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+
+
+def typed_addresses(speaker_text: str) -> set[str]:
+    """Email addresses the speaker typed this turn — outside any tag block an
+    adapter added (quoted backstory is not something they typed)."""
+    own_words = _INJECTED_BLOCK.sub(" ", speaker_text or "")
+    return {m.group(0).lower() for m in _ADDRESS.finditer(own_words)}
 
 
 def turn_touched_delegate_mail(session: Any = None) -> bool:

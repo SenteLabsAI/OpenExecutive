@@ -72,7 +72,7 @@ system:
       claude-opus-5 within the same turn.
   invariants:
     - The internal sub-agent architecture is NEVER exposed to the end user — there is one voice (the Executive).
-    - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only. The single exception is Act as me (delegation) — with the person's own switch on and on their own verified turn, `ghostwrite_email` writes an email in their voice as a DRAFT in their own Gmail, never sent, never from the Executive's own account or bots, and never for anyone who has not turned it on (only the principal can, for now). The identity addendum itself is unchanged; the constant DELEGATION_ADDENDUM after it names the exception.
+    - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only. The single exception is Act as me (delegation) — with the person's own switch on and on their own verified turn in a conversation private to them, `ghostwrite_email` writes an email in their voice as a DRAFT in their own Gmail, never sent, never from the Executive's own account or bots, and never for anyone who has not turned it on (only the principal can, for now). The identity addendum itself is unchanged; the constant DELEGATION_ADDENDUM after it names the exception.
     - Voice follows the account. Text written as a person leaves only from that person's own Gmail (for now only as a draft they review and send themselves); the Executive's own mailbox and bots always sign as the Executive.
     - The model cannot reach a delegated mailbox. delegation.gmail.DelegateGmail talks to the Gmail REST API directly and is never registered with the MCP gateway, so only typed handlers (ghostwrite_email, the voice learner) call it, and its credential never lives in WORKSPACE_MCP_CREDENTIALS_DIR. Every google_workspace__* call through the gateway acts as the Executive's own account (mcp_gateway._check_acting_account refuses any other user_google_email).
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
@@ -195,8 +195,8 @@ caching:
     Act as me adds a tool instead of withholding one. ghostwrite_email lives
     in its own registry (orchestrator.delegation_tools.DELEGATION_TOOLS),
     never _ALL_SKILL_TOOLS. On a turn delegation.settings.pin_turn_delegation
-    offered it to (the principal's own verified, attended, non-private turn,
-    with it on) it joins the pool BEFORE the sort, so those turns share one
+    offered it to (the principal's own verified, attended turn in a private
+    conversation, with it on) it joins the pool BEFORE the sort, so those turns share one
     more sorted prefix with the 1h marker on the last tool, and every other
     turn's list is byte-identical to before. The offer deliberately ignores
     the Gmail connection (the handler checks it per call), so a lapsed token
@@ -3371,8 +3371,8 @@ audit:
         — TurnDelegation.touched_mail, which ghostwrite_email sets before its
         first read): the tool_invocation row, the chat_turn reply carrying the
         draft's preview, cache_event rows, and the post-turn passes, which the
-        turn starts under private_rows(touched_mail). Only the principal can
-        have Act as me for now, so private to the principal is the right
+        turn starts under private_rows(touched_mail) (it runs no learning
+        passes). Only the principal can have Act as me for now, so private to the principal is the right
         visibility; a teammate phase needs rows private to that person.
       - While contacts are reachable (contacts_reachable_now: the
         principal's own verified turn, or grant_contact_egress), True for
@@ -5434,8 +5434,8 @@ integrations:
     delegation.gmail.gmail_status under asyncio.wait_for(PROBE_TIMEOUT_S)
     — a token refresh and GET users/me/profile, only once the owner's
     credential file exists. connected is ok; no credential is off, or
-    amber while Act as me is on; any other status is amber, or red while
-    it is on; a timeout is amber.
+    amber while Act as me is on; shared_mailbox is off while it is off; any
+    other status is amber, or red while it is on; a timeout is amber.
     Secrets: no token in a response or log line — probes report a status
     code, a Slack error code matching [a-z_]{1,40}, or an exception class
     name; _fetch never logs a URL (Telegram's carries the token), and the
@@ -6630,14 +6630,25 @@ delegation:
     enabled for the speaker; is_principal_on_verified_surface(session) (web
     chat, own Slack or Discord, verified Telegram); on the web,
     Session.web_caller_signed_in (the request carried x-caller-email) or
-    local login (settings.local_login mirrors api.main._is_local_login, and a
-    test keeps them in step), so a bare shared-secret API call never gets
-    it; and a turn that is neither unattended nor private_to_principal (the
-    email poller), so inbound text never reaches it. The Gmail connection is
+    local login (utils.deployment.is_local_login, the same function api.main
+    uses) — a request with no caller header is not a sign-in and never gets
+    it, while the header itself is trusted from whoever holds
+    BACKEND_SHARED_SECRET (the UI proxy), as on every principal-only route; a
+    conversation private to the speaker (the web chat, a Slack or Discord DM
+    by session id slack:dm: / discord:dm:, a verified private Telegram chat)
+    and never a shared channel or thread, where the draft's preview and the
+    matching threads would be posted for everyone and other people's
+    messages sit in the model's context; and a turn that is neither
+    unattended nor private_to_principal (the email poller), so inbound text
+    never reaches it. The pin is also set in a ContextVar for the turn's
+    task (turn_delegation prefers it when it names the same session), so two
+    turns running at once on one session each read their own. The Gmail connection is
     NOT part of the offer (the handler checks it per call), so the cached
     tool prefix never flips when a token lapses. speaker_text is pinned
     because the turn's message joins the session history only after the
-    turn, and a new email may go to an address typed this turn.
+    turn, and a new email may go to an address typed this turn — outside any
+    tag block an adapter added (settings.typed_addresses drops the
+    <outbound_reply_context> backstory hydrated into a DM).
     Session.delegation_override (evals and tests only) replaces the speaker,
     the setting and the mailbox with a fake; the surface checks are skipped
     and the tool is offered only when a fake mailbox is supplied.
@@ -6651,13 +6662,19 @@ delegation:
     re-checks the pin and (without an override) the verified surface, then
     the caps — 5 drafts per turn, and DELEGATION_MAX_DRAFTS_PER_DAY (default
     50, at most 1000 = one audit query page) per person per UTC day counted
-    from delegation_drafted rows, refusing when they cannot be counted —
-    then sets touched_mail BEFORE the first mailbox read, then runs
+    from delegation_drafted rows (with an in-process count as a floor, since
+    log_event swallows a failed write), refusing when they cannot be counted.
+    Each slot is reserved synchronously before the first await and handed
+    back when nothing was drafted: _stream_agent_loop gathers a round's tool
+    calls, so a check-then-count-later cap let every parallel call through.
+    Then it sets touched_mail BEFORE the first mailbox read and runs
     gmail_status. A search with several matches returns status choose with
     candidates (subject, sender, date; no text) and drafts nothing.
     Recipients are decided in code: a reply goes to the last inbound From,
     never Reply-To (flag reply_to_ignored), with cc only on reply_all (minus
-    the writer and the sender); a new email goes only to roster people
+    the writer and the sender; beyond 10 trimmed and flagged cc_trimmed);
+    References from gmail.references_header — whole ids only, the parent
+    last, the oldest after the root dropped to fit one header; a new email goes only to roster people
     (contacts only when contacts_reachable_now) or addresses in
     speaker_text. Result {status drafted, draft_id, gmail_link, to, cc,
     subject, preview, flags, open_questions, note}; the link is built from a
@@ -6677,7 +6694,8 @@ delegation:
     URL or email address survives only if it appears in the intent, the
     signature or the recipients (flags removed_link / removed_address), the
     exec name is flagged (names_the_executive) and the body is capped at
-    6000 characters (shortened). asks_if_ai on the last inbound message
+    6000 characters (shortened; cut at a paragraph, line or word break in
+    the last fifth). A body lint leaves empty is a ComposeError. asks_if_ai on the last inbound message
     adds an open question for the person to answer themselves.
   voice: |
     delegation.voice — "How I write", learned from the person's OWN sent
@@ -6686,7 +6704,9 @@ delegation:
     text stripped (sender_new_text); automatic mail, the package's own
     X-OE-Ghostwritten drafts and every thread it drafted into (its private
     delegation_drafted rows) skipped; at least 5 samples; at most once per
-    10 minutes; never over a locked profile. One forced-tool call
+    10 minutes; one pass at a time per person (in_progress); never over a
+    locked profile, and a lock or edit made while it runs wins (the learned
+    profile is dropped: locked / changed). One forced-tool call
     (record_voice_profile), then validate_profile in code — greetings per
     audience (team / contact / other) and a sign-off (short; no links,
     handles, amounts or markup), length and formality from fixed lists, up
@@ -6703,7 +6723,8 @@ delegation:
     create_draft. NO send method (a unit test fails if one appears).
     gmail_status answers connected, not_configured, needs_reconnect
     (invalid_grant, a 401/403 or a missing scope; tokens of an app in
-    Testing mode expire after 7 days), mismatch, no_email, shared_mailbox
+    Testing mode expire after 7 days — a 403 whose reason is a rate limit,
+    and any 429, is a GmailError to retry instead), mismatch, no_email, shared_mailbox
     (the person's address is the exec address; refused before asking
     Google) or error. Credentials per person, see integrations.own_gmail.
   privacy: |
@@ -6711,11 +6732,12 @@ delegation:
     people_tools.audit_row_private_to_principal answers True, so every row
     the turn writes after it is private to the principal; the chat_turn
     reply (it carries the preview), the committee rows and both
-    tool_invocation rows also pass private explicitly, and the post-turn
-    passes run under private_rows(touched_mail). The Honcho peer and
-    department syncs are skipped (peer memory is read on other people's
-    turns); the episodic and open-loop passes still run, quote-gated on the
-    speaker's own words. "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
+    tool_invocation rows also pass private explicitly, and anything the turn
+    starts afterwards runs under private_rows(touched_mail). The turn teaches
+    no memory: episodic extraction, the open-loop pass, the working-style
+    pass and the Honcho peer and department syncs are all skipped, because
+    its reply quotes a draft built from other people's mail (the extractor's
+    summaries are free text, so quote-gating alone would not keep it out). "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
     so the tool rows carry no input or result text. The four delegation_*
     events are always private and metadata-only (see audit.event_types).
   prompt: |
@@ -6726,8 +6748,9 @@ delegation:
     caching.delegation_tool_prefix.
   api: |
     /delegation — GET, PUT {enabled}; /delegation/voice — GET, PUT (edit,
-    lock), DELETE (reset); POST /delegation/voice/learn. The caller's OWN
-    delegation only. 403 not_available_yet for a caller can_delegate
+    lock), DELETE (reset); POST /delegation/voice/learn (409 in_progress /
+    locked / too_soon / not_enough_mail / no_profile / changed). The
+    caller's OWN delegation only. 403 not_available_yet for a caller can_delegate
     refuses (the Settings card hides); 403 sign_in_required with no
     x-caller-email unless local login; turning it on needs gmail_status
     connected (409 gmail_not_connected / gmail_needs_reconnect /

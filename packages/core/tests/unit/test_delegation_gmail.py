@@ -24,6 +24,7 @@ from openexecutive.delegation.gmail import (
     DraftSpec,
     GmailAuthError,
     GmailCredential,
+    GmailError,
     GmailNotConfigured,
     build_raw,
     email_key,
@@ -200,11 +201,13 @@ def test_links_open_the_draft_in_the_right_account() -> None:
 
 class FakeGoogle:
     def __init__(self, *, token_status: int = 200, token_error: str = "",
-                 scope: str = " ".join(gm.SCOPES), api_status: int = 200) -> None:
+                 scope: str = " ".join(gm.SCOPES), api_status: int = 200,
+                 api_reason: str = "") -> None:
         self.token_status = token_status
         self.token_error = token_error
         self.scope = scope
         self.api_status = api_status
+        self.api_reason = api_reason
         self.requests: list[httpx.Request] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -215,7 +218,8 @@ class FakeGoogle:
             return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": self.scope})
         assert request.headers["Authorization"] == "Bearer at"
         if self.api_status != 200:
-            return httpx.Response(self.api_status, json={})
+            body = {"error": {"code": self.api_status, "errors": [{"reason": self.api_reason}]}}
+            return httpx.Response(self.api_status, json=body if self.api_reason else {})
         path = request.url.path
         if path.endswith("/profile"):
             return httpx.Response(200, json={"emailAddress": "Olivia@Co.Example"})
@@ -261,6 +265,7 @@ def test_the_signature_comes_from_gmail_settings() -> None:
     FakeGoogle(token_status=400, token_error="invalid_grant"),
     FakeGoogle(scope=gm.SCOPE_READONLY),  # consent without compose
     FakeGoogle(api_status=401),
+    FakeGoogle(api_status=403, api_reason="insufficientPermissions"),
 ])
 def test_google_refusing_the_credential_is_an_auth_error(google: FakeGoogle) -> None:
     with pytest.raises(GmailAuthError):
@@ -315,3 +320,25 @@ def test_status(person_email: str, mailbox: _Mailbox, expected: str) -> None:
 def test_a_shared_mailbox_is_refused_before_google_is_asked() -> None:
     mailbox = SimpleNamespace(profile_email=None)  # would fail if called
     assert asyncio.run(gmail_status(EXEC, gmail=mailbox)) == "shared_mailbox"
+
+
+@pytest.mark.parametrize(("status", "reason"), [
+    (403, "userRateLimitExceeded"), (403, "rateLimitExceeded"), (429, "rateLimitExceeded"),
+])
+def test_a_rate_limit_is_not_a_reconnect(status: int, reason: str) -> None:
+    google = FakeGoogle(api_status=status, api_reason=reason)
+    with pytest.raises(GmailError) as err:
+        asyncio.run(google.client().profile_email())
+    assert not isinstance(err.value, GmailAuthError)
+    assert asyncio.run(gm.gmail_status(EMAIL, gmail=google.client())) == "error"
+
+
+def test_a_long_reference_chain_keeps_whole_ids_the_root_and_the_parent() -> None:
+    chain = " ".join(f"<id{i:02d}-{'x' * 60}@mail.example>" for i in range(20))
+    refs = gm.references_header(chain, "<parent@mail.example>")
+    assert refs is not None and len(refs) <= 900
+    ids = refs.split()
+    assert ids[0].startswith("<id00-") and ids[-1] == "<parent@mail.example>"
+    assert all(i.startswith("<") and i.endswith(">") for i in ids)
+    assert gm.references_header("<a@x> <b@x>", "<b@x>") == "<a@x> <b@x>"
+    assert gm.references_header("", "") is None

@@ -67,6 +67,11 @@ _MAX_TOKENS = 1500
 UPDATED_BY_LEARN = "learn"
 
 
+# People whose voice is being learned right now: one pass at a time each
+# (checked and added before the first await, so nothing interleaves).
+_LEARNING: set[int] = set()
+
+
 class VoiceError(Exception):
     """Why a learn pass cannot run. ``code`` is the API's error code."""
 
@@ -476,7 +481,7 @@ def drafted_thread_ids(person_id: int) -> set[str]:
 
         rows = get_audit_logger().query(event_type="delegation_drafted", limit=1000)
     except Exception:
-        logger.debug("delegation.voice: drafted-thread lookup failed", exc_info=True)
+        logger.warning("delegation.voice: drafted-thread lookup failed — learning without the skip list", exc_info=True)
         return set()
     out: set[str] = set()
     for row in rows:
@@ -546,6 +551,7 @@ def _client_slot_active() -> bool:
 
         return get_active_client(get_settings()) is not None
     except Exception:
+        logger.warning("delegation.voice: client-slot check failed — keeping no exemplars", exc_info=True)
         return True
 
 
@@ -560,12 +566,26 @@ async def learn_from_sent_mail(
 ) -> StoredVoice:
     """Learn ``person``'s voice from their own sent mail and store it.
 
-    Raises ``VoiceError`` (``locked`` / ``too_soon`` / ``not_enough_mail`` /
-    ``no_profile``) when it cannot run or produced nothing usable; a Gmail
-    failure propagates as ``gmail.GmailError`` for the caller to report."""
+    Raises ``VoiceError`` (``in_progress`` / ``locked`` / ``too_soon`` /
+    ``not_enough_mail`` / ``no_profile`` / ``changed``) when it cannot run,
+    produced nothing usable, or the profile was locked or edited while it ran
+    (the person's edit wins); a Gmail failure propagates as
+    ``gmail.GmailError`` for the caller to report."""
     if person.id is None:
         raise VoiceError("no_person", "This person has no roster entry.")
-    stored = get_voice(person.id, db_path=db_path)
+    if person.id in _LEARNING:
+        raise VoiceError("in_progress", "It's already learning your writing. Give it a minute.")
+    _LEARNING.add(person.id)
+    try:
+        return await _learn(person.id, gmail, now=now, db_path=db_path)
+    finally:
+        _LEARNING.discard(person.id)
+
+
+async def _learn(
+    person_id: int, gmail: Any, *, now: datetime | None, db_path: Path | None
+) -> StoredVoice:
+    stored = get_voice(person_id, db_path=db_path)
     if stored.locked:
         raise VoiceError("locked", "Your writing profile is locked. Unlock it to learn it again.")
     moment = now or datetime.now(UTC)
@@ -578,7 +598,7 @@ async def learn_from_sent_mail(
             raise VoiceError("too_soon", "It learned your writing a few minutes ago. Try again shortly.")
 
     messages = await gmail.list_sent(SAMPLE_LIMIT)
-    samples = collect_samples(messages, skip_threads=drafted_thread_ids(person.id))
+    samples = collect_samples(messages, skip_threads=drafted_thread_ids(person_id))
     if len(samples) < MIN_SAMPLES:
         raise VoiceError(
             "not_enough_mail",
@@ -604,15 +624,22 @@ async def learn_from_sent_mail(
     )
     if not (profile.habits or profile.sign_off or profile.greetings):
         raise VoiceError("no_profile", "Couldn't learn a usable profile from your mail. Try again later.")
+    # Gmail and the model took a while: never overwrite a lock or an edit the
+    # person made meanwhile.
+    current = get_voice(person_id, db_path=db_path)
+    if current.locked:
+        raise VoiceError("locked", "Your writing profile was locked while it was learning. Nothing changed.")
+    if current.updated_at != stored.updated_at:
+        raise VoiceError("changed", "Your writing profile changed while it was learning. Nothing was overwritten.")
     saved = save_voice(
-        person.id, profile, locked=False, updated_by=UPDATED_BY_LEARN,
+        person_id, profile, locked=False, updated_by=UPDATED_BY_LEARN,
         learned=True, sample_count=len(samples), db_path=db_path,
     )
     _audit(
-        f"Learned how person {person.id} writes from {len(samples)} sent emails",
+        f"Learned how person {person_id} writes from {len(samples)} sent emails",
         {
             "op": "learn",
-            "person_id": person.id,
+            "person_id": person_id,
             "samples": len(samples),
             "habits": len(profile.habits),
             "exemplars": len(profile.exemplars),

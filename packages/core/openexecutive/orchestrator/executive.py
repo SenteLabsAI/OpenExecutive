@@ -24,7 +24,6 @@ from openexecutive.delegation.settings import (
     block0_delegation_on,
     pin_turn_delegation,
     turn_delegation,
-    turn_touched_delegate_mail,
 )
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
 from openexecutive.memory.workspace_settings import (
@@ -798,7 +797,7 @@ class Executive:
         principal_role = pin_turn_principal_role(session, workspace_mode)
         # Act as me, pinned with the mode so the tool list, the handler and
         # the turn's audit privacy agree even if the setting flips mid-turn.
-        pin_turn_delegation(session, _speaker_text(memory_text, user_message))
+        delegation_pin = pin_turn_delegation(session, _speaker_text(memory_text, user_message))
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -900,8 +899,10 @@ class Executive:
         session.add_user_message(user_message)
         session.add_assistant_message(full_response)
         # A turn that read or drafted in the speaker's own mailbox (Act as me)
-        # stays private to them from here on, and teaches no shared memory.
-        touched_mail = turn_touched_delegate_mail(session)
+        # stays private to them from here on, and teaches no memory: its reply
+        # quotes a draft built from other people's mail. Read from this turn's
+        # own pin (a concurrent turn on the session has its own).
+        touched_mail = delegation_pin.touched_mail
 
         # Audit the Executive's outbound response. Without this, the audit
         # log only records the *inputs* to a turn (inbound message, memory
@@ -958,7 +959,11 @@ class Executive:
             # call time, so scheduling it out here would snapshot (None,
             # None) and the memory_extractor's model call would record
             # unattributed however correct the snapshot itself was.
-            if should_extract(
+            # Act as me: a turn that touched the speaker's mailbox learns
+            # nothing — no extraction, open loops or working style (and no
+            # Honcho sync below). The reply quotes a draft built from other
+            # people's mail, which must not reach shared memory.
+            if not touched_mail and should_extract(
                 speaker_text,
                 origin_channel=session.origin_channel,
                 person_id=person_id,
@@ -973,20 +978,22 @@ class Executive:
             # unrostered sender (None) records nothing.
             from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
-            schedule_open_loop_pass(
-                speaker_text, full_response, person_id=person_id,
-                session_id=session.session_id,
-                # The turn's pinned mode: solo opens the principal's own
-                # dated commitments, team does not — and only when this
-                # surface verified the speaker is the principal.
-                workspace_mode=workspace_mode,
-                principal_verified=is_principal_on_verified_surface(session),
-            )
+            if not touched_mail:
+                schedule_open_loop_pass(
+                    speaker_text, full_response, person_id=person_id,
+                    session_id=session.session_id,
+                    # The turn's pinned mode: solo opens the principal's own
+                    # dated commitments, team does not — and only when this
+                    # surface verified the speaker is the principal.
+                    workspace_mode=workspace_mode,
+                    principal_verified=is_principal_on_verified_surface(session),
+                )
             # Re-learn this speaker's working style once enough new
             # messages have arrived (paced and budgeted inside).
             from openexecutive.attunement.style import schedule_style_pass
 
-            schedule_style_pass(person_id, session_id=session.session_id)
+            if not touched_mail:
+                schedule_style_pass(person_id, session_id=session.session_id)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -1088,7 +1095,7 @@ class Executive:
 
         workspace_mode = pin_turn_workspace_mode(session)
         principal_role = pin_turn_principal_role(session, workspace_mode)
-        pin_turn_delegation(session, _speaker_text(memory_text, user_message))
+        delegation_pin = pin_turn_delegation(session, _speaker_text(memory_text, user_message))
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -1372,8 +1379,8 @@ class Executive:
 
         session.add_user_message(user_message)
         # Act as me: a turn that touched the speaker's mailbox stays private
-        # (see stream_chat).
-        touched_mail = turn_touched_delegate_mail(session)
+        # and teaches no memory (see stream_chat).
+        touched_mail = delegation_pin.touched_mail
         # Guard against a revision pass that produced no text (only tool_use
         # blocks, model_stop, etc.). Persisting an empty assistant turn
         # corrupts the in-memory history with a phantom turn that future
@@ -1437,8 +1444,9 @@ class Executive:
         # memory alike — see stream_chat.
         speaker_text = _speaker_text(memory_text, user_message)
         # private_rows: see stream_chat — the scheduled passes copy it.
+        # Act as me: a touched turn learns nothing — see stream_chat.
         with private_rows(touched_mail):
-            if should_extract(
+            if not touched_mail and should_extract(
                 speaker_text,
                 origin_channel=session.origin_channel,
                 person_id=person_id,
@@ -1450,14 +1458,16 @@ class Executive:
             # Open loops — see stream_chat.
             from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
-            schedule_open_loop_pass(
-                speaker_text, final_response, person_id=person_id,
-                session_id=session.session_id, workspace_mode=workspace_mode,
-                principal_verified=is_principal_on_verified_surface(session),
-            )
+            if not touched_mail:
+                schedule_open_loop_pass(
+                    speaker_text, final_response, person_id=person_id,
+                    session_id=session.session_id, workspace_mode=workspace_mode,
+                    principal_verified=is_principal_on_verified_surface(session),
+                )
             from openexecutive.attunement.style import schedule_style_pass
 
-            schedule_style_pass(person_id, session_id=session.session_id)
+            if not touched_mail:
+                schedule_style_pass(person_id, session_id=session.session_id)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one

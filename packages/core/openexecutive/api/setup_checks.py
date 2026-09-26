@@ -840,6 +840,10 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
             "Act as me), then put the file it writes in DELEGATION_GOOGLE_CREDENTIALS_DIR.",
             link="/settings",
         )
+    if status == "shared_mailbox" and not on:
+        # Not a fault while it's off: the owner simply uses the Executive's
+        # own address, and Act as me can't be turned on that way.
+        return _result("your_gmail", "off", "Not set up (optional): " + STATUS_MESSAGES[status], link="/settings")
     return _result("your_gmail", "error" if on else "warn", STATUS_MESSAGES[status], link="/settings")
 
 
