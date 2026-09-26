@@ -90,7 +90,8 @@ def hooks(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         "openexecutive.memory.honcho_client.sync_turn",
         lambda *a, **kw: seen["sync"].append(a),
     )
-    monkeypatch.setattr("openexecutive.memory.episodic.should_extract", lambda *a, **kw: True)
+    # The real should_extract: a web turn's own words pass it, and a turn that
+    # touched the mailbox hands it none.
     monkeypatch.setattr(
         "openexecutive.memory.episodic.schedule_extraction",
         lambda *a, **kw: seen["extraction_private"].append(rows_private()),

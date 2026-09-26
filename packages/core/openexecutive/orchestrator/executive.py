@@ -942,8 +942,11 @@ class Executive:
         # quote from this text, and peer memory records it as what the person
         # said. A quoted Executive email or a briefing card's body in the
         # prompt would otherwise satisfy that quote gate with the Executive's
-        # own words.
-        speaker_text = _speaker_text(memory_text, user_message)
+        # own words. A turn that touched the speaker's own mailbox (Act as me)
+        # has none to learn from: its reply quotes a draft built from other
+        # people's mail, so should_extract refuses the empty text and every
+        # other pass below is skipped outright.
+        speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
 
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
@@ -959,11 +962,7 @@ class Executive:
             # call time, so scheduling it out here would snapshot (None,
             # None) and the memory_extractor's model call would record
             # unattributed however correct the snapshot itself was.
-            # Act as me: a turn that touched the speaker's mailbox learns
-            # nothing — no extraction, open loops or working style (and no
-            # Honcho sync below). The reply quotes a draft built from other
-            # people's mail, which must not reach shared memory.
-            if not touched_mail and should_extract(
+            if should_extract(
                 speaker_text,
                 origin_channel=session.origin_channel,
                 person_id=person_id,
@@ -1441,12 +1440,12 @@ class Executive:
             should_extract,
         )
         # The speaker's own words, for extraction, open loops and peer
-        # memory alike — see stream_chat.
-        speaker_text = _speaker_text(memory_text, user_message)
+        # memory alike — none for a turn that touched their mailbox; see
+        # stream_chat.
+        speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
         # private_rows: see stream_chat — the scheduled passes copy it.
-        # Act as me: a touched turn learns nothing — see stream_chat.
         with private_rows(touched_mail):
-            if not touched_mail and should_extract(
+            if should_extract(
                 speaker_text,
                 origin_channel=session.origin_channel,
                 person_id=person_id,
