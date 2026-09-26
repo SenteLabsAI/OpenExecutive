@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -190,6 +191,27 @@ def test_drift_ignores_release_please_version_bump() -> None:
         "removed_lines": {models_py: ['    version: str = "0.4.2"  # x-release-please-version']},
     }
     assert _level(pr_checks.check_arch_drift, **bump) == "PASS"
+
+
+def test_release_please_files_match_its_config() -> None:
+    config = json.loads((_SCRIPT.parents[1] / "release-please-config.json").read_text())
+    generic = {
+        f["path"]
+        for pkg in config["packages"].values()
+        for f in pkg.get("extra-files", [])
+        if f.get("type") == "generic"
+    }
+    assert generic == pr_checks.RELEASE_PLEASE_FILES
+
+
+def test_drift_counts_a_marked_bump_outside_release_please_files() -> None:
+    router = PKG + "orchestrator/router.py"
+    change = {
+        "changed": {router},
+        "added_lines": {router: ['SCHEMA_VERSION = "2.0.0"  # x-release-please-version']},
+        "removed_lines": {router: ['SCHEMA_VERSION = "1.0.0"  # x-release-please-version']},
+    }
+    assert _level(pr_checks.check_arch_drift, **change) == "FAIL"
 
 
 _MARK = "  # x-release-please-version"

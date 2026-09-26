@@ -15,9 +15,9 @@ Checks (see CLAUDE.md -> "Architecture Docs" and "PR Requirements"):
                         evals/_scenarios/ change
 - tests-present   WARN  openexecutive/ code changed with no tests/ change
 
-A release-please version bump is not a code change: a file whose diff only
-rewrites the version number on lines carrying the release-please marker (the
-release PR's bump) counts for neither arch-doc-drift nor tests-present.
+A release-please version bump is not a code change: when a file release-please
+manages only has the version number rewritten on its marked lines (the release
+PR's bump), it counts for neither arch-doc-drift nor tests-present.
 
 A change that does not alter what a section describes can waive the drift
 check with a line in a commit message or the PR description:
@@ -88,9 +88,11 @@ STUB_RE = re.compile(
     r"\bTODO\b|\bFIXME\b|raise NotImplementedError|pass\s+#\s*stub|\.\.\.\s*#\s*stub"
 )
 CODE_EXT = (".py", ".ts", ".tsx", ".js", ".jsx")
-# release-please rewrites the version on lines ending in this marker (the
-# "generic" extra-files in release-please-config.json).
+# release-please rewrites the version on lines ending in this marker in its
+# "generic" extra-files. Keep in step with release-please-config.json (a test
+# checks); any other file carrying the marker gets no exemption.
 VERSION_MARKER = "x-release-please-version"
+RELEASE_PLEASE_FILES = {PKG + "api/main.py", PKG + "api/models.py"}
 SEMVER_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 # These files name the stub patterns themselves.
 STUB_EXEMPT = {"scripts/pr_checks.py", TESTS + "unit/test_pr_checks.py"}
@@ -116,6 +118,8 @@ class Change:
         Each removed line must match its added line once the version is
         masked, so other edits on a marked line still count as code.
         """
+        if path not in RELEASE_PLEASE_FILES:
+            return False
         added = self.added_lines.get(path, [])
         removed = self.removed_lines.get(path, [])
         if not added or len(added) != len(removed):
