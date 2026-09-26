@@ -4504,7 +4504,14 @@ workflows:
   dynamic_user_created: |
     Users create reusable workflows on the fly — from the executive chat, the
     conversational wizard at /jobs/new, or the step-by-step advanced editor —
-    without shipping a Workflow subclass. A dynamic
+    without shipping a Workflow subclass. /jobs opens on a "Start here" panel
+    (components/jobs/StartHere.tsx) that leads to all three: "Start" hands the
+    typed description to the wizard through sessionStorage
+    (lib/workflowStarters.ts) and the wizard sends it as the first message; a
+    `/jobs/new?describe=` link only prefills the composer, so a crafted link
+    can't send text the user never typed. Below the panel: the user's custom
+    workflows, four ready-made starter picks, and the full built-in list
+    folded behind "Browse all" (`?browse=1`). A dynamic
     workflow is a stored JSON definition (the `dynamic_workflows` table;
     `openexecutive.workflows.dynamic_store`) interpreted at runtime by ONE
     generic engine, `openexecutive.workflows.dynamic.DynamicWorkflow`, which
