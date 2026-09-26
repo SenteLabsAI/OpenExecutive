@@ -326,13 +326,18 @@ class WorkspaceResponse(BaseModel):
     reports_to: str | None = None
     remit: str | None = None
     measured_on: str | None = None
+    # The owner's monthly AI spending limit in USD; null for none
+    # (audit.spending pauses background work once this month reaches it).
+    monthly_budget_usd: float | None = None
 
 
 class WorkspaceUpdateRequest(BaseModel):
     """A partial update: only the fields present are changed. `timezone: null`
     (or blank) clears the stored zone; `mode` may be omitted but not null.
     The role fields work like `timezone`: null or blank clears one. Their
-    length caps are checked after trimming (ROLE_TEXT_MAX)."""
+    length caps are checked after trimming (ROLE_TEXT_MAX).
+    `monthly_budget_usd: null` removes the monthly AI limit; a number must be
+    between $1 and $1,000,000 and is rounded to cents."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -343,6 +348,7 @@ class WorkspaceUpdateRequest(BaseModel):
     reports_to: str | None = None
     remit: str | None = None
     measured_on: str | None = None
+    monthly_budget_usd: float | None = None
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -367,6 +373,13 @@ class WorkspaceUpdateRequest(BaseModel):
         # Runs only for fields that were sent; the message never quotes `v`.
         assert info.field_name is not None
         return validate_role_field(info.field_name, v)
+
+    @field_validator("monthly_budget_usd", mode="before")
+    @classmethod
+    def _budget(cls, v: object) -> object:
+        from openexecutive.memory.workspace_settings import validate_monthly_budget
+
+        return validate_monthly_budget(v)
 
 
 

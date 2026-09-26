@@ -44,6 +44,7 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
     );
   }
   const paused = status.paused;
+  const forBudget = paused && status.paused_for_budget === true;
   const open = variant === "card" || expanded;
 
   // Collapse only on success so a failure's error stays visible.
@@ -74,8 +75,12 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
           <p className="text-xs text-fg-muted leading-relaxed">
             Paused
             {status.paused_at && <> since {formatPausedAt(status.paused_at)}</>}
-            {status.paused_by && <> by {status.paused_by}</>}.
-            {status.reason && (
+            {forBudget ? (
+              <>: this month&apos;s AI spending reached the monthly limit.</>
+            ) : (
+              <>{status.paused_by && <> by {status.paused_by}</>}.</>
+            )}
+            {status.reason && !forBudget && (
               <>
                 {" "}
                 <span className="text-fg">&ldquo;{status.reason}&rdquo;</span>
@@ -84,7 +89,11 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
           </p>
           <p className="text-xs text-amber-300">{heldLabel(status.held_actions)}</p>
           {!status.can_resume ? (
-            <p className="text-xs text-fg-muted">Only the principal can resume the Executive.</p>
+            <p className="text-xs text-fg-muted">
+              {forBudget
+                ? "It resumes on the 1st, or as soon as the owner raises or removes the monthly AI limit in Settings."
+                : "Only the principal can resume the Executive."}
+            </p>
           ) : (
           <button
             type="button"

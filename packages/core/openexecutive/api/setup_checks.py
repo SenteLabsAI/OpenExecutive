@@ -32,8 +32,11 @@ import anthropic
 import httpx
 from pydantic import BaseModel
 
+from openexecutive.audit.pricing import format_usd
+
 if TYPE_CHECKING:
     from openexecutive.audit import AuditEvent
+    from openexecutive.audit.spending import Spending
     from openexecutive.briefing.brief_state import DeliveryOutcome
     from openexecutive.config import Settings
     from openexecutive.people.models import Person
@@ -108,6 +111,7 @@ LABELS: dict[str, str] = {
     "google_chat": "Google Chat",
     "scheduler": "Daily schedule",
     "brief": "Daily brief",
+    "spending": "AI spending",
     "memory": "Long-term memory (Honcho)",
 }
 
@@ -154,6 +158,9 @@ class Snapshot:
     brief_email_ready: bool = False
     brief_next_runs: dict[str, datetime] = field(default_factory=dict)
     brief_zone: str | None = None
+    # This month's AI spending against the monthly limit; None when it
+    # could not be read.
+    spending: Spending | None = None
 
 
 def _clip(text: str) -> str:
@@ -853,6 +860,7 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
 
 
 def check_scheduler(snap: Snapshot) -> SetupCheck:
+    from openexecutive.audit.spending import is_budget_pause
     from openexecutive.scheduler.pause import get_pause_state
     from openexecutive.scheduler.runner import scheduler_heartbeat
 
@@ -904,7 +912,17 @@ def check_scheduler(snap: Snapshot) -> SetupCheck:
             "The scheduler's last check hit an error.",
             'Look in the API log for "scheduler tick failed" to see why.',
         )
-    if get_pause_state().paused:
+    pause_state = get_pause_state()
+    if is_budget_pause(pause_state):
+        return _result(
+            "scheduler",
+            "warn",
+            "Paused because this month's AI spending reached your monthly limit: briefs, "
+            "reminders and email checks wait until next month.",
+            "Raise or remove the limit in Settings to resume now.",
+            link="/settings",
+        )
+    if pause_state.paused:
         return _result(
             "scheduler",
             "warn",
@@ -997,6 +1015,66 @@ def check_brief(snap: Snapshot) -> SetupCheck:
     return _result("brief", "ok", f"Sent to you {channel_phrase(plan[0])}{when} ({snap.brief_zone}).")
 
 
+def check_spending(snap: Snapshot) -> SetupCheck:
+    """This month's estimated AI spending against the owner's monthly limit."""
+    spending = snap.spending
+    if spending is None:
+        return _result(
+            "spending",
+            "warn",
+            "This month's AI spending couldn't be worked out.",
+            'The API log has the details — look for "spending".',
+        )
+    uncounted = ""
+    if spending.unpriced_calls:
+        n = spending.unpriced_calls
+        uncounted = (
+            f" {n} call{'s' if n != 1 else ''} used a model with no known price, "
+            "so the real figure is higher."
+        )
+    about = f"About {format_usd(spending.spent_usd)}"
+    limit = spending.limit_usd
+    if limit is None:
+        return _result(
+            "spending",
+            "warn",
+            f"{about} so far this month, with no monthly limit.{uncounted}",
+            "Set a monthly limit in Settings to pause background work at an amount you choose.",
+            link="/settings",
+        )
+    if spending.state == "reached":
+        # Paused for the limit, or about to be: the watch pauses within a
+        # minute, and a person's pause hands over to it when they resume.
+        held = (
+            "so background work is paused until next month"
+            if spending.paused_for_budget
+            else "so background work pauses until next month"
+        )
+        return _result(
+            "spending",
+            "error",
+            f"This month's AI spending (about {format_usd(spending.spent_usd)}) reached your "
+            f"{format_usd(limit)} monthly limit, {held}. Chat still works.{uncounted}",
+            "Raise or remove the limit in Settings to resume it now.",
+            link="/settings",
+        )
+    pace = (
+        f", on pace for about {format_usd(spending.forecast_usd)}"
+        if spending.forecast_usd is not None
+        else ""
+    )
+    used = f"{about} of your {format_usd(limit)} monthly limit used so far this month{pace}."
+    if spending.state == "near":
+        return _result(
+            "spending",
+            "warn",
+            f"{used} Background work pauses when it's reached.{uncounted}",
+            "Raise the limit in Settings if you expect to need more.",
+            link="/settings",
+        )
+    return _result("spending", "ok", f"{used}{uncounted}")
+
+
 async def check_memory(snap: Snapshot) -> SetupCheck:
     from openexecutive.api.routes.health import honcho_health
 
@@ -1039,12 +1117,18 @@ def _latest_inbound() -> dict[str, AuditEvent | None]:
 
 def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) -> Snapshot:
     """Read everything the checks need. Blocking (SQLite): run it off the loop."""
+    from openexecutive.audit.spending import current_spending
     from openexecutive.briefing.brief_state import last_delivery_outcome
     from openexecutive.memory.workspace_settings import get_user_timezone, get_workspace
     from openexecutive.people.store import find_principal_person, list_people
     from openexecutive.scheduler.runner import email_ready, next_brief_runs
 
     now = datetime.now(UTC)
+    try:
+        spending: Spending | None = current_spending(now)
+    except Exception as exc:
+        logger.warning("setup status: reading this month's spending failed (%s)", type(exc).__name__)
+        spending = None
     zone_chosen = (
         get_workspace().timezone is not None
         or settings.user_timezone.strip() not in ("", "UTC")
@@ -1064,6 +1148,7 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
         brief_email_ready=email_ready(),
         brief_next_runs=next_brief_runs(now),
         brief_zone=get_user_timezone().key if zone_chosen else None,
+        spending=spending,
     )
 
 
@@ -1088,6 +1173,7 @@ def _check_runners(
         "google_chat": off_loop(check_google_chat),
         "scheduler": off_loop(check_scheduler),
         "brief": off_loop(check_brief),
+        "spending": off_loop(check_spending),
         "memory": lambda: check_memory(snap),
     }
 

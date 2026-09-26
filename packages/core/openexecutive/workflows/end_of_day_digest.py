@@ -340,6 +340,7 @@ class EndOfDayDigestWorkflow(Workflow):
         )
 
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.providers import get_provider
 
         user_content = _render_eod_context(
@@ -355,6 +356,7 @@ class EndOfDayDigestWorkflow(Workflow):
                 system=_EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM,
                 messages=[{"role": "user", "content": user_content}],
             )
+            log_model_usage(response, model=model, actor="end_of_day_digest")
             text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
             artifact_text = text_blocks[0].text.strip() if text_blocks else ""
         except Exception as exc:

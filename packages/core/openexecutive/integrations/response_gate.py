@@ -139,6 +139,7 @@ async def should_respond(
     """
     try:
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.config import get_settings
         from openexecutive.providers import get_provider
 
@@ -186,6 +187,7 @@ async def should_respond(
             ),
             timeout=gate_timeout,
         )
+        log_model_usage(response, model=model, actor="response_gate")
         raw = "".join(
             getattr(b, "text", "") for b in response.content
             if getattr(b, "type", "") == "text"

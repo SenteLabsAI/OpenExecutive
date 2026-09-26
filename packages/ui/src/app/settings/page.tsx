@@ -5,6 +5,7 @@ import Link from "next/link";
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import Icon from "@/components/Icon";
 import ActAsMeCard from "@/components/settings/ActAsMeCard";
+import SpendingCard from "@/components/settings/SpendingCard";
 import WorkspaceCard from "@/components/settings/WorkspaceCard";
 import { ADVANCED_ITEMS } from "@/components/shell/navConfig";
 
@@ -27,6 +28,10 @@ export default function SettingsPage() {
 
         <div className="mt-3">
           <WorkspaceCard />
+        </div>
+
+        <div className="mt-3">
+          <SpendingCard />
         </div>
 
         {/* Renders nothing for anyone who can't have Act as me (only the owner can). */}

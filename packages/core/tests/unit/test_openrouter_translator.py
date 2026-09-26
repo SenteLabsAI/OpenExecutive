@@ -555,7 +555,9 @@ def test_response_usage_reads_nested_prompt_tokens_details() -> None:
         }
 
     Both fields must land on the Anthropic-shape Message.usage so the
-    cache_event audit row reports real numbers instead of always-zero."""
+    cache_event audit row reports real numbers instead of always-zero, and
+    input_tokens keeps Anthropic's meaning — the tokens not served from the
+    cache — since prompt_tokens already counts the cached ones."""
     msg = from_openai_response(
         {
             "id": "chatcmpl-cache-hit",
@@ -576,7 +578,7 @@ def test_response_usage_reads_nested_prompt_tokens_details() -> None:
             },
         }
     )
-    assert msg.usage.input_tokens == 10339
+    assert msg.usage.input_tokens == 21
     assert msg.usage.output_tokens == 60
     assert msg.usage.cache_read_input_tokens == 10318
     assert msg.usage.cache_creation_input_tokens == 0
@@ -607,6 +609,7 @@ def test_response_usage_reports_cache_write_on_first_turn() -> None:
     )
     assert msg.usage.cache_read_input_tokens == 0
     assert msg.usage.cache_creation_input_tokens == 10318
+    assert msg.usage.input_tokens == 21  # the write is part of prompt_tokens too
 
 
 def test_response_usage_falls_back_to_flat_cached_tokens() -> None:
@@ -632,6 +635,7 @@ def test_response_usage_falls_back_to_flat_cached_tokens() -> None:
     )
     assert msg.usage.cache_read_input_tokens == 80
     assert msg.usage.cache_creation_input_tokens == 0
+    assert msg.usage.input_tokens == 20
 
 
 def test_response_usage_zero_when_no_cache_fields() -> None:
@@ -652,6 +656,7 @@ def test_response_usage_zero_when_no_cache_fields() -> None:
     )
     assert msg.usage.cache_read_input_tokens == 0
     assert msg.usage.cache_creation_input_tokens == 0
+    assert msg.usage.input_tokens == 100
 
 
 def test_response_handles_malformed_tool_arguments_gracefully() -> None:

@@ -179,6 +179,93 @@ def resume(by: str) -> PauseState:
     return get_pause_state()
 
 
+def pause_if_running(by: str, reason: str | None = None) -> bool:
+    """Pause only if nothing is paused — in one statement, so a pause someone
+    starts in between is never relabelled as ``by``'s. Returns whether it
+    paused. For ``audit.spending``, whose pause must not claim a person's."""
+    now = datetime.now(UTC).isoformat()
+    conn = _connect(_db_path())
+    try:
+        conn.execute(_CREATE_SQL)
+        cursor = conn.execute(
+            f"""
+            INSERT INTO {TABLE} (id, paused, paused_at, paused_by, reason, updated_at)
+            VALUES (1, 1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                paused = 1, paused_at = excluded.paused_at, paused_by = excluded.paused_by,
+                reason = excluded.reason, updated_at = excluded.updated_at
+            WHERE {TABLE}.paused = 0
+            """,  # noqa: S608 — constant table name
+            (now, by, reason, now),
+        )
+        conn.commit()
+        paused = cursor.rowcount > 0
+    finally:
+        conn.close()
+    if paused:
+        logger.warning("pause: autonomous work PAUSED by %s (reason=%r)", by, reason)
+    return paused
+
+
+def take_over_pause(from_paused_by: str, by: str, reason: str | None = None) -> bool:
+    """Make the current pause ``by``'s own if ``from_paused_by`` started it,
+    in one UPDATE — work stays held throughout. Returns whether it did. A
+    person who pauses while the monthly AI limit's pause holds takes it over
+    this way, so the limit lifting its own pause never lifts theirs."""
+    path = _db_path()
+    if not path.exists():
+        return False
+    now = datetime.now(UTC).isoformat()
+    conn = _connect(path)
+    try:
+        conn.execute(_CREATE_SQL)
+        cursor = conn.execute(
+            f"""
+            UPDATE {TABLE} SET
+                paused_at = ?, paused_by = ?, reason = ?, updated_at = ?
+            WHERE id = 1 AND paused = 1 AND paused_by = ?
+            """,  # noqa: S608 — constant table name
+            (now, by, reason, now, from_paused_by),
+        )
+        conn.commit()
+        taken = cursor.rowcount > 0
+    finally:
+        conn.close()
+    if taken:
+        logger.warning("pause: %s took over the %s pause (reason=%r)", by, from_paused_by, reason)
+    return taken
+
+
+def resume_if_paused_by(paused_by: str) -> bool:
+    """Resume only if the current pause was started by ``paused_by`` — in one
+    UPDATE, so a pause someone else starts in between is never lifted with it.
+    Returns whether it resumed. For ``audit.spending``, which may lift the
+    pause it started for the monthly limit and nothing else."""
+    path = _db_path()
+    if not path.exists():
+        return False
+    now = datetime.now(UTC).isoformat()
+    conn = _connect(path)
+    try:
+        conn.execute(_CREATE_SQL)
+        cursor = conn.execute(
+            f"""
+            UPDATE {TABLE} SET
+                paused = 0, paused_at = NULL, paused_by = NULL, reason = NULL,
+                updated_at = ?
+            WHERE id = 1 AND paused = 1 AND paused_by = ?
+            """,  # noqa: S608 — constant table name
+            (now, paused_by),
+        )
+        conn.commit()
+        resumed = cursor.rowcount > 0
+    finally:
+        conn.close()
+    if resumed:
+        logger.warning("pause: autonomous work RESUMED (the %s pause lifted)", paused_by)
+    return resumed
+
+
 def count_held_actions(now: datetime | None = None) -> int:
     """Pending scheduled actions already due — what fires on resume."""
     path = _db_path()

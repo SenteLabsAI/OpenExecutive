@@ -621,6 +621,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         # full outbound surface, minus specialist_consult (the reflection
         # workflow doesn't analyse, it acts). We avoid an import-time
         # cycle by deferring this.
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.config import get_settings
         from openexecutive.memory.workspace_settings import (
             effective_principal_role,
@@ -769,6 +770,7 @@ class ExecutiveReflectionWorkflow(Workflow):
                         type="error", message=f"Reflection LLM call failed: {exc}"
                     )
                     return
+                log_model_usage(response, model=model, actor="reflection", iteration=iteration)
 
                 # Only the await sits inside the tag — this is an async
                 # generator, and a ContextVar set across a `yield` would leak.

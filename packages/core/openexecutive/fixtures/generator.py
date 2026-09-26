@@ -718,6 +718,7 @@ async def _generate_bundle(
     if not description or not description.strip():
         raise GenerationError("scenario description is empty")
 
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers.registry import get_provider
 
     resolved_model = model if model is not None else agent.effective_model()
@@ -743,6 +744,9 @@ async def _generate_bundle(
             tools=[tool],
             tool_choice={"type": "tool", "name": "emit_fixture"},
             messages=messages,
+        )
+        log_model_usage(
+            response, model=resolved_model, actor="fixture_generator", iteration=attempt
         )
         raw = _extract_tool_input(response)
         try:

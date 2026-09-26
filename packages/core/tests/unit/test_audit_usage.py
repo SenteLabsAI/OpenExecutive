@@ -31,9 +31,23 @@ def test_usage_counts_reads_tokens_cost_and_server_searches() -> None:
     counts = au.usage_counts(msg)
     assert counts == {
         "input_tokens": 120, "output_tokens": 30,
-        "cache_creation_input_tokens": 10, "cache_read_input_tokens": 900,
+        "cache_creation_input_tokens": 10,
+        # No per-lifetime breakdown on this response (OpenRouter sends none).
+        "cache_creation_5m_input_tokens": 0, "cache_creation_1h_input_tokens": 0,
+        "cache_read_input_tokens": 900,
         "cost_usd": 0.04, "web_search_requests": 3,
     }
+
+
+def test_usage_counts_reads_the_cache_write_split_by_lifetime() -> None:
+    # A 1-hour write costs more than a 5-minute one, so the split is kept.
+    msg = _message(
+        input_tokens=1, output_tokens=1, cache_creation_input_tokens=700,
+        cache_creation=SimpleNamespace(ephemeral_5m_input_tokens=200, ephemeral_1h_input_tokens=500),
+    )
+    counts = au.usage_counts(msg)
+    assert counts is not None
+    assert (counts["cache_creation_5m_input_tokens"], counts["cache_creation_1h_input_tokens"]) == (200, 500)
 
 
 def test_usage_counts_tolerates_missing_fields_and_no_usage() -> None:

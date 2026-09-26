@@ -47,6 +47,7 @@ def test_status_defaults_to_running(client: TestClient) -> None:
         "held_actions": 0,
         # No principal on the roster yet: resume stays open.
         "can_resume": True,
+        "paused_for_budget": False,
     }
 
 

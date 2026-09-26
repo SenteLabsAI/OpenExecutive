@@ -15,16 +15,31 @@ The principal's role (who they report to, what they are measured on) is
 theirs: ``GET`` returns it only to a caller that ``PUT`` would let through,
 and reads it back as nulls for anyone else (a teammate on a team install).
 
+``monthly_budget_usd`` is the monthly AI spending limit. A change is applied
+at once (``audit.spending.enforce_budget``): lowered under this month's
+spend, background work pauses; raised over it or removed, a pause the limit
+started lifts.
+
 Both routes work before onboarding: nothing here needs a company profile.
 """
 from __future__ import annotations
+
+import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
 from openexecutive.api.models import WorkspaceResponse, WorkspaceUpdateRequest
 from openexecutive.memory import workspace_settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+def _usd(amount: float | None) -> str:
+    from openexecutive.audit.pricing import format_usd
+
+    return "none" if amount is None else format_usd(amount)
 
 
 def _response(*, with_role: bool = True) -> WorkspaceResponse:
@@ -34,6 +49,7 @@ def _response(*, with_role: bool = True) -> WorkspaceResponse:
         mode=ws.mode,
         timezone=ws.timezone,
         effective_timezone=workspace_settings.get_user_timezone().key,
+        monthly_budget_usd=ws.monthly_budget_usd,
         **role.model_dump(),
     )
 
@@ -67,6 +83,18 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
     }
     if role_update:
         workspace_settings.set_principal_role(**role_update)
+    budget_changed = (
+        "monthly_budget_usd" in sent and body.monthly_budget_usd != before.monthly_budget_usd
+    )
+    if budget_changed:
+        workspace_settings.set_monthly_budget(body.monthly_budget_usd)
+        from openexecutive.audit.spending import enforce_budget
+
+        try:
+            enforce_budget()
+        except Exception:
+            # The watch loop applies it within a minute anyway.
+            logger.exception("workspace: applying the new monthly AI limit failed")
 
     after = _response()
     mode_or_zone_changed = (after.mode, after.timezone) != (before.mode, before.timezone)
@@ -76,7 +104,7 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
     role_changed = sorted(
         f for f in workspace_settings.ROLE_FIELDS if getattr(after, f) != getattr(before, f)
     )
-    if mode_or_zone_changed or role_changed:
+    if mode_or_zone_changed or role_changed or budget_changed:
         from openexecutive.audit import log_event as audit_log
 
         caller = (request.headers.get("x-caller-email") or "").strip()[:200] or "api"
@@ -93,6 +121,14 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
         if role_changed:
             details["role_fields_changed"] = role_changed
             parts.append("principal's role updated")
+        if budget_changed:
+            details["monthly_budget_usd"] = {
+                "from": before.monthly_budget_usd, "to": after.monthly_budget_usd,
+            }
+            parts.append(
+                f"monthly AI limit {_usd(before.monthly_budget_usd)} → "
+                f"{_usd(after.monthly_budget_usd)}"
+            )
         audit_log(
             "workspace_settings_changed",
             "Workspace settings changed: " + ", ".join(parts),

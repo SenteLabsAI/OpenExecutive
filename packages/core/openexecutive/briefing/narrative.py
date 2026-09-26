@@ -463,6 +463,7 @@ async def synthesize_briefing_narrative(
     brief workflow yields an error event; the page regen logs and moves on).
     """
     from openexecutive.agents.utility_fast import get_fast_model
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers import get_provider
 
     solo = mode == "solo"
@@ -489,6 +490,7 @@ async def synthesize_briefing_narrative(
         system=system,
         messages=[{"role": "user", "content": user_content}],
     )
+    log_model_usage(response, model=model, actor="briefing_narrative")
     text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
     return text_blocks[0].text.strip() if text_blocks else ""
 

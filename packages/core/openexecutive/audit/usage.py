@@ -82,11 +82,20 @@ def usage_counts(message: Any) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         cost_usd = None
     server = getattr(usage, "server_tool_use", None)
+    # Anthropic splits cache writes by how long they are kept, and a 1-hour
+    # write costs more than a 5-minute one (audit.pricing).
+    by_ttl = getattr(usage, "cache_creation", None)
     return {
         "input_tokens": _as_int(getattr(usage, "input_tokens", 0)),
         "output_tokens": _as_int(getattr(usage, "output_tokens", 0)),
         "cache_creation_input_tokens": _as_int(
             getattr(usage, "cache_creation_input_tokens", 0)
+        ),
+        "cache_creation_5m_input_tokens": _as_int(
+            getattr(by_ttl, "ephemeral_5m_input_tokens", 0)
+        ),
+        "cache_creation_1h_input_tokens": _as_int(
+            getattr(by_ttl, "ephemeral_1h_input_tokens", 0)
         ),
         "cache_read_input_tokens": _as_int(getattr(usage, "cache_read_input_tokens", 0)),
         "cost_usd": cost_usd,
