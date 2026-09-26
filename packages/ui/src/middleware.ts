@@ -11,6 +11,11 @@ export { auth as middleware } from "@/auth";
 // Exclude Auth.js's own routes, Next internals, static assets, and exactly
 // `/signin` (with optional trailing slash). Using `signin/?` rather than the
 // looser `signin` keeps unrelated paths like `/signin-help` gated.
+// An entry with no terminator would exclude every path that merely starts
+// with it, so Auth.js's routes end at a segment boundary and the favicon is an
+// exact match: a future `/api/authorizations` or `/favicon.icoX` stays gated.
+// Checked against Next's own matcher compiler in
+// scripts/middleware-matcher.test.mjs.
 export const config = {
-  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico|signin/?$).*)"],
+  matcher: ["/((?!api/auth(?:/|$)|_next/static|_next/image|favicon\\.ico$|signin/?$).*)"],
 };
