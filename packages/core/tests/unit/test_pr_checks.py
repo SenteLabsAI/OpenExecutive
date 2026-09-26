@@ -183,16 +183,30 @@ def test_drift_ignores_release_please_version_bump() -> None:
     assert _level(pr_checks.check_arch_drift, **bump) == "PASS"
     assert _level(pr_checks.check_tests_present, **bump) == "PASS"
 
+    models_py = PKG + "api/models.py"
+    bump = {
+        "changed": {models_py},
+        "added_lines": {models_py: ['    version: str = "1.0.0-rc.1"  # x-release-please-version']},
+        "removed_lines": {models_py: ['    version: str = "0.4.2"  # x-release-please-version']},
+    }
+    assert _level(pr_checks.check_arch_drift, **bump) == "PASS"
+
+
+_MARK = "  # x-release-please-version"
+
 
 @pytest.mark.parametrize(
     ("added", "removed"),
     [
-        (
-            ['version="0.4.2"  # x-release-please-version', "x = 1"],
-            ['version="0.4.1"  # x-release-please-version'],
-        ),
-        (['version="0.4.2"  # x-release-please-version'], ["x = 1"]),
-        (['version="0.4.2"  # x-release-please-version'], []),
+        # code beside the bump
+        (['version="0.4.2"' + _MARK, "x = 1"], ['version="0.4.1"' + _MARK]),
+        (['version="0.4.2"' + _MARK], ["x = 1"]),
+        (['version="0.4.2"' + _MARK], []),
+        # other edits on a marked line
+        (["SOME_FLAG = True" + _MARK], ["SOME_FLAG = False" + _MARK]),
+        (['version="0.4.2", debug=True' + _MARK], ['version="0.4.1"' + _MARK]),
+        (['name="0.4.2"' + _MARK], ['version="0.4.1"' + _MARK]),
+        (['version="0.4.1"'], ['version="0.4.1"' + _MARK]),
     ],
 )
 def test_drift_still_counts_code_beside_a_version_bump(

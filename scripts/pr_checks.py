@@ -15,9 +15,9 @@ Checks (see CLAUDE.md -> "Architecture Docs" and "PR Requirements"):
                         evals/_scenarios/ change
 - tests-present   WARN  openexecutive/ code changed with no tests/ change
 
-Lines carrying the release-please version marker are not code changes: a
-file whose diff only swaps those lines (the release PR's version bump) counts
-for neither arch-doc-drift nor tests-present.
+A release-please version bump is not a code change: a file whose diff only
+rewrites the version number on lines carrying the release-please marker (the
+release PR's bump) counts for neither arch-doc-drift nor tests-present.
 
 A change that does not alter what a section describes can waive the drift
 check with a line in a commit message or the PR description:
@@ -91,6 +91,7 @@ CODE_EXT = (".py", ".ts", ".tsx", ".js", ".jsx")
 # release-please rewrites the version on lines ending in this marker (the
 # "generic" extra-files in release-please-config.json).
 VERSION_MARKER = "x-release-please-version"
+SEMVER_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
 # These files name the stub patterns themselves.
 STUB_EXEMPT = {"scripts/pr_checks.py", TESTS + "unit/test_pr_checks.py"}
 
@@ -110,13 +111,20 @@ class Change:
     waiver_text: str = ""
 
     def version_bump_only(self, path: str) -> bool:
-        """True when the diff to path only swaps release-please version lines."""
+        """True when the diff to path only rewrites marked version numbers.
+
+        Each removed line must match its added line once the version is
+        masked, so other edits on a marked line still count as code.
+        """
         added = self.added_lines.get(path, [])
         removed = self.removed_lines.get(path, [])
-        return (
-            bool(added)
-            and len(added) == len(removed)
-            and all(VERSION_MARKER in line for line in added + removed)
+        if not added or len(added) != len(removed):
+            return False
+        return all(
+            VERSION_MARKER in new
+            and SEMVER_RE.search(new)
+            and SEMVER_RE.sub("", new) == SEMVER_RE.sub("", old)
+            for old, new in zip(removed, added, strict=True)
         )
 
     def code_changed(self) -> set[str]:
