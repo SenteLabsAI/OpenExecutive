@@ -6649,8 +6649,10 @@ delegation:
     turn, and a new email may go to an address typed this turn — outside any
     tag block an adapter added (settings.typed_addresses drops the
     <outbound_reply_context> backstory hydrated into a DM, and counts none
-    at all when a document's text was inlined — an "[Attached: …]" line has
-    no end mark, so the document's addresses can't be told from theirs).
+    at all when the message carries an attachment — an "[Attached: …]"
+    document label or a "(Attached …" / "(Skipped …" / "(Could not …" note,
+    matched anywhere: none has an end mark, and a filename is chosen by
+    whoever sent the file).
     Session.delegation_override (evals and tests only) replaces the speaker,
     the setting and the mailbox with a fake; the surface checks are skipped
     and the tool is offered only when a fake mailbox is supplied.
