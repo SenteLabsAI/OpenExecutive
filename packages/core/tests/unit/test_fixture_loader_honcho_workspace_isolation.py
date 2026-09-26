@@ -40,14 +40,25 @@ def settings_stub(tmp_path: Path) -> Any:
 
 @pytest.fixture(autouse=True)
 def _isolate_dbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.alerts import store as alerts_store
+    from openexecutive.audit.logger import AuditLogger
     from openexecutive.departments import store as dept_store
+    from openexecutive.evals.persistence import initialize_eval_runs_db
     from openexecutive.memory import episodic
     from openexecutive.people import store as people_store
+    from openexecutive.workflows.persistence import initialize_runs_db
 
-    monkeypatch.setattr(episodic, "DB_PATH", tmp_path / "episodic.db")
+    episodic_path = tmp_path / "episodic.db"
+    monkeypatch.setattr(episodic, "DB_PATH", episodic_path)
     monkeypatch.setattr(people_store, "DB_PATH", tmp_path / "people.db")
     monkeypatch.setattr(dept_store, "DB_PATH", tmp_path / "depts.db")
     episodic.initialize_db()
+    # The reset also wipes the alert, workflow-run, eval-run and audit tables
+    # that share the episodic DB, and fails on one that doesn't exist.
+    alerts_store.initialize_db(episodic_path)
+    initialize_runs_db(episodic_path)
+    initialize_eval_runs_db(episodic_path)
+    AuditLogger(db_path=episodic_path)  # the constructor creates audit_log
     people_store.initialize_db()
     dept_store.initialize_db()
     # Point the Honcho state file at the test's company profile dir.

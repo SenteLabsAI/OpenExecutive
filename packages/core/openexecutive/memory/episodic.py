@@ -138,9 +138,19 @@ class OutboundContext(BaseModel):
 DB_PATH = Path(os.environ.get("EPISODIC_DB_PATH", "./episodic_memory.db"))
 
 
+def _resolve_db_path(db_path: Path | None) -> Path:
+    """Return the caller's path or the current module-level DB_PATH.
+
+    Reading DB_PATH dynamically (not via default-arg binding) lets tests
+    monkeypatch `openexecutive.memory.episodic.DB_PATH` and have it actually
+    take effect — default arguments capture the value at def time.
+    """
+    return db_path if db_path is not None else DB_PATH
+
+
 @contextmanager
-def _get_conn(db_path: Path = DB_PATH) -> Generator[sqlite3.Connection, None, None]:
-    conn = sqlite3.connect(str(db_path))
+def _get_conn(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, None]:
+    conn = sqlite3.connect(str(_resolve_db_path(db_path)))
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -149,8 +159,8 @@ def _get_conn(db_path: Path = DB_PATH) -> Generator[sqlite3.Connection, None, No
         conn.close()
 
 
-def initialize_db(db_path: Path = DB_PATH) -> None:
-    with _get_conn(db_path) as conn:
+def initialize_db(db_path: Path | None = None) -> None:
+    with _get_conn(_resolve_db_path(db_path)) as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -561,12 +571,12 @@ def store_decision(
     department: str = "",
     session_id: str = "",
     person_id: int | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> None:
     now = datetime.now(UTC)
     dedup_window_start = (now - timedelta(days=7)).isoformat()
     summary_prefix = summary[:80]
-    with _get_conn(db_path) as conn:
+    with _get_conn(_resolve_db_path(db_path)) as conn:
         existing = conn.execute(
             "SELECT id, rationale FROM decisions"
             " WHERE domain = ? AND timestamp > ? AND substr(summary, 1, 80) = ? AND session_id = ?",
@@ -608,14 +618,15 @@ def store_initiative(
     summary: str = "",
     department: str = "",
     person_id: int | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
     updated_by_person_id: int | None = None,
 ) -> None:
+    resolved = _resolve_db_path(db_path)
     now = datetime.now(UTC).isoformat()
     is_insert = False
     is_status_change = False
     is_real_update = False
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         existing = conn.execute(
             "SELECT id, status, summary FROM initiatives WHERE title = ?", (title,)
         ).fetchone()
@@ -646,7 +657,7 @@ def store_initiative(
     if existing and is_real_update:
         # Only a real change answers a check-in — a same-status re-mention
         # during routine extraction does not.
-        _resolve_initiative_outreach(int(existing["id"]), updated_by_person_id, db_path)
+        _resolve_initiative_outreach(int(existing["id"]), updated_by_person_id, resolved)
     # Mirror only on a new initiative OR a real status transition.
     # Idempotent upserts (same title + same status) don't fire — that
     # would spam the dept peer with redundant notes on every routine
@@ -670,12 +681,12 @@ def store_advice(
     department: str = "",
     session_id: str = "",
     person_id: int | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> None:
     now = datetime.now(UTC)
     dedup_window_start = (now - timedelta(days=7)).isoformat()
     advice_prefix = advice_summary[:80]
-    with _get_conn(db_path) as conn:
+    with _get_conn(_resolve_db_path(db_path)) as conn:
         existing = conn.execute(
             "SELECT id FROM advice_given"
             " WHERE domain = ? AND timestamp > ? AND substr(advice_summary, 1, 80) = ? AND session_id = ?",
@@ -817,10 +828,11 @@ def decisions_awaiting_outcome(
     return [Decision(**dict(row)) for row in rows]
 
 
-def get_active_initiatives(db_path: Path = DB_PATH) -> list[Initiative]:
-    if not db_path.exists():
+def get_active_initiatives(db_path: Path | None = None) -> list[Initiative]:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return []
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         rows = conn.execute(
             "SELECT * FROM initiatives WHERE status != 'completed' ORDER BY updated_at DESC"
         ).fetchall()
@@ -833,10 +845,8 @@ def get_recent_initiatives(
 ) -> list[Initiative]:
     """Most recently kicked-off initiatives, newest first.
 
-    Resolves `db_path` lazily (mirrors `get_recent_decisions`/`get_recent_advice`)
-    so callers and tests pick up a monkeypatched/live `DB_PATH`, unlike
-    `list_initiatives`'s eager default. Ordered by `created_at` DESC — the
-    activity rail surfaces these as "kicked off initiative" events.
+    Ordered by `created_at` DESC — the activity rail surfaces these as
+    "kicked off initiative" events.
     """
     resolved = _resolve_db_path(db_path)
     if not resolved.exists():
@@ -848,60 +858,66 @@ def get_recent_initiatives(
     return [Initiative(**dict(row)) for row in rows]
 
 
-def list_decisions(db_path: Path = DB_PATH) -> list[Decision]:
-    if not db_path.exists():
+def list_decisions(db_path: Path | None = None) -> list[Decision]:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return []
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         rows = conn.execute(
             "SELECT * FROM decisions ORDER BY timestamp DESC"
         ).fetchall()
     return [Decision(**dict(row)) for row in rows]
 
 
-def list_initiatives(db_path: Path = DB_PATH) -> list[Initiative]:
-    if not db_path.exists():
+def list_initiatives(db_path: Path | None = None) -> list[Initiative]:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return []
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         rows = conn.execute(
             "SELECT * FROM initiatives ORDER BY updated_at DESC"
         ).fetchall()
     return [Initiative(**dict(row)) for row in rows]
 
 
-def list_advice(db_path: Path = DB_PATH) -> list[Advice]:
-    if not db_path.exists():
+def list_advice(db_path: Path | None = None) -> list[Advice]:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return []
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         rows = conn.execute(
             "SELECT * FROM advice_given ORDER BY timestamp DESC"
         ).fetchall()
     return [Advice(**dict(row)) for row in rows]
 
 
-def get_decision(decision_id: int, db_path: Path = DB_PATH) -> Decision | None:
-    if not db_path.exists():
+def get_decision(decision_id: int, db_path: Path | None = None) -> Decision | None:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return None
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         row = conn.execute(
             "SELECT * FROM decisions WHERE id = ?", (decision_id,)
         ).fetchone()
     return Decision(**dict(row)) if row else None
 
 
-def get_initiative(initiative_id: int, db_path: Path = DB_PATH) -> Initiative | None:
-    if not db_path.exists():
+def get_initiative(initiative_id: int, db_path: Path | None = None) -> Initiative | None:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return None
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         row = conn.execute(
             "SELECT * FROM initiatives WHERE id = ?", (initiative_id,)
         ).fetchone()
     return Initiative(**dict(row)) if row else None
 
 
-def get_advice(advice_id: int, db_path: Path = DB_PATH) -> Advice | None:
-    if not db_path.exists():
+def get_advice(advice_id: int, db_path: Path | None = None) -> Advice | None:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return None
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         row = conn.execute(
             "SELECT * FROM advice_given WHERE id = ?", (advice_id,)
         ).fetchone()
@@ -916,8 +932,9 @@ def update_decision(
     rationale: str | None = None,
     outcome: str | None = None,
     tags: str | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> bool:
+    resolved = _resolve_db_path(db_path)
     fields: list[tuple[str, str]] = []
     if domain is not None:
         fields.append(("domain", domain))
@@ -930,10 +947,10 @@ def update_decision(
     if tags is not None:
         fields.append(("tags", tags))
     if not fields:
-        return get_decision(decision_id, db_path) is not None
+        return get_decision(decision_id, resolved) is not None
     set_clause = ", ".join(f"{name} = ?" for name, _ in fields)
     values = [value for _, value in fields] + [decision_id]
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         cursor = conn.execute(
             f"UPDATE decisions SET {set_clause} WHERE id = ?", values
         )
@@ -946,9 +963,10 @@ def update_initiative(
     title: str | None = None,
     status: str | None = None,
     summary: str | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
     updated_by_person_id: int | None = None,
 ) -> bool:
+    resolved = _resolve_db_path(db_path)
     fields: list[tuple[str, str]] = []
     if title is not None:
         fields.append(("title", title))
@@ -957,17 +975,17 @@ def update_initiative(
     if summary is not None:
         fields.append(("summary", summary))
     if not fields:
-        return get_initiative(initiative_id, db_path) is not None
+        return get_initiative(initiative_id, resolved) is not None
     fields.append(("updated_at", datetime.now(UTC).isoformat()))
     set_clause = ", ".join(f"{name} = ?" for name, _ in fields)
     values = [value for _, value in fields] + [initiative_id]
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         cursor = conn.execute(
             f"UPDATE initiatives SET {set_clause} WHERE id = ?", values
         )
         updated = cursor.rowcount > 0
     if updated:
-        _resolve_initiative_outreach(initiative_id, updated_by_person_id, db_path)
+        _resolve_initiative_outreach(initiative_id, updated_by_person_id, resolved)
     return updated
 
 
@@ -1007,8 +1025,9 @@ def update_advice(
     domain: str | None = None,
     query_summary: str | None = None,
     advice_summary: str | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> bool:
+    resolved = _resolve_db_path(db_path)
     fields: list[tuple[str, str]] = []
     if domain is not None:
         fields.append(("domain", domain))
@@ -1017,36 +1036,39 @@ def update_advice(
     if advice_summary is not None:
         fields.append(("advice_summary", advice_summary))
     if not fields:
-        return get_advice(advice_id, db_path) is not None
+        return get_advice(advice_id, resolved) is not None
     set_clause = ", ".join(f"{name} = ?" for name, _ in fields)
     values = [value for _, value in fields] + [advice_id]
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         cursor = conn.execute(
             f"UPDATE advice_given SET {set_clause} WHERE id = ?", values
         )
         return cursor.rowcount > 0
 
 
-def delete_decision(decision_id: int, db_path: Path = DB_PATH) -> bool:
-    if not db_path.exists():
+def delete_decision(decision_id: int, db_path: Path | None = None) -> bool:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return False
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         cursor = conn.execute("DELETE FROM decisions WHERE id = ?", (decision_id,))
         return cursor.rowcount > 0
 
 
-def delete_initiative(initiative_id: int, db_path: Path = DB_PATH) -> bool:
-    if not db_path.exists():
+def delete_initiative(initiative_id: int, db_path: Path | None = None) -> bool:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return False
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         cursor = conn.execute("DELETE FROM initiatives WHERE id = ?", (initiative_id,))
         return cursor.rowcount > 0
 
 
-def delete_advice(advice_id: int, db_path: Path = DB_PATH) -> bool:
-    if not db_path.exists():
+def delete_advice(advice_id: int, db_path: Path | None = None) -> bool:
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
         return False
-    with _get_conn(db_path) as conn:
+    with _get_conn(resolved) as conn:
         cursor = conn.execute("DELETE FROM advice_given WHERE id = ?", (advice_id,))
         return cursor.rowcount > 0
 
@@ -1068,16 +1090,6 @@ _VALID_OUTBOUND_CHANNELS = {"discord_dm", "telegram", "slack_dm", "email"}
 # bounding storage + the prompt-injection surface re-injected into the reply
 # turn.
 _MAX_OUTBOUND_CONTEXT_CHARS = 2000
-
-
-def _resolve_db_path(db_path: Path | None) -> Path:
-    """Return the caller's path or the current module-level DB_PATH.
-
-    Reading DB_PATH dynamically (not via default-arg binding) lets tests
-    monkeypatch `openexecutive.memory.episodic.DB_PATH` and have it actually
-    take effect — default arguments capture the value at def time.
-    """
-    return db_path if db_path is not None else DB_PATH
 
 
 _VALID_INSERT_STATUSES = {"pending", "done"}
@@ -1816,7 +1828,7 @@ def last_contact_at_by_person(
 
 
 def format_for_prompt(
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
     max_chars: int = 2500,
     session_id: str = "",
 ) -> str:
@@ -1830,9 +1842,10 @@ def format_for_prompt(
     Output is bounded by `max_chars`. When over budget, oldest advice is dropped
     first, then oldest decisions. Initiatives are always kept.
     """
-    decisions = get_recent_decisions(limit=5, db_path=db_path, session_id=session_id)
-    initiatives = get_active_initiatives(db_path=db_path)
-    advice_items = get_recent_advice(limit=2, db_path=db_path, session_id=session_id)
+    resolved = _resolve_db_path(db_path)
+    decisions = get_recent_decisions(limit=5, db_path=resolved, session_id=session_id)
+    initiatives = get_active_initiatives(db_path=resolved)
+    advice_items = get_recent_advice(limit=2, db_path=resolved, session_id=session_id)
 
     if not decisions and not initiatives and not advice_items:
         return ""
@@ -2681,7 +2694,7 @@ def _audit_extraction(
 async def extract_and_store(
     user_message: str,
     assistant_response: str,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
     session_id: str = "",
     audit_session_id: str | None = None,
     audit_turn_id: str | None = None,
@@ -2700,6 +2713,8 @@ async def extract_and_store(
     """
     from openexecutive.audit.context import get_active_ids, set_turn
 
+    resolved = _resolve_db_path(db_path)
+
     # Fall back per field, not as a pair. Binding a half-empty snapshot
     # would erase the ambient counterpart — a row under a session with no
     # turn, or a turn that joins to nothing — which is worse than either
@@ -2712,13 +2727,13 @@ async def extract_and_store(
 
     if (effective_session, effective_turn) == (ambient_session, ambient_turn):
         await _extract_and_store(
-            user_message, assistant_response, db_path, session_id
+            user_message, assistant_response, resolved, session_id
         )
         return
 
     with set_turn(session_id=effective_session, turn_id=effective_turn):
         await _extract_and_store(
-            user_message, assistant_response, db_path, session_id
+            user_message, assistant_response, resolved, session_id
         )
 
 
