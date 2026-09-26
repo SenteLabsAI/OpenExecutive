@@ -14,7 +14,7 @@ A managed cloud offering is coming (https://openexecutive.ai), where you can get
 
 ## Demo
 
-[![Open Executive demo video](https://img.youtube.com/vi/O_g97xxVTMk/maxresdefault.jpg)](https://youtu.be/O_g97xxVTMk)
+[![Open Executive demo video](https://img.youtube.com/vi/O_g97xxVTMk/hqdefault.jpg)](https://youtu.be/O_g97xxVTMk)
 
 A walkthrough of Open Executive in action — [watch on YouTube](https://youtu.be/O_g97xxVTMk).
 
