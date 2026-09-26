@@ -243,8 +243,13 @@ def test_collect_survives_odd_files_and_git_config(
     _git(repo, "config", "user.name", "t")
     _git(repo, "config", "diff.noprefix", "true")
     _git(repo, "config", "diff.renames", "false")
-    _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    old = repo / PKG / "memory" / "old name.py"
+    old.parent.mkdir(parents=True)
+    old.write_text("# TODO carried over\n" * 5)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
     _git(repo, "checkout", "-qb", "feature")
+    _git(repo, "mv", str(old), str(old.with_name("new name.py")))
     integ = repo / PKG / "integrations"
     integ.mkdir(parents=True)
     (integ / "caf\u00e9.py").write_text("# TODO\n")
@@ -259,6 +264,9 @@ def test_collect_survives_odd_files_and_git_config(
     assert change.added_lines[PKG + "integrations/caf\u00e9.py"] == ["# TODO"]
     assert change.added_lines[PKG + "integrations/sp ace.py"] == ["raise NotImplementedError"]
     assert PKG + "integrations/latin1.txt" in change.changed
+    assert {PKG + "memory/old name.py", PKG + "memory/new name.py"} <= change.changed
+    assert change.renamed == {PKG + "memory/new name.py"}
+    assert PKG + "memory/new name.py" not in change.added_lines  # a pure move adds no lines
     assert pr_checks.check_no_stubs(change).level == "FAIL"
     assert pr_checks.check_arch_drift(change).level == "FAIL"
 
