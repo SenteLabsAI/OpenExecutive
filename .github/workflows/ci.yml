@@ -86,6 +86,11 @@ jobs:
       - name: Run unit tests
         run: cd packages/core && uv run pytest tests/unit/ -n auto --dist loadfile --tb=short
 
+      # Route-level tests against a temp SQLite DB, with the model calls
+      # stubbed; no API key needed. Left out of CI, one rotted unnoticed.
+      - name: Run integration tests
+        run: cd packages/core && uv run pytest tests/integration/ -n auto --dist loadfile --tb=short
+
   ui-typecheck:
     name: UI type check
     runs-on: ubuntu-latest

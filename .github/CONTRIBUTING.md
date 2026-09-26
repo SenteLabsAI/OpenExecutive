@@ -7,8 +7,8 @@
 3. Copy `.env.example` to `.env` and add your `ANTHROPIC_API_KEY`
 4. Start the dev server: `make dev`
 5. Run the tests: `make test`
-6. Before opening a PR: `make check` (lint, unit tests, the UI build if
-   `packages/ui` changed, and the PR rules below)
+6. Before opening a PR: `make check` (lint, unit and integration tests, the UI
+   build if `packages/ui` changed, and the PR rules below). No API key needed.
 
 ## Branch Naming
 
@@ -21,7 +21,7 @@
 ## PR Requirements
 
 All PRs must:
-1. Pass CI (ruff, mypy, unit tests, and `scripts/pr_checks.py` — the no-stubs,
+1. Pass CI (ruff, mypy, unit and integration tests, and `scripts/pr_checks.py` — the no-stubs,
    eval-scenario and architecture-docs rules below)
 2. Include working code — no stubs, no placeholders
 3. Include tests for new behavior
@@ -40,6 +40,10 @@ All PRs must:
    how it works, with the checklist filled in. PRs submitted with an empty
    template will be closed; you're welcome to resubmit with the sections
    completed.
+8. **Address the automated review.** Claude reviews each non-draft PR opened
+   from a branch in this repo and leaves inline comments. Fix each finding or
+   reply saying why not. PRs from forks don't get it, because GitHub doesn't
+   pass secrets to fork workflows; a maintainer reviews those.
 
 ## Adding a New Specialist Agent
 

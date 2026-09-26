@@ -203,16 +203,17 @@ See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no defa
 > is unaffected — lint the specific test files you touched rather than
 > `tests/` as a whole.
 
-> **Known-red on `main`:** `tests/integration/test_chat_committee.py::
-> test_chat_with_committee_streams_phases_and_revised_text` fails on the
-> base commit independently of local changes; deselect it when comparing
-> full-suite runs.
+> **Integration tests need no API key:** `tests/integration/` drives the
+> FastAPI routes against a temp SQLite DB with the model calls stubbed, and
+> CI runs it next to `tests/unit/`. Stub `utils.session_title.generate_session_title`
+> and `knowledge.retriever.retrieve` in any new route test, or it reaches the
+> live API (see `patched_deps` in `test_chat_committee.py`).
 
 ```bash
 # Unit tests (no API calls)
 pytest packages/core/tests/unit/ -v
 
-# Integration tests (requires ANTHROPIC_API_KEY)
+# Integration tests (route-level, stubbed model calls, no API key)
 pytest packages/core/tests/integration/ -v
 
 # Eval suite
@@ -268,4 +269,5 @@ Before calling a code change done or opening a PR:
 - New behavior has tests; a new agent or prompt change has eval scenarios.
 - A change to what a documented topic describes updates its `prebuilt/<section>.json` (see Architecture Docs), or carries an `Arch-Docs: n/a - <reason>` waiver.
 - A change touching `api/`, `integrations/`, `mcp_server/`, auth, `orchestrator/outbound_guard.py`, the cached prompt blocks or `.gitignore` gets a pass from the `security-reviewer` agent (or `/security-review`) before the PR opens.
-- Every non-draft PR also gets an automated Claude review (`.github/workflows/claude-code-review.yml`) as inline comments. Fix or answer each finding.
+- Every non-draft PR also gets an automated Claude review (`.github/workflows/claude-code-review.yml`) as inline comments marked 🔴 must-fix / 🟡 optional / 🟣 pre-existing. Fix or answer each finding.
+- When driving a PR to green, the `steward` skill (`.claude/skills/steward/SKILL.md`) covers CI failures and review findings.
