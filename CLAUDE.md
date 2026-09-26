@@ -173,7 +173,11 @@ See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no defa
 
 > **UI lint:** `packages/ui` has no ESLint config — `npm run lint` opens an
 > interactive setup prompt. `npm run build` (`next build`) is the UI's
-> lint/type gate.
+> lint/type gate. CI's UI job also runs `npx tsc --noEmit` and `npm test`,
+> and some of those `scripts/*.test.mjs` parity tests parse Python source
+> (`api/main.py`'s `_LOOPBACK_HOST_RE` / `_OWN_PAGE_FETCH_SITES`,
+> `utils/deployment.py`'s `FALSEY_ENV`) — moving or renaming one of those
+> breaks the UI job, so run `npm test` too when you touch them.
 
 > **Audit-log test pollution:** `audit.log_event` writes to the default
 > `./episodic_memory.db` unless the test isolates it. A test module that
