@@ -1,6 +1,7 @@
 """Chat route integration tests for the Committee opt-in path."""
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,14 @@ def patched_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.onboarding import profile_builder
     monkeypatch.setattr(profile_builder, "load_or_create_profile", lambda: CompanyProfile())
     monkeypatch.setattr(retriever, "retrieve", lambda **_k: "")
+
+    # Keep the turn off the live Anthropic API (the route titles new sessions).
+    from openexecutive.utils import session_title
+
+    async def _no_title(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(session_title, "generate_session_title", _no_title)
 
 
 def test_chat_with_committee_streams_phases_and_revised_text(
@@ -103,9 +112,15 @@ def test_chat_with_committee_streams_phases_and_revised_text(
     assert '"type": "done"' in body
 
     # Persisted assistant message is the revised text, not the draft.
-    msgs = session_store.list_sessions(db_path=temp_db)
-    assert len(msgs) == 1
-    history = session_store.load_messages(msgs[0]["session_id"], db_path=temp_db)
+    # The session id comes from the done event; list_sessions() is scoped
+    # to an owner, which this unauthenticated test app doesn't have.
+    events = [
+        json.loads(line[len("data: "):])
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+    session_id = next(e["session_id"] for e in events if e.get("type") == "done")
+    history = session_store.load_messages(session_id, db_path=temp_db)
     assistant = [m for m in history if m["role"] == "assistant"]
     assert len(assistant) == 1
     assert assistant[0]["content"] == "Revised executive response."

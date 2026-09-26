@@ -7,6 +7,8 @@
 3. Copy `.env.example` to `.env` and add your `ANTHROPIC_API_KEY`
 4. Start the dev server: `make dev`
 5. Run the tests: `make test`
+6. Before opening a PR: `make check` (lint, unit and integration tests, the UI
+   build if `packages/ui` changed, and the PR rules below). No API key needed.
 
 ## Branch Naming
 
@@ -19,7 +21,8 @@
 ## PR Requirements
 
 All PRs must:
-1. Pass CI (ruff, mypy, unit tests)
+1. Pass CI (ruff, mypy, unit and integration tests, and `scripts/pr_checks.py` — the no-stubs,
+   eval-scenario and architecture-docs rules below)
 2. Include working code — no stubs, no placeholders
 3. Include tests for new behavior
 4. For new or modified agents: include at least 2 eval scenarios
@@ -37,6 +40,10 @@ All PRs must:
    how it works, with the checklist filled in. PRs submitted with an empty
    template will be closed; you're welcome to resubmit with the sections
    completed.
+8. **Address the automated review.** Claude reviews each non-draft PR opened
+   from a branch in this repo and leaves inline comments. Fix each finding or
+   reply saying why not. PRs from forks don't get it, because GitHub doesn't
+   pass secrets to fork workflows; a maintainer reviews those.
 
 ## Adding a New Specialist Agent
 
@@ -84,6 +91,21 @@ Each `prebuilt/<id>.json` carries `section_id`, `title`, `markdown`, `mermaid`
 (string or `null`), and `generated_at`; validate edits with
 `python -m json.tool`. Pure additions to `SPECIALIST_REGISTRY` are
 auto-reflected in the `agents` facts and need no YAML edit.
+
+CI enforces this with `scripts/pr_checks.py`: a change under a documented
+module fails unless one of that module's `prebuilt/<section>.json` files also
+changed (the module → section map is `SECTIONS_FOR` in that script; update it
+when you add a module or section). A YAML-only edit does not count. If the
+change genuinely does not alter what the section describes (a rename, an
+internal refactor), waive it with a line in a commit message or the PR
+description:
+
+```
+Arch-Docs: n/a - <reason>
+```
+
+The CI job reads the PR description when it runs, so after adding the line
+to the description, push a commit or re-run the job.
 
 ## Prompt Changes
 
