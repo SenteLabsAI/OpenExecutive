@@ -3,14 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { AddGoalForm, GOAL_STATUS_COLORS, GoalRow } from "@/components/goals/GoalEditor";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { listDepartments, type DepartmentState } from "@/lib/api";
 import { applyGoalChange, groupGoalsByArea } from "@/lib/goalAreas";
 
 // Every goal in one place, grouped by area. An area is a department row under
 // the hood (solo mode calls it an area and shows this page instead of
 // Departments); goals are added, edited and deleted through the same
-// slug-scoped goal routes a department's own page uses. Reachable in team mode
-// too — it is simply not in the team nav.
+// slug-scoped goal routes a department's own page uses. Team mode links it
+// too, and the copy says "department" there.
 
 const STATUS_LABEL: Record<string, string> = {
   on_track: "on track",
@@ -23,6 +24,8 @@ export default function GoalsPage() {
   const [error, setError] = useState<string | null>(null);
   // The area the add form opens on, or null while it is closed.
   const [addingTo, setAddingTo] = useState<string | null>(null);
+  const { mode } = useWorkspace();
+  const unit = mode === "solo" ? "area" : "department";
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +68,7 @@ export default function GoalsPage() {
             )}
           </div>
           <p className="text-sm text-fg-muted mb-6">
-            What you&apos;re working towards, grouped by area. Tell the Executive how a goal is
+            What you&apos;re working towards, grouped by {unit}. Tell the Executive how a goal is
             going in chat and it updates the goal for you.
           </p>
 
@@ -84,6 +87,7 @@ export default function GoalsPage() {
                     key={addingTo}
                     slug={addingTo}
                     areas={grouped.all}
+                    areaLabel={unit === "area" ? "Area" : "Department"}
                     onCreated={(goal) => {
                       setDepartments((ds) => applyGoalChange(ds ?? [], { saved: goal }));
                       setAddingTo(null);
@@ -95,15 +99,16 @@ export default function GoalsPage() {
 
               {grouped.all.length === 0 ? (
                 <p className="text-sm text-fg-muted">
-                  There are no areas to put goals in yet. Areas come with your profile —
-                  finish setup first.
+                  {mode === "solo"
+                    ? "There are no areas to put goals in yet. Areas come with your profile — finish setup first."
+                    : "There are no departments to put goals in yet. Add one on the Departments page first."}
                 </p>
               ) : total === 0 && addingTo === null ? (
                 <div className="rounded-xl border border-line bg-surface-elevated p-6 text-center">
                   <p className="text-sm text-fg">No goals yet.</p>
                   <p className="text-xs text-fg-muted mt-1">
-                    Add the first thing you&apos;re working towards, and pick the area it
-                    belongs to.
+                    Add the first thing you&apos;re working towards — just type it; the
+                    timeframe defaults to this quarter.
                   </p>
                   <button
                     type="button"
@@ -156,7 +161,7 @@ export default function GoalsPage() {
               {grouped.empty.length > 0 && total > 0 && (
                 <section>
                   <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-2">
-                    Other areas
+                    Other {unit}s
                   </h2>
                   <div className="flex flex-wrap gap-2">
                     {grouped.empty.map((a) => (

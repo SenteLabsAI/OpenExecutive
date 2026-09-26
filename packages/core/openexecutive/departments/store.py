@@ -646,10 +646,9 @@ def _mirror_goal_to_honcho(
     try:
         from openexecutive.memory.honcho_client import append_department_note
 
-        body = (
-            f"Goal {transition} ({period_type} {period_value}): {key_result}\n"
-            f"Target: {target}"
-        )
+        body = f"Goal {transition} ({period_type} {period_value}): {key_result}"
+        if target:
+            body += f"\nTarget: {target}"
         if current:
             body += f"\nCurrent: {current}"
         if status:

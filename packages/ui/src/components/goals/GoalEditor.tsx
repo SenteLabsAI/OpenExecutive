@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import TimeframePicker, { suggestPeriodValue } from "@/components/TimeframePicker";
+import TimeframePicker, { TimeframeChips, suggestPeriodValue } from "@/components/TimeframePicker";
 import {
   createGoal,
   deleteGoal,
@@ -38,8 +38,28 @@ export const GOAL_STATUS_COLORS: Record<string, string> = {
   off_track: "bg-rose-500/20 text-rose-300 border-rose-500/30",
 };
 
+const INPUT_CLS =
+  "px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500";
+
+const GOAL_PLACEHOLDER = "e.g. Close Series A";
+const TARGET_PLACEHOLDER = "How will you know it's done? e.g. $5M raised";
+const CURRENT_PLACEHOLDER = "e.g. $2M committed";
+
 function cls(...parts: (string | false | undefined)[]) {
   return parts.filter(Boolean).join(" ");
+}
+
+// Enter submits, Escape cancels — for the single-line inputs of both forms.
+function formKeys(onSubmit: () => void, onCancel: () => void) {
+  return (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      onSubmit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +80,12 @@ interface GoalRowProps {
 export function formatGoalPeriod(g: Goal): string {
   if (g.period_type === "ongoing") return g.period_value || "Ongoing";
   return `${g.period_type.charAt(0).toUpperCase() + g.period_type.slice(1)}: ${g.period_value}`;
+}
+
+// "Target: $5M — Current: $2M", either half alone, or "" when neither is set.
+export function formatGoalProgress(g: Pick<Goal, "target" | "current">): string {
+  if (g.target) return `Target: ${g.target}${g.current ? ` — Current: ${g.current}` : ""}`;
+  return g.current ? `Current: ${g.current}` : "";
 }
 
 export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: GoalRowProps) {
@@ -104,6 +130,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
   const stale = isStaleReview(goal.last_reviewed_at);
 
   if (!editing) {
+    const progress = formatGoalProgress(goal);
     return (
       <div
         className={cls(
@@ -121,10 +148,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
         </span>
         <div className="flex-1 min-w-0">
           <div className="text-sm text-fg font-medium">{goal.key_result}</div>
-          <div className="text-xs text-fg-muted mt-0.5">
-            Target: {goal.target}
-            {goal.current ? ` — Current: ${goal.current}` : ""}
-          </div>
+          {progress && <div className="text-xs text-fg-muted mt-0.5">{progress}</div>}
           <div className="text-xs text-fg-subtle mt-0.5 flex items-center gap-2 flex-wrap">
             <span>{formatGoalPeriod(goal)}</span>
             <span aria-hidden="true">·</span>
@@ -137,7 +161,9 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
             )}
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        {/* Always shown on small screens (no hover on touch); revealed on
+            hover or keyboard focus from md up. */}
+        <div className="flex flex-col items-end gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition-opacity flex-shrink-0">
           <div className="flex gap-1">
             <button
               onClick={() => setEditingAndNotify(true)}
@@ -148,7 +174,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
             <button
               disabled={deleting}
               onClick={async () => {
-                if (!window.confirm("Delete this Goal?")) return;
+                if (!window.confirm("Delete this goal?")) return;
                 setDeleting(true);
                 setErr(null);
                 try {
@@ -170,8 +196,56 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
     );
   }
 
+  const canSave = !saving && form.key_result.trim() !== "" && form.period_value.trim() !== "";
+
+  function cancel() {
+    setForm({
+      period_type: goal.period_type,
+      period_value: goal.period_value,
+      key_result: goal.key_result,
+      target: goal.target,
+      current: goal.current,
+      status: goal.status as GoalStatus,
+    });
+    setEditingAndNotify(false);
+    setErr(null);
+  }
+
+  async function save() {
+    if (!canSave) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const updated = await updateGoal(slug, goal.id!, {
+        ...form,
+        key_result: form.key_result.trim(),
+        period_value: form.period_value.trim(),
+        target: form.target.trim(),
+        current: form.current.trim(),
+      });
+      onSaved(updated);
+      setEditingAndNotify(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const onKeyDown = formKeys(save, cancel);
+
   return (
     <div className="py-3 border-b border-line last:border-0 space-y-2">
+      <label className="text-xs text-fg-muted flex flex-col gap-1">
+        Goal
+        <input
+          value={form.key_result}
+          onChange={(e) => setForm((f) => ({ ...f, key_result: e.target.value }))}
+          onKeyDown={onKeyDown}
+          className={INPUT_CLS}
+          placeholder={GOAL_PLACEHOLDER}
+        />
+      </label>
       <TimeframePicker
         periodType={form.period_type}
         periodValue={form.period_value}
@@ -183,7 +257,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
         <select
           value={form.status}
           onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as GoalStatus }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+          className={INPUT_CLS}
         >
           {GOAL_STATUS_OPTS.map((s) => (
             <option key={s} value={s}>
@@ -193,67 +267,37 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
         </select>
       </label>
       <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Key result
-        <input
-          value={form.key_result}
-          onChange={(e) => setForm((f) => ({ ...f, key_result: e.target.value }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-          placeholder="Close Series A by Jun 30"
-        />
-      </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Target
+        Target (optional)
         <input
           value={form.target}
           onChange={(e) => setForm((f) => ({ ...f, target: e.target.value }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-          placeholder="What does done look like?"
+          onKeyDown={onKeyDown}
+          className={INPUT_CLS}
+          placeholder={TARGET_PLACEHOLDER}
         />
       </label>
       <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Current
+        Where it stands now (optional)
         <input
           value={form.current}
           onChange={(e) => setForm((f) => ({ ...f, current: e.target.value }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-          placeholder="Where are we now?"
+          onKeyDown={onKeyDown}
+          className={INPUT_CLS}
+          placeholder={CURRENT_PLACEHOLDER}
         />
       </label>
       {err && <p className="text-xs text-rose-300">{err}</p>}
       <div className="flex gap-2">
         <button
-          disabled={saving}
-          onClick={async () => {
-            setSaving(true);
-            setErr(null);
-            try {
-              const updated = await updateGoal(slug, goal.id!, form);
-              onSaved(updated);
-              setEditingAndNotify(false);
-            } catch (e) {
-              setErr(e instanceof Error ? e.message : "Save failed");
-            } finally {
-              setSaving(false);
-            }
-          }}
+          disabled={!canSave}
+          onClick={save}
           className="px-3 py-1.5 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
         >
           {saving ? "Saving…" : "Save"}
         </button>
         <button
           disabled={saving}
-          onClick={() => {
-            setForm({
-              period_type: goal.period_type,
-              period_value: goal.period_value,
-              key_result: goal.key_result,
-              target: goal.target,
-              current: goal.current,
-              status: goal.status as GoalStatus,
-            });
-            setEditingAndNotify(false);
-            setErr(null);
-          }}
+          onClick={cancel}
           className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
         >
           Cancel
@@ -270,13 +314,18 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
 interface AddGoalFormProps {
   /** The department (area) the goal is added to — the picker's first choice when `areas` is set. */
   slug: string;
-  /** When set, an "Area" picker over these lets the user choose where the goal goes. */
+  /** When set, a picker over these lets the user choose where the goal goes. */
   areas?: { slug: string; title: string }[];
+  /** The picker's label: "Area" (solo) or "Department" (team). */
+  areaLabel?: string;
   onCreated: (goal: Goal) => void;
   onCancel: () => void;
 }
 
-export function AddGoalForm({ slug, areas, onCreated, onCancel }: AddGoalFormProps) {
+// One thing to type — the goal. The timeframe is a chip (this quarter by
+// default), target and current are optional, and a new goal starts on track
+// until the department's check-in grades it.
+export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCancel }: AddGoalFormProps) {
   const [areaSlug, setAreaSlug] = useState(slug);
   const [form, setForm] = useState<{
     period_type: PeriodType;
@@ -284,14 +333,12 @@ export function AddGoalForm({ slug, areas, onCreated, onCancel }: AddGoalFormPro
     key_result: string;
     target: string;
     current: string;
-    status: GoalStatus;
   }>(() => ({
     period_type: "quarter",
     period_value: suggestPeriodValue("quarter"),
     key_result: "",
     target: "",
     current: "",
-    status: "on_track",
   }));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -301,16 +348,54 @@ export function AddGoalForm({ slug, areas, onCreated, onCancel }: AddGoalFormPro
     firstRef.current?.focus();
   }, []);
 
+  const canSubmit = !saving && form.key_result.trim() !== "";
+
+  async function submit() {
+    if (!canSubmit) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const target = form.target.trim();
+      const current = form.current.trim();
+      const goal = await createGoal(areaSlug, {
+        period_type: form.period_type,
+        period_value: form.period_value,
+        key_result: form.key_result.trim(),
+        ...(target && { target }),
+        ...(current && { current }),
+      });
+      onCreated(goal);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Create failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const onKeyDown = formKeys(submit, onCancel);
+
   return (
-    <div className="py-3 border-b border-line space-y-2 bg-surface-overlay/30 px-4 -mx-4 rounded-lg">
-      <div className="text-xs font-semibold text-fg-muted uppercase tracking-wide mb-1">New Goal</div>
-      {areas && (
+    <div className="py-3 border-b border-line space-y-3 bg-surface-overlay/30 px-4 -mx-4 rounded-lg">
+      <div className="text-xs font-semibold text-fg-muted uppercase tracking-wide">New goal</div>
+      <label className="text-xs text-fg-muted flex flex-col gap-1">
+        What&apos;s the goal?
+        <input
+          ref={firstRef}
+          value={form.key_result}
+          onChange={(e) => setForm((f) => ({ ...f, key_result: e.target.value }))}
+          onKeyDown={onKeyDown}
+          maxLength={512}
+          className={INPUT_CLS}
+          placeholder={GOAL_PLACEHOLDER}
+        />
+      </label>
+      {areas && areas.length > 1 && (
         <label className="text-xs text-fg-muted flex flex-col gap-1">
-          Area
+          {areaLabel}
           <select
             value={areaSlug}
             onChange={(e) => setAreaSlug(e.target.value)}
-            className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+            className={INPUT_CLS}
           >
             {areas.map((a) => (
               <option key={a.slug} value={a.slug}>
@@ -320,73 +405,42 @@ export function AddGoalForm({ slug, areas, onCreated, onCancel }: AddGoalFormPro
           </select>
         </label>
       )}
-      <TimeframePicker
+      <TimeframeChips
         periodType={form.period_type}
-        periodValue={form.period_value}
         onChange={(pt, pv) => setForm((f) => ({ ...f, period_type: pt, period_value: pv }))}
-        size="compact"
       />
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Status
-        <select
-          value={form.status}
-          onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as GoalStatus }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-        >
-          {GOAL_STATUS_OPTS.map((s) => (
-            <option key={s} value={s}>
-              {s.replace("_", " ")}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Key result
-        <input
-          ref={firstRef}
-          value={form.key_result}
-          onChange={(e) => setForm((f) => ({ ...f, key_result: e.target.value }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-          placeholder="What do we want to achieve?"
-        />
-      </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Target
-        <input
-          value={form.target}
-          onChange={(e) => setForm((f) => ({ ...f, target: e.target.value }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-          placeholder="Measurable target"
-        />
-      </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Current (optional)
-        <input
-          value={form.current}
-          onChange={(e) => setForm((f) => ({ ...f, current: e.target.value }))}
-          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-          placeholder="Current progress"
-        />
-      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <label className="text-xs text-fg-muted flex flex-col gap-1">
+          Target (optional)
+          <input
+            value={form.target}
+            onChange={(e) => setForm((f) => ({ ...f, target: e.target.value }))}
+            onKeyDown={onKeyDown}
+            maxLength={512}
+            className={INPUT_CLS}
+            placeholder={TARGET_PLACEHOLDER}
+          />
+        </label>
+        <label className="text-xs text-fg-muted flex flex-col gap-1">
+          Where it stands now (optional)
+          <input
+            value={form.current}
+            onChange={(e) => setForm((f) => ({ ...f, current: e.target.value }))}
+            onKeyDown={onKeyDown}
+            maxLength={512}
+            className={INPUT_CLS}
+            placeholder={CURRENT_PLACEHOLDER}
+          />
+        </label>
+      </div>
       {err && <p className="text-xs text-rose-300">{err}</p>}
       <div className="flex gap-2">
         <button
-          disabled={saving || !form.period_value || !form.key_result || !form.target}
-          onClick={async () => {
-            setSaving(true);
-            setErr(null);
-            try {
-              const goal = await createGoal(areaSlug, form);
-              onCreated(goal);
-            } catch (e) {
-              setErr(e instanceof Error ? e.message : "Create failed");
-            } finally {
-              setSaving(false);
-            }
-          }}
+          disabled={!canSubmit}
+          onClick={submit}
           className="px-3 py-1.5 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
         >
-          {saving ? "Creating…" : "Add Goal"}
+          {saving ? "Adding…" : "Add goal"}
         </button>
         <button
           disabled={saving}

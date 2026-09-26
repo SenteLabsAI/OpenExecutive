@@ -429,6 +429,7 @@ def _render_goals(state: object) -> str:  # type: ignore[type-arg]
     lines = ["**Goals:**"]
     for goal in state.goals:
         current = f" (current: {goal.current})" if goal.current else ""
+        target = f" — target: {goal.target}" if goal.target else ""
         period_label = (
             goal.period_value
             if goal.period_type == "ongoing"
@@ -442,7 +443,7 @@ def _render_goals(state: object) -> str:  # type: ignore[type-arg]
         # without the prefix and are simply ungradable this cycle.
         id_prefix = f"[id={goal.id}] " if goal.id is not None else ""
         lines.append(
-            f"- {id_prefix}[{goal.status}] {goal.key_result} — target: {goal.target}{current}"
+            f"- {id_prefix}[{goal.status}] {goal.key_result}{target}{current}"
             f" ({period_label})"
         )
     return "\n".join(lines)

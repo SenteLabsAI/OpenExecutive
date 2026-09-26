@@ -4,6 +4,7 @@ Includes coverage for the legacy /okrs aliases kept for one release.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -179,6 +180,81 @@ def test_create_goal_with_each_period_type(client: TestClient) -> None:
         body = resp.json()
         assert body["period_type"] == period_type
         assert body["period_value"] == period_value
+
+
+def test_create_goal_needs_only_the_goal_text(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The add-goal form sends just the goal: the period defaults to the
+    current one in the user's zone and the target is left empty."""
+    from openexecutive.orchestrator import department_tools
+
+    monkeypatch.setattr(department_tools, "_today_local", lambda: date(2026, 9, 25))
+    resp = client.post("/departments/finance/goals", json={"key_result": "Close Series A"})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["key_result"] == "Close Series A"
+    assert body["period_type"] == "quarter"
+    assert body["period_value"] == "Q3 2026"
+    assert body["target"] == ""
+    assert body["status"] == "on_track"
+
+
+@pytest.mark.parametrize(
+    ("period_type", "expected"),
+    [("week", "Week of Sep 21"), ("month", "September 2026"), ("year", "2026"), ("ongoing", "Ongoing")],
+)
+def test_create_goal_defaults_a_blank_period_for_its_type(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, period_type: str, expected: str
+) -> None:
+    from openexecutive.orchestrator import department_tools
+
+    monkeypatch.setattr(department_tools, "_today_local", lambda: date(2026, 9, 25))
+    resp = client.post(
+        "/departments/finance/goals",
+        json={"period_type": period_type, "period_value": "  ", "key_result": "K"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["period_value"] == expected
+
+
+def test_create_goal_falls_back_to_utc_when_the_zone_is_unreadable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import department_tools
+
+    def _boom() -> date:
+        raise RuntimeError("zone unreadable")
+
+    monkeypatch.setattr(department_tools, "_today_local", _boom)
+    resp = client.post("/departments/finance/goals", json={"key_result": "K"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["period_value"].startswith("Q")
+
+
+def test_create_goal_still_requires_the_goal_text(client: TestClient) -> None:
+    resp = client.post("/departments/finance/goals", json={"key_result": ""})
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("field", ["key_result", "period_value"])
+def test_patch_goal_rejects_blanking_required_text(client: TestClient, field: str) -> None:
+    goal_id = client.post(
+        "/departments/finance/goals",
+        json={"period_value": "Q2 2026", "key_result": "K", "target": "T"},
+    ).json()["id"]
+    resp = client.patch(f"/departments/finance/goals/{goal_id}", json={field: ""})
+    assert resp.status_code == 422
+
+
+def test_patch_goal_can_clear_the_target(client: TestClient) -> None:
+    goal_id = client.post(
+        "/departments/finance/goals",
+        json={"period_value": "Q2 2026", "key_result": "K", "target": "T"},
+    ).json()["id"]
+    resp = client.patch(f"/departments/finance/goals/{goal_id}", json={"target": ""})
+    assert resp.status_code == 200
+    assert resp.json()["target"] == ""
 
 
 def test_create_goal_for_unknown_department(client: TestClient) -> None:
