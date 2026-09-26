@@ -76,7 +76,7 @@ EVENT_TYPES: tuple[str, ...] = (
     # Act as me (delegation/) — every one written private to the principal.
     "delegation_settings_changed",  # a person turned Act as me on or off (PUT /delegation)
     "delegation_gmail_verified",    # a person's own Gmail was checked and found usable when turning it on
-    "delegation_voice_changed",     # "How I write" learned, edited, locked or reset
+    "delegation_voice_changed",     # "How I write" learned, edited, locked, reset or its signature re-read
     "delegation_drafted",           # ghostwrite_email saved a draft in a person's own Gmail
 )
 
