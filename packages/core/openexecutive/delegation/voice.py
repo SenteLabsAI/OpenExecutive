@@ -287,9 +287,10 @@ def _short_text(value: object, cap: int, *, lines: int) -> str | None:
 
     A literal backslash-n is a line break: a model can write the escape
     rather than the break, and a stored profile is repaired as it is read.
-    It is read after normalizing (NFKC can make a backslash, and dropping a
-    control character can join one to an "n"), so what is stored reads back
-    the same."""
+    Such a value keeps its first ``lines`` lines rather than being lost; a
+    typed one with too many lines is refused. The escape is read after
+    normalizing (NFKC can make a backslash, and dropping a control character
+    can join one to an "n"), so what is stored reads back the same."""
     if value is None:
         return ""
     if not isinstance(value, str):
@@ -298,10 +299,13 @@ def _short_text(value: object, cap: int, *, lines: int) -> str | None:
         ch for ch in unicodedata.normalize("NFKC", value)
         if ch == "\n" or unicodedata.category(ch) not in ("Cc", "Cf")
     )
+    escaped = "\\n" in text
     parts = [_normalize(p) for p in text.replace("\\n", "\n").split("\n")]
     parts = [p for p in parts if p]
     if not parts:
         return ""
+    if len(parts) > lines and escaped:
+        parts = parts[:lines]
     if len(parts) > lines or any(len(p) > cap for p in parts):
         return None
     joined = "\n".join(parts)

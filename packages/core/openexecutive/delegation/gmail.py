@@ -325,7 +325,8 @@ def html_to_text(markup: str) -> str:
             has_text = False
         elif piece != _EDGE:
             out.append(piece)
-            has_text = has_text or bool(piece.strip())
+            # Only markup whitespace: a line of &nbsp; is a line the reader sees.
+            has_text = has_text or bool(piece.strip(" \t\r\n\f\v"))
     lines = [ln.rstrip() for ln in "".join(out).splitlines()]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 

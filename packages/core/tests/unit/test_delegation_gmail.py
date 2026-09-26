@@ -177,6 +177,7 @@ def test_html_only_mail_becomes_text() -> None:
     ("<div>One</div><div><br></div><div>Three</div>", ["One", "", "Three"]),  # Gmail's blank line
     ("<div>One<br></div><div>Two</div>", ["One", "Two"]),  # a closing <br> adds no line
     ("<p>One</p><p>Two</p>", ["One", "Two"]),
+    ("<p>Hi Dana,</p><p>&nbsp;</p><p>Thanks.</p>", ["Hi Dana,", "", "Thanks."]),  # an editor's blank line
     ("Before<table><tr><td>Cell</td></tr></table>After", ["Before", "Cell", "After"]),
     ("Intro<ul><li>One</li><li>Two</li></ul>", ["Intro", "One", "Two"]),
     ("a<br/>b<BR >c", ["a", "b", "c"]),

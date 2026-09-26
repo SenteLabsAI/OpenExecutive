@@ -124,6 +124,15 @@ class VoiceUpdate(BaseModel):
     clear_signature: bool = False
 
 
+# What a refused field must be, for the message an edit gets back.
+_VOICE_RULES: dict[str, str] = {
+    "greetings": "a greeting is one short line, and {first} is its only placeholder",
+    "sign_off": "the sign-off is at most two short lines",
+    "habits": "a habit or never-rule says how you write, without anyone's name",
+    "avoid": "a habit or never-rule says how you write, without anyone's name",
+}
+
+
 def _refuse(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
@@ -310,12 +319,15 @@ def update_delegation_voice(request: Request, body: VoiceUpdate) -> VoiceOut:
         if d["field"].split(".")[0] in sent
     ]
     if rejected:
+        fields = [d["field"].split(".")[0] for d in rejected]
+        rules = dict.fromkeys(_VOICE_RULES[f] for f in fields if f in _VOICE_RULES)
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "invalid_voice",
-                "message": "Some of it can't be saved: write about how you write, "
-                "without links, handles, amounts or anyone's name.",
+                "message": "Some of it can't be saved: "
+                + "; ".join(rules or ["write about how you write"])
+                + ". No links, handles or amounts.",
                 "rejected": rejected,
             },
         )

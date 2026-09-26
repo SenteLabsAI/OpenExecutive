@@ -6714,8 +6714,10 @@ delegation:
     (record_voice_profile), then validate_profile in code — greetings per
     audience (team / contact / other) and a sign-off (short, at most two
     lines; no links, handles, amounts or markup; a literal backslash-n is a
-    line break, which also repairs a profile stored before that rule, since
-    stored rows are re-validated as they are read), length and formality
+    line break, read after NFKC, and a value with more such lines than fit
+    keeps its first ones — which also repairs a profile stored before that
+    rule, since stored rows are re-validated as they are read; a typed value
+    with too many lines is a 422 naming the rule), length and formality
     from fixed lists, up
     to 8 habits and 6 avoid rules through attunement.style's deny-list plus
     a writing-topic check and a roster-name check, and up to 3 exemplars

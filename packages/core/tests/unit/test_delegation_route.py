@@ -168,6 +168,8 @@ def test_greetings_are_edited_per_audience(client: TestClient, ids: dict[str, in
     assert resp.status_code == 422 and resp.json()["detail"]["rejected"] == [
         {"field": "greetings.team", "reason": "invalid"}
     ]
+    # The message names what went wrong, not only the habits' rule.
+    assert "{first} is its only placeholder" in resp.json()["detail"]["message"]
 
 
 def test_an_edit_keeps_the_signature_unless_cleared(client: TestClient, ids: dict[str, int]) -> None:
@@ -253,10 +255,27 @@ def test_the_signature_is_taken_from_gmail_again_and_nothing_else_changes(
     assert audit[-1][1]["details"]["has_signature"] is False
 
 
+def test_an_edit_made_while_gmail_is_read_is_kept(
+    client: TestClient, ids: dict[str, int], gmail: dict[str, str], mailbox: _Mailbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    save_voice(ids["principal"], VoiceProfile(habits=["Keeps emails short"]), locked=False, updated_by="learn")
+    gmail["status"] = "connected"
+
+    async def slow_signature() -> str:
+        # The person locks it and changes a habit while Gmail answers.
+        save_voice(ids["principal"], VoiceProfile(habits=["Writes in plain words"]), locked=True, updated_by="person")
+        return "Olivia Owner"
+
+    monkeypatch.setattr(mailbox, "send_as_signature", slow_signature)
+    body = client.post("/delegation/voice/signature", headers=OWNER).json()
+    assert (body["signature"], body["habits"], body["locked"]) == ("Olivia Owner", ["Writes in plain words"], True)
+
+
 @pytest.mark.parametrize(("status", "code"), [
     ("not_configured", "gmail_not_connected"),
     ("needs_reconnect", "gmail_needs_reconnect"),
     ("mismatch", "gmail_mismatch"),
+    ("error", "gmail_error"),
 ])
 def test_the_signature_needs_their_gmail(
     client: TestClient, ids: dict[str, int], gmail: dict[str, str], mailbox: _Mailbox, status: str, code: str

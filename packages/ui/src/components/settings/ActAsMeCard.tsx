@@ -225,16 +225,31 @@ function VoiceSection({ connected }: { connected: boolean }) {
   }
   if (!profile) return null;
 
-  // keepEdits: the action leaves the fields below as they are (lock, signature,
-  // examples), so what you've typed and not saved yet stays in the form.
+  // keepEdits (lock, signature, examples): a field you've changed and not
+  // saved keeps your text; every other field takes the new value, which may
+  // come from a change made elsewhere.
   const run = async (action: () => Promise<VoiceProfile>, keepEdits = false) => {
+    const before = profile;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
       const next = await action();
-      if (keepEdits) setProfile(next);
-      else adopt(next);
+      if (!keepEdits) {
+        adopt(next);
+        return;
+      }
+      const keep = (saved: string, fresh: string) => (typed: string) => (typed === saved ? fresh : typed);
+      setProfile(next);
+      setHabits(keep(before.habits.join("\n"), next.habits.join("\n")));
+      setAvoid(keep(before.avoid.join("\n"), next.avoid.join("\n")));
+      setSignOff(keep(before.sign_off, next.sign_off));
+      setLength(keep(before.length, next.length));
+      setFormality(keep(before.formality, next.formality));
+      const [was, now] = [greetingFields(before), greetingFields(next)];
+      setGreetings((typed) =>
+        Object.fromEntries(AUDIENCES.map((a) => [a, keep(was[a], now[a])(typed[a] ?? "")])),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save.");
     } finally {
@@ -245,7 +260,13 @@ function VoiceSection({ connected }: { connected: boolean }) {
   const takeGmailSignature = () =>
     void run(async () => {
       const next = await refreshVoiceSignature();
-      if (!next.signature) setNotice("Your Gmail settings have no signature to add.");
+      if (!next.signature) {
+        setNotice(
+          profile.signature
+            ? "Your Gmail settings have no signature now, so none is added."
+            : "Your Gmail settings have no signature to add.",
+        );
+      }
       return next;
     }, true);
 

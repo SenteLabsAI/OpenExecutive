@@ -128,19 +128,30 @@ def test_a_long_sign_off_is_refused() -> None:
 def test_an_escaped_line_break_is_a_line_break() -> None:
     # A model can write the two characters backslash-n instead of a break.
     profile, dropped = validate_profile(
+        {"sign_off": "Thanks,\\nOlivia", "greetings": {"team": "Hi {first},\\n"}},
+        allow_exemplars=False, keep_signature=False, roster_names=[],
+    )
+    assert (profile.sign_off, profile.greetings, dropped) == ("Thanks,\nOlivia", {"team": "Hi {first},"}, [])
+
+
+def test_escaped_lines_past_the_limit_keep_the_first_ones() -> None:
+    # Rather than losing a learned value; the escape is read after normalizing
+    # (a full-width backslash, a backslash joined to its "n" by a dropped
+    # zero-width space).
+    profile, dropped = validate_profile(
         {
-            "sign_off": "Thanks,\\nOlivia",
-            # A greeting is one line: a full-width backslash normalizes to one.
-            "greetings": {"team": "Hi {first},\\n", "contact": "Hi,\uff3cnthere", "other": "Hi,\\\u200bnthere"},
+            "sign_off": "Best,\\nOlivia\\nFounder",
+            "greetings": {
+                "team": "Hi {first},\\nHope you're well",
+                "contact": "Hi,\uff3cnthere",
+                "other": "Hello,\\\u200bnthere",
+            },
         },
         allow_exemplars=False, keep_signature=False, roster_names=[],
     )
-    assert profile.sign_off == "Thanks,\nOlivia"
-    assert profile.greetings == {"team": "Hi {first},"}
-    assert dropped == [
-        {"field": "greetings.contact", "reason": "invalid"},
-        {"field": "greetings.other", "reason": "invalid"},
-    ]
+    assert profile.sign_off == "Best,\nOlivia"
+    assert profile.greetings == {"team": "Hi {first},", "contact": "Hi,", "other": "Hello,"}
+    assert dropped == []
 
 
 @pytest.mark.parametrize("value", ["Best,\\nOlivia", "Best,\\\\nOlivia", "x\\ \n n", "Cheers \uff3c", "Ta,\r\n\u200bOlivia"])
