@@ -399,6 +399,10 @@ def test_solo_brief_with_a_calendar_gets_slots_and_the_days_events(
     _seed_solo_state()
     calls = _stub_brief(monkeypatch)
     _connect(monkeypatch, _Gateway(_TEXT_REPLY))
+    # Slots are only suggested on business days; don't depend on today's date.
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.calendar_tools.is_business_day", lambda _d: True
+    )
     _brief()
     (call,) = calls
     context = call["messages"][0]["content"]

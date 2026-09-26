@@ -124,6 +124,10 @@ function companyGroup(isOnboarded: boolean): NavGroup {
         description: "Org units with goals, an authority level, and a specialist behind each.",
       },
       {
+        ...GOALS_ITEM,
+        description: "Every department's goals in one place — add, update and close them.",
+      },
+      {
         href: "/people",
         label: "People",
         icon: "users",

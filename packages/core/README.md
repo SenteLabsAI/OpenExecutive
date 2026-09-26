@@ -91,7 +91,7 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 1. Create `packages/core/openexecutive/agents/your_agent.py` extending `BaseAgent`
 2. Add a system prompt in `packages/core/openexecutive/prompts/domain_prompts.py`
 3. Register the tool in `packages/core/openexecutive/orchestrator/router.py`
-4. Add eval scenarios in `evals/scenarios/`
+4. Add eval scenarios in `packages/core/openexecutive/evals/_scenarios/`
 5. Submit a PR with the agent, prompt, and at least 2 eval scenarios
 
 ## Development

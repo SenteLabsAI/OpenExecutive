@@ -23,6 +23,7 @@ import {
   listWorkflows,
 } from "@/lib/api";
 import PlaybooksBrowser from "@/components/jobs/PlaybooksBrowser";
+import StartHere from "@/components/jobs/StartHere";
 import {
   RunBucket,
   runStatusBadgeColor,
@@ -40,9 +41,10 @@ const SECTION_ORDER: WorkflowSection[] = [
   "Operating Cadence",
 ];
 
-// Chip labels. "All" hides the background (system-run) jobs; they get their
-// own chip so the default view is only what a user starts by hand.
-type SectionFilter = "all" | "custom" | "system" | WorkflowSection;
+// Chip labels for the ready-made list. "All" hides the background
+// (system-run) jobs; they get their own chip so the default view is only what
+// a user starts by hand. Custom workflows have their own list above it.
+type SectionFilter = "all" | "system" | WorkflowSection;
 
 const SECTION_CHIP_LABEL: Record<WorkflowSection, string> = {
   Board: "Board",
@@ -57,7 +59,6 @@ const SECTION_CHIP_LABEL: Record<WorkflowSection, string> = {
 function isSectionFilter(v: string | null): v is SectionFilter {
   return (
     v === "all" ||
-    v === "custom" ||
     v === "system" ||
     (SECTION_ORDER as string[]).includes(v ?? "")
   );
@@ -68,9 +69,29 @@ function inSectionFilter(w: WorkflowMeta, f: SectionFilter): boolean {
   if (f === "system") return !!w.background;
   if (w.background) return false;
   if (f === "all") return true;
-  if (f === "custom") return !!w.is_custom;
-  return !w.is_custom && w.section === f;
+  return w.section === f;
 }
+
+// Ready-made workflows shown up front, each with a plain line on when to
+// use it. The full list sits behind "Browse all".
+const STARTER_PICKS: { name: string; useFor: string }[] = [
+  {
+    name: "investor_update",
+    useFor: "Send investors a short monthly email: highlights, numbers, asks.",
+  },
+  {
+    name: "board_prep",
+    useFor: "Get a full board deck drafted before your next meeting.",
+  },
+  {
+    name: "mbr",
+    useFor: "Review last month against plan and flag what needs a decision.",
+  },
+  {
+    name: "competitive_teardown",
+    useFor: "Size up a competitor and get battle-card material for sales.",
+  },
+];
 
 // Runs shown per workflow group before "Show more".
 const RUNS_PER_GROUP = 5;
@@ -139,6 +160,9 @@ function JobsPageInner() {
   const status: RunStatus | null = isStatus(statusParam) ? statusParam : null;
   const sectionParam = searchParams.get("section");
   const section: SectionFilter = isSectionFilter(sectionParam) ? sectionParam : "all";
+  // The full ready-made list is folded behind "Browse all"; a chip in the URL
+  // means someone was already browsing it.
+  const browsing = searchParams.get("browse") === "1" || section !== "all";
 
   const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
   // Custom workflows that are switched off (e.g. saved from chat with tool
@@ -152,6 +176,7 @@ function JobsPageInner() {
   const [runsQuery, setRunsQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const readyMadeRef = useRef<HTMLElement>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -192,6 +217,11 @@ function JobsPageInner() {
     },
     [pathname, router, searchParams]
   );
+
+  const browseReadyMade = useCallback(() => {
+    setParam({ browse: "1" });
+    readyMadeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [setParam]);
 
   const runCounts = useMemo(() => {
     const c = { active: 0, awaiting: 0, done: 0, error: 0 };
@@ -246,8 +276,7 @@ function JobsPageInner() {
             <TabButton
               active={tab === "catalog"}
               onClick={() => setParam({ tab: "catalog" })}
-              label="Catalog"
-              count={workflows.length}
+              label="Build"
             />
             <TabButton
               active={tab === "runs"}
@@ -274,15 +303,48 @@ function JobsPageInner() {
             <OffWorkflowsStrip items={offWorkflows} onDelete={handleDeleteCustom} />
           )}
 
+          {tab === "catalog" && (
+            <StartHere onBrowseReadyMade={browseReadyMade} />
+          )}
+
           {!loading && tab === "catalog" && (
-            <CatalogView
-              workflows={workflows}
-              query={catalogQuery}
-              onQueryChange={setCatalogQuery}
-              section={section}
-              onSectionChange={(s) => setParam({ section: s === "all" ? null : s })}
-              onDeleteCustom={handleDeleteCustom}
-            />
+            <>
+              <YourWorkflows
+                workflows={workflows.filter((w) => w.is_custom && !w.background)}
+                onDeleteCustom={handleDeleteCustom}
+              />
+              <section ref={readyMadeRef} className="scroll-mt-4">
+                <h2 className="text-sm font-semibold text-fg">Ready-made workflows</h2>
+                <p className="mb-3 text-xs text-fg-muted">
+                  Templates you can run as they are: fill in a few details and go.
+                </p>
+                {browsing ? (
+                  <>
+                    <CatalogView
+                      workflows={workflows.filter((w) => !w.is_custom)}
+                      query={catalogQuery}
+                      onQueryChange={setCatalogQuery}
+                      section={section}
+                      onSectionChange={(s) =>
+                        setParam({ browse: "1", section: s === "all" ? null : s })
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setParam({ browse: null, section: null })}
+                      className="mt-4 text-xs text-indigo-400 hover:text-indigo-300"
+                    >
+                      Show fewer
+                    </button>
+                  </>
+                ) : (
+                  <StarterPicks
+                    workflows={workflows}
+                    onBrowseAll={() => setParam({ browse: "1" })}
+                  />
+                )}
+              </section>
+            </>
           )}
 
           {tab === "playbooks" && (
@@ -406,46 +468,15 @@ function OffWorkflowsStrip({
   );
 }
 
-function CatalogView({
-  workflows,
-  query,
-  onQueryChange,
-  section,
-  onSectionChange,
+function WorkflowCard({
+  workflow: w,
   onDeleteCustom,
 }: {
-  workflows: WorkflowMeta[];
-  query: string;
-  onQueryChange: (v: string) => void;
-  section: SectionFilter;
-  onSectionChange: (s: SectionFilter) => void;
-  onDeleteCustom: (name: string) => void;
+  workflow: WorkflowMeta;
+  onDeleteCustom?: (name: string) => void;
 }) {
-  const matching = workflows.filter((w) =>
-    matchesQuery(query, w.title, w.description)
-  );
-  const known = new Set<string>(SECTION_ORDER);
-  const chips: { key: SectionFilter; label: string; count: number }[] = [
-    { key: "all" as SectionFilter, label: "All", count: 0 },
-    { key: "custom" as SectionFilter, label: "Custom", count: 0 },
-    ...SECTION_ORDER.map((s) => ({
-      key: s as SectionFilter,
-      label: SECTION_CHIP_LABEL[s],
-      count: 0,
-    })),
-    { key: "system" as SectionFilter, label: "System", count: 0 },
-  ]
-    .map((c) => ({ ...c, count: matching.filter((w) => inSectionFilter(w, c.key)).length }))
-    // Keep the active chip even at zero so the selection stays visible.
-    .filter((c) => c.key === "all" || c.key === section || c.count > 0);
-
-  const visible = matching.filter((w) => inSectionFilter(w, section));
-
-  const renderCard = (w: WorkflowMeta) => (
-    <div
-      key={w.name}
-      className="group relative min-w-0 rounded-md border border-line bg-surface/40 hover:border-line-strong hover:bg-surface-elevated/40 transition"
-    >
+  return (
+    <div className="group relative min-w-0 rounded-md border border-line bg-surface/40 hover:border-line-strong hover:bg-surface-elevated/40 transition">
       <Link
         href={`/jobs/${encodeURIComponent(w.name)}`}
         className="block px-3 py-2.5"
@@ -457,7 +488,7 @@ function CatalogView({
           {w.steps.length} steps · ~{w.estimated_minutes} min
         </p>
       </Link>
-      {w.is_custom && (
+      {w.is_custom && onDeleteCustom && (
         <div className="absolute top-2 right-2 flex items-center gap-2 text-[11px]">
           <Link
             href={`/jobs/new?edit=${encodeURIComponent(w.name)}`}
@@ -476,24 +507,137 @@ function CatalogView({
       )}
     </div>
   );
+}
 
-  const grid = (items: WorkflowMeta[]) => (
-    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">{items.map(renderCard)}</div>
+function WorkflowGrid({
+  items,
+  onDeleteCustom,
+}: {
+  items: WorkflowMeta[];
+  onDeleteCustom?: (name: string) => void;
+}) {
+  return (
+    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+      {items.map((w) => (
+        <WorkflowCard key={w.name} workflow={w} onDeleteCustom={onDeleteCustom} />
+      ))}
+    </div>
   );
+}
+
+/** The user's own workflows, above the ready-made list. Hidden until they have one. */
+function YourWorkflows({
+  workflows,
+  onDeleteCustom,
+}: {
+  workflows: WorkflowMeta[];
+  onDeleteCustom: (name: string) => void;
+}) {
+  if (workflows.length === 0) return null;
+  return (
+    <section className="mb-6">
+      <h2 className="mb-2 text-sm font-semibold text-fg">
+        Your workflows
+        <span className="ml-2 text-xs font-normal text-fg-subtle">{workflows.length}</span>
+      </h2>
+      <WorkflowGrid items={workflows} onDeleteCustom={onDeleteCustom} />
+    </section>
+  );
+}
+
+/** A few ready-made workflows with a plain "use this to" line, and the way into the rest. */
+function StarterPicks({
+  workflows,
+  onBrowseAll,
+}: {
+  workflows: WorkflowMeta[];
+  onBrowseAll: () => void;
+}) {
+  const byName = new Map(workflows.map((w) => [w.name, w] as const));
+  const picks = STARTER_PICKS.flatMap((p) => {
+    const w = byName.get(p.name);
+    return w && !w.is_custom ? [{ workflow: w, useFor: p.useFor }] : [];
+  });
+  const total = workflows.filter((w) => !w.is_custom && !w.background).length;
+  return (
+    <div>
+      {picks.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {picks.map(({ workflow: w, useFor }) => (
+            <Link
+              key={w.name}
+              href={`/jobs/${encodeURIComponent(w.name)}`}
+              className="rounded-md border border-line bg-surface/40 px-3 py-2.5 hover:border-line-strong hover:bg-surface-elevated/40 transition"
+            >
+              <span className="block text-sm font-medium text-fg">{w.title}</span>
+              <span className="mt-0.5 block text-xs text-fg-muted">{useFor}</span>
+              <span className="mt-1 block text-[11px] text-fg-subtle">
+                ~{w.estimated_minutes} min
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
+      {total > 0 ? (
+        <button
+          type="button"
+          onClick={onBrowseAll}
+          className="mt-3 text-sm text-indigo-400 hover:text-indigo-300"
+        >
+          Browse all {total} ready-made workflows →
+        </button>
+      ) : (
+        <div className="text-sm text-fg-muted">No ready-made workflows available.</div>
+      )}
+    </div>
+  );
+}
+
+/** The full ready-made list: search, section chips, and grouped cards. */
+function CatalogView({
+  workflows,
+  query,
+  onQueryChange,
+  section,
+  onSectionChange,
+}: {
+  workflows: WorkflowMeta[];
+  query: string;
+  onQueryChange: (v: string) => void;
+  section: SectionFilter;
+  onSectionChange: (s: SectionFilter) => void;
+}) {
+  const matching = workflows.filter((w) =>
+    matchesQuery(query, w.title, w.description)
+  );
+  const known = new Set<string>(SECTION_ORDER);
+  const chips: { key: SectionFilter; label: string; count: number }[] = [
+    { key: "all" as SectionFilter, label: "All", count: 0 },
+    ...SECTION_ORDER.map((s) => ({
+      key: s as SectionFilter,
+      label: SECTION_CHIP_LABEL[s],
+      count: 0,
+    })),
+    { key: "system" as SectionFilter, label: "System", count: 0 },
+  ]
+    .map((c) => ({ ...c, count: matching.filter((w) => inSectionFilter(w, c.key)).length }))
+    // Keep the active chip even at zero so the selection stays visible.
+    .filter((c) => c.key === "all" || c.key === section || c.count > 0);
+
+  const visible = matching.filter((w) => inSectionFilter(w, section));
 
   // Under "All", keep light section headings so the list stays scannable;
   // any single chip is already one group, so it renders as a flat grid.
   const grouped: { label: string; items: WorkflowMeta[] }[] =
     section === "all"
       ? [
-          { label: "Custom", items: visible.filter((w) => w.is_custom) },
           ...SECTION_ORDER.map((s) => ({
             label: s as string,
-            items: visible.filter((w) => !w.is_custom && w.section === s),
+            items: visible.filter((w) => w.section === s),
           })),
           {
             label: "Other",
-            items: visible.filter((w) => !w.is_custom && !known.has(w.section)),
+            items: visible.filter((w) => !known.has(w.section)),
           },
         ].filter((g) => g.items.length > 0)
       : [];
@@ -504,7 +648,7 @@ function CatalogView({
         <SearchInput
           value={query}
           onChange={onQueryChange}
-          placeholder="Search workflows…"
+          placeholder="Search ready-made workflows…"
         />
       </div>
       <div className="mb-4 flex flex-wrap gap-1.5">
@@ -541,12 +685,12 @@ function CatalogView({
                   {g.items.length}
                 </span>
               </h2>
-              {grid(g.items)}
+              <WorkflowGrid items={g.items} />
             </div>
           ))}
         </div>
       ) : (
-        grid(visible)
+        <WorkflowGrid items={visible} />
       )}
     </div>
   );
@@ -762,8 +906,8 @@ export default function JobsPage() {
             <div className="min-w-0">
               <h1 className="text-xl font-semibold text-fg">Workflows</h1>
               <p className="text-sm text-fg-muted">
-                Workflows are the jobs that run and produce a deliverable;
-                playbooks are the methods the Executive follows.
+                Jobs the Executive runs for you, start to finish — each one
+                ends in a finished document or a task done.
               </p>
             </div>
             <Link

@@ -709,3 +709,26 @@ def test_needs_check_in_ignores_a_row_private_to_the_principal(audit_db: AuditLo
     audit_db.log("tool_invocation", "finance note: runway review booked",
                  actor="executive", department="finance")
     assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_render_goals_omits_an_empty_target() -> None:
+    """A goal added with only its text renders without a dangling
+    "— target: " in the check-in prompt; one with a target keeps it."""
+    from openexecutive.workflows.department_check_in import _render_goals
+
+    dept_store.insert_goal(
+        "finance", period_type="quarter", period_value="Q3 2026",
+        key_result="Close Series A", target="",
+    )
+    dept_store.insert_goal(
+        "finance", period_type="quarter", period_value="Q3 2026",
+        key_result="Cut burn", target="$200K/mo", current="$260K/mo",
+    )
+    dept_registry.invalidate()
+    state = dept_registry.get_state("finance")
+    rendered = _render_goals(state)
+    no_target = next(line for line in rendered.splitlines() if "Close Series A" in line)
+    assert "target:" not in no_target
+    assert no_target.endswith("Close Series A (quarter Q3 2026)")
+    with_target = next(line for line in rendered.splitlines() if "Cut burn" in line)
+    assert "Cut burn — target: $200K/mo (current: $260K/mo) (quarter Q3 2026)" in with_target

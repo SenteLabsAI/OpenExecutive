@@ -12,14 +12,11 @@ import {
   sendWorkflowDesignerMessage,
   startWorkflowDesigner,
 } from "@/lib/api";
+import { WORKFLOW_STARTERS, takeWorkflowDescription } from "@/lib/workflowStarters";
 import WorkflowDraftReview from "./WorkflowDraftReview";
 
-const STARTERS = [
-  "A weekly competitor digest sent to me every Monday morning",
-  "A board pre-read I kick off before each meeting, with the CFO signing off",
-  "A monthly hiring-plan review across all open roles",
-  "A launch readiness check I run before every product release",
-];
+// Same cap chat applies to its `?draft=` prefill.
+const MAX_DESCRIBE_PARAM_CHARS = 2000;
 
 /**
  * Conversational "New workflow": describe the job, answer a few clarifying
@@ -44,6 +41,15 @@ export default function WorkflowWizard() {
   // The session this component already holds, so mirroring it into the URL
   // does not trigger a redundant resume fetch.
   const heldSessionRef = useRef<string | null>(null);
+  // A turn can finish after the user has left (e.g. "Back to workflows" while
+  // the first message is still in flight); don't pull them back via the URL.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     listPeople()
@@ -76,7 +82,7 @@ export default function WorkflowWizard() {
         const next = await op();
         setTurn(next);
         setInput("");
-        if (next.session_id !== heldSessionRef.current) {
+        if (mountedRef.current && next.session_id !== heldSessionRef.current) {
           heldSessionRef.current = next.session_id;
           router.replace(`${pathname}?session=${encodeURIComponent(next.session_id)}`, {
             scroll: false,
@@ -92,6 +98,30 @@ export default function WorkflowWizard() {
     },
     [pathname, router]
   );
+
+  // Arriving from the "Start here" panel on /jobs: send what the user typed
+  // there as the first message. A `?describe=` link only fills the composer.
+  // The ref keeps StrictMode's second effect run from starting a second session.
+  const describeParam = searchParams.get("describe");
+  const handoffRef = useRef(false);
+  useEffect(() => {
+    if (handoffRef.current) return;
+    handoffRef.current = true;
+    // Always consumed, so a leftover never fires on a later visit.
+    const handedOff = takeWorkflowDescription()?.trim();
+    if (resumeId) return;
+    if (handedOff) {
+      // Kept in the composer until the first turn succeeds, so a failed
+      // start leaves the text ready to retry.
+      setInput(handedOff);
+      void run(() => startWorkflowDesigner(handedOff), handedOff);
+      return;
+    }
+    if (describeParam) {
+      setInput(describeParam.slice(0, MAX_DESCRIBE_PARAM_CHARS));
+      router.replace(pathname, { scroll: false });
+    }
+  }, [resumeId, describeParam, run, router, pathname]);
 
   const send = (text: string) => {
     const message = text.trim();
@@ -137,7 +167,7 @@ export default function WorkflowWizard() {
                 workflow for you to review.
               </p>
               <div className="flex flex-wrap gap-2">
-                {STARTERS.map((s) => (
+                {WORKFLOW_STARTERS.map((s) => (
                   <button
                     key={s}
                     type="button"

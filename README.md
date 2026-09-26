@@ -14,7 +14,7 @@ A managed cloud offering is coming (https://openexecutive.ai), where you can get
 
 ## Demo
 
-[![Open Executive demo video](https://img.youtube.com/vi/O_g97xxVTMk/maxresdefault.jpg)](https://youtu.be/O_g97xxVTMk)
+[![Open Executive demo video](https://img.youtube.com/vi/O_g97xxVTMk/hqdefault.jpg)](https://youtu.be/O_g97xxVTMk)
 
 A walkthrough of Open Executive in action — [watch on YouTube](https://youtu.be/O_g97xxVTMk).
 
@@ -461,7 +461,7 @@ data.
 3. Register in `packages/core/openexecutive/orchestrator/router.py` — add to `SPECIALIST_REGISTRY` and the `specialist` enum in `SPECIALIST_TOOLS`
 4. Add domain alias to `DOMAIN_ALIASES` in `packages/core/openexecutive/knowledge/retriever.py`
 5. Add knowledge docs to `knowledge/builtin/your_domain/`
-6. Add at least 2 eval scenarios to `evals/scenarios/`
+6. Add at least 2 eval scenarios to `packages/core/openexecutive/evals/_scenarios/`
 7. Submit a PR — CI requires all of the above
 
 ## Development
