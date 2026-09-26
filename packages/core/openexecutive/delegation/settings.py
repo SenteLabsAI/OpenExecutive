@@ -307,10 +307,22 @@ _INJECTED_BLOCK = re.compile(r"<([a-z_]+)\b[^>]*>.*?</\1\s*>", re.DOTALL)
 _ADDRESS = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 
 
+# The label an adapter puts before a document's extracted text
+# (``integrations.attachments``). It has no closing mark, so a message that
+# carries one can't be split into the speaker's words and the document's.
+_ATTACHED_TEXT = re.compile(r"(?m)^\[Attached: ")
+
+
 def typed_addresses(speaker_text: str) -> set[str]:
     """Email addresses the speaker typed this turn — outside any tag block an
-    adapter added (quoted backstory is not something they typed)."""
-    own_words = _INJECTED_BLOCK.sub(" ", speaker_text or "")
+    adapter added (quoted backstory is not something they typed). None at all
+    when a document's text was inlined into the message: its addresses can't
+    be told apart from theirs, so they give the address in a message of its
+    own (or add the person as a contact)."""
+    text = speaker_text or ""
+    if _ATTACHED_TEXT.search(text):
+        return set()
+    own_words = _INJECTED_BLOCK.sub(" ", text)
     return {m.group(0).lower() for m in _ADDRESS.finditer(own_words)}
 
 

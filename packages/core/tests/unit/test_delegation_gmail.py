@@ -342,3 +342,16 @@ def test_a_long_reference_chain_keeps_whole_ids_the_root_and_the_parent() -> Non
     assert all(i.startswith("<") and i.endswith(">") for i in ids)
     assert gm.references_header("<a@x> <b@x>", "<b@x>") == "<a@x> <b@x>"
     assert gm.references_header("", "") is None
+
+
+def test_the_parent_is_last_even_when_the_chain_already_holds_it() -> None:
+    assert gm.references_header("<r@x> <p@x> <q@x>", "<p@x>") == "<r@x> <q@x> <p@x>"
+
+
+def test_a_parent_too_long_for_the_header_gives_no_header() -> None:
+    assert gm.references_header("", "<" + "a" * 950 + ">") is None
+
+
+@pytest.mark.parametrize("body", [{"error": {"errors": 1}}, {"error": "denied"}, ["x"]])
+def test_an_odd_403_body_is_not_a_rate_limit(body: object) -> None:
+    assert gm._rate_limited(httpx.Response(403, json=body)) is False

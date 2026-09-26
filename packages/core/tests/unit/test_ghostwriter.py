@@ -135,3 +135,8 @@ def test_a_draft_that_was_only_a_planted_link_is_refused(monkeypatch: pytest.Mon
     _model(monkeypatch, {"subject": "Re: x", "body": "https://pay.example/deposit"})
     with pytest.raises(ComposeError):
         _compose()
+
+
+def test_a_cut_that_lands_on_a_break_keeps_the_last_word() -> None:
+    text = "x" * 95 + " abcd more"
+    assert gw._shorten(text, 100) == "x" * 95 + " abcd"

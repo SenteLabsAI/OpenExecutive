@@ -345,13 +345,17 @@ def references_header(prior: str, parent: str) -> str | None:
     References were ``prior``: whole ids only, the parent always last. When
     the chain is too long for one header, the oldest ids after the thread's
     first one go — never half an id, and never the parent."""
-    ids = list(dict.fromkeys([*_MESSAGE_ID.findall(prior or ""), *_MESSAGE_ID.findall(parent or "")]))
+    parents = _MESSAGE_ID.findall(parent or "")[-1:]
+    ids = [i for i in dict.fromkeys(_MESSAGE_ID.findall(prior or "")) if i not in parents] + parents
     if not ids:
         return None
     while len(ids) > 2 and len(" ".join(ids)) > _MAX_HEADER:
         del ids[1]
+    if len(" ".join(ids)) > _MAX_HEADER:
+        ids = ids[-1:]
     joined = " ".join(ids)
-    return joined if len(joined) <= _MAX_HEADER else ids[-1][:_MAX_HEADER]
+    # A single id too long for the header: none beats half of one.
+    return joined if len(joined) <= _MAX_HEADER else None
 
 
 def build_raw(sender: str, spec: DraftSpec) -> str:
@@ -402,7 +406,9 @@ def _rate_limited(resp: httpx.Response) -> bool:
         errors = resp.json().get("error", {}).get("errors", [])
     except (ValueError, AttributeError):
         return False
-    return any(isinstance(e, dict) and e.get("reason") in _RATE_LIMIT_REASONS for e in errors or [])
+    if not isinstance(errors, list):
+        return False
+    return any(isinstance(e, dict) and e.get("reason") in _RATE_LIMIT_REASONS for e in errors)
 
 
 def _token_key(cred: GmailCredential) -> str:

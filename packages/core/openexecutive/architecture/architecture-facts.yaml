@@ -6648,7 +6648,9 @@ delegation:
     because the turn's message joins the session history only after the
     turn, and a new email may go to an address typed this turn — outside any
     tag block an adapter added (settings.typed_addresses drops the
-    <outbound_reply_context> backstory hydrated into a DM).
+    <outbound_reply_context> backstory hydrated into a DM, and counts none
+    at all when a document's text was inlined — an "[Attached: …]" line has
+    no end mark, so the document's addresses can't be told from theirs).
     Session.delegation_override (evals and tests only) replaces the speaker,
     the setting and the mailbox with a fake; the surface checks are skipped
     and the tool is offered only when a fake mailbox is supplied.

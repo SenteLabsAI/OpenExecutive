@@ -156,6 +156,8 @@ def _shorten(text: str, cap: int) -> str:
     line break, else the last space, in the final fifth — so a cut never
     drops more than a fifth of what fits."""
     cut = text[:cap]
+    if text[cap:cap + 1].isspace():
+        return cut.rstrip()  # the cut already falls on a break
     floor = cap * 4 // 5
     for mark in ("\n\n", "\n", " "):
         at = cut.rfind(mark)
