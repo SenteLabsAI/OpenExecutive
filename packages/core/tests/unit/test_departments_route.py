@@ -232,18 +232,32 @@ def test_create_goal_falls_back_to_utc_when_the_zone_is_unreadable(
     assert resp.json()["period_value"].startswith("Q")
 
 
-def test_create_goal_still_requires_the_goal_text(client: TestClient) -> None:
-    resp = client.post("/departments/finance/goals", json={"key_result": ""})
+@pytest.mark.parametrize("text", ["", "   "])
+def test_create_goal_still_requires_the_goal_text(client: TestClient, text: str) -> None:
+    resp = client.post("/departments/finance/goals", json={"key_result": text})
     assert resp.status_code == 422
 
 
+def test_create_goal_strips_text(client: TestClient) -> None:
+    resp = client.post(
+        "/departments/finance/goals",
+        json={"key_result": "  Close Series A ", "target": "   ", "current": " $2M "},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert (body["key_result"], body["target"], body["current"]) == ("Close Series A", "", "$2M")
+
+
 @pytest.mark.parametrize("field", ["key_result", "period_value"])
-def test_patch_goal_rejects_blanking_required_text(client: TestClient, field: str) -> None:
+@pytest.mark.parametrize("text", ["", "   "])
+def test_patch_goal_rejects_blanking_required_text(
+    client: TestClient, field: str, text: str
+) -> None:
     goal_id = client.post(
         "/departments/finance/goals",
         json={"period_value": "Q2 2026", "key_result": "K", "target": "T"},
     ).json()["id"]
-    resp = client.patch(f"/departments/finance/goals/{goal_id}", json={field: ""})
+    resp = client.patch(f"/departments/finance/goals/{goal_id}", json={field: text})
     assert resp.status_code == 422
 
 

@@ -50,12 +50,14 @@ function cls(...parts: (string | false | undefined)[]) {
 }
 
 // Enter submits, Escape cancels — for the single-line inputs of both forms.
-function formKeys(onSubmit: () => void, onCancel: () => void) {
+// Escape is ignored mid-save, like the disabled Cancel button, so a request
+// in flight can't land on a form the user already closed.
+function formKeys(onSubmit: () => void, onCancel: () => void, saving: boolean) {
   return (e: React.KeyboardEvent<HTMLElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
       e.preventDefault();
       onSubmit();
-    } else if (e.key === "Escape") {
+    } else if (e.key === "Escape" && !saving) {
       e.preventDefault();
       onCancel();
     }
@@ -232,7 +234,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
     }
   }
 
-  const onKeyDown = formKeys(save, cancel);
+  const onKeyDown = formKeys(save, cancel, saving);
 
   return (
     <div className="py-3 border-b border-line last:border-0 space-y-2">
@@ -372,7 +374,7 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
     }
   }
 
-  const onKeyDown = formKeys(submit, onCancel);
+  const onKeyDown = formKeys(submit, onCancel, saving);
 
   return (
     <div className="py-3 border-b border-line space-y-3 bg-surface-overlay/30 px-4 -mx-4 rounded-lg">

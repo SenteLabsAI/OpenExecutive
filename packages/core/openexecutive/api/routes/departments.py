@@ -15,7 +15,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openexecutive.departments import registry, store
 from openexecutive.departments.cadence import CADENCE_FORMATS_HINT, is_valid_cadence_spec
@@ -103,7 +103,10 @@ class DepartmentPatch(BaseModel):
 class GoalCreate(BaseModel):
     """Only `key_result` (the goal itself) is required. A missing or blank
     `period_value` is filled with the current period for `period_type`, and
-    `target` may be left empty."""
+    `target` may be left empty. Text is stripped first, so whitespace alone
+    counts as blank."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     period_type: PeriodType = "quarter"
     period_value: str | None = Field(default=None, max_length=64)
@@ -114,6 +117,9 @@ class GoalCreate(BaseModel):
 
 
 class GoalPatch(BaseModel):
+    # Stripped first, so a whitespace-only goal or period is rejected like "".
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     period_type: PeriodType | None = None
     period_value: str | None = Field(default=None, min_length=1, max_length=64)
     key_result: str | None = Field(default=None, min_length=1, max_length=512)
