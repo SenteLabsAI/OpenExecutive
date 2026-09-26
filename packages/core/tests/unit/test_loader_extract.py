@@ -63,3 +63,30 @@ def test_extract_text_unsupported_suffix(tmp_path: Path) -> None:
     path = tmp_path / "thing.bin"
     path.write_bytes(b"\x00\x01\x02")
     assert extract_text_from_file(path) == ""
+
+
+async def test_async_extractor_converts_a_scanned_pdf(tmp_path: Path, monkeypatch) -> None:
+    """The sync extractor returns "" for a PDF with no text layer; the async
+    one — used by uploads, intake, reconcile and the read tools — converts
+    it (knowledge.pdf_reader, stubbed) and never raises for a bad PDF."""
+    from openexecutive.knowledge import pdf_reader
+    from openexecutive.knowledge.loader import (
+        extract_text_from_file_async,
+        read_document_text,
+    )
+
+    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+        assert data == b"%PDF-scan" and filename == "scan.pdf"
+        return pdf_reader.PdfReadResult("Minutes: approve the budget.", "ocr", 1)
+
+    monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"%PDF-scan")
+
+    assert await extract_text_from_file_async(path) == "Minutes: approve the budget."
+    assert (await read_document_text(path)).converted
+
+    csv = tmp_path / "roster.csv"
+    csv.write_text("name\nDana\n", encoding="utf-8")
+    result = await read_document_text(csv)
+    assert result.text == "name\nDana\n" and not result.converted

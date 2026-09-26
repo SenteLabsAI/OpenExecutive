@@ -276,6 +276,43 @@ async def test_read_file_size_cap(download_dir: Path, monkeypatch: pytest.Monkey
     assert "larger than" in await tc._read_file({"path": str(download_dir / "big.txt")})
 
 
+@pytest.mark.asyncio
+async def test_read_file_converts_a_scanned_pdf(
+    download_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image-only PDF used to fail with 'it may be a scanned image'; its
+    pages are now read (knowledge.pdf_reader, stubbed here)."""
+    from openexecutive.knowledge import pdf_reader
+
+    seen: list[bytes] = []
+
+    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+        seen.append(data)
+        return pdf_reader.PdfReadResult("Invoice total 123.45", "ocr", 1)
+
+    monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
+    (download_dir / "scan.pdf").write_bytes(b"%PDF-scan")
+
+    assert await tc._read_file({"path": str(download_dir / "scan.pdf")}) == "Invoice total 123.45"
+    assert seen == [b"%PDF-scan"]
+
+
+@pytest.mark.asyncio
+async def test_read_file_reports_why_a_pdf_is_unreadable(
+    download_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge import pdf_reader
+
+    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+        return pdf_reader.PdfReadResult("", "none", 1, "no text could be read: OCR is off")
+
+    monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
+    (download_dir / "scan.pdf").write_bytes(b"%PDF-scan")
+
+    out = json.loads(await tc._read_file({"path": str(download_dir / "scan.pdf")}))
+    assert out == {"error": "no text could be read: OCR is off"}
+
+
 def test_default_download_dir_is_workspace_mcps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("WORKFLOW_FILE_DIRS", raising=False)
     monkeypatch.delenv("WORKSPACE_ATTACHMENT_DIR", raising=False)

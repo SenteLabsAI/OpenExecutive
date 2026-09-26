@@ -504,10 +504,14 @@ Async Bolt app in socket mode, embedded in the FastAPI lifespan (no separate pro
 
 Required env vars: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
 
+Files a rostered sender shares (PDFs, Word, spreadsheets, text, images) are read into the turn — scanned PDFs converted to text — which needs the bot's **`files:read`** scope. Without it the message still gets a reply, but its files come back unreadable.
+
 ### Email Poller
 `integrations/email_poller.py`
 
 Polls the configured Gmail inbox via Gmail MCP OAuth every `EMAIL_POLL_INTERVAL_SECONDS` (default 60s). Parses email threads and routes them through the triage pipeline before deciding whether to surface them as alerts or respond directly. Outbound replies are sent via Gmail MCP.
+
+For a sender the principal knows (the team, a contact, the principal), up to five document attachments per email (PDF, Word, Excel, CSV, text, 20 MB each) are downloaded and their text added to the turn, scanned PDFs converted. An unknown sender's attachments are only listed.
 
 Required env var: `EXEC_EMAIL_ADDRESS`  
 Optional: `EMAIL_POLL_INTERVAL_SECONDS`

@@ -11,13 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openexecutive.integrations.attachments import (
-    AttachmentItem,
     _MAX_EXTRACTED_CHARS,
+    AttachmentItem,
     build_attachment_output,
     download_bytes,
     process_attachments,
 )
-
 
 # --------------------------------------------------------------------------- #
 # download_bytes
@@ -80,9 +79,9 @@ async def test_download_bytes_raises_when_actual_content_exceeds_limit():
 # build_attachment_output — image routing
 # --------------------------------------------------------------------------- #
 
-def test_build_attachment_output_png_returns_image_block():
+async def test_build_attachment_output_png_returns_image_block():
     data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20  # fake PNG header
-    extra_text, image_blocks = build_attachment_output("chart.png", data, "image/png")
+    extra_text, image_blocks = await build_attachment_output("chart.png", data, "image/png")
 
     assert extra_text == ""
     assert len(image_blocks) == 1
@@ -93,18 +92,18 @@ def test_build_attachment_output_png_returns_image_block():
     assert block["source"]["data"] == base64.standard_b64encode(data).decode()
 
 
-def test_build_attachment_output_jpeg_normalises_jpg_mime():
+async def test_build_attachment_output_jpeg_normalises_jpg_mime():
     """'image/jpg' (non-standard) must be normalised to 'image/jpeg'."""
     data = b"\xff\xd8\xff"  # JPEG magic bytes
-    extra_text, image_blocks = build_attachment_output("photo.jpg", data, "image/jpg")
+    extra_text, image_blocks = await build_attachment_output("photo.jpg", data, "image/jpg")
 
     assert extra_text == ""
     assert image_blocks[0]["source"]["media_type"] == "image/jpeg"
 
 
-def test_build_attachment_output_image_no_content_type_infers_from_suffix():
+async def test_build_attachment_output_image_no_content_type_infers_from_suffix():
     data = b"GIF89a"
-    extra_text, image_blocks = build_attachment_output("anim.gif", data, "")
+    extra_text, image_blocks = await build_attachment_output("anim.gif", data, "")
 
     assert extra_text == ""
     assert image_blocks[0]["source"]["media_type"] == "image/gif"
@@ -114,16 +113,16 @@ def test_build_attachment_output_image_no_content_type_infers_from_suffix():
 # build_attachment_output — text document routing
 # --------------------------------------------------------------------------- #
 
-def test_build_attachment_output_pdf_extracts_text_and_schedules_ingest():
+async def test_build_attachment_output_pdf_extracts_text_and_schedules_ingest():
     extracted = "Quarterly revenue grew 23%."
     with (
         patch(
             "openexecutive.integrations.attachments._extract_text",
-            return_value=extracted,
+            AsyncMock(return_value=(extracted, "", False)),
         ),
         patch("openexecutive.integrations.attachments._schedule_ingest") as mock_ingest,
     ):
-        extra_text, image_blocks = build_attachment_output(
+        extra_text, image_blocks = await build_attachment_output(
             "report.pdf", b"%PDF-fake", "application/pdf"
         )
 
@@ -133,29 +132,29 @@ def test_build_attachment_output_pdf_extracts_text_and_schedules_ingest():
     mock_ingest.assert_called_once()
 
 
-def test_build_attachment_output_truncates_long_text():
+async def test_build_attachment_output_truncates_long_text():
     # 10x the limit so the label overhead is negligible relative to the total.
     long_text = "word " * (_MAX_EXTRACTED_CHARS * 2)
     with (
         patch(
             "openexecutive.integrations.attachments._extract_text",
-            return_value=long_text,
+            AsyncMock(return_value=(long_text, "", False)),
         ),
         patch("openexecutive.integrations.attachments._schedule_ingest"),
     ):
-        extra_text, _ = build_attachment_output("doc.txt", b"...", "text/plain")
+        extra_text, _ = await build_attachment_output("doc.txt", b"...", "text/plain")
 
     assert "truncated" in extra_text.lower()
     # Total extra_text is label + capped text; must be much smaller than input.
     assert len(extra_text) < len(long_text) // 2
 
 
-def test_build_attachment_output_empty_extraction_returns_notice():
+async def test_build_attachment_output_empty_extraction_returns_notice():
     with patch(
         "openexecutive.integrations.attachments._extract_text",
-        return_value="   ",
+        AsyncMock(return_value=("   ", "", False)),
     ):
-        extra_text, image_blocks = build_attachment_output("empty.pdf", b"", "application/pdf")
+        extra_text, image_blocks = await build_attachment_output("empty.pdf", b"", "application/pdf")
 
     assert image_blocks == []
     assert "could not extract" in extra_text.lower()
@@ -165,8 +164,8 @@ def test_build_attachment_output_empty_extraction_returns_notice():
 # build_attachment_output — unsupported type
 # --------------------------------------------------------------------------- #
 
-def test_build_attachment_output_unsupported_type_returns_notice():
-    extra_text, image_blocks = build_attachment_output(
+async def test_build_attachment_output_unsupported_type_returns_notice():
+    extra_text, image_blocks = await build_attachment_output(
         "model.xlsx", b"PK...", "application/vnd.ms-excel"
     )
 
@@ -232,7 +231,7 @@ async def test_process_attachments_concatenates_multiple_texts():
         patch("openexecutive.integrations.attachments.download_bytes", side_effect=_fake_download),
         patch(
             "openexecutive.integrations.attachments._extract_text",
-            side_effect=lambda data, filename: data.decode(),
+            AsyncMock(side_effect=lambda data, filename: (data.decode(), "", False)),
         ),
         patch("openexecutive.integrations.attachments._schedule_ingest"),
     ):
@@ -246,12 +245,12 @@ async def test_process_attachments_concatenates_multiple_texts():
 # ── #113/#114 at the attachment ingest path ───────────────────────────────
 
 
-def _ingest_call(filename: str, data: bytes = b"# Notes\nRevenue grew."):
-    """Run `_schedule_ingest` to completion and return the `ingest_file` call."""
-    return _ingest_and_store_call(filename, data)[0]
+def _ingest_call(filename: str, text: str = "# Notes\nRevenue grew."):
+    """Run `_schedule_ingest` to completion and return the `ingest_text` call."""
+    return _ingest_and_store_call(filename, text)[0]
 
 
-def _ingest_and_store_call(filename: str, data: bytes = b"# Notes\nRevenue grew."):
+def _ingest_and_store_call(filename: str, text: str = "# Notes\nRevenue grew."):
     """As `_ingest_call`, plus the `ChromaDBStore(...)` construction call.
 
     The store constructor matters on its own: it is how the ingest picks
@@ -269,12 +268,12 @@ def _ingest_and_store_call(filename: str, data: bytes = b"# Notes\nRevenue grew.
     mock_store_cls.ATTACHMENT_COLLECTION = ChromaDBStore.ATTACHMENT_COLLECTION
     mock_store_cls.COMPANY_COLLECTION = ChromaDBStore.COMPANY_COLLECTION
     with (
-        patch("openexecutive.knowledge.loader.ingest_file", mock_ingest),
+        patch("openexecutive.knowledge.loader.ingest_text", mock_ingest),
         patch("openexecutive.knowledge.store.ChromaDBStore", mock_store_cls),
     ):
 
         async def _drive() -> None:
-            att._schedule_ingest(data, filename)
+            att._schedule_ingest(text, filename)
             # `_schedule_ingest` fires a background task; let it run.
             await asyncio.sleep(0)
             await asyncio.sleep(0)
@@ -287,7 +286,8 @@ def _ingest_and_store_call(filename: str, data: bytes = b"# Notes\nRevenue grew.
 
 def test_attachment_is_indexed_under_its_real_name_not_the_temp_path():
     """The bug: the staging temp path was passed straight to `ingest_file`, so
-    every re-send duplicated and no chunk could ever be deleted."""
+    every re-send duplicated and no chunk could ever be deleted. The index now
+    takes the extracted text, and the name is still the attachment's own."""
     _, kwargs = _ingest_call("board-deck.md")
 
     assert kwargs["source_name"] == "attachment:board-deck.md"
@@ -361,3 +361,56 @@ def test_attachment_ingest_uses_the_configured_vector_store():
 
     assert store_call is not None, "ChromaDBStore was never constructed"
     assert store_call.kwargs.get("persist_directory") == get_settings().vector_store_path
+
+
+# ── Scanned PDFs (knowledge.pdf_reader) ───────────────────────────────────
+
+
+async def test_scanned_pdf_attachment_is_read_and_labelled_converted():
+    """A PDF with no text layer used to arrive as 'could not extract any
+    text'. Its pages are now read, and the label says the text was converted
+    so the Executive knows OCR-level errors are possible."""
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
+
+    with (
+        patch(
+            "openexecutive.knowledge.pdf_reader.read_pdf_text",
+            AsyncMock(return_value=PdfReadResult("Revenue grew to 4.2M", "ocr", 1)),
+        ),
+        patch("openexecutive.integrations.attachments._schedule_ingest") as mock_ingest,
+    ):
+        extra_text, image_blocks = await build_attachment_output(
+            "scan.pdf", b"%PDF-fake", "application/pdf"
+        )
+
+    assert image_blocks == []
+    assert extra_text.startswith("[Attached: scan.pdf] (converted from scanned pages)")
+    assert "Revenue grew to 4.2M" in extra_text
+    mock_ingest.assert_called_once_with("Revenue grew to 4.2M", "scan.pdf")
+
+
+async def test_unreadable_pdf_attachment_says_why():
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
+
+    note = "no text could be read: it looks scanned and OCR is not installed on this server"
+    with patch(
+        "openexecutive.knowledge.pdf_reader.read_pdf_text",
+        AsyncMock(return_value=PdfReadResult("", "none", 3, note)),
+    ):
+        extra_text, _ = await build_attachment_output("scan.pdf", b"%PDF", "application/pdf")
+
+    assert extra_text == f"(Attached scan.pdf: {note})"
+
+
+async def test_index_gets_the_full_text_not_the_prompt_truncated_copy():
+    long_text = "word " * (_MAX_EXTRACTED_CHARS * 2)
+    with (
+        patch(
+            "openexecutive.integrations.attachments._extract_text",
+            AsyncMock(return_value=(long_text, "", False)),
+        ),
+        patch("openexecutive.integrations.attachments._schedule_ingest") as mock_ingest,
+    ):
+        await build_attachment_output("doc.txt", b"...", "text/plain")
+
+    assert mock_ingest.call_args.args[0] == long_text

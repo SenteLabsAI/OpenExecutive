@@ -18,7 +18,6 @@ card before clicking Create), so this module never widens it: it only answers
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -311,43 +310,51 @@ def _err(message: str) -> str:
     return json.dumps({"error": message})
 
 
-async def _read_file(tool_input: dict[str, Any]) -> str:
-    """Extract text from a file a previous tool call downloaded.
+def resolve_readable_file(raw: str, extra_dirs: list[Path] | None = None) -> Path | str:
+    """Resolve a path a tool may read, or return the reason it may not.
 
-    Confined to the configured download directories: the path is resolved
-    (symlinks followed, ``..`` collapsed) BEFORE the containment check, so
-    neither can escape it.
+    Confined to the configured download directories (plus ``extra_dirs``):
+    the path is resolved (symlinks followed, ``..`` collapsed) BEFORE the
+    containment check, so neither can escape it. Shared by ``oe__read_file``
+    and the Executive's ``read_document`` tool.
     """
-    from openexecutive.knowledge.loader import extract_text_from_file
-
-    raw = str(tool_input.get("path") or "").strip()
     if not raw:
-        return _err("path is required — pass the file path a previous tool returned")
+        return "path is required — pass the file path a previous tool returned"
     try:
         resolved = Path(raw).expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
-        return _err("file not found")
-    allowed = _allowed_file_dirs()
+        return "file not found"
+    allowed = _allowed_file_dirs() + list(extra_dirs or [])
     if not any(resolved.is_relative_to(d) for d in allowed):
-        return _err(
-            "that file is outside the folders workflows may read "
-            "(downloaded attachments only)"
-        )
+        return "that file is outside the folders tools may read (downloaded attachments only)"
     if not resolved.is_file():
-        return _err("not a file")
+        return "not a file"
     if resolved.suffix.lower() not in _READABLE_SUFFIXES:
-        return _err(
-            "unsupported file type — readable: " + ", ".join(sorted(_READABLE_SUFFIXES))
-        )
+        return "unsupported file type — readable: " + ", ".join(sorted(_READABLE_SUFFIXES))
     if resolved.stat().st_size > _MAX_READ_FILE_BYTES:
-        return _err("file is larger than 25 MB")
+        return "file is larger than 25 MB"
+    return resolved
+
+
+async def _read_file(tool_input: dict[str, Any]) -> str:
+    """Extract text from a file a previous tool call downloaded.
+
+    A scanned PDF is converted (``knowledge.pdf_reader``) rather than
+    reported as unreadable.
+    """
+    from openexecutive.knowledge.loader import read_document_text
+
+    resolved = resolve_readable_file(str(tool_input.get("path") or "").strip())
+    if isinstance(resolved, str):
+        return _err(resolved)
     try:
-        text = await asyncio.to_thread(extract_text_from_file, resolved)
+        result = await read_document_text(resolved)
     except Exception as exc:
         logger.warning("oe__read_file: extraction failed (%s)", type(exc).__name__)
         return _err("could not read that file")
-    if not text.strip():
-        return _err("no text could be extracted (it may be a scanned image)")
+    if not result.text.strip():
+        return _err(result.note or "no text could be extracted")
+    text = result.text
     cap = get_settings().tool_result_max_chars
     return text if len(text) <= cap else text[:cap] + "\n…[truncated]"
 

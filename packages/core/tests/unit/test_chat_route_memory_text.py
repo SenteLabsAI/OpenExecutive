@@ -115,11 +115,10 @@ def test_chat_rejects_empty_or_oversized_memory_text(
 def test_upload_records_typed_text_and_filenames_not_document_text(
     client: TestClient, captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        chat_route,
-        "build_attachment_output",
-        lambda filename, data, content_type: (f"[{filename}] EXTRACTED DOCUMENT TEXT", []),
-    )
+    async def _fake_output(filename, data, content_type):
+        return f"[{filename}] EXTRACTED DOCUMENT TEXT", []
+
+    monkeypatch.setattr(chat_route, "build_attachment_output", _fake_output)
     resp = client.post(
         "/chat/upload",
         data={"message": "Summarise these"},

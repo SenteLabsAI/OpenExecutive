@@ -21,6 +21,10 @@ from email.utils import parseaddr
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.config import get_settings
+from openexecutive.integrations.email_attachments import (
+    EmailAttachmentRef,
+    read_email_attachments,
+)
 
 if TYPE_CHECKING:
     from openexecutive.orchestrator.mcp_gateway import MCPGateway
@@ -169,6 +173,8 @@ _ATTACHMENT_SIZE_RE = re.compile(r"[\d.]+ KB")
 _ATTACHMENT_NESTED_SUFFIX = " [in attached message]"
 # Longer lines are not the MCP's; skipping them bounds the work per line.
 _ATTACHMENT_LINE_MAX_CHARS = 512
+# The line under an attachment entry naming the id to download it by.
+_ATTACHMENT_ID_RE = re.compile(r"Attachment ID:\s*([\w\-]{1,512})")
 # A reply attribution ("On <date>, <name> <addr> wrote:"). One on a single
 # line is trusted: what follows is the older message, quoted with ">" (then
 # skipped line by line, so text the sender wrote below it survives) or not
@@ -221,8 +227,9 @@ def _quote_follows(body: list[str], j: int) -> bool:
     return k < len(body) and body[k].strip().startswith(">")
 
 
-def _attachment_name(line: str) -> str | None:
-    """The filename in one attachment-list line, or None if it isn't one."""
+def _attachment_line(line: str) -> tuple[str, float] | None:
+    """``(filename, size in KB)`` from one attachment-list line, or None if
+    it isn't one."""
     text = line.strip()
     if len(text) > _ATTACHMENT_LINE_MAX_CHARS:
         return None
@@ -236,7 +243,40 @@ def _attachment_name(line: str) -> str | None:
     _mime, comma, size = meta.rpartition(", ")
     if not (sep and comma and _ATTACHMENT_SIZE_RE.fullmatch(size)):
         return None
-    return name.strip() or None
+    name = name.strip()
+    if not name:
+        return None
+    try:
+        return name, float(size.removesuffix(" KB"))
+    except ValueError:
+        return None
+
+
+def _attachment_name(line: str) -> str | None:
+    """The filename in one attachment-list line, or None if it isn't one."""
+    parsed = _attachment_line(line)
+    return parsed[0] if parsed else None
+
+
+def _attachment_refs(raw: str) -> list[EmailAttachmentRef]:
+    """The attachments listed in get_gmail_message_content's output, each
+    with the id ``get_gmail_attachment_content`` downloads it by (the
+    ``Attachment ID:`` line under its entry). Entries without an id are
+    left out."""
+    _header, _body, lines = _split_gmail_content(raw)
+    refs: list[EmailAttachmentRef] = []
+    pending: tuple[str, float] | None = None
+    for line in lines:
+        entry = _attachment_line(line)
+        if entry is not None:
+            pending = entry
+            continue
+        match = _ATTACHMENT_ID_RE.match(line.strip())
+        if match and pending is not None:
+            name, size_kb = pending
+            refs.append(EmailAttachmentRef(name, match.group(1), int(size_kb * 1024)))
+            pending = None
+    return refs
 
 
 def _attribution_end(body: list[str], i: int) -> tuple[int, bool] | None:
@@ -728,10 +768,28 @@ async def _run_executive(
     # — the email analogue of the DM bots. channel_ref is the bare lowercased
     # sender address, matching what the gateway records at send time. No-op on
     # a miss, so a thread that already carries history is unaffected.
+    # Read the email's document attachments into the turn — scanned PDFs
+    # included — as the chat channels do. Only for a sender the principal
+    # knows (the team, a contact, the principal): an unknown sender's files
+    # stay a list, so a stranger cannot make every inbound cost downloads and
+    # conversion. Runs outside the model loop, so it works on private turns,
+    # where the attachment tool itself is not offered.
+    attachment_text = ""
+    if person is not None or contact is not None:
+        try:
+            refs = _attachment_refs(raw_email)
+            if refs:
+                attachment_text = await read_email_attachments(
+                    gateway, message_id, get_settings().exec_email_address, refs
+                )
+        except Exception:
+            logger.exception("email: reading attachments failed for message=%s", message_id)
     base_message = (
         f"You have an inbound email (message_id={message_id}, thread_id={thread_id}).\n\n"
         f"{policy_notice}{raw_email}"
     )
+    if attachment_text:
+        base_message += f"\n\n--- ATTACHMENT TEXT ---\n{attachment_text}"
     if from_addr:
         from openexecutive.integrations.inbound_hydration import (
             hydrate_user_message,

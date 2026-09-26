@@ -68,6 +68,10 @@ from openexecutive.orchestrator.department_tools import (
     DEPARTMENT_TOOL_HANDLERS,
     DEPARTMENT_TOOLS,
 )
+from openexecutive.orchestrator.document_tools import (
+    DOCUMENT_TOOL_HANDLERS,
+    DOCUMENT_TOOLS,
+)
 from openexecutive.orchestrator.form_tools import (
     FORM_TOOL_HANDLERS,
     FORM_TOOLS,
@@ -380,6 +384,7 @@ _ALL_SKILL_TOOLS = [
     *OPEN_LOOP_TOOLS,
     *DEPARTMENT_TOOLS,
     *DECISION_TOOLS,
+    *DOCUMENT_TOOLS,
     *BROADCAST_TOOLS,
     *WATCHLIST_TOOLS,
     *RESEARCH_TOOLS,
@@ -397,6 +402,7 @@ _ALL_SKILL_HANDLERS = {
     **OPEN_LOOP_TOOL_HANDLERS,
     **DEPARTMENT_TOOL_HANDLERS,
     **DECISION_TOOL_HANDLERS,
+    **DOCUMENT_TOOL_HANDLERS,
     **BROADCAST_TOOL_HANDLERS,
     **WATCHLIST_TOOL_HANDLERS,
     **RESEARCH_TOOL_HANDLERS,

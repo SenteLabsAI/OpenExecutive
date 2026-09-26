@@ -17,6 +17,15 @@ dependencies = [
     "rich>=13.7.0",
     "pyyaml>=6.0.1",
     "pypdf>=4.2.0",
+    # Scanned / image-only PDFs have no text layer for pypdf to return.
+    # knowledge/pdf_reader.py renders their pages (pypdfium2) and OCRs them
+    # (RapidOCR on ONNX, models bundled in the wheel) on any provider, offline.
+    "pypdfium2>=4.30",
+    "rapidocr-onnxruntime>=1.4.4; python_version < '3.13'",
+    # RapidOCR pulls in opencv-python, which needs libGL (absent from
+    # python:3.11-slim). The headless build has no GUI deps; the override below
+    # keeps the GUI build out of the lock.
+    "opencv-python-headless>=4.9",
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "slack-bolt>=1.18.0",
@@ -85,6 +94,11 @@ exclude = ["tests/"]
 # in ~2.2 GB of wheels the container never uses (~2.0 GB of NVIDIA libraries,
 # plus triton) and roughly triples the image. Resolve torch alone from PyTorch's CPU-only index instead.
 # `explicit = true` keeps every other package on PyPI.
+[tool.uv]
+# rapidocr-onnxruntime depends on opencv-python (GUI build, needs libGL);
+# opencv-python-headless above provides the same `cv2` module without it.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 

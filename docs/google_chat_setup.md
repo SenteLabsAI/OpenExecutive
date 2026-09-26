@@ -151,6 +151,10 @@ The webhook endpoint is now active at `POST /webhook/google-chat`. Google Chat w
    # Check the FastAPI terminal output
    ```
 
+### Files
+
+Files sent in a message (PDFs, Word, spreadsheets, text, images; up to 5 per message, 20 MB each) are read into the turn, and scanned PDFs are converted to text. They download with the same service account and `chat.bot` scope the replies use, so no extra setup is needed. A Google Drive file shared into a message is left to the Google Workspace (Drive) tools.
+
 ---
 
 ## Troubleshooting
@@ -161,3 +165,4 @@ The webhook endpoint is now active at `POST /webhook/google-chat`. Google Chat w
 | `401 Invalid JWT` | Wrong project number | Use the **numeric** Project Number, not the string Project ID |
 | No reply, no error in Chat | Handler exception | Check server logs for `Google Chat: handler error` — usually an `ANTHROPIC_API_KEY` issue |
 | Bot added to space but never responds | Webhook URL unreachable | Verify the URL is publicly accessible; for local dev, check ngrok is still running |
+| A file comes back as "Could not download" | The service account cannot read the message's attachment | Check server logs for `Google Chat: attachment download failed`; the app must be the one the file was sent to |

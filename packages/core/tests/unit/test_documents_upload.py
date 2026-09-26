@@ -87,6 +87,31 @@ def test_get_document_returns_extracted_text(client: TestClient) -> None:
     assert "Grow revenue 30%." in body["content"]
 
 
+def test_scanned_pdf_upload_is_indexed_and_previewed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PDF with no text layer used to index 0 chunks (while reporting
+    "indexed") and preview as "no extractable text". Its converted text is
+    now what gets indexed and shown (knowledge.pdf_reader, stubbed)."""
+    from openexecutive.knowledge import pdf_reader
+
+    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+        return pdf_reader.PdfReadResult("Signed lease: rent 12,000 per month.", "ocr", 2)
+
+    monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
+    files = {"file": ("lease.pdf", io.BytesIO(b"%PDF-scan"), "application/pdf")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["chunks_indexed"] >= 1
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert any(m["filename"] == "lease.pdf" for m in store.rows.values())
+
+    preview = client.get("/documents/lease.pdf")
+    assert "rent 12,000 per month" in preview.json()["content"]
+
+
 def test_get_document_missing_returns_404(client: TestClient) -> None:
     resp = client.get("/documents/does_not_exist.md")
     assert resp.status_code == 404

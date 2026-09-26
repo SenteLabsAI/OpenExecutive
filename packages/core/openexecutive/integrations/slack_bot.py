@@ -254,6 +254,67 @@ def _replies_to_gate_history(
     return out
 
 
+# Files shared in a message are fetched from here only: the download carries
+# the bot token, which must never go to a URL outside Slack's file host.
+_SLACK_FILE_HOST = "https://files.slack.com/"
+# Per message, like the web upload route's cap.
+_MAX_SHARED_FILES = 5
+
+
+def _shared_files(event: dict) -> list[dict]:
+    """The files a Slack message carries (a ``file_share`` message, or a
+    mention posted with files), capped per message."""
+    files = event.get("files")
+    if not isinstance(files, list):
+        return []
+    return [f for f in files if isinstance(f, dict)][:_MAX_SHARED_FILES]
+
+
+def _file_name(file: dict) -> str:
+    return str(file.get("name") or file.get("title") or "file")
+
+
+async def _read_shared_files(files: list[dict]) -> tuple[str, list[dict]]:
+    """Download and read the files a rostered sender shared — documents to
+    text (a scanned PDF converted), images to vision blocks — through the
+    same ``process_attachments`` path Discord uses. Needs the bot's
+    ``files:read`` scope; without it Slack answers with an error page that
+    reads as an unreadable file."""
+    from openexecutive.config import get_settings
+    from openexecutive.integrations.attachments import (
+        AttachmentItem,
+        process_attachments,
+    )
+
+    token = get_settings().slack_bot_token
+    items: list[AttachmentItem] = []
+    notes: list[str] = []
+    for f in files:
+        url = str(f.get("url_private_download") or f.get("url_private") or "")
+        if not token or not url.startswith(_SLACK_FILE_HOST):
+            notes.append(f"(Could not download {_file_name(f)})")
+            continue
+        size = f.get("size")
+        items.append(
+            AttachmentItem(
+                url=url,
+                filename=_file_name(f),
+                content_type=str(f.get("mimetype") or ""),
+                size=size if isinstance(size, int) else 0,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+    text = ""
+    blocks: list[dict] = []
+    if items:
+        try:
+            text, blocks = await process_attachments(items)
+        except Exception:
+            logger.exception("Slack: attachment processing failed")
+            notes.append("(Could not process the attached files)")
+    return "\n\n".join(p for p in (*notes, text) if p), blocks
+
+
 async def create_slack_app():
     """Build the async Bolt app and its Socket Mode handler.
 
@@ -333,8 +394,18 @@ async def create_slack_app():
         """
         text = event.get("text", "")
         cleaned = _clean_message(text)
-        if not cleaned:
+        files = _shared_files(event)
+        if not cleaned and not files:
             return
+        # What the sender sent, in their own words plus the files' names —
+        # the "(Attached files: …)" note the web upload route uses. A
+        # file-only message has no words, so the note stands in for them.
+        file_note = (
+            f"(Attached files: {', '.join(_file_name(f) for f in files)})" if files else ""
+        )
+        own_words = "\n\n".join(p for p in (cleaned, file_note) if p)
+        if not cleaned:
+            cleaned = file_note
 
         thread_ts = event.get("thread_ts") or event.get("ts")
         slack_user_id = event.get("user", "")
@@ -559,6 +630,14 @@ async def create_slack_app():
         except Exception:
             logger.exception("Failed to schedule alert evaluation for Slack message")
 
+        # Read the shared files only now — after the roster gate, and after
+        # the response gate and the approval resolver may have ended the
+        # turn — so no one off the roster can make the bot download anything.
+        att_text = ""
+        att_image_blocks: list[dict] = []
+        if files:
+            att_text, att_image_blocks = await _read_shared_files(files)
+
         try:
             from openexecutive.integrations.channel_context import (
                 attach_briefing_context,
@@ -667,6 +746,10 @@ async def create_slack_app():
                         user_message=cleaned,
                     )
 
+                if att_text:
+                    # Before the words, as Discord and Telegram inline it.
+                    chat_user_message = f"{att_text}\n\n{chat_user_message}"
+
                 executive = Executive(mcp_gateway=get_active_gateway())
                 response = await executive.chat(
                     user_message=chat_user_message,
@@ -677,6 +760,10 @@ async def create_slack_app():
                     channel_context_block=build_channel_context_block("slack"),
                     person_id=person_id,
                     co_present_person_ids=co_present_person_ids or None,
+                    attachment_blocks=att_image_blocks or None,
+                    # Peer memory records what the sender wrote and the files'
+                    # names, never a document's text as their words.
+                    memory_text=own_words if files else None,
                 )
 
                 await say(text=response, thread_ts=thread_ts)
@@ -715,7 +802,7 @@ async def create_slack_app():
                     title=_session_title(sender_person, mode),
                     created_at=session.created_at.isoformat(),
                     owner_person_id=person_id,
-                    user_text=_format_user_content(cleaned, speaker),
+                    user_text=_format_user_content(own_words, speaker),
                     assistant_text=response,
                     also_session_id=also_session_id,
                     sender_person_id=sender_person.id,
@@ -794,7 +881,9 @@ async def create_slack_app():
         # Slack delivers BOTH a generic `message` event AND `app_mention`
         # when the bot is mentioned in a channel/thread. Filter early so
         # only one handler fires.
-        if event.get("bot_id") or event.get("subtype"):
+        # `file_share` is a person's message with files attached — handled
+        # like any other message (see _read_shared_files).
+        if event.get("bot_id") or event.get("subtype") not in (None, "file_share"):
             return  # bot messages, channel joins, edits, etc.
 
         channel_type = event.get("channel_type")

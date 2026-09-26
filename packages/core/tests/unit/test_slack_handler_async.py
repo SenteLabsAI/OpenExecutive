@@ -878,3 +878,96 @@ async def test_no_alias_for_a_thread_someone_else_rooted() -> None:
     assert resolve.await_args.kwargs["session_ids"] == [
         "slack:thread:C1:1700000000.0"
     ]
+
+
+# ── Shared files (file_share) ──────────────────────────────────────────────
+
+_PDF_FILE = {
+    "name": "appraisal.pdf",
+    "mimetype": "application/pdf",
+    "size": 2048,
+    "url_private_download": "https://files.slack.com/files-pri/T1-F1/download/appraisal.pdf",
+}
+FILE_DM_EVENT = dict(DM_EVENT, text="", subtype="file_share", files=[_PDF_FILE])
+
+
+@asynccontextmanager
+async def _scanned_pdf_download() -> AsyncIterator[AsyncMock]:
+    """Slack's file download and the PDF converter, stubbed: every download
+    returns a scanned PDF that converts to 'APPRAISED VALUE 4.2M'."""
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
+
+    download = AsyncMock(return_value=b"%PDF-scan")
+    with (
+        patch("openexecutive.integrations.attachments.download_bytes", download),
+        patch("openexecutive.integrations.attachments._schedule_ingest"),
+        patch(
+            "openexecutive.knowledge.pdf_reader.read_pdf_text",
+            AsyncMock(return_value=PdfReadResult("APPRAISED VALUE 4.2M", "ocr", 1)),
+        ),
+    ):
+        yield download
+
+
+@pytest.mark.asyncio
+async def test_a_shared_pdf_is_read_into_the_turn() -> None:
+    """File shares used to be dropped outright (their `subtype`), so a PDF
+    sent to the bot got no reply at all."""
+    async with _listeners() as listeners, _scanned_pdf_download() as download:
+        with _Harness() as h:
+            await listeners["handle_message"](
+                event=dict(FILE_DM_EVENT), say=h.say, client=h.client
+            )
+
+            h.chat.assert_awaited_once()
+            kwargs = h.chat.await_args.kwargs
+            assert kwargs["user_message"].startswith(
+                "[Attached: appraisal.pdf] (converted from scanned pages)\n"
+                "APPRAISED VALUE 4.2M"
+            )
+            # Memory and history record the file's name, not its text as the
+            # sender's words.
+            assert kwargs["memory_text"] == "(Attached files: appraisal.pdf)"
+            assert h.store.messages["slack:dm:U123"][0]["content"] == (
+                "(Attached files: appraisal.pdf)"
+            )
+
+    download.assert_awaited_once()
+    assert download.await_args.args[0] == _PDF_FILE["url_private_download"]
+    assert download.await_args.kwargs["headers"] == {"Authorization": "Bearer xoxb-test"}
+
+
+@pytest.mark.asyncio
+async def test_an_unrostered_senders_file_is_never_downloaded() -> None:
+    async with _listeners() as listeners, _scanned_pdf_download() as download:
+        with _Harness() as h:
+            h.person = None
+            await listeners["handle_message"](
+                event=dict(FILE_DM_EVENT), say=h.say, client=h.client
+            )
+            h.chat.assert_not_awaited()
+
+    download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_bot_token_only_goes_to_slacks_file_host() -> None:
+    elsewhere = dict(_PDF_FILE, url_private_download="https://evil.example/appraisal.pdf")
+    event = dict(FILE_DM_EVENT, files=[elsewhere])
+    async with _listeners() as listeners, _scanned_pdf_download() as download:
+        with _Harness() as h:
+            await listeners["handle_message"](event=event, say=h.say, client=h.client)
+            message = h.chat.await_args.kwargs["user_message"]
+
+    download.assert_not_awaited()
+    assert message.startswith("(Could not download appraisal.pdf)")
+
+
+@pytest.mark.asyncio
+async def test_other_message_subtypes_are_still_ignored() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            await listeners["handle_message"](
+                event=dict(DM_EVENT, subtype="message_changed"), say=h.say, client=h.client
+            )
+            h.chat.assert_not_awaited()

@@ -532,6 +532,23 @@ class Settings(BaseSettings):
         50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
     )
 
+    # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
+    # A PDF with no text layer (a scan, or one printed to PDF as images) is
+    # converted instead of coming back empty. Deployments that reach Claude
+    # directly (ANTHROPIC_API_KEY, OpenRouter off) have PDF_VISION_MODEL read
+    # the pages; every other deployment — OpenRouter, local models — gets
+    # local OCR, which needs no key and makes no model call.
+    pdf_vision_model: str = Field("claude-sonnet-5", alias="PDF_VISION_MODEL")
+    # Pages read per converted PDF; the rest are skipped with a note.
+    pdf_vision_max_pages: int = Field(100, alias="PDF_VISION_MAX_PAGES", ge=1, le=600)
+    # Pages sent to the model per request (each request transcribes a slice).
+    pdf_vision_pages_per_call: int = Field(
+        20, alias="PDF_VISION_PAGES_PER_CALL", ge=1, le=100
+    )
+    # Local OCR fallback. Off means a scanned PDF on a non-Claude deployment
+    # stays unreadable (and says so).
+    pdf_ocr_enabled: bool = Field(True, alias="PDF_OCR_ENABLED")
+
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"
     )

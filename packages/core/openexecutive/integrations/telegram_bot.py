@@ -225,7 +225,9 @@ async def _process_and_reply(
                     # don't need AttachmentItem/process_attachments here since
                     # Telegram requires a separate getFile API call rather than
                     # a direct URL download.
-                    att_text, img_blocks = build_attachment_output(filename, data, content_type)
+                    att_text, img_blocks = await build_attachment_output(
+                        filename, data, content_type
+                    )
                     if att_text:
                         message_text = (
                             f"{att_text}\n\n{message_text}" if message_text else att_text

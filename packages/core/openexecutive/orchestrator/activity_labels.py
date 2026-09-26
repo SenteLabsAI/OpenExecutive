@@ -98,6 +98,7 @@ _LABELS: dict[str, str] = {
     "draft_artifact": "Writing that up…",
     "list_artifacts": "Looking through earlier work…",
     "get_artifact": "Rereading that document…",
+    "read_document": "Reading a document…",
 
     # Workflows
     "draft_workflow": "Drafting a workflow…",

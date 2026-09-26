@@ -1675,6 +1675,9 @@ def unattended_withheld_error(tool_name: str) -> str:
 #   skill review list.
 # - load_mcp_server: connects to any HTTPS URL the model names — the URL
 #   itself can carry the turn's content to a stranger.
+# - read_document: reads company documents and other downloaded files, so a
+#   contact's email must not steer it; the poller already reads that email's
+#   own attachments into the turn.
 # Still offered: the email, DM and invite paths reach the principal and
 # refuse anyone else (`people_tools.PRIVATE_TURN_REFUSAL`, the gateway's
 # allow-list), and an alert the turn raises is private to the principal. The
@@ -1695,6 +1698,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "delete_skill",
     "draft_artifact",
     "load_mcp_server",
+    "read_document",
     "run_executive_research",
     "run_workflow",
     "save_workflow",

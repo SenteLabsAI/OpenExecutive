@@ -151,7 +151,7 @@ async def get_document(
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     from openexecutive.config import get_settings
-    from openexecutive.knowledge.loader import extract_text_from_file
+    from openexecutive.knowledge.loader import extract_text_from_file_async
 
     settings = get_settings()
     docs_dir = settings.company_profile_path.parent / "docs"
@@ -160,10 +160,11 @@ async def get_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     # Show the extracted text — exactly what gets chunked into the vector store
-    # and retrieved by the Executive. Works uniformly across PDF/DOCX/MD/TXT.
-    content = extract_text_from_file(path)
+    # and retrieved by the Executive. Works uniformly across PDF/DOCX/MD/TXT; a
+    # scanned PDF shows its converted text (knowledge/pdf_reader.py).
+    content = await extract_text_from_file_async(path)
     if not content.strip():
-        content = "_No extractable text in this document (it may be a scanned or image-only file)._"
+        content = "_No text could be read from this document._"
     return CompanyDocContent(filename=safe, content=content)
 
 

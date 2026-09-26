@@ -1436,7 +1436,7 @@ async def chat_upload(
             )
 
         try:
-            extra_text, blocks = build_attachment_output(
+            extra_text, blocks = await build_attachment_output(
                 filename, data, upload.content_type or "",
             )
         except Exception:

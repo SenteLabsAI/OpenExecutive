@@ -34,14 +34,15 @@ _INTAKE_GEN_CHARS_PER_FILE = 15_000
 _INTAKE_MAX_DOC_CHARS = 40_000
 
 
-def _extract_intake_upload(filename: str, content: bytes) -> tuple[str, str]:
+async def _extract_intake_upload(filename: str, content: bytes) -> tuple[str, str]:
     """Validate one intake upload and return ``(safe_filename, extracted_text)``.
 
     Raises ``HTTPException(400)`` for a bad name/extension and ``413`` when the
     file exceeds the per-file size cap. The text is extracted by the same
-    ``knowledge.loader`` path the /documents upload uses, via a temp file.
+    ``knowledge.loader`` path the /documents upload uses, via a temp file, so
+    a scanned PDF is converted rather than coming back empty.
     """
-    from openexecutive.knowledge.loader import extract_text_from_file
+    from openexecutive.knowledge.loader import extract_text_from_file_async
 
     safe = Path(filename or "").name
     if not safe or safe.startswith("."):
@@ -68,7 +69,7 @@ def _extract_intake_upload(filename: str, content: bytes) -> tuple[str, str]:
         tmp.write(content)
         tmp_path = Path(tmp.name)
     try:
-        text = extract_text_from_file(tmp_path)
+        text = await extract_text_from_file_async(tmp_path)
     finally:
         tmp_path.unlink(missing_ok=True)
     return safe, text.strip()
@@ -81,7 +82,7 @@ async def _gather_intake_attachments(
 
     Enforces the per-request file-count cap, then returns ``(safe_filename,
     extracted_text)`` for each attachment that yielded text. Files with no
-    extractable text (e.g. a scanned, image-only PDF) are dropped silently;
+    readable text (e.g. a blank PDF, or a scan OCR could not read) are dropped;
     per-file type/size validation (and its 400/413 errors) lives in
     ``_extract_intake_upload``.
     """
@@ -98,7 +99,7 @@ async def _gather_intake_attachments(
         content = await upload.read(_INTAKE_MAX_BYTES_PER_FILE + 1)
         if not content:
             continue
-        safe, text = _extract_intake_upload(upload.filename, content)
+        safe, text = await _extract_intake_upload(upload.filename, content)
         if text:
             extracted.append((safe, text))
     return extracted

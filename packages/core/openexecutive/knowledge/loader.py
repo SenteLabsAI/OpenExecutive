@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.knowledge.store import ChromaDBStore
+
+if TYPE_CHECKING:
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +151,34 @@ def extract_text_from_file(path: Path) -> str:
     return ""
 
 
+async def read_document_text(path: Path) -> PdfReadResult:
+    """Read a document for the Executive, converting a scanned PDF.
+
+    A PDF goes through ``knowledge.pdf_reader`` (text layer, else Claude or
+    local OCR); anything else through ``extract_text_from_file`` in a thread.
+    The result's ``note`` says why a file came back empty or partial.
+    Extraction errors on non-PDF files propagate, as they do from the sync
+    extractor.
+    """
+    from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
+
+    if path.suffix.lower() == ".pdf":
+        data = await asyncio.to_thread(path.read_bytes)
+        return await read_pdf_text(data, filename=path.name)
+    text = await asyncio.to_thread(extract_text_from_file, path)
+    return PdfReadResult(text, "text_layer" if text.strip() else "none", 0)
+
+
+async def extract_text_from_file_async(path: Path) -> str:
+    """``extract_text_from_file``, except a PDF with no text layer (a scan)
+    is converted by ``knowledge.pdf_reader`` instead of coming back empty.
+
+    An unreadable PDF returns ``""`` rather than raising, as an image-only
+    one did from the sync extractor.
+    """
+    return (await read_document_text(path)).text
+
+
 def _make_chunk_id(source: str, chunk_index: int) -> str:
     base = f"{source}::chunk::{chunk_index}"
     return hashlib.md5(base.encode()).hexdigest()
@@ -207,7 +239,7 @@ async def ingest_file(
     later be deleted by: Chroma's ``where`` matches exact values only, so a
     tag is the difference between a one-call delete and a full metadata scan.
     """
-    text = extract_text_from_file(path)
+    text = await extract_text_from_file_async(path)
     if not text.strip():
         return 0
 
