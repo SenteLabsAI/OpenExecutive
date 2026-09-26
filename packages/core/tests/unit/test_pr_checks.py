@@ -173,6 +173,60 @@ def test_parse_added_lines_only_trusts_headers() -> None:
     }
 
 
+def test_drift_ignores_release_please_version_bump() -> None:
+    main_py = PKG + "api/main.py"
+    bump = {
+        "changed": {main_py},
+        "added_lines": {main_py: ['    version="0.4.2",  # x-release-please-version']},
+        "removed_lines": {main_py: ['    version="0.4.1",  # x-release-please-version']},
+    }
+    assert _level(pr_checks.check_arch_drift, **bump) == "PASS"
+    assert _level(pr_checks.check_tests_present, **bump) == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("added", "removed"),
+    [
+        (
+            ['version="0.4.2"  # x-release-please-version', "x = 1"],
+            ['version="0.4.1"  # x-release-please-version'],
+        ),
+        (['version="0.4.2"  # x-release-please-version'], ["x = 1"]),
+        (['version="0.4.2"  # x-release-please-version'], []),
+    ],
+)
+def test_drift_still_counts_code_beside_a_version_bump(
+    added: list[str], removed: list[str]
+) -> None:
+    main_py = PKG + "api/main.py"
+    change = {
+        "changed": {main_py},
+        "added_lines": {main_py: added},
+        "removed_lines": {main_py: removed},
+    }
+    assert _level(pr_checks.check_arch_drift, **change) == "FAIL"
+
+
+def test_parse_removed_lines_keys_by_new_path() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/x.py b/x.py",
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1,2 +1 @@",
+            "--- a",  # a removed line that reads "-- a"
+            "-old",
+            "+new",
+            "diff --git a/gone.py b/gone.py",
+            "--- a/gone.py",
+            "+++ /dev/null",
+            "@@ -1 +0,0 @@",
+            "-bye",
+        ]
+    )
+    assert pr_checks._parse_removed_lines(diff) == {"x.py": ["-- a", "old"]}
+
+
 # --- tests-present -----------------------------------------------------------
 
 
@@ -234,6 +288,34 @@ def test_collect_and_main_against_a_real_repo(
     assert "waived (Arch-Docs: n/a - from the PR body)" in capsys.readouterr().out
 
 
+def test_main_passes_a_release_please_bump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    main_py = repo / PKG / "api" / "main.py"
+    main_py.parent.mkdir(parents=True)
+    main_py.write_text('app = App(\n    version="0.4.1",  # x-release-please-version\n)\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-qb", "release")
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("PR_BODY", raising=False)
+
+    main_py.write_text('app = App(\n    version="0.4.2",  # x-release-please-version\n)\n')
+    _git(repo, "commit", "-qam", "chore(main): release 0.4.2")
+    assert pr_checks.main(["--base", "main"]) == 0
+    assert "PASS  arch-doc-drift  no documented module changed" in capsys.readouterr().out
+
+    main_py.write_text(
+        'app = App(\n    version="0.4.2",  # x-release-please-version\n    debug=True,\n)\n'
+    )
+    assert pr_checks.main(["--base", "main"]) == 1
+    assert "FAIL  arch-doc-drift" in capsys.readouterr().out
+
+
 def test_collect_survives_odd_files_and_git_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -275,8 +357,18 @@ def test_main_reports_missing_base(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _git(tmp_path, "init", "-q", "-b", "main")
-    _git(tmp_path, "-c", "user.email=t@e.com", "-c", "user.name=t", "commit", "-q",
-         "--allow-empty", "-m", "base")
+    _git(
+        tmp_path,
+        "-c",
+        "user.email=t@e.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "base",
+    )
     monkeypatch.chdir(tmp_path)
     assert pr_checks.main(["--base", "origin/nope"]) == 2
     assert "is 'origin/nope' fetched?" in capsys.readouterr().out

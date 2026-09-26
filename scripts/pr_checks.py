@@ -15,6 +15,10 @@ Checks (see CLAUDE.md -> "Architecture Docs" and "PR Requirements"):
                         evals/_scenarios/ change
 - tests-present   WARN  openexecutive/ code changed with no tests/ change
 
+Lines carrying the release-please version marker are not code changes: a
+file whose diff only swaps those lines (the release PR's version bump) counts
+for neither arch-doc-drift nor tests-present.
+
 A change that does not alter what a section describes can waive the drift
 check with a line in a commit message or the PR description:
 
@@ -84,6 +88,9 @@ STUB_RE = re.compile(
     r"\bTODO\b|\bFIXME\b|raise NotImplementedError|pass\s+#\s*stub|\.\.\.\s*#\s*stub"
 )
 CODE_EXT = (".py", ".ts", ".tsx", ".js", ".jsx")
+# release-please rewrites the version on lines ending in this marker (the
+# "generic" extra-files in release-please-config.json).
+VERSION_MARKER = "x-release-please-version"
 # These files name the stub patterns themselves.
 STUB_EXEMPT = {"scripts/pr_checks.py", TESTS + "unit/test_pr_checks.py"}
 
@@ -98,7 +105,23 @@ class Change:
     renamed: set[str] = field(default_factory=set)
     # path -> lines the diff adds to that file
     added_lines: dict[str, list[str]] = field(default_factory=dict)
+    # path -> lines the diff removes from that file
+    removed_lines: dict[str, list[str]] = field(default_factory=dict)
     waiver_text: str = ""
+
+    def version_bump_only(self, path: str) -> bool:
+        """True when the diff to path only swaps release-please version lines."""
+        added = self.added_lines.get(path, [])
+        removed = self.removed_lines.get(path, [])
+        return (
+            bool(added)
+            and len(added) == len(removed)
+            and all(VERSION_MARKER in line for line in added + removed)
+        )
+
+    def code_changed(self) -> set[str]:
+        """Changed paths, less release-please version bumps."""
+        return {p for p in self.changed if not self.version_bump_only(p)}
 
 
 @dataclass
@@ -124,7 +147,7 @@ def check_arch_drift(c: Change) -> Result:
         for p in c.changed
         if p.startswith(PREBUILT) and p.endswith(".json") and "/" not in p[len(PREBUILT) :]
     }
-    modules = sorted({m for p in c.changed if (m := _module_of(p)) and m not in NON_DOC})
+    modules = sorted({m for p in c.code_changed() if (m := _module_of(p)) and m not in NON_DOC})
     if not modules:
         return Result(name, "PASS", "no documented module changed")
     new_modules = {
@@ -200,7 +223,7 @@ def check_eval_scenarios(c: Change) -> Result:
 def check_tests_present(c: Change) -> Result:
     code = [
         p
-        for p in c.changed
+        for p in c.code_changed()
         if p.startswith(PKG) and p.endswith(".py") and _module_of(p) not in NON_DOC
     ]
     if not code or any(p.startswith(TESTS) for p in c.changed):
@@ -241,6 +264,15 @@ def _unquote(path: str) -> str:
 
 
 def _parse_added_lines(diff: str) -> dict[str, list[str]]:
+    return _parse_diff_lines(diff, "+")
+
+
+def _parse_removed_lines(diff: str) -> dict[str, list[str]]:
+    """Removed lines, keyed by the file's new path (a deleted file has none)."""
+    return _parse_diff_lines(diff, "-")
+
+
+def _parse_diff_lines(diff: str, sign: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     current: str | None = None
     in_header = False
@@ -253,7 +285,7 @@ def _parse_added_lines(diff: str) -> dict[str, list[str]]:
             current = target[2:] if target.startswith("b/") else None
         elif line.startswith("@@"):
             in_header = False
-        elif current and not in_header and line.startswith("+"):
+        elif current and not in_header and line.startswith(sign):
             out.setdefault(current, []).append(line[1:])
     return out
 
@@ -281,6 +313,7 @@ def collect(base: str, extra_waiver: Iterable[str] = ()) -> Change:
         "--src-prefix=a/", "--dst-prefix=b/", merge_base,
     )
     added_lines = _parse_added_lines(diff)
+    removed_lines = _parse_removed_lines(diff)
 
     for path in _git("ls-files", "-z", "--others", "--exclude-standard").split("\0"):
         if not path:
@@ -294,7 +327,9 @@ def collect(base: str, extra_waiver: Iterable[str] = ()) -> Change:
             pass
 
     waiver = _git("log", "--format=%B", f"{merge_base}..HEAD")
-    return Change(changed, added, renamed, added_lines, "\n".join([waiver, *extra_waiver]))
+    return Change(
+        changed, added, renamed, added_lines, removed_lines, "\n".join([waiver, *extra_waiver])
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
