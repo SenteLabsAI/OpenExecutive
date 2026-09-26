@@ -23,6 +23,9 @@ Routes:
   POST   /delegation/voice/learn  — learn it from the caller's sent mail (409
                                     in_progress / locked / too_soon /
                                     not_enough_mail / no_profile / changed)
+  POST   /delegation/voice/signature — take the signature from the caller's
+                                    Gmail settings again (a locked profile
+                                    stays locked; nothing else changes)
   PUT    /delegation/voice        — edit fields, lock / unlock
   DELETE /delegation/voice        — forget it (history kept)
 
@@ -31,6 +34,7 @@ Every change writes a private audit row.
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -118,6 +122,15 @@ class VoiceUpdate(BaseModel):
     locked: bool | None = None
     clear_exemplars: bool = False
     clear_signature: bool = False
+
+
+# What a refused field must be, for the message an edit gets back.
+_VOICE_RULES: dict[str, str] = {
+    "greetings": "a greeting is one short line, and {first} is its only placeholder",
+    "sign_off": "the sign-off is at most two short lines",
+    "habits": "a habit or never-rule says how you write, without anyone's name",
+    "avoid": "a habit or never-rule says how you write, without anyone's name",
+}
 
 
 def _refuse(status_code: int, code: str, message: str) -> HTTPException:
@@ -251,6 +264,36 @@ async def learn_delegation_voice(request: Request) -> VoiceOut:
     return _voice_out(stored)
 
 
+@router.post("/delegation/voice/signature", response_model=VoiceOut)
+async def refresh_delegation_signature(request: Request) -> VoiceOut:
+    """Read the signature from the caller's Gmail settings again and keep
+    everything else, lock included: a relearn would replace their edits."""
+    person = _caller(request)
+    person_id = _person_id(person)
+    status = await gmail_status(person.email)
+    if status != "connected":
+        raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
+    try:
+        signature = await gmail_for(person.email or "").send_as_signature()
+    except GmailAuthError as exc:
+        raise _refuse(409, "gmail_needs_reconnect", STATUS_MESSAGES["needs_reconnect"]) from exc
+    except GmailError as exc:
+        logger.warning("delegation: reading the Gmail signature failed", exc_info=True)
+        raise _refuse(502, "gmail_error", STATUS_MESSAGES["error"]) from exc
+    # Read after the Gmail call, so an edit made meanwhile is kept.
+    stored = get_voice(person_id)
+    profile, _ = validate_profile(
+        {**asdict(stored.profile), "signature": signature}, allow_exemplars=True, keep_signature=True
+    )
+    saved = save_voice(person_id, profile, locked=stored.locked, updated_by=f"person:{person_id}")
+    _audit(
+        "delegation_voice_changed",
+        f"Signature taken from Gmail settings by person {person_id}",
+        {"op": "signature", "person_id": person_id, "has_signature": bool(profile.signature)},
+    )
+    return _voice_out(saved)
+
+
 @router.put("/delegation/voice", response_model=VoiceOut)
 def update_delegation_voice(request: Request, body: VoiceUpdate) -> VoiceOut:
     person = _caller(request)
@@ -276,12 +319,15 @@ def update_delegation_voice(request: Request, body: VoiceUpdate) -> VoiceOut:
         if d["field"].split(".")[0] in sent
     ]
     if rejected:
+        fields = [d["field"].split(".")[0] for d in rejected]
+        rules = dict.fromkeys(_VOICE_RULES[f] for f in fields if f in _VOICE_RULES)
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "invalid_voice",
-                "message": "Some of it can't be saved: write about how you write, "
-                "without links, handles, amounts or anyone's name.",
+                "message": "Some of it can't be saved: "
+                + "; ".join(rules or ["write about how you write"])
+                + ". No links, handles or amounts.",
                 "rejected": rejected,
             },
         )

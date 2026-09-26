@@ -31,6 +31,7 @@ import json
 import logging
 import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -282,15 +283,29 @@ def rule_rejection(text: str, *, roster_names: list[str] | None = None) -> str |
 def _short_text(value: object, cap: int, *, lines: int) -> str | None:
     """A greeting or sign-off: at most ``lines`` short lines with no link,
     handle, amount or markup (``{first}`` is the one allowed placeholder).
-    None when it does not pass; "" for empty."""
+    None when it does not pass; "" for empty.
+
+    A literal backslash-n is a line break: a model can write the escape
+    rather than the break, and a stored profile is repaired as it is read.
+    Such a value keeps its first ``lines`` lines rather than being lost; a
+    typed one with too many lines is refused. The escape is read after
+    normalizing (NFKC can make a backslash, and dropping a control character
+    can join one to an "n"), so what is stored reads back the same."""
     if value is None:
         return ""
     if not isinstance(value, str):
         return None
-    parts = [_normalize(p) for p in value.replace("\r", "").split("\n")]
+    text = "".join(
+        ch for ch in unicodedata.normalize("NFKC", value)
+        if ch == "\n" or unicodedata.category(ch) not in ("Cc", "Cf")
+    )
+    escaped = "\\n" in text
+    parts = [_normalize(p) for p in text.replace("\\n", "\n").split("\n")]
     parts = [p for p in parts if p]
     if not parts:
         return ""
+    if len(parts) > lines and escaped:
+        parts = parts[:lines]
     if len(parts) > lines or any(len(p) > cap for p in parts):
         return None
     joined = "\n".join(parts)
@@ -394,8 +409,9 @@ one of their contacts, or someone else.
 Return, through record_voice_profile:
 - greetings: how they usually open, per audience ("Hi {first}," — use \
 {first} for the recipient's first name). Leave an audience out if unclear.
-- sign_off: how they usually close (for example "Best,\\nJane"), without \
-their signature block.
+- sign_off: how they usually close, without their signature block. When it \
+is two lines, such as "Best," with their name on the next line, put a line \
+break between them.
 - length and formality: their usual.
 - habits: up to 8 short sentences about HOW they write (sentence length, \
 greetings, punctuation, directness, warmth, structure).

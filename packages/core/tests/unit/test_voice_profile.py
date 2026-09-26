@@ -125,6 +125,53 @@ def test_a_long_sign_off_is_refused() -> None:
     assert profile.sign_off == "" and dropped == [{"field": "sign_off", "reason": "invalid"}]
 
 
+def test_an_escaped_line_break_is_a_line_break() -> None:
+    # A model can write the two characters backslash-n instead of a break.
+    profile, dropped = validate_profile(
+        {"sign_off": "Thanks,\\nOlivia", "greetings": {"team": "Hi {first},\\n"}},
+        allow_exemplars=False, keep_signature=False, roster_names=[],
+    )
+    assert (profile.sign_off, profile.greetings, dropped) == ("Thanks,\nOlivia", {"team": "Hi {first},"}, [])
+
+
+def test_escaped_lines_past_the_limit_keep_the_first_ones() -> None:
+    # Rather than losing a learned value; the escape is read after normalizing
+    # (a full-width backslash, a backslash joined to its "n" by a dropped
+    # zero-width space).
+    profile, dropped = validate_profile(
+        {
+            "sign_off": "Best,\\nOlivia\\nFounder",
+            "greetings": {
+                "team": "Hi {first},\\nHope you're well",
+                "contact": "Hi,\uff3cnthere",
+                "other": "Hello,\\\u200bnthere",
+            },
+        },
+        allow_exemplars=False, keep_signature=False, roster_names=[],
+    )
+    assert profile.sign_off == "Best,\nOlivia"
+    assert profile.greetings == {"team": "Hi {first},", "contact": "Hi,", "other": "Hello,"}
+    assert dropped == []
+
+
+@pytest.mark.parametrize("value", ["Best,\\nOlivia", "Best,\\\\nOlivia", "x\\ \n n", "Cheers \uff3c", "Ta,\r\n\u200bOlivia"])
+def test_a_cleaned_sign_off_reads_back_the_same(value: str) -> None:
+    once, _ = validate_profile({"sign_off": value}, allow_exemplars=False, keep_signature=False, roster_names=[])
+    twice, _ = validate_profile({"sign_off": once.sign_off}, allow_exemplars=False, keep_signature=False, roster_names=[])
+    assert twice.sign_off == once.sign_off
+
+
+def test_a_stored_escaped_sign_off_reads_back_on_two_lines(db: Path) -> None:
+    person_id = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
+    # Stored before the fix: save_voice keeps what it is given.
+    save_voice(person_id, VoiceProfile(sign_off="Thanks,\\nOlivia"), locked=True, updated_by="learn")
+    assert get_voice(person_id).profile.sign_off == "Thanks,\nOlivia"
+
+
+def test_the_learn_prompt_never_shows_an_escaped_line_break() -> None:
+    assert "\\n" not in dvoice._SYSTEM
+
+
 # --------------------------------------------------------------------------- #
 # Storage
 # --------------------------------------------------------------------------- #

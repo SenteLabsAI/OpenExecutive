@@ -1438,6 +1438,13 @@ export async function updateVoiceProfile(update: VoiceUpdate): Promise<VoiceProf
   return res.json();
 }
 
+// Takes the signature from your Gmail settings again; nothing else changes.
+export async function refreshVoiceSignature(): Promise<VoiceProfile> {
+  const res = await fetch(`${API_BASE}/delegation/voice/signature`, { method: "POST" });
+  if (!res.ok) throw await delegationError(res, "Couldn't read your Gmail signature.");
+  return res.json();
+}
+
 export async function resetVoiceProfile(): Promise<VoiceProfile> {
   const res = await fetch(`${API_BASE}/delegation/voice`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't reset how you write.");

@@ -10,6 +10,7 @@ import inspect
 import json
 import re
 import stat
+import time
 from email import policy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -163,6 +164,51 @@ def test_html_only_mail_becomes_text() -> None:
     ))
     assert parsed.text.splitlines() == ["Hello", "there", "& bye"]
     assert parsed.auto_generated is True
+
+
+@pytest.mark.parametrize(("markup", "lines"), [
+    # Gmail's signature editor: the first line sits in the outer <div>, each
+    # later line in a <div> of its own.
+    (
+        '<div dir="ltr">Olivia Owner<div>Fernway Studio</div><div><span>olivia@fernway.example</span></div></div>',
+        ["Olivia Owner", "Fernway Studio", "olivia@fernway.example"],
+    ),
+    ("<div>One</div><div>Two</div>", ["One", "Two"]),  # no blank line between blocks
+    ("<div>One</div><div><br></div><div>Three</div>", ["One", "", "Three"]),  # Gmail's blank line
+    ("<div>One<br></div><div>Two</div>", ["One", "Two"]),  # a closing <br> adds no line
+    ("<p>One</p><p>Two</p>", ["One", "Two"]),
+    ("<p>Hi Dana,</p><p>&nbsp;</p><p>Thanks.</p>", ["Hi Dana,", "", "Thanks."]),  # an editor's blank line
+    ("Before<table><tr><td>Cell</td></tr></table>After", ["Before", "Cell", "After"]),
+    ("Intro<ul><li>One</li><li>Two</li></ul>", ["Intro", "One", "Two"]),
+    ("a<br/>b<BR >c", ["a", "b", "c"]),
+    ("<picture>Not</picture> a <param>block", ["Not a block"]),
+    ("Nul\x00 <div>kept out</div>", ["Nul", "kept out"]),
+    ("a<style>p {}</style>b<script>x()</script>c<script>never closed", ["abcnever closed"]),
+    # A tag runs to the next ">", whatever its attributes hold.
+    ('<a href="https://x.example/" title="<">click</a> here', ["click here"]),
+    ("if x<y then <b>bold</b>", ["if xbold"]),
+    ("a <> b &#00065; &#" + "1" * 5000 + ";", ["a <> b A \ufffd"]),  # Python refuses to int() 4,301+ digits
+])
+def test_html_becomes_the_lines_it_shows(markup: str, lines: list[str]) -> None:
+    assert gm.html_to_text(markup).split("\n") == lines
+
+
+@pytest.mark.parametrize("markup", [
+    "<" + " " * 100_000,
+    "</" + " " * 100_000,
+    "<" * 100_000,
+    "<div" * 25_000,
+    "<br" * 33_000,
+    "<script" * 14_000,
+    "<script>" + "</script" + " " * 100_000,
+    "&#" + "0" * 100_000 + "65;",
+])
+def test_crafted_html_cannot_stall_the_parser(markup: str) -> None:
+    # Anyone can send the mail this parses, and it runs on the event loop: a
+    # backtracking pattern took minutes on inputs like these.
+    started = time.perf_counter()
+    gm.html_to_text(markup)
+    assert time.perf_counter() - started < 2
 
 
 def test_a_draft_is_threaded_and_cannot_smuggle_a_header() -> None:

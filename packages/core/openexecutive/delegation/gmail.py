@@ -252,17 +252,82 @@ def _headers(payload: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-_TAG_RE = re.compile(r"<[^>]+>")
-_BLOCK_TAG_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr|/h\d)\b[^>]*>")
-_SCRIPT_RE = re.compile(r"(?is)<(script|style)\b.*?</\1\s*>")
+# Everything here runs on mail anyone can send, on the event loop, so each step
+# is one forward pass: these patterns end at the next "<" as well as at ">",
+# and no two quantifiers compete for the same characters.
+_BR_RE = re.compile(r"(?i)<\s*(?:/\s*)?br\b[^<>]*>")
+# Opening and closing tags alike: Gmail puts a signature's first line straight
+# in its outer <div> and each later line in a <div> of its own.
+_BLOCK_EDGE_RE = re.compile(
+    r"(?i)<\s*(?:/\s*)?(?:address|article|aside|blockquote|center|dd|div|dl|dt|figcaption|figure|"
+    r"footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tr|ul)\b[^<>]*>"
+)
+_HIDDEN = {
+    name: (re.compile(rf"(?i)<{name}\b"), re.compile(rf"(?i)</{name}\s*>")) for name in ("script", "style")
+}
+_DECIMAL_REF_RE = re.compile(r"&#(\d+)(;?)")
+_EDGE = "\x00"
+
+
+def _strip_tags(text: str) -> str:
+    """``text`` without its tags — each "<" through the next ">", with
+    something between — in one forward pass."""
+    out: list[str] = []
+    at = 0
+    while (lt := text.find("<", at)) != -1:
+        gt = text.find(">", lt + 1)
+        if gt == -1:
+            break  # nothing after this closes a tag
+        out.append(text[at:gt + 1] if gt == lt + 1 else text[at:lt])
+        at = gt + 1
+    out.append(text[at:])
+    return "".join(out)
+
+
+def _short_decimal_ref(match: re.Match[str]) -> str:
+    # html.unescape turns the digits into an int, and Python refuses more than
+    # 4,300 of them (ValueError). Beyond seven significant digits the value is
+    # past Unicode's range, which unescape reads as U+FFFD anyway.
+    digits = match.group(1).lstrip("0") or "0"
+    return "�" if len(digits) > 7 else f"&#{digits}{match.group(2)}"
+
+
+def _drop_hidden(markup: str) -> str:
+    """``markup`` without its ``<script>`` and ``<style>`` elements, in one
+    pass each: an element nothing closes is left for the tag strip."""
+    for opening, closing in _HIDDEN.values():
+        out: list[str] = []
+        at = 0
+        while (start := opening.search(markup, at)) is not None:
+            end = closing.search(markup, start.end())
+            if end is None:
+                break
+            out.append(markup[at:start.start()])
+            at = end.end()
+        out.append(markup[at:])
+        markup = "".join(out)
+    return markup
 
 
 def html_to_text(markup: str) -> str:
-    """Plain text from an HTML body or signature (line breaks kept)."""
-    text = _SCRIPT_RE.sub("", markup)
-    text = _BLOCK_TAG_RE.sub("\n", text)
-    text = html.unescape(_TAG_RE.sub("", text))
-    lines = [ln.rstrip() for ln in text.splitlines()]
+    """Plain text from an HTML body or signature. A ``<br>`` (or a line break
+    in the markup) always ends a line; a block's opening or closing tag ends
+    one only when it has text, so ``</div><div>`` is a single break and
+    ``<div><br></div>`` a blank line."""
+    text = _drop_hidden(markup.replace(_EDGE, ""))
+    text = _BLOCK_EDGE_RE.sub(_EDGE, _BR_RE.sub("\n", text))
+    text = html.unescape(_DECIMAL_REF_RE.sub(_short_decimal_ref, _strip_tags(text)))
+    out: list[str] = []
+    has_text = False
+    for piece in re.split(f"({_EDGE}|\n)", text):
+        if piece == "\n" or (piece == _EDGE and has_text):
+            out.append("\n")
+            has_text = False
+        elif piece != _EDGE:
+            out.append(piece)
+            # Only markup whitespace: a line of &nbsp; is a line the reader sees.
+            has_text = has_text or bool(piece.strip(" \t\r\n\f\v"))
+    lines = [ln.rstrip() for ln in "".join(out).splitlines()]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 

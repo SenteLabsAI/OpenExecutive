@@ -3462,7 +3462,7 @@ audit:
     - workspace_settings_changed — solo/team mode, the user's time zone or the principal's role changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed. The summary names only what moved ("mode A → B, time zone X → Y" and/or "principal's role updated"). A PUT that changes nothing writes nothing.
     - delegation_settings_changed — a person turned Act as me on or off for themselves via PUT /delegation. actor "user"; details carry person_id and enabled. Always private. Setting the current value writes nothing.
     - delegation_gmail_verified — their own Gmail was checked (connected, and the mailbox on their People entry) just before Act as me was turned on. details carry person_id and status. Always private.
-    - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice (actor "user"). details carry op (learn, edit or reset), person_id, and counts or the names of the fields changed — never their text. Always private.
+    - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice, or its signature read from Gmail again via /delegation/voice/signature (actor "user"). details carry op (learn, edit, reset or signature), person_id, and counts, the names of the fields changed or whether a signature was found — never their text. Always private.
     - delegation_drafted — one per draft ghostwrite_email saved in someone's own Gmail. details carry person_id, thread_id, draft_id, reply, the recipient count and flags — never the draft, the intent or the thread. Always private; the daily draft cap counts these rows.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
@@ -6712,14 +6712,26 @@ delegation:
     locked profile, and a lock or edit made while it runs wins (the learned
     profile is dropped: locked / changed). One forced-tool call
     (record_voice_profile), then validate_profile in code — greetings per
-    audience (team / contact / other) and a sign-off (short; no links,
-    handles, amounts or markup), length and formality from fixed lists, up
+    audience (team / contact / other) and a sign-off (short, at most two
+    lines; no links, handles, amounts or markup; a literal backslash-n is a
+    line break, read after NFKC, and a value with more such lines than fit
+    keeps its first ones — which also repairs a profile stored before that
+    rule, since stored rows are re-validated as they are read; a typed value
+    with too many lines is a 422 naming the rule), length and formality
+    from fixed lists, up
     to 8 habits and 6 avoid rules through attunement.style's deny-list plus
     a writing-topic check and a roster-name check, and up to 3 exemplars
     (each verbatim from a sample, emails and phones masked, none while a
     client slot is active). The signature comes from Gmail sendAs, never
-    the model. Tables delegation_voice and delegation_voice_history (every
-    change kept).
+    the model, through gmail.html_to_text: a <br> always ends a line and a
+    block tag (div, p, li, tr, table, lists, headings, blockquote…),
+    opening or closing, ends one only when it has text — Gmail puts a
+    signature's first line straight in the outer <div> and each later line
+    in its own <div>, so closing tags alone glued the first two lines.
+    POST /delegation/voice/signature reads it again without a relearn (a
+    relearn would replace the person's edits, and a locked profile can't
+    relearn): nothing else changes and the lock is kept. Tables
+    delegation_voice and delegation_voice_history (every change kept).
   gmail_client: |
     delegation.gmail.DelegateGmail — direct Gmail REST (httpx), never
     registered with the MCP gateway. Methods profile_email, search_threads
@@ -6731,6 +6743,13 @@ delegation:
     and any 429, is a GmailError to retry instead), mismatch, no_email, shared_mailbox
     (the person's address is the exec address; refused before asking
     Google) or error. Credentials per person, see integrations.own_gmail.
+    html_to_text (HTML-only bodies and the sendAs signature) runs on mail
+    anyone can send, on the event loop, so every step is one forward pass:
+    the <br> and block patterns end at the next "<" as well as ">", tags and
+    script / style elements are cut by scanning forward, and a decimal
+    character reference past Unicode's range becomes U+FFFD before
+    html.unescape (which raises past 4,300 digits). A unit test times
+    crafted input.
   privacy: |
     From the moment ghostwrite_email sets touched_mail,
     people_tools.audit_row_private_to_principal answers True, so every row
@@ -6753,7 +6772,9 @@ delegation:
   api: |
     /delegation — GET, PUT {enabled}; /delegation/voice — GET, PUT (edit,
     lock), DELETE (reset); POST /delegation/voice/learn (409 in_progress /
-    locked / too_soon / not_enough_mail / no_profile / changed). The
+    locked / too_soon / not_enough_mail / no_profile / changed); POST
+    /delegation/voice/signature (the Gmail sendAs signature again; 409 with
+    the Gmail codes, 502 gmail_error). The
     caller's OWN delegation only. 403 not_available_yet for a caller can_delegate
     refuses (the Settings card hides); 403 sign_in_required with no
     x-caller-email unless local login; turning it on needs gmail_status
@@ -6762,8 +6783,12 @@ delegation:
     writes a private audit row.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
-    command and Check again, the Write drafts as me switch, and How I write.
-    Setup status light your_gmail. The chat chip "Drafted an email as you
+    command and Check again, the Write drafts as me switch, and How I write
+    (length and tone, a greeting input per audience, the sign-off and the
+    habit / never lists in textareas that grow to fit, the signature with
+    Refresh from Gmail and Don't add my signature — or Add my Gmail
+    signature — and each exemplar quoted, with Remove examples). Setup
+    status light your_gmail. The chat chip "Drafted an email as you
     to … — in your Gmail Drafts" opens the draft (target=_blank,
     rel=noopener noreferrer). Evals: a scenario's delegation block runs the
     turn against evals.mailbox.ScenarioMailbox and hands the saved drafts to
