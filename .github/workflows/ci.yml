@@ -39,6 +39,30 @@ jobs:
       - name: Run mypy
         run: cd packages/core && uv run mypy openexecutive/ --ignore-missing-imports
 
+  pr-checks:
+    name: PR rules (arch docs, stubs, evals)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      # Rules from CLAUDE.md ("Architecture Docs", "PR Requirements"). The PR
+      # body is read for an "Arch-Docs: n/a - <reason>" waiver; it goes in via
+      # env, never interpolated into the script.
+      - name: Check PR rules
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/pr_checks.py --base "origin/$BASE_REF"
+
   python-test:
     name: Python tests
     runs-on: ubuntu-latest

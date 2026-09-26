@@ -1,4 +1,4 @@
-.PHONY: dev stop test lint eval docker clean install discord
+.PHONY: dev stop test lint check eval docker clean install discord
 
 install:
 	cd packages/core && uv sync
@@ -51,6 +51,19 @@ test:
 
 lint:
 	cd packages/core && uv run ruff check openexecutive/ && uv run mypy openexecutive/
+
+# Everything CI checks, in one command. Unsets the two env vars that make
+# full-app tests 401 or fail at import (see CLAUDE.md -> Testing), builds the
+# UI only when packages/ui differs from BASE, then runs the PR rules.
+BASE ?= origin/main
+check: lint
+	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT \
+		uv run pytest tests/unit/ -n auto --dist loadfile -q
+	@if ! git diff --quiet $$(git merge-base $(BASE) HEAD) -- packages/ui \
+		|| [ -n "$$(git ls-files --others --exclude-standard packages/ui)" ]; then \
+		cd packages/ui && npm run build; \
+	else echo "packages/ui unchanged - skipping UI build"; fi
+	python3 scripts/pr_checks.py --base $(BASE)
 
 eval:
 	cd packages/core && uv run python ../../evals/run_evals.py \
