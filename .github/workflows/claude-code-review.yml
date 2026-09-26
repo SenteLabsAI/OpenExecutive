@@ -1,0 +1,94 @@
+name: Claude Code Review
+
+# Reviews every non-draft PR with Claude (anthropics/claude-code-action) and
+# posts findings as inline comments plus one summary comment.
+#
+# Setup (once, by a repo admin):
+#   1. Install the Claude GitHub App on the repo:
+#      https://github.com/apps/claude
+#   2. Add ONE repository secret (Settings -> Secrets and variables -> Actions):
+#      ANTHROPIC_API_KEY (API billing) or CLAUDE_CODE_OAUTH_TOKEN (a Claude
+#      subscription; create it with `claude setup-token`).
+# Until a secret is set the job skips with a notice instead of failing.
+#
+# Fork PRs are skipped: GitHub does not pass secrets to them.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# A new push supersedes a review still running on the previous one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Check for credentials
+        id: auth
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Claude review skipped: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (see the header of .github/workflows/claude-code-review.yml)."
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.auth.outputs.ready == 'true'
+        with:
+          fetch-depth: 1
+
+      - name: Review the PR
+        if: steps.auth.outputs.ready == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. Read CLAUDE.md first: it holds the
+            project's invariants and PR rules. Read the diff with
+            `gh pr diff`, and open the surrounding code when you need it.
+
+            Report only real problems, most severe first:
+            1. Bugs: wrong logic, missing edge cases, broken error handling,
+               races, a sync call where the code must be async.
+            2. Security: injection, auth bypass, secrets or company data in
+               the diff, untrusted input reaching a dangerous sink, a
+               removed or narrowed .gitignore rule.
+            3. CLAUDE.md invariants: dynamic content inside a cached system
+               prompt block, the executive persona f-stringed, tools not
+               sorted by name, RAG context in the system prompt instead of
+               the user turn, `class Config` instead of `model_config`, a
+               sync `anthropic.Anthropic()` client, a specialist missing
+               from SPECIALIST_TOOLS or `_AREAS`.
+            4. Missing tests for new behavior.
+
+            Skip style nits that ruff/mypy would catch and anything the
+            `pr-checks` CI job already enforces (architecture-doc drift,
+            stub markers, eval scenarios).
+
+            Put each finding as an inline comment on the line it concerns,
+            with a concrete failing input or scenario. Finish with one
+            short PR comment summarizing the findings, or saying none were
+            found. Do not approve or request changes.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"

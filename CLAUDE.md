@@ -264,3 +264,4 @@ Before calling a code change done or opening a PR:
 - New behavior has tests; a new agent or prompt change has eval scenarios.
 - A change to what a documented topic describes updates its `prebuilt/<section>.json` (see Architecture Docs), or carries an `Arch-Docs: n/a - <reason>` waiver.
 - A change touching `api/`, `integrations/`, `mcp_server/`, auth, `orchestrator/outbound_guard.py`, the cached prompt blocks or `.gitignore` gets a pass from the `security-reviewer` agent (or `/security-review`) before the PR opens.
+- Every non-draft PR also gets an automated Claude review (`.github/workflows/claude-code-review.yml`) as inline comments. Fix or answer each finding.
