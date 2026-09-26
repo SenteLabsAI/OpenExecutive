@@ -41,6 +41,15 @@ export default function WorkflowWizard() {
   // The session this component already holds, so mirroring it into the URL
   // does not trigger a redundant resume fetch.
   const heldSessionRef = useRef<string | null>(null);
+  // A turn can finish after the user has left (e.g. "Back to workflows" while
+  // the first message is still in flight); don't pull them back via the URL.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     listPeople()
@@ -73,7 +82,7 @@ export default function WorkflowWizard() {
         const next = await op();
         setTurn(next);
         setInput("");
-        if (next.session_id !== heldSessionRef.current) {
+        if (mountedRef.current && next.session_id !== heldSessionRef.current) {
           heldSessionRef.current = next.session_id;
           router.replace(`${pathname}?session=${encodeURIComponent(next.session_id)}`, {
             scroll: false,

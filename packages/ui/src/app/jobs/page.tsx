@@ -325,7 +325,9 @@ function JobsPageInner() {
                       query={catalogQuery}
                       onQueryChange={setCatalogQuery}
                       section={section}
-                      onSectionChange={(s) => setParam({ section: s === "all" ? null : s })}
+                      onSectionChange={(s) =>
+                        setParam({ browse: "1", section: s === "all" ? null : s })
+                      }
                     />
                     <button
                       type="button"
