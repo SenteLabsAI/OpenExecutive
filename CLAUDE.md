@@ -21,6 +21,7 @@ docker/                 Dockerfile + docker-compose.yml
 make dev          # Start FastAPI (port 8000) + Next.js (port 3000)
 make test         # Run pytest
 make lint         # ruff check + mypy
+make check        # everything CI checks: lint, unit tests, UI build (if touched), PR rules
 make eval         # Run eval suite against localhost
 make docker       # docker compose up --build
 ```
@@ -129,6 +130,8 @@ When your PR materially changes a documented topic, **re-author the affected `pr
 
 Each `prebuilt/<id>.json` has the keys `section_id`, `title`, `markdown`, `mermaid` (a Mermaid string or `null`), and `generated_at`. The Markdown must not include the section heading (the UI renders the title). Validate edits with `python -m json.tool`.
 
+CI enforces this with `scripts/pr_checks.py` (also run by `make check`): a change under a documented module fails unless one of that module's `prebuilt/<section>.json` files changed too. The module → section map is `SECTIONS_FOR` in that script; update it when you add a module or section. When a change genuinely does not alter what a section describes, waive it with a line `Arch-Docs: n/a - <reason>` in a commit message or the PR description.
+
 ## Local Hosts
 
 `make dev` serves both:
@@ -217,7 +220,7 @@ make eval   # runs packages/core/openexecutive/evals/_scenarios/*.yaml, writes e
 - No stubs — working code only
 - Tests for new behavior
 - Eval scenarios for new agents or prompt changes
-- `ruff check` and `mypy` must pass
+- `ruff check` and `mypy` must pass — `make check` runs these, the unit tests and `scripts/pr_checks.py` (no stubs, eval scenarios, arch-doc drift) the way CI does
 - Architecture docs updated per `## Architecture Docs` above (when integrations, scheduler, departments/people, caching, invariants, routing patterns, or top-level modules change)
 - PR title is `type(scope): what changed`, in the imperative — e.g.
   `fix(chat): bind the session for the whole SSE turn`. Types: `fix`, `feat`,
@@ -253,9 +256,11 @@ make eval   # runs packages/core/openexecutive/evals/_scenarios/*.yaml, writes e
   findings and alternatives go in the commit message; open questions go in the
   review thread. Keep the body short enough to read in one screen.
 
-## Workflow
+## Definition of Done
 
-- For any task that writes, modifies, refactors, fixes, or plans code changes
-  in this repo, invoke the `anvil` skill before editing. This applies to bug
-  fixes, new features, refactors, and config changes — including small edits.
-- Research-only tasks (read, search, explain, summarize) do not require Anvil.
+Before calling a code change done or opening a PR:
+
+- `make check` passes. It unsets `BACKEND_SHARED_SECRET` / `OE_PUBLIC_DEPLOYMENT` for the tests, so the Testing gotchas above don't bite.
+- New behavior has tests; a new agent or prompt change has eval scenarios.
+- A change to what a documented topic describes updates its `prebuilt/<section>.json` (see Architecture Docs), or carries an `Arch-Docs: n/a - <reason>` waiver.
+- A change touching `api/`, `integrations/`, `mcp_server/`, auth, `orchestrator/outbound_guard.py`, the cached prompt blocks or `.gitignore` gets a pass from the `security-reviewer` agent (or `/security-review`) before the PR opens.
