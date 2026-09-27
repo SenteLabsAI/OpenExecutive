@@ -83,10 +83,11 @@ _FORWARDED_ENV_VARS = (
 
 # Outbound Gmail tools whose arguments may carry recipients. Any tool name
 # matching one of these (after the `google_workspace__` namespace prefix) is
-# subject to the recipient allow-list. Names track workspace-mcp 1.21.1: the
-# send/reply/forward surface collapsed into a single `send_gmail_message` (reply
-# and forward are just that tool with thread_id/quoting), and `draft_gmail_message`
-# replaced `create_gmail_draft`. Drafts are gated too (defense-in-depth: a draft
+# subject to the recipient allow-list. Names track workspace-mcp 1.29.0: the
+# send/reply/forward surface is a single `send_gmail_message` (reply is that
+# tool with thread_id/quoting; forward is its `forward_message_id` arg, which
+# `_GMAIL_ALLOWED_ARG_KEYS` refuses), and `draft_gmail_message` replaced
+# `create_gmail_draft`. Drafts are gated too (defense-in-depth: a draft
 # carries recipients and may be sent later). Re-verify these names on any
 # workspace-mcp bump.
 _GATED_GMAIL_TOOLS = frozenset({
@@ -187,6 +188,15 @@ _GMAIL_RECIPIENT_FIELDS = ("to", "cc", "bcc")
 # (custom headers, raw MIME blob, multipart parts, additional_headers, etc.)
 # is rejected by default. Add new keys here only after confirming they cannot
 # carry an unvalidated address.
+#
+# Deliberately NOT allowed (workspace-mcp 1.29.0 send_gmail_message args):
+#   - reply_all: workspace-mcp derives To/Cc from the thread itself, so the
+#     recipients never pass through the roster check below.
+#   - forward_message_id / include_forwarded_attachments: forward any inbox
+#     message to `to` with its original attachments — files the model never
+#     sees or writes, so nothing it could otherwise put in `body`. Replies
+#     still work via thread_id + an explicit, roster-checked `to` (with
+#     quote_original, the quoted text goes only to that roster address).
 _GMAIL_ALLOWED_ARG_KEYS = frozenset({
     "user_google_email",
     "to",
@@ -195,7 +205,7 @@ _GMAIL_ALLOWED_ARG_KEYS = frozenset({
     "subject",
     "body",
     "html_body",
-    # workspace-mcp 1.21.1 uses body + body_format ("plain"|"html") instead of a
+    # workspace-mcp (1.21.1+) uses body + body_format ("plain"|"html") instead of a
     # separate html_body; keep html_body for back-compat. body_format is an enum,
     # not a recipient.
     "body_format",
@@ -205,7 +215,7 @@ _GMAIL_ALLOWED_ARG_KEYS = frozenset({
     # Threading metadata — Message-IDs, not addresses. Cannot carry recipients.
     "in_reply_to",
     "references",
-    # Plain booleans (1.21.1) — signature inclusion / original-message quoting.
+    # Plain booleans (1.21.1+) — signature inclusion / original-message quoting.
     # Not recipients.
     "include_signature",
     "quote_original",
@@ -213,7 +223,7 @@ _GMAIL_ALLOWED_ARG_KEYS = frozenset({
     # NOT a recipient and NOT the From address (that stays the authenticated
     # user_google_email). Validated for CR/LF below to block header injection.
     "from_name",
-    # Gmail "Send As" alias address (1.21.1). Sets the From mailbox to a verified
+    # Gmail "Send As" alias address (1.21.1+). Sets the From mailbox to a verified
     # alias of the authenticated user (Gmail rejects unverified aliases, so it
     # can't spoof arbitrary senders) — NOT a recipient, so not roster-checked, but
     # it lands in the From header so it's CR/LF-validated below like from_name.

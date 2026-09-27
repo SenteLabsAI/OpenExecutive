@@ -88,10 +88,10 @@ RUN uv pip install --system "fastembed>=0.6.0" \
 # Google Workspace MCP server, run co-located as a stdio child of the MCP gateway
 # (see docker/workspace-mcp-launch.sh + packages/core/mcp_servers.json.example).
 # Installed into its OWN venv — NOT the system env — so its deps (fastmcp etc.)
-# can't collide with the API's. Pinned to 1.21.1: this version has the
+# can't collide with the API's. Pinned to 1.29.0: it has the
 # `--tool-tier {core,extended,complete}` flag the launcher uses (1.3.0 did NOT —
 # it only had `--tools`, so `--tool-tier complete` errored and the child died),
-# and it ships fastmcp 3.4.2 which works with modern pydantic (no pin needed).
+# and its fastmcp (4.x) works with modern pydantic (no pin needed).
 # The build-time smoke runs the EXACT flag combo the launcher uses
 # (`--tool-tier complete`): if a future bump removes the flag or breaks the
 # import, the BUILD fails loudly instead of crash-looping in production.
@@ -99,7 +99,7 @@ RUN uv pip install --system "fastembed>=0.6.0" \
 # gateway's egress gates key on (_GATED_GMAIL_TOOLS / _GATED_CALENDAR_TOOLS /
 # Drive share gate in orchestrator/mcp_gateway.py). Bump together with those gates.
 RUN uv venv /opt/workspace-mcp \
-    && uv pip install --python /opt/workspace-mcp/bin/python "workspace-mcp==1.21.1" \
+    && uv pip install --python /opt/workspace-mcp/bin/python "workspace-mcp==1.29.0" \
     && /opt/workspace-mcp/bin/workspace-mcp --tool-tier complete --help >/dev/null 2>&1
 COPY docker/workspace-mcp-launch.sh /usr/local/bin/workspace-mcp-launch.sh
 RUN chmod +x /usr/local/bin/workspace-mcp-launch.sh

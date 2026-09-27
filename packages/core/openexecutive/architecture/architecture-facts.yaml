@@ -5262,13 +5262,18 @@ integrations:
         dropped with ``details.outcome="rejected_unknown_sender"``.
 
     Outbound — roster-gated everywhere this matters:
-      • Gmail send (``send_gmail_message`` — which also covers reply/forward
-        via thread_id in workspace-mcp 1.21.1 — and ``draft_gmail_message``)
+      • Gmail send (``send_gmail_message`` — which also covers replies
+        via thread_id in workspace-mcp 1.29.0 — and ``draft_gmail_message``)
         is gated at the MCP gateway
         (orchestrator.mcp_gateway._check_gmail_recipients). Every
         ``to``/``cc``/``bcc`` address must resolve to a Person row's
         email (case-insensitive) or to the exec's own address; misses
-        get an ``integration_outbound_blocked`` audit row.
+        get an ``integration_outbound_blocked`` audit row. Only a fixed
+        set of argument keys passes (``_GMAIL_ALLOWED_ARG_KEYS``), so
+        1.29.0's ``reply_all`` (To/Cc derived from the thread, never
+        roster-checked) and ``forward_message_id`` /
+        ``include_forwarded_attachments`` (forward any inbox message)
+        are refused.
       • ``send_telegram_message`` and ``send_discord_dm`` apply the
         same People-roster check pre-send.
       • Contacts (``people.kind``, private to the principal): a contact's
@@ -5703,8 +5708,8 @@ integrations:
     single-tenant model (one install = one company = one exec Google account), so
     the server is inherently one-per-install; co-locating means a new install needs
     only the API+UI apps. workspace-mcp is baked into the API image in its own
-    venv (docker/Dockerfile: `uv pip install workspace-mcp==1.21.1` at /opt/
-    workspace-mcp — 1.21.1 has the --tool-tier flag and fastmcp 3.x that works
+    venv (docker/Dockerfile: `uv pip install workspace-mcp==1.29.0` at /opt/
+    workspace-mcp — it has the --tool-tier flag and a fastmcp that works
     with modern pydantic) and launched by
     docker/workspace-mcp-launch.sh, referenced as the `command` of the
     google_workspace entry in /data/company/mcp_servers.json. The launcher selects
