@@ -82,6 +82,7 @@ class OpenAICompatibleProvider:
         spec_lookup: dict[str, FeatureSpec] | None = None,
         model_resolver: Callable[[str], tuple[str, FeatureSpec] | None] | None = None,
         include_usage_accounting: bool = False,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -106,6 +107,9 @@ class OpenAICompatibleProvider:
         # behind a LiteLLM gateway), which rejects an unrecognized top-level
         # `usage` field outright rather than ignoring it.
         self._include_usage_accounting = include_usage_accounting
+        # Top-level `reasoning_effort` for thinking-only backends. Skipped
+        # when the request already carries a `reasoning` object.
+        self._reasoning_effort = reasoning_effort
 
     # ------------------------------------------------------------------
     # internal helpers
@@ -131,6 +135,12 @@ class OpenAICompatibleProvider:
         )
         return slug, spec
 
+    def _apply_reasoning_effort(self, body: dict[str, Any]) -> None:
+        # A per-request ``reasoning`` object (Council deep-reasoning toggle)
+        # wins over the backend-wide default.
+        if self._reasoning_effort and "reasoning" not in body:
+            body["reasoning_effort"] = self._reasoning_effort
+
     def _auth_headers(self) -> dict[str, str]:
         # Local backends (Ollama, LM Studio) typically need no auth — omit
         # the header entirely rather than send a bogus ``Bearer None``.
@@ -155,6 +165,7 @@ class OpenAICompatibleProvider:
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
+        self._apply_reasoning_effort(body)
         _announce_reasoning(slug, body)
 
         try:
@@ -183,6 +194,7 @@ class OpenAICompatibleProvider:
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
+        self._apply_reasoning_effort(body)
         _announce_reasoning(slug, body)
         body["stream"] = True
         return _OpenAICompatibleStream(

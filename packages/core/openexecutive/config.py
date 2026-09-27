@@ -287,6 +287,10 @@ class Settings(BaseSettings):
     local_include_usage_accounting: bool = Field(
         False, alias="LOCAL_INCLUDE_USAGE_ACCOUNTING"
     )
+    # Optional `reasoning_effort` sent on every local request (e.g. "low").
+    # Thinking-only models (GLM on Fireworks) otherwise spend the whole
+    # max_tokens budget reasoning and return no tool call. Unset = not sent.
+    local_reasoning_effort: str | None = Field(None, alias="LOCAL_REASONING_EFFORT")
 
     @field_validator("local_models", mode="before")
     @classmethod
