@@ -178,13 +178,20 @@ _URL_FETCH_KEYS = frozenset({"url", "fileurl", "sourceurl", "remoteurl", "downlo
 # as text, never fetched: a document hyperlink, a meeting link, a YouTube id.
 _GOOGLE_FETCH_KEY_RE = re.compile(r"(url|uri|imagesource)$")
 _STORED_URL_KEYS = frozenset({"linkurl", "conferenceuri", "youtubeuri"})
-_URL_SCHEME_RE = re.compile(r"^\s*[A-Za-z][A-Za-z0-9+.\-]*:")
-# Sheets formulas Google evaluates by fetching a URL from the cell VALUE, so no
-# key names it: on a tool that writes cells (its name says sheet / table), any
-# string that is such a formula is refused. Other formulas (=SUM(...)) pass.
-_FORMULA_FETCH_RE = re.compile(
-    r"^\s*=.*\b(IMPORTDATA|IMPORTXML|IMPORTHTML|IMPORTFEED|IMAGE)\s*\(", re.IGNORECASE | re.DOTALL
-)
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+# What a URL parser strips or ignores before the scheme (C0 controls, space,
+# DEL, zero-width and bidi format characters, BOM) — removed before the scheme
+# test so "\x01https://…" or "\u200bhttps://…" is still a URL here.
+_INVISIBLE_RE = re.compile(r"[\x00-\x20\x7f\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff]")
+# Sheets functions Google evaluates by fetching a URL from the cell VALUE, so
+# no key names it. Matched anywhere in any string — a `values` argument may
+# arrive JSON-encoded, a CSV cell sits mid-line, "+IMPORTDATA(" needs no "=" —
+# on every tool that can write cells: the Sheets tools (sheet / table /
+# conditional formatting) and the Drive create / update / import tools, which
+# convert CSV into a native Sheet. Other formulas (=SUM(...)) pass, as does
+# the word without a call ("IMPORTDATA is a function").
+_FORMULA_FETCH_RE = re.compile(r"\b(IMPORTDATA|IMPORTXML|IMPORTHTML|IMPORTFEED|IMAGE)\s*\(", re.IGNORECASE)
+_CELL_WRITER_RE = re.compile(r"sheet|table|conditional|drive_file|import_to")
 # Free text Google mails to someone the roster never checked: an RSVP comment
 # goes to the event's organizer; an out-of-office / focus-time decline message
 # goes to whoever invites the Executive during the window. Refused on every
@@ -466,12 +473,22 @@ def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_url(value: Any) -> bool:
+    """True when ``value`` is a string a URL parser would fetch from: a scheme
+    ("https:", "data:", …) or a protocol-relative "//host", after the
+    characters such a parser strips are removed."""
+    if not isinstance(value, str):
+        return False
+    cleaned = _INVISIBLE_RE.sub("", value)
+    return cleaned.startswith("//") or _URL_SCHEME_RE.match(cleaned) is not None
+
+
 def _google_fetches(key: str, value: Any) -> bool:
-    """True when ``key`` is one Google fetches and ``value`` has a URL scheme."""
+    """True when ``key`` is one Google fetches and ``value`` is a URL."""
     norm = _norm_key(key)
     if norm in _STORED_URL_KEYS or not _GOOGLE_FETCH_KEY_RE.search(norm):
         return False
-    return isinstance(value, str) and _URL_SCHEME_RE.match(value) is not None
+    return _is_url(value)
 
 
 def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
@@ -502,10 +519,10 @@ def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
     """Return None unless a cell-writing call carries a formula Google
     evaluates by fetching a URL (`_FORMULA_FETCH_RE`); else a JSON error."""
     bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
-    if "sheet" not in bare and "table" not in bare:
+    if not _CELL_WRITER_RE.search(bare):
         return None
     for text in _iter_arg_strings(arguments):
-        if _FORMULA_FETCH_RE.match(text):
+        if _FORMULA_FETCH_RE.search(text):
             return _refuse(
                 tool, "values", "<url-fetch>",
                 reason=(

@@ -5874,10 +5874,19 @@ integrations:
       stretchedPictureFill.contentUrl, Forms image.sourceUri, Docs image_uri)
       except the stored-as-text ones (_STORED_URL_KEYS: link_url,
       conference_uri, youtube_uri); a Drive file id has no scheme and passes.
-      On a tool whose name says sheet or table, any string value that is a
-      formula Google evaluates by fetching (_FORMULA_FETCH_RE: IMPORTDATA,
-      IMPORTXML, IMPORTHTML, IMPORTFEED, IMAGE) is refused — the URL is in
-      the cell value, so no key-based check could see it; =SUM(...) passes.
+      A value is a URL once the characters a URL parser strips are removed
+      (_INVISIBLE_RE: C0 controls, zero-width and bidi format characters,
+      BOM) and "//host" counts (_is_url). On every tool that can write cells
+      (_CELL_WRITER_RE: sheet, table, conditional, drive_file, import_to —
+      the Drive create / update / import tools turn CSV into a native
+      Sheet), any string anywhere in the arguments holding a formula call
+      Google evaluates by fetching (_FORMULA_FETCH_RE: IMPORTDATA, IMPORTXML,
+      IMPORTHTML, IMPORTFEED, IMAGE) is refused — the URL is in the cell
+      value, so no key-based check could see it, and a `values` argument may
+      arrive JSON-encoded or a CSV cell mid-line; =SUM(...) passes. Residual,
+      unverified: whether Drive's HTML / Markdown import fetches an <img src>
+      while converting `content` into a Doc (refusing image tags there would
+      break a legitimate import, so it is left open and noted).
       Also refused on every tool: text
       Google mails to a person the roster never checked (_MAILED_TEXT_KEYS:
       rsvp_comment to the organizer, manage_out_of_office /

