@@ -96,6 +96,19 @@ def _typed_text_block(block: dict[str, Any]) -> dict[str, Any] | None:
     return _typed_text_with_cc(block.get("text", ""), block.get("cache_control"))
 
 
+def _pdf_filename(title: Any) -> str:
+    """A document's ``title`` as a safe wire filename: last path segment,
+    printable, at most 100 characters, ending in ``.pdf`` (OpenRouter's
+    parser keys on the extension). ``document.pdf`` when there is none."""
+    if not isinstance(title, str):
+        return "document.pdf"
+    name = "".join(c for c in title.replace("\\", "/").rsplit("/", 1)[-1] if c.isprintable())
+    name = name.strip()[:96]
+    if not name:
+        return "document.pdf"
+    return name if name.lower().endswith(".pdf") else f"{name}.pdf"
+
+
 def _file_part(block: dict[str, Any]) -> dict[str, Any] | None:
     """An Anthropic base64 PDF ``document`` block as the OpenAI chat
     ``file`` content part, which OpenAI and OpenRouter both accept. Anything
@@ -109,8 +122,7 @@ def _file_part(block: dict[str, Any]) -> dict[str, Any] | None:
     data = source.get("data")
     if not isinstance(data, str) or not data:
         return None
-    title = block.get("title")
-    filename = title if isinstance(title, str) and title else "document.pdf"
+    filename = _pdf_filename(block.get("title"))
     return {
         "type": "file",
         "file": {"filename": filename, "file_data": f"data:application/pdf;base64,{data}"},

@@ -15,6 +15,8 @@ could not read the file. ``read_pdf_text`` tries three readers in order:
    the ``file`` part only with ``LOCAL_PDF_INPUT`` (e.g. OpenAI's own API).
    ``providers.registry.pdf_input_supported`` decides; the translation lives
    in ``providers/translator.py`` and ``openrouter_provider.py``.
+   ``PDF_PROVIDER_READING=false`` skips this step: scanned PDFs then never
+   leave the server. The destination is logged once per process.
 3. **Local OCR** — pages rendered with pypdfium2 and read by RapidOCR (ONNX,
    models bundled in the wheel), offline, with no key and no per-page cost:
    for a local model without PDF input, and the fallback whenever step 2
@@ -178,6 +180,32 @@ def _pdf_model() -> str:
     return settings.pdf_vision_model or settings.default_model
 
 
+_announced: set[tuple[str, str]] = set()
+
+
+def _announce_destination(model: str, provider: Any) -> None:
+    """Log once per process where scanned PDFs are sent, so an operator can
+    see the data leave: which provider, and on OpenRouter which parser."""
+    from openexecutive.providers.openrouter_provider import OpenRouterProvider
+
+    where = type(provider).__name__
+    if isinstance(provider, OpenRouterProvider):
+        from openexecutive.providers.openrouter_provider import _pdf_engine
+        from openexecutive.providers.registry import openrouter_slug_for_claude
+
+        slug = openrouter_slug_for_claude(model) or model
+        where = f"OpenRouter (file-parser engine {_pdf_engine(slug)})"
+    key = (model, where)
+    if key in _announced:
+        return
+    _announced.add(key)
+    logger.info(
+        "pdf_reader: scanned PDFs are read by %s via %s "
+        "(PDF_PROVIDER_READING=false keeps them on this server)",
+        model, where,
+    )
+
+
 def _model_provider(model: str) -> Any | None:
     """The provider to send ``model`` a PDF through, or None when that model
     cannot receive one (a local server without LOCAL_PDF_INPUT) or has no
@@ -263,6 +291,7 @@ async def _read_with_model(data: bytes, pages: int) -> tuple[str, bool] | None:
     provider = _model_provider(model)
     if provider is None:
         return None
+    _announce_destination(model, provider)
 
     step = settings.pdf_vision_pages_per_call
     bounds = [(s, min(s + step, pages)) for s in range(0, pages, step)]
@@ -446,7 +475,8 @@ async def read_pdf_text(
             )
         limit = granted
 
-    transcribed = await _read_with_model(data, limit) if limit else None
+    use_model = limit and settings.pdf_provider_reading
+    transcribed = await _read_with_model(data, limit) if use_model else None
     if transcribed:
         transcript, cut_off = transcribed
         note = "; ".join(
@@ -460,7 +490,7 @@ async def read_pdf_text(
         return result
 
     if not settings.pdf_ocr_enabled:
-        return _fallback(text, pages, "it looks scanned and scanned-PDF conversion is turned off")
+        return _fallback(text, pages, "it looks scanned and local OCR is turned off")
     try:
         ocr, read = await asyncio.to_thread(_ocr_pdf, data, limit)
     except OcrUnavailable:

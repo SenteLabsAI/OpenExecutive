@@ -250,3 +250,21 @@ def test_a_local_server_without_pdf_input_gets_the_note(monkeypatch) -> None:
     body = _sent_body(registry.get_provider("llama3.3"), "llama3.3", _user(_PDF))
 
     assert body["messages"][-1]["content"] == PDF_OMITTED_NOTE
+
+
+@pytest.mark.parametrize(
+    ("title", "filename"),
+    [
+        (None, "document.pdf"),
+        ("deck.pdf", "deck.pdf"),
+        ("../../etc/passwd", "passwd.pdf"),
+        ("C:\\Users\\x\\Board Deck.PDF", "Board Deck.PDF"),
+        ("a\nb" + "x" * 300, ("ab" + "x" * 94) + ".pdf"),
+        ("   ", "document.pdf"),
+    ],
+)
+def test_the_wire_filename_is_a_safe_pdf_name(title: Any, filename: str) -> None:
+    block = dict(_PDF, title=title) if title is not None else _PDF
+    body = to_openai_request("openai/gpt-6", _user(block))
+
+    assert body["messages"][0]["content"][0]["file"]["filename"] == filename

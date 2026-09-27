@@ -557,8 +557,13 @@ class Settings(BaseSettings):
     pdf_vision_pages_per_call: int = Field(
         20, alias="PDF_VISION_PAGES_PER_CALL", ge=1, le=100
     )
-    # Local OCR fallback. Off means a scanned PDF on a non-Claude deployment
-    # stays unreadable (and says so).
+    # Whether scanned PDFs may be sent to the model provider at all. Off
+    # keeps them on this server (local OCR only): nothing goes to Anthropic,
+    # OpenRouter or OpenRouter's parser (e.g. Mistral OCR) for them.
+    pdf_provider_reading: bool = Field(True, alias="PDF_PROVIDER_READING")
+    # Local OCR, for a model that cannot take a PDF and as the fallback when
+    # the provider fails. Off means such a PDF stays unreadable (and says so);
+    # it does not stop the provider path above (PDF_PROVIDER_READING does).
     pdf_ocr_enabled: bool = Field(True, alias="PDF_OCR_ENABLED")
     # Files that arrive on their own through a channel (chat, Slack, Google
     # Chat, email attachments) — not ones the Executive or the signed-in user

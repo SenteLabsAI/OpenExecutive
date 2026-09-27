@@ -473,3 +473,35 @@ async def test_a_single_page_that_never_fits_is_kept_and_flagged(monkeypatch):
         "dense page [2 to 2]\n[transcription cut off here]"
     )
     assert result.note == "some pages' transcription was cut off"
+
+
+# ── Keeping scanned PDFs on the server ───────────────────────────────────────
+
+
+async def test_provider_reading_off_keeps_scans_on_this_server(monkeypatch):
+    monkeypatch.setenv("PDF_PROVIDER_READING", "false")
+    provider = _FakeProvider()
+    _use_provider(monkeypatch, provider)
+    ocr = _stub_ocr(monkeypatch)
+
+    result = await read_pdf_text(_blank_pdf(2), filename="scan.pdf")
+
+    assert result.method == "ocr"
+    assert provider.calls == []
+    assert ocr == [2]
+
+
+async def test_where_scans_go_is_logged_once(monkeypatch):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(pdf_reader, "_announced", set())
+    log = MagicMock()
+    monkeypatch.setattr(pdf_reader, "logger", log)
+    _use_provider(monkeypatch, _FakeProvider())
+
+    await read_pdf_text(_blank_pdf(1), filename="a.pdf")
+    await read_pdf_text(_blank_pdf(2), filename="b.pdf")
+
+    lines = [c.args[0] % c.args[1:] for c in log.info.call_args_list]
+    assert len([line for line in lines if "scanned PDFs are read by" in line]) == 1
+    assert "PDF_PROVIDER_READING=false" in lines[0]
