@@ -68,6 +68,13 @@ _loaded_models: list[str] | None = None
 # request field for them. Drives the Council "Deep reasoning" checkbox for
 # non-Claude models.
 _loaded_reasoning: frozenset[str] = frozenset()
+# Ids whose catalog entry lists "file" in ``architecture.input_modalities``:
+# the model reads a PDF itself, so OpenRouter's file-parser can pass it
+# through ("native") instead of OCRing it first.
+_loaded_file_input: frozenset[str] = frozenset()
+# Every id in the last fetched catalog (unfiltered), so ``accepts_files`` can
+# tell "known, no file input" from "not in the catalog".
+_known_ids: frozenset[str] = frozenset()
 _loaded_at: float | None = None
 
 
@@ -85,6 +92,31 @@ def supports_reasoning(model_id: str) -> bool | None:
     if _loaded_models is None or model_id not in _loaded_models:
         return None
     return model_id in _loaded_reasoning
+
+
+def accepts_files(model_id: str) -> bool | None:
+    """Whether the loaded catalog says ``model_id`` reads files (PDFs)
+    natively. ``None`` when no catalog is loaded or the slug isn't in it —
+    the caller treats that as "unknown". Unlike ``supports_reasoning`` this
+    looks at every catalog entry, not only the Council's filtered list: a
+    PDF may be read by any model the operator names."""
+    if _loaded_models is None:
+        return None
+    if model_id in _loaded_file_input:
+        return True
+    return False if model_id in _known_ids else None
+
+
+def file_input_ids(entries: Iterable[Mapping[str, Any]]) -> frozenset[str]:
+    """Ids of catalog entries whose ``input_modalities`` list contains "file"."""
+    out: set[str] = set()
+    for entry in entries:
+        model_id = entry.get("id")
+        arch = entry.get("architecture")
+        inputs = arch.get("input_modalities") if isinstance(arch, Mapping) else None
+        if isinstance(model_id, str) and isinstance(inputs, list) and "file" in inputs:
+            out.add(model_id)
+    return frozenset(out)
 
 
 def reasoning_capable_ids(entries: Iterable[Mapping[str, Any]]) -> frozenset[str]:
@@ -230,7 +262,7 @@ async def refresh_openrouter_catalog(settings: Any) -> bool:
     Never raises: a failure logs a warning and leaves the previous cache
     (or the never-loaded state → registry fallback) untouched.
     """
-    global _loaded_models, _loaded_reasoning, _loaded_at
+    global _loaded_models, _loaded_reasoning, _loaded_file_input, _known_ids, _loaded_at
     try:
         entries = await fetch_catalog(
             base_url=settings.openrouter_base_url,
@@ -252,6 +284,10 @@ async def refresh_openrouter_catalog(settings: Any) -> bool:
         return False
     _loaded_models = models
     _loaded_reasoning = reasoning_capable_ids(entries) & frozenset(models)
+    _loaded_file_input = file_input_ids(entries)
+    _known_ids = frozenset(
+        e["id"] for e in entries if isinstance(e, Mapping) and isinstance(e.get("id"), str)
+    )
     _loaded_at = time.time()
     logger.info(
         "OpenRouter catalog loaded: %d model(s) from %d catalog entries, "
@@ -285,7 +321,9 @@ async def run_catalog_refresher(settings: Any) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _loaded_models, _loaded_reasoning, _loaded_at
+    global _loaded_models, _loaded_reasoning, _loaded_file_input, _known_ids, _loaded_at
     _loaded_models = None
     _loaded_reasoning = frozenset()
+    _loaded_file_input = frozenset()
+    _known_ids = frozenset()
     _loaded_at = None

@@ -6,14 +6,19 @@ relied on pypdf alone got ``""`` back and the Executive could only say it
 could not read the file. ``read_pdf_text`` tries three readers in order:
 
 1. **Text layer** (pypdf) — free and exact; used whenever it yields real text.
-2. **Claude** — a ``document`` content block, which gives the model every
-   page as an image as well as its text. Only when ``PDF_VISION_MODEL``
-   resolves to the Anthropic-direct provider: the OpenRouter / local
-   translator drops ``document`` blocks, so sending one there would silently
-   lose the PDF.
+2. **The deployment's own model, through its provider's PDF support** — the
+   pages go out as an Anthropic ``document`` block to ``PDF_VISION_MODEL``
+   (default: ``DEFAULT_MODEL``), and each provider carries it its own way:
+   Anthropic reads it natively; OpenRouter gets an OpenAI ``file`` part plus
+   its ``file-parser`` plugin (``native`` for a model that reads files, else
+   ``PDF_OPENROUTER_ENGINE``, default ``mistral-ocr``); a local server gets
+   the ``file`` part only with ``LOCAL_PDF_INPUT`` (e.g. OpenAI's own API).
+   ``providers.registry.pdf_input_supported`` decides; the translation lives
+   in ``providers/translator.py`` and ``openrouter_provider.py``.
 3. **Local OCR** — pages rendered with pypdfium2 and read by RapidOCR (ONNX,
-   models bundled in the wheel). Works on every provider, offline, with no
-   key and no per-page cost. Also the fallback when step 2 fails or refuses.
+   models bundled in the wheel), offline, with no key and no per-page cost:
+   for a local model without PDF input, and the fallback whenever step 2
+   fails or refuses.
 
 Callers get a ``PdfReadResult`` and never an exception: an unreadable PDF
 comes back as ``method="none"`` with a ``note`` saying why, which callers
@@ -35,7 +40,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-Method = Literal["text_layer", "vision", "ocr", "none"]
+Method = Literal["text_layer", "model", "ocr", "none"]
 
 # Below this many non-whitespace characters per page, the text layer is taken
 # to be missing: a scanned deck often carries only page numbers or a footer.
@@ -59,7 +64,7 @@ _OCR_MAX_PAGE_PIXELS = 25_000_000
 # documents at once, each stopping (with what it has) after the time budget.
 _OCR_CONCURRENCY = 2
 _OCR_TIME_BUDGET_S = 240.0
-# Pages converted (Claude or OCR) for files that arrive on their own through
+# Pages converted (model or OCR) for files that arrive on their own through
 # a channel — as opposed to one the Executive or the signed-in user asks to
 # read — are metered per rolling hour, so no sender can run up unbounded model
 # spend or CPU by sending scans. See PDF_INBOUND_MAX_PAGES / _PAGES_PER_HOUR.
@@ -86,7 +91,7 @@ class PdfReadResult:
     @property
     def converted(self) -> bool:
         """True when the text came from reading page images, not a text layer."""
-        return self.method in ("vision", "ocr")
+        return self.method in ("model", "ocr")
 
 
 # ── Cache ────────────────────────────────────────────────────────────────────
@@ -149,7 +154,7 @@ def _is_thin(text: str, pages: int) -> bool:
     return visible < _MIN_CHARS_PER_PAGE * max(pages, 1)
 
 
-# ── Claude (document blocks) ─────────────────────────────────────────────────
+# ── The deployment's model (a document block, through any provider) ──────────
 
 def slice_pdf(data: bytes, start: int, end: int) -> bytes:
     """Pages [start, end) of ``data`` as a standalone PDF."""
@@ -164,23 +169,31 @@ def slice_pdf(data: bytes, start: int, end: int) -> bytes:
     return out.getvalue()
 
 
-def _vision_provider(model: str) -> Any | None:
-    """The provider for ``model`` when it is Anthropic-direct, else None.
+def _pdf_model() -> str:
+    """The model that reads scanned pages: PDF_VISION_MODEL, else the model
+    the deployment already runs on."""
+    from openexecutive.config import get_settings
 
-    Anything else (OpenRouter, a local server, or no API key at all — which
-    ``get_provider`` reports by raising) cannot carry a ``document`` block.
-    """
+    settings = get_settings()
+    return settings.pdf_vision_model or settings.default_model
+
+
+def _model_provider(model: str) -> Any | None:
+    """The provider to send ``model`` a PDF through, or None when that model
+    cannot receive one (a local server without LOCAL_PDF_INPUT) or has no
+    reachable provider at all (``get_provider`` reports that by raising)."""
     from openexecutive.providers import get_provider
-    from openexecutive.providers.anthropic_provider import AnthropicProvider
+    from openexecutive.providers.registry import pdf_input_supported
 
     try:
-        provider = get_provider(model)
+        if not pdf_input_supported(model):
+            return None
+        return get_provider(model)
     except Exception:
         return None
-    return provider if isinstance(provider, AnthropicProvider) else None
 
 
-async def _vision_slice(
+async def _model_slice(
     provider: Any, model: str, data: bytes, start: int, end: int
 ) -> tuple[str, bool]:
     """Transcribe pages [start, end): ``(text, cut off at max_tokens)``."""
@@ -240,14 +253,14 @@ async def _transcribe(
     return f"{first}\n\n{second}", cut_a or cut_b
 
 
-async def _read_with_vision(data: bytes, pages: int) -> tuple[str, bool] | None:
-    """Transcribe up to ``pages`` pages with Claude: ``(text, whether a page
-    was cut off)``, or None if unavailable or failed."""
+async def _read_with_model(data: bytes, pages: int) -> tuple[str, bool] | None:
+    """Transcribe up to ``pages`` pages with the deployment's model: ``(text,
+    whether a page was cut off)``, or None if unavailable or failed."""
     from openexecutive.config import get_settings
 
     settings = get_settings()
-    model = settings.pdf_vision_model
-    provider = _vision_provider(model)
+    model = _pdf_model()
+    provider = _model_provider(model)
     if provider is None:
         return None
 
@@ -259,12 +272,12 @@ async def _read_with_vision(data: bytes, pages: int) -> tuple[str, bool] | None:
         # The gate covers one request, not a split's recursion, so halves of
         # a cut-off slice queue like any other request.
         async with gate:
-            return await _vision_slice(provider, model, data, start, end)
+            return await _model_slice(provider, model, data, start, end)
 
     try:
         parts = await asyncio.gather(*(_transcribe(request, s, e) for s, e in bounds))
     except Exception as exc:
-        logger.warning("pdf_reader: vision transcription failed (%s)", type(exc).__name__)
+        logger.warning("pdf_reader: model transcription failed (%s)", type(exc).__name__)
         return None
     return "\n\n".join(t for t, _cut in parts), any(cut for _t, cut in parts)
 
@@ -433,16 +446,16 @@ async def read_pdf_text(
             )
         limit = granted
 
-    vision = await _read_with_vision(data, limit) if limit else None
-    if vision:
-        transcript, cut_off = vision
+    transcribed = await _read_with_model(data, limit) if limit else None
+    if transcribed:
+        transcript, cut_off = transcribed
         note = "; ".join(
             n for n in (
                 _pages_note(limit, pages),
                 "some pages' transcription was cut off" if cut_off else "",
             ) if n
         )
-        result = PdfReadResult(transcript, "vision", pages, note)
+        result = PdfReadResult(transcript, "model", pages, note)
         _cache_put(key, result)
         return result
 

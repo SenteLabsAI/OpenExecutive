@@ -287,6 +287,11 @@ class Settings(BaseSettings):
     local_include_usage_accounting: bool = Field(
         False, alias="LOCAL_INCLUDE_USAGE_ACCOUNTING"
     )
+    # Whether LOCAL_BASE_URL accepts PDFs as OpenAI `file` content parts —
+    # true for OpenAI's own API (https://api.openai.com/v1), false for
+    # Ollama / LM Studio / vLLM. Off, a PDF for a local model is OCR'd on
+    # this server instead (knowledge/pdf_reader.py).
+    local_pdf_input: bool = Field(False, alias="LOCAL_PDF_INPUT")
 
     @field_validator("local_models", mode="before")
     @classmethod
@@ -534,11 +539,18 @@ class Settings(BaseSettings):
 
     # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
     # A PDF with no text layer (a scan, or one printed to PDF as images) is
-    # converted instead of coming back empty. Deployments that reach Claude
-    # directly (ANTHROPIC_API_KEY, OpenRouter off) have PDF_VISION_MODEL read
-    # the pages; every other deployment — OpenRouter, local models — gets
-    # local OCR, which needs no key and makes no model call.
-    pdf_vision_model: str = Field("claude-sonnet-5", alias="PDF_VISION_MODEL")
+    # read by a model through its own provider's PDF support: Anthropic
+    # natively, OpenRouter via its file-parser (see PDF_OPENROUTER_ENGINE), a
+    # local server only when LOCAL_PDF_INPUT says it takes PDFs. Otherwise —
+    # or when that call fails — the server OCRs the pages locally.
+    # Unset means DEFAULT_MODEL, the model the deployment already runs on.
+    pdf_vision_model: str | None = Field(None, alias="PDF_VISION_MODEL")
+    # OpenRouter's PDF parser for a model that cannot read files natively
+    # (a native-file model always gets "native"). mistral-ocr is OpenRouter's
+    # scan-grade OCR ($2 per 1,000 pages); cloudflare-ai is free Markdown.
+    pdf_openrouter_engine: Literal["mistral-ocr", "cloudflare-ai", "native"] = Field(
+        "mistral-ocr", alias="PDF_OPENROUTER_ENGINE"
+    )
     # Pages read per converted PDF; the rest are skipped with a note.
     pdf_vision_max_pages: int = Field(100, alias="PDF_VISION_MAX_PAGES", ge=1, le=600)
     # Pages sent to the model per request (each request transcribes a slice).

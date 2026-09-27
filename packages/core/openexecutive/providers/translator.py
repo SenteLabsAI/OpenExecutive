@@ -96,6 +96,27 @@ def _typed_text_block(block: dict[str, Any]) -> dict[str, Any] | None:
     return _typed_text_with_cc(block.get("text", ""), block.get("cache_control"))
 
 
+def _file_part(block: dict[str, Any]) -> dict[str, Any] | None:
+    """An Anthropic base64 PDF ``document`` block as the OpenAI chat
+    ``file`` content part, which OpenAI and OpenRouter both accept. Anything
+    else (a URL or text source, another media type) is ``None``: there is no
+    faithful OpenAI shape for it, and the caller drops it as before."""
+    source = block.get("source")
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return None
+    if source.get("media_type") != "application/pdf":
+        return None
+    data = source.get("data")
+    if not isinstance(data, str) or not data:
+        return None
+    title = block.get("title")
+    filename = title if isinstance(title, str) and title else "document.pdf"
+    return {
+        "type": "file",
+        "file": {"filename": filename, "file_data": f"data:application/pdf;base64,{data}"},
+    }
+
+
 def _translate_system(system: Any) -> str | list[dict[str, Any]] | None:
     """Translate an Anthropic ``system`` argument to the OpenRouter shape.
 
@@ -209,6 +230,11 @@ def _user_content_to_openai(
     stays as a typed-block array so the cache hint survives translation to
     OpenRouter. Otherwise we flatten to a plain string — broader upstream
     compatibility for non-Anthropic routing and slightly smaller wire bytes.
+
+    A base64 PDF ``document`` block becomes an OpenAI ``file`` part (see
+    ``_file_part``) and forces the typed-array form, text and files in their
+    original order. Whether the model may receive one at all is decided
+    earlier, by ``feature_gate`` (``supports_pdf_input``).
     """
     if isinstance(content, str):
         return [{"role": "user", "content": content}]
@@ -219,6 +245,10 @@ def _user_content_to_openai(
     text_chunks: list[str] = []  # populated for the flat-string fallback
     tool_messages: list[dict[str, Any]] = []
     preserve_typed = _any_block_has_cache_control(content)
+    # Text and PDF parts in their original order, used only when a PDF is
+    # present: a file part cannot ride in the flat-string form.
+    ordered_parts: list[dict[str, Any]] = []
+    has_file = False
 
     for block in content:
         if not isinstance(block, dict):
@@ -228,10 +258,16 @@ def _user_content_to_openai(
             txt = block.get("text", "")
             if isinstance(txt, str) and txt:
                 text_chunks.append(txt)
-                if preserve_typed:
-                    typed = _typed_text_block(block)
-                    if typed is not None:
-                        text_blocks.append(typed)
+                typed = _typed_text_block(block)
+                if preserve_typed and typed is not None:
+                    text_blocks.append(typed)
+                if typed is not None:
+                    ordered_parts.append(typed if preserve_typed else {"type": "text", "text": txt})
+        elif btype == "document":
+            part = _file_part(block)
+            if part is not None:
+                ordered_parts.append(part)
+                has_file = True
         elif btype == "tool_result":
             tool_use_id = block.get("tool_use_id")
             inner = block.get("content")
@@ -261,7 +297,11 @@ def _user_content_to_openai(
             )
 
     msgs: list[dict[str, Any]] = []
-    if preserve_typed and text_blocks:
+    if has_file:
+        # A PDF forces the typed-array form. Text keeps its cache marker when
+        # the request carries one (the same projection as below).
+        msgs.append({"role": "user", "content": ordered_parts})
+    elif preserve_typed and text_blocks:
         msgs.append({"role": "user", "content": text_blocks})
     elif text_chunks:
         # Fall back to the flat-string form even when ``preserve_typed`` is

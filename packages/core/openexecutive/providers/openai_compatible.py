@@ -142,6 +142,11 @@ class OpenAICompatibleProvider:
     # LLMProvider surface
     # ------------------------------------------------------------------
 
+    def _extend_body(self, slug: str, body: dict[str, Any]) -> None:
+        """Backend-specific request fields, added to the translated body in
+        place. None for a plain OpenAI-compatible server: an unknown
+        top-level field can 400 there (see include_usage_accounting)."""
+
     def messages_create(self, **kwargs: Any) -> Awaitable[Any]:
         return self._messages_create(kwargs)
 
@@ -155,6 +160,7 @@ class OpenAICompatibleProvider:
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
+        self._extend_body(slug, body)
         _announce_reasoning(slug, body)
 
         try:
@@ -183,6 +189,7 @@ class OpenAICompatibleProvider:
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
+        self._extend_body(slug, body)
         _announce_reasoning(slug, body)
         body["stream"] = True
         return _OpenAICompatibleStream(
