@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from openexecutive.config import get_settings, mcp_config_file_present
+from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -195,9 +196,10 @@ _INVISIBLE_RE = re.compile(r"[\x00-\x20\x7f\u200b-\u200f\u2028-\u202f\u2060-\u20
 _FORMULA_FETCH_RE = re.compile(r"\b(IMPORTDATA|IMPORTXML|IMPORTHTML|IMPORTFEED|IMAGE)\s*\(", re.IGNORECASE)
 _CELL_WRITER_RE = re.compile(r"sheet|table|conditional|drive_file")
 # A converter decodes markup before it sees a formula, so text bound for a
-# Sheet is also scanned with character references decoded and comments /
-# CDATA markers removed ("IMPORT<!---->DATA(", "&#x49;MPORTDATA(").
-_MARKUP_NOISE_RE = re.compile(r"<!--.*?-->|<!\[CDATA\[|\]\]>", re.DOTALL)
+# Sheet is also scanned with CDATA markers, then tags and comments, removed
+# and character references decoded ("IMPORT<!---->DATA(", "IMPORT<b></b>DATA(",
+# "&#x49;MPORTDATA("). Tags go through utils.html_tags.strip_tags, a forward
+# scan: a regex over sender-shaped text with many "<" is quadratic.
 # What a converter might fold away before the formula is parsed: NUL and other
 # control characters (a UTF-16-shaped CSV), Unicode format characters (a soft
 # hyphen inside the name). Removed, after NFKC folding of full-width letters
@@ -570,13 +572,14 @@ def _becomes_sheet(tool: str, arguments: dict[str, Any]) -> bool:
 
 def _formula_fetches(text: str) -> bool:
     """True when ``text`` holds a fetching formula call, as written, with
-    character references decoded, or with markup noise removed first."""
+    character references decoded, or with markup removed first."""
     if _FORMULA_FETCH_RE.search(text):
         return True
     decoded = html.unescape(text)
     if _FORMULA_FETCH_RE.search(decoded):
         return True
-    stripped = html.unescape(_MARKUP_NOISE_RE.sub("", text))
+    # CDATA markers first: to the tag strip, "<![CDATA[DATA]]>" is one tag.
+    stripped = html.unescape(strip_tags(text.replace("<![CDATA[", "").replace("]]>", "")))
     if _FORMULA_FETCH_RE.search(stripped):
         return True
     folded = _FOLDED_NOISE_RE.sub("", unicodedata.normalize("NFKC", stripped))

