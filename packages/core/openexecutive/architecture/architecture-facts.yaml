@@ -5866,11 +5866,19 @@ integrations:
       URL's query string carries data out before any recipient gate matters
       (a send to the Executive's own address always passes that gate).
       Attachments still go by path, content or artifact_id; Drive files by
-      content / base64_content. Image-source keys at any depth
-      (_IMAGE_SOURCE_KEYS: insert_doc_image.image_source, Slides createImage
-      url / imageUrl, Forms image.sourceUri) are refused when the value has a
-      URL scheme — Google fetches those, which lands the query string on the
-      same host; a Drive file id passes. Also refused on every tool: text
+      content / base64_content. Keys Google itself fetches are refused at any
+      depth when the value has a URL scheme (_URL_SCHEME_RE, any scheme, not
+      just "://"): any key ending in url / uri or image_source
+      (_GOOGLE_FETCH_KEY_RE — insert_doc_image.image_source, Slides
+      createImage url / imageUrl and a page background's
+      stretchedPictureFill.contentUrl, Forms image.sourceUri, Docs image_uri)
+      except the stored-as-text ones (_STORED_URL_KEYS: link_url,
+      conference_uri, youtube_uri); a Drive file id has no scheme and passes.
+      On a tool whose name says sheet or table, any string value that is a
+      formula Google evaluates by fetching (_FORMULA_FETCH_RE: IMPORTDATA,
+      IMPORTXML, IMPORTHTML, IMPORTFEED, IMAGE) is refused — the URL is in
+      the cell value, so no key-based check could see it; =SUM(...) passes.
+      Also refused on every tool: text
       Google mails to a person the roster never checked (_MAILED_TEXT_KEYS:
       rsvp_comment to the organizer, manage_out_of_office /
       manage_focus_time decline_message to whoever invites the Executive),
