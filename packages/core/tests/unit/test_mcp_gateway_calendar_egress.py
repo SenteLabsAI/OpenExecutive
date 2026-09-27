@@ -230,3 +230,89 @@ def test_gmail_gate_unaffected() -> None:
     # (the "to" key is not checked by the calendar gate). The call goes through.
     # For Gmail gate behaviour, see test_mcp_gateway_email_egress.py.
     assert "error" not in json.loads(result) or "not on the People roster" in json.loads(result).get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# rsvp_comment — free text mailed to the organizer, who may be off-roster
+# ---------------------------------------------------------------------------
+
+
+def test_rsvp_comment_refused() -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(
+        gateway,
+        {"action": "rsvp", "event_id": "e1", "rsvp_response": "accepted",
+         "rsvp_comment": "see you there"},
+        [],
+    )
+    assert session_call.await_count == 0
+    assert "rsvp_comment" in json.loads(result)["error"]
+
+
+def test_rsvp_comment_refused_whatever_the_action() -> None:
+    """The field is checked before the delete/rsvp pass-through."""
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, {"action": "delete", "event_id": "e1", "rsvp_comment": "x"}, [])
+    assert session_call.await_count == 0
+    assert "rsvp_comment" in json.loads(result)["error"]
+
+
+def test_rsvp_without_comment_passes() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "rsvp", "event_id": "e1", "rsvp_response": "declined",
+                    "rsvp_comment": None}, [])
+    assert session_call.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# send_updates — pinned to "none" when no attendee was checked
+# ---------------------------------------------------------------------------
+
+
+def _forwarded(session_call: AsyncMock) -> dict[str, Any]:
+    return session_call.await_args.args[1]["arguments"]
+
+
+def test_update_without_attendees_pins_send_updates_none() -> None:
+    """The event's existing guests may be off-roster; the new description must
+    not be mailed to them."""
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "update", "event_id": "e1", "description": "new text",
+                    "send_updates": "all"}, [])
+    assert session_call.await_count == 1
+    assert _forwarded(session_call)["send_updates"] == "none"
+
+
+def test_update_with_empty_attendees_pins_send_updates_none() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "update", "event_id": "e1", "attendees": []}, [])
+    assert _forwarded(session_call)["send_updates"] == "none"
+
+
+def test_action_case_and_spacing_still_pins() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": " Update", "event_id": "e1", "send_updates": "all"}, [])
+    assert _forwarded(session_call)["send_updates"] == "none"
+
+
+def test_update_with_roster_attendees_keeps_send_updates() -> None:
+    """Attendees were checked, so notifying them is the caller's choice."""
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "update", "event_id": "e1",
+                    "attendees": ["alice@example.com"], "send_updates": "all"},
+          ["alice@example.com"])
+    assert _forwarded(session_call)["send_updates"] == "all"
+
+
+def test_delete_keeps_send_updates() -> None:
+    """A cancellation carries no new text."""
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "delete", "event_id": "e1", "send_updates": "all"}, [])
+    assert _forwarded(session_call)["send_updates"] == "all"
+
+
+def test_pin_does_not_touch_other_arguments() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "update", "event_id": "e1", "summary": "S"}, [])
+    fwd = _forwarded(session_call)
+    assert fwd["summary"] == "S" and fwd["event_id"] == "e1" and fwd["action"] == "update"

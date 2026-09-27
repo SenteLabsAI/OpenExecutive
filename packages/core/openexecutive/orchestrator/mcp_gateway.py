@@ -118,6 +118,58 @@ _GATED_DRIVE_TOOLS = frozenset({
     "google_workspace__set_drive_file_permissions",
 })
 
+# Apps Script tools run code as the Executive's Google account, outside every
+# gate in this module: the code can mail anyone, read or share all of Drive
+# and Gmail, and (manage_script_trigger, workspace-mcp 1.29.0) keep running
+# after the turn ends. OE never calls them, so every one is refused. The set
+# holds the 1.29.0 names and the 1.21.1 names they replaced; the name-pattern
+# fallback in `_is_apps_script_tool` keeps a rename from reopening the path.
+_BLOCKED_APPS_SCRIPT_TOOLS = frozenset({
+    # 1.29.0
+    "google_workspace__generate_trigger_code",
+    "google_workspace__get_script_activity",
+    "google_workspace__get_script_project",
+    "google_workspace__get_script_version",
+    "google_workspace__list_script_deployments",
+    "google_workspace__manage_deployment",
+    "google_workspace__manage_script_content",
+    "google_workspace__manage_script_project",
+    "google_workspace__manage_script_trigger",
+    "google_workspace__manage_script_version",
+    "google_workspace__run_script_function",
+    # 1.21.1
+    "google_workspace__create_script_project",
+    "google_workspace__create_version",
+    "google_workspace__delete_script_project",
+    "google_workspace__get_script_content",
+    "google_workspace__get_script_metrics",
+    "google_workspace__get_version",
+    "google_workspace__list_deployments",
+    "google_workspace__list_script_processes",
+    "google_workspace__list_script_projects",
+    "google_workspace__list_versions",
+    "google_workspace__update_script_content",
+})
+
+# Arguments that make workspace-mcp fetch a URL the model chose. Its SSRF guard
+# blocks internal hosts only, so a public URL is an exfiltration channel:
+# whatever the model puts in the query string leaves the box when the fetch
+# runs — before any recipient gate matters (a send to the Executive's own
+# address is always allowed). `create_drive_file.fileUrl` also takes file://,
+# i.e. reads a local file into Drive. Attachments still reach mail as `path`,
+# `content` or an `artifact_id`; Drive files as `content` / `base64_content`.
+_URL_FETCH_ARGS: dict[str, frozenset[str]] = {
+    "google_workspace__create_drive_file": frozenset({"fileUrl"}),
+    "google_workspace__update_drive_file": frozenset({"file_url"}),
+    "google_workspace__import_to_google_doc": frozenset({"file_url"}),
+    "google_workspace__import_to_google_sheets": frozenset({"file_url"}),
+    "google_workspace__import_to_google_slides": frozenset({"file_url"}),
+}
+# Normalized (lowercased, alphanumerics only) argument keys refused on EVERY
+# Google Workspace tool and inside every attachment entry, so a renamed or new
+# fetch argument fails closed. `urls` (a contact's websites) is not one.
+_URL_FETCH_KEYS = frozenset({"url", "fileurl", "sourceurl", "remoteurl", "downloadurl"})
+
 # Permission "type"/"scope" enum values that grant access to a population rather
 # than a single addressable person — i.e. public or whole-domain sharing. These
 # bypass the per-recipient roster model entirely, so any Drive-share argument
@@ -290,6 +342,104 @@ def _check_acting_account(tool: str, arguments: dict[str, Any]) -> str | None:
             "or use that address. Do not retry with another account."
         ),
     })
+
+
+def _refuse(tool: str, field: str, shown: str, *, reason: str) -> str:
+    """Refuse a Google Workspace call for a reason other than a recipient (a
+    blocked tool, a URL fetch, an RSVP comment). Audited like `_block`, with
+    ``shown`` in the row's address slot so /audit reads the same for every
+    refusal."""
+    from openexecutive.audit import log_event as audit_log
+
+    logger.warning("blocked google workspace call: tool=%s field=%s", tool, field)
+    audit_log(
+        "integration_outbound_blocked",
+        f"Blocked a Google Workspace call (tool={tool} field={field})",
+        actor="mcp_gateway",
+        details={"tool": tool, "field": field, "address": shown},
+    )
+    return json.dumps({"error": reason})
+
+
+def _norm_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def _is_apps_script_tool(tool_name: object) -> bool:
+    """True for any Apps Script tool: the known names, or (fallback) any
+    Google Workspace tool whose name says script or deployment. No Gmail /
+    Calendar / Drive / Docs / Sheets tool does, and an over-match refuses,
+    so it fails closed."""
+    if not isinstance(tool_name, str):
+        return False
+    if tool_name in _BLOCKED_APPS_SCRIPT_TOOLS:
+        return True
+    if not tool_name.startswith(_GW_PREFIX):
+        return False
+    bare = tool_name[len(_GW_PREFIX):]
+    return "script" in bare or "deployment" in bare
+
+
+def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Return None unless a Google Workspace call asks the server to fetch a
+    URL (see `_URL_FETCH_ARGS`); else a JSON error. A key set to null / ""
+    fetches nothing and passes."""
+    named = _URL_FETCH_ARGS.get(tool, frozenset())
+    for key, value in arguments.items():
+        if not isinstance(key, str):
+            continue
+        if (key in named or _norm_key(key) in _URL_FETCH_KEYS) and value not in (None, ""):
+            return _refuse(
+                tool, key, "<url-fetch>",
+                reason=(
+                    f"argument {key!r} makes the server fetch a URL, which can "
+                    f"carry data out — refusing. Pass the content itself (or, "
+                    "for a Gmail attachment, a path or artifact_id) instead."
+                ),
+            )
+    return None
+
+
+def _attachment_fetches_url(attachments: Any) -> bool:
+    """True when a Gmail ``attachments`` argument asks workspace-mcp to fetch
+    a URL for any entry. Unknown shapes count as fetching (fail closed);
+    ``artifact_id`` entries and path / content entries do not."""
+    if attachments is None:
+        return False
+    if isinstance(attachments, str):
+        try:
+            attachments = json.loads(attachments)
+        except ValueError:
+            return "://" in attachments or re.search(r"\burl\b", attachments, re.I) is not None
+    if isinstance(attachments, dict):
+        attachments = [attachments]
+    if not isinstance(attachments, list):
+        return True
+    for entry in attachments:
+        if isinstance(entry, dict):
+            for key, value in entry.items():
+                if isinstance(key, str) and _norm_key(key) in _URL_FETCH_KEYS and value not in (None, ""):
+                    return True
+        elif isinstance(entry, str):
+            if "://" in entry:
+                return True
+        else:
+            return True
+    return False
+
+
+def _check_attachment_urls(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Return None unless a gated Gmail call attaches by URL; else a JSON error."""
+    if not _attachment_fetches_url(arguments.get("attachments")):
+        return None
+    return _refuse(
+        tool, "attachments", "<url-fetch>",
+        reason=(
+            "an attachment given as a URL makes the server fetch it, which can "
+            "carry data out — refusing to send. Attach by path, by content, or "
+            "by artifact_id instead."
+        ),
+    )
 
 
 def _roster_allow_set() -> set[str]:
@@ -555,6 +705,18 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
     required by manage_event and validated by the typed tool; its absence in
     a raw call is handled below by the attendees check path.
     """
+    # An RSVP comment is free text Google mails to the event's organizer, who
+    # need not be on the roster: the one manage_event field that carries a
+    # message past the attendee check. Accept / decline work without it.
+    if arguments.get("rsvp_comment") not in (None, ""):
+        return _refuse(
+            tool, "rsvp_comment", "<organizer>",
+            reason=(
+                "rsvp_comment is mailed to the event's organizer, who may not be "
+                "on the People roster — refusing. RSVP without a comment."
+            ),
+        )
+
     action = arguments.get("action", "")
     if action in ("delete", "rsvp"):
         return None
@@ -590,6 +752,31 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
                           reason=f"attendee {email!r} is not on the People roster — "
                                  "refusing to create calendar event.")
     return None
+
+
+def _pin_calendar_notifications(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Keep a manage_event call that named no attendees from emailing the
+    event's existing guests.
+
+    The attendee gate checks only the ``attendees`` argument. An update that
+    leaves it out keeps the event's current guest list — which may hold
+    people off the roster — and Google mails every guest the new title,
+    description or time unless ``send_updates`` is "none". So such a call is
+    forced to "none": the change lands on the calendar and nobody is emailed
+    text the gate never saw. A call that passes attendees had them checked
+    and keeps its own ``send_updates``; delete and rsvp carry no new text; a
+    create without attendees has nobody to mail, so the pin is moot there.
+    """
+    action = str(arguments.get("action", "")).strip().lower()
+    if action in ("delete", "rsvp"):
+        return arguments
+    attendees = arguments.get("attendees")
+    if attendees is not None and not (isinstance(attendees, list) and not attendees):
+        return arguments
+    if arguments.get("send_updates") == "none":
+        return arguments
+    logger.info("manage_event without attendees: send_updates pinned to none")
+    return {**arguments, "send_updates": "none"}
 
 
 def _iter_arg_strings(value: Any) -> Iterator[str]:
@@ -951,8 +1138,23 @@ class MCPGateway:
             blocked = _check_acting_account(tool_name, arguments)
             if blocked is not None:
                 return blocked
+            if _is_apps_script_tool(tool_name):
+                return _refuse(
+                    tool_name, "tool", "<apps-script>",
+                    reason=(
+                        f"{tool_name} is not available: Apps Script runs code as "
+                        "the Executive's Google account outside the outbound "
+                        "gates. Do not retry with another script tool."
+                    ),
+                )
+            blocked = _check_url_fetch(tool_name, arguments)
+            if blocked is not None:
+                return blocked
         if tool_name in _GATED_GMAIL_TOOLS:
             blocked = _check_gmail_recipients(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+            blocked = _check_attachment_urls(tool_name, arguments)
             if blocked is not None:
                 return blocked
             # Only after the recipients pass: render any artifact the model
@@ -965,6 +1167,7 @@ class MCPGateway:
             blocked = _check_calendar_attendees(tool_name, arguments)
             if blocked is not None:
                 return blocked
+            arguments = _pin_calendar_notifications(arguments)
         if _is_drive_share_tool(tool_name):
             blocked = _check_drive_share(tool_name, arguments)
             if blocked is not None:

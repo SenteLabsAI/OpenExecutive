@@ -5847,7 +5847,26 @@ integrations:
       attendees must be on the People roster; this is a hard backstop — the
       typed create_calendar_event tool enforces the same rule via person IDs
       before calling the gateway, but the gateway check ensures bypass-proof
-      safety even for raw call_tool invocations.
+      safety even for raw call_tool invocations. rsvp_comment is refused
+      (Google mails it to the organizer, who may be off the roster), and a
+      call that names no attendees — an update that keeps the event's
+      existing, possibly off-roster guests — is sent with
+      send_updates="none" (_pin_calendar_notifications), so nobody is emailed
+      text the gate never saw.
+    - Refused outright (_refuse, audited as integration_outbound_blocked):
+      every Apps Script tool (_BLOCKED_APPS_SCRIPT_TOOLS plus the
+      _is_apps_script_tool name pattern, scoped to the google_workspace
+      namespace) — code running as the Executive's account outside these
+      gates, and since workspace-mcp 1.29.0 schedulable to keep running
+      (manage_script_trigger); and any argument that makes the server fetch a
+      URL (_URL_FETCH_ARGS: create_drive_file.fileUrl, which also takes
+      file://; update_drive_file and import_to_google_* file_url;
+      _URL_FETCH_KEYS on every tool and inside every Gmail attachment entry)
+      — workspace-mcp's SSRF guard blocks internal hosts only, so a public
+      URL's query string carries data out before any recipient gate matters
+      (a send to the Executive's own address always passes that gate).
+      Attachments still go by path, content or artifact_id; Drive files by
+      content / base64_content.
     - Drive sharing (_GATED_DRIVE_TOOLS = {google_workspace__manage_drive_access,
       google_workspace__set_drive_file_permissions}, plus a defensive
       _is_drive_share_tool() name-pattern fallback that never matches a pure
@@ -5875,8 +5894,8 @@ integrations:
     tier much of Google Workspace reaches people with no recipient check —
     a Google Chat message to a space, Docs / Sheets / Drive writes into
     files already shared with others, manage_event on a shared calendar
-    (the calendar gate checks attendees only), a Drive file created from a
-    URL the server fetches, the comment-notification tools above — and no
+    (the calendar gate checks attendees and pins notifications only), the
+    comment-notification tools above — and no
     other server has any check (a Slack or Notion server; the default
     `fetch` server, whose URL can carry the turn's content; a server loaded
     at runtime). So on such a turn the chat loop
