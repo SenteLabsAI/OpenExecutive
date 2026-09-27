@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from collections.abc import Iterator
 from email.utils import getaddresses
 from pathlib import Path
@@ -197,6 +198,11 @@ _CELL_WRITER_RE = re.compile(r"sheet|table|conditional|drive_file")
 # Sheet is also scanned with character references decoded and comments /
 # CDATA markers removed ("IMPORT<!---->DATA(", "&#x49;MPORTDATA(").
 _MARKUP_NOISE_RE = re.compile(r"<!--.*?-->|<!\[CDATA\[|\]\]>", re.DOTALL)
+# What a converter might fold away before the formula is parsed: NUL and other
+# control characters (a UTF-16-shaped CSV), Unicode format characters (a soft
+# hyphen inside the name). Removed, after NFKC folding of full-width letters
+# and parentheses, for one more matching pass.
+_FOLDED_NOISE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # A JSON-encoded string argument is json.loads'ed by the server, so a gate must
 # read what the server will read: "\u0049MPORTDATA(" is IMPORTDATA( once
 # decoded, and a `requests` list may arrive as one string. Strings up to this
@@ -564,7 +570,11 @@ def _formula_fetches(text: str) -> bool:
     if _FORMULA_FETCH_RE.search(decoded):
         return True
     stripped = html.unescape(_MARKUP_NOISE_RE.sub("", text))
-    return _FORMULA_FETCH_RE.search(stripped) is not None
+    if _FORMULA_FETCH_RE.search(stripped):
+        return True
+    folded = _FOLDED_NOISE_RE.sub("", unicodedata.normalize("NFKC", stripped))
+    folded = "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+    return _FORMULA_FETCH_RE.search(folded) is not None
 
 
 def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
