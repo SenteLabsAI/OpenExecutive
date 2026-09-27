@@ -62,6 +62,13 @@ system:
       Settings validator just requires that at least one provider is
       reachable. Requesting a Claude model with no key and OpenRouter off
       returns an actionable 400.
+      LOCAL_REASONING_EFFORT (optional, unset by default) sends a top-level
+      ``reasoning_effort`` on every local-backend request, skipped when the
+      request already carries a per-call ``reasoning`` object. Thinking-only
+      hosted models (e.g. GLM on Fireworks, which rejects "none") otherwise
+      spend the whole max_tokens budget reasoning and return no tool call —
+      the onboarding interview then fails with "did not return a usable
+      response".
       Slugs listed in LOCAL_MODELS route to the local backend before any
       other rule is consulted; remaining non-Claude slugs route through
       OpenRouter; selecting an

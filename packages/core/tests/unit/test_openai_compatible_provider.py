@@ -105,3 +105,56 @@ def test_anthropic_only_fields_stripped_for_local_model() -> None:
     assert "output_config" not in body
     # system flattened into a plain string message — no cache_control survives.
     assert isinstance(body["messages"][0]["content"], str)
+
+
+def _effort_provider(effort: str | None) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(
+        base_url="https://api.fireworks.ai/inference/v1",
+        spec_lookup={
+            "llama3.3": _LOCAL_SPEC,
+            "reasoner": FeatureSpec(
+                supports_cache_control=False,
+                supports_thinking=True,
+                supports_web_search=False,
+                supports_tool_use=True,
+            ),
+        },
+        reasoning_effort=effort,
+    )
+
+
+def test_reasoning_effort_omitted_by_default() -> None:
+    """Most OpenAI-compatible servers don't know the field; unset = not sent."""
+    captured = _run_create(_local_provider())
+    assert "reasoning_effort" not in captured["json"]
+
+
+def test_reasoning_effort_sent_when_configured() -> None:
+    """Thinking-only models (GLM on Fireworks) otherwise burn the whole
+    max_tokens budget reasoning and return no tool call."""
+    captured = _run_create(_effort_provider("low"))
+    assert captured["json"]["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_sent_on_stream() -> None:
+    provider = _effort_provider("low")
+    stream = provider.messages_stream(
+        model="llama3.3",
+        max_tokens=8,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert stream._body["reasoning_effort"] == "low"  # type: ignore[attr-defined]
+
+
+def test_per_request_reasoning_wins_over_configured_effort() -> None:
+    """The Council deep-reasoning toggle yields a ``reasoning`` object; the
+    backend-wide default must not be sent alongside it."""
+    captured = _run_create(
+        _effort_provider("low"),
+        model="reasoner",
+        max_tokens=4000,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "high"},
+    )
+    assert "reasoning" in captured["json"]
+    assert "reasoning_effort" not in captured["json"]

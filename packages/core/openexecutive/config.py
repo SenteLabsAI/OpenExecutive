@@ -292,6 +292,10 @@ class Settings(BaseSettings):
     # Ollama / LM Studio / vLLM. Off, a PDF for a local model is OCR'd on
     # this server instead (knowledge/pdf_reader.py).
     local_pdf_input: bool = Field(False, alias="LOCAL_PDF_INPUT")
+    # Optional `reasoning_effort` sent on every local request (e.g. "low").
+    # Thinking-only models (GLM on Fireworks) otherwise spend the whole
+    # max_tokens budget reasoning and return no tool call. Unset = not sent.
+    local_reasoning_effort: str | None = Field(None, alias="LOCAL_REASONING_EFFORT")
 
     @field_validator("local_models", mode="before")
     @classmethod
