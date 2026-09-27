@@ -557,13 +557,17 @@ class Settings(BaseSettings):
     pdf_vision_pages_per_call: int = Field(
         20, alias="PDF_VISION_PAGES_PER_CALL", ge=1, le=100
     )
-    # Whether scanned PDFs may be sent to the model provider at all. Off
-    # keeps them on this server (local OCR only): nothing goes to Anthropic,
-    # OpenRouter or OpenRouter's parser (e.g. Mistral OCR) for them.
-    pdf_provider_reading: bool = Field(True, alias="PDF_PROVIDER_READING")
-    # Local OCR, for a model that cannot take a PDF and as the fallback when
-    # the provider fails. Off means such a PDF stays unreadable (and says so);
-    # it does not stop the provider path above (PDF_PROVIDER_READING does).
+    # Opt-in: whether scanned PDFs may be sent to the model provider at all.
+    # On, the deployment's model reads them through its provider (Anthropic
+    # natively; OpenRouter, and for a model without native file input its
+    # parser, e.g. Mistral OCR; a local server with LOCAL_PDF_INPUT). Off (the
+    # default), they never leave this server: local OCR only. Off by default
+    # because company documents are sensitive and turning it on adds data
+    # egress (and, on OpenRouter, possibly a third-party processor).
+    pdf_provider_reading: bool = Field(False, alias="PDF_PROVIDER_READING")
+    # Local OCR: what reads scanned PDFs while PDF_PROVIDER_READING is off,
+    # for a model that cannot take a PDF, and the fallback when the provider
+    # fails. Off means such a PDF stays unreadable (and says so).
     pdf_ocr_enabled: bool = Field(True, alias="PDF_OCR_ENABLED")
     # Files that arrive on their own through a channel (chat, Slack, Google
     # Chat, email attachments) — not ones the Executive or the signed-in user

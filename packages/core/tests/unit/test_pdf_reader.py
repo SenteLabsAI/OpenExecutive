@@ -18,6 +18,13 @@ from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
 
 
 @pytest.fixture(autouse=True)
+def _provider_reading_on(monkeypatch):
+    """Provider reading is opt-in (off by default); most tests here exercise
+    that path, so they turn it on. The default is pinned by its own test."""
+    monkeypatch.setenv("PDF_PROVIDER_READING", "true")
+
+
+@pytest.fixture(autouse=True)
 def _fresh_cache():
     pdf_reader.clear_cache()
     pdf_reader.reset_inbound_budget()
@@ -491,6 +498,20 @@ async def test_provider_reading_off_keeps_scans_on_this_server(monkeypatch):
     assert ocr == [2]
 
 
+async def test_provider_reading_is_off_by_default(monkeypatch):
+    """An upgrade must not start sending scanned PDFs off the server."""
+    monkeypatch.delenv("PDF_PROVIDER_READING", raising=False)
+    provider = _FakeProvider()
+    _use_provider(monkeypatch, provider)
+    ocr = _stub_ocr(monkeypatch)
+
+    result = await read_pdf_text(_blank_pdf(2), filename="scan.pdf")
+
+    assert result.method == "ocr"
+    assert provider.calls == []
+    assert ocr == [2]
+
+
 async def test_where_scans_go_is_logged_once(monkeypatch):
     from unittest.mock import MagicMock
 
@@ -503,5 +524,5 @@ async def test_where_scans_go_is_logged_once(monkeypatch):
     await read_pdf_text(_blank_pdf(2), filename="b.pdf")
 
     lines = [c.args[0] % c.args[1:] for c in log.info.call_args_list]
-    assert len([line for line in lines if "scanned PDFs are read by" in line]) == 1
-    assert "PDF_PROVIDER_READING=false" in lines[0]
+    assert len([line for line in lines if "scanned PDFs are sent to" in line]) == 1
+    assert "PDF_PROVIDER_READING is on" in lines[0]

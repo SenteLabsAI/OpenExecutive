@@ -127,6 +127,7 @@ class OpenAICompatibleProvider:
                 supports_thinking=False,
                 supports_web_search=False,
                 supports_tool_use=True,
+                supports_pdf_input=False,
             ),
         )
         return slug, spec

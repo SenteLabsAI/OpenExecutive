@@ -6,7 +6,9 @@ relied on pypdf alone got ``""`` back and the Executive could only say it
 could not read the file. ``read_pdf_text`` tries three readers in order:
 
 1. **Text layer** (pypdf) — free and exact; used whenever it yields real text.
-2. **The deployment's own model, through its provider's PDF support** — the
+2. **The deployment's own model, through its provider's PDF support**
+   (opt-in: ``PDF_PROVIDER_READING=true``; off by default, so scanned PDFs
+   stay on the server unless an operator turns this on) — the
    pages go out as an Anthropic ``document`` block to ``PDF_VISION_MODEL``
    (default: ``DEFAULT_MODEL``), and each provider carries it its own way:
    Anthropic reads it natively; OpenRouter gets an OpenAI ``file`` part plus
@@ -15,12 +17,11 @@ could not read the file. ``read_pdf_text`` tries three readers in order:
    the ``file`` part only with ``LOCAL_PDF_INPUT`` (e.g. OpenAI's own API).
    ``providers.registry.pdf_input_supported`` decides; the translation lives
    in ``providers/translator.py`` and ``openrouter_provider.py``.
-   ``PDF_PROVIDER_READING=false`` skips this step: scanned PDFs then never
-   leave the server. The destination is logged once per process.
+   The destination is logged once per process when this step is on.
 3. **Local OCR** — pages rendered with pypdfium2 and read by RapidOCR (ONNX,
    models bundled in the wheel), offline, with no key and no per-page cost:
-   for a local model without PDF input, and the fallback whenever step 2
-   fails or refuses.
+   the default reader while step 2 is off, for a local model without PDF
+   input, and the fallback whenever step 2 fails or refuses.
 
 Callers get a ``PdfReadResult`` and never an exception: an unreadable PDF
 comes back as ``method="none"`` with a ``note`` saying why, which callers
@@ -200,8 +201,8 @@ def _announce_destination(model: str, provider: Any) -> None:
         return
     _announced.add(key)
     logger.info(
-        "pdf_reader: scanned PDFs are read by %s via %s "
-        "(PDF_PROVIDER_READING=false keeps them on this server)",
+        "pdf_reader: scanned PDFs are sent to %s via %s "
+        "(PDF_PROVIDER_READING is on; off keeps them on this server)",
         model, where,
     )
 

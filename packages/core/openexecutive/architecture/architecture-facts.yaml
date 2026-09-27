@@ -1476,10 +1476,13 @@ knowledge:
        LOCAL_PDF_INPUT (e.g. LOCAL_BASE_URL = OpenAI's API). OpenAI models
        are reached through OpenRouter (openai/...) — there is no direct
        OpenAI provider.
-       This is data egress (to the provider, and on OpenRouter possibly
-       to Mistral OCR): the destination is logged once per process, and
-       PDF_PROVIDER_READING=false skips this step entirely (local OCR
-       only). PDF_OCR_ENABLED only governs step 3.
+       OPT-IN: PDF_PROVIDER_READING (default false). It is data egress (to
+       the provider, and on OpenRouter possibly to Mistral OCR), so an
+       upgrade must not start it: off, this step is skipped and scanned
+       PDFs never leave the server. That default also moves Anthropic-
+       direct deployments off #254's default (Claude read scans there);
+       they OCR locally until they opt in. When on, the destination is
+       logged once per process. PDF_OCR_ENABLED only governs step 3.
     3. Local OCR: pypdfium2 renders each page (scale 2), RapidOCR
        (rapidocr-onnxruntime, models bundled in the wheel; opencv-python is
        overridden to opencv-python-headless in pyproject so python:3.11-slim

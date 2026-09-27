@@ -268,3 +268,13 @@ def test_the_wire_filename_is_a_safe_pdf_name(title: Any, filename: str) -> None
     body = to_openai_request("openai/gpt-6", _user(block))
 
     assert body["messages"][0]["content"][0]["file"]["filename"] == filename
+
+
+def test_an_unknown_slug_on_a_bare_server_gets_the_note_not_the_pdf() -> None:
+    """The fallback spec for a slug no lookup covers assumes the least,
+    PDF input included."""
+    bare = OpenAICompatibleProvider(base_url="http://localhost:8000/v1")
+
+    body = _sent_body(bare, "some-unlisted-model", _user(_PDF))
+
+    assert body["messages"][-1]["content"] == PDF_OMITTED_NOTE
