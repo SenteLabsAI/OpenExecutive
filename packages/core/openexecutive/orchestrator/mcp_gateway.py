@@ -169,6 +169,17 @@ _URL_FETCH_ARGS: dict[str, frozenset[str]] = {
 # Google Workspace tool and inside every attachment entry, so a renamed or new
 # fetch argument fails closed. `urls` (a contact's websites) is not one.
 _URL_FETCH_KEYS = frozenset({"url", "fileurl", "sourceurl", "remoteurl", "downloadurl"})
+# Image-source keys, at any depth (insert_doc_image.image_source, Slides
+# createImage.url / replaceImage.url / imageUrl, Forms image.sourceUri): a URL
+# here is fetched by Google's servers, which still lands the query string on
+# the attacker's host. A Drive file id is the other legitimate value, so only
+# a value with a URL scheme is refused.
+_IMAGE_SOURCE_KEYS = frozenset({"imagesource", "imageurl", "imageuri", "sourceuri"})
+# Free text Google mails to someone the roster never checked: an RSVP comment
+# goes to the event's organizer; an out-of-office / focus-time decline message
+# goes to whoever invites the Executive during the window. Refused on every
+# Google Workspace tool, whatever the spelling of the key.
+_MAILED_TEXT_KEYS = frozenset({"rsvpcomment", "declinemessage"})
 
 # Permission "type"/"scope" enum values that grant access to a population rather
 # than a single addressable person — i.e. public or whole-domain sharing. These
@@ -319,12 +330,13 @@ def _check_acting_account(tool: str, arguments: dict[str, Any]) -> str | None:
     possibly anyone's in the domain. Someone's own mailbox is reached only
     through ``delegation.gmail`` (Act as me), never through here. Absent
     means the server's own account and stays allowed."""
-    value = arguments.get("user_google_email")
-    if value is None:
+    values = [v for v in _arg_values(arguments, "user_google_email") if v is not None]
+    if not values:
         return None
     exec_address = get_settings().exec_email_address.strip().lower()
-    if isinstance(value, str) and value.strip().lower() == exec_address:
+    if all(isinstance(v, str) and v.strip().lower() == exec_address for v in values):
         return None
+    value = next(v for v in values if not (isinstance(v, str) and v.strip().lower() == exec_address))
     from openexecutive.audit import log_event as audit_log
 
     shown = (value if isinstance(value, str) else repr(value))[:200]
@@ -365,6 +377,27 @@ def _norm_key(key: str) -> str:
     return re.sub(r"[^a-z0-9]", "", key.lower())
 
 
+# workspace-mcp 1.29.0 added CamelCaseArgumentsMiddleware (core/server.py): an
+# argument key that is not a declared parameter is renamed to its snake_case
+# form when that form is declared and absent. So `rsvpComment`, `Attendees` or
+# `userGoogleEmail` reach the tool as the real parameter — and a gate that
+# matched the exact key never saw them. Every gate therefore reads a parameter
+# through these, by normalized spelling, and a refusal fires on any variant.
+def _arg_values(arguments: dict[str, Any], name: str) -> list[Any]:
+    """Every value stored under ``name`` or a respelling of it."""
+    target = _norm_key(name)
+    return [v for k, v in arguments.items() if isinstance(k, str) and _norm_key(k) == target]
+
+
+def _arg(arguments: dict[str, Any], name: str) -> Any:
+    """The value under ``name`` — the exact key when present (the middleware
+    never overrides one), else the first respelling; None when absent."""
+    if name in arguments:
+        return arguments[name]
+    values = _arg_values(arguments, name)
+    return values[0] if values else None
+
+
 def _is_apps_script_tool(tool_name: object) -> bool:
     """True for any Apps Script tool: the known names, or (fallback) any
     Google Workspace tool whose name says script or deployment. No Gmail /
@@ -388,6 +421,10 @@ def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
     for key, value in arguments.items():
         if not isinstance(key, str):
             continue
+        # A gated Gmail tool's attachments have their own check, after the
+        # recipient gate, so a stranger is still refused as a stranger.
+        if tool in _GATED_GMAIL_TOOLS and _norm_key(key) == "attachments":
+            continue
         if (key in named or _norm_key(key) in _URL_FETCH_KEYS) and value not in (None, ""):
             return _refuse(
                 tool, key, "<url-fetch>",
@@ -395,6 +432,65 @@ def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
                     f"argument {key!r} makes the server fetch a URL, which can "
                     f"carry data out — refusing. Pass the content itself (or, "
                     "for a Gmail attachment, a path or artifact_id) instead."
+                ),
+            )
+        if _norm_key(key) in _IMAGE_SOURCE_KEYS and isinstance(value, str) and "://" in value:
+            return _refuse(
+                tool, key, "<url-fetch>",
+                reason=(
+                    f"{key!r} names an image URL for Google to fetch, which can "
+                    "carry data out — refusing. Use a Drive file id instead."
+                ),
+            )
+        nested = _nested_fetch_key(value)
+        if nested is not None:
+            return _refuse(
+                tool, f"{key}.{nested}", "<url-fetch>",
+                reason=(
+                    f"{nested!r} inside {key!r} names a URL to fetch (by the "
+                    "server or by Google), which can carry data out — refusing. "
+                    "Use a Drive file id or the content itself."
+                ),
+            )
+    return None
+
+
+def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
+    """The first key below the top level that carries something to fetch: a
+    `_URL_FETCH_KEYS` key with any value, or an `_IMAGE_SOURCE_KEYS` key
+    whose value has a URL scheme. None when there is none."""
+    if depth > 32:
+        return "<too-deep>"
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str):
+                norm = _norm_key(k)
+                if norm in _URL_FETCH_KEYS and v not in (None, ""):
+                    return k
+                if norm in _IMAGE_SOURCE_KEYS and isinstance(v, str) and "://" in v:
+                    return k
+            found = _nested_fetch_key(v, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            found = _nested_fetch_key(v, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _check_mailed_text(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Return None unless the call carries text Google would mail to someone
+    the roster never checked (`_MAILED_TEXT_KEYS`); else a JSON error."""
+    for key, value in arguments.items():
+        if isinstance(key, str) and _norm_key(key) in _MAILED_TEXT_KEYS and value not in (None, ""):
+            return _refuse(
+                tool, key, "<unchecked-recipient>",
+                reason=(
+                    f"{key!r} is mailed by Google to a person the People roster "
+                    "never checked (an event's organizer, whoever sends an "
+                    "invitation) — refusing. Leave it out."
                 ),
             )
     return None
@@ -409,6 +505,8 @@ def _attachment_fetches_url(attachments: Any) -> bool:
     if isinstance(attachments, str):
         try:
             attachments = json.loads(attachments)
+        except RecursionError:
+            return True
         except ValueError:
             return "://" in attachments or re.search(r"\burl\b", attachments, re.I) is not None
     if isinstance(attachments, dict):
@@ -705,37 +803,33 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
     required by manage_event and validated by the typed tool; its absence in
     a raw call is handled below by the attendees check path.
     """
-    # An RSVP comment is free text Google mails to the event's organizer, who
-    # need not be on the roster: the one manage_event field that carries a
-    # message past the attendee check. Accept / decline work without it.
-    if arguments.get("rsvp_comment") not in (None, ""):
-        return _refuse(
-            tool, "rsvp_comment", "<organizer>",
-            reason=(
-                "rsvp_comment is mailed to the event's organizer, who may not be "
-                "on the People roster — refusing. RSVP without a comment."
-            ),
-        )
-
-    action = arguments.get("action", "")
+    # rsvp_comment (text mailed to the organizer) is refused for every tool by
+    # _check_mailed_text, before this gate runs.
+    # Action is matched as the server matches it (case- and space-insensitive),
+    # so a "Delete" is a delete here too rather than a stricter accident.
+    action = str(_arg(arguments, "action") or "").strip().lower()
     if action in ("delete", "rsvp"):
         return None
 
-    attendees = arguments.get("attendees")
+    # Every spelling of `attendees` is read: the server renames `Attendees`
+    # to the real parameter, so a variant is as good as the exact key.
     # None = no attendees field at all → pass through (e.g. organizer-only event).
     # Empty list [] = explicitly supplied with no names → also pass through;
     # the typed create_calendar_event tool always supplies at least one attendee,
     # and a raw call with [] creates an organizer-only event (no roster leak).
     # Any non-empty list → every address must be roster-validated.
-    if attendees is None:
+    supplied = [v for v in _arg_values(arguments, "attendees") if v is not None]
+    if not supplied:
         return None
-    if isinstance(attendees, list) and len(attendees) == 0:
+    if all(isinstance(v, list) and len(v) == 0 for v in supplied):
         return None
 
     allow = _roster_allow_set()
 
     # attendees may be a list of strings (emails) or dicts with an "email" key.
-    items = attendees if isinstance(attendees, list) else [attendees]
+    items: list[Any] = []
+    for attendees in supplied:
+        items.extend(attendees if isinstance(attendees, list) else [attendees])
     for item in items:
         if isinstance(item, dict):
             email = item.get("email", "")
@@ -767,16 +861,20 @@ def _pin_calendar_notifications(arguments: dict[str, Any]) -> dict[str, Any]:
     and keeps its own ``send_updates``; delete and rsvp carry no new text; a
     create without attendees has nobody to mail, so the pin is moot there.
     """
-    action = str(arguments.get("action", "")).strip().lower()
+    action = str(_arg(arguments, "action") or "").strip().lower()
     if action in ("delete", "rsvp"):
         return arguments
-    attendees = arguments.get("attendees")
-    if attendees is not None and not (isinstance(attendees, list) and not attendees):
+    supplied = [v for v in _arg_values(arguments, "attendees") if v is not None]
+    if any(not (isinstance(v, list) and not v) for v in supplied):
         return arguments
-    if arguments.get("send_updates") == "none":
+    if _arg_values(arguments, "send_updates") == ["none"]:
         return arguments
     logger.info("manage_event without attendees: send_updates pinned to none")
-    return {**arguments, "send_updates": "none"}
+    # Every spelling goes, so no `sendUpdates: "all"` survives beside the pin.
+    pinned = {k: v for k, v in arguments.items()
+              if not (isinstance(k, str) and _norm_key(k) == "sendupdates")}
+    pinned["send_updates"] = "none"
+    return pinned
 
 
 def _iter_arg_strings(value: Any) -> Iterator[str]:
@@ -1134,20 +1232,29 @@ class MCPGateway:
         tool_name = tool_input.get("name", "")
         attached_artifacts: list[str] = []
         # Every Google Workspace call acts as the Executive's own account.
-        if isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX) and isinstance(arguments, dict):
+        if _is_apps_script_tool(tool_name):
+            return _refuse(
+                tool_name, "tool", "<apps-script>",
+                reason=(
+                    f"{tool_name} is not available: Apps Script runs code as "
+                    "the Executive's Google account outside the outbound "
+                    "gates. Do not retry with another script tool."
+                ),
+            )
+        if isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX):
+            # Every gate below reads a dict; anything else would skip them all.
+            if not isinstance(arguments, dict):
+                return _refuse(
+                    tool_name, "arguments", "<non-object>",
+                    reason="arguments must be a JSON object — refusing.",
+                )
             blocked = _check_acting_account(tool_name, arguments)
             if blocked is not None:
                 return blocked
-            if _is_apps_script_tool(tool_name):
-                return _refuse(
-                    tool_name, "tool", "<apps-script>",
-                    reason=(
-                        f"{tool_name} is not available: Apps Script runs code as "
-                        "the Executive's Google account outside the outbound "
-                        "gates. Do not retry with another script tool."
-                    ),
-                )
             blocked = _check_url_fetch(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+            blocked = _check_mailed_text(tool_name, arguments)
             if blocked is not None:
                 return blocked
         if tool_name in _GATED_GMAIL_TOOLS:

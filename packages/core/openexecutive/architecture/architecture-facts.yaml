@@ -5866,7 +5866,25 @@ integrations:
       URL's query string carries data out before any recipient gate matters
       (a send to the Executive's own address always passes that gate).
       Attachments still go by path, content or artifact_id; Drive files by
-      content / base64_content.
+      content / base64_content. Image-source keys at any depth
+      (_IMAGE_SOURCE_KEYS: insert_doc_image.image_source, Slides createImage
+      url / imageUrl, Forms image.sourceUri) are refused when the value has a
+      URL scheme — Google fetches those, which lands the query string on the
+      same host; a Drive file id passes. Also refused on every tool: text
+      Google mails to a person the roster never checked (_MAILED_TEXT_KEYS:
+      rsvp_comment to the organizer, manage_out_of_office /
+      manage_focus_time decline_message to whoever invites the Executive),
+      and arguments that are not a JSON object (every gate reads a dict; a
+      list or string would have skipped them all).
+    - Key spelling: every gate reads a parameter through _arg / _arg_values
+      (normalized: lowercase, alphanumerics only), and a refusal fires on any
+      variant. workspace-mcp 1.29.0's CamelCaseArgumentsMiddleware renames an
+      undeclared camelCase key to the declared snake_case parameter, so
+      `Attendees`, `userGoogleEmail` or `rsvpComment` reached the tool as the
+      real thing while an exact-key gate saw nothing; the 1.29.0 bump opened
+      this against the acting-account and attendee gates until the fix. The
+      notification pin drops every spelling of send_updates before writing
+      the canonical one, so a `sendUpdates: "all"` cannot survive beside it.
     - Drive sharing (_GATED_DRIVE_TOOLS = {google_workspace__manage_drive_access,
       google_workspace__set_drive_file_permissions}, plus a defensive
       _is_drive_share_tool() name-pattern fallback that never matches a pure
