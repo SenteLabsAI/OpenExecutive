@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextlib
+import io
 import json
 import logging
 import os
 import re
+import zipfile
 from collections.abc import Iterator
 from email.utils import getaddresses
 from pathlib import Path
@@ -191,7 +194,18 @@ _INVISIBLE_RE = re.compile(r"[\x00-\x20\x7f\u200b-\u200f\u2028-\u202f\u2060-\u20
 # convert CSV into a native Sheet. Other formulas (=SUM(...)) pass, as does
 # the word without a call ("IMPORTDATA is a function").
 _FORMULA_FETCH_RE = re.compile(r"\b(IMPORTDATA|IMPORTXML|IMPORTHTML|IMPORTFEED|IMAGE)\s*\(", re.IGNORECASE)
-_CELL_WRITER_RE = re.compile(r"sheet|table|conditional|drive_file|import_to")
+_CELL_WRITER_RE = re.compile(r"sheet|table|conditional|drive_file")
+# A JSON-encoded string argument is json.loads'ed by the server, so a gate must
+# read what the server will read: "\u0049MPORTDATA(" is IMPORTDATA( once
+# decoded, and a `requests` list may arrive as one string. Strings up to this
+# size that parse to a list or object are walked as that value.
+_JSON_STRING_MAX = 2_000_000
+# base64_content on a cell-writing tool is a CSV or an XLSX / ODS (a zip whose
+# members hold formulas as text). It is decoded and every member scanned; what
+# cannot be read as text (a legacy binary format, invalid base64, too big) is
+# refused, since a formula inside it cannot be seen.
+_BASE64_CONTENT_MAX = 30 * 1024 * 1024
+_ZIP_MEMBERS_TOTAL_MAX = 60 * 1024 * 1024
 # Free text Google mails to someone the roster never checked: an RSVP comment
 # goes to the event's organizer; an out-of-office / focus-time decline message
 # goes to whoever invites the Executive during the window. Refused on every
@@ -497,6 +511,10 @@ def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
     (`_google_fetches`) whose value has a URL scheme. None when there is none."""
     if depth > 32:
         return "<too-deep>"
+    if isinstance(value, str):
+        # A JSON-encoded `requests` list is walked as the list the server decodes.
+        parsed = _parsed_json(value)
+        return _nested_fetch_key(parsed, depth + 1) if parsed is not None else None
     if isinstance(value, dict):
         for k, v in value.items():
             if isinstance(k, str):
@@ -521,17 +539,70 @@ def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
     bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
     if not _CELL_WRITER_RE.search(bare):
         return None
-    for text in _iter_arg_strings(arguments):
-        if _FORMULA_FETCH_RE.search(text):
+    formula_reason = (
+        "a formula that fetches a URL (IMPORTDATA / IMPORTXML / IMPORTHTML / "
+        "IMPORTFEED / IMAGE) would make Google carry data out — refusing. Write "
+        "the value itself instead."
+    )
+    for key, value in arguments.items():
+        if not isinstance(key, str) or value in (None, ""):
+            continue
+        norm = _norm_key(key)
+        if norm == "filepath":
+            # A file already on the server — usually an attachment someone
+            # mailed in — whose formulas cannot be seen from here.
             return _refuse(
-                tool, "values", "<url-fetch>",
+                tool, key, "<uninspected-file>",
                 reason=(
-                    "a formula that fetches a URL (IMPORTDATA / IMPORTXML / "
-                    "IMPORTHTML / IMPORTFEED / IMAGE) would make Google carry data "
-                    "out — refusing. Write the value itself instead."
+                    f"{key!r} imports a server-side file whose formulas cannot be "
+                    "checked here — refusing. Pass the content itself instead."
                 ),
             )
+        if norm == "base64content":
+            texts = _decoded_texts(value) if isinstance(value, str) else None
+            if texts is None:
+                return _refuse(
+                    tool, key, "<uninspected-file>",
+                    reason=(
+                        f"{key!r} could not be read as text or as a zip of text "
+                        "(XLSX / ODS), so its formulas cannot be checked — "
+                        "refusing. Pass CSV or XLSX content."
+                    ),
+                )
+            if any(_FORMULA_FETCH_RE.search(text) for text in texts):
+                return _refuse(tool, key, "<url-fetch>", reason=formula_reason)
+    for text in _iter_arg_strings(arguments):
+        if _FORMULA_FETCH_RE.search(text):
+            return _refuse(tool, "values", "<url-fetch>", reason=formula_reason)
     return None
+
+
+def _decoded_texts(b64: str) -> list[str] | None:
+    """The text a base64 upload holds — every member of a zip (XLSX / ODS), or
+    the bytes as UTF-8 — or None when it cannot be read that way."""
+    if len(b64) > _BASE64_CONTENT_MAX * 4 // 3 + 4:
+        return None
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if raw[:2] == b"PK":
+        texts: list[str] = []
+        total = 0
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                for info in archive.infolist():
+                    total += info.file_size
+                    if total > _ZIP_MEMBERS_TOTAL_MAX:
+                        return None
+                    texts.append(archive.read(info).decode("utf-8", "replace"))
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, ValueError, OSError):
+            return None
+        return texts
+    try:
+        return [raw.decode("utf-8")]
+    except UnicodeDecodeError:
+        return None
 
 
 def _check_mailed_text(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -931,7 +1002,20 @@ def _pin_calendar_notifications(arguments: dict[str, Any]) -> dict[str, Any]:
     return pinned
 
 
-def _iter_arg_strings(value: Any) -> Iterator[str]:
+def _parsed_json(text: str) -> dict[str, Any] | list[Any] | None:
+    """The list or object a string argument encodes, else None. The server
+    json.loads such a string, so a gate reads it the same way."""
+    head = text.lstrip()[:1]
+    if head not in ("[", "{") or len(text) > _JSON_STRING_MAX:
+        return None
+    try:
+        parsed = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def _iter_arg_strings(value: Any, depth: int = 0) -> Iterator[str]:
     """Yield every string anywhere in a (possibly nested) argument value.
 
     Drive-share tool schemas vary across workspace-mcp versions and a grantee
@@ -939,18 +1023,24 @@ def _iter_arg_strings(value: Any) -> Iterator[str]:
     or even a dict *key* (e.g. an email-keyed permission map). Walking every
     string in both key and value position — rather than trusting a fixed set of
     field names — keeps the gate fail-closed against an email smuggled through an
-    unexpected shape.
+    unexpected shape. A string that encodes JSON is also walked as the value it
+    encodes, which is what the server sees after json.loads.
     """
+    if depth > 32:
+        return
     if isinstance(value, str):
         yield value
+        parsed = _parsed_json(value)
+        if parsed is not None:
+            yield from _iter_arg_strings(parsed, depth + 1)
     elif isinstance(value, dict):
         for k, v in value.items():
             if isinstance(k, str):
                 yield k
-            yield from _iter_arg_strings(v)
+            yield from _iter_arg_strings(v, depth + 1)
     elif isinstance(value, (list, tuple)):
         for v in value:
-            yield from _iter_arg_strings(v)
+            yield from _iter_arg_strings(v, depth + 1)
 
 
 def _is_truthy_public(value: Any) -> bool:

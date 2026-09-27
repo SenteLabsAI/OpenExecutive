@@ -5883,7 +5883,17 @@ integrations:
       Google evaluates by fetching (_FORMULA_FETCH_RE: IMPORTDATA, IMPORTXML,
       IMPORTHTML, IMPORTFEED, IMAGE) is refused — the URL is in the cell
       value, so no key-based check could see it, and a `values` argument may
-      arrive JSON-encoded or a CSV cell mid-line; =SUM(...) passes. Residual,
+      arrive JSON-encoded or a CSV cell mid-line; =SUM(...) passes. Every
+      gate walks a string that encodes JSON as the value the server decodes
+      (_parsed_json, in _iter_arg_strings and _nested_fetch_key), so a
+      \u0049MPORTDATA escape or a JSON-string `requests` list is read as
+      IMPORTDATA / as the list. A base64_content upload on a cell-writing
+      tool is decoded (_decoded_texts): a zip (XLSX / ODS) is scanned member
+      by member under size caps, text is scanned as text, and anything else
+      (a legacy binary format, invalid base64, too big) is refused because
+      its formulas cannot be seen; file_path (a server-side file, usually a
+      mailed-in attachment) is refused on those tools for the same reason.
+      Residual,
       unverified: whether Drive's HTML / Markdown import fetches an <img src>
       while converting `content` into a Doc (refusing image tags there would
       break a legitimate import, so it is left open and noted).
