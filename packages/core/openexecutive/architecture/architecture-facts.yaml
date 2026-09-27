@@ -343,6 +343,18 @@ providers:
     executive_reflection loops never enable thinking and drop the block
     harmlessly (each consults `reasoning_replay_block`, so the echo is
     already wired should deep reasoning ever be added to them).
+    Anthropic base64 PDF ``document`` block → OpenAI ``{"type":"file",
+    "file":{"filename","file_data":"data:application/pdf;base64,…"}}`` part
+    (the user message then goes out as a typed array, text and files in
+    order; a URL/text-source document has no faithful shape and is left
+    out). ``FeatureSpec.supports_pdf_input`` gates it per model: false for a
+    local server unless LOCAL_PDF_INPUT, and a gated-off block becomes the
+    text note "[PDF omitted: …]" rather than vanishing. OpenRouterProvider's
+    ``_extend_body`` hook adds ``plugins=[{"id":"file-parser","pdf":
+    {"engine": …}}]`` when a file part is present: ``native`` for
+    anthropic/claude-* or a catalog entry whose input_modalities has
+    "file" (openrouter_catalog.accepts_files), else PDF_OPENROUTER_ENGINE
+    (default mistral-ocr). No file part → the body is byte-identical.
     The Anthropic
     server-side web_search tool (no input_schema) cannot be executed by
     OpenRouter, so it is replaced in ``tools[]`` by OpenRouter's
@@ -1453,17 +1465,30 @@ knowledge:
     Scanned / image-only PDFs (no text layer) are read, not returned empty.
     knowledge.pdf_reader.read_pdf_text tries, in order, and never raises:
     1. pypdf's text layer — kept when it has >= ~20 visible chars per page.
-    2. Claude: base64 `document` blocks, PDF_VISION_PAGES_PER_CALL pages
-       (default 20) per request, 3 concurrent, transcribed to Markdown by
-       PDF_VISION_MODEL (default claude-sonnet-5). ONLY when that model
-       resolves to AnthropicProvider — providers/translator.py drops
-       `document` (and `image`) blocks on OpenRouter / local routes, so the
-       PDF would be silently lost there.
+    2. The deployment's own model, through its provider's PDF support:
+       base64 `document` blocks, PDF_VISION_PAGES_PER_CALL pages (default
+       20) per request, 3 concurrent, transcribed to Markdown by
+       PDF_VISION_MODEL (unset = DEFAULT_MODEL). Sent only when
+       providers.registry.pdf_input_supported(model): Anthropic direct and
+       every OpenRouter model (translator -> `file` part; OpenRouter's
+       file-parser: native for file-input models, else
+       PDF_OPENROUTER_ENGINE, default mistral-ocr), a local server only with
+       LOCAL_PDF_INPUT (e.g. LOCAL_BASE_URL = OpenAI's API). OpenAI models
+       are reached through OpenRouter (openai/...) — there is no direct
+       OpenAI provider.
+       OPT-IN: PDF_PROVIDER_READING (default false). It is data egress (to
+       the provider, and on OpenRouter possibly to Mistral OCR), so an
+       upgrade must not start it: off, this step is skipped and scanned
+       PDFs never leave the server. That default also moves Anthropic-
+       direct deployments off #254's default (Claude read scans there);
+       they OCR locally until they opt in. When on, the destination is
+       logged once per process. PDF_OCR_ENABLED only governs step 3.
     3. Local OCR: pypdfium2 renders each page (scale 2), RapidOCR
        (rapidocr-onnxruntime, models bundled in the wheel; opencv-python is
        overridden to opencv-python-headless in pyproject so python:3.11-slim
-       needs no libGL) reads it. Offline, no key, every provider; also the
-       fallback when step 2 errors, refuses or returns nothing.
+       needs no libGL) reads it. Offline, no key: what a local model without
+       PDF input gets, and the fallback on every provider when step 2
+       errors, refuses or returns nothing.
        PDF_OCR_ENABLED=false turns it off. Not installed on Python >= 3.13
        (the wheel's cap) — the note then says OCR is not installed.
     PDF_VISION_MAX_PAGES (default 100) caps pages read (note says so).

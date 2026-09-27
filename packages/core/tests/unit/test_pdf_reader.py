@@ -1,6 +1,6 @@
 """knowledge.pdf_reader — reading scanned / image-only PDFs.
 
-The model is stubbed (no network): `_vision_provider` is patched to a fake
+The model is stubbed (no network): `_model_provider` is patched to a fake
 with `messages_create`. OCR runs for real in one test (skipped when RapidOCR
 is not installed) and is stubbed elsewhere so the rest stay fast.
 """
@@ -15,6 +15,13 @@ from pypdf import PdfReader, PdfWriter
 
 from openexecutive.knowledge import pdf_reader
 from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
+
+
+@pytest.fixture(autouse=True)
+def _provider_reading_on(monkeypatch):
+    """Provider reading is opt-in (off by default); most tests here exercise
+    that path, so they turn it on. The default is pinned by its own test."""
+    monkeypatch.setenv("PDF_PROVIDER_READING", "true")
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +123,7 @@ class _FakeProvider:
 
 
 def _use_provider(monkeypatch: pytest.MonkeyPatch, provider: Any) -> None:
-    monkeypatch.setattr(pdf_reader, "_vision_provider", lambda model: provider)
+    monkeypatch.setattr(pdf_reader, "_model_provider", lambda model: provider)
 
 
 def _stub_ocr(monkeypatch: pytest.MonkeyPatch, text: str = "--- page 1 ---\nOCR TEXT") -> list:
@@ -164,7 +171,7 @@ async def test_scanned_pdf_is_transcribed_from_a_document_block(monkeypatch):
 
     result = await read_pdf_text(_blank_pdf(2), filename="scan.pdf")
 
-    assert result == PdfReadResult("Revenue 4.2M [1 to 2]", "vision", 2)
+    assert result == PdfReadResult("Revenue 4.2M [1 to 2]", "model", 2)
     assert result.converted
     assert ocr == []
     (call,) = provider.calls
@@ -183,7 +190,7 @@ async def test_long_scan_is_sent_in_slices_and_joined_in_order(monkeypatch):
 
     result = await read_pdf_text(_blank_pdf(45), filename="scan.pdf")
 
-    assert result.method == "vision"
+    assert result.method == "model"
     assert result.text == "part [1 to 20]\n\npart [21 to 40]\n\npart [41 to 45]"
     assert sorted(_pages_in(c) for c in provider.calls) == [5, 20, 20]
 
@@ -195,7 +202,7 @@ async def test_pages_past_the_cap_are_skipped_with_a_note(monkeypatch):
 
     result = await read_pdf_text(_blank_pdf(25), filename="scan.pdf")
 
-    assert result.method == "vision"
+    assert result.method == "model"
     assert result.pages == 25
     assert result.note == "only the first 10 of 25 pages were read"
     assert sum(_pages_in(c) for c in provider.calls) == 10
@@ -233,23 +240,42 @@ async def test_a_failed_transcription_falls_back_to_ocr(monkeypatch, provider):
     assert provider.calls
 
 
-def test_openrouter_and_missing_keys_get_no_vision_provider(monkeypatch):
-    """The OpenRouter / local translator drops `document` blocks, so only the
-    Anthropic-direct provider may be handed the PDF."""
+def test_each_deployment_gets_its_own_pdf_reader(monkeypatch):
+    """The PDF goes to whatever provider the model routes to — Anthropic,
+    OpenRouter, or a local server that says it takes PDFs — and only a model
+    with no way to receive one falls to local OCR."""
     from openexecutive.providers import registry
     from openexecutive.providers.anthropic_provider import AnthropicProvider
+    from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
+    from openexecutive.providers.openrouter_provider import OpenRouterProvider
 
     registry._reset_for_tests()
     try:
-        assert isinstance(pdf_reader._vision_provider("claude-sonnet-5"), AnthropicProvider)
+        assert isinstance(pdf_reader._model_provider("claude-sonnet-5"), AnthropicProvider)
 
         registry._reset_for_tests()
         monkeypatch.setenv("OPENROUTER_ENABLED", "true")
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-        assert pdf_reader._vision_provider("claude-sonnet-5") is None
-        assert pdf_reader._vision_provider("openai/gpt-6-astra") is None
+        assert isinstance(pdf_reader._model_provider("claude-sonnet-5"), OpenRouterProvider)
+        assert isinstance(pdf_reader._model_provider("openai/gpt-6-astra"), OpenRouterProvider)
+
+        registry._reset_for_tests()
+        monkeypatch.setenv("LOCAL_MODELS_ENABLED", "true")
+        monkeypatch.setenv("LOCAL_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("LOCAL_MODELS", "llama3.3")
+        assert pdf_reader._model_provider("llama3.3") is None
+        monkeypatch.setenv("LOCAL_PDF_INPUT", "true")
+        assert isinstance(pdf_reader._model_provider("llama3.3"), OpenAICompatibleProvider)
     finally:
         registry._reset_for_tests()
+
+
+def test_the_pdf_model_defaults_to_the_deployments_model(monkeypatch):
+    monkeypatch.delenv("PDF_VISION_MODEL", raising=False)
+    monkeypatch.setenv("DEFAULT_MODEL", "openai/gpt-6-astra")
+    assert pdf_reader._pdf_model() == "openai/gpt-6-astra"
+    monkeypatch.setenv("PDF_VISION_MODEL", "claude-haiku-4-5")
+    assert pdf_reader._pdf_model() == "claude-haiku-4-5"
 
 
 async def test_ocr_not_installed_says_so(monkeypatch):
@@ -311,7 +337,7 @@ async def test_an_unreadable_result_is_not_cached(monkeypatch):
     assert (await read_pdf_text(data)).method == "none"
 
     _use_provider(monkeypatch, _FakeProvider())
-    assert (await read_pdf_text(data)).method == "vision"
+    assert (await read_pdf_text(data)).method == "model"
 
 
 # ── Real OCR ─────────────────────────────────────────────────────────────────
@@ -433,7 +459,7 @@ async def test_a_cut_off_slice_is_split_until_each_part_fits(monkeypatch):
 
     result = await read_pdf_text(_blank_pdf(20), filename="dense.pdf")
 
-    assert result.method == "vision"
+    assert result.method == "model"
     assert result.note == ""
     assert result.text == (
         "part [1 to 5]\n\npart [6 to 10]\n\npart [11 to 15]\n\npart [16 to 20]"
@@ -448,9 +474,55 @@ async def test_a_single_page_that_never_fits_is_kept_and_flagged(monkeypatch):
 
     result = await read_pdf_text(_blank_pdf(2), filename="dense.pdf")
 
-    assert result.method == "vision"
+    assert result.method == "model"
     assert result.text == (
         "dense page [1 to 1]\n[transcription cut off here]\n\n"
         "dense page [2 to 2]\n[transcription cut off here]"
     )
     assert result.note == "some pages' transcription was cut off"
+
+
+# ── Keeping scanned PDFs on the server ───────────────────────────────────────
+
+
+async def test_provider_reading_off_keeps_scans_on_this_server(monkeypatch):
+    monkeypatch.setenv("PDF_PROVIDER_READING", "false")
+    provider = _FakeProvider()
+    _use_provider(monkeypatch, provider)
+    ocr = _stub_ocr(monkeypatch)
+
+    result = await read_pdf_text(_blank_pdf(2), filename="scan.pdf")
+
+    assert result.method == "ocr"
+    assert provider.calls == []
+    assert ocr == [2]
+
+
+async def test_provider_reading_is_off_by_default(monkeypatch):
+    """An upgrade must not start sending scanned PDFs off the server."""
+    monkeypatch.delenv("PDF_PROVIDER_READING", raising=False)
+    provider = _FakeProvider()
+    _use_provider(monkeypatch, provider)
+    ocr = _stub_ocr(monkeypatch)
+
+    result = await read_pdf_text(_blank_pdf(2), filename="scan.pdf")
+
+    assert result.method == "ocr"
+    assert provider.calls == []
+    assert ocr == [2]
+
+
+async def test_where_scans_go_is_logged_once(monkeypatch):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(pdf_reader, "_announced", set())
+    log = MagicMock()
+    monkeypatch.setattr(pdf_reader, "logger", log)
+    _use_provider(monkeypatch, _FakeProvider())
+
+    await read_pdf_text(_blank_pdf(1), filename="a.pdf")
+    await read_pdf_text(_blank_pdf(2), filename="b.pdf")
+
+    lines = [c.args[0] % c.args[1:] for c in log.info.call_args_list]
+    assert len([line for line in lines if "scanned PDFs are sent to" in line]) == 1
+    assert "PDF_PROVIDER_READING is on" in lines[0]

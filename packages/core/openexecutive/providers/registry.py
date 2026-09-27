@@ -15,6 +15,7 @@ the hardcoded ``OPENROUTER_MODELS`` snapshot when nothing has been loaded.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any, Literal, TypedDict
 
 from fastapi import HTTPException
@@ -394,8 +395,15 @@ def _local() -> OpenAICompatibleProvider:
         # Local models get the tools-only spec: no cache_control, thinking,
         # or web_search — a self-hosted OpenAI-compatible server has no
         # search tool and would 400 (or silently ignore) the rest.
+        # PDFs only when the operator says the server takes them
+        # (LOCAL_PDF_INPUT, e.g. OpenAI's own API); otherwise the gate
+        # replaces a PDF with a note and pdf_reader OCRs it locally instead.
+        local_spec = replace(
+            _LOCAL_FEATURE_SPEC,
+            supports_pdf_input=bool(getattr(settings, "local_pdf_input", False)),
+        )
         spec_lookup: dict[str, FeatureSpec] = {
-            m: _LOCAL_FEATURE_SPEC for m in _local_models(settings)
+            m: local_spec for m in _local_models(settings)
         }
         _local_provider = OpenAICompatibleProvider(
             base_url=base_url,
@@ -474,6 +482,23 @@ def get_provider(model: str) -> LLMProvider:
             ),
         )
     return _openrouter()
+
+
+def pdf_input_supported(model: str) -> bool:
+    """Whether a PDF ``document`` block sent to ``model`` reaches a reader.
+
+    Mirrors ``get_provider``'s routing without building anything: a local
+    slug reads PDFs only with LOCAL_PDF_INPUT; a Claude id reads them
+    natively on Anthropic (when a key is set) or through OpenRouter; any
+    other slug goes to OpenRouter, whose file-parser handles every model.
+    False when the model has no reachable provider at all.
+    """
+    settings = get_settings()
+    if model in _local_models(settings):
+        return bool(getattr(settings, "local_pdf_input", False))
+    if settings.openrouter_enabled:
+        return True
+    return _is_claude(model) and bool(settings.anthropic_api_key)
 
 
 def _reset_for_tests() -> None:
