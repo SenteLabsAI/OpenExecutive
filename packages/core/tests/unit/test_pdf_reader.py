@@ -20,8 +20,10 @@ from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
 @pytest.fixture(autouse=True)
 def _fresh_cache():
     pdf_reader.clear_cache()
+    pdf_reader.reset_inbound_budget()
     yield
     pdf_reader.clear_cache()
+    pdf_reader.reset_inbound_budget()
 
 
 # ── PDF builders ─────────────────────────────────────────────────────────────
@@ -115,9 +117,9 @@ def _use_provider(monkeypatch: pytest.MonkeyPatch, provider: Any) -> None:
 def _stub_ocr(monkeypatch: pytest.MonkeyPatch, text: str = "--- page 1 ---\nOCR TEXT") -> list:
     calls: list = []
 
-    def fake(data: bytes, max_pages: int) -> str:
+    def fake(data: bytes, max_pages: int) -> tuple[str, int]:
         calls.append(max_pages)
-        return text
+        return text, max_pages
 
     monkeypatch.setattr(pdf_reader, "_ocr_pdf", fake)
     return calls
@@ -316,8 +318,79 @@ def test_ocr_reads_an_image_only_pdf():
     data = _image_pdf(["Board meeting notes", "Approve the hiring plan"])
     assert PdfReader(io.BytesIO(data)).pages[0].extract_text() == ""
 
-    text = pdf_reader._ocr_pdf(data, max_pages=5)
+    text, read = pdf_reader._ocr_pdf(data, max_pages=5)
 
+    assert read == 1
     assert text.startswith("--- page 1 ---")
     assert "Board meeting notes" in text
     assert "Approve the hiring plan" in text
+
+
+# ── Resource bounds ──────────────────────────────────────────────────────────
+
+
+def test_a_huge_page_is_rendered_within_the_pixel_budget():
+    """A page's size is whatever its MediaBox says; a 20000pt-square page at
+    the normal scale would allocate gigabytes."""
+    assert pdf_reader._render_scale(612, 792) == pdf_reader._OCR_RENDER_SCALE
+    scale = pdf_reader._render_scale(20_000, 20_000)
+    assert (20_000 * scale) ** 2 <= pdf_reader._OCR_MAX_PAGE_PIXELS * 1.0001
+
+
+def test_ocr_renders_a_huge_page_at_the_capped_scale(monkeypatch):
+    pytest.importorskip("pypdfium2")
+    writer = PdfWriter()
+    writer.add_blank_page(width=14_000, height=14_000)
+    buf = io.BytesIO()
+    writer.write(buf)
+    sizes: list[tuple[int, int]] = []
+
+    class Engine:
+        def __call__(self, image: Any) -> tuple[None, None]:
+            sizes.append(image.shape[:2])
+            return None, None
+
+    monkeypatch.setattr(pdf_reader, "_get_ocr_engine", lambda: Engine())
+
+    assert pdf_reader._ocr_pdf(buf.getvalue(), max_pages=1) == ("", 1)
+    (height, width), = sizes
+    assert height * width <= pdf_reader._OCR_MAX_PAGE_PIXELS * 1.001
+
+
+def test_ocr_stops_at_its_time_budget(monkeypatch):
+    pytest.importorskip("pypdfium2")
+    monkeypatch.setattr(pdf_reader, "_OCR_TIME_BUDGET_S", -1.0)
+    monkeypatch.setattr(pdf_reader, "_get_ocr_engine", lambda: object())
+
+    assert pdf_reader._ocr_pdf(_blank_pdf(5), max_pages=5) == ("", 0)
+
+
+async def test_inbound_files_get_the_smaller_page_cap(monkeypatch):
+    monkeypatch.setenv("PDF_INBOUND_MAX_PAGES", "4")
+    _use_provider(monkeypatch, None)
+    ocr = _stub_ocr(monkeypatch)
+    data = _blank_pdf(10)
+
+    inbound = await read_pdf_text(data, inbound=True)
+    asked = await read_pdf_text(data)
+
+    assert ocr == [4, 10]
+    assert inbound.note == "only the first 4 of 10 pages were read"
+    assert asked.note == ""
+
+
+async def test_inbound_conversions_share_an_hourly_page_budget(monkeypatch):
+    monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "5")
+    _use_provider(monkeypatch, None)
+    ocr = _stub_ocr(monkeypatch)
+
+    first = await read_pdf_text(_blank_pdf(3), inbound=True)
+    second = await read_pdf_text(_blank_pdf(4), inbound=True)
+    third = await read_pdf_text(_blank_pdf(2), inbound=True)
+    asked = await read_pdf_text(_blank_pdf(2))
+
+    assert ocr == [3, 2, 2]
+    assert first.method == second.method == "ocr"
+    assert second.note == "only the first 2 of 4 pages were read"
+    assert third.method == "none" and "hourly budget" in third.note
+    assert asked.method == "ocr"

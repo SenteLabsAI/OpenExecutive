@@ -548,6 +548,16 @@ class Settings(BaseSettings):
     # Local OCR fallback. Off means a scanned PDF on a non-Claude deployment
     # stays unreadable (and says so).
     pdf_ocr_enabled: bool = Field(True, alias="PDF_OCR_ENABLED")
+    # Files that arrive on their own through a channel (chat, Slack, Google
+    # Chat, email attachments) — not ones the Executive or the signed-in user
+    # asks to read — convert at most this many pages each, and at most
+    # PDF_INBOUND_PAGES_PER_HOUR pages across all senders per rolling hour,
+    # so sending scans cannot run up unbounded model spend or CPU. The rest of
+    # such a file is one `read_document` away when it is on disk.
+    pdf_inbound_max_pages: int = Field(30, alias="PDF_INBOUND_MAX_PAGES", ge=1, le=600)
+    pdf_inbound_pages_per_hour: int = Field(
+        300, alias="PDF_INBOUND_PAGES_PER_HOUR", ge=0
+    )
 
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"

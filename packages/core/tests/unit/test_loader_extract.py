@@ -75,7 +75,7 @@ async def test_async_extractor_converts_a_scanned_pdf(tmp_path: Path, monkeypatc
         read_document_text,
     )
 
-    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         assert data == b"%PDF-scan" and filename == "scan.pdf"
         return pdf_reader.PdfReadResult("Minutes: approve the budget.", "ocr", 1)
 

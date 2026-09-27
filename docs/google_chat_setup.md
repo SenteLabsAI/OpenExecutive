@@ -153,7 +153,7 @@ The webhook endpoint is now active at `POST /webhook/google-chat`. Google Chat w
 
 ### Files
 
-Files sent in a message (PDFs, Word, spreadsheets, text, images; up to 5 per message, 20 MB each) are read into the turn, and scanned PDFs are converted to text. They download with the same service account and `chat.bot` scope the replies use, so no extra setup is needed. A Google Drive file shared into a message is left to the Google Workspace (Drive) tools.
+Files sent in a message (PDFs, Word, spreadsheets, text, images; up to 5 per message, 20 MB each) are read into the turn, and scanned PDFs are converted to text. They download with the same service account and `chat.bot` scope the replies use, so no extra setup is needed. Because the webhook authenticates Google rather than the sender, files are read only from people on the **People** roster, matched by their Google account email; anyone else's files are named to the Executive but never downloaded. A Google Drive file shared into a message is left to the Google Workspace (Drive) tools.
 
 ---
 

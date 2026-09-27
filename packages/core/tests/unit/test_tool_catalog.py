@@ -286,7 +286,7 @@ async def test_read_file_converts_a_scanned_pdf(
 
     seen: list[bytes] = []
 
-    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         seen.append(data)
         return pdf_reader.PdfReadResult("Invoice total 123.45", "ocr", 1)
 
@@ -303,7 +303,7 @@ async def test_read_file_reports_why_a_pdf_is_unreadable(
 ) -> None:
     from openexecutive.knowledge import pdf_reader
 
-    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         return pdf_reader.PdfReadResult("", "none", 1, "no text could be read: OCR is off")
 
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)

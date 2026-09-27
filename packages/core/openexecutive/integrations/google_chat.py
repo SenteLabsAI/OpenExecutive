@@ -117,8 +117,9 @@ def send_reply(
 
 
 # Per message: bounds the downloads (and OCR / model work) one message can
-# cause. The webhook authenticates Google, not the sender, so anyone in a
-# space the bot is in can send files.
+# cause. Files are read only for a sender on the People roster (matched by
+# the Google account email the event carries): the webhook authenticates
+# Google, not the sender, so anyone in a space the bot is in can post.
 _MAX_ATTACHMENTS = 5
 _MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
@@ -134,6 +135,21 @@ def _message_attachments(message: dict) -> list[dict]:
 
 def _attachment_name(attachment: dict) -> str:
     return str(attachment.get("contentName") or "file")
+
+
+def _sender_on_roster(email: str) -> bool:
+    """Whether a Chat sender is a team member (not just a contact), by the
+    Google account email on the event. No email — a bot, or an event without
+    one — is not."""
+    if not email:
+        return False
+    try:
+        from openexecutive.people.store import find_person_by_email
+
+        return find_person_by_email(email) is not None
+    except Exception:
+        logger.exception("Google Chat: roster lookup failed")
+        return False
 
 
 def download_attachment(
@@ -227,6 +243,7 @@ async def _process_and_reply(
     service_account_file: str | None,
     service_account_email: str | None,
     attachments: list[dict] | None = None,
+    sender_email: str = "",
 ) -> None:
     if not space_name:
         logger.error("Google Chat: missing space_name for message %s, cannot reply", message_name)
@@ -295,13 +312,19 @@ async def _process_and_reply(
 
         chat_message = message_text
         image_blocks: list[dict] = []
-        if attachments:
+        if attachments and _sender_on_roster(sender_email):
             att_text, image_blocks = await _read_attachments(
                 attachments, service_account_file, service_account_email
             )
             if att_text:
                 # Before the words, as the other chat channels inline it.
                 chat_message = f"{att_text}\n\n{message_text}"
+        elif attachments:
+            names = ", ".join(map(_attachment_name, attachments))
+            chat_message = (
+                f"(Attached files, not read — files are read only from people on "
+                f"the team: {names})\n\n{message_text}"
+            )
 
         response = await Executive(mcp_gateway=get_active_gateway()).chat(
             user_message=chat_message,
@@ -385,5 +408,6 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
         attachments=attachments,
+        sender_email=str(body.get("user", {}).get("email") or ""),
     )
     return {}

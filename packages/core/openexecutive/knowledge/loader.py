@@ -151,12 +151,14 @@ def extract_text_from_file(path: Path) -> str:
     return ""
 
 
-async def read_document_text(path: Path) -> PdfReadResult:
+async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadResult:
     """Read a document for the Executive, converting a scanned PDF.
 
     A PDF goes through ``knowledge.pdf_reader`` (text layer, else Claude or
     local OCR); anything else through ``extract_text_from_file`` in a thread.
     The result's ``note`` says why a file came back empty or partial.
+    ``inbound`` is ``read_pdf_text``'s: a file that arrived on its own
+    through a channel, metered by the inbound page budget.
     Extraction errors on non-PDF files propagate, as they do from the sync
     extractor.
     """
@@ -164,7 +166,7 @@ async def read_document_text(path: Path) -> PdfReadResult:
 
     if path.suffix.lower() == ".pdf":
         data = await asyncio.to_thread(path.read_bytes)
-        return await read_pdf_text(data, filename=path.name)
+        return await read_pdf_text(data, filename=path.name, inbound=inbound)
     text = await asyncio.to_thread(extract_text_from_file, path)
     return PdfReadResult(text, "text_layer" if text.strip() else "none", 0)
 

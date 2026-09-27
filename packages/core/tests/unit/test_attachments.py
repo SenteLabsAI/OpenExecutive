@@ -231,7 +231,7 @@ async def test_process_attachments_concatenates_multiple_texts():
         patch("openexecutive.integrations.attachments.download_bytes", side_effect=_fake_download),
         patch(
             "openexecutive.integrations.attachments._extract_text",
-            AsyncMock(side_effect=lambda data, filename: (data.decode(), "", False)),
+            AsyncMock(side_effect=lambda data, filename, **_kw: (data.decode(), "", False)),
         ),
         patch("openexecutive.integrations.attachments._schedule_ingest"),
     ):

@@ -1467,6 +1467,15 @@ knowledge:
        PDF_OCR_ENABLED=false turns it off. Not installed on Python >= 3.13
        (the wheel's cap) — the note then says OCR is not installed.
     PDF_VISION_MAX_PAGES (default 100) caps pages read (note says so).
+    inbound=True (a file a channel delivered: chat/Slack/Google Chat/email
+    attachments; NOT POST /chat/upload, the signed-in user's own) caps at
+    PDF_INBOUND_MAX_PAGES (30) and draws on a rolling hourly budget,
+    PDF_INBOUND_PAGES_PER_HOUR (300), shared by all senders — a spent budget
+    returns a note, not a conversion. Text layers are never metered.
+    OCR bounds (security review): each page renders within a 25 MP pixel
+    budget (scale lowered for a huge MediaBox — a 20000pt page would be a
+    multi-GB bitmap), at most 2 documents OCR at once (BoundedSemaphore),
+    and each stops after 240 s with the pages it has.
     Results are cached in process by sha256 (32 entries); failures are not.
     loader.read_document_text / extract_text_from_file_async are the async
     entry points; ingest_file (uploads, reconcile_company_docs), the
@@ -1481,13 +1490,18 @@ knowledge:
       through, downloads after the roster + response gates, sends the bot
       token only to https://files.slack.com/ (needs `files:read`). Google
       Chat downloads uploaded content via media.download with the chat.bot
-      credentials (5/message, 20 MB checked per chunk; no roster gate on
-      that channel, so the caps are the bound); a driveDataRef attachment
-      is left to the Drive tools with its id.
+      credentials (5/message, 20 MB checked per chunk), only when the
+      event's user.email is on the People roster — the webhook
+      authenticates Google, not the sender, so anyone else's files are
+      named, never downloaded; a driveDataRef attachment is left to the
+      Drive tools with its id.
     - email — integrations.email_attachments: for a known sender (team,
       contact, principal) the poller calls get_gmail_attachment_content for
       up to 5 readable attachments of THIS message (20 MB each); workspace-
-      mcp in stdio mode answers "Saved to: <path>", which must pass
+      mcp in stdio mode answers "Saved to: <path>" — taken only from a line
+      it starts, the LAST one, and only if its name equals the "Saved
+      filename:" line (the answer echoes the sender-chosen filename first,
+      which could carry a fake "Saved to:") — which must then pass
       tool_catalog.resolve_readable_file; text appended to the turn under
       "--- ATTACHMENT TEXT ---" (15k chars each). Outside the model loop, so
       it works on private turns without widening PRIVATE_TURN_MCP_TOOLS.

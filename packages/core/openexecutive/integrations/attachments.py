@@ -120,7 +120,9 @@ def _suffix_from_filename(filename: str) -> str:
     return Path(filename).suffix.lower()
 
 
-async def _extract_text(data: bytes, filename: str) -> tuple[str, str, bool]:
+async def _extract_text(
+    data: bytes, filename: str, *, inbound: bool = True
+) -> tuple[str, str, bool]:
     """Extract the text of one document attachment.
 
     Returns ``(text, note, converted)``. ``text`` may be empty if extraction
@@ -142,7 +144,7 @@ async def _extract_text(data: bytes, filename: str) -> tuple[str, str, bool]:
         # when reached directly, local OCR otherwise) and never raises.
         from openexecutive.knowledge.pdf_reader import read_pdf_text
 
-        result = await read_pdf_text(data, filename=filename)
+        result = await read_pdf_text(data, filename=filename, inbound=inbound)
         return result.text, result.note, result.converted
 
     try:
@@ -292,11 +294,16 @@ async def build_attachment_output(
     filename: str,
     data: bytes,
     content_type: str,
+    *,
+    inbound: bool = True,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Route one attachment to the right handler.
 
     Returns ``(extra_text, image_blocks)``.  Both may be empty — callers
-    concatenate results across all attachments.
+    concatenate results across all attachments. ``inbound`` (the default:
+    a file a channel delivered) meters a scanned PDF's conversion by the
+    inbound page budget; the web upload route, where the signed-in user
+    sends it, passes False.
     """
     # Normalise content_type — some servers omit it or add parameters.
     # All normalization (non-standard aliases, suffix inference) happens once
@@ -312,7 +319,7 @@ async def build_attachment_output(
         return "", [_build_image_block(data, ct)]
 
     if suffix in _EXTRACTABLE_SUFFIXES:
-        text, note, converted = await _extract_text(data, filename)
+        text, note, converted = await _extract_text(data, filename, inbound=inbound)
         if not text.strip():
             return f"(Attached {filename}: {note or 'could not extract any text'})", []
         extra_text = format_attached_text(filename, text, converted=converted, note=note)

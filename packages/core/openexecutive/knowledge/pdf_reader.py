@@ -26,7 +26,9 @@ import base64
 import hashlib
 import io
 import logging
+import math
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -41,8 +43,21 @@ _MIN_CHARS_PER_PAGE = 20
 _VISION_CONCURRENCY = 3
 _VISION_MAX_TOKENS = 16_000
 _CACHE_SIZE = 32
-# ~144 dpi for a Letter/A4 page: enough for body text, bounded in memory.
+# ~144 dpi for a Letter/A4 page: enough for body text.
 _OCR_RENDER_SCALE = 2.0
+# Pixel budget per rendered page. A page's size is whatever its MediaBox
+# says, so a crafted 20000pt-square page would otherwise render to a
+# multi-gigabyte bitmap; a bigger page is rendered at a lower scale instead.
+_OCR_MAX_PAGE_PIXELS = 25_000_000
+# OCR is CPU-bound and runs in the default thread pool: at most this many
+# documents at once, each stopping (with what it has) after the time budget.
+_OCR_CONCURRENCY = 2
+_OCR_TIME_BUDGET_S = 240.0
+# Pages converted (Claude or OCR) for files that arrive on their own through
+# a channel — as opposed to one the Executive or the signed-in user asks to
+# read — are metered per rolling hour, so no sender can run up unbounded model
+# spend or CPU by sending scans. See PDF_INBOUND_MAX_PAGES / _PAGES_PER_HOUR.
+_INBOUND_WINDOW_S = 3600.0
 
 _TRANSCRIBE_PROMPT = (
     "Transcribe every page of this PDF into Markdown, verbatim. Keep the "
@@ -260,35 +275,88 @@ def _ocr_page_text(engine: Any, image: Any) -> str:
     return "\n".join(" ".join(t for _x, t in sorted(row)) for row in rows)
 
 
-def _ocr_pdf(data: bytes, max_pages: int) -> str:
-    """OCR the first ``max_pages`` pages. Blocking — run in a thread."""
+def _render_scale(width_pt: float, height_pt: float) -> float:
+    """The render scale for a page, lowered so it stays within the pixel budget."""
+    area = max(width_pt, 1.0) * max(height_pt, 1.0)
+    if area * _OCR_RENDER_SCALE**2 <= _OCR_MAX_PAGE_PIXELS:
+        return _OCR_RENDER_SCALE
+    return math.sqrt(_OCR_MAX_PAGE_PIXELS / area)
+
+
+def _ocr_pdf(data: bytes, max_pages: int) -> tuple[str, int]:
+    """OCR up to ``max_pages`` pages: ``(text, pages read)``. Stops early at
+    the time budget. Blocking — run in a thread."""
     import pypdfium2 as pdfium
 
     engine = _get_ocr_engine()
-    doc = pdfium.PdfDocument(data)
-    try:
-        parts: list[str] = []
-        for i in range(min(len(doc), max_pages)):
-            page = doc[i]
-            try:
-                image = page.render(scale=_OCR_RENDER_SCALE).to_pil()
-            finally:
-                page.close()
-            text = _ocr_page_text(engine, image).strip()
-            if text:
-                parts.append(f"--- page {i + 1} ---\n{text}")
-        return "\n\n".join(parts)
-    finally:
-        doc.close()
+    with _ocr_slots:
+        deadline = time.monotonic() + _OCR_TIME_BUDGET_S
+        doc = pdfium.PdfDocument(data)
+        try:
+            parts: list[str] = []
+            read = 0
+            for i in range(min(len(doc), max_pages)):
+                if time.monotonic() > deadline:
+                    break
+                page = doc[i]
+                try:
+                    width, height = page.get_size()
+                    image = page.render(scale=_render_scale(width, height)).to_pil()
+                finally:
+                    page.close()
+                text = _ocr_page_text(engine, image).strip()
+                read += 1
+                if text:
+                    parts.append(f"--- page {i + 1} ---\n{text}")
+            return "\n\n".join(parts), read
+        finally:
+            doc.close()
+
+
+_ocr_slots = threading.BoundedSemaphore(_OCR_CONCURRENCY)
+
+
+# ── Inbound page budget ──────────────────────────────────────────────────────
+
+_inbound_spent: list[tuple[float, int]] = []
+_inbound_lock = threading.Lock()
+
+
+def _take_inbound_pages(wanted: int, per_hour: int) -> int:
+    """Reserve up to ``wanted`` pages from the rolling hourly budget and
+    return how many were granted (0 when it is spent)."""
+    now = time.monotonic()
+    with _inbound_lock:
+        _inbound_spent[:] = [(t, n) for t, n in _inbound_spent if now - t < _INBOUND_WINDOW_S]
+        left = per_hour - sum(n for _t, n in _inbound_spent)
+        granted = max(0, min(wanted, left))
+        if granted:
+            _inbound_spent.append((now, granted))
+        return granted
+
+
+def reset_inbound_budget() -> None:
+    """Forget pages spent. Tests call this between cases."""
+    with _inbound_lock:
+        _inbound_spent.clear()
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-async def read_pdf_text(data: bytes, *, filename: str = "") -> PdfReadResult:
-    """Return the text of a PDF, converting scanned pages when needed."""
+async def read_pdf_text(
+    data: bytes, *, filename: str = "", inbound: bool = False
+) -> PdfReadResult:
+    """Return the text of a PDF, converting scanned pages when needed.
+
+    ``inbound`` marks a file that arrived on its own through a channel (a
+    chat, Slack, Google Chat or email attachment) rather than one the
+    Executive or the signed-in user asked to read: its conversion gets the
+    smaller ``PDF_INBOUND_MAX_PAGES`` cap and draws on the hourly
+    ``PDF_INBOUND_PAGES_PER_HOUR`` budget. A text layer is free either way.
+    """
     from openexecutive.config import get_settings
 
-    key = hashlib.sha256(data).hexdigest()
+    key = f"{hashlib.sha256(data).hexdigest()}:{'inbound' if inbound else 'asked'}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -309,20 +377,26 @@ async def read_pdf_text(data: bytes, *, filename: str = "") -> PdfReadResult:
 
     settings = get_settings()
     limit = min(pages, settings.pdf_vision_max_pages)
-    skipped = (
-        f"only the first {limit} of {pages} pages were read" if pages > limit else ""
-    )
+    if inbound:
+        limit = min(limit, settings.pdf_inbound_max_pages)
+        granted = _take_inbound_pages(limit, settings.pdf_inbound_pages_per_hour)
+        if limit and not granted:
+            return _fallback(
+                text, pages,
+                "it looks scanned and the hourly budget for converting sent files is used up",
+            )
+        limit = granted
 
     vision = await _read_with_vision(data, limit) if limit else None
     if vision:
-        result = PdfReadResult(vision, "vision", pages, skipped)
+        result = PdfReadResult(vision, "vision", pages, _pages_note(limit, pages))
         _cache_put(key, result)
         return result
 
     if not settings.pdf_ocr_enabled:
         return _fallback(text, pages, "it looks scanned and scanned-PDF conversion is turned off")
     try:
-        ocr = await asyncio.to_thread(_ocr_pdf, data, limit)
+        ocr, read = await asyncio.to_thread(_ocr_pdf, data, limit)
     except OcrUnavailable:
         return _fallback(text, pages, "it looks scanned and OCR is not installed on this server")
     except Exception as exc:
@@ -330,9 +404,13 @@ async def read_pdf_text(data: bytes, *, filename: str = "") -> PdfReadResult:
         return _fallback(text, pages, "it looks scanned and OCR could not read it")
     if not ocr.strip():
         return _fallback(text, pages, "it looks scanned and no text could be read from its pages")
-    result = PdfReadResult(ocr, "ocr", pages, skipped)
+    result = PdfReadResult(ocr, "ocr", pages, _pages_note(read, pages))
     _cache_put(key, result)
     return result
+
+
+def _pages_note(read: int, pages: int) -> str:
+    return f"only the first {read} of {pages} pages were read" if read < pages else ""
 
 
 def _fallback(text: str, pages: int, reason: str) -> PdfReadResult:

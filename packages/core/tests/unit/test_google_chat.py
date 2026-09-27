@@ -397,6 +397,7 @@ def test_attachment_only_message_is_no_longer_dropped(monkeypatch: pytest.Monkey
     monkeypatch.setattr(gc_module, "_process_and_reply", fake_process)
     payload = _message_event(text="<users/111>")
     payload["message"]["attachment"] = [_UPLOADED]
+    payload["user"]["email"] = "jane@acme.com"
 
     app = FastAPI()
     app.include_router(gc_module.router)
@@ -409,10 +410,15 @@ def test_attachment_only_message_is_no_longer_dropped(monkeypatch: pytest.Monkey
     (call,) = process_calls
     assert call["message_text"] == "(Attached files: scan.pdf)"
     assert call["attachments"] == [_UPLOADED]
+    assert call["sender_email"] == "jane@acme.com"
 
 
 def _run_with_attachments(
-    monkeypatch: pytest.MonkeyPatch, attachments: list[dict], download: Any
+    monkeypatch: pytest.MonkeyPatch,
+    attachments: list[dict],
+    download: Any,
+    *,
+    rostered: bool = True,
 ) -> dict[str, Any]:
     from openexecutive.knowledge.pdf_reader import PdfReadResult
 
@@ -425,9 +431,13 @@ def _run_with_attachments(
         lambda: SimpleNamespace(is_empty=lambda: True),
     )
     monkeypatch.setattr(gc_module, "download_attachment", download)
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_email",
+        lambda email, **_kw: SimpleNamespace(id=3) if rostered and email == "bob@acme.com" else None,
+    )
     monkeypatch.setattr("openexecutive.integrations.attachments._schedule_ingest", lambda *_: None)
 
-    async def fake_read(data: bytes, *, filename: str = "") -> PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> PdfReadResult:
         return PdfReadResult("APPRAISED VALUE 4.2M", "ocr", 1)
 
     monkeypatch.setattr("openexecutive.knowledge.pdf_reader.read_pdf_text", fake_read)
@@ -454,6 +464,7 @@ def _run_with_attachments(
                 service_account_file="/fake/key.json",
                 service_account_email=None,
                 attachments=attachments,
+                sender_email="bob@acme.com",
             )
         )
     return captured
@@ -530,3 +541,19 @@ def test_download_attachment_stops_past_the_size_cap(monkeypatch: pytest.MonkeyP
     with pytest.raises(ValueError):
         gc_module.download_attachment("res/1", None, None, max_bytes=25)
     assert len(chunks_read) == 3
+
+
+def test_files_from_someone_off_the_roster_are_not_downloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The webhook authenticates Google, not the sender: anyone in a space
+    can post. Their files are named to the Executive, never downloaded."""
+    def download(*_a: Any) -> bytes:
+        raise AssertionError("an off-roster sender's file must not be downloaded")
+
+    captured = _run_with_attachments(monkeypatch, [_UPLOADED], download, rostered=False)
+
+    assert captured["user_message"] == (
+        "(Attached files, not read — files are read only from people on the team: scan.pdf)"
+        "\n\nWhat is this worth?"
+    )

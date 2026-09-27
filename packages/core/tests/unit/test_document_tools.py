@@ -31,7 +31,7 @@ def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
     'PAGE TEXT (<n> bytes)'. Returns the bytes it was handed."""
     seen: list[bytes] = []
 
-    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         seen.append(data)
         return pdf_reader.PdfReadResult(f"PAGE TEXT ({len(data)} bytes)", "ocr", 1)
 
@@ -112,7 +112,7 @@ async def test_reads_a_page_range_of_a_pdf(dirs, fake_pdf) -> None:
 
 
 async def test_an_unreadable_pdf_says_why(dirs, monkeypatch) -> None:
-    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         return pdf_reader.PdfReadResult("", "none", 2, "no text could be read: OCR is off")
 
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)

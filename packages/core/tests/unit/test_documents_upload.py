@@ -95,7 +95,7 @@ def test_scanned_pdf_upload_is_indexed_and_previewed(
     now what gets indexed and shown (knowledge.pdf_reader, stubbed)."""
     from openexecutive.knowledge import pdf_reader
 
-    async def fake_read(data: bytes, *, filename: str = "") -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         return pdf_reader.PdfReadResult("Signed lease: rent 12,000 per month.", "ocr", 2)
 
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)

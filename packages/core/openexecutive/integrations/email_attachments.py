@@ -40,8 +40,14 @@ MAX_CHARS_PER_ATTACHMENT = 15_000
 _READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".xlsx", ".xlsm", ".csv", ".md", ".txt"})
 _ATTACHMENT_TOOL = "google_workspace__get_gmail_attachment_content"
 # workspace-mcp's stdio answer names the saved file on its own line. In HTTP
-# mode it gives a download URL instead, which this does not follow.
-_SAVED_TO_RE = re.compile(r"Saved to:\s*(/[^\n]+?)\s*$", re.MULTILINE)
+# mode it gives a download URL instead, which this does not follow. Anchored
+# to the start of a line, and the LAST one is taken: the answer also echoes
+# the sender-chosen attachment name on an earlier "Filename:" line, which may
+# itself contain "Saved to: /…" to point the poller at another saved file.
+_SAVED_TO_RE = re.compile(r"^\s*(?:\U0001F4CE\s*)?Saved to:\s*(/.+?)\s*$", re.MULTILINE)
+# The saved file's own name, which workspace-mcp sanitizes and makes unique;
+# the path above must end in it.
+_SAVED_NAME_RE = re.compile(r"^\s*Saved filename:\s*(.+?)\s*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,22 @@ class EmailAttachmentRef:
     name: str
     attachment_id: str
     size_bytes: int
+
+
+def _saved_path(answer: object) -> str | None:
+    """The path workspace-mcp saved the attachment to, or None.
+
+    Only a ``Saved to:`` line that starts its line counts, the last one wins,
+    and its file name must match the ``Saved filename:`` line — both lines
+    are written by workspace-mcp after the sender-chosen name it echoes."""
+    if not isinstance(answer, str):
+        return None
+    paths = _SAVED_TO_RE.findall(answer)
+    names = _SAVED_NAME_RE.findall(answer)
+    if not paths or not names:
+        return None
+    path = paths[-1]
+    return path if Path(path).name == names[-1] else None
 
 
 async def _read_one(
@@ -73,16 +95,16 @@ async def _read_one(
         logger.warning("email attachment download failed (%s)", type(exc).__name__)
         return f"(Could not download {ref.name})"
 
-    match = _SAVED_TO_RE.search(answer) if isinstance(answer, str) else None
-    if match is None:
+    saved = _saved_path(answer)
+    if saved is None:
         return f"(Could not download {ref.name})"
-    resolved = resolve_readable_file(match.group(1))
+    resolved = resolve_readable_file(saved)
     if isinstance(resolved, str):
         logger.warning("email attachment not read: %s", resolved)
         return f"(Could not read {ref.name})"
 
     try:
-        result = await read_document_text(resolved)
+        result = await read_document_text(resolved, inbound=True)
     except Exception as exc:
         logger.warning("email attachment extraction failed (%s)", type(exc).__name__)
         return f"(Could not read {ref.name})"

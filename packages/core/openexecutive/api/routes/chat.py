@@ -1436,8 +1436,9 @@ async def chat_upload(
             )
 
         try:
+            # The signed-in user sent it, so it is not metered as inbound.
             extra_text, blocks = await build_attachment_output(
-                filename, data, upload.content_type or "",
+                filename, data, upload.content_type or "", inbound=False,
             )
         except Exception:
             logger.exception("chat_upload: processing failed for %s", filename)
