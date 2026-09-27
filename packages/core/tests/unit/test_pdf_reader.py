@@ -91,11 +91,13 @@ class _FakeProvider:
     """Records each request and answers with one text block per call."""
 
     def __init__(self, *, reply: str = "TRANSCRIBED", stop_reason: str = "end_turn",
-                 error: Exception | None = None) -> None:
+                 error: Exception | None = None, fits_pages: int | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self.reply = reply
         self.stop_reason = stop_reason
         self.error = error
+        # A slice of more pages than this runs into max_tokens.
+        self.fits_pages = fits_pages
 
     async def messages_create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
@@ -104,8 +106,11 @@ class _FakeProvider:
         prompt = kwargs["messages"][0]["content"][1]["text"]
         pages = prompt.rsplit("These are pages ", 1)[1].split(" of ")[0]
         text = f"{self.reply} [{pages}]" if self.reply else ""
+        stop_reason = self.stop_reason
+        if self.fits_pages is not None and _pages_in(kwargs) > self.fits_pages:
+            stop_reason = "max_tokens"
         return SimpleNamespace(
-            stop_reason=self.stop_reason,
+            stop_reason=stop_reason,
             content=[SimpleNamespace(type="text", text=text)],
         )
 
@@ -394,3 +399,58 @@ async def test_inbound_conversions_share_an_hourly_page_budget(monkeypatch):
     assert second.note == "only the first 2 of 4 pages were read"
     assert third.method == "none" and "hourly budget" in third.note
     assert asked.method == "ocr"
+
+
+# ── Review findings: page-tree ceiling, cut-off transcriptions ───────────────
+
+
+async def test_a_pdf_past_the_page_ceiling_is_refused_before_parsing(monkeypatch):
+    """The page caps bound conversion only; the text-layer pass would
+    otherwise extract every page of a crafted many-thousand-page file."""
+    from pypdf import PageObject
+
+    monkeypatch.setattr(pdf_reader, "_MAX_PDF_PAGES", 5)
+
+    def never(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("no page may be parsed past the ceiling")
+
+    monkeypatch.setattr(PageObject, "extract_text", never)
+    provider = _FakeProvider()
+    _use_provider(monkeypatch, provider)
+
+    result = await read_pdf_text(_blank_pdf(8), filename="huge.pdf")
+
+    assert result == PdfReadResult(
+        "", "none", 8, "the PDF has 8 pages — more than the 5 this reads"
+    )
+    assert provider.calls == []
+
+
+async def test_a_cut_off_slice_is_split_until_each_part_fits(monkeypatch):
+    monkeypatch.setenv("PDF_VISION_PAGES_PER_CALL", "20")
+    provider = _FakeProvider(reply="part", fits_pages=5)
+    _use_provider(monkeypatch, provider)
+
+    result = await read_pdf_text(_blank_pdf(20), filename="dense.pdf")
+
+    assert result.method == "vision"
+    assert result.note == ""
+    assert result.text == (
+        "part [1 to 5]\n\npart [6 to 10]\n\npart [11 to 15]\n\npart [16 to 20]"
+    )
+    # 20 -> 10 + 10 -> four slices of 5: seven requests in all.
+    assert sorted(_pages_in(c) for c in provider.calls) == [5, 5, 5, 5, 10, 10, 20]
+
+
+async def test_a_single_page_that_never_fits_is_kept_and_flagged(monkeypatch):
+    provider = _FakeProvider(reply="dense page", stop_reason="max_tokens")
+    _use_provider(monkeypatch, provider)
+
+    result = await read_pdf_text(_blank_pdf(2), filename="dense.pdf")
+
+    assert result.method == "vision"
+    assert result.text == (
+        "dense page [1 to 1]\n[transcription cut off here]\n\n"
+        "dense page [2 to 2]\n[transcription cut off here]"
+    )
+    assert result.note == "some pages' transcription was cut off"

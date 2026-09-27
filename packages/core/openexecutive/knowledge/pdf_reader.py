@@ -42,6 +42,12 @@ Method = Literal["text_layer", "vision", "ocr", "none"]
 _MIN_CHARS_PER_PAGE = 20
 _VISION_CONCURRENCY = 3
 _VISION_MAX_TOKENS = 16_000
+# Marks where a single page's transcription ran into the output limit.
+_CUT_OFF_MARK = "[transcription cut off here]"
+# Hard ceiling on a PDF's page count, checked before any page is parsed. The
+# page caps below bound conversion only; without this a crafted file of tens
+# of thousands of tiny pages would have every page's text extracted first.
+_MAX_PDF_PAGES = 2000
 _CACHE_SIZE = 32
 # ~144 dpi for a Letter/A4 page: enough for body text.
 _OCR_RENDER_SCALE = 2.0
@@ -113,11 +119,23 @@ def clear_cache() -> None:
 
 # ── Text layer ───────────────────────────────────────────────────────────────
 
+class PdfTooLarge(ValueError):
+    def __init__(self, pages: int) -> None:
+        super().__init__(f"{pages} pages")
+        self.pages = pages
+
+
 def _text_layer(data: bytes) -> tuple[str, int]:
-    """(joined page text, page count) from the PDF's own text layer."""
+    """(joined page text, page count) from the PDF's own text layer.
+
+    Raises ``PdfTooLarge`` past ``_MAX_PDF_PAGES``, before any page's text is
+    extracted."""
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data))
+    count = len(reader.pages)
+    if count > _MAX_PDF_PAGES:
+        raise PdfTooLarge(count)
     pages = []
     for page in reader.pages:
         text = page.extract_text()
@@ -164,7 +182,8 @@ def _vision_provider(model: str) -> Any | None:
 
 async def _vision_slice(
     provider: Any, model: str, data: bytes, start: int, end: int
-) -> str:
+) -> tuple[str, bool]:
+    """Transcribe pages [start, end): ``(text, cut off at max_tokens)``."""
     chunk = await asyncio.to_thread(slice_pdf, data, start, end)
     response = await provider.messages_create(
         model=model,
@@ -199,11 +218,31 @@ async def _vision_slice(
     ).strip()
     if not text:
         raise RuntimeError("model returned no transcription")
-    return text
+    return text, getattr(response, "stop_reason", None) == "max_tokens"
 
 
-async def _read_with_vision(data: bytes, pages: int) -> str | None:
-    """Transcribe up to ``pages`` pages with Claude, or None if unavailable."""
+async def _transcribe(
+    request: Any, start: int, end: int
+) -> tuple[str, bool]:
+    """Transcribe pages [start, end) with ``request(start, end)``, splitting a
+    slice whose answer ran into the output limit in half until each part
+    fits. A single page that still does not fit keeps what was written, with
+    a marker. Returns ``(text, whether any page was cut off)``."""
+    text, cut_off = await request(start, end)
+    if not cut_off:
+        return text, False
+    if end - start == 1:
+        return f"{text}\n{_CUT_OFF_MARK}", True
+    mid = (start + end) // 2
+    (first, cut_a), (second, cut_b) = await asyncio.gather(
+        _transcribe(request, start, mid), _transcribe(request, mid, end)
+    )
+    return f"{first}\n\n{second}", cut_a or cut_b
+
+
+async def _read_with_vision(data: bytes, pages: int) -> tuple[str, bool] | None:
+    """Transcribe up to ``pages`` pages with Claude: ``(text, whether a page
+    was cut off)``, or None if unavailable or failed."""
     from openexecutive.config import get_settings
 
     settings = get_settings()
@@ -216,16 +255,18 @@ async def _read_with_vision(data: bytes, pages: int) -> str | None:
     bounds = [(s, min(s + step, pages)) for s in range(0, pages, step)]
     gate = asyncio.Semaphore(_VISION_CONCURRENCY)
 
-    async def run(start: int, end: int) -> str:
+    async def request(start: int, end: int) -> tuple[str, bool]:
+        # The gate covers one request, not a split's recursion, so halves of
+        # a cut-off slice queue like any other request.
         async with gate:
             return await _vision_slice(provider, model, data, start, end)
 
     try:
-        parts = await asyncio.gather(*(run(s, e) for s, e in bounds))
+        parts = await asyncio.gather(*(_transcribe(request, s, e) for s, e in bounds))
     except Exception as exc:
         logger.warning("pdf_reader: vision transcription failed (%s)", type(exc).__name__)
         return None
-    return "\n\n".join(parts)
+    return "\n\n".join(t for t, _cut in parts), any(cut for _t, cut in parts)
 
 
 # ── Local OCR ────────────────────────────────────────────────────────────────
@@ -364,6 +405,11 @@ async def read_pdf_text(
     label = filename or "PDF"
     try:
         text, pages = await asyncio.to_thread(_text_layer, data)
+    except PdfTooLarge as exc:
+        return PdfReadResult(
+            "", "none", exc.pages,
+            f"the PDF has {exc.pages} pages — more than the {_MAX_PDF_PAGES} this reads",
+        )
     except Exception as exc:
         logger.warning("pdf_reader: could not open %s (%s)", label, type(exc).__name__)
         return PdfReadResult(
@@ -389,7 +435,14 @@ async def read_pdf_text(
 
     vision = await _read_with_vision(data, limit) if limit else None
     if vision:
-        result = PdfReadResult(vision, "vision", pages, _pages_note(limit, pages))
+        transcript, cut_off = vision
+        note = "; ".join(
+            n for n in (
+                _pages_note(limit, pages),
+                "some pages' transcription was cut off" if cut_off else "",
+            ) if n
+        )
+        result = PdfReadResult(transcript, "vision", pages, note)
         _cache_put(key, result)
         return result
 

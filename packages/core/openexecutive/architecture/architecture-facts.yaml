@@ -1476,6 +1476,13 @@ knowledge:
     budget (scale lowered for a huge MediaBox — a 20000pt page would be a
     multi-GB bitmap), at most 2 documents OCR at once (BoundedSemaphore),
     and each stops after 240 s with the pages it has.
+    _MAX_PDF_PAGES (2000) is checked before the text-layer pass extracts any
+    page (PdfTooLarge -> "none" with a note): the page caps bound conversion
+    only, and a crafted many-thousand-page tree would otherwise be walked.
+    A vision slice answering stop_reason=max_tokens is split in half and
+    re-requested until each part fits (depth <= log2 pages-per-call); a
+    single page still cut off keeps its text + "[transcription cut off
+    here]" and the note says so — never returned as complete.
     Results are cached in process by sha256 (32 entries); failures are not.
     loader.read_document_text / extract_text_from_file_async are the async
     entry points; ingest_file (uploads, reconcile_company_docs), the
