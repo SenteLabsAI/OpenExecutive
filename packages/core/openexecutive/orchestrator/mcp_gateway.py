@@ -209,6 +209,13 @@ _FOLDED_NOISE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # size that parse to a list or object are walked as that value; a larger one
 # on a cell-writing tool is refused, since it cannot be read.
 _JSON_STRING_MAX = 2_000_000
+# Nesting deeper than any real argument. Every walk stops here and FAILS
+# CLOSED: `_nested_fetch_key` reports it as a hit, and `_iter_arg_strings`
+# yields this sentinel, which its consumers (the formula scan, the Drive share
+# scan) refuse — a payload buried past the cap is unread, and unread means
+# refused, never forwarded.
+_WALK_DEPTH_MAX = 32
+_TOO_DEEP = "<too-deep>"
 # An upload that becomes a native Sheet is evaluated by Google, and a binary
 # upload (XLSX, ODS, XLS) hides its formulas behind zip members, XML encodings
 # and character references — nothing a scan here can read reliably. So such an
@@ -519,8 +526,8 @@ def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
     """The first key below the top level that carries something to fetch: a
     `_URL_FETCH_KEYS` key with any value, or a key Google fetches
     (`_google_fetches`) whose value has a URL scheme. None when there is none."""
-    if depth > 32:
-        return "<too-deep>"
+    if depth > _WALK_DEPTH_MAX:
+        return _TOO_DEEP
     if isinstance(value, str):
         # A JSON-encoded `requests` list is walked as the list the server decodes.
         parsed = _parsed_json(value)
@@ -598,6 +605,11 @@ def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
                     ),
                 )
     for text in _iter_arg_strings(arguments):
+        if text is _TOO_DEEP:
+            return _refuse(
+                tool, "values", "<unreadable>",
+                reason="an argument nested this deep cannot be checked — refusing. Flatten it.",
+            )
         if len(text) > _JSON_STRING_MAX and text.lstrip()[:1] in ("[", "{"):
             return _refuse(
                 tool, "values", "<unreadable>",
@@ -650,9 +662,10 @@ def _attachment_fetches_url(attachments: Any) -> bool:
         return True
     for entry in attachments:
         if isinstance(entry, dict):
-            for key, value in entry.items():
-                if isinstance(key, str) and _norm_key(key) in _URL_FETCH_KEYS and value not in (None, ""):
-                    return True
+            # Any depth, like every other Workspace argument: a url under
+            # `metadata` is still a url, and past the depth cap it is refused.
+            if _nested_fetch_key(entry) is not None:
+                return True
         elif isinstance(entry, str):
             if "://" in entry:
                 return True
@@ -1034,9 +1047,12 @@ def _iter_arg_strings(value: Any, depth: int = 0) -> Iterator[str]:
     string in both key and value position — rather than trusting a fixed set of
     field names — keeps the gate fail-closed against an email smuggled through an
     unexpected shape. A string that encodes JSON is also walked as the value it
-    encodes, which is what the server sees after json.loads.
+    encodes, which is what the server sees after json.loads. Past
+    `_WALK_DEPTH_MAX` it yields `_TOO_DEEP` once instead of going silent, so a
+    consumer refuses what it could not read.
     """
-    if depth > 32:
+    if depth > _WALK_DEPTH_MAX:
+        yield _TOO_DEEP
         return
     if isinstance(value, str):
         yield value
@@ -1131,6 +1147,16 @@ def _check_drive_share(tool: str, arguments: dict[str, Any]) -> str | None:
         )
 
     for s in _iter_arg_strings(arguments):
+
+        if s is _TOO_DEEP:
+
+            return _refuse(
+
+                tool, "share", "<unreadable>",
+
+                reason="a share argument nested this deep cannot be checked — refusing. Flatten it.",
+
+            )
         if _norm_share_token(s) in _PUBLIC_SHARE_SCOPES:
             return _block(
                 "scope", s.strip(), tool,
