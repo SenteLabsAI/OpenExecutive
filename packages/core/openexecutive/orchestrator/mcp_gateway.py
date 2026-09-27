@@ -193,9 +193,10 @@ _GMAIL_RECIPIENT_FIELDS = ("to", "cc", "bcc")
 #   - reply_all: workspace-mcp derives To/Cc from the thread itself, so the
 #     recipients never pass through the roster check below.
 #   - forward_message_id / include_forwarded_attachments: forward any inbox
-#     message (and its attachments) to `to` — an exfiltration path for mail
-#     the sender never wrote to the Executive. Replies still work via
-#     thread_id + an explicit, roster-checked `to`.
+#     message to `to` with its original attachments — files the model never
+#     sees or writes, so nothing it could otherwise put in `body`. Replies
+#     still work via thread_id + an explicit, roster-checked `to` (with
+#     quote_original, the quoted text goes only to that roster address).
 _GMAIL_ALLOWED_ARG_KEYS = frozenset({
     "user_google_email",
     "to",
