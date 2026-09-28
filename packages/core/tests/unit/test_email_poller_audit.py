@@ -171,12 +171,56 @@ def test_details_stay_structured_for_a_subject_and_preview_of_non_ascii_text() -
     assert len(json.dumps(row["details"])) <= 4000
 
 
+def test_a_stranger_is_a_public_row_with_their_own_words_only() -> None:
+    # A sender on neither the roster nor the contacts — cold inbound — is
+    # everyone's to read, as their subject already was and as the
+    # Executive's reply about them is: the audit row must read like a
+    # contact's (only the visibility differs), so it keeps `message` and,
+    # being public, leaves out the quoted chain.
+    row = _inbound_row(_raw(f"{NEW_TEXT}\n\n{QUOTED_CHAIN}", sender="stranger@else.example"))
+    assert row["private"] is False
+    assert row["full"]["message"] == NEW_TEXT
+    assert "body" not in row["full"]
+    assert row["details"]["preview"] == NEW_TEXT[:120]
+
+
+def _json_len(value: Any) -> int:
+    import json
+
+    return len(json.dumps(value, default=str))
+
+
 def test_oversized_text_is_cut_not_dropped() -> None:
     huge = "x" * 30_000
     row = _inbound_row(_raw(huge, sender=CONTACT))
-    assert len(row["full"]["message"]) == poller._AUDIT_TEXT_MAX_CHARS
-    assert len(row["full"]["body"]) == poller._AUDIT_TEXT_MAX_CHARS
+    assert _json_len(row["full"]["message"]) <= poller._AUDIT_TEXT_MAX_JSON
+    assert _json_len(row["full"]["body"]) <= poller._AUDIT_TEXT_MAX_JSON
+    assert len(row["full"]["message"]) > 19_000
     assert row["details"]["body_len"] == 30_000
+
+
+@pytest.mark.parametrize("char", ["\u4e2d", "\u00e9", "\U0001f600"])
+def test_a_long_mail_in_another_script_keeps_the_rows_structure(char: str) -> None:
+    # The logger measures its 64 KB cap on the escaped JSON, where this
+    # character is 6 or 12 characters, and over it the whole payload turns
+    # into an unstructured preview. A normal-length mail in another script
+    # must not get there, on a private row that carries message and body.
+    text = char * 11_000
+    row = _inbound_row(_raw(text, sender=CONTACT))
+    assert set(row["full"]) == {"attachments", "message", "body"}
+    assert _json_len(row["full"]) <= 64 * 1024
+    assert row["full"]["message"].startswith(char * 100)
+    assert _json_len(row["full"]["message"]) <= poller._AUDIT_TEXT_MAX_JSON
+
+
+def test_a_mail_with_many_attachments_keeps_the_leading_names() -> None:
+    names = [f"{i:03d}-" + "\u00e9" * 100 + ".pdf" for i in range(60)]
+    listing = "\n".join(f"{i + 1}. {n} (application/pdf, 1.0 KB)" for i, n in enumerate(names))
+    row = _inbound_row(_raw("See attached.", sender=CONTACT, attachments=listing))
+    kept = row["full"]["attachments"]
+    assert kept == names[: len(kept)] and 0 < len(kept) < 60
+    assert _json_len(kept) <= poller._AUDIT_ATTACHMENTS_MAX_JSON
+    assert _json_len(row["full"]) <= 64 * 1024
 
 
 def test_an_empty_body_and_a_missing_subject_still_write_the_row() -> None:

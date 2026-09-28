@@ -15,6 +15,7 @@ Executive's responsibility via its tool access.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from email.utils import parseaddr
@@ -152,12 +153,40 @@ _ATTACHMENTS_MARKER = "--- ATTACHMENTS ---"
 # What the MCP writes when a message has no text/plain part — not the
 # sender's words.
 _NO_BODY_PLACEHOLDER = "[No text/plain body found]"
-# The inbound audit row's text. The preview sits in `details`, which the
-# logger caps at 4 KB of JSON — a subject and preview of escaped non-ASCII
-# text (12 bytes a character) must still fit beside the ids. The full-payload
-# fields are cut under the 64 KB cap for the same reason.
+# The inbound audit row's text. The audit logger measures its caps on the
+# `json.dumps` output, where a non-ASCII character is 6 escaped characters
+# and an emoji 12, and a payload over the cap is replaced by an unstructured
+# preview. The 120-character preview sits in `details` (4 KB cap) beside a
+# 160-character subject and the ids; the full-payload budgets below are
+# escaped JSON characters and add up to under the logger's 64 KB cap
+# (`audit.logger._FULL_MAX_LEN`) even on a private row, which carries the
+# message and the body.
 _AUDIT_PREVIEW_CHARS = 120
-_AUDIT_TEXT_MAX_CHARS = 24_000
+_AUDIT_TEXT_MAX_JSON = 20_000
+_AUDIT_ATTACHMENTS_MAX_JSON = 8_000
+
+
+def _audit_text(text: str, max_json_chars: int) -> str:
+    """``text`` cut so that its JSON encoding is at most ``max_json_chars``
+    characters, the way the audit logger measures its caps."""
+    encoded = json.dumps(text)
+    while len(encoded) > max_json_chars:
+        keep = min(len(text) - 1, len(text) * max_json_chars // len(encoded))
+        text = text[:max(keep, 0)]
+        encoded = json.dumps(text)
+    return text
+
+
+def _audit_attachments(names: list[str], max_json_chars: int) -> list[str]:
+    """The leading ``names`` whose JSON list fits in ``max_json_chars``."""
+    kept: list[str] = []
+    used = 2
+    for name in names:
+        used += len(json.dumps(name)) + 2
+        if used > max_json_chars:
+            break
+        kept.append(name)
+    return kept
 _NO_SUBJECT_PLACEHOLDER = "(no subject)"
 # A reply or forward carries the earlier message's subject — often the
 # Executive's own ("Re: Approve the Acme renewal") — which would let its words
@@ -562,18 +591,19 @@ async def _handle_one_email(
         # — a contact's, on the principal's reply to one — and every
         # signed-in user reads this row unless it is private, so the whole
         # body is kept only on a private row, which the principal alone
-        # reads. Each field is cut well under the logger's 64 KB cap so an
-        # oversized mail loses its tail, not the row's structure.
+        # reads. Each field is cut, by its escaped JSON length, well under the
+        # logger's 64 KB cap so an oversized mail loses its tail, not the
+        # row's structure.
         body = "\n".join(body_lines).strip()
         new_lines, _forwarded = _new_text_lines(body_lines)
         message = "\n".join(new_lines).strip()
         attachments = [name for name in map(_attachment_name, attachment_lines) if name]
         full: dict[str, Any] = {
-            "attachments": attachments,
-            "message": message[:_AUDIT_TEXT_MAX_CHARS],
+            "attachments": _audit_attachments(attachments, _AUDIT_ATTACHMENTS_MAX_JSON),
+            "message": _audit_text(message, _AUDIT_TEXT_MAX_JSON),
         }
         if private:
-            full["body"] = body[:_AUDIT_TEXT_MAX_CHARS]
+            full["body"] = _audit_text(body, _AUDIT_TEXT_MAX_JSON)
         # Deterministic per-thread session id so every audit row from this inbound
         # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
         # with the integration_inbound row. Falls back to from_addr when the Gmail
