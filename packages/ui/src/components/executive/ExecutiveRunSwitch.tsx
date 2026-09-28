@@ -20,7 +20,9 @@ function heldLabel(n: number): string {
  *
  * - `sidebar`: a one-line status row in the shared sidebar footer that
  *   expands into the pause/resume panel.
- * - `card`: the always-expanded panel, for the Settings page.
+ * - `card`: the body of the Settings page's Executive section — a status
+ *   row that opens into the pause form on request, and stays open while
+ *   paused so the held count and Resume are always in view.
  */
 export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "card" }) {
   const { status, unknown, busy, error, pause, resume } = useExecutiveStatus();
@@ -32,11 +34,10 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
     // The last status read failed: say so rather than show a stale state,
     // and offer no action whose effect we can't confirm.
     return (
-      <div
-        className={variant === "card" ? "rounded-xl border border-line bg-surface-elevated p-4" : "pb-1"}
-        title="Couldn't reach the backend — retrying"
-      >
-        <div className="flex items-center gap-2.5 px-3 py-2 text-sm text-fg-muted">
+      <div className={variant === "card" ? "" : "pb-1"} title="Couldn't reach the backend — retrying">
+        <div
+          className={`flex items-center gap-2.5 text-sm text-fg-muted ${variant === "card" ? "" : "px-3 py-2"}`}
+        >
           <span className="inline-block w-2 h-2 rounded-full flex-shrink-0 bg-fg-subtle" aria-hidden="true" />
           <span className="truncate">Executive status unknown</span>
         </div>
@@ -44,7 +45,8 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
     );
   }
   const paused = status.paused;
-  const open = variant === "card" || expanded;
+  // The card opens on request while running and always while paused.
+  const open = variant === "card" ? paused || expanded : expanded;
 
   // Collapse only on success so a failure's error stays visible.
   const onPause = async () => {
@@ -129,13 +131,35 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
 
   if (variant === "card") {
     return (
-      <section className="rounded-xl border border-line bg-surface-elevated p-4">
-        <div className="flex items-center gap-2.5">
-          {dot}
-          <h2 className="text-sm font-medium text-fg">{label}</h2>
+      <div className="max-w-md">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-sm font-medium text-fg">
+            {dot}
+            <span>{label}</span>
+          </div>
+          {!paused && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-expanded={open}
+              aria-controls="executive-pause-panel"
+              className="flex items-center gap-1 text-xs text-fg-muted hover:text-fg transition-colors cursor-pointer"
+            >
+              Pause…
+              <Icon
+                name="chevron-right"
+                size="w-3.5 h-3.5"
+                className={`transition-transform ${open ? "rotate-90" : ""}`}
+              />
+            </button>
+          )}
         </div>
-        <div className="mt-3 max-w-md">{panel}</div>
-      </section>
+        {open && (
+          <div id="executive-pause-panel" className="mt-3">
+            {panel}
+          </div>
+        )}
+      </div>
     );
   }
 

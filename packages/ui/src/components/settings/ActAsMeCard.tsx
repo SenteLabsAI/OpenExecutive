@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import Icon from "@/components/Icon";
+import SettingsSection from "@/components/settings/SettingsSection";
+import Switch from "@/components/Switch";
 import {
   getDelegation,
   getVoiceProfile,
@@ -17,7 +20,12 @@ import {
 // Settings → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — it never sends. Backed by GET/PUT
 // /delegation and /delegation/voice. Hidden for anyone who can't have it yet
-// (only the owner can) and on a backend without it.
+// (only the owner can) and on a backend without it — so, unlike the other
+// sections, this one renders its own heading and tells the page (via
+// `onVisible`) whether it is on the page at all.
+
+const INTRO =
+  "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own Gmail for you to review and send — it never sends anything. Everything else it writes stays in its own name.";
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -43,7 +51,7 @@ function greetingFields(p: VoiceProfile): Record<string, string> {
   return Object.fromEntries(AUDIENCES.map((a) => [a, p.greetings[a] ?? ""]));
 }
 
-export default function ActAsMeCard() {
+export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boolean) => void }) {
   const [settings, setSettings] = useState<DelegationSettings | null>(null);
   const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
   const [busy, setBusy] = useState(false);
@@ -70,13 +78,18 @@ export default function ActAsMeCard() {
     return () => controller.abort();
   }, [load]);
 
+  // The page lists the section in its nav only while it is on the page, and
+  // scrolls a `#act-as-me` link here once it is.
+  useEffect(() => {
+    onVisible?.(state === "ready" || state === "error");
+  }, [state, onVisible]);
+
   if (state === "hidden" || state === "loading") return null;
   if (state === "error" || !settings) {
     return (
-      <section className="mt-3 rounded-xl border border-line bg-surface-elevated p-4">
-        <h2 className="text-sm font-medium text-fg">Act as me</h2>
-        <p className="mt-1 text-xs text-fg-subtle">Couldn&apos;t load this setting.</p>
-      </section>
+      <SettingsSection id="act-as-me" title="Act as me" description={INTRO}>
+        <p className="text-xs text-fg-subtle">Couldn&apos;t load this setting.</p>
+      </SettingsSection>
     );
   }
 
@@ -103,17 +116,10 @@ export default function ActAsMeCard() {
   };
 
   return (
-    <section className="mt-3 rounded-xl border border-line bg-surface-elevated p-4">
-      <h2 className="text-sm font-medium text-fg">Act as me</h2>
-      <p className="mt-1 text-xs text-fg-muted leading-relaxed">
-        Let the Executive write email as you, in your own voice. When you ask it to reply to or
-        write an email as you, it saves a draft in your own Gmail for you to review and send — it
-        never sends anything. Everything else it writes stays in its own name.
-      </p>
-
-      <div className="mt-4 space-y-5 max-w-md">
+    <SettingsSection id="act-as-me" title="Act as me" description={INTRO}>
+      <div className="max-w-md divide-y divide-line">
         {/* Your Gmail */}
-        <div>
+        <div className="py-4 first:pt-0 last:pb-0">
           <div className="text-xs font-medium text-fg">Your Gmail</div>
           <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
             {connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
@@ -143,7 +149,7 @@ export default function ActAsMeCard() {
         </div>
 
         {/* The switch */}
-        <div>
+        <div className="py-4 first:pt-0 last:pb-0">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-xs font-medium text-fg" id="act-as-me-label">
@@ -157,36 +163,27 @@ export default function ActAsMeCard() {
                     : "Connect your Gmail first."}
               </p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={on}
-              aria-labelledby="act-as-me-label"
+            <Switch
+              checked={on}
+              onChange={() => void toggle()}
               disabled={busy || (!on && !connected)}
-              onClick={() => void toggle()}
-              className={`relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                on ? "bg-indigo-500" : "bg-surface-overlay border border-line"
-              }`}
-            >
-              <span
-                aria-hidden="true"
-                className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                  on ? "translate-x-4" : "translate-x-0.5"
-                }`}
-              />
-            </button>
+              labelledBy="act-as-me-label"
+            />
           </div>
           {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
         </div>
 
         <VoiceSection connected={connected} />
       </div>
-    </section>
+    </SettingsSection>
   );
 }
 
-// "How I write": learned from your sent mail, editable, lockable.
+// "How I write": learned from your sent mail, editable, lockable. The
+// summary line and the Learn button are always in view; the fields sit
+// behind "Edit how I write", and stay open while an edit is unsaved.
 function VoiceSection({ connected }: { connected: boolean }) {
+  const [editing, setEditing] = useState(false);
   const [profile, setProfile] = useState<VoiceProfile | null>(null);
   const [greetings, setGreetings] = useState<Record<string, string>>({});
   const [habits, setHabits] = useState("");
@@ -280,9 +277,10 @@ function VoiceSection({ connected }: { connected: boolean }) {
     length !== profile.length ||
     formality !== profile.formality;
   const linkButton = "text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50";
+  const showForm = editing || dirty;
 
   return (
-    <div>
+    <div className="py-4 first:pt-0 last:pb-0">
       <div className="text-xs font-medium text-fg">How I write</div>
       <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
         {learned
@@ -290,19 +288,37 @@ function VoiceSection({ connected }: { connected: boolean }) {
           : "Not learned yet. It reads your recent sent mail once, keeps only what you wrote, and describes your style — you can edit or lock it."}
       </p>
 
-      {!profile.locked && (
-        <button
-          type="button"
-          disabled={busy || !connected}
-          onClick={() => void run(learnVoiceProfile)}
-          className="mt-2 rounded-md border border-line px-2.5 py-1 text-xs text-fg hover:bg-surface-overlay disabled:opacity-50"
-        >
-          {busy ? "Working…" : learned ? "Learn again from my sent mail" : "Learn from my sent mail"}
-        </button>
-      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {!profile.locked && (
+          <button
+            type="button"
+            disabled={busy || !connected}
+            onClick={() => void run(learnVoiceProfile)}
+            className="rounded-md border border-line px-2.5 py-1 text-xs text-fg hover:bg-surface-overlay disabled:opacity-50"
+          >
+            {busy ? "Working…" : learned ? "Learn again from my sent mail" : "Learn from my sent mail"}
+          </button>
+        )}
+        {learned && !dirty && (
+          <button
+            type="button"
+            onClick={() => setEditing((v) => !v)}
+            aria-expanded={showForm}
+            aria-controls="voice-editor"
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
+          >
+            {showForm ? "Done editing" : "Edit how I write"}
+            <Icon
+              name="chevron-right"
+              size="w-3.5 h-3.5"
+              className={`transition-transform ${showForm ? "rotate-90" : ""}`}
+            />
+          </button>
+        )}
+      </div>
 
-      {learned && (
-        <div className="mt-3 space-y-4">
+      {learned && showForm && (
+        <div id="voice-editor" className="mt-3 space-y-4">
           <div className="flex gap-3">
             <label className="text-xs text-fg-muted">
               Length

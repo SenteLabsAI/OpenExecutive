@@ -157,8 +157,8 @@ function youGroup(isOnboarded: boolean, roleKind: RoleKind | null): NavGroup {
   };
 }
 
-// Day-to-day navigation only. Power/admin tools live in the Settings
-// area (see ADVANCED_ITEMS) so this list stays focused.
+// Day-to-day navigation only. Power/admin tools live on the Settings
+// page (see ADVANCED_ITEMS) so this list stays focused.
 export function buildPrimaryNav({
   isOnboarded = true,
   reviewBadge = 0,
@@ -244,13 +244,28 @@ export const NEW_CHAT_DESCRIPTION = "Start a fresh conversation with the Executi
 export const BRIEFING_DESCRIPTION =
   "Land on a daily brief of what's happened and what needs you.";
 
-// Admin / power-user tools surfaced on the Settings hub page rather than
+// Where a Settings tool sits on that page: what you open to check on the
+// install, to change how it runs, or to learn how it works.
+export type AdvancedGroupKey = "diagnose" | "configure" | "learn";
+
+export interface AdvancedItem extends NavItem {
+  group: AdvancedGroupKey;
+}
+
+export const ADVANCED_GROUPS: { key: AdvancedGroupKey; label: string }[] = [
+  { key: "diagnose", label: "Check & diagnose" },
+  { key: "configure", label: "Configure" },
+  { key: "learn", label: "Learn" },
+];
+
+// Admin / power-user tools surfaced on the Settings page rather than
 // in the primary nav — they aren't part of the day-to-day loop.
-export const ADVANCED_ITEMS: NavItem[] = [
+export const ADVANCED_ITEMS: AdvancedItem[] = [
   {
     href: "/settings/status",
     label: "Setup status",
     icon: "check-circle",
+    group: "diagnose",
     description:
       "A light for each part of your setup — AI key, sign-in, channels, schedule — and what to do about anything that isn't working.",
   },
@@ -258,6 +273,7 @@ export const ADVANCED_ITEMS: NavItem[] = [
     href: "/council",
     label: "Agent Council",
     icon: "users",
+    group: "configure",
     description:
       "Configure the agents — models, system prompts, deep-reasoning, and the Executive voice persona.",
   },
@@ -265,6 +281,7 @@ export const ADVANCED_ITEMS: NavItem[] = [
     href: "/audit",
     label: "Audit log",
     icon: "doc-search",
+    group: "diagnose",
     description:
       "Searchable event log of every chat turn, specialist consult, tool call, and scheduled action.",
   },
@@ -272,6 +289,7 @@ export const ADVANCED_ITEMS: NavItem[] = [
     href: "/audit/usage",
     label: "Token usage",
     icon: "activity",
+    group: "diagnose",
     description:
       "Aggregate token usage and cost across all sessions — totals, by day, and by model.",
   },
@@ -279,6 +297,7 @@ export const ADVANCED_ITEMS: NavItem[] = [
     href: "/guide",
     label: "User Guide",
     icon: "info",
+    group: "learn",
     description:
       "Plain-language overviews of every feature — what each one is and what it does.",
   },
@@ -286,12 +305,14 @@ export const ADVANCED_ITEMS: NavItem[] = [
     href: "/architecture",
     label: "Architecture",
     icon: "grid",
+    group: "learn",
     description: "Interactive reference docs explaining how the system is built.",
   },
   {
     href: "/demo",
     label: "Company Simulator",
     icon: "cog",
+    group: "configure",
     description:
       "Load prebuilt company fixtures, snapshot your current data, or generate a new scenario with AI.",
   },
@@ -299,9 +320,41 @@ export const ADVANCED_ITEMS: NavItem[] = [
     href: "/clients",
     label: "Client Companies",
     icon: "building",
+    group: "configure",
     description:
       "Multi-client mode for fractional work — switch the live company between named client slots.",
   },
+];
+
+// The tools as the Settings page lists them: by group, in ADVANCED_GROUPS
+// order, each keeping its ADVANCED_ITEMS order within the group.
+export function advancedItemsByGroup(): {
+  key: AdvancedGroupKey;
+  label: string;
+  items: AdvancedItem[];
+}[] {
+  return ADVANCED_GROUPS.map((group) => ({
+    ...group,
+    items: ADVANCED_ITEMS.filter((item) => item.group === group.key),
+  }));
+}
+
+// The Settings page's sections in page order. Its in-page nav and the page
+// itself both read this list, so the two can't drift; the ids are the
+// hashes a link can land on (`/settings#workspace`). "act-as-me" is only
+// on the page for the owner — the page drops it when the card is hidden.
+export type SettingsSectionId = "executive" | "workspace" | "act-as-me" | "tools";
+
+export interface SettingsSectionDef {
+  id: SettingsSectionId;
+  label: string;
+}
+
+export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
+  { id: "executive", label: "Executive" },
+  { id: "workspace", label: "Workspace" },
+  { id: "act-as-me", label: "Act as me" },
+  { id: "tools", label: "Tools" },
 ];
 
 // Anchors the mobile bottom nav. ≤5 per Material guidance; "More" opens

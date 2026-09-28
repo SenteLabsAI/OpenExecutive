@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ADVANCED_GROUPS,
+  ADVANCED_ITEMS,
   PROFILE_NAV,
+  SETTINGS_SECTIONS,
+  advancedItemsByGroup,
   buildMobilePrimary,
   buildPrimaryNav,
   profileWording,
@@ -114,4 +118,44 @@ test("every destination explains itself", () => {
       for (const item of items) assert.ok(item.description.trim(), `${item.href} needs a description`);
     }
   }
+});
+
+test("every Settings tool is in exactly one group, and no group is empty", () => {
+  const keys = ADVANCED_GROUPS.map((g) => g.key);
+  for (const item of ADVANCED_ITEMS) {
+    assert.ok(keys.includes(item.group), `${item.href} has group ${item.group}`);
+    assert.ok(item.description.trim(), `${item.href} needs a description`);
+  }
+  assert.equal(new Set(ADVANCED_ITEMS.map((i) => i.href)).size, ADVANCED_ITEMS.length);
+  for (const group of advancedItemsByGroup()) assert.ok(group.items.length > 0, group.key);
+});
+
+test("the Settings tools are grouped by what you'd use them for", () => {
+  const grouped = advancedItemsByGroup().map((g) => ({
+    key: g.key,
+    label: g.label,
+    items: g.items.map((i) => `${i.label} → ${i.href}`),
+  }));
+  assert.deepEqual(grouped, [
+    {
+      key: "diagnose",
+      label: "Check & diagnose",
+      items: ["Setup status → /settings/status", "Audit log → /audit", "Token usage → /audit/usage"],
+    },
+    {
+      key: "configure",
+      label: "Configure",
+      items: ["Agent Council → /council", "Company Simulator → /demo", "Client Companies → /clients"],
+    },
+    { key: "learn", label: "Learn", items: ["User Guide → /guide", "Architecture → /architecture"] },
+  ]);
+  // Grouping reorders nothing and drops nothing.
+  assert.equal(grouped.flatMap((g) => g.items).length, ADVANCED_ITEMS.length);
+});
+
+test("the Settings sections have unique ids and a label each", () => {
+  const ids = SETTINGS_SECTIONS.map((s) => s.id);
+  assert.deepEqual(ids, ["executive", "workspace", "act-as-me", "tools"]);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const s of SETTINGS_SECTIONS) assert.ok(s.label.trim(), s.id);
 });

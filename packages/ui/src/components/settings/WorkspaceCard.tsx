@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import Switch from "@/components/Switch";
 import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
@@ -16,9 +17,10 @@ import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/p
 
 // Settings → Workspace: who Open Executive is for (just you, or you and your
 // team), your role when it's just you, the time zone its briefs run in, and
-// whether it books meetings without asking. Mode, role and zone go through
-// PUT /workspace and then the app-wide WorkspaceProvider is refreshed so the
-// nav and pages follow.
+// whether it books meetings without asking, as one row each. Mode, role and
+// zone go through PUT /workspace and then the app-wide WorkspaceProvider is
+// refreshed so the nav and pages follow. The page supplies the section
+// heading; this is the body.
 
 const MODE_LABEL: Record<WorkspaceMode, string> = {
   solo: "Just me",
@@ -80,15 +82,10 @@ export default function WorkspaceCard() {
   }
 
   return (
-    <section className="rounded-xl border border-line bg-surface-elevated p-4">
-      <h2 className="text-sm font-medium text-fg">Workspace</h2>
-      <p className="mt-1 text-xs text-fg-muted leading-relaxed">
-        Who Open Executive is for, and the time zone your briefs run in.
-      </p>
-
-      <div className="mt-4 space-y-5 max-w-md">
+    <div className="max-w-md">
+      <div className="divide-y divide-line">
         {/* Mode */}
-        <div>
+        <div className="py-4 first:pt-0 last:pb-0">
           <div className="text-xs font-medium text-fg mb-1.5" id="ws-mode-label">
             Using Open Executive
           </div>
@@ -149,7 +146,7 @@ export default function WorkspaceCard() {
         {mode === "solo" && <RoleSection />}
 
         {/* Time zone */}
-        <div>
+        <div className="py-4 first:pt-0 last:pb-0">
           <label htmlFor="ws-timezone" className="text-xs font-medium text-fg">
             Time zone
           </label>
@@ -192,14 +189,13 @@ export default function WorkspaceCard() {
         </div>
 
         <MeetingAutonomySwitch />
-
-        {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
 
+      {error && <p className="mt-3 text-xs text-red-400">{error}</p>}
       <p className="mt-4 text-xs text-fg-subtle">
         A persona you customised in Council stays in place in either mode.
       </p>
-    </section>
+    </div>
   );
 }
 
@@ -240,7 +236,7 @@ function RoleSection() {
   }
 
   return (
-    <div>
+    <div className="py-4 first:pt-0 last:pb-0">
       <div className="text-xs font-medium text-fg">Your role</div>
       <p className="text-xs text-fg-muted mt-0.5 mb-2 leading-relaxed">
         So the Executive&apos;s advice fits your job, whatever your role: your own business, a
@@ -314,7 +310,11 @@ function MeetingAutonomySwitch() {
 
   if (state === "absent" || state === "loading") return null;
   if (state === "error") {
-    return <p className="text-xs text-fg-subtle">Couldn&apos;t load the meeting-booking setting.</p>;
+    return (
+      <div className="py-4 first:pt-0 last:pb-0">
+        <p className="text-xs text-fg-subtle">Couldn&apos;t load the meeting-booking setting.</p>
+      </div>
+    );
   }
 
   const on = mode === "auto_execute";
@@ -332,7 +332,7 @@ function MeetingAutonomySwitch() {
   };
 
   return (
-    <div>
+    <div className="py-4 first:pt-0 last:pb-0">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs font-medium text-fg" id="ws-meetings-label">
@@ -344,24 +344,7 @@ function MeetingAutonomySwitch() {
               : "Each meeting the Executive wants to book waits for your approval in the briefing."}
           </p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={on}
-          aria-labelledby="ws-meetings-label"
-          disabled={busy}
-          onClick={() => void toggle()}
-          className={`relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 ${
-            on ? "bg-indigo-500" : "bg-surface-overlay border border-line"
-          }`}
-        >
-          <span
-            aria-hidden="true"
-            className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-              on ? "translate-x-4" : "translate-x-0.5"
-            }`}
-          />
-        </button>
+        <Switch checked={on} onChange={() => void toggle()} disabled={busy} labelledBy="ws-meetings-label" />
       </div>
       {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
     </div>

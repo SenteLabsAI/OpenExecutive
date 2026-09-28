@@ -163,7 +163,7 @@ export default function CompanyProfilePage() {
                     <>
                       {" "}
                       {copy.roleNote}{" "}
-                      <Link href="/settings" className="whitespace-nowrap text-indigo-400 hover:text-indigo-300 transition-colors">
+                      <Link href="/settings#workspace" className="whitespace-nowrap text-indigo-400 hover:text-indigo-300 transition-colors">
                         Settings → Workspace
                       </Link>
                       .
