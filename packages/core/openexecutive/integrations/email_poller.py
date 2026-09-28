@@ -152,6 +152,12 @@ _ATTACHMENTS_MARKER = "--- ATTACHMENTS ---"
 # What the MCP writes when a message has no text/plain part — not the
 # sender's words.
 _NO_BODY_PLACEHOLDER = "[No text/plain body found]"
+# The inbound audit row's text. The preview sits in `details`, which the
+# logger caps at 4 KB of JSON — a subject and preview of escaped non-ASCII
+# text (12 bytes a character) must still fit beside the ids. The full-payload
+# fields are cut under the 64 KB cap for the same reason.
+_AUDIT_PREVIEW_CHARS = 120
+_AUDIT_TEXT_MAX_CHARS = 24_000
 _NO_SUBJECT_PLACEHOLDER = "(no subject)"
 # A reply or forward carries the earlier message's subject — often the
 # Executive's own ("Re: Approve the Acme renewal") — which would let its words
@@ -545,10 +551,29 @@ async def _handle_one_email(
             )
 
         logger.info("routing message=%s to Executive", message_id)
-        subject_line = next(
-            (ln for ln in raw.splitlines() if ln.lower().startswith("subject:")), ""
-        )
+        header, body_lines, attachment_lines = _split_gmail_content(raw)
+        subject_line = next((ln for ln in header if ln.lower().startswith("subject:")), "")
         subject = subject_line[len("subject:"):].strip()[:160] if subject_line else ""
+        # The mail's text, for the audit log: the Executive's reply is kept in
+        # full on its chat_turn row, so keep what it answered next to it.
+        # `message` is what the sender wrote (quoted replies and a forwarded
+        # message cut off, as peer memory sees it), the same thing web chat
+        # keeps for a turn. The quoted chain below it is other people's mail
+        # — a contact's, on the principal's reply to one — and every
+        # signed-in user reads this row unless it is private, so the whole
+        # body is kept only on a private row, which the principal alone
+        # reads. Each field is cut well under the logger's 64 KB cap so an
+        # oversized mail loses its tail, not the row's structure.
+        body = "\n".join(body_lines).strip()
+        new_lines, _forwarded = _new_text_lines(body_lines)
+        message = "\n".join(new_lines).strip()
+        attachments = [name for name in map(_attachment_name, attachment_lines) if name]
+        full: dict[str, Any] = {
+            "attachments": attachments,
+            "message": message[:_AUDIT_TEXT_MAX_CHARS],
+        }
+        if private:
+            full["body"] = body[:_AUDIT_TEXT_MAX_CHARS]
         # Deterministic per-thread session id so every audit row from this inbound
         # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
         # with the integration_inbound row. Falls back to from_addr when the Gmail
@@ -565,7 +590,10 @@ async def _handle_one_email(
                 "thread_id": thread_id,
                 "from": from_addr,
                 "subject": subject,
+                "preview": message[:_AUDIT_PREVIEW_CHARS],
+                "body_len": len(body),
             },
+            full=full,
             private=private,
         )
         try:
