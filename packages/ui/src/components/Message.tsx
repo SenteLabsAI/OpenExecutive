@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +29,9 @@ interface MessageProps {
   // given (the reply has a stored id) and the reply has finished streaming.
   feedback?: "up" | "down" | null;
   onFeedback?: (value: "up" | "down" | null) => void;
+  // Shown under the text while the reply streams, e.g. the "still working"
+  // line when the Executive goes quiet mid-reply to run a tool.
+  status?: ReactNode;
 }
 
 function FeedbackButtons({
@@ -112,6 +116,7 @@ export default function Message({
   sources,
   feedback,
   onFeedback,
+  status,
 }: MessageProps) {
   if (role === "user") {
     return (
@@ -151,6 +156,8 @@ export default function Message({
             <span className="inline-block w-0.5 h-4 bg-accent cursor-blink ml-0.5 align-text-bottom rounded-full" />
           )}
         </div>
+
+        {status && <div className="mt-3">{status}</div>}
 
         {actions && actions.length > 0 && (
           <div

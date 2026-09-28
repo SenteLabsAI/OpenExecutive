@@ -4,10 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Message from "@/components/Message";
+import TurnStatusRow, { useTurnClock } from "@/components/TurnStatusRow";
 import { useAskOE } from "@/components/askoe/AskOEContext";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken, FormPatch } from "@/lib/api";
-import { setMessageFeedback, streamChat } from "@/lib/api";
+import { FALLBACK_ACTIVITY_LABEL, setMessageFeedback, streamChat } from "@/lib/api";
+import { turnStatus } from "@/lib/turnStatus";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
 
 // One proposal card per form_patch event: what was applied/skipped, the
@@ -95,6 +97,7 @@ export default function AskOEPanel() {
   const [streaming, setStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [activityLabel, setActivityLabel] = useState<string | null>(null);
+  const turnClock = useTurnClock(streaming);
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -148,6 +151,7 @@ export default function AskOEPanel() {
       setInput("");
       setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
       setStreaming(true);
+      turnClock.start();
       setStreamingContent("");
       setActivityLabel(null);
       const { clientTurnId, signal } = beginTurn();
@@ -167,6 +171,7 @@ export default function AskOEPanel() {
           clientTurnId,
           signal,
         })) {
+          turnClock.markEvent();
           if (item.type === "chunk" && item.content) {
             content += item.content;
             setActivityLabel(null);
@@ -287,6 +292,19 @@ export default function AskOEPanel() {
 
   if (!ctx.open) return null;
 
+  // The panel ignores `thinking`: an `activity` label that arrived after the
+  // last chunk (a chunk clears it) is what marks a tool round in progress.
+  const status = turnStatus({
+    isLoading: streaming,
+    hasText: Boolean(streamingContent),
+    isConsulting: activityLabel !== null,
+    activityLabel,
+    inCommittee: false,
+    msSinceTurnStart: turnClock.msSinceTurnStart,
+    msSinceLastEvent: turnClock.msSinceLastEvent,
+    fallbackLabel: FALLBACK_ACTIVITY_LABEL,
+  });
+
   const emptyPrompts = [
     "What does this page do?",
     ...(ctx.formMeta ? ["Fill this form in for me: "] : []),
@@ -381,8 +399,13 @@ export default function AskOEPanel() {
           {streaming && (
             <Message
               role="assistant"
-              content={streamingContent || activityLabel || "…"}
+              content={streamingContent || status.label || activityLabel || "…"}
               isStreaming
+              status={
+                streamingContent && status.show ? (
+                  <TurnStatusRow status={status} committeePhase={null} />
+                ) : undefined
+              }
             />
           )}
 

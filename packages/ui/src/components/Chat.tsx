@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Message from "./Message";
 import BrandMark from "./BrandMark";
-import CommitteePhaseIndicator from "./CommitteePhaseIndicator";
+import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
 import Icon from "./Icon";
 import InfoTip from "./InfoTip";
 import {
@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
+import { turnStatus } from "@/lib/turnStatus";
 
 interface ChatProps {
   onDebugEvent?: (event: DebugEvent) => void;
@@ -89,6 +90,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   const [activityLabel, setActivityLabel] = useState<string | null>(null);
   const [committeeEnabled, setCommitteeEnabled] = useState(false);
   const [committeePhase, setCommitteePhase] = useState<CommitteePhase | null>(null);
+  const turnClock = useTurnClock(isLoading);
   const [suggested, setSuggested] = useState<string[]>([]);
   const [subtitle, setSubtitle] = useState<string>(FALLBACK_SUBTITLE);
   const [isLoadingPrompts, setIsLoadingPrompts] = useState(true);
@@ -239,6 +241,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     clearFollowup();
     setMessages((prev) => [...prev, { role: "user", content: userBubbleContent }]);
     setIsLoading(true);
+    turnClock.start();
     setStreamingContent("");
     setStreamingActions([]);
     setIsConsulting(false);
@@ -274,6 +277,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         signal,
         memoryText: turnMemoryText,
       })) {
+        turnClock.markEvent();
         if (item.type === "debug_event") {
           onDebugEvent?.(item);
           continue;
@@ -413,6 +417,19 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setMessageFeedback(sessionId, target.id, value).catch(() => apply(previous));
   }
 
+  // The "still working" line: before the reply starts, and again under the
+  // partial reply whenever the Executive goes quiet to run a tool.
+  const status = turnStatus({
+    isLoading,
+    hasText: Boolean(streamingContent),
+    isConsulting,
+    activityLabel,
+    inCommittee: committeePhase !== null,
+    msSinceTurnStart: turnClock.msSinceTurnStart,
+    msSinceLastEvent: turnClock.msSinceLastEvent,
+    fallbackLabel: FALLBACK_ACTIVITY_LABEL,
+  });
+
   // Fill the composer with the suggestion without sending it, so the user
   // can edit first. The suggestion is kept: clearing the box shows it again.
   function acceptFollowup() {
@@ -548,34 +565,22 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   content={streamingContent}
                   isStreaming
                   actions={streamingActions.length > 0 ? streamingActions : undefined}
+                  status={
+                    status.show ? (
+                      <TurnStatusRow status={status} committeePhase={committeePhase} />
+                    ) : undefined
+                  }
                 />
               )}
 
-              {isLoading && !streamingContent && (
+              {status.show && !streamingContent && (
                 <div className="flex gap-4 mb-8">
                   <div className="flex-shrink-0 mt-1">
                     <BrandMark size="md" />
                   </div>
                   <div className="flex-1 pt-1.5">
                     <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">Executive</div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <div className="flex gap-1.5" aria-label="Thinking">
-                        {[0, 1, 2].map((i) => (
-                          <div
-                            key={i}
-                            className="w-1.5 h-1.5 bg-fg-muted rounded-full animate-bounce motion-reduce:animate-none"
-                            style={{ animationDelay: `${i * 0.15}s` }}
-                          />
-                        ))}
-                      </div>
-                      {committeePhase ? (
-                        <CommitteePhaseIndicator phase={committeePhase} />
-                      ) : isConsulting ? (
-                        <span className="text-xs text-fg-muted italic">
-                          {activityLabel ?? FALLBACK_ACTIVITY_LABEL}
-                        </span>
-                      ) : null}
-                    </div>
+                    <TurnStatusRow status={status} committeePhase={committeePhase} />
                   </div>
                 </div>
               )}
