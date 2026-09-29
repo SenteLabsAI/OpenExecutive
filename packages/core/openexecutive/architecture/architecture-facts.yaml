@@ -1681,11 +1681,40 @@ memory:
         `session.company_profile` so the NEXT turn's cached company block
         carries it (one cache miss per change), and records a
         `kind='profile'` row for the Pulse page.
-      - Gate: the principal on a verified surface only
+      - Gate: the principal on a verified surface
         (`is_principal_on_verified_surface`), never an unattended session;
         all three in `UNATTENDED_WITHHELD_TOOLS` and in
         `PRIVATE_TURN_WITHHELD_TOOLS` (what they write or retire is read on
         everyone's turns).
+      - TEAMMATES (remember_fact only): a rostered `team` member, not
+        archived, not the principal, on a verified surface (web signed in,
+        own Slack / Discord — `people_tools._is_verified_speaker_surface`),
+        not unattended, not a private or email turn
+        (`fact_tools._teammate_speaker`; fails closed). Same own-words gates
+        on the TEAMMATE's words. The row is attributed:
+        `recorded_by_role='teammate'`, `recorded_by_name` (People-list name
+        at write time), rendered "(per <name>)"; the header says such a line
+        is the teammate's word and the principal's unmarked line wins a
+        conflict. PRINCIPAL OUTRANKS: a teammate write whose subject /
+        replaces_fact_id hits an active principal fact raises
+        `PrincipalFactConflict` → stored `proposed` (never renders) with
+        `replaces_fact_id` naming it; teammates supersede each other freely;
+        the principal supersedes anyone. "NEEDS MY APPROVAL":
+        `fact_approval_rules(person_id, needs_approval)`, default off,
+        principal-only `GET/PUT /memories/facts/approval[/{person_id}]` →
+        every write from that teammate is `proposed`. The tool answers
+        `awaiting_approval` (no chip). `approve_fact` → active, supersedes
+        what it names (the principal's own included — approval is their
+        word); `decline_fact` → `declined`. forget_fact and
+        update_company_profile stay principal-only; a teammate retires only
+        their own facts, from the Pulse page. Columns added by `_migrate` on
+        first write (old rows read as the principal's; the read-only render
+        tolerates an unmigrated DB).
+      - BRIEF FYI: `facts.render_teammate_changes(since)` → the morning
+        brief's TEAMMATE CORRECTIONS SINCE LAST BRIEF block (active or
+        proposed teammate facts created in the window), rendered before the
+        quiet check and carried in `build_brief_fingerprint(teammate_changes=)`
+        so a correction alone un-suppresses the brief.
       - `source_quote` (at least 2 words / 8 chars) must appear, normalized
         like the episodic quote gate, in the principal's own words this turn:
         `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
@@ -1815,10 +1844,14 @@ memory:
       - Audit: private `fact_confirmation` rows (held / applied / cancelled
         / refused_unauthenticated / auto_reply_ignored / no_live_token); the applied change writes the
         tools' usual private rows with source_channel "email".
-    SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
-    `POST /memories/facts/{id}/retire`, principal only). Other viewers get
-    the active rows only, with the quote, retire reason, session_id, turn_id
-    and recorded_by_person_id blanked. A subject that
+    SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`
+    with `retirable_ids` / `can_review`; `POST /memories/facts/{id}/retire`
+    — principal any, a teammate their own; `/approve`, `/decline` —
+    principal only). Other viewers get the active rows plus their own
+    proposals, with the retire reason, session_id, turn_id and
+    recorded_by_person_id blanked, and the quote blanked except on their own
+    facts. Proposals show first with Approve / Decline; the principal sets
+    "needs my approval" per teammate at the bottom of the tab. A subject that
     folds to an empty key ("???") is refused, so such subjects never
     supersede one another. `/memories?tab=corrections` opens it; the chat
     chips for the three tools link there / to /company-profile.

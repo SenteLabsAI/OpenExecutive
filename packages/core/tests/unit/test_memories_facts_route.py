@@ -118,6 +118,108 @@ def test_a_failed_audit_row_is_logged_not_swallowed(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(episodic_route.logger, "warning", lambda *a, **k: warned.append(a))
     res = _client(monkeypatch, principal=True).post(f"/memories/facts/{new}/retire")
     assert res.status_code == 200 and res.json()["status"] == "retired"
-    assert warned and "fact_retired audit row failed" in warned[0][0]
+    assert warned and warned[0][0] % warned[0][1:] == "fact_retired audit row failed"
     # The fact's text never reaches the log line.
     assert "Maple House" not in str(warned)
+
+
+# --------------------------------------------------------------------------- #
+# Teammates' facts: attribution, their own retires, proposals, the switch
+# --------------------------------------------------------------------------- #
+
+SAM, KIM = 7, 8
+
+
+def _as_teammate(monkeypatch: pytest.MonkeyPatch, person_id: int) -> TestClient:
+    monkeypatch.setattr(episodic_route, "_caller_id", lambda request: person_id)
+    return _client(monkeypatch, principal=False)
+
+
+def _teammate_fact(person_id: int, name: str, *, subject: str = "Cedar Court",
+                   proposed: bool = False) -> int:
+    row, _ = facts.record_fact(
+        subject=subject, statement=f"{subject} per {name}.", source_quote=f"{name} said it",
+        recorded_by_person_id=person_id, recorded_by_role="teammate", recorded_by_name=name,
+        session_id=f"s-{name}", proposed=proposed,
+    )
+    return row.id
+
+
+def test_a_teammate_sees_attribution_their_own_proposals_and_what_they_may_retire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, principals, _ = _seed()
+    sams = _teammate_fact(SAM, "Sam Lee")
+    kims = _teammate_fact(KIM, "Kim Park", subject="Maple House")
+    sams_proposal = _teammate_fact(SAM, "Sam Lee", subject="Oak Row", proposed=True)
+    kims_proposal = _teammate_fact(KIM, "Kim Park", subject="Elm Yard", proposed=True)
+    body = _as_teammate(monkeypatch, SAM).get("/memories/facts").json()
+    by_id = {f["id"]: f for f in body["facts"]}
+    assert sams_proposal in by_id and kims_proposal not in by_id
+    assert by_id[kims]["recorded_by_name"] == "Kim Park" and by_id[kims]["recorded_by_role"] == "teammate"
+    # Their own quote is theirs to see; nobody's ids or anyone else's quote.
+    assert by_id[sams]["source_quote"] == "Sam Lee said it" and by_id[kims]["source_quote"] == ""
+    assert by_id[principals]["source_quote"] == ""
+    assert all(f["session_id"] is None and f["recorded_by_person_id"] is None for f in body["facts"])
+    assert body["retirable_ids"] == [sams] and body["can_review"] is False
+
+
+def test_a_teammate_retires_only_their_own(monkeypatch: pytest.MonkeyPatch, db: list[dict[str, Any]]) -> None:
+    _, principals, _ = _seed()
+    sams = _teammate_fact(SAM, "Sam Lee")
+    kims = _teammate_fact(KIM, "Kim Park", subject="Maple House")
+    client = _as_teammate(monkeypatch, SAM)
+    assert client.post(f"/memories/facts/{principals}/retire").status_code == 403
+    assert client.post(f"/memories/facts/{kims}/retire").status_code == 403
+    assert client.post(f"/memories/facts/{sams}/retire").json()["status"] == "retired"
+    [row] = [r for r in db if r["event_type"] == "fact_retired"]
+    assert row["private"] is True and row["details"]["by"] == "teammate"
+
+
+def test_the_principal_approves_and_declines_proposals(
+    monkeypatch: pytest.MonkeyPatch, db: list[dict[str, Any]],
+) -> None:
+    mine, _ = facts.record_fact(subject="Cedar Court", statement="Cedar Court has 36 units.", source_quote="q")
+    first = _teammate_fact(SAM, "Sam Lee", proposed=True)
+    second = _teammate_fact(SAM, "Sam Lee", subject="Oak Row", proposed=True)
+    assert _as_teammate(monkeypatch, SAM).post(f"/memories/facts/{first}/approve").status_code == 403
+    client = _client(monkeypatch, principal=True)
+    assert client.get("/memories/facts").json()["can_review"] is True
+    approved = client.post(f"/memories/facts/{first}/approve")
+    assert approved.status_code == 200 and approved.json()["status"] == "active"
+    assert facts.get_fact(mine.id).status == "superseded"  # type: ignore[union-attr]
+    assert client.post(f"/memories/facts/{first}/approve").status_code == 409
+    declined = client.post(f"/memories/facts/{second}/decline", json={"reason": "not signed yet"})
+    assert declined.json()["status"] == "declined"
+    reviews = [r for r in db if r["event_type"] == "fact_reviewed"]
+    assert [r["details"]["decision"] for r in reviews] == ["approved", "declined"]
+    assert all(r["private"] is True for r in reviews)
+
+
+def test_the_principal_sets_who_needs_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: list[dict[str, Any]],
+) -> None:
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", tmp_path / "facts.db")
+    people_store.initialize_db()
+    people_registry.invalidate()
+    people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="o@n.test")
+    sam = people_store.upsert_person(full_name="Sam Lee", email="sam@n.test")
+    carl = people_store.upsert_person(full_name="Carl Contact", email="c@else.test", kind="contact")
+    people_registry.invalidate()
+    assert _as_teammate(monkeypatch, sam).get("/memories/facts/approval").status_code == 403
+    assert _as_teammate(monkeypatch, sam).put(
+        f"/memories/facts/approval/{sam}", json={"needs_approval": False},
+    ).status_code == 403
+    client = _client(monkeypatch, principal=True)
+    assert client.get("/memories/facts/approval").json() == [
+        {"person_id": sam, "full_name": "Sam Lee", "needs_approval": False},
+    ]
+    res = client.put(f"/memories/facts/approval/{sam}", json={"needs_approval": True})
+    assert res.json()["needs_approval"] is True and facts.needs_approval(sam) is True
+    assert client.put(f"/memories/facts/approval/{carl}", json={"needs_approval": True}).status_code == 404
+    [row] = [r for r in db if r["event_type"] == "fact_approval_changed"]
+    assert row["details"] == {"person_id": sam, "needs_approval": True} and row["private"] is True
+    people_registry.invalidate()

@@ -8,10 +8,18 @@ morning brief, the alert review, the specialists and the review workflows.
 company profile (``company/profile.yaml``) from chat, the same file the
 Company page edits.
 
-All three are the principal's alone, on a surface that verified it is them —
-the ``record_decision_outcome`` rule: a standing fact is read by every later
-prompt as the principal's own account, so one from a teammate, a forged email
-or a run nobody is watching would be text carrying the principal's authority.
+All three are the principal's, on a surface that verified it is them — the
+``record_decision_outcome`` rule: a standing fact is read by every later
+prompt, so one from a forged email or a run nobody is watching would be text
+carrying the principal's authority. ``remember_fact`` is also open to a
+teammate on the People list talking from a surface that verified who they are
+(the web app signed in, their own Slack or Discord). Their fact is attributed
+— rendered "(per <name>)", so no prompt reads it as the principal's — and the
+principal's outrank theirs: a teammate's fact that would replace one the
+principal set is held as a proposal, as is every fact from a teammate the
+principal marked "needs my approval" (``memory.facts``). A proposal never
+renders until the principal approves it on the Pulse page. Retiring a fact
+and editing the company profile stay the principal's alone.
 The principal's own email (their primary address, DMARC passing, not mail
 they forwarded) is checked like chat, then held: the change applies only when
 a one-time token emailed to that address comes back in their reply
@@ -20,7 +28,7 @@ a one-time token emailed to that address comes back in their reply
 principal (``schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS``): what they write,
 or retire, is read on everyone's turns.
 
-A write also needs ``source_quote``: the principal's exact words from this
+A write also needs ``source_quote``: the speaker's exact words from this
 message (at least two words and eight characters), checked against what they
 typed this turn — never the backstory an adapter hydrates a reply with, and
 nothing at all when the message carries an attachment. It is the provenance
@@ -55,22 +63,26 @@ _RATIONALE_MAX = 280
 REMEMBER_FACT_TOOL: dict[str, Any] = {
     "name": "remember_fact",
     "description": (
-        "Keep a fact or a correction the principal states about the business so it "
-        "holds everywhere from now on — every later conversation, the briefs, "
-        "scheduled runs and the alert review all see it. Call it when the "
-        "principal corrects a figure, name, date or status you or a document got "
-        "wrong ('Maple House is 48 units, not 52'), or states one they clearly "
-        "want kept ('remember that Cedar Court is fully let'). One fact per "
-        "call. A correction of a fact already listed under STANDING FACTS passes "
-        "its id as replaces_fact_id; the same subject also replaces the old one. "
-        "Only for facts about the business — never someone's pay, health, "
-        "performance or other personal matters, which every teammate's "
-        "conversation would then see. Only the principal can record one: from a "
-        "conversation that confirms it is them, or by email from their own address"
-        " (held until they confirm it by reply). source_quote must be their exact "
-        "words from this message, and every figure, name and date you store (in "
-        "the subject, statement or previous value) must be one they wrote. Never record your own inference, a figure from a document, "
-        "or something a third party said. For a company-profile field "
+        "Keep a fact or a correction about the business so it holds everywhere "
+        "from now on — every later conversation, the briefs, scheduled runs and "
+        "the alert review all see it. Call it when the person you are talking to "
+        "corrects a figure, name, date or status you or a document got wrong "
+        "('Maple House is 48 units, not 52'), or states one they clearly want "
+        "kept ('remember that Cedar Court is fully let'). One fact per call. A "
+        "correction of a fact already listed under STANDING FACTS passes its id "
+        "as replaces_fact_id; the same subject also replaces the old one. Only "
+        "for facts about the business — never someone's pay, health, performance "
+        "or other personal matters, which every teammate's conversation would "
+        "then see. The principal can record one from a conversation that "
+        "confirms it is them, or by email from their own address (held until "
+        "they confirm it by reply). A teammate on the People list can record "
+        "one from the web app or their own Slack or Discord: it is kept as "
+        "theirs, shown as (per their name), and one that would replace the "
+        "principal's fact waits for the principal's approval. source_quote must "
+        "be the speaker's exact words from this message, and every figure, name "
+        "and date you store (in the subject, statement or previous value) must "
+        "be one they wrote. Never record your own inference, a figure from a "
+        "document, or something a third party said. For a company-profile field "
         "(industry, headcount, ARR, burn, runway, priorities, ...) use "
         "update_company_profile instead."
     ),
@@ -102,7 +114,7 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
             },
             "source_quote": {
                 "type": "string",
-                "description": "The principal's exact words from this message that state the fact.",
+                "description": "The speaker's exact words from this message that state the fact.",
             },
         },
         "required": ["subject", "statement", "source_quote"],
@@ -285,27 +297,69 @@ def _principal_email_turn(session: Any) -> bool:
     return principal is not None and (principal.email or "").strip().lower() == sender
 
 
-def _gate(tool: str) -> tuple[str | None, bool]:
-    """``(refusal, held)``: a refusal result for anyone but the principal on a
-    verified surface or on their own authenticated email; ``held`` is True on
-    that email, where the change waits for their confirming reply."""
+def _teammate_speaker(session: Any) -> Any:
+    """The rostered teammate talking, when this turn may record an attributed
+    fact for them: a team member (not a contact, not archived, not the
+    principal) on a surface that verified who they are — the web app signed
+    in, their own Slack or Discord — in a turn someone is watching. None
+    otherwise, or when the lookup fails (fails closed)."""
+    from openexecutive.orchestrator.people_tools import _is_verified_speaker_surface
+
+    if (
+        session is None
+        or getattr(session, "unattended", False)
+        or getattr(session, "private_to_principal", False)
+        or getattr(session, "email_from", "")
+        or not _is_verified_speaker_surface(session)
+    ):
+        return None
+    person_id = getattr(session, "caller_person_id", None)
+    if person_id is None:
+        return None
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(int(person_id))
+    except Exception:
+        logger.warning("fact_tools: teammate lookup failed — refusing", exc_info=True)
+        return None
+    if person is None or person.is_principal or person.archived or person.kind != "team":
+        return None
+    return person
+
+
+def _gate(tool: str, *, teammates: bool = False) -> tuple[str | None, bool, Any]:
+    """``(refusal, held, teammate)``: a refusal result for anyone but the
+    principal on a verified surface or on their own authenticated email —
+    or, with ``teammates``, a teammate on a verified surface (``teammate`` is
+    their People row); ``held`` is True on the principal's email, where the
+    change waits for their confirming reply."""
     from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
     session = _session()
     if not getattr(session, "unattended", False):
         if is_principal_on_verified_surface(session):
-            return None, False
+            return None, False, None
         if _principal_email_turn(session):
-            return None, True
+            return None, True, None
+        if teammates:
+            teammate = _teammate_speaker(session)
+            if teammate is not None:
+                return None, False, teammate
+    who = (
+        "the principal, or a teammate on the People list talking from the web "
+        "app or their own Slack or Discord,"
+        if teammates else "only the principal"
+    )
     return _bad(
         tool,
-        "refused: only the principal can change what the Executive keeps as fact, "
-        "and this request did not come from a conversation that confirms it is "
-        "them. Tell whoever asked that the principal needs to tell you — in the "
-        "web app, in their own Slack or Discord, or by email from their own "
-        "address (which they then confirm by reply).",
+        f"refused: {who} can change what the Executive keeps as fact, and this "
+        "request did not come from a conversation that confirms who is asking. "
+        "Tell whoever asked that the principal needs to tell you — in the web "
+        "app, in their own Slack or Discord, or by email from their own address "
+        "(which they then confirm by reply).",
         refused=True, **_caller_context(session),
-    ), False
+    ), False, None
 
 
 @dataclass
@@ -342,23 +396,23 @@ def _quote_error(quote: str, session: Any) -> str | None:
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
     if not quote:
-        return "source_quote is required: the principal's exact words from this message."
+        return "source_quote is required: the speaker's exact words from this message."
     nq = _normalize_for_quote_match(quote)
     if len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS:
         return (
-            "source_quote is too short to show what the principal said: quote the "
+            "source_quote is too short to show what the speaker said: quote the "
             "whole phrase that states it."
         )
     spoken = _own_words(session)
     if spoken is None:
         return (
             "refused: this message carries an attachment, and its text can't be told "
-            "apart from the principal's own words. Ask them to state the fact in a "
+            "apart from the speaker's own words. Ask them to state the fact in a "
             "message of its own."
         )
     if nq not in _normalize_for_quote_match(spoken):
         return (
-            "source_quote is not in what the principal wrote this turn. Quote their "
+            "source_quote is not in what the speaker wrote this turn. Quote their "
             "exact words, or — if they did not state it (a document, an earlier "
             "message or someone else did) — do not record it."
         )
@@ -474,7 +528,7 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
     for n in _numbers_in(text):
         if not _number_in_own_words(n, session):
             return (
-                f"the {label}'s figure {n:g} is not a number the principal wrote "
+                f"the {label}'s figure {n:g} is not a number the speaker wrote "
                 "this turn. Use the figures they gave, or — if they did not give one "
                 "(a document or someone else did) — ask them."
                 + (_PREVIOUS_HINT if label == "previous_value" else "")
@@ -483,7 +537,7 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
     if unsaid:
         return (
             f"the {label} names {', '.join(repr(w) for w in unsaid[:5])}, which the "
-            "principal did not write this turn. Use their terms, or — if it came from "
+            "speaker did not write this turn. Use their terms, or — if it came from "
             "a document or someone else — ask them to confirm it."
             + (_PREVIOUS_HINT if label == "previous_value" else "")
         )
@@ -541,7 +595,7 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
     from openexecutive.memory import facts
 
     tool = "remember_fact"
-    refused, held = _gate(tool)
+    refused, held, teammate = _gate(tool, teammates=True)
     if refused is not None:
         return refused
     session = _session()
@@ -580,11 +634,18 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
         if existing is None or existing.status != "active" or existing.kind == "profile":
             return _bad(tool, f"no standing fact {replaces}. Check the '[fact N]' ids and call again.")
 
-    args = {
+    args: dict[str, Any] = {
         "subject": subject, "statement": statement, "source_quote": quote,
         "previous_statement": previous, "replaces_fact_id": replaces,
     }
     provenance = _provenance(session)
+    if teammate is not None:
+        provenance.update(
+            recorded_by_person_id=teammate.id, recorded_by_role="teammate",
+            recorded_by_name=teammate.full_name,
+        )
+        # The principal asked to see this teammate's facts before they count.
+        args["proposed"] = facts.needs_approval(int(teammate.id))
     if held:
         was = previous or (existing.statement if existing is not None else "")
         summary = f"Keep as a standing fact: {subject}: {statement}" + (
@@ -596,17 +657,25 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
 
 def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
     """Store a checked fact: at once from chat, or on the principal's
-    confirming reply to an emailed one."""
+    confirming reply to an emailed one. A teammate's fact is stored as a
+    proposal when the principal asked to approve theirs, or when it would
+    replace a fact the principal set (theirs outranks)."""
     from openexecutive.memory import facts
 
     tool = "remember_fact"
     subject, statement = args["subject"], args["statement"]
+    outranked: Any = None
+    record: dict[str, Any] = {
+        "subject": subject, "statement": statement, "source_quote": args["source_quote"],
+        "previous_statement": args["previous_statement"],
+        "replaces_fact_id": args["replaces_fact_id"], **provenance,
+    }
     try:
-        fact, superseded = facts.record_fact(
-            subject=subject, statement=statement, source_quote=args["source_quote"],
-            previous_statement=args["previous_statement"],
-            replaces_fact_id=args["replaces_fact_id"], **provenance,
-        )
+        try:
+            fact, superseded = facts.record_fact(**record, proposed=bool(args.get("proposed")))
+        except facts.PrincipalFactConflict as conflict:
+            outranked = conflict.fact
+            fact, superseded = facts.record_fact(**record, proposed=True)
     except Exception as exc:
         logger.exception("remember_fact: write failed")
         _audit(tool, False, f"remember_fact FAILED: {type(exc).__name__}", {"error": repr(exc)[:300]})
@@ -616,13 +685,34 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
         })
 
     _audit(
-        tool, True, f"remember_fact {fact.id}: {subject[:60]} — {statement[:80]}",
+        tool, True,
+        f"remember_fact {fact.id} ({fact.status}): {subject[:60]} — {statement[:80]}",
         {
-            "fact_id": fact.id, "kind": fact.kind, "subject": subject,
+            "fact_id": fact.id, "kind": fact.kind, "status": fact.status,
+            "recorded_by_role": fact.recorded_by_role, "subject": subject,
             "statement": statement, "previous": fact.previous_statement[:300],
             "superseded_ids": [f.id for f in superseded],
+            **({"outranked_by": outranked.id} if outranked is not None else {}),
         },
     )
+    if fact.status == "proposed":
+        why = (
+            f"it would replace fact {outranked.id}, which the principal set themselves, "
+            "and the principal's facts outrank a teammate's"
+            if outranked is not None
+            else "the principal asked to approve this teammate's facts before they are used"
+        )
+        return json.dumps({
+            "status": "awaiting_approval",
+            "fact_id": fact.id,
+            "subject": fact.subject,
+            "statement": fact.statement,
+            "message": (
+                f"Kept as a proposal, not in use yet: {why}. The principal approves "
+                "or declines it on the Pulse page. Tell the person you are talking "
+                "to that, and do not describe it as in effect."
+            ),
+        })
     return json.dumps({
         "status": "ok",
         "fact_id": fact.id,
@@ -630,6 +720,7 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
         "subject": fact.subject,
         "statement": fact.statement,
         "replaced": [{"fact_id": f.id, "statement": f.statement} for f in superseded],
+        **({"attributed_to": fact.recorded_by_name} if fact.recorded_by_role == "teammate" else {}),
     })
 
 
@@ -637,7 +728,7 @@ def _forget_fact(tool_input: dict[str, Any]) -> str | _Hold:
     from openexecutive.memory import facts
 
     tool = "forget_fact"
-    refused, held = _gate(tool)
+    refused, held, _teammate = _gate(tool)
     if refused is not None:
         return refused
     session = _session()
@@ -713,7 +804,7 @@ def _display(value: Any) -> str:
 
 def _update_company_profile(tool_input: dict[str, Any]) -> str | _Hold:
     tool = "update_company_profile"
-    refused, held = _gate(tool)
+    refused, held, _teammate = _gate(tool)
     if refused is not None:
         return refused
     session = _session()

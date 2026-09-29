@@ -22,6 +22,7 @@ audience-selection rules.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -253,10 +254,16 @@ class MorningBriefWorkflow(Workflow):
 
         handled = brief_state.handled_since(since)
         pending_suggestions = brief_state.pending_watch_suggestions()
+        # Corrections teammates made since the last brief: the principal's
+        # FYI (memory.facts), in force now or waiting for their approval.
+        from openexecutive.memory.facts import render_teammate_changes
+
+        teammate_changes = await asyncio.to_thread(render_teammate_changes, since)
         fingerprint = brief_state.build_brief_fingerprint(
             today_data=today_data, activity=activity, handled=handled, since=since,
             pending_watch_suggestions=pending_suggestions, mode=mode,
             live_keys=live.keys, reflection_flags=reflection_flags,
+            teammate_changes=teammate_changes,
         )
         previous = brief_state.last_delivered(BRIEF_KIND)
         suppressed = (
@@ -335,7 +342,7 @@ class MorningBriefWorkflow(Workflow):
                 since=since, handled=handled,
                 pending_watch_suggestions=pending_suggestions, mode=mode,
                 live=live, live_window="since the last brief",
-                reflection_flags=reflection_flags,
+                reflection_flags=reflection_flags, teammate_changes=teammate_changes,
             )
             # standalone=True → the enumerated DM brief (no cards beside it),
             # not the /today header synthesis.
