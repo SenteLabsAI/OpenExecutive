@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import re
+from email.message import Message
 from email.parser import HeaderParser
 from email.utils import parseaddr
 from typing import Any, Literal
@@ -57,11 +58,37 @@ def principal_address() -> str:
     return (principal.email or "").strip().lower() if principal is not None else ""
 
 
-# Where get_gmail_message_content(body_format="raw") starts the RFC 5322 text.
-_RAW_MIME_MARKER = "--- RAW MIME ---"
+# Where get_gmail_message_content(body_format="raw") starts the RFC 5322 text:
+# a line of its own after a blank line. Everything above it is header values
+# the sender wrote (Subject, To, References…), so the separator is matched
+# whole: a bare "--- RAW MIME ---" in a Subject must not move where the raw
+# message is read from.
+_RAW_MIME_SEPARATOR = "\n\n--- RAW MIME ---\n"
 # The authserv-id Gmail stamps on the Authentication-Results of mail it receives.
 _GMAIL_AUTHSERV = "mx.google.com"
 _HEADER_FROM = re.compile(r"\bheader\.from=([^\s;()]+)")
+# Marks of an automatic reply (an out-of-office, a vacation responder) in the
+# raw headers. The printed headers the poller reads carry only Precedence and
+# the List-* ones, so an Exchange out-of-office — Auto-Submitted only — would
+# otherwise pass as the principal's answer.
+_AUTO_HEADERS = ("x-auto-response-suppress", "x-autoreply", "x-autorespond", "x-autoresponder")
+_AUTO_SUBJECT = re.compile(
+    r"^\s*(automatic reply|auto(matic)?[- ]?(reply|response)|out of (the )?office|autoreply|"
+    r"auto:|vacation|away)\b",
+    re.IGNORECASE,
+)
+
+
+def _raw_headers(raw: str) -> Message | None:
+    """The headers of the raw message in a ``body_format="raw"`` read, or
+    None when there is none or it can't be parsed."""
+    _before, separator, mime = raw.partition(_RAW_MIME_SEPARATOR)
+    if not separator:
+        return None
+    try:
+        return HeaderParser().parsestr(mime.lstrip("\r\n"), headersonly=True)
+    except Exception:  # noqa: BLE001 - unreadable counts as absent.
+        return None
 
 
 def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
@@ -73,12 +100,11 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     ``dmarc=pass`` for the From domain, and the raw From must be
     ``from_addr``. Anything missing or unreadable — no header, ``dmarc=none``,
     a temporary error — is False: this gate fails closed."""
-    _before, marker, mime = raw.partition(_RAW_MIME_MARKER)
     address = from_addr.strip().lower()
-    if not marker or "@" not in address:
+    headers = _raw_headers(raw)
+    if headers is None or "@" not in address:
         return False
     try:
-        headers = HeaderParser().parsestr(mime.lstrip("\r\n"), headersonly=True)
         _name, raw_from = parseaddr(str(headers.get("From", "")))
         results = headers.get_all("Authentication-Results") or []
     except Exception:  # noqa: BLE001 - an unreadable message is not authenticated.
@@ -98,15 +124,38 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     )
 
 
-async def sender_authenticated(gateway: Any, message_id: str, from_addr: str) -> bool:
-    """Whether Gmail authenticated the sender of message ``message_id``
-    (``authenticated_by_gmail``). The text the poller reads doesn't carry
-    Authentication-Results — workspace-mcp prints a fixed set of headers — so
-    this fetches the raw message. Never raises; False on any failure."""
+def automatic_reply(raw: str) -> bool:
+    """Whether a raw message is an automatic reply: ``Auto-Submitted`` other
+    than ``no``, an out-of-office header, a bulk / auto-reply ``Precedence``,
+    or an out-of-office subject. An unreadable message counts as automatic:
+    nobody can be shown to have written it."""
+    headers = _raw_headers(raw)
+    if headers is None:
+        return True
+    try:
+        names = {str(k).lower() for k in headers}
+        auto = str(headers.get("Auto-Submitted", "no")).strip().lower()
+        precedence = str(headers.get("Precedence", "")).strip().lower()
+        subject = " ".join(str(headers.get("Subject", "")).split())
+    except Exception:  # noqa: BLE001 - unreadable counts as automatic.
+        return True
+    return (
+        (auto not in ("", "no"))
+        or any(h in names for h in _AUTO_HEADERS)
+        or precedence in ("bulk", "auto_reply", "list", "junk")
+        or _AUTO_SUBJECT.match(subject) is not None
+    )
+
+
+async def read_raw(gateway: Any, message_id: str) -> str:
+    """Message ``message_id`` read as raw MIME (``body_format="raw"``): the
+    text the poller reads doesn't carry Authentication-Results or
+    Auto-Submitted — workspace-mcp prints a fixed set of headers. "" on any
+    failure. Never raises."""
     from openexecutive.config import get_settings
 
     if gateway is None or not message_id:
-        return False
+        return ""
     try:
         raw = await gateway.call_tool({
             "name": "google_workspace__get_gmail_message_content",
@@ -116,10 +165,16 @@ async def sender_authenticated(gateway: Any, message_id: str, from_addr: str) ->
                 "body_format": "raw",
             },
         })
-    except Exception:  # noqa: BLE001 - unauthenticated, as below.
+    except Exception:  # noqa: BLE001 - read as nothing, which fails closed.
         logger.warning("fact_confirmation: reading message %s raw failed", message_id, exc_info=True)
-        return False
-    return authenticated_by_gmail(str(raw or ""), from_addr)
+        return ""
+    return str(raw or "")
+
+
+async def sender_authenticated(gateway: Any, message_id: str, from_addr: str) -> bool:
+    """Whether Gmail authenticated the sender of message ``message_id``
+    (``authenticated_by_gmail`` on ``read_raw``). False on any failure."""
+    return authenticated_by_gmail(await read_raw(gateway, message_id), from_addr)
 
 
 def _audit(summary: str, details: dict[str, Any]) -> None:
@@ -241,9 +296,11 @@ async def try_email_fact_confirmation(
 ) -> bool:
     """Handle an email that answers a fact confirmation; True when it did
     (the caller marks it read and stops). It must come from the principal's
-    primary address, exactly, carry a token this module issued, and not be an
-    automatic reply. Anything else is left to the ordinary path, where the
-    token is hidden from the model."""
+    primary address, exactly, and carry the token of a pending confirmation;
+    anything else is left to the ordinary path, where the token is hidden
+    from the model. A matched reply that Gmail did not authenticate is
+    refused (the principal is told), and an automatic reply is consumed
+    quietly; only an authenticated reply a person wrote can decide."""
     from openexecutive.integrations.email_poller import _split_gmail_content, sender_new_text
     from openexecutive.integrations.roster_intake import _auto_or_bulk_headers
     from openexecutive.orchestrator.fact_tools import apply_confirmed
@@ -268,11 +325,11 @@ async def try_email_fact_confirmation(
             {"message_id": message_id, "status": "no_live_token"},
         )
         return False
-    if _auto_or_bulk_headers(raw):
-        return False
     # Only after a live token matched: a forged mail without one never makes
     # the Executive email the principal, or fetch anything.
-    if not await sender_authenticated(gateway, message_id, from_addr):
+    printed_auto = _auto_or_bulk_headers(raw)
+    raw_mime = "" if printed_auto else await read_raw(gateway, message_id)
+    if not printed_auto and not authenticated_by_gmail(raw_mime, from_addr):
         _audit(
             "A reply to a fact confirmation was not authenticated",
             {"message_id": message_id, "confirmation_id": conf.id, "status": "refused_unauthenticated"},
@@ -284,6 +341,16 @@ async def try_email_fact_confirmation(
             "you, reply again from your own mailbox.\n\n"
             f"  {conf.summary}"
         ))
+        return True
+    if printed_auto or automatic_reply(raw_mime):
+        # An out-of-office or vacation reply echoes the token and may say
+        # "confirm" ("I'll confirm on my return"); nobody answered. Consumed
+        # quietly: no reply (it would bounce between two responders), no
+        # model turn, and the change keeps waiting.
+        _audit(
+            "An automatic reply to a fact confirmation was ignored",
+            {"message_id": message_id, "confirmation_id": conf.id, "status": "auto_reply_ignored"},
+        )
         return True
 
     _header, body, _att = _split_gmail_content(raw)
@@ -324,7 +391,9 @@ async def _reply(to: str, text: str) -> None:
 
 __all__ = [
     "authenticated_by_gmail",
+    "automatic_reply",
     "principal_address",
+    "read_raw",
     "request_confirmation",
     "sender_authenticated",
     "try_email_fact_confirmation",

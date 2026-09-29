@@ -1768,14 +1768,19 @@ memory:
         address + the token of a PENDING confirmation (made-up, spent,
         cancelled or expired tokens match nothing and fall through to the
         ordinary path, token hidden — no reply, so no token can make the
-        Executive email the principal) → auto/bulk left alone → not
-        authenticated by Gmail (same check as the request) is refused, still
-        waiting, principal told → CONFIRM /
+        Executive email the principal) → re-read as raw MIME; not
+        authenticated by Gmail (same check as the request, or the read
+        failed) is refused, still waiting, principal told → an automatic
+        reply (printed Precedence: bulk, or raw Auto-Submitted /
+        X-Auto-Response-Suppress / Precedence: auto_reply / out-of-office
+        subject — an Exchange OOF echoes the token and may say "confirm")
+        is consumed quietly, no reply, no model turn, still waiting →
+        CONFIRM /
         yes applies via `fact_tools.apply_confirmed` (the same apply step as
         chat), CANCEL / no drops, unclear keeps waiting. A compare-and-set
         makes a token single-use.
       - Audit: private `fact_confirmation` rows (held / applied / cancelled
-        / refused_unauthenticated / no_live_token); the applied change writes the
+        / refused_unauthenticated / auto_reply_ignored / no_live_token); the applied change writes the
         tools' usual private rows with source_channel "email".
     SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
     `POST /memories/facts/{id}/retire`, principal only). Other viewers get

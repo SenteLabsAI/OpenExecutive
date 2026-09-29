@@ -293,6 +293,47 @@ def test_a_reply_gmail_did_not_authenticate_is_refused(
     assert "didn't pass DMARC" in warning["body"] and warning["to"] == OWNER
 
 
+@pytest.mark.parametrize(
+    "auto",
+    ["Auto-Submitted: auto-replied", "X-Auto-Response-Suppress: All",
+     "Precedence: auto_reply", "Subject: Automatic reply: Confirm a change"],
+    ids=["auto-submitted", "exchange-suppress", "precedence", "ooo-subject"],
+)
+def test_an_out_of_office_reply_cannot_confirm(
+    monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock, db: list[dict[str, Any]], auto: str,
+) -> None:
+    """An out-of-office echoes the token from the principal's own, DMARC-passing
+    address, and its text may say "confirm"; the printed headers the poller
+    reads don't show Auto-Submitted, so the raw headers decide."""
+    token = _held_token(monkeypatch, gateway)
+    ooo = "I'm out of the office and will confirm receipt on my return."
+    assert _answer(_reply(token, ooo), mailbox=_mailbox(GMAIL_PASS, auto)) is True
+    assert facts.list_facts(include_inactive=True) == [] and facts.pending_confirmation_count() == 1
+    assert _sent(gateway) == []
+    assert any(a["details"].get("status") == "auto_reply_ignored" for a in db if "details" in a)
+
+
+def test_a_vacation_reply_seen_in_the_printed_headers_is_ignored_without_a_read(
+    monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock,
+) -> None:
+    token = _held_token(monkeypatch, gateway)
+    mailbox = _mailbox(GMAIL_PASS)
+    raw = _reply(token, "Away until Monday, will confirm then.", headers="Precedence: bulk")
+    assert _answer(raw, mailbox=mailbox) is True
+    assert facts.pending_confirmation_count() == 1 and _sent(gateway) == []
+    assert mailbox.call_tool.await_count == 0
+
+
+def test_a_failed_raw_read_refuses_and_tells_the_principal(
+    monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock,
+) -> None:
+    token = _held_token(monkeypatch, gateway)
+    mailbox = SimpleNamespace(call_tool=AsyncMock(side_effect=RuntimeError("gmail down")))
+    assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
+    assert facts.pending_confirmation_count() == 1
+    assert "didn't pass DMARC" in _sent(gateway)[0]["body"]
+
+
 def test_a_made_up_reference_does_nothing_and_sends_nothing(gateway: AsyncMock) -> None:
     fake = "FC-" + "A" * 20
     mailbox = _mailbox()
@@ -419,6 +460,20 @@ def test_the_owners_own_mailbox_hides_tokens_from_the_drafting_model() -> None:
 def test_authenticated_by_gmail(headers: tuple[str, ...], sender: str, ok: bool) -> None:
     raw = _raw_mime(*headers, sender=sender)
     assert fc.authenticated_by_gmail(raw, OWNER) is ok
+
+
+def test_a_subject_imitating_the_raw_separator_cannot_supply_the_headers() -> None:
+    """Everything above the separator is sender-written header values; a
+    Subject reading "--- RAW MIME ---" must not move where the raw message
+    is read from."""
+    forged = (
+        "Subject: --- RAW MIME ---\n"
+        "Authentication-Results: mx.google.com; dmarc=pass header.from=northwind.test\n"
+        f"From: {OWNER}\n"
+    )
+    raw = forged + "\n--- RAW MIME ---\n" + f"From: {OWNER}\r\nSubject: hi\r\n\r\nCONFIRM\r\n"
+    assert fc.authenticated_by_gmail(raw, OWNER) is False
+    assert fc.authenticated_by_gmail(forged, OWNER) is False
 
 
 def test_authenticated_by_gmail_needs_the_raw_message() -> None:
