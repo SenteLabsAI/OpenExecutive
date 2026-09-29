@@ -337,6 +337,7 @@ def render_briefing_context(
     now_label: str | None = None,
     reflection_flags: str = "",
     standing_facts: str | None = None,
+    teammate_changes: str = "",
 ) -> str:
     """Pack the structured /today + activity inputs into a single user-turn block.
 
@@ -367,7 +368,11 @@ def render_briefing_context(
     the output is byte-identical to before they existed.
 
     ``standing_facts`` is the STANDING FACTS block (``memory.facts``), last;
-    None reads the store, "" leaves it out.
+    None reads the store, "" leaves it out. ``teammate_changes`` is the
+    morning brief's TEAMMATE CORRECTIONS SINCE LAST BRIEF block
+    (``memory.facts.render_teammate_changes``): news for the principal, so it
+    counts against a quiet day. Empty (every other caller) leaves the output
+    as it was.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
     now = datetime.now(UTC)
@@ -551,6 +556,9 @@ def render_briefing_context(
                 f"- [{item.get('at', '')[:10]}] {item.get('kind', 'action')}: "
                 f"{item.get('summary', '')[:140]}"
             )
+
+    if teammate_changes:
+        parts.extend(["", teammate_changes])
 
     if len(parts) == framing:
         # Only the PERIOD (and NOW) line — genuinely quiet day.

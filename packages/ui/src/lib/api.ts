@@ -1065,31 +1065,50 @@ export async function deleteDecision(id: number): Promise<void> {
   if (!res.ok) throw new Error("Failed to delete decision");
 }
 
-/** A standing fact or correction the principal asked the Executive to keep
- * (`memory/facts.py`). Every prompt that produces output reads the active
- * ones; `profile` rows record a company-profile field changed from chat. */
+/** A standing fact or correction the principal or a teammate asked the
+ * Executive to keep (`memory/facts.py`). Every prompt that produces output
+ * reads the active ones — a teammate's attributed "(per <name>)"; `proposed`
+ * ones wait for the principal's approval and are never used until then.
+ * `profile` rows record a company-profile field changed from chat. */
 export interface StandingFact {
   id: number;
   kind: "fact" | "correction" | "profile";
   subject: string;
   statement: string;
   previous_statement: string;
-  /** The principal's own words; empty for anyone but the principal. */
+  /** The speaker's own words; shown to the principal, and to a teammate for
+   * their own facts only. */
   source_quote: string;
   source_channel: string;
   session_id: string | null;
   turn_id: string | null;
   recorded_by_person_id: number | null;
   created_at: string;
-  status: "active" | "superseded" | "retired";
+  status: "active" | "superseded" | "retired" | "proposed" | "declined";
   superseded_by: number | null;
   retired_at: string | null;
   retired_reason: string;
+  recorded_by_role: "principal" | "teammate";
+  /** The teammate's name when they recorded it; empty for the principal's. */
+  recorded_by_name: string;
+  /** A proposal: the active fact it replaces once approved. */
+  replaces_fact_id: number | null;
 }
 
 export interface StandingFactsPage {
   facts: StandingFact[];
   can_retire: boolean;
+  /** The facts this caller may retire (a teammate: their own). */
+  retirable_ids: number[];
+  /** The principal: approves teammates' proposals and sets who needs approval. */
+  can_review: boolean;
+}
+
+/** One teammate and whether the principal approves their facts first. */
+export interface FactApprovalRule {
+  person_id: number;
+  full_name: string;
+  needs_approval: boolean;
 }
 
 export async function listStandingFacts(): Promise<StandingFactsPage> {
@@ -1105,6 +1124,38 @@ export async function retireStandingFact(id: number, reason = ""): Promise<Stand
     body: JSON.stringify({ reason }),
   });
   if (!res.ok) throw new Error("Failed to retire standing fact");
+  return res.json();
+}
+
+export async function reviewStandingFact(
+  id: number,
+  decision: "approve" | "decline",
+): Promise<StandingFact> {
+  const res = await fetch(`${API_BASE}/memories/facts/${id}/${decision}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(`Failed to ${decision} standing fact`);
+  return res.json();
+}
+
+export async function listFactApprovalRules(): Promise<FactApprovalRule[]> {
+  const res = await fetch(`${API_BASE}/memories/facts/approval`);
+  if (!res.ok) throw new Error("Failed to list who needs approval");
+  return res.json();
+}
+
+export async function setFactApprovalRule(
+  personId: number,
+  needsApproval: boolean,
+): Promise<FactApprovalRule> {
+  const res = await fetch(`${API_BASE}/memories/facts/approval/${personId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ needs_approval: needsApproval }),
+  });
+  if (!res.ok) throw new Error("Failed to change who needs approval");
   return res.json();
 }
 

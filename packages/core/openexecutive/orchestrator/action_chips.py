@@ -168,10 +168,14 @@ def summarize_action(
         # The Executive's prose will explain what went wrong; we just don't
         # paint a green ✓ chip over a red outcome.
         return None
-    if parsed is not None and parsed.get("status") in ("not_found", "refused", "awaiting_confirmation"):
+    if parsed is not None and parsed.get("status") in (
+        "not_found", "refused", "awaiting_confirmation", "awaiting_approval",
+    ):
         # The target row didn't exist (e.g. archive_person for an unknown
         # person), or the tool refused the caller (e.g. a roster change asked
-        # for by someone other than the principal). Nothing changed → no ✓ chip.
+        # for by someone other than the principal), or the change waits on the
+        # principal (an emailed fact, a teammate's proposed one). Nothing
+        # changed → no ✓ chip.
         return None
     if parsed is not None and parsed.get("noop") is True:
         # Idempotent re-call (e.g. `ack_alert` after the briefing UI already
