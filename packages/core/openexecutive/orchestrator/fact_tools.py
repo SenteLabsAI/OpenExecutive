@@ -550,11 +550,19 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
 # field they would read as a second, forged marker ("… (per Olivia Owner) —
 # 2026-09-01" in a teammate's statement), so no field may carry one.
 _RENDER_MARKERS = re.compile(
-    r"\[\s*fact\s*\d+\s*\]|[\u2010-\u2015\u2212]\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE,
+    r"\[\s*fact\s*\d+\s*\]|(?:^|\s)[-\u2010-\u2015\u2212]\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE,
 )
-# "(per Olivia Owner)" — a name, so capitalised — never "(per month)" or
-# "(per unit)", which are ordinary business wording.
-_ATTRIBUTION_MARKER = re.compile(r"\(\s*[Pp]er\s+[A-Z]")
+# "(per <anyone>)", in any case — "(per olivia owner)" reads to a model just
+# like the real marker — except the units business text says "per" of:
+# "(per month)", "(per unit)", "(per square foot)".
+_PER_UNITS = frozenset({
+    "annum", "bed", "capita", "cent", "customer", "day", "desk", "door", "employee",
+    "foot", "ft", "head", "hour", "household", "item", "kg", "km", "lb", "meter",
+    "metre", "mile", "minute", "month", "night", "order", "person", "quarter",
+    "room", "seat", "share", "sq", "sqft", "square", "ton", "tonne", "unit",
+    "user", "week", "year",
+})
+_PER_WORD = re.compile(r"\(\s*per\s+([^\W\d_]+)", re.IGNORECASE)
 
 
 def _marker_error(label: str, text: str) -> str | None:
@@ -563,9 +571,13 @@ def _marker_error(label: str, text: str) -> str | None:
     folded = "".join(
         ch for ch in unicodedata.normalize("NFKC", text) if unicodedata.category(ch) != "Cf"
     )
-    if _RENDER_MARKERS.search(folded) or _ATTRIBUTION_MARKER.search(folded):
+    attribution = any(
+        m.group(1).lower().rstrip("s") not in _PER_UNITS and m.group(1).lower() not in _PER_UNITS
+        for m in _PER_WORD.finditer(folded)
+    )
+    if _RENDER_MARKERS.search(folded) or attribution:
         return (
-            f"the {label} may not contain '(per <name>)', '[fact N]' or a '— YYYY-MM-DD' "
+            f"the {label} may not contain '(per <someone>)', '[fact N]' or a '— YYYY-MM-DD' "
             "stamp: those mark who stated a fact and when, and are added when it "
             "is shown. Leave them out."
         )
