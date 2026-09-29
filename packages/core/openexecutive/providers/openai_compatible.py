@@ -64,6 +64,23 @@ def _announce_reasoning(slug: str, body: dict[str, Any]) -> None:
         )
 
 
+# Slugs for which we've already logged the LOCAL_REASONING_EFFORT being
+# sent. A missing or wrong effort is what makes a thinking-only model burn
+# its whole max_tokens budget, so the log shows which value is in play.
+_effort_announced: set[str] = set()
+
+
+def _announce_effort(slug: str, effort: str) -> None:
+    if slug not in _effort_announced:
+        _effort_announced.add(slug)
+        logger.info(
+            "reasoning_effort=%s sent to %s via OpenAI-compatible backend "
+            "(LOCAL_REASONING_EFFORT)",
+            effort,
+            slug,
+        )
+
+
 class OpenAICompatibleProvider:
     """LLMProvider implementation backed by any OpenAI-compatible endpoint.
 
@@ -107,8 +124,8 @@ class OpenAICompatibleProvider:
         # behind a LiteLLM gateway), which rejects an unrecognized top-level
         # `usage` field outright rather than ignoring it.
         self._include_usage_accounting = include_usage_accounting
-        # Top-level `reasoning_effort` for thinking-only backends. Skipped
-        # when the request already carries a `reasoning` object.
+        # Top-level `reasoning_effort` for thinking-only backends
+        # (LOCAL_REASONING_EFFORT). None = not sent.
         self._reasoning_effort = reasoning_effort
 
     # ------------------------------------------------------------------
@@ -136,12 +153,6 @@ class OpenAICompatibleProvider:
         )
         return slug, spec
 
-    def _apply_reasoning_effort(self, body: dict[str, Any]) -> None:
-        # A per-request ``reasoning`` object (Council deep-reasoning toggle)
-        # wins over the backend-wide default.
-        if self._reasoning_effort and "reasoning" not in body:
-            body["reasoning_effort"] = self._reasoning_effort
-
     def _auth_headers(self) -> dict[str, str]:
         # Local backends (Ollama, LM Studio) typically need no auth — omit
         # the header entirely rather than send a bogus ``Bearer None``.
@@ -155,8 +166,17 @@ class OpenAICompatibleProvider:
 
     def _extend_body(self, slug: str, body: dict[str, Any]) -> None:
         """Backend-specific request fields, added to the translated body in
-        place. None for a plain OpenAI-compatible server: an unknown
-        top-level field can 400 there (see include_usage_accounting)."""
+        place. A plain OpenAI-compatible server gets only what the operator
+        opted into: an unknown top-level field can 400 there (see
+        include_usage_accounting).
+
+        ``reasoning_effort`` is sent unconditionally when configured. Local
+        slugs never carry a per-call ``reasoning`` object (their spec has
+        ``supports_thinking=False``), so there is nothing for it to clash
+        with."""
+        if self._reasoning_effort:
+            body["reasoning_effort"] = self._reasoning_effort
+            _announce_effort(slug, self._reasoning_effort)
 
     def messages_create(self, **kwargs: Any) -> Awaitable[Any]:
         return self._messages_create(kwargs)
@@ -172,7 +192,6 @@ class OpenAICompatibleProvider:
             slug, gated, include_usage=self._include_usage_accounting
         )
         self._extend_body(slug, body)
-        self._apply_reasoning_effort(body)
         _announce_reasoning(slug, body)
 
         try:
@@ -202,7 +221,6 @@ class OpenAICompatibleProvider:
             slug, gated, include_usage=self._include_usage_accounting
         )
         self._extend_body(slug, body)
-        self._apply_reasoning_effort(body)
         _announce_reasoning(slug, body)
         body["stream"] = True
         return _OpenAICompatibleStream(

@@ -12,6 +12,9 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from openexecutive.providers import openai_compatible
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -110,15 +113,7 @@ def test_anthropic_only_fields_stripped_for_local_model() -> None:
 def _effort_provider(effort: str | None) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         base_url="https://api.fireworks.ai/inference/v1",
-        spec_lookup={
-            "llama3.3": _LOCAL_SPEC,
-            "reasoner": FeatureSpec(
-                supports_cache_control=False,
-                supports_thinking=True,
-                supports_web_search=False,
-                supports_tool_use=True,
-            ),
-        },
+        spec_lookup={"llama3.3": _LOCAL_SPEC},
         reasoning_effort=effort,
     )
 
@@ -146,15 +141,16 @@ def test_reasoning_effort_sent_on_stream() -> None:
     assert stream._body["reasoning_effort"] == "low"  # type: ignore[attr-defined]
 
 
-def test_per_request_reasoning_wins_over_configured_effort() -> None:
-    """The Council deep-reasoning toggle yields a ``reasoning`` object; the
-    backend-wide default must not be sent alongside it."""
-    captured = _run_create(
-        _effort_provider("low"),
-        model="reasoner",
-        max_tokens=4000,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "high"},
-    )
-    assert "reasoning" in captured["json"]
-    assert "reasoning_effort" not in captured["json"]
+def test_reasoning_effort_logged_once_per_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The effort in play is what decides whether a thinking-only model
+    answers at all, so it's logged, but once per model, not per call."""
+    monkeypatch.setattr(openai_compatible, "_effort_announced", set())
+    fake_logger = MagicMock()
+    monkeypatch.setattr(openai_compatible, "logger", fake_logger)
+    provider = _effort_provider("low")
+    _run_create(provider)
+    _run_create(provider)
+    assert fake_logger.info.call_count == 1
+    assert fake_logger.info.call_args.args[1:] == ("low", "llama3.3")

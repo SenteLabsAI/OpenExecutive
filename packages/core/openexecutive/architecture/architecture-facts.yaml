@@ -62,9 +62,13 @@ system:
       Settings validator just requires that at least one provider is
       reachable. Requesting a Claude model with no key and OpenRouter off
       returns an actionable 400.
-      LOCAL_REASONING_EFFORT (optional, unset by default) sends a top-level
-      ``reasoning_effort`` on every local-backend request, skipped when the
-      request already carries a per-call ``reasoning`` object. Thinking-only
+      LOCAL_REASONING_EFFORT (optional, unset by default; one of none,
+      minimal, low, medium, high, validated at startup) sends a top-level
+      ``reasoning_effort`` on every local-backend request, streamed or not,
+      unconditionally: local slugs get a no-thinking spec, so the Council
+      deep-reasoning toggle never adds a per-call ``reasoning`` object on
+      that path. It is added in the provider's ``_extend_body`` hook and
+      logged once per model. Thinking-only
       hosted models (e.g. GLM on Fireworks, which rejects "none") otherwise
       spend the whole max_tokens budget reasoning and return no tool call —
       the onboarding interview then fails with "did not return a usable
