@@ -305,6 +305,51 @@ def test_remember_fact_statement_figures_must_be_the_principals(
         assert facts.list_facts(include_inactive=True) == []
 
 
+@pytest.mark.parametrize(
+    ("said", "statement", "ok"),
+    [
+        # A paraphrase of what they said, names and all.
+        ("Riverside Court is fully let now", "Riverside Court is fully let.", True),
+        ("St. Albans is 48 units", "St. Albans has 48 units.", True),
+        # A sentence's first word is grammar, not a name.
+        ("the annex at St. Albans is done", "Construction of the St. Albans annex is done.", True),
+        # A figure-free claim from a document: its date and name were never said.
+        ("remember what the lease doc says about Riverside",
+         "Riverside's lease expires in March.", False),
+        ("remember what the lease doc says about Riverside",
+         "Riverside's landlord is Harbourline Estates.", False),
+    ],
+)
+def test_remember_fact_statement_names_and_dates_must_be_the_principals(
+    principal: SimpleNamespace, said: str, statement: str, ok: bool,
+) -> None:
+    principal.turn_delegation.speaker_text = said
+    out = _call(fact_tools.handle_remember_fact, subject="Riverside",
+                statement=statement, source_quote=said)
+    if ok:
+        assert out["status"] == "ok", out
+    else:
+        assert "which the principal did not write" in out["error"]
+        assert facts.list_facts(include_inactive=True) == []
+
+
+@pytest.mark.parametrize(
+    ("said", "statement"),
+    [
+        ("burn is 180,000 a month now", "Monthly burn is $180k."),
+        ("burn is 180k a month now", "Monthly burn is $180,000."),
+        ("ARR is 1.2m now", "ARR is 1,200,000."),
+    ],
+)
+def test_statement_figures_match_whichever_side_has_the_suffix(
+    principal: SimpleNamespace, said: str, statement: str,
+) -> None:
+    principal.turn_delegation.speaker_text = said
+    out = _call(fact_tools.handle_remember_fact, subject="Burn",
+                statement=statement, source_quote=said)
+    assert out["status"] == "ok", out
+
+
 def test_remember_fact_rejects_an_unknown_replaces_id(principal: SimpleNamespace) -> None:
     out = _call(fact_tools.handle_remember_fact, subject="Units", statement="48",
                 replaces_fact_id=99, source_quote="St. Albans is 48 units")

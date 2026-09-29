@@ -1623,9 +1623,13 @@ memory:
         Discord/Slack reply to the Executive's DM about an attacker's alert
         could have the alert's text stored as the principal's fact.
       - remember_fact: every number in `statement` must be one the principal
-        wrote this turn (`_numbers_in` / `_number_in_own_words`), so a real
-        quote ("that's the number from the lease doc") cannot carry a
-        document's figure into every prompt.
+        wrote this turn (`_numbers_in` / `_number_in_own_words`; a k / m / bn
+        suffix is matched on either side), and every name (a capitalised
+        word past a sentence's start) and date word (month, weekday,
+        quarter) must appear in their own words (`_unsaid_claim_words`).
+        A real quote ("remember what the lease doc says") therefore cannot
+        carry a document's figure, name or date into every prompt; a
+        paraphrase of what they said still passes.
       - Every write / refusal is a `tool_invocation` audit row; a Pulse-page
         retire is a `fact_retired` row. Neither carries the quote, a forget
         rationale or a retire reason: /audit/logs is readable by every

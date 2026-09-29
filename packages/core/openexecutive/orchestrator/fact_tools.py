@@ -23,7 +23,9 @@ typed this turn — never the backstory an adapter hydrates a reply with, and
 nothing at all when the message carries an attachment. It is the provenance
 the Pulse page shows the principal, and it keeps the model from storing its
 own inference, a document's figure or text quoted back at the principal as
-something they said. The audit rows carry neither the quote nor the
+something they said. The quote alone only proves they asked; so a
+remember_fact statement's figures, names and date words, and an
+update_company_profile value, must be in their words too. The audit rows carry neither the quote nor the
 rationale: those are the principal's words, and the audit log is readable by
 every signed-in teammate.
 The schemas are static, so the cached tool prefix never moves.
@@ -323,33 +325,78 @@ _SCALE = {
 }
 
 
-def _numbers_in(text: str) -> list[float]:
-    """The numbers written in ``text``, each as written ("48", "1,200")."""
-    out: list[float] = []
+def _numbers_in(text: str) -> list[tuple[float, float]]:
+    """The numbers written in ``text``, each as ``(as written, scaled)``:
+    "1,200" → (1200, 1200), "$180k" → (180, 180000)."""
+    out: list[tuple[float, float]] = []
     for m in _NUMBER.finditer(text):
-        try:
-            out.append(float(m.group(1).replace(",", "")))
-        except ValueError:
-            continue
-    return out
-
-
-def _number_in_own_words(value: float, session: Any) -> bool:
-    """Whether ``value`` is a number the principal wrote this turn, as
-    written ("42", "180,000") or scaled by its suffix ("$180k", "1.2m")."""
-    spoken = _own_words(session)
-    if spoken is None:
-        return False
-    for m in _NUMBER.finditer(spoken):
         try:
             base = float(m.group(1).replace(",", ""))
         except ValueError:
             continue
-        scale = _SCALE.get((m.group(2) or "").lower(), 1.0)
-        for candidate in (base, base * scale):
-            if abs(candidate - value) <= 1e-9 * max(1.0, abs(value)):
-                return True
-    return False
+        out.append((base, base * _SCALE.get((m.group(2) or "").lower(), 1.0)))
+    return out
+
+
+def _same(a: float, b: float) -> bool:
+    return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
+
+
+def _number_in_own_words(value: float | tuple[float, float], session: Any) -> bool:
+    """Whether a number is one the principal wrote this turn. Either side may
+    carry a suffix ("$180k" written, "180,000" stored, or the other way
+    round); a pair from ``_numbers_in`` matches on either of its forms."""
+    spoken = _own_words(session)
+    if spoken is None:
+        return False
+    wanted = value if isinstance(value, tuple) else (value,)
+    return any(
+        _same(w, c) for said in _numbers_in(spoken) for c in said for w in wanted
+    )
+
+
+# Words a statement may use without the principal having said them: its
+# glue, not its claim. Everything else that is capitalised (a name, a
+# place, a product) or names a date must be in the principal's own words.
+_GLUE = frozenset({
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it", "its",
+    "of", "on", "or", "our", "the", "their", "this", "that", "to", "we", "with",
+})
+_DATE_WORDS = frozenset({
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december", "jan", "feb", "mar", "apr",
+    "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "sunday", "q1", "q2", "q3", "q4",
+})
+_WORD = re.compile(r"[A-Za-z][A-Za-z0-9&'’-]*")
+
+
+def _bare(word: str) -> str:
+    return re.sub(r"['’]s$", "", word).strip("'’-")
+
+
+def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
+    """The names and date words in ``statement`` the principal did not write
+    this turn. A figure-free claim carried in from a document ("Riverside's
+    lease expires in March" after "remember what the lease doc says") names
+    something they never said; a paraphrase of what they did say does not.
+    A sentence's first word is capitalised by grammar, not because it is a
+    name, so it counts only when it is a date word."""
+    from openexecutive.memory.episodic import _normalize_for_quote_match
+
+    spoken = _normalize_for_quote_match(_own_words(session) or "")
+    said = {_bare(w) for w in _WORD.findall(spoken)}
+    missing: list[str] = []
+    for m in _WORD.finditer(statement):
+        bare = _bare(m.group(0))
+        key = bare.lower()
+        if not key or key in _GLUE or key in said:
+            continue
+        before = statement[: m.start()].rstrip()
+        sentence_start = not before or before[-1] in ".!?:;"
+        if key in _DATE_WORDS or (bare[0].isupper() and not sentence_start):
+            missing.append(bare)
+    return missing
 
 
 def _defang(text: str) -> str:
@@ -421,15 +468,26 @@ def _remember_fact(tool_input: dict[str, Any]) -> str:
     # stored must be theirs too. A real quote ("that's the number from the
     # lease doc") paired with a statement carrying the document's figure would
     # render into every prompt as the principal's own correction.
-    for n in _numbers_in(statement):
-        if not _number_in_own_words(n, session):
+    for pair in _numbers_in(statement):
+        if not _number_in_own_words(pair, session):
             return _bad(
                 tool,
-                f"the statement's figure {n:g} is not a number the principal wrote "
-                "this turn. State the fact with the figures they gave, or — if they "
-                "did not give one (a document or someone else did) — ask them.",
+                f"the statement's figure {pair[1]:g} is not a number the principal "
+                "wrote this turn. State the fact with the figures they gave, or — if "
+                "they did not give one (a document or someone else did) — ask them.",
                 subject=subject[:120],
             )
+    # Figures are not the only claim a document can carry in: its names and
+    # dates must be the principal's words too.
+    unsaid = _unsaid_claim_words(statement, session)
+    if unsaid:
+        return _bad(
+            tool,
+            f"the statement names {', '.join(repr(w) for w in unsaid[:5])}, which the "
+            "principal did not write this turn. State the fact in their terms, or — "
+            "if it came from a document or someone else — ask them to confirm it.",
+            subject=subject[:120],
+        )
     replaces = _positive_int(tool_input.get("replaces_fact_id"))
     if tool_input.get("replaces_fact_id") is not None and replaces is None:
         return _bad(tool, "replaces_fact_id must be the N of a listed '[fact N]'")
