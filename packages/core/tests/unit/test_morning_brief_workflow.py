@@ -205,8 +205,10 @@ async def test_a_teammates_correction_reaches_the_brief_and_unsuppresses_it(
     first = [e async for e in MorningBriefWorkflow().run(MorningBriefInput(), MagicMock())]
     fp = next(e for e in first if e.type == "result").data["brief_fingerprint"]
     brief_state.record_delivered("principal_brief_morning", fp, "FULL BRIEF")
+    facts.set_needs_approval(7, False)  # a trusted teammate: theirs apply at once
     facts.record_fact(subject="Cedar Court unit count", statement="Cedar Court has 38 units.",
-                      source_quote="q", recorded_by_role="teammate", recorded_by_name="Sam Lee")
+                      source_quote="q", recorded_by_role="teammate", recorded_by_name="Sam Lee",
+                      recorded_by_person_id=7)
 
     second = [e async for e in MorningBriefWorkflow().run(MorningBriefInput(), MagicMock())]
     assert next(e for e in second if e.type == "result").data["suppressed"] is False

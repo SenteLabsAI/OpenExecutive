@@ -51,7 +51,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 
@@ -159,6 +159,15 @@ class Fact(BaseModel):
     def principal_owned(self) -> bool:
         """The principal's own fact, or one they approved."""
         return self.recorded_by_role == "principal" or self.approved_at is not None
+
+
+# Proposals one teammate may have waiting at once, so they cannot bury the
+# principal's Corrections tab (as MAX_PENDING_CONFIRMATIONS bounds email).
+MAX_PENDING_PROPOSALS_PER_PERSON = 20
+
+
+class TooManyProposals(Exception):  # noqa: N818 - a refusal, not an error.
+    """A teammate already has ``MAX_PENDING_PROPOSALS_PER_PERSON`` waiting."""
 
 
 class PrincipalFactConflict(Exception):  # noqa: N818 - a refusal, not an error.
@@ -303,11 +312,12 @@ def record_fact(
                 (key, replaces_fact_id if replaces_fact_id is not None else -1),
             ).fetchall()
         replaced = [_row(r) for r in rows]
-        if recorded_by_role == "teammate" and not proposed and recorded_by_person_id is not None:
+        if recorded_by_role == "teammate" and not proposed:
             # "Needs my approval", read in this write's transaction: a switch
             # turned on a moment earlier cannot let one fact through. On
-            # unless the principal marked this teammate trusted.
-            rule = conn.execute(
+            # unless the principal marked this teammate trusted; a teammate
+            # write naming no person is never trusted.
+            rule = None if recorded_by_person_id is None else conn.execute(
                 "SELECT needs_approval FROM fact_approval_rules WHERE person_id=?",
                 (recorded_by_person_id,),
             ).fetchone()
@@ -316,6 +326,14 @@ def record_fact(
             outranks = next((f for f in replaced if f.principal_owned), None)
             if outranks is not None:
                 raise PrincipalFactConflict(outranks)
+        if proposed and recorded_by_role == "teammate":
+            (waiting,) = conn.execute(
+                "SELECT COUNT(*) FROM facts WHERE status='proposed' AND recorded_by_role='teammate' "
+                "AND recorded_by_person_id IS ?",
+                (recorded_by_person_id,),
+            ).fetchone()
+            if int(waiting) >= MAX_PENDING_PROPOSALS_PER_PERSON:
+                raise TooManyProposals()
         previous = _clean(previous_statement, STATEMENT_MAX)
         if not previous and replaced:
             previous = replaced[0].statement
@@ -476,15 +494,29 @@ def list_facts(
     return [_row(r) for r in rows]
 
 
-def retire_fact(fact_id: int, *, reason: str = "", db_path: Path | None = None) -> Fact | None:
+def retire_fact(
+    fact_id: int,
+    *,
+    reason: str = "",
+    teammate_id: int | None = None,
+    db_path: Path | None = None,
+) -> Fact | None:
     """Stop an active fact rendering anywhere. Returns the retired row, or
-    None when there is no active row with that id."""
+    None when there is no active row with that id. With ``teammate_id``,
+    only that teammate's own fact the principal has not approved — checked
+    in the UPDATE itself, so ownership cannot change between check and write."""
     now = datetime.now(UTC).isoformat()
+    owner_clause, owner_args = "", cast(tuple[int, ...], ())
+    if teammate_id is not None:
+        owner_clause = (
+            " AND recorded_by_role='teammate' AND recorded_by_person_id=? AND approved_at IS NULL"
+        )
+        owner_args = (teammate_id,)
     with _conn(db_path) as conn:
         cur = conn.execute(
             "UPDATE facts SET status='retired', retired_at=?, retired_reason=? "
-            "WHERE id=? AND status='active'",
-            (now, _clean(reason, 280), fact_id),
+            f"WHERE id=? AND status='active'{owner_clause}",  # noqa: S608 - fixed clause
+            (now, _clean(reason, 280), fact_id, *owner_args),
         )
         if cur.rowcount == 0:
             return None
@@ -766,7 +798,9 @@ __all__ = [
     "Confirmation",
     "FACTS_BLOCK_HEADER",
     "MAX_PENDING_CONFIRMATIONS",
+    "MAX_PENDING_PROPOSALS_PER_PERSON",
     "PrincipalFactConflict",
+    "TooManyProposals",
     "approval_rules",
     "approve_fact",
     "decline_fact",

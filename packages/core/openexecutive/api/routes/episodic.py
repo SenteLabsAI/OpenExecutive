@@ -275,7 +275,7 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
     if existing is None or existing.kind == "profile":
         raise HTTPException(status_code=404, detail="Fact not found")
     reason = " ".join(((body.reason if body else "") or "retired from the Pulse page").split())
-    retired = retire_fact(fact_id, reason=reason[:280])
+    retired = retire_fact(fact_id, reason=reason[:280], teammate_id=None if principal else caller)
     if retired is None:
         raise HTTPException(status_code=409, detail="Fact is no longer active")
     # Not the reason: it is the retiring person's own words.

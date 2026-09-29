@@ -722,6 +722,12 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
         except facts.PrincipalFactConflict as conflict:
             outranked = conflict.fact
             fact, superseded = facts.record_fact(**record, proposed=True)
+    except facts.TooManyProposals:
+        return _bad(tool, (
+            f"{facts.MAX_PENDING_PROPOSALS_PER_PERSON} of this teammate's facts are already "
+            "waiting for the principal's approval. Tell them it will be kept once the "
+            "principal has reviewed those on the Pulse page."
+        ))
     except Exception as exc:
         logger.exception("remember_fact: write failed")
         _audit(tool, False, f"remember_fact FAILED: {type(exc).__name__}", {"error": repr(exc)[:300]})

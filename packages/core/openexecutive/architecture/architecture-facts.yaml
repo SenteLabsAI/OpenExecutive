@@ -1705,7 +1705,11 @@ memory:
         principal-only `GET/PUT /memories/facts/approval[/{person_id}]` →
         every write from that teammate is `proposed` unless the principal
         marked them trusted (off). Read inside record_fact's BEGIN
-        IMMEDIATE, so a switch flipped mid-request cannot leak one fact. The tool answers
+        IMMEDIATE, so a switch flipped mid-request cannot leak one fact; a
+        teammate write with no person id is never trusted. At most
+        MAX_PENDING_PROPOSALS_PER_PERSON (20) proposals per teammate
+        (TooManyProposals). A teammate retire guards ownership in the UPDATE
+        (`retire_fact(teammate_id=)`: role teammate, their id, not approved). The tool answers
         `awaiting_approval` (no chip). `approve_fact` → active, supersedes
         what it names (the principal's own included — approval is their
         word) and stamps `approved_at`: from then on the row is
