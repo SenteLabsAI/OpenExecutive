@@ -46,11 +46,15 @@ from openexecutive.memory import facts
 logger = logging.getLogger(__name__)
 
 _CONFIRM_WORDS = re.compile(r"\b(confirm|confirmed|yes|approve|approved)\b", re.IGNORECASE)
-_CANCEL_WORDS = re.compile(r"\b(cancel|cancelled|no|reject|don'?t|do not)\b", re.IGNORECASE)
-# Words that take back an opening "yes" ("Yes, but don't apply that"). A bare
-# "no" is not one: "Confirm, no rush" still confirms.
-_TAKE_BACK_WORDS = re.compile(
-    r"\b(cancel|cancelled|reject|don'?t|do not|wait|hold|stop)\b", re.IGNORECASE,
+_CANCEL_WORDS = re.compile(r"\b(cancel|cancelled|no|reject|don['’]?t|do not)\b", re.IGNORECASE)
+# Anything that holds back a confirmation: a negation ("Not approved", "I
+# haven't confirmed") or a pause ("Confirm — actually wait").
+_HOLD_WORDS = re.compile(
+    r"\b(not|never|unable|cannot|wait|hold|stop)\b|n['’]t\b", re.IGNORECASE,
+)
+# Harmless "no"s, removed before reading the reply: "Confirm, no rush".
+_SOFT_NO = re.compile(
+    r"\bno (rush|hurry|problems?|worries|worry|changes?|need|issues?|further)\b", re.IGNORECASE,
 )
 
 
@@ -267,20 +271,19 @@ async def request_confirmation(action: dict[str, Any], summary: str) -> str | No
 
 
 def _decision(text: str) -> str:
-    """"confirm", "cancel" or "" (unclear) from the principal's reply. A
-    reply that opens with a cancel word cancels. One that opens with a
-    confirm word confirms ("Confirm, no rush") unless it also takes it back
-    ("Yes, but don't apply that" is unclear, and they are asked again).
-    Otherwise it must hold words of one kind only. Every doubt falls on the
-    side of not applying."""
-    words = text[:400]
-    opening = words.lstrip(" \t\r\n>*_-\"'")[:20]
+    """"confirm", "cancel" or "" (unclear) from the principal's reply. It
+    confirms only when it holds a confirm word and nothing that cancels,
+    negates or pauses ("Not approved", "Confirm? No.", "Yes, but wait" are
+    all unclear, and they are asked again). A reply that opens with a cancel
+    word, or holds only cancel words, cancels. A few harmless phrases ("no
+    rush", "no changes") are read past. Every doubt falls on the side of not
+    applying."""
+    words = _SOFT_NO.sub(" ", text[:400])
+    opening = words.lstrip(" \t\r\n>*_-\"',.;:!")[:20]
     if _CANCEL_WORDS.match(opening):
         return "cancel"
-    if _CONFIRM_WORDS.match(opening):
-        return "" if _TAKE_BACK_WORDS.search(words) else "confirm"
     yes, no = bool(_CONFIRM_WORDS.search(words)), bool(_CANCEL_WORDS.search(words))
-    if yes and not no:
+    if yes and not no and not _HOLD_WORDS.search(words):
         return "confirm"
     if no and not yes:
         return "cancel"
