@@ -183,6 +183,17 @@ def _caller_id(request: Request) -> int | None:
 
 
 def _is_own_teammate_fact(fact: Fact, caller: int | None) -> bool:
+    """A teammate's own fact, not yet the principal's: once the principal
+    approved it (``principal_owned``), only the principal may retire it."""
+    return (
+        caller is not None
+        and fact.recorded_by_role == "teammate"
+        and fact.recorded_by_person_id == caller
+        and not fact.principal_owned
+    )
+
+
+def _is_own_quote(fact: Fact, caller: int | None) -> bool:
     return (
         caller is not None
         and fact.recorded_by_role == "teammate"
@@ -230,7 +241,7 @@ def get_facts(
         retirable = [f.id for f in rows if f.status == "active" and f.kind != "profile"]
     else:
         rows = [
-            f for f in list_facts(include_inactive=True, limit=limit)
+            f for f in list_facts(statuses=("active", "proposed"), limit=limit)
             if f.status == "active" or (f.status == "proposed" and _is_own_teammate_fact(f, caller))
         ]
         retirable = [f.id for f in rows if f.status == "active" and _is_own_teammate_fact(f, caller)]
@@ -238,7 +249,7 @@ def get_facts(
         # chats and turns a fact came from (ids other routes may key on).
         rows = [
             f.model_copy(update={
-                "source_quote": f.source_quote if _is_own_teammate_fact(f, caller) else "",
+                "source_quote": f.source_quote if _is_own_quote(f, caller) else "",
                 "retired_reason": "",
                 "session_id": None, "turn_id": None, "recorded_by_person_id": None,
             })
@@ -270,7 +281,8 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
     _audit_fact(
         "fact_retired", f"Standing fact {fact_id} retired: {existing.subject[:80]}",
         {"fact_id": fact_id, "subject": existing.subject, "statement": existing.statement,
-         "by": "principal" if principal else "teammate"},
+         "by": "principal" if principal else "teammate",
+         **({} if principal else {"caller_person_id": caller})},
         actor="principal" if principal else "teammate",
     )
     return retired

@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS facts (
     retired_reason TEXT NOT NULL DEFAULT '',
     recorded_by_role TEXT NOT NULL DEFAULT 'principal',
     recorded_by_name TEXT NOT NULL DEFAULT '',
-    replaces_fact_id INTEGER
+    replaces_fact_id INTEGER,
+    approved_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject_key, status);
@@ -119,6 +120,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("recorded_by_role", "TEXT NOT NULL DEFAULT 'principal'"),
     ("recorded_by_name", "TEXT NOT NULL DEFAULT ''"),
     ("replaces_fact_id", "INTEGER"),
+    ("approved_at", "TEXT"),
 )
 
 
@@ -147,6 +149,15 @@ class Fact(BaseModel):
     recorded_by_name: str = ""
     # A proposed row: the active fact it would replace once approved.
     replaces_fact_id: int | None = None
+    # When the principal approved a teammate's proposal. From then on it
+    # outranks teammates as the principal's own fact does: no teammate may
+    # replace or retire it.
+    approved_at: str | None = None
+
+    @property
+    def principal_owned(self) -> bool:
+        """The principal's own fact, or one they approved."""
+        return self.recorded_by_role == "principal" or self.approved_at is not None
 
 
 class PrincipalFactConflict(Exception):  # noqa: N818 - a refusal, not an error.
@@ -226,6 +237,7 @@ def _row(r: sqlite3.Row) -> Fact:
         recorded_by_role=_col(r, "recorded_by_role", "principal"),
         recorded_by_name=_col(r, "recorded_by_name", ""),
         replaces_fact_id=_col(r, "replaces_fact_id", None),
+        approved_at=_col(r, "approved_at", None),
     )
 
 
@@ -259,7 +271,8 @@ def record_fact(
     that names the wrong value in ``previous_statement``.
 
     A teammate's row (``recorded_by_role="teammate"``) may replace another
-    teammate's but never the principal's: that raises
+    teammate's but never the principal's, nor one the principal approved:
+    that raises
     ``PrincipalFactConflict`` and stores nothing. ``proposed=True`` stores the
     row as ``proposed`` and replaces nothing yet (``approve_fact`` does).
     """
@@ -288,7 +301,7 @@ def record_fact(
             ).fetchall()
         replaced = [_row(r) for r in rows]
         if recorded_by_role == "teammate" and not proposed:
-            outranks = next((f for f in replaced if f.recorded_by_role == "principal"), None)
+            outranks = next((f for f in replaced if f.principal_owned), None)
             if outranks is not None:
                 raise PrincipalFactConflict(outranks)
         previous = _clean(previous_statement, STATEMENT_MAX)
@@ -333,8 +346,9 @@ def record_fact(
 def approve_fact(fact_id: int, db_path: Path | None = None) -> tuple[Fact, list[Fact]] | None:
     """Make a proposed fact active, replacing — as it was proposed to — the
     fact it named and every active fact with its subject, the principal's
-    included: approving it is the principal's own word. None when the row is
-    no longer proposed."""
+    included: approving it is the principal's own word, so it is stamped
+    ``approved_at`` and outranks teammates from then on (``principal_owned``).
+    None when the row is no longer proposed."""
     with _conn(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         r = conn.execute(
@@ -353,8 +367,8 @@ def approve_fact(fact_id: int, db_path: Path | None = None) -> tuple[Fact, list[
         previous = proposal.previous_statement or (superseded[0].statement if superseded else "")
         kind: FactKind = "correction" if (superseded or previous) else proposal.kind
         conn.execute(
-            "UPDATE facts SET status='active', kind=?, previous_statement=? WHERE id=?",
-            (kind, previous, fact_id),
+            "UPDATE facts SET status='active', kind=?, previous_statement=?, approved_at=? WHERE id=?",
+            (kind, previous, datetime.now(UTC).isoformat(), fact_id),
         )
         for old in superseded:
             conn.execute(
@@ -423,15 +437,21 @@ def get_fact(fact_id: int, db_path: Path | None = None) -> Fact | None:
 def list_facts(
     *,
     include_inactive: bool = False,
+    statuses: tuple[FactStatus, ...] | None = None,
     limit: int = 200,
     db_path: Path | None = None,
 ) -> list[Fact]:
-    """Newest first. Active rows only unless ``include_inactive``."""
-    where = "" if include_inactive else "WHERE status='active'"
+    """Newest first. Active rows only unless ``include_inactive``, or exactly
+    ``statuses`` when given (filtered before the limit)."""
+    if statuses is not None:
+        wanted: tuple[str, ...] = tuple(statuses) or ("active",)
+    else:
+        wanted = () if include_inactive else ("active",)
+    where = f"WHERE status IN ({','.join('?' * len(wanted))})" if wanted else ""
     with _conn(db_path) as conn:
         rows = conn.execute(
-            f"SELECT * FROM facts {where} ORDER BY created_at DESC, id DESC LIMIT ?",  # noqa: S608 - fixed clause
-            (max(1, limit),),
+            f"SELECT * FROM facts {where} ORDER BY created_at DESC, id DESC LIMIT ?",  # noqa: S608 - placeholders only
+            (*wanted, max(1, limit)),
         ).fetchall()
     return [_row(r) for r in rows]
 
@@ -542,13 +562,22 @@ def render_facts_for_prompt(
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def render_teammate_changes(since: datetime, *, limit: int = 15, db_path: Path | None = None) -> str:
+def render_teammate_changes(
+    since: datetime,
+    *,
+    include_proposed: bool = True,
+    limit: int = 15,
+    db_path: Path | None = None,
+) -> str:
     """The standalone briefs' FYI: facts teammates recorded since ``since``
-    (the last brief), newest first — in force now, or waiting for the
-    principal's approval. "" when none. Read-only; never raises."""
+    (the last brief), newest first — in force now, and, with
+    ``include_proposed``, those waiting for the principal's approval (theirs
+    alone to see: pass it only for a brief the principal reads privately).
+    "" when none. Read-only; never raises."""
+    statuses = "('active', 'proposed')" if include_proposed else "('active')"
     rows = _read_only_rows(
         "SELECT * FROM facts WHERE recorded_by_role='teammate' AND kind!='profile' "
-        "AND status IN ('active', 'proposed') AND created_at >= ? "
+        f"AND status IN {statuses} AND created_at >= ? "  # noqa: S608 - fixed clause
         "ORDER BY created_at DESC, id DESC LIMIT ?",
         (since.astimezone(UTC).isoformat(), max(1, limit)),
         db_path,

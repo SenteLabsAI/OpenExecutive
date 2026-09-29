@@ -229,11 +229,25 @@ class MorningBriefWorkflow(Workflow):
         # The reflection's notes are written from what everyone may see (it
         # reads the board without private rows), so any run may carry them.
         reflection_flags = brief_state.reflection_flags_since(since)
+        # Corrections teammates made since the last brief: the principal's
+        # FYI (memory.facts). What waits for their approval is theirs alone
+        # (GET /memories/facts hides it from other teammates), so a brief any
+        # teammate may run lists only what is in force.
+        from openexecutive.memory.facts import render_teammate_changes
+
+        teammate_changes = await asyncio.to_thread(
+            render_teammate_changes, since, include_proposed=private_ok,
+        )
+        in_force_changes = (
+            await asyncio.to_thread(render_teammate_changes, since, include_proposed=False)
+            if private_ok else teammate_changes
+        )
         # Did this brief actually draw on anything private to the principal?
         # Then its text stays out of the shared run history (the principal
         # gets it where it is delivered).
         private_used = private_ok and (
-            live.calendar is not None
+            teammate_changes != in_force_changes
+            or live.calendar is not None
             or any(
                 str(t).lower() == PRIVATE_ALERT_TAG
                 for p in today_data["proposals"] for t in p.get("topic_tags") or []
@@ -254,11 +268,6 @@ class MorningBriefWorkflow(Workflow):
 
         handled = brief_state.handled_since(since)
         pending_suggestions = brief_state.pending_watch_suggestions()
-        # Corrections teammates made since the last brief: the principal's
-        # FYI (memory.facts), in force now or waiting for their approval.
-        from openexecutive.memory.facts import render_teammate_changes
-
-        teammate_changes = await asyncio.to_thread(render_teammate_changes, since)
         fingerprint = brief_state.build_brief_fingerprint(
             today_data=today_data, activity=activity, handled=handled, since=since,
             pending_watch_suggestions=pending_suggestions, mode=mode,

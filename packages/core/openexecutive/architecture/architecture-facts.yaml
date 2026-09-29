@@ -1705,14 +1705,21 @@ memory:
         every write from that teammate is `proposed`. The tool answers
         `awaiting_approval` (no chip). `approve_fact` → active, supersedes
         what it names (the principal's own included — approval is their
-        word); `decline_fact` → `declined`. forget_fact and
-        update_company_profile stay principal-only; a teammate retires only
-        their own facts, from the Pulse page. Columns added by `_migrate` on
+        word) and stamps `approved_at`: from then on the row is
+        `principal_owned` (outranks teammates, principal-only to retire), so
+        approval is not a one-shot gate. `decline_fact` → `declined`.
+        forget_fact and update_company_profile stay principal-only; a
+        teammate retires only their own unapproved facts, from the Pulse
+        page. No field may contain `(per`, `[fact N]` or a `— YYYY-MM-DD`
+        stamp (`_marker_error`): the render adds those, so a stored one
+        would be a forged second attribution. Columns added by `_migrate` on
         first write (old rows read as the principal's; the read-only render
         tolerates an unmigrated DB).
       - BRIEF FYI: `facts.render_teammate_changes(since)` → the morning
-        brief's TEAMMATE CORRECTIONS SINCE LAST BRIEF block (active or
-        proposed teammate facts created in the window), rendered before the
+        brief's TEAMMATE CORRECTIONS SINCE LAST BRIEF block (active teammate
+        facts created in the window; proposed ones too only when
+        `_private_ok()` — any teammate may run the brief and its run history
+        is shared — and then `private_used`), rendered before the
         quiet check and carried in `build_brief_fingerprint(teammate_changes=)`
         so a correction alone un-suppresses the brief.
       - `source_quote` (at least 2 words / 8 chars) must appear, normalized

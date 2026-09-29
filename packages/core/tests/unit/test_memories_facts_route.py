@@ -223,3 +223,27 @@ def test_the_principal_sets_who_needs_approval(
     [row] = [r for r in db if r["event_type"] == "fact_approval_changed"]
     assert row["details"] == {"person_id": sam, "needs_approval": True} and row["private"] is True
     people_registry.invalidate()
+
+
+def test_an_approved_fact_is_the_principals_to_retire(
+    monkeypatch: pytest.MonkeyPatch, db: list[dict[str, Any]],
+) -> None:
+    sams = _teammate_fact(SAM, "Sam Lee", proposed=True)
+    facts.approve_fact(sams)
+    client = _as_teammate(monkeypatch, SAM)
+    assert client.get("/memories/facts").json()["retirable_ids"] == []
+    assert client.post(f"/memories/facts/{sams}/retire").status_code == 403
+    own = _teammate_fact(SAM, "Sam Lee", subject="Oak Row")
+    assert client.post(f"/memories/facts/{own}/retire").status_code == 200
+    [row] = [r for r in db if r["event_type"] == "fact_retired"]
+    assert row["details"]["caller_person_id"] == SAM
+
+
+def test_history_does_not_crowd_out_a_teammates_active_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _teammate_fact(SAM, "Sam Lee", subject="Oak Row")
+    for n in range(5):
+        facts.record_fact(subject="Units", statement=f"Maple House has {50 + n} units.", source_quote="q")
+    body = _as_teammate(monkeypatch, SAM).get("/memories/facts?limit=2").json()
+    ids = [f["id"] for f in body["facts"]]
+    assert len(ids) == 2 and all(facts.get_fact(i).status == "active" for i in ids)  # type: ignore[union-attr]
+    assert live in ids

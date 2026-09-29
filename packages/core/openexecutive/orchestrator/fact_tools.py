@@ -544,6 +544,25 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
     return None
 
 
+# What the STANDING FACTS render adds to each line itself: "[fact N]", a
+# teammate's "(per <name>)" and the "— YYYY-MM-DD" stamp. Inside a stored
+# field they would read as a second, forged marker ("… (per Olivia Owner) —
+# 2026-09-01" in a teammate's statement), so no field may carry one.
+_RENDER_MARKERS = re.compile(
+    r"\(\s*per\b|\[\s*fact\s*\d+\s*\]|[—–]\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE,
+)
+
+
+def _marker_error(label: str, text: str) -> str | None:
+    if _RENDER_MARKERS.search(text):
+        return (
+            f"the {label} may not contain '(per …)', '[fact N]' or a '— YYYY-MM-DD' "
+            "stamp: those mark who stated a fact and when, and are added when it "
+            "is shown. Leave them out."
+        )
+    return None
+
+
 _PREVIOUS_HINT = (
     " previous_value is optional: leave it out and a replaced standing fact's "
     "own statement is kept as what it corrects."
@@ -622,7 +641,7 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
     # the principal's own correction — and every stored field renders: the
     # subject as "[fact N] subject:", the previous value as "(corrects: …)".
     for label, text in (("statement", statement), ("subject", subject), ("previous_value", previous)):
-        claim_error = _claim_error(label, text, session)
+        claim_error = _marker_error(label, text) or _claim_error(label, text, session)
         if claim_error:
             return _bad(tool, claim_error, subject=subject[:120])
     replaces = _positive_int(tool_input.get("replaces_fact_id"))
