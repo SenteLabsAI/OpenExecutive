@@ -52,6 +52,13 @@ _CANCEL_WORDS = re.compile(r"\b(cancel|cancelled|no|reject|don['’]?t|do not)\b
 _HOLD_WORDS = re.compile(
     r"\b(not|never|unable|cannot|wait|hold|stop)\b|n['’]t\b", re.IGNORECASE,
 )
+# Where a signature starts: "-- ", a rule, or a phone client's footer line.
+# Everything from there on is read past ("Sent from my iPhone. Please don't
+# forward" must not turn a CONFIRM into unclear).
+_SIGNATURE_START = re.compile(
+    r"^[ \t]*(--[ \t]*|_{3,}|—{2,}|sent from my\b.*|get outlook for\b.*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 # Harmless "no"s, removed before reading the reply: "Confirm, no rush".
 _SOFT_NO = re.compile(
     r"\bno (rush|hurry|problems?|worries|worry|changes?|need|issues?|further)\b", re.IGNORECASE,
@@ -278,7 +285,9 @@ def _decision(text: str) -> str:
     all unclear, and they are asked again). A reply that opens with a cancel
     word, or holds only cancel words, cancels. A few harmless phrases ("no
     rush", "no changes") are read past. Every doubt falls on the side of not
-    applying."""
+    applying. A signature ("-- ", "Sent from my iPhone") is read past."""
+    signature = _SIGNATURE_START.search(text)
+    text = text[: signature.start()] if signature else text
     words = _SOFT_NO.sub(" ", text[:400])
     opening = words.lstrip(" \t\r\n>*_-\"',.;:!")[:20]
     if _CANCEL_WORDS.match(opening):
