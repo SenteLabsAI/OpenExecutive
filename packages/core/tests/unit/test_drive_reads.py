@@ -252,3 +252,13 @@ def test_delegate_mail_turn_records_nothing() -> None:
     assert not drive_reads.may_remember(session)
     session.turn_delegation = TurnDelegation(enabled=True)
     assert drive_reads.may_remember(session)
+
+
+def test_a_search_whose_lines_all_fail_is_not_an_empty_search(db: Path) -> None:
+    unparsable = (
+        "Found 1 files for ceo@example.com matching 'q':\n"
+        '- Name: "x" (ID: bad id!, Type: application/pdf) Link: https://drive.google.com/x'
+    )
+    assert drive_reads.parse_search_result(unparsable) is None
+    assert not drive_reads.record_drive_result("s1", 7, SEARCH, {"query": "q"}, unparsable)
+    assert drive_reads.format_drive_memory("s1", 7) == ""

@@ -162,7 +162,9 @@ def _summarize(body: str, mime_type: str) -> str:
 
 def parse_search_result(result_text: str) -> list[dict[str, str]] | None:
     """The files a ``search_drive_files`` result lists, ``[]`` for a search
-    that matched nothing, or None for anything else (an error, a refusal)."""
+    that matched nothing, or None for anything else (an error, a refusal, or
+    a search that matched files none of whose lines could be kept — that is
+    not "matched nothing")."""
     if result_text.startswith(_EMPTY_SEARCH_PREFIX):
         return []
     lines = result_text.splitlines()
@@ -179,7 +181,7 @@ def parse_search_result(result_text: str) -> list[dict[str, str]] | None:
                 "mime_type": fields[1],
                 "link": fields[2],
             })
-    return files
+    return files or None
 
 
 def parse_content_result(result_text: str) -> dict[str, str] | None:
