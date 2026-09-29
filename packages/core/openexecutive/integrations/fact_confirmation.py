@@ -16,9 +16,14 @@ applied, until the principal's own mailbox confirms it:
 2. The principal replies CONFIRM (or CANCEL). The email poller hands every
    inbound message to ``try_email_fact_confirmation`` before any model turn,
    as it does for roster-request answers. A reply counts only from the
-   principal's primary address, carrying a pending token, and not failing
-   DMARC; the change is then applied (``fact_tools.apply_confirmed``) and the
-   principal is told what happened.
+   principal's primary address, carrying a pending token, and passing DMARC
+   as Gmail recorded it (``authenticated_by_gmail``); the change is then
+   applied (``fact_tools.apply_confirmed``) and the principal is told what
+   happened.
+
+The request itself must pass the same check (``Session.email_authenticated``),
+so mail that only claims the principal's address cannot fill their inbox with
+confirmation requests.
 
 A token works once (a compare-and-set, so two replies cannot apply it twice)
 and expires after ``memory.facts.CONFIRM_TTL``. At most
@@ -31,6 +36,8 @@ import asyncio
 import json
 import logging
 import re
+from email.parser import HeaderParser
+from email.utils import parseaddr
 from typing import Any, Literal
 
 from openexecutive.memory import facts
@@ -41,7 +48,7 @@ _CONFIRM_WORDS = re.compile(r"\b(confirm|confirmed|yes|approve|approved)\b", re.
 _CANCEL_WORDS = re.compile(r"\b(cancel|cancelled|no|reject|don'?t|do not)\b", re.IGNORECASE)
 
 
-def _principal_address() -> str:
+def principal_address() -> str:
     """The principal's primary address — where confirmations go, and the only
     address a confirming reply may come from."""
     from openexecutive.people.store import find_principal_person
@@ -50,15 +57,69 @@ def _principal_address() -> str:
     return (principal.email or "").strip().lower() if principal is not None else ""
 
 
-def dmarc_failed(raw: str) -> bool:
-    """Whether the headers the Gmail tool printed report a DMARC failure."""
-    from openexecutive.integrations.email_poller import _split_gmail_content
+# Where get_gmail_message_content(body_format="raw") starts the RFC 5322 text.
+_RAW_MIME_MARKER = "--- RAW MIME ---"
+# The authserv-id Gmail stamps on the Authentication-Results of mail it receives.
+_GMAIL_AUTHSERV = "mx.google.com"
+_HEADER_FROM = re.compile(r"\bheader\.from=([^\s;()]+)")
 
-    header, _body, _att = _split_gmail_content(raw)
-    return any(
-        line.strip().lower().startswith("authentication-results:") and "dmarc=fail" in line.lower()
-        for line in header
+
+def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
+    """Whether a raw message (``get_gmail_message_content`` with
+    ``body_format="raw"``) shows Gmail found ``from_addr``'s domain
+    authenticated. Only the topmost Authentication-Results header counts:
+    Gmail adds it on receipt, above every header the sender wrote, so a forged
+    one sits below it. It must be Gmail's (``mx.google.com``) and report
+    ``dmarc=pass`` for the From domain, and the raw From must be
+    ``from_addr``. Anything missing or unreadable — no header, ``dmarc=none``,
+    a temporary error — is False: this gate fails closed."""
+    _before, marker, mime = raw.partition(_RAW_MIME_MARKER)
+    address = from_addr.strip().lower()
+    if not marker or "@" not in address:
+        return False
+    try:
+        headers = HeaderParser().parsestr(mime.lstrip("\r\n"), headersonly=True)
+        _name, raw_from = parseaddr(str(headers.get("From", "")))
+        results = headers.get_all("Authentication-Results") or []
+    except Exception:  # noqa: BLE001 - an unreadable message is not authenticated.
+        return False
+    if raw_from.strip().lower() != address or not results:
+        return False
+    newest = " ".join(str(results[0]).split()).lower()
+    authserv, _sep, rest = newest.partition(";")
+    if authserv.strip() != _GMAIL_AUTHSERV:
+        return False
+    dmarc = next((c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")), "")
+    header_from = _HEADER_FROM.search(dmarc)
+    return (
+        re.match(r"dmarc=pass\b", dmarc) is not None
+        and header_from is not None
+        and header_from.group(1) == address.rsplit("@", 1)[1]
     )
+
+
+async def sender_authenticated(gateway: Any, message_id: str, from_addr: str) -> bool:
+    """Whether Gmail authenticated the sender of message ``message_id``
+    (``authenticated_by_gmail``). The text the poller reads doesn't carry
+    Authentication-Results — workspace-mcp prints a fixed set of headers — so
+    this fetches the raw message. Never raises; False on any failure."""
+    from openexecutive.config import get_settings
+
+    if gateway is None or not message_id:
+        return False
+    try:
+        raw = await gateway.call_tool({
+            "name": "google_workspace__get_gmail_message_content",
+            "arguments": {
+                "message_id": message_id,
+                "user_google_email": get_settings().exec_email_address,
+                "body_format": "raw",
+            },
+        })
+    except Exception:  # noqa: BLE001 - unauthenticated, as below.
+        logger.warning("fact_confirmation: reading message %s raw failed", message_id, exc_info=True)
+        return False
+    return authenticated_by_gmail(str(raw or ""), from_addr)
 
 
 def _audit(summary: str, details: dict[str, Any]) -> None:
@@ -122,7 +183,7 @@ async def request_confirmation(action: dict[str, Any], summary: str) -> str | No
                 "the principal to confirm them. Ask them to answer those first, or make "
                 "this change in the web app."
             )
-        to = await asyncio.to_thread(_principal_address)
+        to = await asyncio.to_thread(principal_address)
         if not to:
             return "there is no principal email address on the People list to confirm this with"
         conf_id, token = await asyncio.to_thread(facts.hold_confirmation, action, summary)
@@ -190,7 +251,7 @@ async def try_email_fact_confirmation(
     tokens = facts.find_confirmation_tokens(raw)
     if not tokens:
         return False
-    principal = await asyncio.to_thread(_principal_address)
+    principal = await asyncio.to_thread(principal_address)
     if not principal or from_addr.strip().lower() != principal:
         return False
     conf = None
@@ -199,30 +260,28 @@ async def try_email_fact_confirmation(
         if conf is not None:
             break
     if conf is None:
+        # A spent, expired or made-up token: not an answer. The mail goes on
+        # to the ordinary path with the token hidden, and gets no reply here,
+        # so an old token cannot make the Executive email the principal.
         _audit(
-            "A reply to a fact confirmation carried no known reference",
-            {"message_id": message_id, "status": "unknown_token"},
+            "A reply to a fact confirmation carried no live reference",
+            {"message_id": message_id, "status": "no_live_token"},
         )
         return False
-    # Only after a real token matched: a forged mail with a made-up reference
-    # must not be able to make the Executive email the principal.
-    if dmarc_failed(raw):
-        _audit(
-            "A reply to a fact confirmation failed DMARC",
-            {"message_id": message_id, "confirmation_id": conf.id, "status": "refused_dmarc"},
-        )
-        await _reply(principal, (
-            "A reply to one of my confirmation emails claimed to be from you but "
-            "failed an authenticity check (DMARC), so I didn't act on it. If it was "
-            "you, reply again from your own mail."
-        ))
-        return True
     if _auto_or_bulk_headers(raw):
         return False
-    if conf.status != "pending":
+    # Only after a live token matched: a forged mail without one never makes
+    # the Executive email the principal, or fetch anything.
+    if not await sender_authenticated(gateway, message_id, from_addr):
+        _audit(
+            "A reply to a fact confirmation was not authenticated",
+            {"message_id": message_id, "confirmation_id": conf.id, "status": "refused_unauthenticated"},
+        )
         await _reply(principal, (
-            "That confirmation isn't waiting any more: it was already used, "
-            "cancelled, or it expired. Ask me again if you still want the change.\n\n"
+            "A reply to one of my confirmation emails claimed to be from you, but "
+            "Gmail couldn't confirm it came from your mail server (it didn't pass "
+            "DMARC), so I didn't act on it. The change is still waiting; if it was "
+            "you, reply again from your own mailbox.\n\n"
             f"  {conf.summary}"
         ))
         return True
@@ -264,7 +323,9 @@ async def _reply(to: str, text: str) -> None:
 
 
 __all__ = [
-    "dmarc_failed",
+    "authenticated_by_gmail",
+    "principal_address",
     "request_confirmation",
+    "sender_authenticated",
     "try_email_fact_confirmation",
 ]

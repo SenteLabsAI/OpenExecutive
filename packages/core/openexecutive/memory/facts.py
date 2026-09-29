@@ -440,8 +440,9 @@ def find_confirmation_tokens(text: str) -> list[str]:
 
 
 def find_confirmation(token: str, db_path: Path | None = None) -> Confirmation | None:
-    """The confirmation this token was issued for, whatever its status (so a
-    reply to a spent or expired one can be told so), or None."""
+    """The pending confirmation this token was issued for, or None. A spent,
+    cancelled or expired token matches nothing, so a reply carrying one is
+    read like any other mail and never makes the Executive answer it."""
     if not re.fullmatch(r"FC-[A-Z2-7]{20}", (token or "").strip().upper()):
         return None
     path = _db_path(db_path)
@@ -451,7 +452,8 @@ def find_confirmation(token: str, db_path: Path | None = None) -> Confirmation |
     with _conn(db_path) as conn:
         _expire_stale(conn, now)
         r = conn.execute(
-            "SELECT * FROM fact_confirmations WHERE token_hash=?", (_hash_token(token),),
+            "SELECT * FROM fact_confirmations WHERE token_hash=? AND status='pending'",
+            (_hash_token(token),),
         ).fetchone()
     return _confirmation(r) if r else None
 

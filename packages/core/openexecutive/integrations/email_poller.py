@@ -826,13 +826,21 @@ async def _run_executive(
         session_kwargs["session_id"] = session_id
     session = Session(**session_kwargs)
     if from_addr:
-        # Who the mail claims to be from, and whether it passed DMARC: the
-        # fact tools let the principal's own authenticated mail ask for a
-        # standing fact, held until they confirm it by reply.
-        from openexecutive.integrations.fact_confirmation import dmarc_failed
+        # Who the mail claims to be from, and whether Gmail authenticated it:
+        # the fact tools let the principal's own authenticated mail ask for a
+        # standing fact, held until they confirm it by reply. Only mail
+        # claiming the principal's primary address is checked (it costs a
+        # second read of the message); everything else stays unauthenticated.
+        from openexecutive.integrations.fact_confirmation import (
+            principal_address,
+            sender_authenticated,
+        )
 
         session.email_from = from_addr.strip().lower()
-        session.email_authenticated = not dmarc_failed(raw_email)
+        principal = await asyncio.to_thread(principal_address)
+        session.email_authenticated = bool(principal) and session.email_from == principal and (
+            await sender_authenticated(gateway, message_id, from_addr)
+        )
     if from_addr:
         # Only register the sender as a schedulable channel_ref if they
         # are in the People roster. Without this guard, an attacker who

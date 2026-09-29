@@ -8,6 +8,7 @@ address, comes back in their reply. A From line alone proves nothing.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -116,8 +117,28 @@ def _reply(token: str, text: str, *, sender: str = OWNER, headers: str = "") -> 
     )
 
 
-def _answer(raw: str, sender: str = OWNER) -> bool:
-    return asyncio.run(fc.try_email_fact_confirmation(None, raw, sender, "m-reply"))
+GMAIL_PASS = (
+    "Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@northwind.test;"
+    "\r\n       spf=pass smtp.mailfrom=owner@northwind.test;"
+    "\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=northwind.test"
+)
+
+
+def _raw_mime(*headers: str, sender: str = OWNER) -> str:
+    """What get_gmail_message_content(body_format="raw") returns: the printed
+    headers, then the RFC 5322 message with Gmail's stamp on top."""
+    lines = "\r\n".join([*headers, f"From: Olivia <{sender}>", "Subject: Re: units"])
+    return f"Subject: Re: units\nFrom: {sender}\n\n--- RAW MIME ---\n{lines}\r\n\r\nCONFIRM\r\n"
+
+
+def _mailbox(*headers: str, sender: str = OWNER) -> SimpleNamespace:
+    """The Executive's mailbox, answering the raw read of the reply."""
+    return SimpleNamespace(call_tool=AsyncMock(return_value=_raw_mime(*headers, sender=sender)))
+
+
+def _answer(raw: str, sender: str = OWNER, mailbox: Any = None) -> bool:
+    mailbox = mailbox if mailbox is not None else _mailbox(GMAIL_PASS)
+    return asyncio.run(fc.try_email_fact_confirmation(mailbox, raw, sender, "m-reply"))
 
 
 # --------------------------------------------------------------------------- #
@@ -221,11 +242,13 @@ def test_confirm_applies_it_once_and_tells_the_principal(
     assert fact.source_quote == "Maple House is 48 units, not 52"
     [done] = _sent(gateway)
     assert done["to"] == OWNER and done["body"].startswith("Done")
-    # The same token again changes nothing.
+    # The same token again changes nothing, and gets no answer: a spent token
+    # is not a reply, so it cannot make the Executive email anyone.
     gateway.reset_mock()
-    assert _answer(_reply(token, "confirm")) is True
+    mailbox = _mailbox(GMAIL_PASS)
+    assert _answer(_reply(token, "confirm"), mailbox=mailbox) is False
     assert len(facts.list_facts(include_inactive=True)) == 1
-    assert "isn't waiting any more" in _sent(gateway)[0]["body"]
+    assert _sent(gateway) == [] and mailbox.call_tool.await_count == 0
 
 
 def test_cancel_drops_it(monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock) -> None:
@@ -250,19 +273,31 @@ def test_a_reply_from_anyone_else_is_not_an_answer(
     assert facts.list_facts(include_inactive=True) == [] and _sent(gateway) == []
 
 
-def test_a_reply_failing_dmarc_is_refused(monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock) -> None:
+@pytest.mark.parametrize(
+    "auth",
+    [
+        "Authentication-Results: mx.google.com; dmarc=fail (p=NONE) header.from=northwind.test",
+        "Authentication-Results: mx.google.com; dmarc=none header.from=northwind.test",
+        None,
+    ],
+    ids=["dmarc-fail", "dmarc-none", "no-header"],
+)
+def test_a_reply_gmail_did_not_authenticate_is_refused(
+    monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock, auth: str | None,
+) -> None:
     token = _held_token(monkeypatch, gateway)
-    raw = _reply(token, "CONFIRM", headers="Authentication-Results: mx; dmarc=fail")
-    assert _answer(raw) is True
+    mailbox = _mailbox(*([auth] if auth else []))
+    assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.list_facts(include_inactive=True) == [] and facts.pending_confirmation_count() == 1
-    assert "failed an authenticity check" in _sent(gateway)[0]["body"]
+    [warning] = _sent(gateway)
+    assert "didn't pass DMARC" in warning["body"] and warning["to"] == OWNER
 
 
 def test_a_made_up_reference_does_nothing_and_sends_nothing(gateway: AsyncMock) -> None:
     fake = "FC-" + "A" * 20
-    raw = _reply(fake, "CONFIRM", headers="Authentication-Results: mx; dmarc=fail")
-    assert _answer(raw) is False
-    assert _sent(gateway) == []
+    mailbox = _mailbox()
+    assert _answer(_reply(fake, "CONFIRM"), mailbox=mailbox) is False
+    assert _sent(gateway) == [] and mailbox.call_tool.await_count == 0
 
 
 def test_an_expired_confirmation_cannot_be_used(
@@ -272,9 +307,8 @@ def test_an_expired_confirmation_cannot_be_used(
     past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     with sqlite3.connect(str(episodic.DB_PATH)) as conn:
         conn.execute("UPDATE fact_confirmations SET expires_at=?", (past,))
-    assert _answer(_reply(token, "CONFIRM")) is True
-    assert facts.list_facts(include_inactive=True) == []
-    assert "isn't waiting any more" in _sent(gateway)[0]["body"]
+    assert _answer(_reply(token, "CONFIRM")) is False
+    assert facts.list_facts(include_inactive=True) == [] and _sent(gateway) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -347,9 +381,49 @@ def test_the_gateway_hides_confirmation_tokens_from_every_read() -> None:
     assert hide_roster_tokens(text) == "Subject: Confirm [FC-[hidden]] and roster RR-[hidden]"
 
 
-def test_dmarc_failed() -> None:
-    assert fc.dmarc_failed("Subject: x\nAuthentication-Results: mx; dmarc=fail\n\n--- BODY ---\nhi\n")
-    assert not fc.dmarc_failed("Subject: x\nAuthentication-Results: mx; dmarc=pass\n\n--- BODY ---\nhi\n")
+def test_the_owners_own_mailbox_hides_tokens_from_the_drafting_model() -> None:
+    from openexecutive.delegation.gmail import parse_message
+
+    token = "FC-" + "D" * 20
+    body = base64.urlsafe_b64encode(f"Reply CONFIRM.\n(Reference {token})".encode()).decode()
+    message = parse_message({"id": "m1", "threadId": "t1", "payload": {
+        "mimeType": "text/plain", "body": {"data": body},
+        "headers": [{"name": "Subject", "value": f"Confirm a change [{token}]"},
+                    {"name": "From", "value": EXEC}],
+    }})
+    assert token not in message.subject + message.text
+    assert "FC-[hidden]" in message.subject and "FC-[hidden]" in message.text
+
+
+@pytest.mark.parametrize(
+    ("headers", "sender", "ok"),
+    [
+        ((GMAIL_PASS,), OWNER, True),
+        (("Authentication-Results: mx.google.com; dmarc=pass header.from=northwind.test",),
+         OWNER, True),
+        ((), OWNER, False),
+        (("Authentication-Results: mx.google.com; dmarc=none header.from=northwind.test",), OWNER, False),
+        (("Authentication-Results: mx.google.com; dmarc=temperror header.from=northwind.test",),
+         OWNER, False),
+        (("Authentication-Results: mx.google.com; dmarc=fail header.from=northwind.test",), OWNER, False),
+        # Gmail's stamp is the topmost; a pass the sender wrote lower down is theirs, not Gmail's.
+        (("Authentication-Results: mx.google.com; dmarc=fail header.from=northwind.test",
+          "Authentication-Results: mx.google.com; dmarc=pass header.from=northwind.test"), OWNER, False),
+        (("Authentication-Results: mx.evil.test; dmarc=pass header.from=northwind.test",), OWNER, False),
+        (("Authentication-Results: mx.google.com; dmarc=pass header.from=evil.test",), OWNER, False),
+        ((GMAIL_PASS,), "mallory@northwind.test", False),
+    ],
+    ids=["gmail-pass", "one-line-pass", "no-header", "dmarc-none", "temperror", "dmarc-fail",
+         "forged-pass-below", "not-gmail", "other-domain", "raw-from-differs"],
+)
+def test_authenticated_by_gmail(headers: tuple[str, ...], sender: str, ok: bool) -> None:
+    raw = _raw_mime(*headers, sender=sender)
+    assert fc.authenticated_by_gmail(raw, OWNER) is ok
+
+
+def test_authenticated_by_gmail_needs_the_raw_message() -> None:
+    printed = f"Subject: x\nFrom: {OWNER}\n{GMAIL_PASS}\n\n--- BODY ---\nhi\n"
+    assert fc.authenticated_by_gmail(printed, OWNER) is False
 
 
 def test_the_poller_hands_a_confirming_reply_over_before_any_turn(
@@ -357,7 +431,12 @@ def test_the_poller_hands_a_confirming_reply_over_before_any_turn(
 ) -> None:
     token = _held_token(monkeypatch, gateway)
     inbox = AsyncMock()
-    inbox.call_tool = AsyncMock(return_value=_reply(token, "CONFIRM"))
+
+    async def read(call: dict[str, Any]) -> str:
+        raw = call["arguments"].get("body_format") == "raw"
+        return _raw_mime(GMAIL_PASS) if raw else _reply(token, "CONFIRM")
+
+    inbox.call_tool = AsyncMock(side_effect=read)
     settings = SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)
     with (
         patch.object(poller, "get_settings", return_value=settings),
@@ -369,7 +448,19 @@ def test_the_poller_hands_a_confirming_reply_over_before_any_turn(
     assert [f.statement for f in facts.list_facts()] == ["Maple House has 48 units."]
 
 
-def test_the_poller_marks_the_session_with_the_sender_and_dmarc() -> None:
+@pytest.mark.parametrize(
+    ("sender", "mailbox_headers", "authenticated", "raw_reads"),
+    [
+        (OWNER.upper(), (GMAIL_PASS,), True, 1),
+        (OWNER.upper(), (), False, 1),
+        # Only mail claiming the principal's address is worth a second read.
+        ("someone@else.test", (GMAIL_PASS,), False, 0),
+    ],
+    ids=["principal-authenticated", "principal-unauthenticated", "someone-else"],
+)
+def test_the_poller_marks_the_session_with_the_sender_and_authentication(
+    sender: str, mailbox_headers: tuple[str, ...], authenticated: bool, raw_reads: int,
+) -> None:
     captured: dict[str, Any] = {}
 
     class _Exec:
@@ -380,10 +471,8 @@ def test_the_poller_marks_the_session_with_the_sender_and_dmarc() -> None:
             captured["session"] = kwargs["session"]
             return "ok"
 
-    raw = (
-        f"Subject: Units\nFrom: Olivia <{OWNER.upper()}>\n"
-        "Authentication-Results: mx; dmarc=pass\n\n--- BODY ---\nMaple House is 48 units.\n"
-    )
+    raw = f"Subject: Units\nFrom: Olivia <{sender}>\n\n--- BODY ---\nMaple House is 48 units.\n"
+    mailbox = _mailbox(*mailbox_headers, sender=sender.lower())
     with (
         patch("openexecutive.orchestrator.executive.Executive", new=_Exec),
         patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
@@ -392,10 +481,14 @@ def test_the_poller_marks_the_session_with_the_sender_and_dmarc() -> None:
         patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
         patch.object(poller, "get_settings",
                      return_value=SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)),
+        patch("openexecutive.config.get_settings",
+              return_value=SimpleNamespace(exec_email_address=EXEC)),
     ):
         asyncio.run(poller._run_executive(
-            gateway=AsyncMock(), raw_email=raw, message_id="m1", thread_id="t1",
-            from_addr=OWNER.upper(),
+            gateway=mailbox, raw_email=raw, message_id="m1", thread_id="t1",  # type: ignore[arg-type]
+            from_addr=sender,
         ))
     session = captured["session"]
-    assert session.email_from == OWNER and session.email_authenticated is True
+    assert session.email_from == sender.lower()
+    assert session.email_authenticated is authenticated
+    assert mailbox.call_tool.await_count == raw_reads

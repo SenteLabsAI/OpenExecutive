@@ -88,9 +88,11 @@ class Session:
     # may not draft a team-visible artifact. Set by the email poller.
     private_to_principal: bool = False
     # The bare, lowercased From address of the inbound email this turn is
-    # answering, and whether that mail passed DMARC (no "dmarc=fail" in its
-    # Authentication-Results). Set by the email poller only; empty / False on
-    # every other surface. The fact tools read them to let the principal's own
+    # answering, and whether it is the principal's primary address with
+    # Gmail's own Authentication-Results reporting dmarc=pass for it
+    # (``integrations.fact_confirmation.authenticated_by_gmail``; fails
+    # closed). Set by the email poller only; empty / False on every other
+    # surface. The fact tools read them to let the principal's own
     # email request a standing fact, held until a token reply confirms it
     # (``orchestrator.fact_tools``) — a From line alone proves nothing.
     email_from: str = ""

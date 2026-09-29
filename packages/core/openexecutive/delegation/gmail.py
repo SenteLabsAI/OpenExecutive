@@ -350,8 +350,20 @@ def _addresses(value: str) -> list[str]:
     return [normalize_email(addr) for _, addr in getaddresses([value]) if "@" in addr]
 
 
+def _hide_tokens(text: str) -> str:
+    """``text`` with the Executive's one-time answer tokens hidden. The
+    owner's own mailbox holds the roster and standing-fact confirmation
+    emails the Executive sent them; the drafting model must never read a live
+    token (``mcp_gateway.hide_roster_tokens`` does the same for the
+    Executive's mailbox)."""
+    from openexecutive.orchestrator.mcp_gateway import hide_roster_tokens
+
+    return hide_roster_tokens(text)
+
+
 def parse_message(raw: dict[str, Any]) -> MailMessage:
-    """A Gmail API ``format=full`` message as a ``MailMessage``."""
+    """A Gmail API ``format=full`` message as a ``MailMessage``, with any
+    one-time answer token hidden (``_hide_tokens``)."""
     raw_payload = raw.get("payload")
     payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
     headers = _headers(payload)
@@ -366,12 +378,12 @@ def parse_message(raw: dict[str, Any]) -> MailMessage:
         to=_addresses(headers.get("to", "")),
         cc=_addresses(headers.get("cc", "")),
         reply_to=",".join(_addresses(headers.get("reply-to", ""))),
-        subject=headers.get("subject", "").strip(),
+        subject=_hide_tokens(headers.get("subject", "").strip()),
         date=headers.get("date", "").strip(),
         message_id_header=headers.get("message-id", "").strip(),
         references=headers.get("references", "").strip(),
         labels=[str(label) for label in raw.get("labelIds") or []],
-        text=_body_text(payload),
+        text=_hide_tokens(_body_text(payload)),
         mailing_list=bool(headers.get("list-unsubscribe") or headers.get("list-id")),
         auto_generated=auto or "calendar-notification" in headers.get("sender", "").lower(),
         ghostwritten=bool(headers.get(GHOSTWRITTEN_HEADER.lower())),
@@ -595,7 +607,7 @@ class DelegateGmail:
                 headers = _headers(messages[-1].get("payload") or {}) if messages else {}
                 summaries.append(ThreadSummary(
                     id=thread_id,
-                    subject=headers.get("subject", ""),
+                    subject=_hide_tokens(headers.get("subject", "")),
                     sender=headers.get("from", ""),
                     date=headers.get("date", ""),
                 ))

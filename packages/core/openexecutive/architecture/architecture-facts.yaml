@@ -1738,7 +1738,16 @@ memory:
     EMAIL (confirm by reply) — `integrations/fact_confirmation.py`,
     table `fact_confirmations` in memory/facts.py:
       - The email poller sets `Session.email_from` (lowercased From) and
-        `email_authenticated` (no dmarc=fail) on every email turn.
+        `email_authenticated` on every email turn. The poller's text read
+        never shows Authentication-Results (workspace-mcp prints a fixed
+        header set), so for mail claiming the principal's primary address it
+        re-reads the message as raw MIME (`sender_authenticated`) and needs
+        Gmail's own stamp: the TOPMOST Authentication-Results (added on
+        receipt, above sender-written headers), authserv-id mx.google.com,
+        dmarc=pass with header.from = the From domain, raw From matching
+        (`authenticated_by_gmail`). Fails closed (absent header, dmarc=none,
+        temperror, read failure). Anyone else: no second read, never
+        authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY
         address (exact; no alias / domain rule), authenticated, and not
         private_to_principal (forwarded mail and contacts stay refused).
@@ -1750,17 +1759,22 @@ memory:
         a failed send holds nothing. Profile edits are dry-run first.
       - The token never reaches a model: absent from the tool result, and
         `mcp_gateway.hide_roster_tokens` scrubs `FC-` as well as `RR-` from
-        every Google Workspace result except the poller's inbound fetch.
+        every Google Workspace result except the poller's inbound fetch;
+        Act as me's reads of the principal's own Gmail
+        (`delegation.gmail.parse_message`, thread search) hide them too.
       - `try_email_fact_confirmation` runs in `_handle_one_email` right after
         the roster-answer check, before any model turn: principal primary
-        address + a token this module issued (unknown tokens ignored
-        silently, so forged mail cannot trigger an email) → DMARC fail is
-        refused and the principal told → auto/bulk left alone → CONFIRM /
+        address + the token of a PENDING confirmation (made-up, spent,
+        cancelled or expired tokens match nothing and fall through to the
+        ordinary path, token hidden — no reply, so no token can make the
+        Executive email the principal) → auto/bulk left alone → not
+        authenticated by Gmail (same check as the request) is refused, still
+        waiting, principal told → CONFIRM /
         yes applies via `fact_tools.apply_confirmed` (the same apply step as
         chat), CANCEL / no drops, unclear keeps waiting. A compare-and-set
-        makes a token single-use; spent / expired tokens are answered.
+        makes a token single-use.
       - Audit: private `fact_confirmation` rows (held / applied / cancelled
-        / refused_dmarc / unknown_token); the applied change writes the
+        / refused_unauthenticated / no_live_token); the applied change writes the
         tools' usual private rows with source_channel "email".
     SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
     `POST /memories/facts/{id}/retire`, principal only). Other viewers get
