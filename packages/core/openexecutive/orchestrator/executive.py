@@ -83,7 +83,12 @@ from openexecutive.orchestrator.form_tools import (
     PROPOSE_FORM_VALUES,
     build_form_patch_event,
 )
-from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES, MCP_TOOLS, MCPGateway
+from openexecutive.orchestrator.mcp_gateway import (
+    MCP_TOOL_NAMES,
+    MCP_TOOLS,
+    MCPGateway,
+    gateway_server_names,
+)
 from openexecutive.orchestrator.open_loop_tools import (
     OPEN_LOOP_TOOL_HANDLERS,
     OPEN_LOOP_TOOLS,
@@ -841,6 +846,7 @@ class Executive:
             principal_role=principal_role if workspace_mode == "solo" else None,
             include_contacts=_contacts_in_prompt(session),
             delegation=block0_delegation_on(session),
+            mcp_servers=gateway_server_names(self._mcp_gateway),
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -1144,6 +1150,7 @@ class Executive:
             principal_role=principal_role if workspace_mode == "solo" else None,
             include_contacts=_contacts_in_prompt(session),
             delegation=block0_delegation_on(session),
+            mcp_servers=gateway_server_names(self._mcp_gateway),
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.

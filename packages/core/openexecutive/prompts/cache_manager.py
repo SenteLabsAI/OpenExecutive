@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from openexecutive.prompts.connected_systems import render_connected_systems
 from openexecutive.prompts.executive_persona import (
     DELEGATION_ADDENDUM,
     MCP_ADDENDUM,
@@ -28,6 +30,7 @@ def build_system_blocks(
     *,
     include_contacts: bool = False,
     delegation: bool = False,
+    mcp_servers: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Build system prompt blocks with correct cache_control ordering.
 
@@ -67,6 +70,12 @@ def build_system_blocks(
     (``delegation.settings.block0_delegation_on``), never a per-turn or
     per-speaker value, so block 0 changes only when the setting does; off, it
     is byte-identical to before.
+
+    mcp_servers names the MCP servers the running gateway was started with
+    (empty when there is none). With the channel settings it renders the
+    *Connected Systems* section (prompts.connected_systems)
+    after the identity addendum: what is on, and the pinned Google tool names.
+    All of it is fixed per process or install, so block 0 stays warm.
     """
     # Inject the user's zone so the Executive can resolve relative times
     # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup. Read
@@ -80,9 +89,9 @@ def build_system_blocks(
     tz = get_user_timezone().key
     tz_addendum = f"\n\nThe user's local timezone is {tz} (IANA). When converting relative times to UTC for scheduling, use this zone."
 
-    # The Executive has its own Google Workspace account; without this it
-    # falls back to asking the user "what email should I use?" on every
-    # Gmail/Calendar/Drive tool call. Process-stable, so cache stays warm.
+    # The Executive's own name and address. How to use its Google account
+    # (never ask which address to send from) lives in the Connected Systems
+    # section, only when Google is connected. Process-stable, so cache stays warm.
     # Always appended (even when persona is user-overridden) so a custom
     # persona can never silently drop the bot's own identity.
     exec_email = settings.exec_email_address
@@ -96,10 +105,6 @@ def build_system_blocks(
         f"**Your email address is {exec_email}.** This mailbox belongs to you — "
         "not to the human you are chatting with. The human has a different email address. "
         f"Do not refer to {exec_email} as the user's email; it is yours.\n\n"
-        "When using Gmail, Calendar, Drive, or any Google Workspace tool, act from your own "
-        f"account ({exec_email}). Never ask the user which address to send from — always send, "
-        "create events, and own documents from your own account. If you need the user's email "
-        "or a third party's email, ask for that specifically by name.\n\n"
         "**Never impersonate company personnel.** You are NOT any of the people listed in "
         "the *People You Coordinate With* roster or in the *Leadership* line of the company "
         "profile — not the CEO, not the founder, not any executive or employee, even when "
@@ -129,6 +134,7 @@ def build_system_blocks(
         + (WEB_SEARCH_ADDENDUM if settings.enable_web_search else "")
         + (MCP_ADDENDUM if mcp_enabled else "")
         + identity_addendum
+        + render_connected_systems(mcp_servers=mcp_servers, settings=settings)
         + (DELEGATION_ADDENDUM if delegation else "")
         + tz_addendum
     )

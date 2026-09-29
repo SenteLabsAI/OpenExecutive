@@ -20,9 +20,9 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.1.0",
     "@tailwindcss/typography": "^0.5.20",
-    "@xyflow/react": "^12.11.6",
+    "@xyflow/react": "^12.12.0",
     "mermaid": "^12.0.0",
-    "next": "^16.3.5",
+    "next": "^16.3.6",
     "next-auth": "^5.0.0-beta.32",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -37,7 +37,7 @@
     "@types/react-dom": "^19",
     "autoprefixer": "^10.6.1",
     "eslint": "^10",
-    "eslint-config-next": "^16.3.5",
+    "eslint-config-next": "^16.3.6",
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
     "typescript": "^7"
