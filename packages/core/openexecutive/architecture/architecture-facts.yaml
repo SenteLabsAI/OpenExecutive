@@ -1782,11 +1782,16 @@ memory:
         (`authenticated_by_gmail`). Quoted strings and comments are stripped
         before the verdict is read (Gmail copies the envelope sender and
         DKIM tags into its own stamp, and a quoted local part could carry a
-        fake `dmarc=pass`), then exactly one dmarc= verdict must remain, as
-        the LAST resinfo, reading exactly `dmarc=pass header.from=<domain>`
-        (Gmail writes it last; anything else is echoed sender text). Fails
-        closed (absent header, dmarc=none, temperror, unbalanced quotes or
-        comments, two verdicts, a verdict not last, read failure). Anyone else: no second read, never
+        fake `dmarc=pass`), then exactly one dmarc= verdict must remain,
+        reading exactly `dmarc=pass header.from=<domain>` (Gmail may follow
+        it with its own `dara=` resinfo for Gmail / Workspace senders, so
+        its position is not checked). Fails closed (absent header,
+        dmarc=none, temperror, unbalanced quotes or comments, two verdicts,
+        extra text in the verdict, read failure). Residual: when Gmail
+        writes NO verdict (a From domain without DMARC) and echoes an
+        unsanitised `;dmarc=pass header.from=...` elsewhere (a HELO on
+        null-sender mail), the echo would read as the verdict — unverified
+        whether Gmail echoes it; bounded by the ack caps. Anyone else: no second read, never
         authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY
         address (exact; no alias / domain rule), authenticated, and not
@@ -3277,7 +3282,11 @@ people:
       failed or capped ack reads "haven't been told anything yet" on the
       Today card, in the principal's chat/email prompt and in the email
       [POLICY] notice (`_run_executive(roster_acknowledged=...)`, default
-      False).
+      False). A withheld ack is audited `roster_ack_withheld` (private);
+      `release_ack` nulls `ack_sent_at` only when it still holds the stamp
+      of the claim being released, so an ack that really went out earlier
+      on the same request stays on record. If the request can't be
+      re-read, the card still goes up, reading "not told".
     - Replays run in a FRESH `contextvars.Context` (`_spawn`): the answer
       may come from the principal's own verified turn, and a stranger's
       message must never run with the principal's session (and contacts,
@@ -4003,7 +4012,7 @@ audit:
     - scheduled_action_cancelled — a pending scheduled action cancelled via DELETE /scheduled/{id} (the Pulse page's Cancel, or a script). actor is the signed-in caller's email, "admin-token" or "local"; details carry action_id, kind, channel and department. A refused or 409 cancel writes nothing.
     - decision_class_mode_changed — a decision class's mode changed (propose ↔ auto_execute) via PUT /decisions/classes/meeting_scheduling. actor is the caller's x-caller-email or "api"; details carry decision_class and mode as from/to. Setting the current mode writes nothing.
     - workspace_settings_changed — solo/team mode, the user's time zone or the principal's role changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed. The summary names only what moved ("mode A → B, time zone X → Y" and/or "principal's role updated"). A PUT that changes nothing writes nothing.
-    - roster_request_created / roster_ack_sent / roster_request_resolved / roster_message_replayed / roster_email_answer_refused — the roster-request lifecycle (people.roster_requests, integrations.roster_intake). Always private to the principal; details carry ids, the channel and statuses, never what the new sender wrote. roster_request_resolved's actor is where it was answered (web / slack / discord / telegram / email / people_page); roster_message_replayed is one per held message (replayed / dropped / failed / unavailable). The fixed acknowledgement email is an integration_outbound row (details.kind roster_ack, private).
+    - roster_request_created / roster_ack_sent / roster_ack_withheld / roster_request_resolved / roster_message_replayed / roster_email_answer_refused — the roster-request lifecycle (people.roster_requests, integrations.roster_intake). Always private to the principal; details carry ids, the channel and statuses, never what the new sender wrote. roster_request_resolved's actor is where it was answered (web / slack / discord / telegram / email / people_page); roster_message_replayed is one per held message (replayed / dropped / failed / unavailable). The fixed acknowledgement email is an integration_outbound row (details.kind roster_ack, private).
     - delegation_settings_changed — a person turned Act as me on or off for themselves via PUT /delegation. actor "user"; details carry person_id and enabled. Always private. Setting the current value writes nothing.
     - delegation_gmail_verified — their own Gmail was checked (connected, and the mailbox on their People entry) just before Act as me was turned on. details carry person_id and status. Always private.
     - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice, or its signature read from Gmail again via /delegation/voice/signature (actor "user"). details carry op (learn, edit, reset or signature), person_id, and counts, the names of the fields changed or whether a signature was found — never their text. Always private.

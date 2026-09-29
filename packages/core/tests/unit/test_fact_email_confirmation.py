@@ -545,11 +545,9 @@ def test_authenticated_by_gmail(headers: tuple[str, ...], sender: str, ok: bool)
         # Unquoted text Gmail might echo, on a From domain with no DMARC of its own.
         "Authentication-Results: mx.google.com; spf=pass smtp.mailfrom=x;dmarc=pass "
         "header.from=northwind.test @attacker.test",
-        "Authentication-Results: mx.google.com; dmarc=pass header.from=northwind.test; "
-        "spf=pass smtp.mailfrom=attacker.test",
     ],
     ids=["quoted-mailfrom", "quoted-in-spf-comment", "comment-only", "two-verdicts",
-         "unbalanced-quote", "unbalanced-comment", "unquoted-echo", "verdict-not-last"],
+         "unbalanced-quote", "unbalanced-comment", "unquoted-echo"],
 )
 def test_sender_written_text_in_gmails_stamp_is_no_verdict(stamp: str) -> None:
     """Gmail copies the envelope sender (and DKIM tags) into its own
@@ -570,8 +568,14 @@ def test_sender_written_text_in_gmails_stamp_is_no_verdict(stamp: str) -> None:
         'Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test '
         'header.s=s1 header.b="Ab/+cd12"; spf=pass smtp.mailfrom="john.doe"@northwind.test; '
         "dmarc=pass (p=QUARANTINE sp=QUARANTINE dis=NONE) header.from=northwind.test",
+        # Mail sent from Gmail / Workspace: Gmail adds dara= after its verdict.
+        "Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@northwind.test "
+        "header.s=google header.b=AbCd;\r\n       spf=pass (google.com: domain of "
+        "owner@northwind.test designates 209.85.220.41 as permitted sender) "
+        "smtp.mailfrom=owner@northwind.test;\r\n       dmarc=pass (p=NONE sp=QUARANTINE "
+        "dis=NONE) header.from=northwind.test;\r\n       dara=pass header.i=@northwind.test",
     ],
-    ids=["gmail-pass", "arc-and-spf-comment", "quoted-values"],
+    ids=["gmail-pass", "arc-and-spf-comment", "quoted-values", "dara-after-verdict"],
 )
 def test_real_gmail_stamps_still_pass(stamp: str) -> None:
     assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is True

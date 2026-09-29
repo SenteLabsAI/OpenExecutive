@@ -137,7 +137,7 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     authenticated. Only the topmost Authentication-Results header counts:
     Gmail adds it on receipt, above every header the sender wrote, so a forged
     one sits below it. It must be Gmail's (``mx.google.com``) and report
-    ``dmarc=pass`` for the From domain as its last resinfo, and the raw From must be
+    ``dmarc=pass`` for the From domain, and the raw From must be
     ``from_addr``. Anything missing or unreadable — no header, ``dmarc=none``,
     a temporary error — is False: this gate fails closed."""
     address = from_addr.strip().lower()
@@ -157,14 +157,16 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     authserv, _sep, rest = newest.partition(";")
     if authserv.strip() != _GMAIL_AUTHSERV:
         return False
-    # Gmail writes its dmarc= verdict once, as the last resinfo, and nothing
-    # else in it. Anything else — two verdicts, one elsewhere, extra text —
-    # is sender-written text Gmail echoed (a HELO, an envelope sender), not
-    # Gmail's own verdict.
-    resinfos = [c.strip() for c in rest.split(";") if c.strip()]
-    if sum(c.startswith("dmarc=") for c in resinfos) != 1 or not resinfos[-1].startswith("dmarc="):
+    # Gmail writes one dmarc= verdict and nothing else in it; it may be
+    # followed by its own dara= resinfo (mail sent from Gmail / Workspace).
+    # A second verdict, or extra text in it, is sender text Gmail echoed.
+    # Residual: when Gmail writes NO verdict (a From domain without DMARC)
+    # and echoes an unsanitised ``;dmarc=pass header.from=...`` elsewhere
+    # (a HELO on null-sender mail), that echo would read as the verdict.
+    verdicts = [c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")]
+    if len(verdicts) != 1:
         return False
-    verdict = _DMARC_PASS.fullmatch(resinfos[-1])
+    verdict = _DMARC_PASS.fullmatch(verdicts[0])
     return verdict is not None and verdict.group(1) == address.rsplit("@", 1)[1]
 
 

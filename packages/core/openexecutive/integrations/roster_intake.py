@@ -175,7 +175,12 @@ async def _intake(
                 f"Told a new {rr.channel_label(channel)} sender their message is waiting",
                 {"request_id": request.id, "channel": channel},
             )
-        except AckWithheld:
+        except AckWithheld as withheld:
+            _audit(
+                "roster_ack_withheld",
+                f"Did not acknowledge a new {rr.channel_label(channel)} sender: {withheld}",
+                {"request_id": request.id, "channel": channel},
+            )
             await asyncio.to_thread(
                 rr.release_ack, channel, request.channel_ref, request_id=request.id
             )
@@ -184,7 +189,13 @@ async def _intake(
             await asyncio.to_thread(
                 rr.release_ack, channel, request.channel_ref, request_id=request.id
             )
-    fresh = await asyncio.to_thread(rr.get_request, request.id)
+    try:
+        fresh = await asyncio.to_thread(rr.get_request, request.id)
+    except Exception:
+        # The card must still go up; without a fresh read, say nothing was told.
+        logger.warning("roster_intake: re-reading request %d failed", request.id, exc_info=True)
+        fresh = None
+        request = request.model_copy(update={"ack_sent_at": None})
     request = fresh if fresh is not None else request
     if outcome.created:
         told = request.ack_sent_at is not None
