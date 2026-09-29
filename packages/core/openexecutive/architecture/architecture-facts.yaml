@@ -1634,8 +1634,16 @@ memory:
         (context copied, so current_session / the speaker pin / audit ids
         resolve), and PATCH /company-profile does its locked edit in a
         thread too: neither blocks the event loop on SQLite, the YAML file
-        or PROFILE_EDIT_LOCK. stream_chat / committee and the alert review
-        read `render_facts_for_prompt` via `asyncio.to_thread` as well.
+        or PROFILE_EDIT_LOCK. stream_chat / committee, the alert review,
+        `synthesize_briefing_narrative` (morning brief) and the EOD digest,
+        weekly review and reflection (`with_standing_facts`) read the block
+        via `asyncio.to_thread` as well.
+      - update_company_profile: beyond the quote, a text value, list item,
+        metric name and metric value must each appear in the principal's
+        own words (`_in_own_words`); number fields are exempt (parsed, so
+        they carry no text). The value lands in the cached company block on
+        every later turn, so "set our mission to what the doc says" must not
+        save the doc's text. Saved text is `<`/`>` defanged (`_defang`).
     STORE — one active fact per subject: a new row supersedes active rows
     with the same folded `subject_key` (or the id in replaces_fact_id) in one
     `BEGIN IMMEDIATE` transaction; old rows become `superseded` with

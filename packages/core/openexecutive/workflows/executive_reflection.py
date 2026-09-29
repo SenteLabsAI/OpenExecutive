@@ -29,6 +29,7 @@ principal sees the effects of reflection through the brief.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -676,7 +677,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         # or schedules repeats a figure they already corrected.
         from openexecutive.memory.facts import with_standing_facts
 
-        user_content = with_standing_facts(user_content)
+        user_content = await asyncio.to_thread(with_standing_facts, user_content)
 
         # Seed a synthetic Session into the `current_session` ContextVar
         # so schedule_followup's anti-spam guard accepts the reflection's

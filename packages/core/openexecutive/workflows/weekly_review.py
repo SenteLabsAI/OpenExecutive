@@ -508,9 +508,10 @@ async def _next_weeks_top_three(body: str, period: str) -> str:
     from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
     playbook = load_playbook("weekly-review")
-    user = with_standing_facts(
+    user = await asyncio.to_thread(
+        with_standing_facts,
         f"WEEKLY REVIEW — {period}\n\n{body}"
-        + playbook_clause(playbook, "Choose the three following this playbook")
+        + playbook_clause(playbook, "Choose the three following this playbook"),
     )
     try:
         model = get_fast_model()

@@ -18,6 +18,7 @@ broadcast.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -343,7 +344,8 @@ class EndOfDayDigestWorkflow(Workflow):
         from openexecutive.memory.facts import with_standing_facts
         from openexecutive.providers import get_provider
 
-        user_content = with_standing_facts(_render_eod_context(
+        # A SQLite read: off the event loop the SSE streams share.
+        user_content = await asyncio.to_thread(with_standing_facts, _render_eod_context(
             period_label=period, today_data=today_data, activity=activity,
             since=since, handled=handled, mode=mode,
         ))

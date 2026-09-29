@@ -611,6 +611,15 @@ async def synthesize_briefing_narrative(
         system = _viewer_system_prompt(viewer["name"], viewer["role"])
     else:
         system = BRIEFING_NARRATIVE_SOLO_SYSTEM if solo else BRIEFING_NARRATIVE_SYSTEM
+    # The standing facts are a SQLite read: done off the event loop here, so
+    # the render below (which would otherwise read them itself) stays sync.
+    standing_facts: str | None = None
+    if rendered_context is None:
+        import asyncio
+
+        from openexecutive.memory.facts import render_facts_for_prompt
+
+        standing_facts = await asyncio.to_thread(render_facts_for_prompt)
     # `rendered_context` lets a caller hand in the exact block it already
     # rendered. The /today header path does, because it hashes that string as
     # its cache key — re-rendering here could quietly drift from what was
@@ -620,7 +629,7 @@ async def synthesize_briefing_narrative(
         since=since, handled=handled,
         pending_watch_suggestions=pending_watch_suggestions,
         mode=mode, live=live, live_window=live_window, now_label=now_label,
-        reflection_flags=reflection_flags,
+        reflection_flags=reflection_flags, standing_facts=standing_facts,
     )
     model = get_fast_model()
     response = await get_provider(model).messages_create(
