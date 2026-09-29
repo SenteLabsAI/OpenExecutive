@@ -1635,7 +1635,10 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # surface; this keeps them out of the unattended toolkits altogether.
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_goal",
+    "forget_fact",
     "record_decision_outcome",
+    "remember_fact",
+    "update_company_profile",
 })
 
 
@@ -1699,6 +1702,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "draft_artifact",
     "load_mcp_server",
     "read_document",
+    "remember_fact",
     "run_executive_research",
     "run_workflow",
     "save_workflow",
@@ -1706,6 +1710,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "send_company_broadcast",
     "send_department_message",
     "suggest_workflow",
+    "update_company_profile",
     "update_department_goal",
     "update_skill",
 })

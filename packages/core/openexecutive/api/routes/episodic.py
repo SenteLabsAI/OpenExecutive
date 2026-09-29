@@ -20,6 +20,7 @@ from openexecutive.memory.episodic import (
     update_decision,
     update_initiative,
 )
+from openexecutive.memory.facts import Fact, get_fact, list_facts, retire_fact
 from openexecutive.memory.honcho_client import (
     PERSON_CONCLUSIONS_MAX_PAGE,
     PeopleMemory,
@@ -124,6 +125,70 @@ def remove_advice(advice_id: int) -> Response:
     if not delete_advice(advice_id):
         raise HTTPException(status_code=404, detail="Advice not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Standing facts (corrections that persist everywhere) ---
+
+
+class FactsPage(BaseModel):
+    facts: list[Fact]
+    # Whether this caller may retire a fact (the principal only).
+    can_retire: bool
+
+
+class FactRetire(BaseModel):
+    reason: str = ""
+
+
+@router.get("/memories/facts", response_model=FactsPage)
+def get_facts(
+    request: Request,
+    include_inactive: bool = Query(True),
+    limit: int = Query(200, ge=1, le=500),
+) -> FactsPage:
+    """The standing facts and corrections the principal asked to keep
+    (``memory.facts``), newest first — with their replaced and retired
+    history unless ``include_inactive=false`` — and the company-profile
+    fields changed from chat. Every prompt that produces output reads the
+    active ones.
+
+    The facts themselves are company knowledge every conversation already
+    sees; the provenance quote is the principal's own message and is shown
+    to the principal only."""
+    principal = _caller_is_principal(request)
+    rows = list_facts(include_inactive=include_inactive, limit=limit)
+    if not principal:
+        rows = [f.model_copy(update={"source_quote": ""}) for f in rows]
+    return FactsPage(facts=rows, can_retire=principal)
+
+
+@router.post("/memories/facts/{fact_id}/retire", response_model=Fact)
+def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None = None) -> Fact:
+    """Stop an active fact rendering into any prompt. The row stays, as
+    ``retired``, so the Pulse page still shows what it said. Principal only:
+    a standing fact carries their authority in every later prompt."""
+    if not _caller_is_principal(request):
+        raise HTTPException(status_code=403, detail="Only the principal can retire a standing fact")
+    existing = get_fact(fact_id)
+    if existing is None or existing.kind == "profile":
+        raise HTTPException(status_code=404, detail="Fact not found")
+    reason = " ".join(((body.reason if body else "") or "retired from the Pulse page").split())
+    retired = retire_fact(fact_id, reason=reason[:280])
+    if retired is None:
+        raise HTTPException(status_code=409, detail="Fact is no longer active")
+    try:
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "fact_retired",
+            f"Standing fact {fact_id} retired: {existing.subject[:80]}",
+            actor="principal",
+            details={"fact_id": fact_id, "subject": existing.subject,
+                     "statement": existing.statement, "reason": reason[:280]},
+        )
+    except Exception:  # noqa: BLE001 - the retire already landed.
+        pass
+    return retired
 
 
 # --- People (peer memory) ---

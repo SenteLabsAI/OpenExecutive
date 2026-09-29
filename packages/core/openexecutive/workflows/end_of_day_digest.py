@@ -340,12 +340,13 @@ class EndOfDayDigestWorkflow(Workflow):
         )
 
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.memory.facts import with_standing_facts
         from openexecutive.providers import get_provider
 
-        user_content = _render_eod_context(
+        user_content = with_standing_facts(_render_eod_context(
             period_label=period, today_data=today_data, activity=activity,
             since=since, handled=handled, mode=mode,
-        )
+        ))
 
         try:
             model = get_fast_model()

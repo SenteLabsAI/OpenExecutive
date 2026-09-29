@@ -672,6 +672,11 @@ class ExecutiveReflectionWorkflow(Workflow):
         roster = _render_principal_line(principal) if solo else _render_team_roster(people)
         if roster:
             user_content = roster + "\n" + user_content
+        # The principal's kept corrections, so nothing this pass flags, DMs
+        # or schedules repeats a figure they already corrected.
+        from openexecutive.memory.facts import with_standing_facts
+
+        user_content = with_standing_facts(user_content)
 
         # Seed a synthetic Session into the `current_session` ContextVar
         # so schedule_followup's anti-spam guard accepts the reflection's

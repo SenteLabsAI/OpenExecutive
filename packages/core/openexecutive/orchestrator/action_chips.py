@@ -53,6 +53,10 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "create_goal",
     # How a past decision turned out (the weekly review's "how did it go?")
     "record_decision_outcome",
+    # Standing facts and company-profile edits (corrections that stick)
+    "remember_fact",
+    "forget_fact",
+    "update_company_profile",
     # Skills mutations
     "create_skill",
     "update_skill",
@@ -317,6 +321,29 @@ def summarize_action(
         decision_id = (parsed or {}).get("decision_id", tool_input.get("decision_id"))
         payload["target"] = f"decision {decision_id}" if decision_id else None
         payload["link"] = "/memories"
+    elif tool_name == "remember_fact":
+        statement = str((parsed or {}).get("statement") or tool_input.get("statement", "") or "")[:80]
+        corrected = str((parsed or {}).get("kind") or "") == "correction"
+        verb = "Corrected" if corrected else "Will remember"
+        payload["summary"] = f"{verb}: {statement}" if statement else "Kept a standing fact"
+        fact_id = (parsed or {}).get("fact_id")
+        payload["target"] = f"fact {fact_id}" if fact_id else None
+        payload["link"] = "/memories?tab=corrections"
+    elif tool_name == "forget_fact":
+        forgotten = str((parsed or {}).get("forgotten") or "")[:80]
+        payload["summary"] = f"Forgot: {forgotten}" if forgotten else "Forgot a standing fact"
+        fact_id = (parsed or {}).get("fact_id", tool_input.get("fact_id"))
+        payload["target"] = f"fact {fact_id}" if fact_id else None
+        payload["link"] = "/memories?tab=corrections"
+    elif tool_name == "update_company_profile":
+        label = str((parsed or {}).get("label") or tool_input.get("field", "") or "")[:60]
+        value = str((parsed or {}).get("value") or "")[:60]
+        payload["summary"] = (
+            f"Updated the company profile: {label} → {value}" if label and value
+            else "Updated the company profile"
+        )
+        payload["target"] = str(tool_input.get("field") or "") or None
+        payload["link"] = "/company-profile"
     elif tool_name == "create_skill":
         name = tool_input.get("name", "")
         payload["summary"] = f"Drafted playbook: {name}" if name else "Drafted a playbook"

@@ -58,6 +58,7 @@ class BaseAgent(ABC):
         *,
         company_stage: str = "",
         principal_role: str = "",
+        standing_facts: str = "",
         system_prompt_override: str | None = None,
         model_override: str | None = None,
         deep_reasoning_override: bool | None = None,
@@ -107,6 +108,13 @@ class BaseAgent(ABC):
         if episodic_context:
             user_content = (
                 f"<past_decisions>\n{episodic_context}\n</past_decisions>\n\n{user_content}"
+            )
+        if standing_facts:
+            # The principal's kept corrections (memory.facts), next to the
+            # institutional memory it overrides. User turn, never the cached
+            # specialist system prompt.
+            user_content = (
+                f"<standing_facts>\n{standing_facts}\n</standing_facts>\n\n{user_content}"
             )
         if department_memory:
             # Placed adjacent to past_decisions so the specialist sees both

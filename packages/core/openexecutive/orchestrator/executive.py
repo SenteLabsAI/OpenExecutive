@@ -25,6 +25,7 @@ from openexecutive.delegation.settings import (
     pin_turn_delegation,
     turn_delegation,
 )
+from openexecutive.memory.facts import render_facts_for_prompt
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
 from openexecutive.memory.workspace_settings import (
     effective_principal_role,
@@ -71,6 +72,10 @@ from openexecutive.orchestrator.department_tools import (
 from openexecutive.orchestrator.document_tools import (
     DOCUMENT_TOOL_HANDLERS,
     DOCUMENT_TOOLS,
+)
+from openexecutive.orchestrator.fact_tools import (
+    FACT_TOOL_HANDLERS,
+    FACT_TOOLS,
 )
 from openexecutive.orchestrator.form_tools import (
     FORM_TOOL_HANDLERS,
@@ -384,6 +389,7 @@ _ALL_SKILL_TOOLS = [
     *OPEN_LOOP_TOOLS,
     *DEPARTMENT_TOOLS,
     *DECISION_TOOLS,
+    *FACT_TOOLS,
     *DOCUMENT_TOOLS,
     *BROADCAST_TOOLS,
     *WATCHLIST_TOOLS,
@@ -402,6 +408,7 @@ _ALL_SKILL_HANDLERS = {
     **OPEN_LOOP_TOOL_HANDLERS,
     **DEPARTMENT_TOOL_HANDLERS,
     **DECISION_TOOL_HANDLERS,
+    **FACT_TOOL_HANDLERS,
     **DOCUMENT_TOOL_HANDLERS,
     **BROADCAST_TOOL_HANDLERS,
     **WATCHLIST_TOOL_HANDLERS,
@@ -500,6 +507,7 @@ def _emit_memory_snapshot(
     model: str,
     committee: bool,
     working_style: str = "",
+    standing_facts: str = "",
 ) -> None:
     """One memory_snapshot per turn: what was in the prompt before the API call.
 
@@ -536,6 +544,7 @@ def _emit_memory_snapshot(
             "company_profile_hash": profile_hash,
             "system_blocks": _system_block_names(system_blocks),
             "working_style_chars": len(working_style),
+            "standing_facts_chars": len(standing_facts),
         },
         # Do NOT duplicate the raw user_message here — chat_turn already
         # persists it in its own row. The episodic_context and
@@ -547,6 +556,7 @@ def _emit_memory_snapshot(
             "retrieved_context": retrieved_context,
             "system_blocks": _system_block_names(system_blocks),
             "working_style": working_style,
+            "standing_facts": standing_facts,
         },
     )
 
@@ -600,6 +610,7 @@ class Executive:
         channel_context_block: str = "",
         page_context_block: str = "",
         working_style: str = "",
+        standing_facts: str = "",
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         history = session.get_recent_history()
@@ -633,6 +644,14 @@ class Executive:
                 {"type": "text", "text": f"<working_style>\n{working_style}\n</working_style>"}
             )
 
+        # Facts and corrections the principal asked to keep (memory/facts.py).
+        # The same block every unattended prompt reads, so a correction made
+        # here holds in the briefs, scheduled runs and alert review too. User
+        # turn, never a cached system block: it changes whenever a fact does.
+        if standing_facts:
+            user_content_parts.append(
+                {"type": "text", "text": f"<standing_facts>\n{standing_facts}\n</standing_facts>"}
+            )
         if episodic_context:
             user_content_parts.append(
                 {"type": "text", "text": f"<past_decisions>\n{episodic_context}\n</past_decisions>"}
@@ -715,6 +734,7 @@ class Executive:
         turn_id: str | None = None,
         memory_text: str | None = None,
         turn_sources: TurnSources | None = None,
+        standing_facts: str | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Stream a response from the Executive, routing to specialists as needed.
 
@@ -850,6 +870,8 @@ class Executive:
             from openexecutive.attunement.style import build_style_block
 
             working_style = build_style_block(person_id)
+            if standing_facts is None:
+                standing_facts = render_facts_for_prompt()
             messages = self._build_messages(
                 session,
                 user_message,
@@ -862,6 +884,7 @@ class Executive:
                 channel_context_block=channel_context_block,
                 page_context_block=page_context_block,
                 working_style=working_style,
+                standing_facts=standing_facts,
             )
 
             _emit_memory_snapshot(
@@ -876,6 +899,7 @@ class Executive:
                 model=effective_model,
                 committee=False,
                 working_style=working_style,
+                standing_facts=standing_facts,
             )
             consulted: list[str] = []
             async for item in self._stream_agent_loop(
@@ -1048,6 +1072,7 @@ class Executive:
         turn_id: str | None = None,
         memory_text: str | None = None,
         turn_sources: TurnSources | None = None,
+        standing_facts: str | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Committee-reviewed variant of stream_chat.
 
@@ -1154,6 +1179,8 @@ class Executive:
         from openexecutive.attunement.style import build_style_block
 
         working_style = build_style_block(person_id)
+        if standing_facts is None:
+            standing_facts = render_facts_for_prompt()
         messages = self._build_messages(
             session,
             user_message,
@@ -1166,6 +1193,7 @@ class Executive:
             channel_context_block=channel_context_block,
             page_context_block=page_context_block,
             working_style=working_style,
+            standing_facts=standing_facts,
         )
 
         # ----- Phase 1: drafting -----------------------------------------
@@ -1191,6 +1219,7 @@ class Executive:
             model=effective_model,
             committee=True,
             working_style=working_style,
+            standing_facts=standing_facts,
         )
 
         async for item in self._stream_agent_loop(
@@ -2178,6 +2207,7 @@ class Executive:
         briefing_context: str = "",
         channel_context_block: str = "",
         memory_text: str | None = None,
+        standing_facts: str | None = None,
     ) -> str:
         """Non-streaming chat — collects and returns the full response.
 
@@ -2221,6 +2251,8 @@ class Executive:
             common_kwargs["peer_memory_reasoning_level"] = peer_memory_reasoning_level
         if peer_memory_context is not None:
             common_kwargs["peer_memory_context"] = peer_memory_context
+        if standing_facts is not None:
+            common_kwargs["standing_facts"] = standing_facts
         stream = (
             self.stream_chat_with_committee(**common_kwargs)
             if committee_review

@@ -26,6 +26,9 @@ def test_route_to_specialist_passes_episodic_to_analyze(monkeypatch) -> None:
     monkeypatch.setattr(
         "openexecutive.orchestrator.router.load_principal_role", lambda: ""
     )
+    monkeypatch.setattr(
+        "openexecutive.memory.facts.render_facts_for_prompt", lambda: "STANDING FACTS — x"
+    )
     analyze_mock = AsyncMock(return_value="analysis result")
     with patch.object(SPECIALIST_REGISTRY["cso"], "analyze", analyze_mock):
         result = asyncio.run(
@@ -47,6 +50,7 @@ def test_route_to_specialist_passes_episodic_to_analyze(monkeypatch) -> None:
         department_memory="",
         company_stage="",
         principal_role="",
+        standing_facts="STANDING FACTS — x",
         actor="specialist_workflow",
     )
 

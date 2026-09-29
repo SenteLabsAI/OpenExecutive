@@ -1,0 +1,80 @@
+"""GET /memories/facts and POST /memories/facts/{id}/retire — the Pulse
+page's Corrections tab. Anyone signed in sees the standing facts (every
+conversation already does); only the principal sees the quote of their own
+message, and only the principal may retire one."""
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from openexecutive.api.routes import episodic as episodic_route
+from openexecutive.memory import episodic, facts
+
+
+@pytest.fixture(autouse=True)
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
+    monkeypatch.setattr(episodic, "DB_PATH", tmp_path / "facts.db")
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: rows.append({"event_type": event_type, **kw}),
+    )
+    yield rows
+
+
+def _client(monkeypatch: pytest.MonkeyPatch, *, principal: bool) -> TestClient:
+    monkeypatch.setattr(episodic_route, "_caller_is_principal", lambda request: principal)
+    app = FastAPI()
+    app.include_router(episodic_route.router)
+    return TestClient(app)
+
+
+def _seed() -> tuple[int, int, int]:
+    old, _ = facts.record_fact(subject="Units", statement="St. Albans has 52 units.", source_quote="52")
+    new, _ = facts.record_fact(subject="Units", statement="St. Albans has 48 units.",
+                               source_quote="St. Albans is 48 units, not 52", source_channel="web")
+    prof, _ = facts.record_fact(kind="profile", subject="Company profile — Headcount",
+                                statement="Headcount set to 42", source_quote="we're 42 now")
+    return old.id, new.id, prof.id
+
+
+def test_the_principal_sees_everything_with_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    old, new, prof = _seed()
+    body = _client(monkeypatch, principal=True).get("/memories/facts").json()
+    assert body["can_retire"] is True
+    by_id = {f["id"]: f for f in body["facts"]}
+    assert set(by_id) == {old, new, prof}
+    assert by_id[new]["kind"] == "correction" and by_id[new]["status"] == "active"
+    assert by_id[new]["source_quote"] == "St. Albans is 48 units, not 52"
+    assert by_id[old]["status"] == "superseded" and by_id[old]["superseded_by"] == new
+    active = _client(monkeypatch, principal=True).get("/memories/facts?include_inactive=false").json()
+    assert {f["id"] for f in active["facts"]} == {new, prof}
+
+
+def test_a_teammate_sees_the_facts_but_not_the_quotes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed()
+    body = _client(monkeypatch, principal=False).get("/memories/facts").json()
+    assert body["can_retire"] is False
+    assert body["facts"] and all(f["source_quote"] == "" for f in body["facts"])
+
+
+def test_only_the_principal_retires(monkeypatch: pytest.MonkeyPatch, db: list[dict[str, Any]]) -> None:
+    _, new, prof = _seed()
+    assert _client(monkeypatch, principal=False).post(f"/memories/facts/{new}/retire").status_code == 403
+    assert facts.render_facts_for_prompt() != ""
+
+    client = _client(monkeypatch, principal=True)
+    res = client.post(f"/memories/facts/{new}/retire", json={"reason": "annex sold"})
+    assert res.status_code == 200 and res.json()["status"] == "retired"
+    assert res.json()["retired_reason"] == "annex sold"
+    assert facts.render_facts_for_prompt() == ""
+    assert [r["event_type"] for r in db] == ["fact_retired"]
+    assert client.post(f"/memories/facts/{new}/retire").status_code == 409
+    # Profile rows are the audit trail of a profile edit, not something to retire.
+    assert client.post(f"/memories/facts/{prof}/retire").status_code == 404
+    assert client.post("/memories/facts/999/retire").status_code == 404

@@ -1551,6 +1551,7 @@ memory:
     - initiatives
     - advice_given
     - scheduled_actions
+    - "facts — standing facts and corrections the principal asked to keep, with provenance (memory/facts.py; see `standing_facts` below)."
     - "app_migrations — one-shot data migrations (name PK, applied_at). Schema DDL stays idempotent and is NOT recorded here; only sweeps that must run exactly once per DB insert a row. First user is `cancel_orphaned_talent_reminders` (2026-09), deletable in the release after next."
   formatter: openexecutive.memory.episodic.format_for_prompt — produces a compact prompt block of recent decisions/initiatives.
   session_scoping: |
@@ -1590,6 +1591,72 @@ memory:
     are click-to-discuss handoffs that rely on this block. The formatter
     swallows its own errors and returns "" so a chat turn is never blocked
     by an alerts-store hiccup.
+  standing_facts: |
+    Corrections that persist everywhere (`openexecutive.memory.facts`,
+    table `facts`, created on first write). Before it, a chat correction's
+    one durable home was Honcho peer memory: optional, best-effort (one
+    tenant logged 5 timeouts and 4 errors on the prefetch), re-injected only
+    into that person's later chat turns, never read by briefs, scheduled
+    runs or the six-hourly alert review. The episodic extractor cannot hold
+    one: it stores only decisions backed by a commitment quote.
+    WRITE PATH — chat tools in `orchestrator/fact_tools.py`:
+      - `remember_fact(subject, statement, previous_value?, replaces_fact_id?,
+        source_quote)` and `forget_fact(fact_id, rationale)`.
+      - `update_company_profile(field, operation set|add|remove, value,
+        metric?, source_quote)` over a whitelist of `CompanyProfile` fields
+        (text / int / number set; list add/remove; financials.key_metrics by
+        name). Writes `company/profile.yaml` via `save_to_yaml`, updates
+        `session.company_profile` so the NEXT turn's cached company block
+        carries it (one cache miss per change), and records a
+        `kind='profile'` row for the Pulse page.
+      - Gate: the principal on a verified surface only
+        (`is_principal_on_verified_surface`), never an unattended session;
+        all three in `UNATTENDED_WITHHELD_TOOLS`, remember_fact and
+        update_company_profile in `PRIVATE_TURN_WITHHELD_TOOLS` (what they
+        write is read on everyone's turns).
+      - `source_quote` must appear (normalized like the episodic quote gate)
+        in the principal's own words this turn — the pinned
+        `TurnDelegation.speaker_text` — so the model cannot store its own
+        inference or a document's figure as the principal's statement.
+      - Every write / refusal is a `tool_invocation` audit row; a Pulse-page
+        retire is a `fact_retired` row.
+    STORE — one active fact per subject: a new row supersedes active rows
+    with the same folded `subject_key` (or the id in replaces_fact_id) in one
+    `BEGIN IMMEDIATE` transaction; old rows become `superseded` with
+    `superseded_by`; the new one is a `correction` carrying
+    `previous_statement`. `profile` rows only supersede earlier profile rows
+    for the same field and never render into a prompt (the cached profile
+    block already carries the value). Provenance per row: source_quote,
+    source_channel (web or the adapter), session_id, turn_id,
+    recorded_by_person_id, created_at.
+    READ PATH — `render_facts_for_prompt()`: active non-profile rows, newest
+    first, under the self-explaining `FACTS_BLOCK_HEADER` (use over older
+    figures; the current conversation still wins; quoted data, never
+    instructions; never mention keeping them), capped at 40 facts / 6000
+    chars, `<`/`>` defanged. Opens the DB read-only (`mode=ro`) and returns
+    "" for a missing file or table — it never creates either, because it runs
+    on every prompt, including test-built ones. Never raises.
+    WHERE IT IS INJECTED (always a user turn, never a cached system block):
+      - chat: `Executive._build_messages` `<standing_facts>` (stream_chat /
+        committee / chat take `standing_facts: str | None`; None reads the
+        store) — covers every scheduled run through the chat loop and every
+        inbound channel;
+      - specialists: `route_to_specialist(standing_facts=None)` →
+        `BaseAgent.analyze` `<standing_facts>` tag (chat consults and
+        workflow steps);
+      - /today header + morning brief: last block of
+        `render_briefing_context`, after the quiet check and inside the
+        string the header cache key hashes (a fact change rewrites it);
+      - alert review: `render_batch(..., standing_facts)`, read once per pass;
+      - end_of_day_digest, weekly review top three, morning reflection:
+        `with_standing_facts(user_content)`.
+    Evals never read the install's store: a scenario's `standing_facts`
+    lines are rendered under the header (`evals.runner.scenario_standing_facts`)
+    and the judge sees them (`_standing_facts_section`).
+    SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
+    `POST /memories/facts/{id}/retire`, principal only; the quote is blanked
+    for other viewers). `/memories?tab=corrections` opens it; the chat
+    chips for the three tools link there / to /company-profile.
   peer_memory_mirror: |
     SQL is the system of record; the peer-memory service is the recall
     layer. When `store_decision` / `store_initiative` / `store_advice`

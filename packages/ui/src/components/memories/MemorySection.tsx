@@ -20,9 +20,12 @@ import {
   type PersonConclusion,
   type PersonMemory,
 } from "@/lib/api";
+import CorrectionsTab from "./CorrectionsTab";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
-type MemoryTab = "decisions" | "initiatives" | "advice" | "people";
+type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "people";
+
+const MEMORY_TABS: readonly MemoryTab[] = ["decisions", "initiatives", "advice", "corrections", "people"];
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 const PEOPLE_EMPTY =
@@ -36,13 +39,14 @@ const PEOPLE_UNAVAILABLE = "Peer memory is unavailable right now.";
 export default function MemorySection() {
   const [tab, setTab] = useState<MemoryTab>("decisions");
   // Each tab reports its row count so the tab labels can carry a live badge.
-  // All three tabs stay mounted (inactive ones hidden) so every count loads up
+  // All tabs stay mounted (inactive ones hidden) so every count loads up
   // front; a tab's own edit/delete re-runs its refresh, which reports the new
   // length back here, keeping that tab's badge correct.
   const [counts, setCounts] = useState<Record<MemoryTab, number | null>>({
     decisions: null,
     initiatives: null,
     advice: null,
+    corrections: null,
     people: null,
   });
   // Peer memory is optional: until its status is known the People tab shows
@@ -57,6 +61,10 @@ export default function MemorySection() {
   const onCountDecisions = useCallback((n: number) => setCounts((c) => ({ ...c, decisions: n })), []);
   const onCountInitiatives = useCallback((n: number) => setCounts((c) => ({ ...c, initiatives: n })), []);
   const onCountAdvice = useCallback((n: number) => setCounts((c) => ({ ...c, advice: n })), []);
+  const onCountCorrections = useCallback(
+    (n: number) => setCounts((c) => ({ ...c, corrections: n })),
+    [],
+  );
   const onCountPeople = useCallback(
     (n: number | null) => setCounts((c) => ({ ...c, people: n })),
     [],
@@ -70,20 +78,28 @@ export default function MemorySection() {
     if (peopleEnabled === false && tab === "people") setTab("decisions");
   }, [peopleEnabled, tab]);
 
+  // `/memories?tab=corrections` (the chat chip after remember_fact) opens
+  // that tab. Read once on mount from the URL, so the page needs no Suspense
+  // boundary for useSearchParams.
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    if (wanted && (MEMORY_TABS as readonly string[]).includes(wanted)) setTab(wanted as MemoryTab);
+  }, []);
+
   const tabs: MemoryTab[] =
     peopleEnabled === false
-      ? ["decisions", "initiatives", "advice"]
-      : ["decisions", "initiatives", "advice", "people"];
+      ? MEMORY_TABS.filter((t) => t !== "people")
+      : [...MEMORY_TABS];
 
   return (
     <div className="rounded-xl border border-line bg-surface-elevated p-4">
       <div className="mb-3">
-        <div className="flex gap-1 p-1 bg-surface-overlay/60 rounded-xl w-fit border border-line-strong/50">
+        <div className="flex flex-wrap gap-1 p-1 bg-surface-overlay/60 rounded-xl w-fit max-w-full border border-line-strong/50">
           {tabs.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize ${
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize ${
                 tab === t
                   ? "bg-surface-input text-fg shadow-sm"
                   : "text-fg-muted hover:text-fg"
@@ -111,6 +127,9 @@ export default function MemorySection() {
         </div>
         <div className={tab === "advice" ? "" : "hidden"}>
           <AdviceTab onCount={onCountAdvice} />
+        </div>
+        <div className={tab === "corrections" ? "" : "hidden"}>
+          <CorrectionsTab onCount={onCountCorrections} />
         </div>
         <div className={tab === "people" ? "" : "hidden"}>
           <PeopleTab onCount={onCountPeople} onStatus={onPeopleStatus} />

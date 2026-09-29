@@ -180,6 +180,7 @@ async def route_to_specialist(
     actor: str = "specialist_workflow",
     company_stage: str | None = None,
     principal_role: str | None = None,
+    standing_facts: str | None = None,
 ) -> str:
     """Run one specialist and return its prose analysis.
 
@@ -196,6 +197,10 @@ async def route_to_specialist(
     ``principal_role`` is the ``<principal_role>`` tag body the same way:
     "" sends none, ``None`` reads it fresh (``load_principal_role`` — solo
     only).
+
+    ``standing_facts`` is the STANDING FACTS block (``memory.facts``) the
+    same way: "" sends none, ``None`` reads the store — so a workflow step's
+    analysis uses the principal's corrections just as a chat consult does.
     """
     agent = SPECIALIST_REGISTRY.get(specialist_name)
     if agent is None:
@@ -204,6 +209,10 @@ async def route_to_specialist(
         company_stage = await asyncio.to_thread(load_company_stage)
     if principal_role is None:
         principal_role = await asyncio.to_thread(load_principal_role)
+    if standing_facts is None:
+        from openexecutive.memory.facts import render_facts_for_prompt
+
+        standing_facts = await asyncio.to_thread(render_facts_for_prompt)
     return await agent.analyze(
         query=query,
         context=context,
@@ -213,6 +222,7 @@ async def route_to_specialist(
         department_memory=department_memory,
         company_stage=company_stage,
         principal_role=principal_role,
+        standing_facts=standing_facts,
         actor=actor,
     )
 

@@ -325,6 +325,7 @@ def render_briefing_context(
     live_window: str = "today so far",
     now_label: str | None = None,
     reflection_flags: str = "",
+    standing_facts: str | None = None,
 ) -> str:
     """Pack the structured /today + activity inputs into a single user-turn block.
 
@@ -353,6 +354,9 @@ def render_briefing_context(
     signals) renders as its own block. ``reflection_flags`` is the morning
     reflection's "Flagged for the brief" text (quoted). With none of these
     the output is byte-identical to before they existed.
+
+    ``standing_facts`` is the STANDING FACTS block (``memory.facts``), last;
+    None reads the store, "" leaves it out.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
     now = datetime.now(UTC)
@@ -544,6 +548,17 @@ def render_briefing_context(
             if solo
             else "(No org activity, proposals, or at-risk goals this period.)"
         )
+
+    # Corrections the principal asked to keep (memory/facts.py), after the
+    # quiet check so they never make a quiet day look busy. Inside the
+    # rendered context, so the /today header's cache key (a hash of this
+    # string) moves when a fact does and the header is rewritten with it.
+    if standing_facts is None:
+        from openexecutive.memory.facts import render_facts_for_prompt
+
+        standing_facts = render_facts_for_prompt()
+    if standing_facts:
+        parts.extend(["", standing_facts])
 
     return "\n".join(parts)
 
