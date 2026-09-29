@@ -863,6 +863,26 @@ routing:
     no action chip. `list_people` stays open. The People page's own
     routes apply the same owner rule (see `people.api`).
 
+    `upsert_person` also takes `email_aliases` (the full list, replacing;
+    omitted keeps it; `people.store.clean_aliases` + `set_person_emails`,
+    an address already on someone else is an error) and, after every
+    write, calls `roster_intake.after_roster_write` so a pending roster
+    request whose sender now matches someone closes and replays. A fourth
+    write tool, `resolve_roster_request` (request_id, decision approve /
+    link / decline, full_name, kind, role, person_id,
+    replace_channel_id), answers a roster request (see
+    `people.roster_requests`) under the same `_refuse_unless_owner` gate,
+    and only for an id in `Session.trusted_roster_request_ids` — filled by
+    `briefing.context.render_and_trust` from the `<roster_requests>` block
+    it appends to the user-turn digest on the principal's verified turn
+    (server-derived lines only: id, channel, address / account id, the
+    sanitised unverified name, a company-domain hint, the message count;
+    never the sender's words). `approve` without `kind` uses
+    `roster_intake.default_kind` (team on a company domain, else
+    contact). The id is removed from the trusted set once answered; the
+    tool is in `UNATTENDED_WITHHELD_TOOLS`. `_names_a_contact` (audit
+    privacy) matches contacts' aliases too.
+
     Contacts (see `people.kind`): `upsert_person` takes `kind` — explicit
     wins; an update that omits it keeps the row's kind; a new person
     defaults to "team", or to "contact" when
@@ -1968,14 +1988,20 @@ peer_memory:
     Each entry point into the Executive resolves the inbound user to a
     ``Person.id`` differently:
 
-      - Channel adapters (Discord, Slack, Telegram, email) use
-        ``find_person_by_{discord,slack,telegram,email}_id`` /
-        ``find_person_by_email`` against the channel ID extracted from
-        the inbound message. No match → the channel adapter drops the
-        message entirely (see `integrations.channel_access`).
+      - Channel adapters (Discord, Slack, Telegram) use
+        ``find_person_by_{discord,slack,telegram}_id`` against the
+        channel ID extracted from the inbound message; the email poller
+        uses ``people.identity.resolve_email_sender`` (primary or alias,
+        then the company-domain rule). No match → the message does not
+        reach the Executive as that sender: a chat DM / mention / private
+        verified Telegram chat is held as a roster request and replayed,
+        attributed, once the principal adds them; non-roster email is
+        triaged unattributed (see `integrations.channel_access`,
+        `people.roster_requests`).
       - Web ``/chat`` uses ``x-caller-email`` stamped by the Next.js
         proxy from the verified NextAuth session →
-        ``find_person_by_email``. Header present + no match → person_id
+        ``find_person_by_email`` (primary address only — an alias never
+        signs in). Header present + no match → person_id
         stays ``None`` so the turn doesn't get fused into the principal's
         peer card. Header absent → falls back to
         ``find_principal_person``. The proxy strips inbound
@@ -2748,12 +2774,16 @@ people:
     callers that act on the result check `kind`.
 
     OPT-IN callers, and only these: the MCP gateway's egress allow-list
-    (`mcp_gateway._roster_allow_set`), calendar attendee resolution
+    (`mcp_gateway._roster_allow_set`, a `people.identity.RosterAllow`),
+    calendar attendee resolution
     (`calendar_tools._resolve_attendees`), the chat DM gates
     (`schedule_tools._dm_recipient_on_roster` and person-id recovery),
     the People page listing (`GET /people?include_contacts=true`), the
     chat `list_people` tool, the org prompt block's `## Contacts`
-    section, the email poller's contact lookup (to word its notice), and
+    section, the email poller's contact lookup (to word its notice), the
+    roster-request intake (each chat adapter's `_hold_unknown_sender` looks
+    the sender up with contacts included only to leave a contact out — see
+    `people.roster_requests`), roster-request suggestions and linking, and
     the style deny-list (`attunement.style._roster_names` — more names is
     stricter).
 
@@ -2871,6 +2901,160 @@ people:
     and working style. Adding a team member in solo offers to switch the
     workspace to team mode (`PUT /workspace`) or keep solo. Pure helpers:
     packages/ui/src/lib/peopleKinds.ts.
+  aliases: |
+    A Person has one PRIMARY address (`Person.email`, the one they sign in
+    with) and up to 10 ALIASES (`Person.email_aliases`, table
+    `person_emails`: id, person_id FK ON DELETE CASCADE, email, email_norm
+    UNIQUE across the roster, source manual / chat_tool / roster_request,
+    roster_request_id, created_at). An alias matches the person's mail and
+    may be emailed like the primary, but INVARIANT: an alias is NOT a
+    login. `store.find_person_by_email` stays primary-only and is the
+    sign-in lookup (web caller resolution, `/auth/allowed-emails`,
+    onboarding's owner email); mail is matched by
+    `store.find_person_by_address` (primary or alias, case-insensitive,
+    team row wins over a contact, archived excluded) and, on top of it,
+    `people.identity.resolve_email_sender` (company-domain rule, below).
+    Uniqueness: `store.address_holder` (anyone's primary or alias) and
+    `store.alias_holder` (aliases only); `clean_aliases` trims, dedupes
+    case-insensitively, drops the person's own primary, refuses a
+    non-address (the message never quotes it) and more than 10;
+    `set_person_emails` replaces the list, `add_person_email` adds one
+    (False when already theirs); both raise `AddressInUseError` before
+    writing when an address is someone else's. Archiving a person deletes
+    their aliases so they never block the address. Writers: the People
+    page ("Other addresses"; POST / PATCH /people `email_aliases`, 422 for
+    a bad one, 409 for one in use — and 409 for a new primary that is
+    someone's alias), `upsert_person`'s `email_aliases` (the full list,
+    replacing; omit to keep), and a roster request linked to someone who
+    already has a primary. Readers that now include aliases: the email
+    poller, the outbound gates (RosterAllow), `_names_a_contact` (audit
+    privacy), Act as me's recipient-kind map (`delegation.voice`,
+    `delegation_tools`) and `/today`'s name lookup. Onboarding still
+    imports no model-emitted addresses — only the owner's sign-in email,
+    and an alias counts as taken there (`find_person_by_address`).
+  company_domains: |
+    `people.identity`: on one of the company's own email domains, an
+    address's local part (lowercased, `+tag` dropped) matches a TEAMMATE
+    whose primary or alias on ANY company domain has that local part —
+    anna+invoices@acme.io is the Anna whose address is anna@acme.com.
+    Contacts never match this way. A domain alone proves nothing: an
+    unknown local part on the company domain matches nobody (it becomes a
+    roster request with suggested_kind "team"), and when two teammates
+    would match nobody does (fail closed, logged). Exact matches win
+    first. The domains are the `company_domains` workspace setting
+    (workspace_settings column, JSON list or NULL; GET / PUT /workspace,
+    Settings → Workspace; same caller rule as the principal's role; at
+    most 10 plain DNS names; `validate_company_domains` refuses a
+    free-mail provider's) or, when unset, the non-free-mail domains of the
+    principal's own addresses (`identity.company_domains`). Never a
+    free-mail domain (`identity.FREEMAIL_DOMAINS`: gmail.com, outlook.com,
+    yahoo.com, icloud.com, proton.me, …), where a local part says nothing
+    about who someone is — a principal on gmail.com with no setting has no
+    company domains at all. `identity.RosterAllow` is the same rule as a
+    set for the outbound Gmail / Calendar / Drive gates (exact addresses of
+    everyone allowed, plus company-domain local parts of teammates), so
+    the Executive may email exactly the addresses inbound mail would
+    match.
+  roster_requests: |
+    `people.roster_requests` (ledger + state machine, no channel sends) and
+    `integrations.roster_intake` (acknowledgement, telling the principal,
+    answers, replay). When someone NOT on the roster — and NOT one of the
+    principal's contacts — writes in (an email address, a Slack or Discord
+    user in a DM or mention, a private Telegram chat on a verified
+    webhook), their message is HELD as a roster request instead of being
+    dropped. Tables (same DB as people, created by `initialize_db`):
+    `roster_requests` (one pending row per (channel, channel_ref) —
+    partial unique index; display_name sanitised and unverified,
+    profile_email, on_company_domain, suggested_kind "team" on a company
+    domain else NULL, suggested_person_id (a chat profile email already on
+    someone, or a display name that is exactly one person's full name),
+    status pending / resolving / approved / linked / declined / expired /
+    superseded, resolved_*, token_hash, notified_*, ack_sent_at,
+    alert_id, message_count, expires_at), `roster_request_messages`
+    (payload_json for the replay, preview, replay_status held /
+    replaying / replayed / dropped / failed / unavailable; unique per
+    (request, external_id) so a redelivery is held once; at most 10 held
+    per request, later ones only bump message_count) and `roster_ack_log`.
+
+    Lifecycle. `hold` opens or extends the request (`ROSTER_REQUEST_DAILY_CAP`
+    = 30 new requests a day; a sender declined within 30 days is not
+    raised again). A new request gets a private /today card
+    (`surface_card`: alert source "roster_request", tags
+    `roster_request:<id>` + `private:principal`, routed to the principal)
+    and a push to the principal (`notify_principal`: their delivery plan —
+    preferred chat, other chats, email — for a chat sender or a
+    company-domain email sender; an outside email sender waits on the
+    card; capped by the same daily cap). The sender gets the fixed
+    `ACK_TEXT` at most once per `ROSTER_ACK_WINDOW_DAYS` (7) and at most
+    `ROSTER_ACK_DAILY_CAP` (20) a day overall (`claim_ack`, one BEGIN
+    IMMEDIATE transaction; `release_ack` on a failed send). Unanswered
+    requests expire after `ROSTER_REQUEST_TTL_DAYS` (14), swept lazily on
+    every read.
+
+    Answers — all end in `resolve` (claims the row pending → resolving so
+    two answers race and one wins; unclaims on any error; nothing is
+    written unless it succeeds): APPROVE adds a new Person (team or
+    contact) with the address / chat id; LINK attaches it to someone
+    listed — an email becomes their alias (their primary if they had
+    none), a chat id fills their field (a different existing id only with
+    replace_channel_id, else `ChannelIdConflict`); DECLINE leaves them
+    off. Who can answer: ONLY the principal, on a verified surface — the
+    web card (`POST /people/requests/{id}/approve|decline`, principal-only,
+    404 for anyone else; kind must be given explicitly), their own Slack /
+    Discord DM or verified private Telegram chat (`resolve_roster_request`
+    tool, only ids in `Session.trusted_roster_request_ids`), or an email
+    reply from their own address or alias (exact, not the company-domain
+    rule) carrying the request's one-time token (`RR-` + 20 base32, stored
+    as a SHA hash, cleared on resolve; the reply must pass DMARC; parsed by
+    `parse_decision(..., "roster_identity")`) — handled before any model
+    turn. Default kind when the chat or email answer did not say: team for
+    a company-domain sender, else contact (the least access). RECONCILE:
+    after any other roster write (POST / PATCH /people, `upsert_person`)
+    `after_roster_write` closes every pending request whose sender now
+    matches someone as `superseded` (via people_page) and replays it.
+
+    Replay (`roster_intake.replay_request`): held messages go back through
+    the adapter that received them (`register_replayer` per channel;
+    oldest first; `claim_messages` held → replaying, each at most once).
+    Team: every message. New contact: email only (it takes the private
+    contact path; a contact has no chat access, so held chat is dropped).
+    Declined: all dropped. No replayer registered: `unavailable`.
+
+    INVARIANTS:
+    - An alias is not a login (see `aliases`).
+    - Contacts get no request and no acknowledgement (every adapter checks
+      `include_contacts=True` first; the email poller holds only mail that
+      is not private to the principal), and the team-visible audit rows
+      (`rejected_unknown_sender` / `accepted_non_roster`) stay identical for
+      a contact and a stranger.
+    - The acknowledgement is a fixed text — never the model, never an echo
+      of the sender's words — delivered where only the sender sees it (a
+      DM, a Slack ephemeral, a private Telegram chat, a Discord ephemeral
+      for /ask, one email to exactly that address under the gateway's
+      one-shot `roster_ack_grant`).
+    - Replays run in a FRESH `contextvars.Context` (`_spawn`): the answer
+      may come from the principal's own verified turn, and a stranger's
+      message must never run with the principal's session (and contacts,
+      and audit scope) still bound. `bind_loop` at app boot lets a sync
+      route schedule the replay on the app loop.
+    - Held text is purged on resolve or expiry: `_purge` blanks
+      payload_json and preview on decline / expire, `finish_message` on
+      each replay.
+    - Private to the principal: the routes (404), the /today card
+      (`private:principal`, excluded from the narrative, the chat alert
+      digest, `ack_alert`, single ack — 409 — bulk ack, reopen, TTL sweep
+      and alert review via `lifecycle.TTL_EXEMPT_SOURCES`), and every
+      audit row (`roster_request_created`, `roster_ack_sent`,
+      `roster_request_resolved`, `roster_message_replayed`,
+      `roster_email_answer_refused`). The <roster_requests> block and the
+      card show server-derived fields only; previews reach the web card,
+      never a model.
+    - Caps: ROSTER_ACK_WINDOW_DAYS=7, ROSTER_ACK_DAILY_CAP=20,
+      ROSTER_REQUEST_DAILY_CAP=30, ROSTER_REQUEST_TTL_DAYS=14 (config.py),
+      MAX_HELD_MESSAGES=10, DECLINE_QUIET_DAYS=30.
+    - Wiped on a company swap: `clients.slots._BLANK_WIPE_TABLES`,
+      `fixture_loader.reset_all_state` and `_seed_people` (with
+      `person_emails`, children first).
   registry: openexecutive.people.registry — in-memory cache + lookup
   channel: |
     openexecutive.people.channel — resolves a person to a deliverable
@@ -2908,7 +3092,16 @@ people:
     GET /people is team-only unless include_contacts=true, and POST and
     PATCH take kind; include_contacts, a contact's id and adding a contact
     are the principal's alone, a stricter check than the owner rule (see
-    `people.kind`).
+    `people.kind`). POST and PATCH also take email_aliases (see
+    `people.aliases`) and then reconcile pending roster requests. The
+    roster-request routes — GET /people/requests (?status=, default
+    pending, `all` for every status), GET /people/requests/{id}, POST
+    /people/requests/{id}/approve (link_person_id [+ replace_channel_id],
+    or full_name + kind [+ role]) and POST /people/requests/{id}/decline —
+    are declared before /people/{person_id} and answer 404 to anyone but
+    the principal (`caller_is_principal`); an answered request, or an id /
+    address already on someone else, is a 409 (see
+    `people.roster_requests`).
   executive_write_access: |
     The Executive can mutate the roster directly without going through the
     UI via the `list_people` / `upsert_person` / `archive_person` /
@@ -2916,7 +3109,12 @@ people:
     but only when the principal asks from the web chat, their own Slack or
     Discord, or a private Telegram chat with a TELEGRAM_WEBHOOK_SECRET
     Telegram can send;
-    anyone and anything else is refused.
+    anyone and anything else is refused. `resolve_roster_request` answers a
+    pending roster request under the same gate, only for ids the server
+    printed that turn in the `<roster_requests>` user-turn block
+    (`briefing.context.render_and_trust` → `Session.trusted_roster_request_ids`,
+    the principal's verified turn only; never the cached system prompt),
+    and is in `UNATTENDED_WITHHELD_TOOLS`.
     See `routing.people_tools` for details.
   brief_insights: |
     openexecutive.people.insights generates a one-line per-person note for the
@@ -3559,6 +3757,7 @@ audit:
     - scheduled_action_cancelled — a pending scheduled action cancelled via DELETE /scheduled/{id} (the Pulse page's Cancel, or a script). actor is the signed-in caller's email, "admin-token" or "local"; details carry action_id, kind, channel and department. A refused or 409 cancel writes nothing.
     - decision_class_mode_changed — a decision class's mode changed (propose ↔ auto_execute) via PUT /decisions/classes/meeting_scheduling. actor is the caller's x-caller-email or "api"; details carry decision_class and mode as from/to. Setting the current mode writes nothing.
     - workspace_settings_changed — solo/team mode, the user's time zone or the principal's role changed via PUT /workspace. actor is the caller's x-caller-email or "api"; details carry mode and timezone, each as from/to, plus role_fields_changed (the names of the role fields that changed, never their text — it is the principal's own and may name their manager) when the role changed. The summary names only what moved ("mode A → B, time zone X → Y" and/or "principal's role updated"). A PUT that changes nothing writes nothing.
+    - roster_request_created / roster_ack_sent / roster_request_resolved / roster_message_replayed / roster_email_answer_refused — the roster-request lifecycle (people.roster_requests, integrations.roster_intake). Always private to the principal; details carry ids, the channel and statuses, never what the new sender wrote. roster_request_resolved's actor is where it was answered (web / slack / discord / telegram / email / people_page); roster_message_replayed is one per held message (replayed / dropped / failed / unavailable). The fixed acknowledgement email is an integration_outbound row (details.kind roster_ack, private).
     - delegation_settings_changed — a person turned Act as me on or off for themselves via PUT /delegation. actor "user"; details carry person_id and enabled. Always private. Setting the current value writes nothing.
     - delegation_gmail_verified — their own Gmail was checked (connected, and the mailbox on their People entry) just before Act as me was turned on. details carry person_id and status. Always private.
     - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice, or its signature read from Gmail again via /delegation/voice/signature (actor "user"). details carry op (learn, edit, reset or signature), person_id, and counts, the names of the fields changed or whether a signature was found — never their text. Always private.
@@ -5263,21 +5462,44 @@ integrations:
         will be blocked. Audit ``integration_inbound`` row carries
         ``details.outcome="accepted_non_roster"`` for observability —
         the same row for one of the principal's contacts, who are private
-        to the principal (see ``people.kind``).
+        to the principal (see ``people.kind``). A sender is on the roster
+        when ``people.identity.resolve_email_sender`` matches them (a
+        primary address or alias, then the company-domain rule — see
+        ``people.aliases`` / ``people.company_domains``). Non-roster mail
+        that is not private to the principal and not machine-sent is ALSO
+        held as a roster request (see ``people.roster_requests``) and
+        acknowledged once; it is still triaged on this pass and replayed
+        after the principal adds the sender.
       • Discord, Slack, Telegram: still roster-gated on inbound. A
         sender's channel ID must match a non-archived TEAM member's row
         (discord_user_id / slack_user_id / telegram_chat_id) — a
-        contact's id counts as unknown. Unknown senders are silently
-        dropped with ``details.outcome="rejected_unknown_sender"``.
+        contact's id counts as unknown. An unknown sender's message never
+        reaches the Executive (``details.outcome="rejected_unknown_sender"``),
+        but it is no longer silently dropped: a DM or mention (Slack,
+        Discord) or a private chat on a verified webhook (Telegram) is
+        held as a roster request, the sender gets the fixed
+        acknowledgement privately, and the principal is asked who they
+        are. Silent still: a contact (no chat access, and no request), a
+        thread continuation the bot was not addressed in, a Telegram group,
+        and any Telegram update without a valid TELEGRAM_WEBHOOK_SECRET.
 
     Outbound — roster-gated everywhere this matters:
       • Gmail send (``send_gmail_message`` — which also covers replies
         via thread_id in workspace-mcp 1.29.0 — and ``draft_gmail_message``)
         is gated at the MCP gateway
         (orchestrator.mcp_gateway._check_gmail_recipients). Every
-        ``to``/``cc``/``bcc`` address must resolve to a Person row's
-        email (case-insensitive) or to the exec's own address; misses
-        get an ``integration_outbound_blocked`` audit row. Only a fixed
+        ``to``/``cc``/``bcc`` address must be in the ``RosterAllow``
+        (a Person's primary or alias, case-insensitive; for a teammate,
+        also their local part on a company domain) or be the exec's own
+        address; misses get an ``integration_outbound_blocked`` audit row.
+        The one exception is the roster-request acknowledgement: inside
+        ``roster_ack_grant(to, subject, body)`` (a ContextVar set only by
+        ``roster_intake.send_email_ack``) exactly one
+        ``send_gmail_message`` with exactly those four keys
+        (user_google_email, to, subject, body), a single plain ``to``
+        equal to the granted one and the granted subject and body passes,
+        audited private as ``integration_outbound`` kind roster_ack; the
+        grant is then spent. Only a fixed
         set of argument keys passes (``_GMAIL_ALLOWED_ARG_KEYS``), so
         1.29.0's ``reply_all`` (To/Cc derived from the thread, never
         roster-checked) and ``forward_message_id`` /
@@ -5349,8 +5571,35 @@ integrations:
     the principal could send (text in the reply, never sent, never a
     Gmail draft), note any commitment or date, and offer to add the
     original sender as a contact (confirmed from the web app or the
-    principal's Slack / Discord). The reply goes to the principal only;
+    principal's Slack / Discord — an ordinary email turn cannot change the
+    People list). The reply goes to the principal only;
     the From header is unauthenticated, so the framing grants nothing.
+
+    Roster requests (see ``people.roster_requests``). Sender matching uses
+    ``people.identity.resolve_email_sender`` everywhere the poller used
+    ``find_person_by_email`` (aliases and the company-domain rule). Before
+    any triage, ``roster_intake.try_email_roster_answer`` checks the mail
+    for a roster-request token (``RR-…``): from the principal's own address
+    or alias exactly, carrying a pending request's token and not failing
+    DMARC, it is the principal's answer — parsed with
+    ``parse_decision(..., "roster_identity")``, applied, answered by a
+    short email to the principal, marked read; no model turn. Anything else
+    falls through (a refused token is audited privately). For NON-ROSTER
+    mail that is not private to the principal (so never a contact's) and
+    does not ``looks_automated`` (no-reply / notifications / billing-style
+    local part, List-Id / List-Unsubscribe / Feedback-ID / X-Campaign,
+    Auto-Submitted other than no, bulk/list/junk Precedence, DMARC fail),
+    ``_hold_for_roster`` holds it (payload = message and thread id only;
+    preview = subject + new text) and sends the fixed acknowledgement via
+    ``send_email_ack`` under the gateway's one-shot grant. The mail is
+    STILL triaged on this pass, with a variant [POLICY] notice
+    (``held_for_roster``) that opens with the same sentence as the
+    non-roster one and adds: the sender was already told it is waiting,
+    the principal was asked (a Today card), do not raise another alert or
+    proposal just to add them, and the email comes back once they are
+    added. ``replay_held_email`` (registered as the email replayer)
+    re-fetches the message from Gmail after approval and handles it as
+    new mail from a now-known sender.
     Peer memory records ``_email_memory_text(raw)`` as the sender's
     words, not the prompt: the subject, the body cut at the first quoted
     or forwarded message (Gmail's possibly-wrapped "On … wrote:",
@@ -5388,7 +5637,16 @@ integrations:
     The bot's own user_id is resolved once at startup via
     ``auth_test()`` so it can detect its own past replies and avoid
     double-firing with ``app_mention``. Roster-gated per
-    `channel_access`.
+    `channel_access`. An unknown sender's DM or @mention (not a thread
+    continuation) goes to ``_hold_unknown_sender``: a contact gets nothing;
+    otherwise name and profile email come from ``users_info`` (5 s
+    timeout), the event is held with a fixed key set (``_HELD_EVENT_KEYS``:
+    type, text, user, channel, channel_type, ts, thread_ts, files,
+    subtype) as a roster request, and the fixed acknowledgement goes in
+    the DM or as ``chat_postEphemeral`` for a mention (a channel reply
+    would tell everyone there who is not on the roster). The registered
+    replayer re-runs ``_handle_message`` on the held event under the
+    handler semaphore once the sender is on the roster.
 
     Session model (added with #136; Slack had none before it). The
     conversation key is ``_slack_session_id``: ``slack:dm:{user}`` for a
@@ -5440,7 +5698,16 @@ integrations:
     so the Executive sees who in the thread said what. Auto-continues
     in bot-owned threads (without re-tag), with continuations gated by
     the shared ``response_gate`` (see `response_gate:` below).
-    Roster-gated per `channel_access`.
+    Roster-gated per `channel_access`. An unknown sender writing to the bot
+    directly (a DM or a mention — not a thread it merely follows) goes to
+    ``_hold_unknown_sender``: a contact gets nothing; otherwise the text
+    and routing fields are held as a roster request and the fixed
+    acknowledgement is sent in the DM, or by DM for a channel mention.
+    ``/ask`` from an unknown user answers the interaction first with an
+    EPHEMERAL ``ACK_TEXT`` (Discord's 3-second window) — replacing the old
+    "ask the admin to add you" — then holds the prompt with no second
+    acknowledgement. ``_replay_held`` re-runs ``_handle_message`` (DM, or
+    the original channel) once the sender is on the roster.
 
     @mention routing: in DMs and inside existing threads, the bot
     replies in-place. In a plain text channel, the
@@ -5496,7 +5763,18 @@ integrations:
     Slack has no equivalent kill-switch yet (the gate only fires once
     the bot has engaged in a thread, so accidental over-firing has a
     naturally small blast radius).
-  telegram: Webhook gating + per-chat conversation history. Roster-gated per `channel_access`.
+  telegram: |
+    Webhook gating + per-chat conversation history. Roster-gated per
+    `channel_access`. An unknown chat is held as a roster request only when
+    the chat is PRIVATE and TELEGRAM_WEBHOOK_SECRET is set and valid
+    (Telegram identifies the chat, not the sender, and an unverified
+    webhook accepts anyone's forged update); a group or an unverified
+    webhook stays silent. Contacts get nothing. The hold runs as a
+    background task (the webhook stays fast): text with bot commands
+    stripped (``_message_content``) plus attachment file ids, downloaded
+    only on replay; the fixed acknowledgement is sent to that chat.
+    ``_replay_held`` re-runs ``_process_and_reply`` once the chat is on the
+    roster.
   google_chat: Webhook + service-account auth.
   setup_status: |
     GET /setup/status (api/routes/setup_status.py; checks in
@@ -5866,14 +6144,24 @@ integrations:
 
     Egress gating: MCPGateway.call_tool intercepts three tool families before
     delegating to the MCP subprocess. All three resolve the allow-list from the
-    shared _roster_allow_set() helper: every team member's email plus the exec
-    address, and contacts' emails only when people_tools.contacts_reachable_now()
+    shared _roster_allow_set() helper, which returns a people.identity.RosterAllow
+    (a set-like object: exact primaries and aliases, plus — for a teammate — any
+    address on a company domain whose local part matches theirs, the rule
+    inbound mail is matched by): every team member's addresses plus the exec
+    address, and contacts' addresses only when people_tools.contacts_reachable_now()
     (the principal's own verified turn, or grant_contact_egress()); otherwise a
     contact's address is refused exactly like a stranger's, so the refusal never
     reveals a contact. A private turn (Session.private_to_principal) narrows it
     to the principal's address and the exec's:
     - Gmail (_GATED_GMAIL_TOOLS): to/cc/bcc must be on the People roster
-      or the exec address; unknown argument keys rejected.
+      or the exec address; unknown argument keys rejected. One exception,
+      checked after the key checks and before the roster check:
+      _roster_ack_admits passes exactly one send under roster_ack_grant (the
+      fixed roster-request acknowledgement to one unknown sender: tool
+      send_gmail_message, keys exactly user_google_email/to/subject/body, a
+      single `to` equal to the grant with no , ; < > or newline, the granted
+      subject and body), then marks the grant used; audited private as
+      integration_outbound kind roster_ack.
     - Calendar (_GATED_CALENDAR_TOOLS = {google_workspace__manage_event}):
       attendees must be on the People roster; this is a hard backstop — the
       typed create_calendar_event tool enforces the same rule via person IDs
