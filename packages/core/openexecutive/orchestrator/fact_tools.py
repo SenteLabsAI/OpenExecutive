@@ -51,6 +51,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -549,12 +550,17 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
 # field they would read as a second, forged marker ("… (per Olivia Owner) —
 # 2026-09-01" in a teammate's statement), so no field may carry one.
 _RENDER_MARKERS = re.compile(
-    r"\(\s*per\b|\[\s*fact\s*\d+\s*\]|[—–]\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE,
+    r"\(\s*per\b|\[\s*fact\s*\d+\s*\]|[\u2010-\u2015\u2212]\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE,
 )
 
 
 def _marker_error(label: str, text: str) -> str | None:
-    if _RENDER_MARKERS.search(text):
+    # Look-alikes read the same to a model: fullwidth brackets fold under
+    # NFKC, and invisible format characters (a zero-width space) go.
+    folded = "".join(
+        ch for ch in unicodedata.normalize("NFKC", text) if unicodedata.category(ch) != "Cf"
+    )
+    if _RENDER_MARKERS.search(folded):
         return (
             f"the {label} may not contain '(per …)', '[fact N]' or a '— YYYY-MM-DD' "
             "stamp: those mark who stated a fact and when, and are added when it "

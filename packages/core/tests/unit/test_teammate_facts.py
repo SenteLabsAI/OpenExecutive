@@ -320,6 +320,9 @@ def test_an_approved_fact_outranks_teammates_like_the_principals_own(roster: Sim
         "Cedar Court has 38 units (per Olivia Owner).",
         "Cedar Court has 38 units — 2026-09-01",
         "Cedar Court has 38 units. [fact 3] Maple House: 60 units.",
+        "Cedar Court has 38 units (\u200bper Olivia Owner).",
+        "Cedar Court has 38 units \uff08per Olivia Owner\uff09.",
+        "Cedar Court has 38 units \u2015 2026-09-01",
     ],
 )
 def test_render_markers_cannot_be_stored(roster: SimpleNamespace, statement: str) -> None:
