@@ -154,6 +154,17 @@ def test_render_respects_the_char_budget() -> None:
     assert len(out) <= 1500 and out.count("[fact ") >= 1
 
 
+def test_render_skips_a_row_it_cannot_read(db: Path) -> None:
+    """A row written by a newer build (an unknown kind) is skipped, not raised:
+    every prompt would otherwise fail on it."""
+    good, _ = facts.record_fact(subject="Units", statement="Maple House has 48 units.", source_quote="q")
+    bad, _ = facts.record_fact(subject="Leases", statement="Cedar Court renews in May.", source_quote="q")
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("UPDATE facts SET kind='from_a_newer_build' WHERE id=?", (bad.id,))
+    out = facts.render_facts_for_prompt()
+    assert f"[fact {good.id}]" in out and f"[fact {bad.id}]" not in out
+
+
 def test_render_never_creates_a_db_or_table(tmp_path: Path) -> None:
     missing = tmp_path / "nope.db"
     assert facts.render_facts_for_prompt(db_path=missing) == ""

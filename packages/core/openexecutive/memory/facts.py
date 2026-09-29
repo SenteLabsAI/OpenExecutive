@@ -336,7 +336,11 @@ def render_facts_for_prompt(
     lines = [FACTS_BLOCK_HEADER]
     used = len(FACTS_BLOCK_HEADER)
     for r in rows:
-        f = _row(r)
+        try:
+            f = _row(r)
+        except Exception:  # noqa: BLE001 - one bad row must not cost every prompt its facts.
+            logger.warning("facts: skipping unreadable fact row %s", r["id"], exc_info=True)
+            continue
         line = f"- [fact {f.id}] {_safe(f.subject, SUBJECT_MAX)}: {_safe(f.statement, STATEMENT_MAX)}"
         if f.kind == "correction" and f.previous_statement:
             line += f" (corrects: {_safe(f.previous_statement, 160)})"
