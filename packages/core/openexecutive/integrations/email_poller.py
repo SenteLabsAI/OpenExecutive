@@ -541,6 +541,13 @@ async def _handle_one_email(
     if await try_email_roster_answer(gateway, raw, from_addr, message_id):
         await _mark_read(gateway, message_id, user_email)
         return
+    # The principal confirming (or cancelling) a standing-fact change they
+    # asked for by email: the reply carries that change's one-time token.
+    from openexecutive.integrations.fact_confirmation import try_email_fact_confirmation
+
+    if await try_email_fact_confirmation(gateway, raw, from_addr, message_id):
+        await _mark_read(gateway, message_id, user_email)
+        return
     # Not an answer: from here on the mail is read like any other, so any
     # token in it is hidden from the model, as on every other read.
     from openexecutive.orchestrator.mcp_gateway import hide_roster_tokens
@@ -818,6 +825,14 @@ async def _run_executive(
     if session_id:
         session_kwargs["session_id"] = session_id
     session = Session(**session_kwargs)
+    if from_addr:
+        # Who the mail claims to be from, and whether it passed DMARC: the
+        # fact tools let the principal's own authenticated mail ask for a
+        # standing fact, held until they confirm it by reply.
+        from openexecutive.integrations.fact_confirmation import dmarc_failed
+
+        session.email_from = from_addr.strip().lower()
+        session.email_authenticated = not dmarc_failed(raw_email)
     if from_addr:
         # Only register the sender as a schedulable channel_ref if they
         # are in the People roster. Without this guard, an attacker who

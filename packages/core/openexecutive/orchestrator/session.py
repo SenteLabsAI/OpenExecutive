@@ -87,6 +87,14 @@ class Session:
     # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it
     # may not draft a team-visible artifact. Set by the email poller.
     private_to_principal: bool = False
+    # The bare, lowercased From address of the inbound email this turn is
+    # answering, and whether that mail passed DMARC (no "dmarc=fail" in its
+    # Authentication-Results). Set by the email poller only; empty / False on
+    # every other surface. The fact tools read them to let the principal's own
+    # email request a standing fact, held until a token reply confirms it
+    # (``orchestrator.fact_tools``) — a From line alone proves nothing.
+    email_from: str = ""
+    email_authenticated: bool = False
     # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
     # pinned at its start by ``pin_turn_delegation``: whether the speaker has
     # it on, whether ``ghostwrite_email`` is offered, and whether the turn has

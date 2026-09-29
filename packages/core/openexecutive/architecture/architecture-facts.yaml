@@ -1735,6 +1735,33 @@ memory:
     Evals never read the install's store: a scenario's `standing_facts`
     lines are rendered under the header (`evals.runner.scenario_standing_facts`)
     and the judge sees them (`_standing_facts_section`).
+    EMAIL (confirm by reply) — `integrations/fact_confirmation.py`,
+    table `fact_confirmations` in memory/facts.py:
+      - The email poller sets `Session.email_from` (lowercased From) and
+        `email_authenticated` (no dmarc=fail) on every email turn.
+        `fact_tools._gate` admits one only from the principal's PRIMARY
+        address (exact; no alias / domain rule), authenticated, and not
+        private_to_principal (forwarded mail and contacts stay refused).
+        Such a call is checked like chat, then HELD: the tool returns
+        `awaiting_confirmation` (no chip; the model is told nothing changed).
+      - `request_confirmation`: store action JSON + sha256(token)
+        ("FC-" + 20 base32, 100 bits), 7-day TTL, max 10 pending; email the
+        token to the principal's roster address outside any turn context;
+        a failed send holds nothing. Profile edits are dry-run first.
+      - The token never reaches a model: absent from the tool result, and
+        `mcp_gateway.hide_roster_tokens` scrubs `FC-` as well as `RR-` from
+        every Google Workspace result except the poller's inbound fetch.
+      - `try_email_fact_confirmation` runs in `_handle_one_email` right after
+        the roster-answer check, before any model turn: principal primary
+        address + a token this module issued (unknown tokens ignored
+        silently, so forged mail cannot trigger an email) → DMARC fail is
+        refused and the principal told → auto/bulk left alone → CONFIRM /
+        yes applies via `fact_tools.apply_confirmed` (the same apply step as
+        chat), CANCEL / no drops, unclear keeps waiting. A compare-and-set
+        makes a token single-use; spent / expired tokens are answered.
+      - Audit: private `fact_confirmation` rows (held / applied / cancelled
+        / refused_dmarc / unknown_token); the applied change writes the
+        tools' usual private rows with source_channel "email".
     SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
     `POST /memories/facts/{id}/retire`, principal only). Other viewers get
     the active rows only, with the quote, retire reason, session_id, turn_id

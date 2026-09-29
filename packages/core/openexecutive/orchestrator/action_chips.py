@@ -168,7 +168,7 @@ def summarize_action(
         # The Executive's prose will explain what went wrong; we just don't
         # paint a green ✓ chip over a red outcome.
         return None
-    if parsed is not None and parsed.get("status") in ("not_found", "refused"):
+    if parsed is not None and parsed.get("status") in ("not_found", "refused", "awaiting_confirmation"):
         # The target row didn't exist (e.g. archive_person for an unknown
         # person), or the tool refused the caller (e.g. a roster change asked
         # for by someone other than the principal). Nothing changed → no ✓ chip.

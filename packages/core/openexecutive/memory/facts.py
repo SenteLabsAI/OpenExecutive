@@ -29,14 +29,18 @@ rendered into a prompt.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 import re
+import secrets
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -78,6 +82,17 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject_key, status);
+CREATE TABLE IF NOT EXISTS fact_confirmations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fact_conf_token ON fact_confirmations(token_hash, status);
 """
 
 
@@ -341,8 +356,132 @@ def with_standing_facts(user_content: str, *, db_path: Path | None = None) -> st
     return f"{user_content.rstrip()}\n\n{block}" if block else user_content
 
 
+# --------------------------------------------------------------------------- #
+# Email confirmations
+# --------------------------------------------------------------------------- #
+#
+# An email's From line proves nothing, so a change the principal asks for by
+# email is held here, never applied, and a one-time token is emailed to their
+# own address (``orchestrator.fact_tools``). Their reply carrying it confirms
+# or cancels (``integrations.fact_confirmation``). Only the token's hash is
+# stored; a token works once and expires. The Executive's Sent folder holds the
+# confirmation email, so the MCP gateway hides these tokens from every model
+# read of the mailbox, as it does roster-request tokens.
+
+CONFIRM_TOKEN_RE = re.compile(r"\bFC-([A-Z2-7]{20})\b")
+CONFIRM_TTL = timedelta(days=7)
+# Held at once, so a stream of emails (the principal's own, or a forged
+# sender who got past DMARC) cannot bury their inbox in confirmation mail.
+MAX_PENDING_CONFIRMATIONS = 10
+
+
+class Confirmation(BaseModel):
+    id: int
+    action: dict[str, Any]
+    summary: str
+    status: Literal["pending", "confirmed", "cancelled", "expired"]
+    created_at: str
+    expires_at: str
+    decided_at: str | None = None
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.strip().upper().encode("ascii", "ignore")).hexdigest()
+
+
+def _confirmation(r: sqlite3.Row) -> Confirmation:
+    return Confirmation(
+        id=r["id"], action=json.loads(r["action"]), summary=r["summary"],
+        status=r["status"], created_at=r["created_at"], expires_at=r["expires_at"],
+        decided_at=r["decided_at"],
+    )
+
+
+def _expire_stale(conn: sqlite3.Connection, now: datetime) -> None:
+    conn.execute(
+        "UPDATE fact_confirmations SET status='expired', decided_at=? "
+        "WHERE status='pending' AND expires_at <= ?",
+        (now.isoformat(), now.isoformat()),
+    )
+
+
+def pending_confirmation_count(db_path: Path | None = None) -> int:
+    now = datetime.now(UTC)
+    with _conn(db_path) as conn:
+        _expire_stale(conn, now)
+        (count,) = conn.execute(
+            "SELECT COUNT(*) FROM fact_confirmations WHERE status='pending'"
+        ).fetchone()
+    return int(count)
+
+
+def hold_confirmation(
+    action: dict[str, Any], summary: str, db_path: Path | None = None,
+) -> tuple[int, str]:
+    """Hold ``action`` until the principal confirms it. Returns ``(id,
+    token)``; the token ("FC-" + 20 base32 characters, 100 bits) is returned
+    once, for the confirmation email, and never stored."""
+    now = datetime.now(UTC)
+    token = "FC-" + base64.b32encode(secrets.token_bytes(15)).decode("ascii")[:20]
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO fact_confirmations (action, summary, token_hash, status, "
+            "created_at, expires_at) VALUES (?,?,?, 'pending', ?, ?)",
+            (json.dumps(action), _clean(summary, 600), _hash_token(token),
+             now.isoformat(), (now + CONFIRM_TTL).isoformat()),
+        )
+        conf_id = int(cur.lastrowid or 0)
+    return conf_id, token
+
+
+def find_confirmation_tokens(text: str) -> list[str]:
+    """Every confirmation token in ``text``, in order."""
+    return [f"FC-{m}" for m in CONFIRM_TOKEN_RE.findall((text or "").upper())]
+
+
+def find_confirmation(token: str, db_path: Path | None = None) -> Confirmation | None:
+    """The confirmation this token was issued for, whatever its status (so a
+    reply to a spent or expired one can be told so), or None."""
+    if not re.fullmatch(r"FC-[A-Z2-7]{20}", (token or "").strip().upper()):
+        return None
+    path = _db_path(db_path)
+    if not path.exists():
+        return None
+    now = datetime.now(UTC)
+    with _conn(db_path) as conn:
+        _expire_stale(conn, now)
+        r = conn.execute(
+            "SELECT * FROM fact_confirmations WHERE token_hash=?", (_hash_token(token),),
+        ).fetchone()
+    return _confirmation(r) if r else None
+
+
+def decide_confirmation(
+    conf_id: int, status: Literal["confirmed", "cancelled"], db_path: Path | None = None,
+) -> bool:
+    """Move a pending confirmation to ``status``; False when it was no longer
+    pending (already used, cancelled or expired). A compare-and-set, so two
+    replies racing on one token apply it once."""
+    now = datetime.now(UTC)
+    with _conn(db_path) as conn:
+        _expire_stale(conn, now)
+        cur = conn.execute(
+            "UPDATE fact_confirmations SET status=?, decided_at=? WHERE id=? AND status='pending'",
+            (status, now.isoformat(), conf_id),
+        )
+    return cur.rowcount == 1
+
+
 __all__ = [
+    "CONFIRM_TOKEN_RE",
+    "Confirmation",
     "FACTS_BLOCK_HEADER",
+    "MAX_PENDING_CONFIRMATIONS",
+    "decide_confirmation",
+    "find_confirmation",
+    "find_confirmation_tokens",
+    "hold_confirmation",
+    "pending_confirmation_count",
     "Fact",
     "get_fact",
     "list_facts",

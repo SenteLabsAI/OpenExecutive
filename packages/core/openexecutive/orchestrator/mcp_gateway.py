@@ -736,19 +736,22 @@ _ROSTER_ACK_KEYS = frozenset({"user_google_email", "to", "subject", "body"})
 
 # A roster request's one-time answer token ("RR-" + 20 base32 characters,
 # people.roster_requests) proves an email answer came from the principal's
-# mailbox. The confirmation email carrying it sits in the Executive's own
-# Sent folder, so every Google Workspace result is scrubbed of tokens — a
-# model turn (anyone's) reading that mail sees "RR-[hidden]" — except the
-# email poller's own fetch of an inbound message, inside reveal_roster_tokens.
-_ROSTER_TOKEN_RE = re.compile(r"\bRR-[A-Z2-7]{20}\b", re.IGNORECASE)
+# mailbox, and so does a standing-fact confirmation token ("FC-",
+# memory.facts). The confirmation email carrying one sits in the Executive's
+# own Sent folder, so every Google Workspace result is scrubbed of tokens — a
+# model turn (anyone's) reading that mail sees "RR-[hidden]" / "FC-[hidden]"
+# — except the email poller's own fetch of an inbound message, inside
+# reveal_roster_tokens.
+_ROSTER_TOKEN_RE = re.compile(r"\b(RR|FC)-[A-Z2-7]{20}\b", re.IGNORECASE)
 _reveal_tokens: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "reveal_roster_tokens", default=False
 )
 
 
 def hide_roster_tokens(text: str) -> str:
-    """``text`` with every roster answer token replaced by "RR-[hidden]"."""
-    return _ROSTER_TOKEN_RE.sub("RR-[hidden]", text)
+    """``text`` with every roster answer token replaced by "RR-[hidden]" and
+    every standing-fact confirmation token by "FC-[hidden]"."""
+    return _ROSTER_TOKEN_RE.sub(lambda m: f"{m.group(1).upper()}-[hidden]", text)
 
 
 @contextlib.contextmanager
