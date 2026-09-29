@@ -93,7 +93,7 @@ jobs:
       # latest=auto), never a branch push. No bare `{{major}}` tag while the
       # project is pre-1.0 — a `0` tag would be misleading.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ matrix.image }}
           tags: |
