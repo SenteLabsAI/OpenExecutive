@@ -419,6 +419,14 @@ _ALL_SKILL_HANDLERS = {
 }
 
 
+def _private_tool_row(tool_name: str) -> bool:
+    """Whether a tool's dispatch audit row is private to the principal: Act as
+    me reads the speaker's own mailbox, and the fact tools' input quotes the
+    principal verbatim and ties a fact to their chat session and turn, which
+    ``GET /memories/facts`` hides from everyone else."""
+    return tool_name in DELEGATION_TOOL_NAMES or tool_name in FACT_TOOL_HANDLERS
+
+
 def _speaker_text(memory_text: str | None, user_message: str) -> str:
     """The speaker's own words for this turn, which every post-turn pass reads
     instead of the prompt — episodic extraction, open loops and peer memory:
@@ -2015,8 +2023,9 @@ class Executive:
                                 "ok": False,
                                 "error": repr(raw)[:ERROR_DETAIL_LEN],
                             },
-                            # Act as me reads the speaker's own mailbox.
-                            private=tu["name"] in DELEGATION_TOOL_NAMES,
+                            # Act as me reads the speaker's own mailbox; the
+                            # fact tools carry the principal's own words.
+                            private=_private_tool_row(tu["name"]),
                         )
                         # Hand the model an error tool_result and move on. No
                         # chip: summarize_action must never see an exception.
@@ -2073,7 +2082,7 @@ class Executive:
                             "result": audit_tool_result_full(tu["name"], result),
                             "active_prompt_blocks": _system_block_names(system_blocks),
                         },
-                        private=tu["name"] in DELEGATION_TOOL_NAMES,
+                        private=_private_tool_row(tu["name"]),
                     )
 
             if mcp_tool_uses and self._mcp_gateway is not None:

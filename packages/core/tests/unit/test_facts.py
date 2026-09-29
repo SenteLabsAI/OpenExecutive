@@ -265,6 +265,19 @@ def test_the_audit_row_never_carries_the_principals_words(
     dumped = json.dumps(rows)
     assert "St. Albans is 48 units, not 52" not in dumped and "Private reason" not in dumped
     assert [r["details"]["ok"] for r in rows] == [True, True]
+    # The rows tie a fact to the principal's session and turn: theirs alone.
+    assert all(r["private"] is True for r in rows)
+
+
+def test_the_chat_loop_dispatch_row_for_a_fact_tool_is_private() -> None:
+    """The loop's own ``skill:<tool>`` row carries the tool input verbatim,
+    source_quote included; teammates can read any non-private audit row."""
+    from openexecutive.orchestrator.executive import _private_tool_row
+
+    for name in fact_tools.FACT_TOOL_HANDLERS:
+        assert _private_tool_row(name) is True
+    assert _private_tool_row("ghostwrite_email") is True
+    assert _private_tool_row("record_decision_outcome") is False
 
 
 def test_remember_fact_stores_and_corrects_with_provenance(principal: SimpleNamespace) -> None:
@@ -318,6 +331,12 @@ def test_remember_fact_statement_figures_must_be_the_principals(
          "Riverside's lease expires in March.", False),
         ("remember what the lease doc says about Riverside",
          "Riverside's landlord is Harbourline Estates.", False),
+        # A colon or semicolon does not start a sentence, so cannot exempt a name.
+        ("remember what the lease doc says about Riverside",
+         "Riverside landlord: Harbourline; Estates.", False),
+        # A look-alike capital (Greek Eta) still reads as a name.
+        ("remember what the lease doc says about Riverside",
+         "Riverside's landlord is \u0397arbourline.", False),
     ],
 )
 def test_remember_fact_statement_names_and_dates_must_be_the_principals(
@@ -348,6 +367,22 @@ def test_statement_figures_match_whichever_side_has_the_suffix(
     out = _call(fact_tools.handle_remember_fact, subject="Burn",
                 statement=statement, source_quote=said)
     assert out["status"] == "ok", out
+
+
+@pytest.mark.parametrize(
+    ("said", "statement"),
+    [
+        ("burn is 180m a year", "Monthly burn is $180k."),
+        ("we raised 180", "We raised $180 billion."),
+    ],
+)
+def test_a_figure_at_the_wrong_magnitude_is_refused(
+    principal: SimpleNamespace, said: str, statement: str,
+) -> None:
+    principal.turn_delegation.speaker_text = said
+    out = _call(fact_tools.handle_remember_fact, subject="Burn",
+                statement=statement, source_quote=said)
+    assert "not a number the principal wrote" in out["error"]
 
 
 def test_remember_fact_rejects_an_unknown_replaces_id(principal: SimpleNamespace) -> None:
