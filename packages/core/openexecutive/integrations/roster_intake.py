@@ -87,23 +87,16 @@ def _audit(event: str, summary: str, details: dict[str, Any]) -> None:
 def _suggest(channel: str, ref: str, display_name: str, profile_email: str | None) -> tuple[bool, int | None]:
     """(on a company domain?, the person it may be) for a new request."""
     from openexecutive.people.identity import is_company_address, resolve_email_sender
-    from openexecutive.people.store import list_people
 
     address = ref if channel == "email" else (profile_email or "")
     on_company = bool(address) and is_company_address(address)
     suggested: int | None = None
     if channel != "email" and profile_email:
-        # A chat account whose profile email is already someone's.
+        # A chat account whose profile email is already someone's (Slack
+        # reports it from the workspace, not from anything the sender typed).
+        # Never from a display name: anyone can call themselves "Anna Chen".
         person = resolve_email_sender(profile_email, include_contacts=True)
         suggested = person.id if person is not None else None
-    name = rr.sanitize_display_name(display_name).lower()
-    if suggested is None and name:
-        same = [
-            p for p in list_people(include_contacts=True)
-            if " ".join(p.full_name.split()).lower() == name
-        ]
-        if len(same) == 1:
-            suggested = same[0].id
     return on_company, suggested
 
 
@@ -369,6 +362,12 @@ def looks_automated(raw: str, from_addr: str) -> bool:
     local = from_addr.strip().lower().rpartition("@")[0]
     if not local or _AUTOMATED_LOCAL.match(local):
         return True
+    return _auto_or_bulk_headers(raw)
+
+
+def _auto_or_bulk_headers(raw: str) -> bool:
+    """Whether the headers the Gmail tool printed mark the mail as automatic
+    (an out-of-office, a list, a bulk send) or as failing DMARC."""
     from openexecutive.integrations.email_poller import _split_gmail_content
 
     header, _body, _att = _split_gmail_content(raw)
@@ -467,8 +466,9 @@ def schedule_replay(request: rr.RosterRequest) -> None:
             asyncio.get_running_loop()
         except RuntimeError:
             if _LOOP is None or _LOOP.is_closed():
-                # No loop to run on (a CLI or a test): do it now.
-                asyncio.run(replay_request(request))
+                # No loop to run on (a CLI or a test): do it now, still in a
+                # fresh context.
+                contextvars.Context().run(asyncio.run, replay_request(request))
                 return
             _LOOP.call_soon_threadsafe(
                 _spawn, lambda: replay_request(request), context=contextvars.Context()
@@ -528,13 +528,12 @@ async def _parse_answer(text: str) -> dict[str, Any]:
     return await parse_decision(text, "roster_identity", question=_PARSE_QUESTION)
 
 
-def _principal_addresses() -> set[str]:
+def _principal_address() -> str:
+    """The principal's primary address — the one confirmation emails go to."""
     from openexecutive.people.store import find_principal_person
 
     principal = find_principal_person()
-    if principal is None:
-        return set()
-    return {a.strip().lower() for a in [principal.email, *principal.email_aliases] if a}
+    return (principal.email or "").strip().lower() if principal is not None else ""
 
 
 async def try_email_roster_answer(
@@ -542,14 +541,19 @@ async def try_email_roster_answer(
 ) -> bool:
     """Handle an email that answers a roster request; True when it did (the
     caller marks it read and stops). An answer must come from the principal's
-    own address or alias — exactly, not by the company-domain rule — and
-    carry the one-time token of a pending request, which only ever went to
-    that mailbox: a From header alone proves nothing. Anything else is left
-    to the ordinary path."""
+    primary address — exactly: not an alias, not by the company-domain rule —
+    and carry the one-time token of a pending request, which only ever went
+    to that mailbox (and which the gateway hides from every other read of the
+    Executive's mail, ``mcp_gateway.reveal_roster_tokens``): a From header
+    alone proves nothing. An automatic reply (an out-of-office quoting the
+    subject) is no answer. Anything else is left to the ordinary path."""
     tokens = rr.find_tokens(raw)
     if not tokens:
         return False
-    if from_addr.strip().lower() not in await asyncio.to_thread(_principal_addresses):
+    principal = await asyncio.to_thread(_principal_address)
+    if not principal or from_addr.strip().lower() != principal:
+        return False
+    if _auto_or_bulk_headers(raw):
         return False
     request = None
     for token in tokens:

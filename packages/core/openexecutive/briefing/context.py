@@ -242,10 +242,17 @@ def _handled_block(db_path: Path | None, now: datetime) -> str:
 
     # Each per-status page is newest-first; the merge is not, so re-sort before
     # capping or the cap would favour whichever status sorts first by name.
+    from openexecutive.alerts.models import is_private_alert
+    from openexecutive.people.roster_requests import ALERT_SOURCE as _ROSTER_SOURCE
+
+    # Shown on everyone's turn, so never a card private to the principal (a
+    # contact's mail, a roster request naming who wrote to them).
     fresh = [
         alert for alert in rows
         if (created := parse_aware(alert.created_at)) is not None
         and now - created <= _HANDLED_WINDOW
+        and alert.source != _ROSTER_SOURCE
+        and not is_private_alert(alert)
     ]
     fresh.sort(key=lambda a: a.created_at, reverse=True)
 

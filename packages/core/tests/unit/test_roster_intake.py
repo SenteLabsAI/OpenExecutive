@@ -279,9 +279,12 @@ def test_this_is_someone_on_the_list_links_them(pending: tuple[rr.RosterRequest,
     "annamarie@acme.com",  # the stranger
     "olivia+x@acme.com",  # the principal by the company-domain rule, not exactly
     "anna@acme.com",  # a teammate
+    "olivia@home.example",  # the principal's alias: the token went to the primary
 ])
 def test_only_the_principals_own_address_answers(pending: tuple[rr.RosterRequest, str], from_addr: str) -> None:
     req, token = pending
+    owner = people_store.find_principal_person()
+    people_store.set_person_emails(owner.id, ["olivia@home.example"])
     handled, sent, _ = _answer(
         _answer_mail(from_addr, "add her", token), from_addr, {"decision": "approve", "name": "X"}
     )
@@ -392,3 +395,46 @@ def test_a_sync_route_schedules_the_replay_on_the_app_loop(roster: SimpleNamespa
 
     asyncio.run(_main())
     assert seen == [None]
+
+
+def test_an_automatic_reply_is_no_answer(pending: tuple[rr.RosterRequest, str]) -> None:
+    req, token = pending
+    raw = _answer_mail(OWNER, "I'm out until Monday", token, "Auto-Submitted: auto-replied")
+    handled, sent, seen = _answer(raw, OWNER, {"decision": "approve", "name": "X"})
+    assert not handled and seen == [] and sent.await_count == 0
+    assert rr.get_request(req.id).status == "pending"
+
+
+def test_a_display_name_never_suggests_who_they_are(roster: SimpleNamespace) -> None:
+    # Anyone can call themselves "Anna Smith".
+    with patch.object(roster_intake, "notify_principal", new=AsyncMock()):
+        req = asyncio.run(roster_intake.intake(
+            "email", "attacker@evil.example", external_id="1", payload={},
+            display_name="Anna Smith",
+        ))
+    assert req is not None and req.suggested_person_id is None
+
+
+def test_the_answer_token_is_hidden_from_every_other_read_of_the_mailbox(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.orchestrator.mcp_gateway import reveal_roster_tokens
+
+    token = "RR-" + "A2" * 10
+    gateway = MCPGateway()
+    session = MagicMock()
+    result = MagicMock()
+    result.content = [MagicMock(text=f"Subject: Who is Annamarie? [{token}]")]
+    session.call_tool = AsyncMock(return_value=result)
+    gateway._session = session
+    call = {
+        "name": "google_workspace__search_gmail_messages",
+        "arguments": {"query": "in:sent", "user_google_email": EXEC},
+    }
+    assert token not in asyncio.run(gateway.call_tool(call))
+
+    async def _poller_read() -> str:
+        with reveal_roster_tokens():
+            return await gateway.call_tool(call)
+
+    assert token in asyncio.run(_poller_read())

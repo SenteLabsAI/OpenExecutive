@@ -1161,6 +1161,14 @@ def create_discord_bot():
             )
             from openexecutive.integrations.roster_intake import ACK_TEXT
 
+            # One of the principal's contacts: nothing is held for them, so
+            # promise nothing (contacts have no chat access).
+            if find_person_by_discord_id(str(interaction.user.id), include_contacts=True):
+                await interaction.response.send_message(
+                    "You don't appear in the People roster — ask the admin to add you.",
+                    ephemeral=True,
+                )
+                return
             # Answer the interaction first (Discord allows 3 seconds), only
             # to the sender; then hold the prompt for the principal.
             await interaction.response.send_message(ACK_TEXT, ephemeral=True)

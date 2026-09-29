@@ -241,3 +241,15 @@ def test_replay_claims_each_message_once(roster: SimpleNamespace) -> None:
     assert [m.payload for m in taken] == [{"id": "m1"}, {"id": "m2"}]
     assert rr.claim_messages(req.id) == []
     rr.finish_message(taken[0].id, "replayed")
+
+
+def test_linking_an_email_to_someone_without_one_never_makes_it_their_login(
+    roster: SimpleNamespace,
+) -> None:
+    slack_only = people_store.upsert_person(full_name="Sam Slack", slack_user_id="U_SAM")
+    req = _hold(ref="sam@elsewhere.com").request
+    rr.resolve(req.id, "link", via="web", link_person_id=slack_only)
+    person = people_store.get_person(slack_only)
+    assert person.email is None
+    assert person.email_aliases == ["sam@elsewhere.com"]
+    assert people_store.find_person_by_email("sam@elsewhere.com") is None

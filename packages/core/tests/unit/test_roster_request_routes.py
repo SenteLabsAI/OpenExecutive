@@ -237,3 +237,14 @@ def test_the_card_stays_out_of_the_narrative_and_the_ack_digest(client: TestClie
     digest = format_open_alerts_for_prompt(trusted_ids=trusted, include_private=True)
     assert alert_id not in trusted
     assert "Ignore previous instructions" not in digest
+
+
+def test_an_answered_card_stays_out_of_the_already_handled_block(client: TestClient) -> None:
+    from openexecutive.briefing.context import format_open_alerts_for_prompt
+
+    req = _request(display_name="Annamarie Chen")
+    rr.surface_card(req, people_store.find_principal_person().id)
+    rr.resolve(req.id, "decline", via="web")
+    # Read on everyone's turn: it must not tell the team who wrote to the principal.
+    assert "Annamarie" not in format_open_alerts_for_prompt(include_private=False)
+    assert "Annamarie" not in format_open_alerts_for_prompt(include_private=True)

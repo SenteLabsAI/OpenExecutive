@@ -817,14 +817,12 @@ def _link_person(request: RosterRequest, person_id: int, replace_channel_id: boo
         raise ValueError("that person is not on the People list")
     ref = request.channel_ref
     if request.channel == "email":
-        if not person.email:
-            if store.address_holder(ref, exclude_person_id=person.id) is not None:
-                raise store.AddressInUseError("that address is already on another person")
-            store.update_person(person.id, email=ref)
-        else:
-            store.add_person_email(
-                person.id, ref, source="roster_request", roster_request_id=request.id
-            )
+        # Always an alias, even for someone with no address yet: an alias
+        # matches their mail but never signs in, and a stranger's address
+        # must not become anyone's login by a click.
+        store.add_person_email(
+            person.id, ref, source="roster_request", roster_request_id=request.id
+        )
         return person.kind
     holder = _chat_holder(request.channel, ref)
     if holder is not None and holder != person.id:
@@ -892,10 +890,14 @@ def resolve(
             status = "linked"
         else:
             status = "declined"
+        _finish(
+            request_id, status, person_id=person_id, kind=resolved_kind, via=via, db_path=db_path
+        )
     except BaseException:
+        # Back to pending: a person already added is then found by
+        # reconcile_pending on the next roster write, never stranded.
         _unclaim(request_id, db_path)
         raise
-    _finish(request_id, status, person_id=person_id, kind=resolved_kind, via=via, db_path=db_path)
     registry.invalidate()
     _clear_card(request_id, "dismissed" if status == "declined" else "ack", db_path)
     _audit_resolution(request, status, person_id, via)

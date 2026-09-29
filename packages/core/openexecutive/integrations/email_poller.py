@@ -491,14 +491,19 @@ async def _handle_one_email(
     thread_id: str,
     user_email: str,
 ) -> None:
-    raw = await gateway.call_tool({
-        "name": "google_workspace__get_gmail_message_content",
-        "arguments": {
-            "message_id": message_id,
-            "user_google_email": user_email,
-            "body_format": "text",
-        },
-    })
+    from openexecutive.orchestrator.mcp_gateway import reveal_roster_tokens
+
+    # A roster answer token in this message is read here, before any model
+    # turn; every other read of the mailbox has them hidden.
+    with reveal_roster_tokens():
+        raw = await gateway.call_tool({
+            "name": "google_workspace__get_gmail_message_content",
+            "arguments": {
+                "message_id": message_id,
+                "user_google_email": user_email,
+                "body_format": "text",
+            },
+        })
     if raw:
         preview = raw[:200]
         suffix = f"…[truncated {len(raw) - 200} chars]" if len(raw) > 200 else ""
@@ -536,6 +541,11 @@ async def _handle_one_email(
     if await try_email_roster_answer(gateway, raw, from_addr, message_id):
         await _mark_read(gateway, message_id, user_email)
         return
+    # Not an answer: from here on the mail is read like any other, so any
+    # token in it is hidden from the model, as on every other read.
+    from openexecutive.orchestrator.mcp_gateway import hide_roster_tokens
+
+    raw = hide_roster_tokens(raw)
 
     # Sender-roster awareness. Unrostered senders are NOT dropped — the
     # Executive still reads, classifies, and decides. What protects us

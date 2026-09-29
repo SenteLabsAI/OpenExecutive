@@ -2945,8 +2945,10 @@ people:
     (workspace_settings column, JSON list or NULL; GET / PUT /workspace,
     Settings → Workspace; same caller rule as the principal's role; at
     most 10 plain DNS names; `validate_company_domains` refuses a
-    free-mail provider's) or, when unset, the non-free-mail domains of the
-    principal's own addresses (`identity.company_domains`). Never a
+    free-mail provider's) or, when unset, the domain of the principal's
+    PRIMARY address, if not free-mail (`identity.company_domains`) — never
+    an alias's: an alias is often a personal or ISP address, and counting
+    its domain would let anyone who registers anna@<that ISP> pass as Anna. Never a
     free-mail domain (`identity.FREEMAIL_DOMAINS`: gmail.com, outlook.com,
     yahoo.com, icloud.com, proton.me, …), where a local part says nothing
     about who someone is — a principal on gmail.com with no setting has no
@@ -2967,7 +2969,7 @@ people:
     partial unique index; display_name sanitised and unverified,
     profile_email, on_company_domain, suggested_kind "team" on a company
     domain else NULL, suggested_person_id (a chat profile email already on
-    someone, or a display name that is exactly one person's full name),
+    someone — never from a display name, which the sender chooses),
     status pending / resolving / approved / linked / declined / expired /
     superseded, resolved_*, token_hash, notified_*, ack_sent_at,
     alert_id, message_count, expires_at), `roster_request_messages`
@@ -2995,17 +2997,20 @@ people:
     two answers race and one wins; unclaims on any error; nothing is
     written unless it succeeds): APPROVE adds a new Person (team or
     contact) with the address / chat id; LINK attaches it to someone
-    listed — an email becomes their alias (their primary if they had
-    none), a chat id fills their field (a different existing id only with
+    listed — an email becomes their alias (never their primary, even
+    when they had none: a link never creates a login), a chat id fills their field (a different existing id only with
     replace_channel_id, else `ChannelIdConflict`); DECLINE leaves them
     off. Who can answer: ONLY the principal, on a verified surface — the
     web card (`POST /people/requests/{id}/approve|decline`, principal-only,
     404 for anyone else; kind must be given explicitly), their own Slack /
     Discord DM or verified private Telegram chat (`resolve_roster_request`
     tool, only ids in `Session.trusted_roster_request_ids`), or an email
-    reply from their own address or alias (exact, not the company-domain
+    reply from their own PRIMARY address (exact; not an alias, not the company-domain
     rule) carrying the request's one-time token (`RR-` + 20 base32, stored
-    as a SHA hash, cleared on resolve; the reply must pass DMARC; parsed by
+    as a SHA hash, cleared on resolve, hidden as RR-[hidden] from every
+    other Google Workspace result by the gateway so no turn can read it
+    from the Sent folder; an automatic reply or a visible DMARC fail is
+    refused; parsed by
     `parse_decision(..., "roster_identity")`) — handled before any model
     turn. Default kind when the chat or email answer did not say: team for
     a company-domain sender, else contact (the least access). RECONCILE:
@@ -5579,9 +5584,9 @@ integrations:
     ``people.identity.resolve_email_sender`` everywhere the poller used
     ``find_person_by_email`` (aliases and the company-domain rule). Before
     any triage, ``roster_intake.try_email_roster_answer`` checks the mail
-    for a roster-request token (``RR-…``): from the principal's own address
-    or alias exactly, carrying a pending request's token and not failing
-    DMARC, it is the principal's answer — parsed with
+    for a roster-request token (``RR-…``): from the principal's PRIMARY
+    address exactly (not an alias), carrying a pending request's token, not
+    an automatic reply and not failing DMARC, it is the principal's answer — parsed with
     ``parse_decision(..., "roster_identity")``, applied, answered by a
     short email to the principal, marked read; no model turn. Anything else
     falls through (a refused token is audited privately). For NON-ROSTER

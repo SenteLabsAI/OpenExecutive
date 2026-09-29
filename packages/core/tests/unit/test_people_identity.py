@@ -167,3 +167,13 @@ def test_the_migration_adds_aliases_to_an_existing_roster(tmp_path: Path, monkey
     people_store.initialize_db()  # idempotent
     person = people_store.find_person_by_address("OLD@acme.com")
     assert person is not None and person.email_aliases == []
+
+
+def test_an_alias_never_makes_its_domain_a_company_domain(roster: SimpleNamespace) -> None:
+    # A personal ISP address on the principal must not let anyone who
+    # registers anna@comcast.net pass as Anna.
+    people_store.set_person_emails(roster.owner, ["olivia@comcast.net"])
+    assert identity.company_domains() == frozenset({"acme.com"})
+    assert _name("anna@comcast.net") is None
+    allow = identity.RosterAllow(people_store.list_people())
+    assert "anna@comcast.net" not in allow

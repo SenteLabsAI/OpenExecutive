@@ -734,6 +734,33 @@ _roster_ack: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Context
 )
 _ROSTER_ACK_KEYS = frozenset({"user_google_email", "to", "subject", "body"})
 
+# A roster request's one-time answer token ("RR-" + 20 base32 characters,
+# people.roster_requests) proves an email answer came from the principal's
+# mailbox. The confirmation email carrying it sits in the Executive's own
+# Sent folder, so every Google Workspace result is scrubbed of tokens — a
+# model turn (anyone's) reading that mail sees "RR-[hidden]" — except the
+# email poller's own fetch of an inbound message, inside reveal_roster_tokens.
+_ROSTER_TOKEN_RE = re.compile(r"\bRR-[A-Z2-7]{20}\b", re.IGNORECASE)
+_reveal_tokens: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "reveal_roster_tokens", default=False
+)
+
+
+def hide_roster_tokens(text: str) -> str:
+    """``text`` with every roster answer token replaced by "RR-[hidden]"."""
+    return _ROSTER_TOKEN_RE.sub("RR-[hidden]", text)
+
+
+@contextlib.contextmanager
+def reveal_roster_tokens() -> Iterator[None]:
+    """Leave roster answer tokens in Google Workspace results (the poller's
+    read of one inbound message, before any model sees it)."""
+    token = _reveal_tokens.set(True)
+    try:
+        yield
+    finally:
+        _reveal_tokens.reset(token)
+
 
 @contextlib.contextmanager
 def roster_ack_grant(*, to: str, subject: str, body: str) -> Iterator[None]:
@@ -1525,6 +1552,11 @@ class MCPGateway:
             {"tool_name": tool_input["name"], "arguments": arguments},
         )
         result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        if (
+            isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX)
+            and not _reveal_tokens.get()
+        ):
+            result_text = hide_roster_tokens(result_text)
         # Record an outbound-context linkage only for a genuinely-sent email.
         # The send tool returns its outcome as text; a soft-error payload
         # (`{"error": ...}`) means nothing was sent, so skip it to avoid a

@@ -15,7 +15,7 @@ sender here, in this order:
    teammates would match, nobody does (fail closed).
 
 The company's domains are the ``company_domains`` workspace setting, or,
-when that is unset, the domains of the principal's own addresses — never a
+when that is unset, the domain of the principal's primary address — never a
 free-mail provider's (gmail.com and the like), where a local part says
 nothing about who someone is.
 
@@ -92,8 +92,11 @@ def derive_company_domains(addresses: Iterable[str | None]) -> frozenset[str]:
 
 def company_domains() -> frozenset[str]:
     """The company's own email domains: the ``company_domains`` workspace
-    setting, else derived from the principal's addresses. Empty when neither
-    gives one (a principal on gmail.com with no setting). Never raises."""
+    setting, else the domain of the principal's primary address (the one
+    they sign in with). Never their aliases: an alias is often a personal or
+    ISP address (john@comcast.net), and counting its domain would let anyone
+    who registers anna@comcast.net pass as Anna. Empty when neither gives
+    one (a principal on gmail.com with no setting). Never raises."""
     try:
         from openexecutive.memory.workspace_settings import get_workspace
 
@@ -108,7 +111,7 @@ def company_domains() -> frozenset[str]:
         return frozenset()
     if principal is None:
         return frozenset()
-    return derive_company_domains([principal.email, *principal.email_aliases])
+    return derive_company_domains([principal.email])
 
 
 def addresses_of(person: Person) -> list[str]:
