@@ -241,16 +241,17 @@ async def request_confirmation(action: dict[str, Any], summary: str) -> str | No
     from openexecutive.workflows.action_step import looks_like_error
 
     try:
-        if await asyncio.to_thread(facts.pending_confirmation_count) >= facts.MAX_PENDING_CONFIRMATIONS:
+        to = await asyncio.to_thread(principal_address)
+        if not to:
+            return "there is no principal email address on the People list to confirm this with"
+        held = await asyncio.to_thread(facts.hold_confirmation, action, summary)
+        if held is None:
             return (
                 f"{facts.MAX_PENDING_CONFIRMATIONS} emailed changes are already waiting for "
                 "the principal to confirm them. Ask them to answer those first, or make "
                 "this change in the web app."
             )
-        to = await asyncio.to_thread(principal_address)
-        if not to:
-            return "there is no principal email address on the People list to confirm this with"
-        conf_id, token = await asyncio.to_thread(facts.hold_confirmation, action, summary)
+        conf_id, token = held
         subject, body = _confirmation_email(summary, token)
         try:
             result = await _send(to, subject, body)

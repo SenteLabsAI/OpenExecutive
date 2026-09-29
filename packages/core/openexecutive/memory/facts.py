@@ -417,13 +417,23 @@ def pending_confirmation_count(db_path: Path | None = None) -> int:
 
 def hold_confirmation(
     action: dict[str, Any], summary: str, db_path: Path | None = None,
-) -> tuple[int, str]:
+) -> tuple[int, str] | None:
     """Hold ``action`` until the principal confirms it. Returns ``(id,
     token)``; the token ("FC-" + 20 base32 characters, 100 bits) is returned
-    once, for the confirmation email, and never stored."""
+    once, for the confirmation email, and never stored. None when
+    ``MAX_PENDING_CONFIRMATIONS`` are already waiting: the count and the
+    insert share one write transaction, so two requests at once cannot both
+    slip under the cap."""
     now = datetime.now(UTC)
     token = "FC-" + base64.b32encode(secrets.token_bytes(15)).decode("ascii")[:20]
     with _conn(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _expire_stale(conn, now)
+        (waiting,) = conn.execute(
+            "SELECT COUNT(*) FROM fact_confirmations WHERE status='pending'"
+        ).fetchone()
+        if int(waiting) >= MAX_PENDING_CONFIRMATIONS:
+            return None
         cur = conn.execute(
             "INSERT INTO fact_confirmations (action, summary, token_hash, status, "
             "created_at, expires_at) VALUES (?,?,?, 'pending', ?, ?)",

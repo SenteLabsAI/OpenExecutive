@@ -206,6 +206,18 @@ def test_too_many_waiting_confirmations_are_refused(
     assert "already waiting" in out["error"] and _sent(gateway) == []
 
 
+def test_the_cap_holds_when_requests_race() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def hold(n: int) -> tuple[int, str] | None:
+        return facts.hold_confirmation({"tool": "remember_fact", "args": {}}, f"held {n}")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(hold, range(facts.MAX_PENDING_CONFIRMATIONS + 8)))
+    assert sum(r is not None for r in results) == facts.MAX_PENDING_CONFIRMATIONS
+    assert facts.pending_confirmation_count() == facts.MAX_PENDING_CONFIRMATIONS
+
+
 def test_a_failed_confirmation_email_holds_nothing(
     monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock,
 ) -> None:
