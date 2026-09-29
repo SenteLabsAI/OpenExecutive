@@ -1614,12 +1614,21 @@ memory:
         all three in `UNATTENDED_WITHHELD_TOOLS`, remember_fact and
         update_company_profile in `PRIVATE_TURN_WITHHELD_TOOLS` (what they
         write is read on everyone's turns).
-      - `source_quote` must appear (normalized like the episodic quote gate)
-        in the principal's own words this turn — the pinned
-        `TurnDelegation.speaker_text` — so the model cannot store its own
-        inference or a document's figure as the principal's statement.
+      - `source_quote` (at least 2 words / 8 chars) must appear, normalized
+        like the episodic quote gate, in the principal's own words this turn:
+        `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
+        adapter-hydrated `<outbound_reply_context>` backstory stripped, and
+        None (refused) when the message carries an attachment. Otherwise a
+        Discord/Slack reply to the Executive's DM about an attacker's alert
+        could have the alert's text stored as the principal's fact.
       - Every write / refusal is a `tool_invocation` audit row; a Pulse-page
-        retire is a `fact_retired` row.
+        retire is a `fact_retired` row. Neither carries the quote, a forget
+        rationale or a retire reason: /audit/logs is readable by every
+        signed-in teammate, and GET /memories/facts blanks `source_quote` and
+        `retired_reason` for anyone but the principal.
+      - Profile edits run load → change → save under
+        `company_profile.PROFILE_EDIT_LOCK`, which PATCH /company-profile
+        also takes (no lost update between the two).
     STORE — one active fact per subject: a new row supersedes active rows
     with the same folded `subject_key` (or the id in replaces_fact_id) in one
     `BEGIN IMMEDIATE` transaction; old rows become `superseded` with

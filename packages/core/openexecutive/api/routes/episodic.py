@@ -153,12 +153,12 @@ def get_facts(
     active ones.
 
     The facts themselves are company knowledge every conversation already
-    sees; the provenance quote is the principal's own message and is shown
-    to the principal only."""
+    sees; the provenance quote and a retire reason are the principal's own
+    words and are shown to the principal only."""
     principal = _caller_is_principal(request)
     rows = list_facts(include_inactive=include_inactive, limit=limit)
     if not principal:
-        rows = [f.model_copy(update={"source_quote": ""}) for f in rows]
+        rows = [f.model_copy(update={"source_quote": "", "retired_reason": ""}) for f in rows]
     return FactsPage(facts=rows, can_retire=principal)
 
 
@@ -183,8 +183,10 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
             "fact_retired",
             f"Standing fact {fact_id} retired: {existing.subject[:80]}",
             actor="principal",
+            # Not the reason: it is the principal's own words, and the audit
+            # log is readable by every signed-in teammate.
             details={"fact_id": fact_id, "subject": existing.subject,
-                     "statement": existing.statement, "reason": reason[:280]},
+                     "statement": existing.statement},
         )
     except Exception:  # noqa: BLE001 - the retire already landed.
         pass

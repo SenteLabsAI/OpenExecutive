@@ -56,11 +56,15 @@ def test_the_principal_sees_everything_with_history(monkeypatch: pytest.MonkeyPa
     assert {f["id"] for f in active["facts"]} == {new, prof}
 
 
-def test_a_teammate_sees_the_facts_but_not_the_quotes(monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed()
+def test_a_teammate_sees_the_facts_but_not_the_principals_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, new, _ = _seed()
+    facts.retire_fact(new, reason="annex sold, keep quiet")
     body = _client(monkeypatch, principal=False).get("/memories/facts").json()
     assert body["can_retire"] is False
     assert body["facts"] and all(f["source_quote"] == "" for f in body["facts"])
+    assert all(f["retired_reason"] == "" for f in body["facts"])
+    mine = _client(monkeypatch, principal=True).get("/memories/facts").json()
+    assert any(f["retired_reason"] == "annex sold, keep quiet" for f in mine["facts"])
 
 
 def test_only_the_principal_retires(monkeypatch: pytest.MonkeyPatch, db: list[dict[str, Any]]) -> None:
@@ -74,6 +78,7 @@ def test_only_the_principal_retires(monkeypatch: pytest.MonkeyPatch, db: list[di
     assert res.json()["retired_reason"] == "annex sold"
     assert facts.render_facts_for_prompt() == ""
     assert [r["event_type"] for r in db] == ["fact_retired"]
+    assert "annex sold" not in str(db)
     assert client.post(f"/memories/facts/{new}/retire").status_code == 409
     # Profile rows are the audit trail of a profile edit, not something to retire.
     assert client.post(f"/memories/facts/{prof}/retire").status_code == 404

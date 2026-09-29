@@ -19,9 +19,14 @@ principal is not offered the two that write
 everyone's turns.
 
 A write also needs ``source_quote``: the principal's exact words from this
-message, checked against what they actually typed this turn. It is the
-provenance the Pulse page shows, and it keeps the model from storing its own
-inference, or a figure from a document, as something the principal said.
+message (at least two words and eight characters), checked against what they
+typed this turn — never the backstory an adapter hydrates a reply with, and
+nothing at all when the message carries an attachment. It is the provenance
+the Pulse page shows the principal, and it keeps the model from storing its
+own inference, a document's figure or text quoted back at the principal as
+something they said. The audit rows carry neither the quote nor the
+rationale: those are the principal's words, and the audit log is readable by
+every signed-in teammate.
 The schemas are static, so the cached tool prefix never moves.
 """
 from __future__ import annotations
@@ -243,25 +248,49 @@ def _refusal(tool: str) -> str | None:
     )
 
 
-def _speaker_text(session: Any) -> str:
-    from openexecutive.delegation.settings import turn_delegation
+# A quote this short could be found in almost any message ("48", "yes"), so
+# it would prove nothing about what the principal said.
+_QUOTE_MIN_CHARS = 8
+_QUOTE_MIN_WORDS = 2
+
+
+def _own_words(session: Any) -> str | None:
+    """What the principal typed this turn: the pinned speaker text without
+    any block an adapter added (the ``<outbound_reply_context>`` backstory a
+    Slack or Discord reply is hydrated with quotes the Executive's own DM and
+    the alert or mail behind it). None when the message carries an
+    attachment, whose text can't be told apart from theirs
+    (``delegation.settings.own_words``)."""
+    from openexecutive.delegation.settings import own_words, turn_delegation
 
     pin = turn_delegation(session)
-    return pin.speaker_text if pin is not None else ""
+    return own_words(pin.speaker_text if pin is not None else "")
 
 
 def _quote_error(quote: str, session: Any) -> str | None:
-    """None when ``quote`` is really the principal's words this turn."""
+    """None when ``quote`` is really the principal's own words this turn."""
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
     if not quote:
         return "source_quote is required: the principal's exact words from this message."
-    spoken = _speaker_text(session)
     nq = _normalize_for_quote_match(quote)
-    if not nq or nq not in _normalize_for_quote_match(spoken):
+    if len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS:
+        return (
+            "source_quote is too short to show what the principal said: quote the "
+            "whole phrase that states it."
+        )
+    spoken = _own_words(session)
+    if spoken is None:
+        return (
+            "refused: this message carries an attachment, and its text can't be told "
+            "apart from the principal's own words. Ask them to state the fact in a "
+            "message of its own."
+        )
+    if nq not in _normalize_for_quote_match(spoken):
         return (
             "source_quote is not in what the principal wrote this turn. Quote their "
-            "exact words, or — if they did not state it — do not record it."
+            "exact words, or — if they did not state it (a document, an earlier "
+            "message or someone else did) — do not record it."
         )
     return None
 
@@ -350,7 +379,7 @@ async def handle_remember_fact(tool_input: dict[str, Any]) -> str:
         {
             "fact_id": fact.id, "kind": fact.kind, "subject": subject,
             "statement": statement, "previous": fact.previous_statement[:300],
-            "superseded_ids": [f.id for f in superseded], "source_quote": quote[:500],
+            "superseded_ids": [f.id for f in superseded],
         },
     )
     return json.dumps({
@@ -384,8 +413,7 @@ async def handle_forget_fact(tool_input: dict[str, Any]) -> str:
         return _bad(tool, f"fact {fact_id} is not active (already replaced or forgotten)")
     _audit(
         tool, True, f"forget_fact {fact_id}: {existing.subject[:60]}",
-        {"fact_id": fact_id, "subject": existing.subject, "statement": existing.statement,
-         "rationale": rationale[:_RATIONALE_MAX]},
+        {"fact_id": fact_id, "subject": existing.subject, "statement": existing.statement},
     )
     return json.dumps({"status": "ok", "fact_id": fact_id, "forgotten": existing.statement})
 
@@ -423,7 +451,7 @@ def _display(value: Any) -> str:
 async def handle_update_company_profile(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
     from openexecutive.memory import facts
-    from openexecutive.memory.company_profile import CompanyProfile
+    from openexecutive.memory.company_profile import PROFILE_EDIT_LOCK, CompanyProfile
     from openexecutive.onboarding.profile_builder import load_or_create_profile
 
     tool = "update_company_profile"
@@ -455,66 +483,69 @@ async def handle_update_company_profile(tool_input: dict[str, Any]) -> str:
     if quote_error:
         return _bad(tool, quote_error, field=field)
 
-    profile_path = get_settings().company_profile_path
-    profile = load_or_create_profile(profile_path)
-    if profile.is_empty():
-        return _bad(tool, "there is no company profile yet — the principal completes onboarding first")
-    data = profile.model_dump()
-    parent_key, _, leaf = field.rpartition(".")
-    container = data[parent_key] if parent_key else data
-    if ftype == "metric":
-        metric = metric[:80]
-        old = container[leaf].get(metric)
-        if op == "remove":
-            if metric not in container[leaf]:
-                return _bad(tool, f"there is no key metric named {metric!r}")
-            container[leaf].pop(metric)
-            new: Any = None
+    # Load → change → save under the lock PATCH /company-profile also takes,
+    # so a concurrent edit is never silently dropped.
+    with PROFILE_EDIT_LOCK:
+        profile_path = get_settings().company_profile_path
+        profile = load_or_create_profile(profile_path)
+        if profile.is_empty():
+            return _bad(tool, "there is no company profile yet — the principal completes onboarding first")
+        data = profile.model_dump()
+        parent_key, _, leaf = field.rpartition(".")
+        container = data[parent_key] if parent_key else data
+        if ftype == "metric":
+            metric = metric[:80]
+            old = container[leaf].get(metric)
+            if op == "remove":
+                if metric not in container[leaf]:
+                    return _bad(tool, f"there is no key metric named {metric!r}")
+                container[leaf].pop(metric)
+                new: Any = None
+            else:
+                new = value[:_TEXT_MAX]
+                container[leaf][metric] = new
+            subject_label = f"{label}: {metric}"
+        elif ftype == "list":
+            old = list(container[leaf])
+            item = value[:_LIST_ITEM_MAX]
+            folded = [str(v).casefold() for v in old]
+            if op == "add":
+                if item.casefold() in folded:
+                    return json.dumps({
+                        "status": "unchanged", "noop": True, "field": field, "value": _display(old),
+                    })
+                if len(old) >= _LIST_MAX_ITEMS:
+                    return _bad(tool, f"{field} already has {_LIST_MAX_ITEMS} items; remove one first")
+                container[leaf] = [*old, item]
+            else:
+                if item.casefold() not in folded:
+                    return _bad(tool, f"{item!r} is not in {field}: {_display(old)}")
+                idx = folded.index(item.casefold())
+                container[leaf] = old[:idx] + old[idx + 1:]
+            new = container[leaf]
+            subject_label = label
         else:
-            new = value[:_TEXT_MAX]
-            container[leaf][metric] = new
-        subject_label = f"{label}: {metric}"
-    elif ftype == "list":
-        old = list(container[leaf])
-        item = value[:_LIST_ITEM_MAX]
-        folded = [str(v).casefold() for v in old]
-        if op == "add":
-            if item.casefold() in folded:
-                return json.dumps({
-                    "status": "unchanged", "noop": True, "field": field, "value": _display(old),
-                })
-            if len(old) >= _LIST_MAX_ITEMS:
-                return _bad(tool, f"{field} already has {_LIST_MAX_ITEMS} items; remove one first")
-            container[leaf] = [*old, item]
-        else:
-            if item.casefold() not in folded:
-                return _bad(tool, f"{item!r} is not in {field}: {_display(old)}")
-            idx = folded.index(item.casefold())
-            container[leaf] = old[:idx] + old[idx + 1:]
-        new = container[leaf]
-        subject_label = label
-    else:
-        old = container[leaf]
-        if ftype == "text":
-            new = value[:_TEXT_MAX]
-        else:
-            new = _parse_number(value, integer=ftype == "int")
-            if new is None:
-                return _bad(tool, f"{field} takes a non-negative {'whole ' if ftype == 'int' else ''}number, e.g. '42'")
-        container[leaf] = new
-        subject_label = label
+            old = container[leaf]
+            if ftype == "text":
+                new = value[:_TEXT_MAX]
+            else:
+                new = _parse_number(value, integer=ftype == "int")
+                if new is None:
+                    return _bad(tool, f"{field} takes a non-negative {'whole ' if ftype == 'int' else ''}number, e.g. '42'")
+            container[leaf] = new
+            subject_label = label
 
-    try:
-        updated = CompanyProfile.model_validate(data)
-        updated.save_to_yaml(profile_path)
-    except Exception as exc:
-        logger.exception("update_company_profile: write failed field=%s", field)
-        _audit(tool, False, f"update_company_profile FAILED {field}: {type(exc).__name__}",
-               {"field": field, "error": repr(exc)[:300]})
-        return json.dumps({
-            "error": f"update_company_profile failed with {type(exc).__name__}. The failure "
-                     "is recorded; do not retry the same call unchanged."
-        })
+        try:
+            updated = CompanyProfile.model_validate(data)
+            updated.save_to_yaml(profile_path)
+        except Exception as exc:
+            logger.exception("update_company_profile: write failed field=%s", field)
+            _audit(tool, False, f"update_company_profile FAILED {field}: {type(exc).__name__}",
+                   {"field": field, "error": repr(exc)[:300]})
+            return json.dumps({
+                "error": f"update_company_profile failed with {type(exc).__name__}. The failure "
+                         "is recorded; do not retry the same call unchanged."
+            })
 
     # The rest of this turn keeps the profile it started with (its system
     # block is already built); the next turn on this session reads the new one.
@@ -547,7 +578,7 @@ async def handle_update_company_profile(tool_input: dict[str, Any]) -> str:
         tool, True, f"update_company_profile {field}: {statement[:100]}",
         {"field": field, "operation": op, "metric": metric or None,
          "previous": _display(old)[:300], "value": _display(new)[:300],
-         "source_quote": quote[:500], "fact_id": fact_id},
+         "fact_id": fact_id},
     )
     return json.dumps({
         "status": "ok",

@@ -319,17 +319,25 @@ _ADDRESS = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 _ATTACHMENT_MARK = re.compile(r"\[Attached: |\((?:Attached|Skipped|Could not)\b")
 
 
-def typed_addresses(speaker_text: str) -> set[str]:
-    """Email addresses the speaker typed this turn — outside any tag block an
-    adapter added (quoted backstory is not something they typed). None at all
-    when the message carries an attachment (its text, or a note naming the
-    file): those addresses can't be told apart from theirs, so they give the
-    address in a message of its own (or add the person as a contact)."""
+def own_words(speaker_text: str) -> str | None:
+    """What the speaker typed this turn: ``speaker_text`` without any tag
+    block an adapter added (quoted backstory is not something they typed), or
+    None when the message carries an attachment (its text, or a note naming
+    the file), whose words can't be told apart from theirs."""
     text = speaker_text or ""
     if _ATTACHMENT_MARK.search(text):
+        return None
+    return _INJECTED_BLOCK.sub(" ", text)
+
+
+def typed_addresses(speaker_text: str) -> set[str]:
+    """Email addresses the speaker typed this turn (``own_words``). None at
+    all when the message carries an attachment, so they give the address in a
+    message of its own (or add the person as a contact)."""
+    words = own_words(speaker_text)
+    if words is None:
         return set()
-    own_words = _INJECTED_BLOCK.sub(" ", text)
-    return {m.group(0).lower() for m in _ADDRESS.finditer(own_words)}
+    return {m.group(0).lower() for m in _ADDRESS.finditer(words)}
 
 
 def turn_touched_delegate_mail(session: Any = None) -> bool:
