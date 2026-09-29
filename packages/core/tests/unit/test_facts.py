@@ -337,6 +337,11 @@ def test_remember_fact_statement_figures_must_be_the_principals(
         # A look-alike capital (Greek Eta) still reads as a name.
         ("remember what the lease doc says about Riverside",
          "Riverside's landlord is \u0397arbourline.", False),
+        # Nor can a name hide by being made its own one-word sentence.
+        ("remember what the lease doc says about Riverside",
+         "Riverside's landlord. Harbourline. Estates.", False),
+        ("remember what the lease doc says about Riverside",
+         "Riverside landlord! Harbourline? Estates.", False),
     ],
 )
 def test_remember_fact_statement_names_and_dates_must_be_the_principals(
@@ -383,6 +388,32 @@ def test_a_figure_at_the_wrong_magnitude_is_refused(
     out = _call(fact_tools.handle_remember_fact, subject="Burn",
                 statement=statement, source_quote=said)
     assert "not a number the principal wrote" in out["error"]
+
+
+def test_number_scanning_is_linear_on_a_hostile_message() -> None:
+    """A long digit run followed by a letter used to take quadratic time
+    (a trailing \\b forced a retry from every position), holding the GIL."""
+    import time
+
+    started = time.monotonic()
+    found = fact_tools._numbers_in("1" * 20000 + "x " + "9," * 5000 + "k")
+    assert time.monotonic() - started < 1.0
+    assert len(found) == 2
+
+
+@pytest.mark.parametrize(
+    ("text", "numbers"),
+    [
+        ("we're 42 people now", [42.0]),
+        ("burn is $180k a month", [180000.0]),
+        ("ARR 1.2m", [1200000.0]),
+        ("14 months runway", [14.0]),
+        ("$2.5 million", [2500000.0]),
+        ("180,000 and 48.", [180000.0, 48.0]),
+    ],
+)
+def test_numbers_in(text: str, numbers: list[float]) -> None:
+    assert fact_tools._numbers_in(text) == pytest.approx(numbers)
 
 
 def test_remember_fact_rejects_an_unknown_replaces_id(principal: SimpleNamespace) -> None:

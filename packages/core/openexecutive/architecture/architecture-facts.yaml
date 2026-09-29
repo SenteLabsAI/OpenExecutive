@@ -1625,8 +1625,9 @@ memory:
       - remember_fact: every number in `statement` must be one the principal
         wrote this turn (`_numbers_in` / `_number_in_own_words`, compared at
         magnitude: "$180k" ↔ "180,000" either way, never "180m" → "$180k"),
-        and every name (a capitalised or non-ASCII-letter word past a
-        sentence start, where only . ! ? end a sentence) and date word
+        and every name (a capitalised or non-ASCII-letter word other than
+        the statement's very first word — exempting each sentence's first
+        word let "Landlord. Harbourline." split names past it) and date word
         (month, weekday, quarter) must appear in their own words
         (`_unsaid_claim_words`). A name written in lower case is not caught:
         a heuristic that narrows, not a proof of paraphrase.

@@ -324,8 +324,14 @@ def _in_own_words(text: str, session: Any) -> bool:
     return bool(needle) and spoken is not None and needle in _normalize_for_quote_match(spoken)
 
 
+# Linear, whatever the input: the lookbehind stops a match starting inside a
+# number, and nothing after the digits can fail and force a retry (a
+# trailing ``\b`` did, so "1" * 20000 + "x" took quadratic time). The suffix
+# counts only when no letter follows it ("14 months" is 14, not 14 million).
 _NUMBER = re.compile(
-    r"(\d[\d,]*(?:\.\d+)?)\s*(k|mm|m|bn|b|thousand|million|billion)?\b", re.IGNORECASE,
+    r"(?<![\d.,])(\d[\d,]*(?:\.\d+)?)"
+    r"(?:\s*(k|mm|m|bn|b|thousand|million|billion)(?![A-Za-z]))?",
+    re.IGNORECASE,
 )
 _SCALE = {
     "k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "million": 1e6,
@@ -389,25 +395,25 @@ def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
     something they never said; a paraphrase of what they did say does not.
 
     A name is a capitalised word, or any word holding a non-ASCII letter (a
-    look-alike capital cannot hide one). A sentence's first word is
-    capitalised by grammar, so it counts only when it is a date word; only
-    ``. ! ?`` end a sentence, so a colon or semicolon cannot exempt the name
-    after it. A name the model writes in lower case is not caught — the gate
-    narrows what a real quote can carry in, it does not prove a paraphrase."""
+    look-alike capital cannot hide one). Only the statement's very first word
+    is exempt, being capitalised by grammar (a date word never is): exempting
+    every sentence's first word would let a steered model split a document's
+    names into one-word sentences ("Riverside's landlord. Harbourline.").
+    A statement is one fact, so a second sentence gets no such allowance. A
+    name the model writes in lower case is not caught — the gate narrows
+    what a real quote can carry in, it does not prove a paraphrase."""
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
     spoken = _normalize_for_quote_match(_own_words(session) or "")
     said = {_bare(w) for w in _WORD.findall(spoken)}
     missing: list[str] = []
-    for m in _WORD.finditer(statement):
+    for i, m in enumerate(_WORD.finditer(statement)):
         bare = _bare(m.group(0))
         key = bare.lower()
         if not key or key in _GLUE or key in said:
             continue
-        before = statement[: m.start()].rstrip()
-        sentence_start = not before or before[-1] in ".!?"
         name_like = bare[0].isupper() or not bare.isascii()
-        if key in _DATE_WORDS or (name_like and not sentence_start):
+        if key in _DATE_WORDS or (name_like and i > 0):
             missing.append(bare)
     return missing
 
