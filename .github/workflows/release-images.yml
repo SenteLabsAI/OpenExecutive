@@ -111,7 +111,7 @@ jobs:
       # provenance=false keeps each tag a plain single-platform image; the
       # default attestation manifest shows up as an `unknown/unknown` row on
       # the package page.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
