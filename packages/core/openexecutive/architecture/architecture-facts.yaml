@@ -1421,6 +1421,56 @@ knowledge:
         (unreviewed, multi-writer …)" section ranked BELOW curated company
         documents and above recent research. Manual: `openexecutive
         sync-notion` / `openexecutive purge-notion`.
+    - name: DRIVE
+      what: |
+        Files synced from shared Google Drive folders (ChromaDB collection
+        `drive_docs`, metadata `drive_file_id` / `type=drive` / `name` /
+        `url` / `synced_at`), by knowledge.drive_sync. SEPARATE from COMPANY
+        for NOTION_WIKI's reason: a shared folder is multi-writer and
+        unreviewed. Optional (`DRIVE_SYNC_ENABLED`, off by default; setup in
+        docs/drive_sync_setup.md): a scheduler heartbeat (`drive_sync_scan`)
+        lists `DRIVE_SYNC_FOLDER_IDS` and their subfolders (depth 4, 2000
+        items per tick) through knowledge.drive_client. That client calls the
+        Drive v3 API directly with httpx, as a SERVICE ACCOUNT with
+        drive.readonly (`DRIVE_SYNC_SERVICE_ACCOUNT_FILE`; token via
+        google-auth, refreshed off the loop). It is deliberately NOT the
+        workspace-mcp gateway: that acts as the Executive's own account at
+        the complete tier and returns display text. Here Google enforces the
+        folder scope (only what is shared with the service account), the sync
+        can change nothing, and results are JSON; ids are checked against
+        [A-Za-z0-9_-]{1,128} before use.
+
+        Change detection: a file is dirty when its (modifiedTime,
+        md5Checksum) differs from its record in
+        <company_profile_dir>/drive_sync_state.json. Dirty files are handled
+        newest first, capped at DRIVE_MAX_FILES_PER_SCAN; the overflow waits
+        for the next tick.
+        - Text: Docs / Slides are exported as text/plain and Sheets as .xlsx
+          (Drive's CSV export holds only the first sheet). PDF / .docx /
+          .xlsx / txt / md / csv are downloaded and read with
+          loader.extract_text_from_file, with no model call, so a scanned PDF
+          yields nothing. Anything else, and anything over 20 MB, is skipped.
+        - A file with no text is recorded with no chunks, so it is not
+          refetched until it changes.
+        - Text is written under <company_profile_dir>/docs/drive/
+          (drive-<id8>-<slug>.md, with a drive_file_id comment); subdirectory,
+          so never in company_docs.
+
+        Reconcile purges files no longer listed. It is skipped when a folder
+        failed to list, the 2000-item cap was hit, or every folder listed
+        nothing while files are on record; the reconcile_skips streak is
+        logged. Locking matches Notion: skip while _FIXTURE_OP_LOCK is held,
+        fetch unlocked, apply under the lock, discard if the active client
+        changed. Fixture load/reset and client-slot switches wipe the
+        collection and the state file.
+
+        At retrieval: n=3, below NOTION_WIKI, under "Synced Google Drive
+        (unreviewed, multi-writer …)". Each chunk is labelled
+        `[drive:<name> · file id … · synced …]`; the name is flattened, with
+        brackets and # neutralised. The block tells the Executive to open
+        the live file with get_drive_file_content when the latest version
+        matters. Recorded as `drive` answer sources with the Drive link.
+        Manual: `openexecutive sync-drive` / `purge-drive`.
     - name: FAILURES
       what: Recorded failure cases used to teach specialists what to avoid.
     - name: RECENT_RESEARCH
@@ -1621,9 +1671,9 @@ memory:
     cannot close the tag, and labelled data, not instructions. A search that
     matched nothing also gets empty_search_note appended to its tool result
     (report the exact query; never say the file does not exist).
-    session_store.delete_session drops the rows. First step only: Drive is
-    still not synced into the company collection (the Notion sync is the
-    pattern for that).
+    session_store.delete_session drops the rows. Complements, not replaces,
+    the folder sync (knowledge collections: DRIVE): a synced folder is known
+    without a search; this remembers whatever else a conversation read.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking
