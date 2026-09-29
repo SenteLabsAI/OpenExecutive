@@ -695,9 +695,17 @@ def describe(request: RosterRequest) -> str:
     return f"Someone not on your People list wrote on {where}: {who}"
 
 
-def surface_card(request: RosterRequest, principal_id: int | None, db_path: Path | None = None) -> int | None:
+def surface_card(
+    request: RosterRequest,
+    principal_id: int | None,
+    db_path: Path | None = None,
+    *,
+    acknowledged: bool = True,
+) -> int | None:
     """Put a pending request on the principal's /today. Best-effort; returns
-    the alert id (None when it was already there or the insert failed)."""
+    the alert id (None when it was already there or the insert failed).
+    ``acknowledged`` is False when the sender gets no acknowledgement (an
+    email Gmail did not authenticate), so the card doesn't say they were told."""
     from openexecutive.alerts.models import PRIVATE_ALERT_TAG
     from openexecutive.alerts.store import insert_alert
 
@@ -707,10 +715,13 @@ def surface_card(request: RosterRequest, principal_id: int | None, db_path: Path
         f"Who is {request.display_name}? ({where})" if request.display_name
         else f"Someone new wrote on {where}"
     )
-    body = describe(request) + (
-        ". They were told their message arrived and is waiting for you. Add them, "
-        "say who they are, or ignore them."
+    told = (
+        "They were told their message arrived and is waiting for you."
+        if acknowledged
+        else "They haven't been told anything: their email couldn't be confirmed as "
+        "really from that address."
     )
+    body = f"{describe(request)}. {told} Add them, say who they are, or ignore them."
     try:
         alert_id = insert_alert(
             source=ALERT_SOURCE,

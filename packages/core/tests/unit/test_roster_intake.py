@@ -138,7 +138,8 @@ def test_intake_holds_cards_notifies_and_acknowledges_once(roster: SimpleNamespa
     async def _ack(text: str) -> None:
         acks.append(text)
 
-    async def _notify(request: rr.RosterRequest) -> str:
+    async def _notify(request: rr.RosterRequest, *, acknowledged: bool) -> str:
+        assert acknowledged
         notified.append(request.id)
         return "email"
 
@@ -156,6 +157,29 @@ def test_intake_holds_cards_notifies_and_acknowledges_once(roster: SimpleNamespa
     assert notified == [first.id]  # once per request
     card = alerts_store.get_alert_by_external(rr.ALERT_SOURCE, rr.alert_external_id(first.id))
     assert card is not None and card.routed_to_person_id == roster.owner
+
+
+def test_an_unacknowledged_sender_is_not_said_to_have_been_told(roster: SimpleNamespace) -> None:
+    """With no acknowledgement (an email Gmail did not authenticate) the card
+    and the principal's prompt say so, instead of claiming the sender was told."""
+    told: list[bool] = []
+
+    async def _notify(_request: rr.RosterRequest, *, acknowledged: bool) -> str:
+        told.append(acknowledged)
+        return "email"
+
+    with patch.object(roster_intake, "notify_principal", new=_notify):
+        request = asyncio.run(roster_intake.intake(
+            "email", STRANGER, external_id="m1", payload={"message_id": "m1"}, send_ack=None,
+        ))
+    assert request is not None and told == [False]
+    card = alerts_store.get_alert_by_external(rr.ALERT_SOURCE, rr.alert_external_id(request.id))
+    assert card is not None
+    assert "were told" not in card.body and "haven't been told anything" in card.body
+    assert "I told them" not in roster_intake._chat_prompt(request, acknowledged=False)
+    _subject, body = roster_intake._email_prompt(request, "RR-X", acknowledged=False)
+    assert "I told them" not in body and "haven't told them anything" in body
+    assert "I told them" in roster_intake._chat_prompt(request)
 
 
 def test_intake_without_a_principal_holds_nothing() -> None:

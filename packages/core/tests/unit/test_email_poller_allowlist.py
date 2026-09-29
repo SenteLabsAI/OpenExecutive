@@ -343,6 +343,7 @@ def test_a_sender_gmail_did_not_authenticate_is_held_but_never_acknowledged(
         asyncio.run(poller._handle_email(gateway, message_id="m1", thread_id="t1",
                                          user_email="exec@example.com"))
     assert run_exec.await_args.kwargs["held_for_roster"] is True
+    assert run_exec.await_args.kwargs["roster_acknowledged"] is False
     [request] = rr.list_requests()
     assert request.channel_ref == "annamarie@example.com"
     assert _sends(gateway) == []
@@ -364,7 +365,14 @@ def test_a_new_senders_notice_says_they_were_told(principal: int) -> None:
     assert "surface a proposal to add the sender" not in message
 
 
-def _capture_user_message_from_run_executive_held(from_addr: str) -> str:
+def test_an_unacknowledged_senders_notice_does_not_say_they_were_told(principal: int) -> None:
+    message = _capture_user_message_from_run_executive_held("new@example.com", acknowledged=False)
+    assert "already been told" not in message
+    assert "have not been told anything" in message
+    assert "principal has been asked who they are" in message
+
+
+def _capture_user_message_from_run_executive_held(from_addr: str, *, acknowledged: bool = True) -> str:
     captured: dict[str, Any] = {}
 
     class _Exec:
@@ -386,6 +394,7 @@ def _capture_user_message_from_run_executive_held(from_addr: str) -> str:
         asyncio.run(poller._run_executive(
             gateway=AsyncMock(), raw_email=_raw_email(from_addr), message_id="m1",
             thread_id="t1", from_addr=from_addr, held_for_roster=True,
+            roster_acknowledged=acknowledged,
         ))
     return str(captured["user_message"])
 

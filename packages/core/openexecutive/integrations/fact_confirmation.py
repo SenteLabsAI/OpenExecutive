@@ -107,6 +107,28 @@ def _raw_headers(raw: str) -> Message | None:
         return None
 
 
+_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
+_COMMENT = re.compile(r"\((?:[^()\\]|\\.)*\)")
+
+
+def _strip_quotes_and_comments(value: str) -> str | None:
+    """``value`` with RFC 8601 quoted strings and (nested) comments removed,
+    or None when they don't balance. Gmail writes sender-chosen text into its
+    own Authentication-Results — the envelope sender in ``smtp.mailfrom=`` and
+    the SPF comment, DKIM tags — and a quoted local part such as
+    ``"x;dmarc=pass header.from=victim.com "@attacker.com`` would otherwise
+    read as a verdict of its own."""
+    value = _QUOTED.sub('""', value)
+    while True:
+        stripped = _COMMENT.sub(" ", value)
+        if stripped == value:
+            break
+        value = stripped
+    if '"' in value.replace('""', "") or "(" in value or ")" in value:
+        return None
+    return value
+
+
 def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     """Whether a raw message (``get_gmail_message_content`` with
     ``body_format="raw"``) shows Gmail found ``from_addr``'s domain
@@ -127,11 +149,16 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
         return False
     if raw_from.strip().lower() != address or not results:
         return False
-    newest = " ".join(str(results[0]).split()).lower()
+    newest = _strip_quotes_and_comments(" ".join(str(results[0]).split()).lower())
+    if newest is None:
+        return False
     authserv, _sep, rest = newest.partition(";")
     if authserv.strip() != _GMAIL_AUTHSERV:
         return False
-    dmarc = next((c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")), "")
+    verdicts = [c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")]
+    if len(verdicts) != 1:
+        return False
+    [dmarc] = verdicts
     header_from = _HEADER_FROM.search(dmarc)
     return (
         re.match(r"dmarc=pass\b", dmarc) is not None

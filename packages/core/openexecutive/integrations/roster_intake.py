@@ -157,13 +157,15 @@ async def _intake(
         return None
     request = outcome.request
     if outcome.created:
-        await asyncio.to_thread(rr.surface_card, request, principal.id)
+        await asyncio.to_thread(
+            rr.surface_card, request, principal.id, acknowledged=send_ack is not None
+        )
         _audit(
             "roster_request_created",
             f"Roster request {request.id} opened ({channel})",
             {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
         )
-        await notify_principal(request)
+        await notify_principal(request, acknowledged=send_ack is not None)
     if send_ack is not None and await asyncio.to_thread(
         rr.claim_ack, channel, request.channel_ref, request_id=request.id
     ):
@@ -192,24 +194,36 @@ def _pending_for(channel: str, ref: str) -> rr.RosterRequest | None:
 # Telling the principal
 # --------------------------------------------------------------------------- #
 
-def _chat_prompt(request: rr.RosterRequest) -> str:
+def _told(acknowledged: bool) -> str:
+    """What the sender was told: the fixed acknowledgement, or nothing when
+    their email could not be shown to come from that address."""
+    if acknowledged:
+        return "I told them their message arrived and is waiting for you"
+    return (
+        "I haven't told them anything: I couldn't confirm the email really came "
+        "from that address"
+    )
+
+
+def _chat_prompt(request: rr.RosterRequest, acknowledged: bool = True) -> str:
     who = f"“{request.display_name}”" if request.display_name else "them"
     return (
-        f"{rr.describe(request)}. I told them their message arrived and is waiting "
-        "for you — I haven't replied to what they said.\n"
+        f"{rr.describe(request)}. {_told(acknowledged)} — I haven't replied to what "
+        "they said.\n"
         f"Tell me who {who} is and I'll add them — for example \"that's Annamarie, "
         "add her to the team\", \"add them as a contact\", \"that's <someone already "
         "on the People list>\", or \"ignore\". The card on your Today page works too."
     )
 
 
-def _email_prompt(request: rr.RosterRequest, token: str) -> tuple[str, str]:
+def _email_prompt(
+    request: rr.RosterRequest, token: str, acknowledged: bool = True,
+) -> tuple[str, str]:
     subject_who = request.display_name or request.channel_ref
     subject = f"Who is {subject_who}? [{token}]"
     body = (
         f"{rr.describe(request)}.\n\n"
-        "I told them their message arrived and is waiting for you. I haven't "
-        "replied to what they said.\n\n"
+        f"{_told(acknowledged)}. I haven't replied to what they said.\n\n"
         "Reply to this email from your own address to tell me who they are, for "
         "example:\n"
         "  - \"That's Annamarie Chen, add her to the team\"\n"
@@ -227,20 +241,20 @@ def _message_id(result: str) -> str | None:
     return match.group(1) if match else None
 
 
-async def notify_principal(request: rr.RosterRequest) -> str | None:
+async def notify_principal(request: rr.RosterRequest, *, acknowledged: bool = True) -> str | None:
     """Tell the principal about a new request on the first channel that works
     (their preferred chat, then the others, then email). Chat senders and
     senders on the company's own domain are pushed; an outside email sender
     waits on the /today card, as does everyone past the day's cap. Returns
     the channel used, or None. Never raises."""
     try:
-        return await _notify_principal(request)
+        return await _notify_principal(request, acknowledged=acknowledged)
     except Exception:
         logger.exception("roster_intake: telling the principal about request %d failed", request.id)
         return None
 
 
-async def _notify_principal(request: rr.RosterRequest) -> str | None:
+async def _notify_principal(request: rr.RosterRequest, *, acknowledged: bool) -> str | None:
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.schedule_tools import set_session
     from openexecutive.scheduler.runner import _delivered_ok, principal_delivery_plan
@@ -252,7 +266,7 @@ async def _notify_principal(request: rr.RosterRequest) -> str | None:
     principal, plan = await asyncio.to_thread(principal_delivery_plan)
     if principal is None:
         return None
-    text = _chat_prompt(request)
+    text = _chat_prompt(request, acknowledged)
     # No session: nothing sent here is a turn's outbound context.
     with set_session(None):
         for channel in plan:
@@ -278,7 +292,7 @@ async def _notify_principal(request: rr.RosterRequest) -> str | None:
                         {"chat_id": int(principal.telegram_chat_id), "text": text}
                     )
                 elif channel == "email" and principal.email:
-                    sent = await _email_principal(request, principal.email)
+                    sent = await _email_principal(request, principal.email, acknowledged)
                     if sent:
                         return "email"
                     continue
@@ -292,7 +306,9 @@ async def _notify_principal(request: rr.RosterRequest) -> str | None:
     return None
 
 
-async def _email_principal(request: rr.RosterRequest, principal_email: str) -> bool:
+async def _email_principal(
+    request: rr.RosterRequest, principal_email: str, acknowledged: bool = True,
+) -> bool:
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.workflows.action_step import looks_like_error
@@ -301,7 +317,7 @@ async def _email_principal(request: rr.RosterRequest, principal_email: str) -> b
     if gateway is None:
         return False
     token = await asyncio.to_thread(rr.issue_email_token, request.id)
-    subject, body = _email_prompt(request, token)
+    subject, body = _email_prompt(request, token, acknowledged)
     result = await gateway.call_tool({
         "name": "google_workspace__send_gmail_message",
         "arguments": {

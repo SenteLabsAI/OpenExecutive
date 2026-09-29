@@ -523,6 +523,36 @@ def test_authenticated_by_gmail(headers: tuple[str, ...], sender: str, ok: bool)
     assert fc.authenticated_by_gmail(raw, OWNER) is ok
 
 
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        # A quoted envelope local part Gmail writes into smtp.mailfrom.
+        'Authentication-Results: mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass '
+        'header.from=northwind.test "@attacker.test; dmarc=fail header.from=northwind.test',
+        # The same in the SPF comment, ahead of Gmail's real verdict.
+        "Authentication-Results: mx.google.com; spf=pass (google.com: domain of "
+        '"a;dmarc=pass header.from=northwind.test "@attacker.test designates 192.0.2.1) '
+        "smtp.mailfrom=attacker.test; dmarc=fail header.from=northwind.test",
+        # A comment alone, then no verdict of Gmail's at all.
+        "Authentication-Results: mx.google.com; spf=pass (x;dmarc=pass "
+        "header.from=northwind.test) smtp.mailfrom=attacker.test",
+        # Two verdicts: never guess which one is Gmail's.
+        "Authentication-Results: mx.google.com; dmarc=pass header.from=northwind.test; "
+        "dmarc=fail header.from=northwind.test",
+        # Unbalanced quoting or comments: unreadable, so not authenticated.
+        'Authentication-Results: mx.google.com; smtp.mailfrom="x; dmarc=pass header.from=northwind.test',
+        "Authentication-Results: mx.google.com; (x; dmarc=pass header.from=northwind.test",
+    ],
+    ids=["quoted-mailfrom", "quoted-in-spf-comment", "comment-only", "two-verdicts",
+         "unbalanced-quote", "unbalanced-comment"],
+)
+def test_sender_written_text_in_gmails_stamp_is_no_verdict(stamp: str) -> None:
+    """Gmail copies the envelope sender (and DKIM tags) into its own
+    Authentication-Results; a quoted string or comment there must not read
+    as a DMARC pass."""
+    assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is False
+
+
 def test_a_subject_imitating_the_raw_separator_cannot_supply_the_headers() -> None:
     """Everything above the separator is sender-written header values; a
     Subject reading "--- RAW MIME ---" must not move where the raw message

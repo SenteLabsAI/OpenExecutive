@@ -1779,8 +1779,12 @@ memory:
         Gmail's own stamp: the TOPMOST Authentication-Results (added on
         receipt, above sender-written headers), authserv-id mx.google.com,
         dmarc=pass with header.from = the From domain, raw From matching
-        (`authenticated_by_gmail`). Fails closed (absent header, dmarc=none,
-        temperror, read failure). Anyone else: no second read, never
+        (`authenticated_by_gmail`). Quoted strings and comments are stripped
+        before the verdict is read (Gmail copies the envelope sender and
+        DKIM tags into its own stamp, and a quoted local part could carry a
+        fake `dmarc=pass`), and exactly one dmarc= verdict must remain.
+        Fails closed (absent header, dmarc=none, temperror, unbalanced
+        quotes or comments, two verdicts, read failure). Anyone else: no second read, never
         authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY
         address (exact; no alias / domain rule), authenticated, and not
@@ -3262,7 +3266,10 @@ people:
       headers the poller reads never carry Authentication-Results, so a
       forged From would otherwise draw the ack to whoever it names
       (backscatter). An unauthenticated sender is still held, silently,
-      and spends no `claim_ack`.
+      and spends no `claim_ack`; the Today card, the principal's prompt
+      (chat or email) and the model's [POLICY] notice then say they were
+      NOT told (`surface_card` / `notify_principal` `acknowledged=False`,
+      `_run_executive(roster_acknowledged=False)`).
     - Replays run in a FRESH `contextvars.Context` (`_spawn`): the answer
       may come from the principal's own verified turn, and a stranger's
       message must never run with the principal's session (and contacts,
