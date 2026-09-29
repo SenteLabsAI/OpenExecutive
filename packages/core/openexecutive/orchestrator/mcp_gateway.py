@@ -1362,6 +1362,26 @@ def _record_email_outbound_context(arguments: dict[str, Any]) -> None:
         )
 
 
+# extensible-mcp's refusal for a tool no search in this session has returned
+# (DiscoveredToolsFilter, surfaced by its call_tool handler as "Error: ...").
+_UNDISCOVERED_MARKER = "has not been discovered via search_tools"
+
+
+def _is_undiscovered_refusal(tool_name: object, result_text: object) -> bool:
+    """Whether the gateway refused a pinned Google tool only because this
+    session had not discovered it yet. Pinned names only: any other tool
+    still needs the model's own search, as before."""
+    from openexecutive.prompts.connected_systems import PINNED_GOOGLE_TOOLS
+
+    return (
+        isinstance(tool_name, str)
+        and tool_name in PINNED_GOOGLE_TOOLS
+        and isinstance(result_text, str)
+        and result_text.startswith(f"Error: Tool '{tool_name}' ")
+        and _UNDISCOVERED_MARKER in result_text
+    )
+
+
 # Ceiling on the MCP config we will read into memory. The real file is a
 # handful of server entries; anything past this is a mistake or a symlink to
 # something that is not a config, and reading it during startup is how you get
@@ -1442,6 +1462,10 @@ class MCPGateway:
     def __init__(self) -> None:
         self._session: Any = None
         self._stdio_cm: Any = None
+        # The servers the config named when this gateway started. The
+        # Connected Systems prompt section reads it, so a gateway that never
+        # started never reads as connected.
+        self.server_names: tuple[str, ...] = ()
 
     async def start(self, config_path: Path) -> None:
         from mcp import ClientSession, StdioServerParameters
@@ -1458,6 +1482,7 @@ class MCPGateway:
         self._session = ClientSession(read, write)
         await self._session.__aenter__()
         await self._session.initialize()
+        self.server_names = tuple(configured_server_names(config_path))
         logger.info("MCPGateway started — config=%s", config_path)
 
     async def close(self) -> None:
@@ -1484,6 +1509,45 @@ class MCPGateway:
             args["top_k"] = tool_input["top_k"]
         result = await session.call_tool("search_tools", args)
         return result.content[0].text if result.content else json.dumps({"tools": []})
+
+    async def _discover(self, tool_name: str) -> bool:
+        """Run the exact-name search that registers ``tool_name`` with
+        extensible-mcp's discovered-tools filter (it only runs a tool one of
+        this session's ``search_tools`` results returned, and remembers it for
+        the session's life), the way ``tool_catalog.resolve`` does. True when
+        the search returned it. Best-effort: never raises."""
+        from openexecutive.workflows.tool_catalog import parse_search_results
+
+        query = re.sub(r"[_\-]+", " ", tool_name).strip()
+        try:
+            text = await self.search_tools({"query": query, "top_k": 10})
+        except Exception as exc:
+            logger.warning(
+                "MCPGateway: discovering %s failed (%s)", tool_name, type(exc).__name__
+            )
+            return False
+        if any(info.name == tool_name for info in parse_search_results(text)):
+            return True
+        logger.warning(
+            "MCPGateway: pinned tool %s not found by search — has workspace-mcp "
+            "renamed it? (prompts/connected_systems.GOOGLE_TOOL_MANIFEST)",
+            tool_name,
+        )
+        return False
+
+    async def prime_pinned_tools(self) -> list[str]:
+        """Discover every pinned Google tool (PINNED_GOOGLE_TOOLS) up front, so
+        the model's direct ``call_tool`` on one works without a search of its
+        own. Returns the names not found, a drift signal. Run once at startup
+        when Google is configured."""
+        from openexecutive.prompts.connected_systems import PINNED_GOOGLE_TOOLS
+
+        missing = [n for n in sorted(PINNED_GOOGLE_TOOLS) if not await self._discover(n)]
+        logger.info(
+            "MCPGateway: primed %d pinned Google tools (%d missing)",
+            len(PINNED_GOOGLE_TOOLS) - len(missing), len(missing),
+        )
+        return missing
 
     async def call_tool(self, tool_input: dict[str, Any]) -> str:
         session = self._require_session()
@@ -1552,6 +1616,18 @@ class MCPGateway:
             {"tool_name": tool_input["name"], "arguments": arguments},
         )
         result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        # A pinned tool called before startup priming reached it: the prompt
+        # told the model to call it directly, so discover it and retry once.
+        # The refused call ran nothing, and every gate above has already
+        # passed these same arguments.
+        if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
+            result = await session.call_tool(
+                "call_tool",
+                {"tool_name": tool_input["name"], "arguments": arguments},
+            )
+            result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        # On the final result, retry or not: roster answer tokens are hidden
+        # from every Google Workspace read but the poller's own.
         if (
             isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX)
             and not _reveal_tokens.get()
@@ -1667,3 +1743,12 @@ def set_active_gateway(gateway: MCPGateway | None) -> None:
 
 def get_active_gateway() -> MCPGateway | None:
     return _active_gateway
+
+
+def gateway_server_names(gateway: object) -> tuple[str, ...]:
+    """The servers ``gateway`` started with, or () for no gateway (or a
+    stand-in without the attribute)."""
+    names = getattr(gateway, "server_names", ())
+    if not isinstance(names, tuple | list):
+        return ()
+    return tuple(n for n in names if isinstance(n, str))

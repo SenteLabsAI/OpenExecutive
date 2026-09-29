@@ -275,6 +275,11 @@ async def _start_mcp_gateway(
 
     app.state.mcp_gateway = gateway
     set_active_gateway(gateway)
+    if "google_workspace" in servers:
+        # Discover the pinned Google tools now, so the model's first direct
+        # call_tool doesn't wait on the search. Held on app.state: a bare
+        # create_task is only weakly referenced.
+        app.state.mcp_prime_task = asyncio.create_task(gateway.prime_pinned_tools())
 
     from openexecutive.integrations.email_poller import run_email_poller
     return asyncio.create_task(run_email_poller(gateway))
@@ -767,6 +772,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         catalog_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await catalog_refresh_task
+
+    prime_task = getattr(app.state, "mcp_prime_task", None)
+    if prime_task is not None:
+        prime_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await prime_task
 
     if getattr(app.state, "mcp_gateway", None) is not None:
         from openexecutive.orchestrator.mcp_gateway import set_active_gateway

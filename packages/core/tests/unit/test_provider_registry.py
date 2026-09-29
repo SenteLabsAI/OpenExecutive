@@ -167,6 +167,7 @@ def _settings_stub(
     local_api_key: str | None = None,
     local_timeout_s: float = 300.0,
     local_include_usage_accounting: bool = False,
+    local_reasoning_effort: str | None = None,
 ) -> Any:
     return SimpleNamespace(
         anthropic_api_key=anthropic_key,
@@ -182,6 +183,7 @@ def _settings_stub(
         local_api_key=local_api_key,
         local_timeout_s=local_timeout_s,
         local_include_usage_accounting=local_include_usage_accounting,
+        local_reasoning_effort=local_reasoning_effort,
     )
 
 
@@ -344,6 +346,23 @@ def test_local_provider_respects_usage_accounting_opt_in(
     _local_stub(monkeypatch, enabled=False, local_include_usage_accounting=True)
     provider = get_provider("llama3.3")
     assert provider._include_usage_accounting is True  # type: ignore[attr-defined]
+
+
+def test_local_provider_reasoning_effort_unset_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _local_stub(monkeypatch, enabled=False)
+    provider = get_provider("llama3.3")
+    assert provider._reasoning_effort is None  # type: ignore[attr-defined]
+
+
+def test_local_provider_passes_configured_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_REASONING_EFFORT reaches the local provider."""
+    _local_stub(monkeypatch, enabled=False, local_reasoning_effort="low")
+    provider = get_provider("llama3.3")
+    assert provider._reasoning_effort == "low"  # type: ignore[attr-defined]
 
 
 def test_local_provider_distinct_from_openrouter_singleton(
