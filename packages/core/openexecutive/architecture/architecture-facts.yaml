@@ -3255,6 +3255,14 @@ people:
       DM, a Slack ephemeral, a private Telegram chat, a Discord ephemeral
       for /ask, one email to exactly that address under the gateway's
       one-shot `roster_ack_grant`).
+    - An email sender is acknowledged only when Gmail authenticated them:
+      the poller re-reads the mail as raw MIME and needs Gmail's topmost
+      Authentication-Results reporting dmarc=pass for the From domain
+      (`fact_confirmation.sender_authenticated`, fail-closed). The printed
+      headers the poller reads never carry Authentication-Results, so a
+      forged From would otherwise draw the ack to whoever it names
+      (backscatter). An unauthenticated sender is still held, silently,
+      and spends no `claim_ack`.
     - Replays run in a FRESH `contextvars.Context` (`_spawn`): the answer
       may come from the principal's own verified turn, and a stranger's
       message must never run with the principal's session (and contacts,
@@ -5857,8 +5865,11 @@ integrations:
     local part, List-Id / List-Unsubscribe / Feedback-ID / X-Campaign,
     Auto-Submitted other than no, bulk/list/junk Precedence, DMARC fail),
     ``_hold_for_roster`` holds it (payload = message and thread id only;
-    preview = subject + new text) and sends the fixed acknowledgement via
-    ``send_email_ack`` under the gateway's one-shot grant. The mail is
+    preview = subject + new text) and, only when Gmail authenticated the
+    sender (``fact_confirmation.sender_authenticated``: a raw read showing
+    Gmail's dmarc=pass for the From domain), sends the fixed
+    acknowledgement via ``send_email_ack`` under the gateway's one-shot
+    grant; an unauthenticated sender is held with no acknowledgement. The mail is
     STILL triaged on this pass, with a variant [POLICY] notice
     (``held_for_roster``) that opens with the same sentence as the
     non-roster one and adds: the sender was already told it is waiting,

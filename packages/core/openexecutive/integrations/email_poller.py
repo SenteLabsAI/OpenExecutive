@@ -680,8 +680,15 @@ async def _hold_for_roster(
     (``integrations.roster_intake``) and acknowledge the sender once. Not for
     machine-sent mail (newsletters, notifications, bounces), nor for one of
     the principal's contacts (the caller only calls this for a non-private
-    mail, which a contact's never is). True when a request now holds it."""
+    mail, which a contact's never is). True when a request now holds it.
+
+    Only a sender Gmail authenticated (``dmarc=pass`` for their domain, read
+    from the raw message) is acknowledged. The printed headers never carry
+    Authentication-Results, so without that read a forged From would draw
+    the acknowledgement to whoever it names: backscatter from the
+    Executive's mailbox. An unauthenticated sender is still held, silently."""
     from openexecutive.integrations import roster_intake
+    from openexecutive.integrations.fact_confirmation import sender_authenticated
 
     if not from_addr or roster_intake.looks_automated(raw, from_addr):
         return False
@@ -695,13 +702,14 @@ async def _hold_for_roster(
     async def _ack(_text: str) -> None:
         await roster_intake.send_email_ack(gateway, from_addr)
 
+    authenticated = await sender_authenticated(gateway, message_id, from_addr)
     request = await roster_intake.intake(
         "email", from_addr,
         external_id=message_id,
         payload={"message_id": message_id, "thread_id": thread_id},
         preview=preview,
         display_name=display_name,
-        send_ack=_ack,
+        send_ack=_ack if authenticated else None,
     )
     return request is not None
 

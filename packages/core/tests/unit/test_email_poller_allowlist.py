@@ -18,6 +18,7 @@ the outbound tool calls.
 from __future__ import annotations
 
 import asyncio
+from email.utils import parseaddr
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -260,9 +261,38 @@ def _sends(gateway: AsyncMock) -> list[dict[str, Any]]:
     ]
 
 
-def _run_with_gateway(raw: str) -> tuple[AsyncMock, AsyncMock]:
+def _gmail_stamp(from_addr: str) -> str:
+    """Gmail's own Authentication-Results for mail it received from ``from_addr``."""
+    domain = from_addr.rsplit("@", 1)[1]
+    return (
+        f"Authentication-Results: mx.google.com;\r\n       spf=pass smtp.mailfrom={from_addr};"
+        f"\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from={domain}"
+    )
+
+
+def _mailbox(raw: str, *, stamp: str = "") -> AsyncMock:
+    """The Executive's mailbox: ``raw`` for the printed read, and for a
+    ``body_format="raw"`` read the same mail as raw MIME under ``stamp``."""
+    _name, from_addr = parseaddr(next(
+        ln[len("From:"):] for ln in raw.splitlines() if ln.startswith("From:")
+    ))
+
+    async def _call(request: dict[str, Any]) -> str:
+        if request["arguments"].get("body_format") == "raw":
+            lines = "\r\n".join([*([stamp] if stamp else []), f"From: <{from_addr}>", "Subject: Hello"])
+            return f"{raw}\n\n--- RAW MIME ---\n{lines}\r\n\r\nBody text here.\r\n"
+        return raw
+
     gateway = AsyncMock()
-    gateway.call_tool = AsyncMock(return_value=raw)
+    gateway.call_tool = AsyncMock(side_effect=_call)
+    return gateway
+
+
+def _run_with_gateway(raw: str, *, authenticated: bool = True) -> tuple[AsyncMock, AsyncMock]:
+    _name, from_addr = parseaddr(next(
+        ln[len("From:"):] for ln in raw.splitlines() if ln.startswith("From:")
+    ))
+    gateway = _mailbox(raw, stamp=_gmail_stamp(from_addr) if authenticated else "")
     with (
         patch.object(poller, "get_settings", return_value=_settings()),
         patch.object(poller, "_run_executive", new=AsyncMock()) as run_exec,
@@ -286,6 +316,39 @@ def test_a_new_sender_is_held_acknowledged_and_still_triaged(principal: int) -> 
     # The one reply they get: fixed text, to them alone, never quoting them.
     [ack] = [s for s in _sends(gateway) if s.get("to") == "annamarie@example.com"]
     assert ack["body"] == ACK_TEXT and "Hello" not in ack["subject"]
+
+
+@pytest.mark.parametrize("stamp", [
+    "",  # no Authentication-Results at all: a domain with no DMARC
+    "Authentication-Results: mx.google.com; spf=fail smtp.mailfrom=annamarie@example.com",
+    "Authentication-Results: mx.google.com; dmarc=none header.from=example.com",
+    # A pass the sender wrote themselves, not Gmail's stamp.
+    "Authentication-Results: mx.example.com; dmarc=pass header.from=example.com",
+])
+def test_a_sender_gmail_did_not_authenticate_is_held_but_never_acknowledged(
+    principal: int, stamp: str,
+) -> None:
+    """A forged From must not draw the acknowledgement to the address it
+    names (backscatter from the Executive's mailbox). The request still
+    opens, silently, and spends no acknowledgement claim."""
+    from openexecutive.people import roster_requests as rr
+
+    raw = _raw_email("Annamarie Chen <annamarie@example.com>")
+    gateway = _mailbox(raw, stamp=stamp)
+    with (
+        patch.object(poller, "get_settings", return_value=_settings()),
+        patch.object(poller, "_run_executive", new=AsyncMock()) as run_exec,
+        patch.object(poller, "_mark_read", new=AsyncMock()),
+    ):
+        asyncio.run(poller._handle_email(gateway, message_id="m1", thread_id="t1",
+                                         user_email="exec@example.com"))
+    assert run_exec.await_args.kwargs["held_for_roster"] is True
+    [request] = rr.list_requests()
+    assert request.channel_ref == "annamarie@example.com"
+    assert _sends(gateway) == []
+    # The claim was never taken, so a later authenticated mail is acknowledged.
+    _run, gateway = _run_with_gateway(raw)
+    assert [s["to"] for s in _sends(gateway)] == ["annamarie@example.com"]
 
 
 def test_machine_mail_is_not_held_or_acknowledged(principal: int) -> None:

@@ -54,10 +54,24 @@ RAW = (
     "--- BODY ---\nHi — I joined finance this week. Can you send the Q3 numbers?\n"
 )
 
+# The same mail read as raw MIME, with Gmail's stamp: only an authenticated
+# sender is acknowledged.
+RAW_MIME = (
+    "\n\n--- RAW MIME ---\n"
+    "Authentication-Results: mx.google.com;\r\n       spf=pass smtp.mailfrom=annamarie@acme.com;"
+    "\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=acme.com\r\n"
+    "From: Annamarie Chen <annamarie@acme.com>\r\nSubject: Q3 numbers\r\n\r\nHi\r\n"
+)
+
 
 def _receive() -> tuple[AsyncMock, list[dict[str, Any]]]:
+    async def _read(request: dict[str, Any]) -> str:
+        if request["arguments"].get("body_format") == "raw":
+            return RAW + RAW_MIME
+        return RAW
+
     gateway = AsyncMock()
-    gateway.call_tool = AsyncMock(return_value=RAW)
+    gateway.call_tool = AsyncMock(side_effect=_read)
     turns: list[dict[str, Any]] = []
 
     async def _executive(*_a: Any, **kw: Any) -> None:
