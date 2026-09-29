@@ -290,14 +290,15 @@ def test_a_reply_gmail_did_not_authenticate_is_refused(
     assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.list_facts(include_inactive=True) == [] and facts.pending_confirmation_count() == 1
     [warning] = _sent(gateway)
-    assert "didn't pass DMARC" in warning["body"] and warning["to"] == OWNER
+    assert "DMARC check" in warning["body"] and warning["to"] == OWNER
 
 
 @pytest.mark.parametrize(
     "auto",
     ["Auto-Submitted: auto-replied", "X-Auto-Response-Suppress: All",
-     "Precedence: auto_reply", "Subject: Automatic reply: Confirm a change"],
-    ids=["auto-submitted", "exchange-suppress", "precedence", "ooo-subject"],
+     "Precedence: auto_reply", "Subject: Automatic reply: Confirm a change",
+     "Subject: Auto: Re: Confirm a change"],
+    ids=["auto-submitted", "exchange-suppress", "precedence", "ooo-subject", "auto-colon"],
 )
 def test_an_out_of_office_reply_cannot_confirm(
     monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock, db: list[dict[str, Any]], auto: str,
@@ -331,7 +332,7 @@ def test_a_failed_raw_read_refuses_and_tells_the_principal(
     mailbox = SimpleNamespace(call_tool=AsyncMock(side_effect=RuntimeError("gmail down")))
     assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.pending_confirmation_count() == 1
-    assert "didn't pass DMARC" in _sent(gateway)[0]["body"]
+    assert "DMARC check" in _sent(gateway)[0]["body"]
 
 
 def test_a_made_up_reference_does_nothing_and_sends_nothing(gateway: AsyncMock) -> None:

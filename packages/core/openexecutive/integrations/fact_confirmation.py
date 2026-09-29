@@ -73,8 +73,8 @@ _HEADER_FROM = re.compile(r"\bheader\.from=([^\s;()]+)")
 # otherwise pass as the principal's answer.
 _AUTO_HEADERS = ("x-auto-response-suppress", "x-autoreply", "x-autorespond", "x-autoresponder")
 _AUTO_SUBJECT = re.compile(
-    r"^\s*(automatic reply|auto(matic)?[- ]?(reply|response)|out of (the )?office|autoreply|"
-    r"auto:|vacation|away)\b",
+    r"^\s*(auto:|(automatic reply|auto(matic)?[- ]?(reply|response)|out of (the )?office|"
+    r"autoreply|vacation|away)\b)",
     re.IGNORECASE,
 )
 
@@ -336,8 +336,8 @@ async def try_email_fact_confirmation(
         )
         await _reply(principal, (
             "A reply to one of my confirmation emails claimed to be from you, but "
-            "Gmail couldn't confirm it came from your mail server (it didn't pass "
-            "DMARC), so I didn't act on it. The change is still waiting; if it was "
+            "I couldn't confirm it came from your mail server (Gmail's DMARC check "
+            "didn't pass, or I couldn't read it), so I didn't act on it. The change is still waiting; if it was "
             "you, reply again from your own mailbox.\n\n"
             f"  {conf.summary}"
         ))
