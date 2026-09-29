@@ -437,21 +437,28 @@ def get_fact(fact_id: int, db_path: Path | None = None) -> Fact | None:
 def list_facts(
     *,
     include_inactive: bool = False,
-    statuses: tuple[FactStatus, ...] | None = None,
+    own_proposals_of: int | None = None,
     limit: int = 200,
     db_path: Path | None = None,
 ) -> list[Fact]:
-    """Newest first. Active rows only unless ``include_inactive``, or exactly
-    ``statuses`` when given (filtered before the limit)."""
-    if statuses is not None:
-        wanted: tuple[str, ...] = tuple(statuses) or ("active",)
-    else:
-        wanted = () if include_inactive else ("active",)
-    where = f"WHERE status IN ({','.join('?' * len(wanted))})" if wanted else ""
+    """Newest first. Active rows only unless ``include_inactive``.
+    ``own_proposals_of`` (a teammate's view): the active rows plus that
+    person's own proposals, filtered in SQL before the limit, so neither
+    history nor anyone else's proposals can crowd them out."""
+    if own_proposals_of is not None:
+        with _conn(db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM facts WHERE status='active' OR (status='proposed' "
+                "AND recorded_by_role='teammate' AND recorded_by_person_id=?) "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (own_proposals_of, max(1, limit)),
+            ).fetchall()
+        return [_row(r) for r in rows]
+    where = "" if include_inactive else "WHERE status='active'"
     with _conn(db_path) as conn:
         rows = conn.execute(
-            f"SELECT * FROM facts {where} ORDER BY created_at DESC, id DESC LIMIT ?",  # noqa: S608 - placeholders only
-            (*wanted, max(1, limit)),
+            f"SELECT * FROM facts {where} ORDER BY created_at DESC, id DESC LIMIT ?",  # noqa: S608 - fixed clause
+            (max(1, limit),),
         ).fetchall()
     return [_row(r) for r in rows]
 

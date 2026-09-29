@@ -1710,7 +1710,7 @@ memory:
         approval is not a one-shot gate. `decline_fact` → `declined`.
         forget_fact and update_company_profile stay principal-only; a
         teammate retires only their own unapproved facts, from the Pulse
-        page. No field may contain `(per`, `[fact N]` or a `— YYYY-MM-DD`
+        page. No field may contain `(per <Capitalised>`, `[fact N]` or a `— YYYY-MM-DD`
         stamp (`_marker_error`): the render adds those, so a stored one
         would be a forged second attribution. Columns added by `_migrate` on
         first write (old rows read as the principal's; the read-only render

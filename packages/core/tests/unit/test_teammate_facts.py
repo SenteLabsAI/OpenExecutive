@@ -332,6 +332,14 @@ def test_render_markers_cannot_be_stored(roster: SimpleNamespace, statement: str
     assert facts.list_facts(include_inactive=True) == []
 
 
+def test_business_wording_is_not_a_marker(roster: SimpleNamespace) -> None:
+    said = "Maple House rent is $2,000 now (per month), and the fee is $40 (per unit)."
+    _speak(roster.owner, said=said)
+    out = _remember(subject="Maple House rent", statement="Maple House rent is $2,000 (per month).",
+                    source_quote="Maple House rent is $2,000 now")
+    assert out["status"] == "ok", out
+
+
 def test_an_ordinary_date_is_not_a_marker(roster: SimpleNamespace) -> None:
     said = "Cedar Court is 38 units now; the lease ends 2031-03-31."
     _speak(roster.owner, said=said)

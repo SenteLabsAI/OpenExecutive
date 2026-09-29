@@ -247,3 +247,12 @@ def test_history_does_not_crowd_out_a_teammates_active_facts(monkeypatch: pytest
     ids = [f["id"] for f in body["facts"]]
     assert len(ids) == 2 and all(facts.get_fact(i).status == "active" for i in ids)  # type: ignore[union-attr]
     assert live in ids
+
+
+def test_others_proposals_cannot_crowd_out_a_teammates_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _teammate_fact(SAM, "Sam Lee", subject="Oak Row")
+    for n in range(5):
+        _teammate_fact(KIM, "Kim Park", subject=f"Kim {n}", proposed=True)
+    mine = _teammate_fact(SAM, "Sam Lee", subject="Elm Yard", proposed=True)
+    body = _as_teammate(monkeypatch, SAM).get("/memories/facts?limit=2").json()
+    assert {f["id"] for f in body["facts"]} == {live, mine}

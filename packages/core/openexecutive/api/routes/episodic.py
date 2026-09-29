@@ -240,10 +240,11 @@ def get_facts(
         rows = list_facts(include_inactive=include_inactive, limit=limit)
         retirable = [f.id for f in rows if f.status == "active" and f.kind != "profile"]
     else:
-        rows = [
-            f for f in list_facts(statuses=("active", "proposed"), limit=limit)
-            if f.status == "active" or (f.status == "proposed" and _is_own_teammate_fact(f, caller))
-        ]
+        rows = (
+            list_facts(own_proposals_of=caller, limit=limit)
+            if caller is not None
+            else list_facts(limit=limit)
+        )
         retirable = [f.id for f in rows if f.status == "active" and _is_own_teammate_fact(f, caller)]
         # Provenance is the principal's: their words, and which of their
         # chats and turns a fact came from (ids other routes may key on).
