@@ -996,9 +996,11 @@ class GroundingScope:
             if report.ok:
                 return text, []
             bad = {c.index for c in report.bad_lines}
-            lines = body.split("\n")
+            # Same numbering as check_text (splitlines), so a lone \r or
+            #   in the flags can't shift which line gets dropped.
+            lines = body.splitlines(keepends=True)
             held = [lines[i].strip() for i in sorted(bad) if lines[i].strip()]
-            kept = "\n".join(ln for i, ln in enumerate(lines) if i not in bad)
+            kept = "".join(ln for i, ln in enumerate(lines) if i not in bad)
             if not kept.strip():
                 kept = " (nothing I could ground)"
             _audit(

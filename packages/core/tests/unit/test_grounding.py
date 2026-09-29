@@ -434,6 +434,19 @@ def test_filter_section_drops_ungrounded_flags(sources: list[GroundingSource]) -
     assert "**Quiet:**" in out
 
 
+def test_filter_section_numbers_lines_like_check_text(sources: list[GroundingSource]) -> None:
+    """A lone \\r inside a flag must not shift which line is dropped."""
+    text = (
+        "**Flagged for the brief:**\n- Dana's renewal:\r48 units\n"
+        "- Marcus Lee wants a call\n- Nothing else pressing\n\n**Quiet:** done."
+    )
+    scope = GroundingScope(sources, [], surface="test")
+    out, held = scope.filter_section(text, "Flagged for the brief")
+    assert held == ["- Marcus Lee wants a call"]
+    assert "Marcus" not in out
+    assert "- Dana's renewal:\r48 units\n" in out and "- Nothing else pressing" in out
+
+
 # --------------------------------------------------------------------------- #
 # Alert text
 # --------------------------------------------------------------------------- #
