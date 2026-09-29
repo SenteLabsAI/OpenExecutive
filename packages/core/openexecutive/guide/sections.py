@@ -43,7 +43,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     GuideSection(
         id="pulse",
         title="Pulse (Memory)",
-        sub="The Executive's running memory — decisions made, initiatives in flight, advice gathered.",
+        sub="The Executive's running memory — decisions made, initiatives in flight, advice gathered, corrections kept.",
     ),
     GuideSection(
         id="review",

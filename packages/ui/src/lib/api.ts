@@ -1065,6 +1065,49 @@ export async function deleteDecision(id: number): Promise<void> {
   if (!res.ok) throw new Error("Failed to delete decision");
 }
 
+/** A standing fact or correction the principal asked the Executive to keep
+ * (`memory/facts.py`). Every prompt that produces output reads the active
+ * ones; `profile` rows record a company-profile field changed from chat. */
+export interface StandingFact {
+  id: number;
+  kind: "fact" | "correction" | "profile";
+  subject: string;
+  statement: string;
+  previous_statement: string;
+  /** The principal's own words; empty for anyone but the principal. */
+  source_quote: string;
+  source_channel: string;
+  session_id: string | null;
+  turn_id: string | null;
+  recorded_by_person_id: number | null;
+  created_at: string;
+  status: "active" | "superseded" | "retired";
+  superseded_by: number | null;
+  retired_at: string | null;
+  retired_reason: string;
+}
+
+export interface StandingFactsPage {
+  facts: StandingFact[];
+  can_retire: boolean;
+}
+
+export async function listStandingFacts(): Promise<StandingFactsPage> {
+  const res = await fetch(`${API_BASE}/memories/facts`);
+  if (!res.ok) throw new Error("Failed to list standing facts");
+  return res.json();
+}
+
+export async function retireStandingFact(id: number, reason = ""): Promise<StandingFact> {
+  const res = await fetch(`${API_BASE}/memories/facts/${id}/retire`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) throw new Error("Failed to retire standing fact");
+  return res.json();
+}
+
 export async function listInitiatives(): Promise<Initiative[]> {
   const res = await fetch(`${API_BASE}/memories/initiatives`);
   if (!res.ok) throw new Error("Failed to list initiatives");

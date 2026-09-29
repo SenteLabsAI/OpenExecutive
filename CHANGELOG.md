@@ -9,6 +9,25 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.4.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.2...v0.4.3) (2026-09-29)
+
+
+### Added
+
+* **briefing:** feed the principal's live day into the header and the brief ([#263](https://github.com/SenteLabsAI/OpenExecutive/issues/263)) ([7fea2d5](https://github.com/SenteLabsAI/OpenExecutive/commit/7fea2d514c0d6dc4b567b1266a5275d5312318c4))
+* **briefing:** ground names and figures in unattended prose before delivery ([#272](https://github.com/SenteLabsAI/OpenExecutive/issues/272)) ([a565c30](https://github.com/SenteLabsAI/OpenExecutive/commit/a565c30634c1a0d2413522f8d724e2283f47fb45))
+* **memory:** keep chat corrections as standing facts in prompts ([#270](https://github.com/SenteLabsAI/OpenExecutive/issues/270)) ([4e2a42b](https://github.com/SenteLabsAI/OpenExecutive/commit/4e2a42b8816a3254c7bfbab58058a36e8e185b04))
+* **memory:** remember the Drive files a conversation found or read ([#276](https://github.com/SenteLabsAI/OpenExecutive/issues/276)) ([f200cd9](https://github.com/SenteLabsAI/OpenExecutive/commit/f200cd99ceb571681cf4ad8e8319897883de77b5))
+* **orchestrator:** tell the executive which systems are connected ([#271](https://github.com/SenteLabsAI/OpenExecutive/issues/271)) ([8c742b3](https://github.com/SenteLabsAI/OpenExecutive/commit/8c742b3c4c7362f1ca16127bd989556cb44d41e5))
+* **people:** let the owner confirm and add unknown senders ([#273](https://github.com/SenteLabsAI/OpenExecutive/issues/273)) ([ff693ae](https://github.com/SenteLabsAI/OpenExecutive/commit/ff693ae50cc7a05ddf9d63ea2d57bc727dae82b8))
+* **providers:** add LOCAL_REASONING_EFFORT for thinking-only models ([#274](https://github.com/SenteLabsAI/OpenExecutive/issues/274)) ([ed06025](https://github.com/SenteLabsAI/OpenExecutive/commit/ed06025aabf3a3c381a690f13192d0bd2e104904))
+
+
+### Fixed
+
+* **ui:** show turn progress while the executive is still working ([#261](https://github.com/SenteLabsAI/OpenExecutive/issues/261)) ([29f634b](https://github.com/SenteLabsAI/OpenExecutive/commit/29f634ba9d69b1c91d35230e0e08d3fd3622872c))
+* update the Apache license file ([#275](https://github.com/SenteLabsAI/OpenExecutive/issues/275)) ([421db3c](https://github.com/SenteLabsAI/OpenExecutive/commit/421db3c402a652ae9e0693e922f3b4c96283e807))
+
 ## [0.4.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.1...v0.4.2) (2026-09-28)
 
 

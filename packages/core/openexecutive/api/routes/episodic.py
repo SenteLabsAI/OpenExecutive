@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
@@ -20,6 +22,7 @@ from openexecutive.memory.episodic import (
     update_decision,
     update_initiative,
 )
+from openexecutive.memory.facts import Fact, get_fact, list_facts, retire_fact
 from openexecutive.memory.honcho_client import (
     PERSON_CONCLUSIONS_MAX_PAGE,
     PeopleMemory,
@@ -29,6 +32,7 @@ from openexecutive.memory.honcho_client import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class DecisionUpdate(BaseModel):
@@ -124,6 +128,87 @@ def remove_advice(advice_id: int) -> Response:
     if not delete_advice(advice_id):
         raise HTTPException(status_code=404, detail="Advice not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Standing facts (corrections that persist everywhere) ---
+
+
+class FactsPage(BaseModel):
+    facts: list[Fact]
+    # Whether this caller may retire a fact (the principal only).
+    can_retire: bool
+
+
+class FactRetire(BaseModel):
+    reason: str = ""
+
+
+@router.get("/memories/facts", response_model=FactsPage)
+def get_facts(
+    request: Request,
+    include_inactive: bool = Query(True),
+    limit: int = Query(200, ge=1, le=500),
+) -> FactsPage:
+    """The standing facts and corrections the principal asked to keep
+    (``memory.facts``), newest first — with their replaced and retired
+    history unless ``include_inactive=false`` — and the company-profile
+    fields changed from chat. Every prompt that produces output reads the
+    active ones. The history is the principal's alone: anyone else gets the
+    active rows only.
+
+    The facts themselves are company knowledge every conversation already
+    sees; the provenance (the quote, a retire reason, and the session, turn
+    and person it came from) is shown to the principal only."""
+    principal = _caller_is_principal(request)
+    # A teammate sees only what is in force: a fact the principal retired or
+    # replaced (perhaps because it was wrong or too sensitive) no longer
+    # renders anywhere, so its text is not theirs to read either.
+    rows = list_facts(include_inactive=include_inactive and principal, limit=limit)
+    if not principal:
+        # Provenance is the principal's: their words, and which of their
+        # chats and turns a fact came from (ids other routes may key on).
+        rows = [
+            f.model_copy(update={
+                "source_quote": "", "retired_reason": "",
+                "session_id": None, "turn_id": None, "recorded_by_person_id": None,
+            })
+            for f in rows
+        ]
+    return FactsPage(facts=rows, can_retire=principal)
+
+
+@router.post("/memories/facts/{fact_id}/retire", response_model=Fact)
+def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None = None) -> Fact:
+    """Stop an active fact rendering into any prompt. The row stays, as
+    ``retired``, so the Pulse page still shows what it said. Principal only:
+    a standing fact carries their authority in every later prompt."""
+    if not _caller_is_principal(request):
+        raise HTTPException(status_code=403, detail="Only the principal can retire a standing fact")
+    existing = get_fact(fact_id)
+    if existing is None or existing.kind == "profile":
+        raise HTTPException(status_code=404, detail="Fact not found")
+    reason = " ".join(((body.reason if body else "") or "retired from the Pulse page").split())
+    retired = retire_fact(fact_id, reason=reason[:280])
+    if retired is None:
+        raise HTTPException(status_code=409, detail="Fact is no longer active")
+    try:
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "fact_retired",
+            f"Standing fact {fact_id} retired: {existing.subject[:80]}",
+            actor="principal",
+            # Not the reason: it is the principal's own words. And private:
+            # the row names what was retired, and a teammate must not read a
+            # fact the principal took down (perhaps as wrong or too
+            # sensitive) through /audit when GET /memories/facts hides it.
+            details={"fact_id": fact_id, "subject": existing.subject,
+                     "statement": existing.statement},
+            private=True,
+        )
+    except Exception:  # noqa: BLE001 - the retire already landed.
+        logger.warning("fact_retired audit row failed for fact %s", fact_id, exc_info=True)
+    return retired
 
 
 # --- People (peer memory) ---

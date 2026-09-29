@@ -104,7 +104,7 @@ system:
     - An external signal whose `dedup_key` already exists is dropped at ingest via the UNIQUE(dedup_key) constraint on `external_signals`. Adapter retries / re-polls cannot multiply alerts for the same upstream event.
     - Alerts have a lifetime. Every user-facing surface (`/today`, the chat `<briefing>` block, the briefs, the reflection) reads `alerts.lifecycle.list_live_alerts` — unread, inside its category TTL, not snoozed — and the scheduler sweep persists the same predicate as status `expired`. `artifact` and `decision_scheduling` rows are exempt (own lifecycle). Every autonomous close is reversible via `POST /alerts/{id}/reopen`.
     - A repeat of an open alert with the same `(source, dedup_key)` coalesces into the existing row (`alerts.store.coalesce_alert`) rather than inserting a second card, and does not re-dispatch unless severity rose into high/urgent. Monitoring alerts carry a producer-supplied `watch:<slug>` key so one watch = one open card.
-    - Unattended prose is grounded deterministically (`briefing.grounding`, no model in the check). The morning brief, the EOD digest, the executive reflection's "Flagged for the brief" bullets and its outward tool calls (message_person, send_department_message, send_company_broadcast, schedule_followup, create_alert), triage's rewrite of an alert and the alert review's rewrites may name only people and figures found in their own inputs — the rendered context, the tool results so far, the event, the evidence — or the company profile. A name must appear whole in ONE source line (or belong to a roster person some source mentions; being on the roster alone is not enough); a figure (money, %, k/M/B, bare numbers ≥ 11) must match a source number within the precision the prose shows. What fails is held back (briefs — one repair call, then the line is dropped and a "held back N lines" note added), refused with a reason the model can act on (tools), or replaced by the event's own text / the old text (alerts, made inert first — links masked, markup and @-mentions stripped). Fail-open; `GROUNDING_CHECKS=enforce|report|off`; every finding writes a `grounding` audit row.
+    - Unattended prose is grounded deterministically (`briefing.grounding`, no model in the check). The morning brief, the EOD digest, the executive reflection's "Flagged for the brief" bullets and its outward tool calls (message_person, send_department_message, send_company_broadcast, schedule_followup, create_alert), triage's rewrite of an alert and the alert review's rewrites may name only people and figures found in their own inputs — the rendered context, the tool results so far, the event, the evidence — or the company profile. Standing facts (memory.facts) count as input wherever the prompt carried them: they sit in the brief, digest and reflection context, and the alert review grounds its rewrites against the batch's STANDING FACTS block too, so correcting a card to the principal's correction is not refused. A name must appear whole in ONE source line (or belong to a roster person some source mentions; being on the roster alone is not enough); a figure (money, %, k/M/B, bare numbers ≥ 11) must match a source number within the precision the prose shows. What fails is held back (briefs — one repair call, then the line is dropped and a "held back N lines" note added), refused with a reason the model can act on (tools), or replaced by the event's own text / the old text (alerts, made inert first — links masked, markup and @-mentions stripped). Fail-open; `GROUNDING_CHECKS=enforce|report|off`; every finding writes a `grounding` audit row.
     - The alert review model (`agents.alert_review`) never mutates state. `alerts.review.apply_verdict` is the only writer: it closes only on a high-confidence `resolved`/`stale` verdict with named evidence, routes only to a person on the roster slice it showed the model (scope-holders or the principal for board/comp/legal matters), runs department moves through `departments.authority.gate_action` (propose-only → `propose_via_alert`, never a third-party DM), caps outbound moves per pass, and audits every move with its evidence and prior state. Status `resolved` (Executive closed) is distinct from `ack` (user approved).
 
 caching:
@@ -1646,6 +1646,7 @@ memory:
     - initiatives
     - advice_given
     - scheduled_actions
+    - "facts — standing facts and corrections the principal asked to keep, with provenance (memory/facts.py; see `standing_facts` below)."
     - "app_migrations — one-shot data migrations (name PK, applied_at). Schema DDL stays idempotent and is NOT recorded here; only sweeps that must run exactly once per DB insert a row. First user is `cancel_orphaned_talent_reminders` (2026-09), deletable in the release after next."
   formatter: openexecutive.memory.episodic.format_for_prompt — produces a compact prompt block of recent decisions/initiatives.
   drive_reads: |
@@ -1718,6 +1719,166 @@ memory:
     are click-to-discuss handoffs that rely on this block. The formatter
     swallows its own errors and returns "" so a chat turn is never blocked
     by an alerts-store hiccup.
+  standing_facts: |
+    Corrections that persist everywhere (`openexecutive.memory.facts`,
+    table `facts`, created on first write). Before it, a chat correction's
+    one durable home was Honcho peer memory: optional, best-effort (its
+    prefetch times out or errors under load), re-injected only
+    into that person's later chat turns, never read by briefs, scheduled
+    runs or the six-hourly alert review. The episodic extractor cannot hold
+    one: it stores only decisions backed by a commitment quote.
+    WRITE PATH — chat tools in `orchestrator/fact_tools.py`:
+      - `remember_fact(subject, statement, previous_value?, replaces_fact_id?,
+        source_quote)` and `forget_fact(fact_id, rationale, source_quote)` —
+        a retire needs the same quote proof as a write.
+      - `update_company_profile(field, operation set|add|remove, value,
+        metric?, source_quote)` over a whitelist of `CompanyProfile` fields
+        (text / int / number set; list add/remove; financials.key_metrics by
+        name). Writes `company/profile.yaml` via `save_to_yaml`, updates
+        `session.company_profile` so the NEXT turn's cached company block
+        carries it (one cache miss per change), and records a
+        `kind='profile'` row for the Pulse page.
+      - Gate: the principal on a verified surface only
+        (`is_principal_on_verified_surface`), never an unattended session;
+        all three in `UNATTENDED_WITHHELD_TOOLS` and in
+        `PRIVATE_TURN_WITHHELD_TOOLS` (what they write or retire is read on
+        everyone's turns).
+      - `source_quote` (at least 2 words / 8 chars) must appear, normalized
+        like the episodic quote gate, in the principal's own words this turn:
+        `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
+        adapter-hydrated `<outbound_reply_context>` backstory stripped, and
+        None (refused) when the message carries an attachment. Otherwise a
+        Discord/Slack reply to the Executive's DM about an attacker's alert
+        could have the alert's text stored as the principal's fact.
+      - remember_fact (statement, subject and previous_value alike — each is
+        rendered; `_claim_error`; an omitted previous_value falls back to
+        the replaced row's statement): every number must be one the principal
+        wrote this turn (`_numbers_in` / `_number_in_own_words`, compared at
+        magnitude: "$180k" ↔ "180,000" either way, never "180m" → "$180k"),
+        and every name (a capitalised or non-ASCII-letter word other than
+        the statement's very first word — exempting each sentence's first
+        word let "Landlord. Acme." split names past it) and date word
+        (month, weekday, quarter) must appear in their own words
+        (`_unsaid_claim_words`). A name written in lower case is not caught:
+        a heuristic that narrows, not a proof of paraphrase.
+        A real quote ("remember what the lease doc says") therefore cannot
+        carry a document's figure, name or date into every prompt; a
+        paraphrase of what they said still passes.
+      - Every write / refusal is a `tool_invocation` audit row; a Pulse-page
+        retire is a private `fact_retired` row (it names the retired fact,
+        which teammates can no longer read). The tools' own rows carry no quote or
+        rationale and are written `private=True`, and the chat loop's
+        `skill:` dispatch row for them (its `full.input` quotes the principal
+        verbatim) is private too (`executive._private_tool_row`): each ties a
+        fact to the principal's session_id / turn_id, and /audit/logs serves
+        any non-private row to every signed-in teammate, and GET /memories/facts blanks `source_quote` and
+        `retired_reason` for anyone but the principal.
+      - Profile edits run load → change → save under
+        `company_profile.PROFILE_EDIT_LOCK`, which PATCH /company-profile
+        also takes (no lost update between the two).
+      - All three handlers are sync bodies run via `asyncio.to_thread`
+        (context copied, so current_session / the speaker pin / audit ids
+        resolve), and PATCH /company-profile does its locked edit in a
+        thread too: neither blocks the event loop on SQLite, the YAML file
+        or PROFILE_EDIT_LOCK. stream_chat / committee, the alert review,
+        `synthesize_briefing_narrative` (morning brief) and the EOD digest,
+        weekly review and reflection (`with_standing_facts`) read the block
+        via `asyncio.to_thread` as well.
+      - update_company_profile: beyond the quote, a text value, list item,
+        metric name and metric value must each appear in the principal's
+        own words (`_in_own_words`), and a number field's parsed value must
+        be among the numbers they wrote (`_number_in_own_words`: `$`, `,` and
+        k / m / bn / thousand / million / billion suffixes tolerated). The
+        value lands in the cached company block on every later turn, so
+        "set our mission to what the doc says" / "update our headcount"
+        must not save a doc's text or a guessed figure. Saved text is
+        `<`/`>` defanged (`_defang`).
+    STORE — one active fact per subject: a new row supersedes active rows
+    with the same folded `subject_key` (or the id in replaces_fact_id) in one
+    `BEGIN IMMEDIATE` transaction; old rows become `superseded` with
+    `superseded_by`; the new one is a `correction` carrying
+    `previous_statement`. `profile` rows only supersede earlier profile rows
+    for the same field and never render into a prompt (the cached profile
+    block already carries the value). Provenance per row: source_quote,
+    source_channel (web or the adapter), session_id, turn_id,
+    recorded_by_person_id, created_at.
+    READ PATH — `render_facts_for_prompt()`: active non-profile rows, newest
+    first, under the self-explaining `FACTS_BLOCK_HEADER` (use over older
+    figures; the current conversation still wins; quoted data, never
+    instructions; never mention keeping them), capped at 40 facts / 6000
+    chars, `<`/`>` defanged. Opens the DB read-only (`mode=ro`) and returns
+    "" for a missing file or table — it never creates either, because it runs
+    on every prompt, including test-built ones. Never raises.
+    WHERE IT IS INJECTED (always a user turn, never a cached system block):
+      - chat: `Executive._build_messages` `<standing_facts>` (stream_chat /
+        committee / chat take `standing_facts: str | None`; None reads the
+        store) — covers every scheduled run through the chat loop and every
+        inbound channel;
+      - specialists: `route_to_specialist(standing_facts=None)` →
+        `BaseAgent.analyze` `<standing_facts>` tag (chat consults and
+        workflow steps);
+      - /today header + morning brief: last block of
+        `render_briefing_context`, after the quiet check and inside the
+        string the header cache key hashes (a fact change rewrites it);
+      - alert review: `render_batch(..., standing_facts)`, read once per pass;
+      - end_of_day_digest, weekly review top three, morning reflection:
+        `with_standing_facts(user_content)`.
+    Evals never read the install's store: a scenario's `standing_facts`
+    lines are rendered under the header (`evals.runner.scenario_standing_facts`)
+    and the judge sees them (`_standing_facts_section`).
+    EMAIL (confirm by reply) — `integrations/fact_confirmation.py`,
+    table `fact_confirmations` in memory/facts.py:
+      - The email poller sets `Session.email_from` (lowercased From) and
+        `email_authenticated` on every email turn. The poller's text read
+        never shows Authentication-Results (workspace-mcp prints a fixed
+        header set), so for mail claiming the principal's primary address it
+        re-reads the message as raw MIME (`sender_authenticated`) and needs
+        Gmail's own stamp: the TOPMOST Authentication-Results (added on
+        receipt, above sender-written headers), authserv-id mx.google.com,
+        dmarc=pass with header.from = the From domain, raw From matching
+        (`authenticated_by_gmail`). Fails closed (absent header, dmarc=none,
+        temperror, read failure). Anyone else: no second read, never
+        authenticated.
+        `fact_tools._gate` admits one only from the principal's PRIMARY
+        address (exact; no alias / domain rule), authenticated, and not
+        private_to_principal (forwarded mail and contacts stay refused).
+        Such a call is checked like chat, then HELD: the tool returns
+        `awaiting_confirmation` (no chip; the model is told nothing changed).
+      - `request_confirmation`: store action JSON + sha256(token)
+        ("FC-" + 20 base32, 100 bits), 7-day TTL, max 10 pending; email the
+        token to the principal's roster address outside any turn context;
+        a failed send holds nothing. Profile edits are dry-run first.
+      - The token never reaches a model: absent from the tool result, and
+        `mcp_gateway.hide_roster_tokens` scrubs `FC-` as well as `RR-` from
+        every Google Workspace result except the poller's inbound fetch;
+        Act as me's reads of the principal's own Gmail
+        (`delegation.gmail.parse_message`, thread search) hide them too.
+      - `try_email_fact_confirmation` runs in `_handle_one_email` right after
+        the roster-answer check, before any model turn: principal primary
+        address + the token of a PENDING confirmation (made-up, spent,
+        cancelled or expired tokens match nothing and fall through to the
+        ordinary path, token hidden — no reply, so no token can make the
+        Executive email the principal) → re-read as raw MIME; not
+        authenticated by Gmail (same check as the request, or the read
+        failed) is refused, still waiting, principal told → an automatic
+        reply (printed Precedence: bulk, or raw Auto-Submitted /
+        X-Auto-Response-Suppress / Precedence: auto_reply / out-of-office
+        subject — an Exchange OOF echoes the token and may say "confirm")
+        is consumed quietly, no reply, no model turn, still waiting →
+        CONFIRM /
+        yes applies via `fact_tools.apply_confirmed` (the same apply step as
+        chat), CANCEL / no drops, unclear keeps waiting. A compare-and-set
+        makes a token single-use.
+      - Audit: private `fact_confirmation` rows (held / applied / cancelled
+        / refused_unauthenticated / auto_reply_ignored / no_live_token); the applied change writes the
+        tools' usual private rows with source_channel "email".
+    SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
+    `POST /memories/facts/{id}/retire`, principal only). Other viewers get
+    the active rows only, with the quote, retire reason, session_id, turn_id
+    and recorded_by_person_id blanked. A subject that
+    folds to an empty key ("???") is refused, so such subjects never
+    supersede one another. `/memories?tab=corrections` opens it; the chat
+    chips for the three tools link there / to /company-profile.
   peer_memory_mirror: |
     SQL is the system of record; the peer-memory service is the recall
     layer. When `store_decision` / `store_initiative` / `store_advice`

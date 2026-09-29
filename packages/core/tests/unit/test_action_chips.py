@@ -340,6 +340,7 @@ def _all_registered_tool_names() -> set[str]:
     from openexecutive.orchestrator.decision_tools import DECISION_TOOL_HANDLERS
     from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_HANDLERS
     from openexecutive.orchestrator.department_tools import DEPARTMENT_TOOL_HANDLERS
+    from openexecutive.orchestrator.fact_tools import FACT_TOOL_HANDLERS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
     from openexecutive.orchestrator.open_loop_tools import OPEN_LOOP_TOOL_HANDLERS
     from openexecutive.orchestrator.people_tools import PEOPLE_TOOL_HANDLERS
@@ -353,6 +354,7 @@ def _all_registered_tool_names() -> set[str]:
         | set(OPEN_LOOP_TOOL_HANDLERS)
         | set(DEPARTMENT_TOOL_HANDLERS)
         | set(DECISION_TOOL_HANDLERS)
+        | set(FACT_TOOL_HANDLERS)
         | set(SKILL_TOOL_HANDLERS)
         | set(BROADCAST_TOOL_HANDLERS)
         | set(DRAFT_ARTIFACT_TOOL_HANDLERS)

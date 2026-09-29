@@ -336,6 +336,7 @@ def render_briefing_context(
     live_window: str = "today so far",
     now_label: str | None = None,
     reflection_flags: str = "",
+    standing_facts: str | None = None,
 ) -> str:
     """Pack the structured /today + activity inputs into a single user-turn block.
 
@@ -364,6 +365,9 @@ def render_briefing_context(
     signals) renders as its own block. ``reflection_flags`` is the morning
     reflection's "Flagged for the brief" text (quoted). With none of these
     the output is byte-identical to before they existed.
+
+    ``standing_facts`` is the STANDING FACTS block (``memory.facts``), last;
+    None reads the store, "" leaves it out.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
     now = datetime.now(UTC)
@@ -556,6 +560,17 @@ def render_briefing_context(
             else "(No org activity, proposals, or at-risk goals this period.)"
         )
 
+    # Corrections the principal asked to keep (memory/facts.py), after the
+    # quiet check so they never make a quiet day look busy. Inside the
+    # rendered context, so the /today header's cache key (a hash of this
+    # string) moves when a fact does and the header is rewritten with it.
+    if standing_facts is None:
+        from openexecutive.memory.facts import render_facts_for_prompt
+
+        standing_facts = render_facts_for_prompt()
+    if standing_facts:
+        parts.extend(["", standing_facts])
+
     return "\n".join(parts)
 
 
@@ -607,6 +622,15 @@ async def synthesize_briefing_narrative(
         system = _viewer_system_prompt(viewer["name"], viewer["role"])
     else:
         system = BRIEFING_NARRATIVE_SOLO_SYSTEM if solo else BRIEFING_NARRATIVE_SYSTEM
+    # The standing facts are a SQLite read: done off the event loop here, so
+    # the render below (which would otherwise read them itself) stays sync.
+    standing_facts: str | None = None
+    if rendered_context is None:
+        import asyncio
+
+        from openexecutive.memory.facts import render_facts_for_prompt
+
+        standing_facts = await asyncio.to_thread(render_facts_for_prompt)
     # `rendered_context` lets a caller hand in the exact block it already
     # rendered. The /today header path does, because it hashes that string as
     # its cache key — re-rendering here could quietly drift from what was
@@ -616,7 +640,7 @@ async def synthesize_briefing_narrative(
         since=since, handled=handled,
         pending_watch_suggestions=pending_watch_suggestions,
         mode=mode, live=live, live_window=live_window, now_label=now_label,
-        reflection_flags=reflection_flags,
+        reflection_flags=reflection_flags, standing_facts=standing_facts,
     )
     model = get_fast_model()
     response = await get_provider(model).messages_create(

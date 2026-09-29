@@ -586,6 +586,33 @@ def test_run_alert_review_end_to_end_with_stubbed_agent(db: Path, audit_events, 
     assert summary3.reviewed == 1 and seen_batches
 
 
+def test_run_alert_review_reads_standing_facts_from_its_own_db(
+    db: Path, monkeypatch, tmp_path: Path,
+) -> None:
+    """The batch carries the facts of the DB the review runs against, not the
+    default one."""
+    from openexecutive.agents import alert_review as agent_module
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.api.routes.today import ActivityResponse
+    from openexecutive.memory import episodic, facts
+
+    monkeypatch.setattr(episodic, "DB_PATH", tmp_path / "some_other.db")
+    facts.record_fact(subject="Units", statement="Maple House has 48 units.", source_quote="q", db_path=db)
+    _insert(db, "Maple House rent roll", hours_ago=10)
+    seen: list[str] = []
+
+    async def fake_review(self, batch_context: str) -> list[AlertVerdict]:
+        seen.append(batch_context)
+        return []
+
+    monkeypatch.setattr(agent_module.AlertReviewAgent, "review", fake_review)
+    monkeypatch.setattr(review, "_seed_outbound_session", lambda: None)
+    monkeypatch.setattr(today_route, "_build_activity",
+                        lambda limit, since=None, **_kw: ActivityResponse(items=[]))
+    asyncio.run(review.run_alert_review(now=NOW, db_path=db, settings=_settings()))
+    assert seen and "Maple House has 48 units." in seen[0]
+
+
 def test_run_alert_review_provider_failure_changes_nothing(db: Path, monkeypatch) -> None:
     from openexecutive.agents import alert_review as agent_module
 
@@ -973,6 +1000,36 @@ def test_changed_rewrite_naming_what_the_evidence_lacks_keeps_the_old_text(
     ev = next(e for e in audit_events if e[0] == review.EVENT_CHANGED)
     assert ev[2]["text_ungrounded"] == ["Marcus Lee", "40%"]
     assert ev[2]["new_headline"] is None
+
+
+def test_a_rewrite_applying_a_standing_fact_is_grounded_by_it(
+    db: Path, audit_events, monkeypatch,
+) -> None:
+    """The review is shown the principal's standing facts so it can correct a
+    card to them; the grounding check must accept a figure they hold."""
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    aid = _insert(db, "Maple House rent roll due", severity="medium")
+    alert = alert_store.get_alert(aid, db_path=db)
+    assert alert is not None
+    verdict = _verdict(aid, verdict="changed", note="rewritten",
+                       headline="Maple House rent roll due for all 48 units")
+    facts_block = "STANDING FACTS\n- [fact 1] Maple House unit count: Maple House has 48 units."
+    label = asyncio.run(review.apply_verdict(
+        alert, verdict, review.gather_evidence(alert, NOW, db_path=db), now=NOW,
+        settings=_settings(), summary=review.ReviewSummary(), db_path=db,
+        standing_facts=facts_block,
+    ))
+    assert label == "changed"
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None and row.headline == "Maple House rent roll due for all 48 units"
+    # Without the facts, the same figure is not grounded.
+    aid2 = _insert(db, "Cedar Court rent roll due", severity="medium")
+    _apply(db, aid2, _verdict(aid2, verdict="changed", note="rewritten",
+                              headline="Cedar Court rent roll due for all 48 units"))
+    row2 = alert_store.get_alert(aid2, db_path=db)
+    assert row2 is not None and row2.headline == "Cedar Court rent roll due"
 
 
 def test_ungrounded_rewrite_without_a_severity_change_changes_nothing(

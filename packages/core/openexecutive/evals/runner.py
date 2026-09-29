@@ -186,6 +186,16 @@ def scenario_workspace_mode(scenario: dict[str, Any]) -> str | None:
     return str(mode)
 
 
+def scenario_standing_facts(scenario: dict[str, Any]) -> str:
+    """The ``<standing_facts>`` body for a scenario: its ``standing_facts``
+    lines under the shared block header, or "" when it has none. Never the
+    install's own facts store, so a scenario runs the same on every machine."""
+    from openexecutive.memory.facts import FACTS_BLOCK_HEADER
+
+    lines = str(scenario.get("standing_facts") or "").strip()
+    return f"{FACTS_BLOCK_HEADER}\n{lines}" if lines else ""
+
+
 def _make_triage_runner(
     sem: asyncio.Semaphore,
     queue: asyncio.Queue[dict[str, Any] | None],
@@ -409,6 +419,10 @@ def _make_chat_runner(
                         # never fires; this is the only way to exercise how the
                         # Executive USES peer memory. None keeps chat()'s default.
                         peer_memory_context=scenario.get("peer_memory_context"),
+                        # Likewise the <standing_facts> body (memory/facts.py):
+                        # the scenario's own lines under the shared header, or
+                        # none — an eval never reads the install's facts.
+                        standing_facts=scenario_standing_facts(scenario),
                     )
                     if delegation is not None:
                         drafts = [asdict(d) for d in delegation.gmail.drafts]

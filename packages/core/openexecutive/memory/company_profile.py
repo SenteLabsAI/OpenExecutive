@@ -4,11 +4,18 @@ import contextlib
 import os
 import secrets
 import stat
+import threading
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
+
+# Held around a load → change → save of the profile by the writers that edit
+# it in place (PATCH /company-profile, the update_company_profile chat tool),
+# so two concurrent edits never silently drop one another. save_to_yaml's
+# rename already keeps the file itself whole.
+PROFILE_EDIT_LOCK = threading.Lock()
 
 
 class TargetCustomer(BaseModel):

@@ -2135,7 +2135,7 @@ wheels = [
 
 [[package]]
 name = "openexecutive"
-version = "0.4.2"
+version = "0.4.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

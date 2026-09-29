@@ -1635,8 +1635,11 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # surface; this keeps them out of the unattended toolkits altogether.
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_goal",
+    "forget_fact",
     "record_decision_outcome",
+    "remember_fact",
     "resolve_roster_request",
+    "update_company_profile",
 })
 
 
@@ -1679,6 +1682,10 @@ def unattended_withheld_error(tool_name: str) -> str:
 # - read_document: reads company documents and other downloaded files, so a
 #   contact's email must not steer it; the poller already reads that email's
 #   own attachments into the turn.
+# - remember_fact, forget_fact, update_company_profile: a standing fact (or
+#   its retirement) and the company profile are read on everyone's turns and
+#   in every brief. They also refuse any surface but the principal's verified
+#   ones, which email is not.
 # Still offered: the email, DM and invite paths reach the principal and
 # refuse anyone else (`people_tools.PRIVATE_TURN_REFUSAL`, the gateway's
 # allow-list), and an alert the turn raises is private to the principal. The
@@ -1698,8 +1705,10 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_skill",
     "delete_skill",
     "draft_artifact",
+    "forget_fact",
     "load_mcp_server",
     "read_document",
+    "remember_fact",
     "run_executive_research",
     "run_workflow",
     "save_workflow",
@@ -1707,6 +1716,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "send_company_broadcast",
     "send_department_message",
     "suggest_workflow",
+    "update_company_profile",
     "update_department_goal",
     "update_skill",
 })
