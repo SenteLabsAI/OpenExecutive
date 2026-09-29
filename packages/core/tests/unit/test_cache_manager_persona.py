@@ -23,12 +23,25 @@ def _isolate_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_persona_includes_exec_email_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "ceo.test@example.com")
-    blocks = build_system_blocks()
+    blocks = build_system_blocks(mcp_servers=("google_workspace",))
     persona_text = blocks[0]["text"]
     assert "ceo.test@example.com" in persona_text
     assert "## Your Identity" in persona_text
-    assert "Never ask the user which address to send from" in persona_text
+    assert "never ask the user which address to send from" in persona_text
     assert "This mailbox belongs to you" in persona_text
+
+
+def test_google_account_guidance_only_when_google_is_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "ceo.test@example.com")
+    persona_text = build_system_blocks()[0]["text"]
+    # Name and address stay; the Google how-to does not, and nothing claims
+    # Gmail or Drive access that isn't there.
+    assert "This mailbox belongs to you" in persona_text
+    assert "which address to send from" not in persona_text
+    assert "When using Gmail" not in persona_text
+    assert "Google Workspace: not connected" in persona_text
 
 
 def test_persona_uses_default_when_no_override() -> None:

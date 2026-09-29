@@ -121,7 +121,13 @@ caching:
         override, which wins as-is in either mode +
         {VOICE_PERSONA} substitution + conditional WEB_SEARCH_ADDENDUM and
         MCP_ADDENDUM + identity addendum (exec name/email, impersonation
-        guard) + DELEGATION_ADDENDUM (Act as me — a constant, only while
+        guard) + Connected Systems section (prompts/connected_systems.py:
+        Google Workspace on/off from the running gateway's server_names, and
+        when on the own-account guidance plus the pinned GOOGLE_TOOL_MANIFEST
+        names to call directly; other MCP servers by name; Slack / Discord /
+        Telegram / Google Chat on/off; Notion sync; a constant Act as me line
+        pointing at DELEGATION_ADDENDUM — all process-stable and sorted) +
+        DELEGATION_ADDENDUM (Act as me — a constant, only while
         anyone on the install has it on) + timezone addendum +
         KNOWLEDGE_INDEX_SUMMARY.
         The timezone addendum names the user's zone from
@@ -5711,6 +5717,26 @@ integrations:
     servers as tools available to the Executive (Gmail, Calendar, Drive, …).
     The MCP is configured via company/mcp_servers.json (workspace-mcp at
     --tool-tier complete to expose the full Google Workspace tool surface).
+
+    Telling the model what is connected (F004, F009): configured_server_names()
+    used to feed only the setup checks and the boot log, while the identity
+    addendum named Gmail and Drive unconditionally, and search_tools (an
+    uncached proxy; prior turns replay as plain text) was how the model found
+    tool names — so it rediscovered them on most turns and, on an empty result,
+    said it could not see Gmail. Now MCPGateway.start() records server_names,
+    and block 0 carries a Connected Systems section built from them
+    (prompts/connected_systems.render_connected_systems) with the Google tool
+    names pinned by service (GOOGLE_TOOL_MANIFEST, checked against
+    workspace-mcp 1.29.0 — re-check on a bump). extensible-mcp's
+    DiscoveredToolsFilter runs only tools one of the session's searches
+    returned and keeps them for the session's life, so the lifespan runs
+    MCPGateway.prime_pinned_tools() once in the background when
+    google_workspace is configured (exact-name searches; misses logged as
+    drift), and call_tool retries a PINNED name once after discovering it when
+    the reply is extensible-mcp's "has not been discovered via search_tools"
+    refusal — after every gate has passed the same arguments. Unpinned tools
+    still need the model's own search; nothing here widens what a call may do
+    (gates and PRIVATE_TURN_MCP_TOOLS unchanged).
 
     workspace-mcp hosting: that google_workspace server runs CO-LOCATED inside the
     API as a stdio child of the gateway — NOT a separate service. This fits the
