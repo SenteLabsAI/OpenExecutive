@@ -1591,6 +1591,39 @@ memory:
     - scheduled_actions
     - "app_migrations — one-shot data migrations (name PK, applied_at). Schema DDL stays idempotent and is NOT recorded here; only sweeps that must run exactly once per DB insert a row. First user is `cancel_orphaned_talent_reminders` (2026-09), deletable in the release after next."
   formatter: openexecutive.memory.episodic.format_for_prompt — produces a compact prompt block of recent decisions/initiatives.
+  drive_reads: |
+    memory.drive_reads keeps what a conversation has seen of Google Drive,
+    which is otherwise reached only as live Google Workspace calls inside a
+    turn and lost once history keeps only prose. MCPGateway.call_tool hands
+    every search_drive_files / get_drive_file_content result (workspace-mcp
+    1.29.0 text shapes; errors and refusals record nothing) to
+    record_drive_result when drive_reads.may_remember(session) holds: a bound
+    current_session with a rostered caller_person_id, not private_to_principal,
+    and not a turn that touched the speaker's own mailbox (Act as me).
+    Workflow steps and other session-less callers keep nothing. Rows are keyed
+    (session_id, person_id) and rendered only to that speaker, because one
+    session id spans several people on email / Slack / Discord threads.
+    Tables session_drive_files ((session_id, person_id, file_id) PK; name,
+    mime_type, link, summary = first 600 chars of an opened file, opened,
+    found_by query) and session_drive_searches (person_id, query,
+    result_count) are created on first write, not in initialize_db; readers
+    treat a missing table as empty. Pruned on write to 100 files and 100
+    searches per speaker per session. workspace-mcp interpolates names
+    unescaped, so a name with a newline can forge a search-result line: only
+    a Drive-shaped id ([A-Za-z0-9_-]), a type/subtype mime and a
+    docs|drive.google.com https link are kept (else the line is dropped or
+    the link blanked); the name is always rendered quoted.
+    format_drive_memory renders the 20 most recent files and the queries that
+    matched nothing (dropped once the same query later matches) into a
+    <drive_memory> block in the user turn (Executive._build_messages, so the
+    committee path too), never a cached system block. Names and text are
+    Drive content an outsider can write: quoted, "<" neutralised so they
+    cannot close the tag, and labelled data, not instructions. A search that
+    matched nothing also gets empty_search_note appended to its tool result
+    (report the exact query; never say the file does not exist).
+    session_store.delete_session drops the rows. First step only: Drive is
+    still not synced into the company collection (the Notion sync is the
+    pattern for that).
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking

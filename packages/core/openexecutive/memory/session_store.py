@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from openexecutive.memory.drive_reads import delete_session_drive_memory
 from openexecutive.memory.episodic import DB_PATH, _get_conn
 
 
@@ -194,7 +195,9 @@ def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
     with _get_conn(db_path) as conn:
         conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
         cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    delete_session_drive_memory(session_id, db_path)
+    return deleted
 
 
 def get_session_metadata(session_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | None:

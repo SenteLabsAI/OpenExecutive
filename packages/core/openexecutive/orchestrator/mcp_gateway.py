@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openexecutive.config import get_settings, mcp_config_file_present
+from openexecutive.memory import drive_reads
 from openexecutive.people.identity import RosterAllow
 from openexecutive.utils.html_tags import strip_tags
 
@@ -1367,6 +1368,32 @@ def _record_email_outbound_context(arguments: dict[str, Any]) -> None:
 _UNDISCOVERED_MARKER = "has not been discovered via search_tools"
 
 
+def _remember_drive_read(tool_name: str, arguments: dict[str, Any], result_text: str) -> str:
+    """Keep what a Drive read showed for the rest of the conversation
+    (``memory.drive_reads``), and return the result the model sees: a search
+    that matched nothing gains a note to report the query rather than
+    conclude the file does not exist.
+
+    Records only for a rostered speaker in a live session (``current_session``
+    set), so a workflow step keeps nothing, and never on a turn private to the
+    principal or one that touched the speaker's own mailbox (Act as me).
+    Best-effort: a store failure never costs the model the result it asked
+    for."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if drive_reads.may_remember(session):
+        try:
+            drive_reads.record_drive_result(
+                session.session_id, session.caller_person_id, tool_name, arguments, result_text
+            )
+        except Exception:
+            logger.exception("drive_reads: failed to record %s result", tool_name)
+    if drive_reads.is_empty_search(tool_name, result_text):
+        result_text += drive_reads.empty_search_note(arguments)
+    return result_text
+
+
 def _is_undiscovered_refusal(tool_name: object, result_text: object) -> bool:
     """Whether the gateway refused a pinned Google tool only because this
     session had not discovered it yet. Pinned names only: any other tool
@@ -1633,6 +1660,8 @@ class MCPGateway:
             and not _reveal_tokens.get()
         ):
             result_text = hide_roster_tokens(result_text)
+        if tool_name in drive_reads.DRIVE_READ_TOOLS:
+            result_text = _remember_drive_read(tool_name, arguments, result_text)
         # Record an outbound-context linkage only for a genuinely-sent email.
         # The send tool returns its outcome as text; a soft-error payload
         # (`{"error": ...}`) means nothing was sent, so skip it to avoid a

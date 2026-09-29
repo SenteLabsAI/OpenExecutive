@@ -342,6 +342,21 @@ def _tool_error_result(tool_name: str, exc: BaseException) -> str:
     )
 
 
+def _drive_memory_block(session: Session, person_id: int | None) -> str:
+    """The speaker's ``<drive_memory>`` body for this session, or "": only
+    their own reads, none on a turn that may not keep them, and a store
+    failure never blocks the turn."""
+    from openexecutive.memory.drive_reads import format_drive_memory, may_remember
+
+    try:
+        if person_id is None or person_id != session.caller_person_id or not may_remember(session):
+            return ""
+        return format_drive_memory(session.session_id, person_id)
+    except Exception:
+        logger.exception("drive_reads: failed to load drive memory")
+        return ""
+
+
 def _build_current_speaker_block(person_id: int | None) -> str | None:
     """Render the body of a <current_speaker> hint naming who is in the room.
 
@@ -684,6 +699,15 @@ class Executive:
                     "type": "text",
                     "text": f"<retrieved_context>\n{retrieved_context}\n</retrieved_context>",
                 }
+            )
+        # The Drive files this conversation already found or opened, and the
+        # searches that matched nothing (memory.drive_reads), so "the file you
+        # found earlier" resolves after history has kept only the prose.
+        # Per session, so the user turn — never a cached system block.
+        drive_memory = _drive_memory_block(session, person_id)
+        if drive_memory:
+            user_content_parts.append(
+                {"type": "text", "text": f"<drive_memory>\n{drive_memory}\n</drive_memory>"}
             )
 
         # Attachment blocks (images) are inserted before the text message so
