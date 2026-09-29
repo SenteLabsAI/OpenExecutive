@@ -113,6 +113,18 @@ def test_profile_rows_never_supersede_facts_and_never_render() -> None:
     assert "We are 40 people." in rendered and "Headcount set to 42" not in rendered
 
 
+@pytest.mark.parametrize("subject", ["???", "—", " - "])
+def test_a_subject_with_no_letters_or_digits_is_refused(subject: str) -> None:
+    with pytest.raises(ValueError, match="letter or digit"):
+        facts.record_fact(subject=subject, statement="x", source_quote="q")
+
+
+def test_remember_fact_refuses_a_subject_with_no_letters(principal: SimpleNamespace) -> None:
+    out = _call(fact_tools.handle_remember_fact, subject="???",
+                statement="St. Albans has 48 units.", source_quote="St. Albans is 48 units")
+    assert "letter or digit" in out["error"]
+
+
 def test_retire_drops_it_from_every_prompt() -> None:
     row, _ = facts.record_fact(subject="Office", statement="The office moved to Leeds.", source_quote="q")
     assert "Leeds" in facts.render_facts_for_prompt()

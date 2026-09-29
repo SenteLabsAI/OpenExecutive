@@ -150,13 +150,17 @@ def get_facts(
     (``memory.facts``), newest first — with their replaced and retired
     history unless ``include_inactive=false`` — and the company-profile
     fields changed from chat. Every prompt that produces output reads the
-    active ones.
+    active ones. The history is the principal's alone: anyone else gets the
+    active rows only.
 
     The facts themselves are company knowledge every conversation already
     sees; the provenance quote and a retire reason are the principal's own
     words and are shown to the principal only."""
     principal = _caller_is_principal(request)
-    rows = list_facts(include_inactive=include_inactive, limit=limit)
+    # A teammate sees only what is in force: a fact the principal retired or
+    # replaced (perhaps because it was wrong or too sensitive) no longer
+    # renders anywhere, so its text is not theirs to read either.
+    rows = list_facts(include_inactive=include_inactive and principal, limit=limit)
     if not principal:
         rows = [f.model_copy(update={"source_quote": "", "retired_reason": ""}) for f in rows]
     return FactsPage(facts=rows, can_retire=principal)

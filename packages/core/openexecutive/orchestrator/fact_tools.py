@@ -408,6 +408,8 @@ def _remember_fact(tool_input: dict[str, Any]) -> str:
         return _bad(tool, "subject is required (a short label, e.g. 'St. Albans unit count')")
     if not statement:
         return _bad(tool, "statement is required (the fact as it now stands, one sentence)")
+    if not facts.subject_key(subject):
+        return _bad(tool, "subject needs at least one letter or digit (e.g. 'St. Albans unit count')")
     if len(subject) > facts.SUBJECT_MAX:
         return _bad(tool, f"subject must be at most {facts.SUBJECT_MAX} characters")
     if len(statement) > facts.STATEMENT_MAX:

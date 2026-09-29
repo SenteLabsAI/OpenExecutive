@@ -62,7 +62,9 @@ def test_a_teammate_sees_the_facts_but_not_the_principals_words(monkeypatch: pyt
     body = _client(monkeypatch, principal=False).get("/memories/facts").json()
     assert body["can_retire"] is False
     assert body["facts"] and all(f["source_quote"] == "" for f in body["facts"])
-    assert all(f["retired_reason"] == "" for f in body["facts"])
+    # Only what is in force: no retired or replaced text, whatever is asked.
+    assert all(f["status"] == "active" for f in body["facts"])
+    assert "52 units" not in str(body) and "48 units" not in str(body)
     mine = _client(monkeypatch, principal=True).get("/memories/facts").json()
     assert any(f["retired_reason"] == "annex sold, keep quiet" for f in mine["facts"])
 

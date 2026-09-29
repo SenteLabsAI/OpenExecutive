@@ -182,6 +182,10 @@ def record_fact(
     if not subject or not statement:
         raise ValueError("subject and statement are required")
     key = subject_key(subject)
+    if not key:
+        # "???" or "—" folds to "", and every such subject would share one
+        # key: recording a second would silently supersede the first.
+        raise ValueError("subject needs at least one letter or digit")
     now = datetime.now(UTC).isoformat()
     with _conn(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
