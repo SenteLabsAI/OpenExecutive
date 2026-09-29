@@ -34,6 +34,10 @@ def isolated_people_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "people.db"
     monkeypatch.setattr(people_store, "DB_PATH", db_path)
     people_store.initialize_db()
+    # The poller audits every inbound; unpatched, those rows create a stray
+    # ./episodic_memory.db (no workflow_runs table) that later tests reading
+    # the default DB trip over (CLAUDE.md, "Audit-log test pollution").
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **kw: None)
     return db_path
 
 
