@@ -265,6 +265,38 @@ def test_an_unclear_reply_keeps_it_waiting(monkeypatch: pytest.MonkeyPatch, gate
     assert "couldn't tell" in _sent(gateway)[0]["body"]
 
 
+@pytest.mark.parametrize(
+    ("text", "decision"),
+    [
+        ("Confirm, no rush", "confirm"),
+        ("Yes — no changes to the wording", "confirm"),
+        ("> CONFIRM", "confirm"),
+        ("No, don't. It's 52.", "cancel"),
+        ("Cancel — yes, I changed my mind", "cancel"),
+        ("Thanks, please confirm it", "confirm"),
+        ("Thanks — yes, but no, wait", ""),
+        ("hmm, let me think", ""),
+    ],
+)
+def test_the_opening_word_decides_a_mixed_reply(text: str, decision: str) -> None:
+    assert fc._decision(text) == decision
+
+
+def test_a_confirmation_that_fails_to_apply_is_reported(
+    monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock,
+) -> None:
+    token = _held_token(monkeypatch, gateway)
+
+    def boom(_action: dict[str, Any]) -> str:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(fact_tools, "apply_confirmed", boom)
+    assert _answer(_reply(token, "CONFIRM")) is True
+    assert facts.list_facts(include_inactive=True) == []
+    [told] = _sent(gateway)
+    assert told["body"].startswith("I couldn't apply it") and "Maple House has 48 units." in told["body"]
+
+
 def test_a_reply_from_anyone_else_is_not_an_answer(
     monkeypatch: pytest.MonkeyPatch, gateway: AsyncMock,
 ) -> None:

@@ -262,8 +262,15 @@ async def request_confirmation(action: dict[str, Any], summary: str) -> str | No
 
 
 def _decision(text: str) -> str:
-    """"confirm", "cancel" or "" (unclear) from the principal's reply."""
+    """"confirm", "cancel" or "" (unclear) from the principal's reply. A
+    reply that opens with a confirm or cancel word is decided by it ("Confirm,
+    no rush" confirms); otherwise it must hold words of one kind only."""
     words = text[:400]
+    opening = words.lstrip(" \t\r\n>*_-\"'")[:20]
+    if _CONFIRM_WORDS.match(opening):
+        return "confirm"
+    if _CANCEL_WORDS.match(opening):
+        return "cancel"
     yes, no = bool(_CONFIRM_WORDS.search(words)), bool(_CANCEL_WORDS.search(words))
     if yes and not no:
         return "confirm"
@@ -371,7 +378,13 @@ async def try_email_fact_confirmation(
                {"confirmation_id": conf.id, "status": "cancelled"})
         await _reply(principal, f"Cancelled. Nothing changed:\n\n  {conf.summary}")
         return True
-    result = await asyncio.to_thread(apply_confirmed, conf.action)
+    try:
+        result = await asyncio.to_thread(apply_confirmed, conf.action)
+    except Exception:
+        # The token is already spent: say so rather than leave the principal
+        # thinking it is still waiting, or done.
+        logger.exception("fact_confirmation: applying confirmation %s failed", conf.id)
+        result = json.dumps({"error": "something went wrong applying it; ask me again or make the change in the web app"})
     applied = _applied(result)
     _audit(
         "The principal confirmed an emailed change",
