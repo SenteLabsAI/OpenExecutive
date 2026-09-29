@@ -1594,8 +1594,8 @@ memory:
   standing_facts: |
     Corrections that persist everywhere (`openexecutive.memory.facts`,
     table `facts`, created on first write). Before it, a chat correction's
-    one durable home was Honcho peer memory: optional, best-effort (one
-    tenant logged 5 timeouts and 4 errors on the prefetch), re-injected only
+    one durable home was Honcho peer memory: optional, best-effort (its
+    prefetch times out or errors under load), re-injected only
     into that person's later chat turns, never read by briefs, scheduled
     runs or the six-hourly alert review. The episodic extractor cannot hold
     one: it stores only decisions backed by a commitment quote.
@@ -1627,7 +1627,7 @@ memory:
         magnitude: "$180k" ↔ "180,000" either way, never "180m" → "$180k"),
         and every name (a capitalised or non-ASCII-letter word other than
         the statement's very first word — exempting each sentence's first
-        word let "Landlord. Harbourline." split names past it) and date word
+        word let "Landlord. Acme." split names past it) and date word
         (month, weekday, quarter) must appear in their own words
         (`_unsaid_claim_words`). A name written in lower case is not caught:
         a heuristic that narrows, not a proof of paraphrase.

@@ -35,9 +35,9 @@ def _client(monkeypatch: pytest.MonkeyPatch, *, principal: bool) -> TestClient:
 
 
 def _seed() -> tuple[int, int, int]:
-    old, _ = facts.record_fact(subject="Units", statement="St. Albans has 52 units.", source_quote="52")
-    new, _ = facts.record_fact(subject="Units", statement="St. Albans has 48 units.",
-                               source_quote="St. Albans is 48 units, not 52", source_channel="web",
+    old, _ = facts.record_fact(subject="Units", statement="Maple House has 52 units.", source_quote="52")
+    new, _ = facts.record_fact(subject="Units", statement="Maple House has 48 units.",
+                               source_quote="Maple House is 48 units, not 52", source_channel="web",
                                session_id="s-principal", turn_id="t-1", recorded_by_person_id=1)
     prof, _ = facts.record_fact(kind="profile", subject="Company profile — Headcount",
                                 statement="Headcount set to 42", source_quote="we're 42 now")
@@ -51,7 +51,7 @@ def test_the_principal_sees_everything_with_history(monkeypatch: pytest.MonkeyPa
     by_id = {f["id"]: f for f in body["facts"]}
     assert set(by_id) == {old, new, prof}
     assert by_id[new]["kind"] == "correction" and by_id[new]["status"] == "active"
-    assert by_id[new]["source_quote"] == "St. Albans is 48 units, not 52"
+    assert by_id[new]["source_quote"] == "Maple House is 48 units, not 52"
     assert by_id[new]["session_id"] == "s-principal" and by_id[new]["recorded_by_person_id"] == 1
     assert by_id[old]["status"] == "superseded" and by_id[old]["superseded_by"] == new
     active = _client(monkeypatch, principal=True).get("/memories/facts?include_inactive=false").json()
@@ -97,6 +97,6 @@ def test_a_teammate_never_gets_the_principals_session_or_turn(monkeypatch: pytes
     _, new, _ = _seed()
     body = _client(monkeypatch, principal=False).get("/memories/facts").json()
     row = next(f for f in body["facts"] if f["id"] == new)
-    assert row["statement"] == "St. Albans has 48 units." and row["status"] == "active"
+    assert row["statement"] == "Maple House has 48 units." and row["status"] == "active"
     assert row["session_id"] is None and row["turn_id"] is None
     assert row["recorded_by_person_id"] is None and row["source_quote"] == ""

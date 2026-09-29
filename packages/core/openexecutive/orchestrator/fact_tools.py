@@ -55,8 +55,8 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
         "holds everywhere from now on — every later conversation, the briefs, "
         "scheduled runs and the alert review all see it. Call it when the "
         "principal corrects a figure, name, date or status you or a document got "
-        "wrong ('St. Albans is 48 units, not 52'), or states one they clearly "
-        "want kept ('remember that Riverside Court is fully let'). One fact per "
+        "wrong ('Maple House is 48 units, not 52'), or states one they clearly "
+        "want kept ('remember that Cedar Court is fully let'). One fact per "
         "call. A correction of a fact already listed under STANDING FACTS passes "
         "its id as replaces_fact_id; the same subject also replaces the old one. "
         "Only for facts about the business — never someone's pay, health, "
@@ -76,12 +76,12 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "A short, stable label for what the fact is about, e.g. "
-                    "'St. Albans unit count'. Reuse the listed subject when correcting."
+                    "'Maple House unit count'. Reuse the listed subject when correcting."
                 ),
             },
             "statement": {
                 "type": "string",
-                "description": "The fact as it now stands, one sentence, e.g. 'St. Albans has 48 units.'",
+                "description": "The fact as it now stands, one sentence, e.g. 'Maple House has 48 units.'",
             },
             "previous_value": {
                 "type": "string",
@@ -380,7 +380,7 @@ _DATE_WORDS = frozenset({
     "wednesday", "thursday", "friday", "saturday", "sunday", "q1", "q2", "q3", "q4",
 })
 # Any letter, not only ASCII: a name that opens with a look-alike capital
-# ("Ηarbourline", a Greek Eta) must still read as a word.
+# ("Αcme", a Greek Alpha) must still read as a word.
 _WORD = re.compile(r"[^\W\d_][\w&'’-]*")
 
 
@@ -390,7 +390,7 @@ def _bare(word: str) -> str:
 
 def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
     """The names and date words in ``statement`` the principal did not write
-    this turn. A figure-free claim carried in from a document ("Riverside's
+    this turn. A figure-free claim carried in from a document ("Cedar Court's
     lease expires in March" after "remember what the lease doc says") names
     something they never said; a paraphrase of what they did say does not.
 
@@ -398,7 +398,7 @@ def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
     look-alike capital cannot hide one). Only the statement's very first word
     is exempt, being capitalised by grammar (a date word never is): exempting
     every sentence's first word would let a steered model split a document's
-    names into one-word sentences ("Riverside's landlord. Harbourline.").
+    names into one-word sentences ("Cedar Court's landlord. Acme.").
     A statement is one fact, so a second sentence gets no such allowance. A
     name the model writes in lower case is not caught — the gate narrows
     what a real quote can carry in, it does not prove a paraphrase."""
@@ -471,11 +471,11 @@ def _remember_fact(tool_input: dict[str, Any]) -> str:
     quote = _text(tool_input, "source_quote")
     previous = _text(tool_input, "previous_value")
     if not subject:
-        return _bad(tool, "subject is required (a short label, e.g. 'St. Albans unit count')")
+        return _bad(tool, "subject is required (a short label, e.g. 'Maple House unit count')")
     if not statement:
         return _bad(tool, "statement is required (the fact as it now stands, one sentence)")
     if not facts.subject_key(subject):
-        return _bad(tool, "subject needs at least one letter or digit (e.g. 'St. Albans unit count')")
+        return _bad(tool, "subject needs at least one letter or digit (e.g. 'Maple House unit count')")
     if len(subject) > facts.SUBJECT_MAX:
         return _bad(tool, f"subject must be at most {facts.SUBJECT_MAX} characters")
     if len(statement) > facts.STATEMENT_MAX:

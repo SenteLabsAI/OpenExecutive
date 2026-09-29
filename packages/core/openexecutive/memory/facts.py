@@ -1,6 +1,6 @@
 """Standing facts: corrections and facts the principal stated, with provenance.
 
-Before this store a chat correction ("St. Albans is 48 units, not 52") had
+Before this store a chat correction ("Maple House is 48 units, not 52") had
 one durable home, Honcho peer memory: optional, best-effort, re-injected only
 into that person's later chat turns, and never read by the briefs, the
 scheduled runs or the alert review. Structured episodic memory cannot hold it
@@ -122,7 +122,7 @@ def _conn(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, No
 
 def subject_key(subject: str) -> str:
     """Match key for "the same subject": case, punctuation and spacing folded,
-    so "St. Albans unit count" and "st albans  unit-count" collide."""
+    so "Maple House unit count" and "maple house  unit-count" collide."""
     folded = re.sub(r"[^\w]+", " ", subject.casefold())
     return " ".join(folded.split())
 
