@@ -944,9 +944,9 @@ def test_solo_morning_brief_carries_the_due_items(
     monkeypatch.setattr(brief_state, "handled_since", lambda since, limit=20: [])
     monkeypatch.setattr(brief_state, "pending_watch_suggestions", lambda: 0)
     monkeypatch.setattr(today_route, "_build_today",
-                        lambda: TodayResponse(departments=[], people=[], proposals=[]))
+                        lambda **_kw: TodayResponse(departments=[], people=[], proposals=[]))
     monkeypatch.setattr(today_route, "_build_activity",
-                        lambda limit, since=None: ActivityResponse(items=[]))
+                        lambda limit, since=None, **_kw: ActivityResponse(items=[]))
 
     async def _drain(mode: str) -> None:
         captured.clear()

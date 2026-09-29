@@ -82,6 +82,50 @@ _ALERT_SWEEP_INTERVAL = timedelta(minutes=15)
 _last_alert_sweep_at: datetime | None = None
 
 
+# The /today header's precompute (api.routes.today.refresh_principal_
+# narrative). Throttled inside the tick loop like the sweep; the regeneration
+# itself runs as its own task so a slow model call never holds the tick.
+_last_narrative_refresh_at: datetime | None = None
+_narrative_task: asyncio.Task[bool] | None = None
+
+
+def _maybe_refresh_narrative(now: datetime) -> bool:
+    """Start a principal-header refresh when the interval has elapsed and it
+    is daytime locally. True when one was started. Never raises."""
+    global _last_narrative_refresh_at, _narrative_task
+    try:
+        from openexecutive.config import get_settings
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        s = get_settings()
+        minutes = int(s.briefing_narrative_refresh_minutes)
+        if minutes <= 0:
+            return False
+        if (
+            _last_narrative_refresh_at is not None
+            and now - _last_narrative_refresh_at < timedelta(minutes=minutes)
+        ):
+            return False
+        if _narrative_task is not None and not _narrative_task.done():
+            return False
+        local_hour = now.astimezone(get_user_timezone()).hour
+        if not (
+            int(s.briefing_narrative_refresh_start_hour)
+            <= local_hour
+            < int(s.briefing_narrative_refresh_end_hour)
+        ):
+            return False
+        _last_narrative_refresh_at = now
+        from openexecutive.api.routes.today import refresh_principal_narrative
+
+        with unscoped_audit_rows():
+            _narrative_task = asyncio.create_task(refresh_principal_narrative())
+        return True
+    except Exception:
+        logger.exception("scheduler: narrative refresh failed to start")
+        return False
+
+
 def _maybe_sweep_alerts(now: datetime) -> int:
     """Run the expiry sweep if the interval has elapsed. Returns rows expired.
 
@@ -230,6 +274,7 @@ async def run_scheduler(
                 _beat("rotating")
                 await asyncio.sleep(poll_interval_seconds)
                 continue
+            _maybe_refresh_narrative(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))
@@ -1851,6 +1896,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         complete_run,
         create_run,
         fail_run,
+        stored_artifact,
     )
 
     assert action.id is not None
@@ -1889,16 +1935,30 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         artifact = ""
         fingerprint: str | None = None
         suppressed = False
-        async for event in workflow.run(inputs=wf_inputs, store=store):
-            event = ensure_workflow_event(event, site="scheduler.principal_brief")
-            if event.type == "artifact" and event.content:
-                artifact = event.content
-            elif event.type == "result" and event.data and event.data.get("brief_fingerprint"):
-                fingerprint = str(event.data["brief_fingerprint"])
-                suppressed = bool(event.data.get("suppressed"))
-            elif event.type == "error" and event.message:
-                raise RuntimeError(event.message)
-        complete_run(run_id, artifact or "(no artifact)")
+        private_to_principal = False
+        # This run goes to the principal alone, so the brief may read what is
+        # private to them (morning_brief.PRINCIPAL_DELIVERY).
+        from openexecutive.workflows.morning_brief import PRINCIPAL_DELIVERY
+
+        delivery_token = PRINCIPAL_DELIVERY.set(True)
+        try:
+            async for event in workflow.run(inputs=wf_inputs, store=store):
+                event = ensure_workflow_event(event, site="scheduler.principal_brief")
+                if event.type == "artifact" and event.content:
+                    artifact = event.content
+                elif event.type == "result" and event.data and event.data.get("brief_fingerprint"):
+                    fingerprint = str(event.data["brief_fingerprint"])
+                    suppressed = bool(event.data.get("suppressed"))
+                    private_to_principal = bool(event.data.get("private_to_principal"))
+                elif event.type == "error" and event.message:
+                    raise RuntimeError(event.message)
+        finally:
+            PRINCIPAL_DELIVERY.reset(delivery_token)
+        complete_run(
+            run_id,
+            stored_artifact(artifact, private_to_principal=private_to_principal)
+            or "(no artifact)",
+        )
 
         if not artifact:
             brief_state.record_delivery_outcome(kind, reason="not_written", channel=None)

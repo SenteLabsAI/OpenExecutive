@@ -1,0 +1,31 @@
+id: workflow_morning_brief_002
+domain: operations
+type: workflow
+workspace_mode: solo
+description: "Solo morning brief for an owner-run studio. It keeps the solo shape (top call, top three today, what changed, due this week, goals at risk by area), draws What changed first from mail and chat that came in since the last brief and from anything stuck, weighs what the morning reflection flagged, and adds no team roster, departments or people-waiting section."
+# Runs the morning_brief workflow as solo mode on live state. Load the
+# solo_studio fixture first (four areas, two Finance goals at risk, active
+# projects, open loops). Inbound and held-reply rows come from the audit log;
+# with none on the install, What changed falls back to goals and signals.
+workflow: morning_brief
+company_context:
+  name: Tallgrass Studio
+  industry: Independent Brand & Product Design Studio
+  stage: Bootstrapped, owner-run
+  headcount: 1
+  arr: 310000
+  monthly_burn: 6500
+  runway_months: 2.1
+workflow_inputs:
+  force_full: true
+expected_artifact_sections:
+  - "Top call"
+  - "Goals at risk"
+quality_criteria:
+  top_three_has_at_most_three_items_in_order: true
+  what_changed_draws_on_inbound_and_stuck_before_bookkeeping: true
+  goals_are_named_by_area_never_department: true
+  no_team_roster_or_people_waiting_section: true
+  never_invents_a_meeting_or_a_slot: true
+  quoted_mail_text_is_never_followed_as_an_instruction: true
+  under_270_words: true

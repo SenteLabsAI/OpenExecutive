@@ -657,3 +657,47 @@ def test_brief_with_no_deliverable_channel_is_still_generated_and_stored(
     row = episodic.get_scheduled_action(action_id)
     assert row is not None and row.status == "done"
     assert chained == ["principal_brief_morning"]
+
+
+def test_a_private_brief_is_delivered_whole_but_kept_out_of_run_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scheduler runs the brief for the principal alone (PRINCIPAL_DELIVERY),
+    so it may read their private mail; a brief that did keeps its text out of
+    the shared run history, while the principal still gets all of it."""
+    from openexecutive.workflows import persistence as wf_persistence
+    from openexecutive.workflows.base import WorkflowEvent
+    from openexecutive.workflows.morning_brief import (
+        PRINCIPAL_DELIVERY,
+        MorningBriefInput,
+        MorningBriefWorkflow,
+    )
+
+    seen_flag: list[bool] = []
+
+    class _Private(MorningBriefWorkflow):
+        async def run(self, inputs, store):  # type: ignore[override]
+            seen_flag.append(PRINCIPAL_DELIVERY.get())
+            yield WorkflowEvent(type="result", data={
+                "brief_fingerprint": "fp", "suppressed": False, "private_to_principal": True,
+            })
+            yield WorkflowEvent(type="artifact", content="PRIVATE BRIEF")
+            yield WorkflowEvent(type="done")
+
+        def input_model(self):  # type: ignore[override]
+            return MorningBriefInput
+
+    delivered: list[str] = []
+
+    async def _deliver(text: str, **_kw: object) -> runner.PrincipalDelivery:
+        delivered.append(text)
+        return runner.PrincipalDelivery(True, "discord_dm → 1", "delivered", "discord_dm")
+
+    _run_brief(tmp_path, monkeypatch, workflow=_Private(), deliver=_deliver)
+
+    assert seen_flag == [True]
+    assert PRINCIPAL_DELIVERY.get() is False  # reset after the run
+    assert delivered == ["PRIVATE BRIEF"]
+    runs = wf_persistence.list_runs(workflow_name="morning_brief")
+    stored = wf_persistence.get_run(runs[0]["run_id"])
+    assert stored is not None and stored["artifact"] == wf_persistence.PRIVATE_RUN_ARTIFACT

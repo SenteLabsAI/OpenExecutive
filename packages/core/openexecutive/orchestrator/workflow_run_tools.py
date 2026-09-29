@@ -327,6 +327,7 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
         complete_run,
         create_run,
         fail_run,
+        stored_artifact,
     )
     from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
@@ -395,6 +396,7 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
 
     artifact = ""
     last_error = ""
+    private_to_principal = False
     awaiting: dict[str, Any] | None = None
     try:
         async for event in workflow.run(inputs=wf_inputs, store=store):
@@ -425,6 +427,8 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
                 break
             if event.type == "artifact" and event.content:
                 artifact = event.content
+            elif event.type == "result" and event.data and event.data.get("private_to_principal"):
+                private_to_principal = True
             elif event.type == "error" and event.message:
                 last_error = event.message
     except Exception as exc:
@@ -470,7 +474,11 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
         return json.dumps({"error": f"workflow error: {msg}", "run_id": run_id})
 
     with contextlib.suppress(Exception):
-        complete_run(run_id, artifact)
+        # The artifact still comes back into this (the principal's own) turn;
+        # only the shared run history leaves out a private one.
+        complete_run(
+            run_id, stored_artifact(artifact, private_to_principal=private_to_principal)
+        )
     _audit(
         "run_workflow", "write", True,
         f"run_workflow {name} ok run_id={run_id}",

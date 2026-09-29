@@ -409,6 +409,12 @@ class TodayResponse(BaseModel):
     # from `briefing.narrative_cache` and regenerated off the hot path. None
     # until the first background generation has run (or on a cold cache).
     narrative: str | None = None
+    # When the served narrative was written (ISO-8601 UTC), and whether a
+    # fresher one is being written right now. The UI shows "Updated …" from
+    # the first and re-polls /today while the second is true, so a new
+    # narrative lands without a reload. Additive; None / False on a cold cache.
+    narrative_generated_at: str | None = None
+    narrative_stale: bool = False
     # In-flight work the Executive will do soon (pending follow-ups / nudges)
     # and people we're awaiting a reply from. Both additive, default empty.
     in_flight: list[InFlightItem] = []
@@ -965,17 +971,30 @@ def _payload_headline(payload_json: str | None) -> str | None:
     return None
 
 
+# The Executive's own daily rhythm runs. Each lands as a dated
+# "workflow_done: Executive Reflection 2026-09-28" row every day: fine on the
+# rail, but noise to the header and the briefs (and the dated title moved the
+# brief's "unchanged" fingerprint every day, so it never suppressed).
+RHYTHM_WORKFLOWS: frozenset[str] = frozenset({
+    "morning_brief", "end_of_day_digest", "executive_reflection", "weekly_review",
+})
+
+
 def _build_activity(
     limit: int,
     since: datetime | None = None,
     *,
     include_alert_raised: bool = True,
+    exclude_workflows: frozenset[str] = frozenset(),
 ) -> ActivityResponse:
     """Aggregate recent self-initiated Executive activity across sources.
 
     ``since`` bounds the feed to items at/after that instant (the briefs pass
     the previous delivery time so "what changed" is a real delta); the pool
     is widened so a busy history cannot starve the window.
+
+    ``exclude_workflows`` drops completed runs of those workflow names (the
+    header and the briefs pass ``RHYTHM_WORKFLOWS``).
 
     ``include_alert_raised=False`` omits the ``alert_raised`` source entirely.
     The rail wants it — a raise really happened, even if the card is gone — but
@@ -1087,6 +1106,8 @@ def _build_activity(
     # (not applied after the pull) so a backlog of running/awaiting runs can't
     # starve the done ones out of the pool. Bucket at `updated_at` (completion).
     for run in wf_persistence.list_runs(status="done", limit=pool):
+        if run.get("workflow_name") in exclude_workflows:
+            continue
         items.append(ActivityItem(
             kind="workflow_done",
             summary=run.get("title") or run.get("workflow_name") or "Workflow",
@@ -1229,19 +1250,50 @@ def _viewer_for(
     return next((p for p in response.people if p.id == caller_person_id), None)
 
 
-def _action_proposals(proposals: list[ProposalItem]) -> list[ProposalItem]:
+def _action_proposals(
+    proposals: list[ProposalItem], *, include_private: bool = False
+) -> list[ProposalItem]:
     """Action-category proposals only — drops monitoring/watchlist noise.
 
     The narrative is a SYNTHESIS (not a re-list of the cards), so it should
     reason over the signal — decisions/approvals — and ignore the passive
     monitoring items the UI collapses into its own section.
+
+    A private alert (``alerts.models.PRIVATE_ALERT_TAG``) is kept only with
+    ``include_private``: the principal's own scope, which no one else is
+    served. The shared ``company`` scope an unresolved caller reads, and a
+    teammate's, are written from what everyone may see.
     """
-    # Never a private alert: the narrative is cached per scope and the
-    # principal's scope is also served to an unresolved caller, so it is
-    # written from what everyone may see (the principal still gets the card).
     from openexecutive.alerts.models import is_private_alert
 
-    return [p for p in proposals if p.category == "action" and not is_private_alert(p)]
+    return [
+        p for p in proposals
+        if p.category == "action" and (include_private or not is_private_alert(p))
+    ]
+
+
+# How recent a monitoring signal must be to reach the header's EXTERNAL block.
+_EXTERNAL_WINDOW = timedelta(hours=24)
+_EXTERNAL_MAX = 5
+
+
+def _fresh_external(
+    proposals: list[ProposalItem], *, include_private: bool, now: datetime
+) -> list[ProposalItem]:
+    """Monitoring signals raised in the last day, newest first. They never
+    count as needing attention on their own; they only give the header the
+    outside world when something else is going on."""
+    from openexecutive.alerts.models import is_private_alert
+
+    fresh = [
+        p for p in proposals
+        if p.category == "monitoring"
+        and (include_private or not is_private_alert(p))
+        and (at := _parse_aware(p.created_at)) is not None
+        and now - at <= _EXTERNAL_WINDOW
+    ]
+    fresh.sort(key=lambda p: p.created_at, reverse=True)
+    return fresh[:_EXTERNAL_MAX]
 
 
 def _viewer_slice(response: TodayResponse, viewer: PersonBriefItem) -> dict[str, Any]:
@@ -1267,23 +1319,35 @@ def _narrative_inputs(
 ) -> tuple[str, dict[str, Any], dict[str, str] | None, PersonBriefItem | None]:
     """Resolve (cache scope, scoped today_data, viewer descriptor, viewer row).
 
-    The principal and any unresolved caller share the whole-company narrative
-    (DEFAULT_SCOPE); each non-principal teammate gets a `person:<id>` scope and
-    a role-scoped slice + descriptor.
+    Three scopes:
+      * ``principal`` (DEFAULT_SCOPE) — the resolved principal. Their own, so
+        it may carry what is private to them (their contacts' mail and
+        alerts); nobody else is ever served it.
+      * ``company`` — any caller that resolved to no roster row. The
+        whole-company synthesis written from what everyone may see.
+      * ``person:<id>`` — a non-principal teammate: a role-scoped slice.
     """
     from openexecutive.briefing import narrative_cache
 
     viewer = _viewer_for(response, caller_person_id)
-    is_principal = viewer.is_principal if viewer else False
-    if viewer is None or is_principal:
+    if viewer is None or viewer.is_principal:
         # Whole-company synthesis: feed all ACTION proposals (mine + across the
         # team) so the narrative can connect them, minus monitoring noise.
         # At-risk depts / activity stay company-wide.
+        own = viewer is not None
         data = response.model_dump()
         data["proposals"] = [
-            p.model_dump() for p in _action_proposals(response.proposals)
+            p.model_dump()
+            for p in _action_proposals(response.proposals, include_private=own)
         ]
-        return narrative_cache.DEFAULT_SCOPE, data, None, viewer
+        data["external"] = [
+            p.model_dump()
+            for p in _fresh_external(
+                response.proposals, include_private=own, now=datetime.now(UTC)
+            )
+        ]
+        scope = narrative_cache.DEFAULT_SCOPE if own else narrative_cache.COMPANY_SCOPE
+        return scope, data, None, viewer
     return (
         f"person:{caller_person_id}",
         _viewer_slice(response, viewer),
@@ -1297,13 +1361,11 @@ def _narrative_activity(
 ) -> list[dict[str, Any]]:
     """The activity list the narrative reasons over.
 
-    Background task only — deliberately NOT part of the cache hash. Hashing it
-    looked like the fix for a frozen header, but it has no floor: the 20-row
-    window moves on almost every DM, decision, advice row and completed
-    workflow, so every viewer's narrative would regenerate (a real model call
-    each) on nearly any Executive action. `_nothing_needs_attention` is what
-    actually keeps a frozen header from recurring, and the hash now tracks the
-    proposal fields that genuinely change what the narrative would say.
+    It is rendered into the context, so it is covered by the cache key like
+    everything else the model sees (``narrative_cache.build_narrative_input_
+    hash`` hashes the rendered context). On a quiet board it is never built:
+    `_narrative_context` short-circuits to the fixed quiet line first, so the
+    rail's churn cannot trigger model calls on a board with nothing on it.
 
     ``alert_raised`` is excluded (see `_build_activity`): live raises are the
     proposal cards, which the header must not re-list, and closed ones are
@@ -1316,7 +1378,9 @@ def _narrative_activity(
     """
     activity = [
         item.model_dump()
-        for item in _build_activity(20, include_alert_raised=False).items
+        for item in _build_activity(
+            20, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
+        ).items
     ]
     if viewer_desc is not None and viewer is not None:
         # Teammate view: keep only activity in their departments.
@@ -1364,36 +1428,114 @@ def _with_due_soon(
     return {**today_data, "due_soon": principal_due_soon()}
 
 
+# How far back the header's live blocks reach: the principal's local day, or
+# the last 12 hours when that is longer (so at 07:00 last night's mail is
+# still "going on").
+_LIVE_MIN_LOOKBACK = timedelta(hours=12)
+
+
+def _header_live(include_private: bool, now: datetime | None = None) -> tuple[Any, str, str]:
+    """``(signals, window words, NOW label)`` for a whole-company header.
+
+    The window start and the NOW line are keyed to the current local HOUR,
+    so the rendered context (and the cache key over it) moves at most once
+    an hour on time alone, plus whenever something new lands. The calendar
+    is placed at the real time (a meeting that ended at 10:15 is gone at
+    10:40), which moves the key only when a meeting starts or ends. The calendar is the cached
+    read (``live_signals.refresh_calendar``, refreshed by the scheduler);
+    this never calls out.
+    """
+    from openexecutive.briefing.live_signals import gather_live_signals
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    now = now or datetime.now(UTC)
+    tz = get_user_timezone()
+    hour = now.astimezone(tz).replace(minute=0, second=0, microsecond=0)
+    midnight = hour.replace(hour=0)
+    start = min(midnight, hour - _LIVE_MIN_LOOKBACK)
+    window = "today so far" if start == midnight else f"since {start:%a %H:%M}"
+    now_label = f"{hour:%A %d %B}, between {hour:%H}:00 and {(hour + timedelta(hours=1)):%H}:00 local time"
+    signals = gather_live_signals(
+        start.astimezone(UTC), now=now, include_private=include_private,
+    )
+    return signals, window, now_label
+
+
 def _narrative_context(
     today_data: dict[str, Any],
     viewer: PersonBriefItem | None,
     viewer_desc: dict[str, str] | None,
     mode: str = "team",
+    scope: str | None = None,
 ) -> tuple[str, list[dict[str, Any]] | None]:
     """``(context, activity)`` — the exact user turn the model would receive.
 
     The single source both the cache key and the model call come from, so the
     key can never be computed over something the model did not see.
 
-    On a quiet board it returns `narrative_cache.QUIET_CONTEXT` and no
-    activity: the narrative is a fixed line there, so the key must not depend
-    on the rail, and building the rail would be wasted work (it is a
-    seven-source SQL union) on a request whose answer is a constant.
+    The whole-company scopes (``principal`` / ``company``) also get the live
+    blocks (`_header_live`) — what came in today, what is stuck, the rest of
+    the calendar — private rows only in the principal's own scope. A
+    teammate's header is unchanged.
+
+    On a quiet board — nothing awaiting a decision and nothing live — it
+    returns `narrative_cache.QUIET_CONTEXT` and no activity: the narrative is
+    a fixed line there, so the key must not depend on the rail, and building
+    the rail would be wasted work (it is a seven-source SQL union) on a
+    request whose answer is a constant.
     """
     from openexecutive.briefing import narrative_cache
     from openexecutive.briefing.narrative import render_briefing_context
 
     today_data = _with_due_soon(today_data, mode, viewer_desc)
-    if _nothing_needs_attention(today_data, mode):
+    live = None
+    window = "today so far"
+    now_label: str | None = None
+    if viewer_desc is None:
+        live, window, now_label = _header_live(
+            include_private=scope == narrative_cache.DEFAULT_SCOPE
+        )
+    if _nothing_needs_attention(today_data, mode) and (live is None or live.is_empty()):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)
     context = render_briefing_context(
-        period_label=datetime.now(UTC).strftime("%Y-%m-%d"),
+        period_label=narrative_cache.local_today(),
         today_data=today_data,
         activity=activity,
         mode=mode,
+        live=live,
+        live_window=window,
+        now_label=now_label,
     )
     return context, activity
+
+
+# One regeneration per scope at a time. Every stale view schedules one, and
+# the scheduler's tick does too, so without this a busy page stacks model
+# calls that all write the same row. A trigger that finds one running is not
+# dropped: it marks the scope pending, and the running one goes round once
+# more when it ends (it built its context before that trigger's news landed).
+_regen_locks: dict[str, asyncio.Lock] = {}
+_regen_pending: set[str] = set()
+
+# After a regeneration fails (model error, 25 s timeout, empty text) nothing
+# is cached, so every view would report the header stale and spend another
+# model call. For this long after a failure no view or tick starts one, and
+# the page is told nothing is coming, so it drops its "Catching up…" line.
+_REGEN_FAILURE_BACKOFF = timedelta(minutes=5)
+_regen_failed_at: dict[str, datetime] = {}
+
+
+def _in_failure_backoff(scope: str, now: datetime | None = None) -> bool:
+    failed = _regen_failed_at.get(scope)
+    return failed is not None and (now or datetime.now(UTC)) - failed < _REGEN_FAILURE_BACKOFF
+
+
+def _regen_lock(scope: str) -> asyncio.Lock:
+    lock = _regen_locks.get(scope)
+    if lock is None:
+        lock = _regen_locks[scope] = asyncio.Lock()
+    return lock
 
 
 def _attach_narrative(
@@ -1404,21 +1546,39 @@ def _attach_narrative(
 ) -> None:
     """Serve the viewer's cached narrative onto `response`, scheduling a
     background regeneration when it's missing/stale. `background_tasks=None`
-    (the deprecated alias) serves cache-only without scheduling regen."""
+    (the deprecated alias) serves cache-only without scheduling regen.
+
+    Sets ``narrative_generated_at`` and ``narrative_stale`` so the page can
+    say how old the text is and re-poll until the regeneration lands. A row
+    written on an earlier local day is never served as today's: the page
+    shows nothing until today's is written (a few seconds) rather than
+    yesterday's read as if it were current."""
     from openexecutive.briefing import narrative_cache
     from openexecutive.memory.workspace_settings import get_workspace
 
     scope, today_data, desc, viewer = _narrative_inputs(response, caller_person_id)
     try:
         mode = get_workspace().mode
-        context, _activity = _narrative_context(today_data, viewer, desc, mode)
+        context, _activity = _narrative_context(today_data, viewer, desc, mode, scope)
         nhash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
         cached = narrative_cache.get(scope)
-        if cached is not None:
-            response.narrative = cached.narrative_text
         is_stale = cached is None or cached.input_hash != nhash
-        if is_stale and background_tasks is not None:
+        age_s: int | None = None
+        if cached is not None:
+            written = _parse_aware(cached.generated_at)
+            if written is not None and narrative_cache.local_today(written) == narrative_cache.local_today():
+                response.narrative = cached.narrative_text
+                response.narrative_generated_at = cached.generated_at
+                age_s = int((datetime.now(UTC) - written).total_seconds())
+        scheduled = is_stale and background_tasks is not None and not _in_failure_backoff(scope)
+        if scheduled:
+            assert background_tasks is not None
             background_tasks.add_task(_regen_briefing_narrative, caller_person_id, scope)
+        response.narrative_stale = scheduled
+        logger.info(
+            "today: narrative served scope=%s age_s=%s stale=%s regen_scheduled=%s",
+            scope, age_s, is_stale, scheduled,
+        )
     except Exception:
         logger.exception("today: briefing narrative attach failed (scope=%s)", scope)
 
@@ -1428,17 +1588,54 @@ async def _regen_briefing_narrative(
 ) -> None:
     """Regenerate and cache the viewer's briefing narrative off the hot path.
 
-    Runs as a FastAPI background task after the response is sent. Rebuilds the
-    snapshot, derives the viewer's scope / scoped slice / perspective (and, for
-    a teammate, filters activity to their departments), synthesizes via the
-    shared synthesizer, and caches under the viewer's scope. Guarded so a
-    slow/failed model call can never surface to the user.
+    Runs as a FastAPI background task after the response is sent, and from
+    the scheduler's tick (`refresh_principal_narrative`). Rebuilds the
+    snapshot — with the principal's private rows only for their own scope —
+    derives the viewer's scope / scoped slice / perspective, synthesizes via
+    the shared synthesizer, and caches under the viewer's scope. Guarded so a
+    slow/failed model call can never surface to the user, and serialized per
+    scope so concurrent triggers do not stack model calls: a trigger that
+    finds one running skips (the running one writes the fresh state).
 
     `expected_scope` is the scope resolved on the hot path; if the viewer's
     scope changed in between (e.g. the person was deleted, collapsing them to
-    the principal scope) we skip the write rather than churn / overwrite a
+    the company scope) we skip the write rather than churn / overwrite a
     different scope's cache entry.
     """
+    if _in_failure_backoff(expected_scope):
+        return
+    lock = _regen_lock(expected_scope)
+    if lock.locked():
+        _regen_pending.add(expected_scope)
+        logger.info(
+            "today: narrative regen already running scope=%s — queued one more pass",
+            expected_scope,
+        )
+        return
+    async with lock:
+        # At most one extra pass: a trigger that arrived mid-run may carry
+        # news the running pass never saw. The pass is cheap when nothing
+        # moved (it returns before the model call when the key matches).
+        for _ in range(2):
+            _regen_pending.discard(expected_scope)
+            ok = await _regen_briefing_narrative_locked(caller_person_id, expected_scope)
+            if not ok:
+                _regen_failed_at[expected_scope] = datetime.now(UTC)
+                _regen_pending.discard(expected_scope)
+                return
+            _regen_failed_at.pop(expected_scope, None)
+            if expected_scope not in _regen_pending:
+                return
+
+
+async def _regen_briefing_narrative_locked(
+    caller_person_id: int | None, expected_scope: str
+) -> bool:
+    """One pass. False only when the model could not write a header (an
+    error, a timeout, empty text) — the caller backs off; a skipped write or
+    an unchanged key is not a failure."""
+    import time
+
     from openexecutive.briefing import narrative_cache
     from openexecutive.briefing.narrative import (
         QUIET_PRINCIPAL,
@@ -1447,9 +1644,10 @@ async def _regen_briefing_narrative(
     )
     from openexecutive.memory.workspace_settings import get_workspace
 
+    started = time.monotonic()
     try:
         mode = get_workspace().mode
-        snapshot = _build_today()
+        snapshot = _build_today(include_private=expected_scope == narrative_cache.DEFAULT_SCOPE)
         scope, today_data, viewer_desc, viewer = _narrative_inputs(
             snapshot, caller_person_id
         )
@@ -1458,8 +1656,12 @@ async def _regen_briefing_narrative(
                 "today: narrative scope changed (%s → %s) between serve and "
                 "regen; skipping write", expected_scope, scope,
             )
-            return
-        context, activity = _narrative_context(today_data, viewer, viewer_desc, mode)
+            return True
+        context, activity = _narrative_context(today_data, viewer, viewer_desc, mode, scope)
+        input_hash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
+        cached = narrative_cache.get(scope)
+        if cached is not None and cached.input_hash == input_hash:
+            return True  # another trigger already wrote this exact state
         if context == narrative_cache.QUIET_CONTEXT:
             # Nothing awaits a decision — skip the model call entirely and
             # write the fixed quiet line. Still cached (below) so the hot path
@@ -1469,7 +1671,7 @@ async def _regen_briefing_narrative(
             text = await asyncio.wait_for(
                 synthesize_briefing_narrative(
                     today_data=today_data, activity=activity or [],
-                    period_label=datetime.now(UTC).strftime("%Y-%m-%d"),
+                    period_label=narrative_cache.local_today(),
                     viewer=viewer_desc,
                     # Hand the model the very string that was hashed.
                     rendered_context=context,
@@ -1478,18 +1680,59 @@ async def _regen_briefing_narrative(
                 timeout=25.0,
             )
     except Exception:
-        logger.exception("today: briefing narrative regen failed")
-        return
+        logger.exception("today: briefing narrative regen failed (scope=%s)", expected_scope)
+        return False
 
     if not text:
-        return
-    input_hash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
+        logger.warning("today: narrative regen returned no text (scope=%s) — not cached", scope)
+        return False
     narrative_cache.put(narrative_cache.BriefingNarrative(
         scope=scope,
         input_hash=input_hash,
         narrative_text=text,
         generated_at=narrative_cache.utc_now_iso(),
     ))
+    logger.info(
+        "today: narrative regenerated scope=%s ms=%d quiet=%s context_chars=%d",
+        scope, int((time.monotonic() - started) * 1000),
+        context == narrative_cache.QUIET_CONTEXT, len(context),
+    )
+    return True
+
+
+async def refresh_principal_narrative() -> bool:
+    """Bring the principal's header up to date without anyone opening the page.
+
+    Called from the scheduler's tick: refreshes the calendar read the header
+    quotes, then regenerates the principal's narrative only when its key
+    moved (new mail, something stuck, a proposal, the hour). True when a
+    regeneration ran. Never raises.
+    """
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.briefing.live_signals import refresh_calendar
+    from openexecutive.memory.workspace_settings import get_workspace
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+        if principal is None or principal.id is None:
+            return False
+        await refresh_calendar()
+        mode = get_workspace().mode
+        snapshot = _build_today(include_private=True)
+        scope, today_data, desc, viewer = _narrative_inputs(snapshot, principal.id)
+        if scope != narrative_cache.DEFAULT_SCOPE:
+            return False
+        context, _activity = _narrative_context(today_data, viewer, desc, mode, scope)
+        nhash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
+        cached = narrative_cache.get(scope)
+        if (cached is not None and cached.input_hash == nhash) or _in_failure_backoff(scope):
+            return False
+        await _regen_briefing_narrative(principal.id, scope)
+        return True
+    except Exception:
+        logger.exception("today: principal narrative refresh failed")
+        return False
 
 
 def _is_principal(caller_person_id: int | None) -> bool:

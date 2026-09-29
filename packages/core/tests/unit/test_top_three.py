@@ -376,9 +376,9 @@ def _stub_brief(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     monkeypatch.setattr("openexecutive.providers.get_provider", lambda _m: _P())
     monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
     monkeypatch.setattr(today_route, "_build_today",
-                        lambda: TodayResponse(departments=[], people=[], proposals=[]))
+                        lambda **_kw: TodayResponse(departments=[], people=[], proposals=[]))
     monkeypatch.setattr(today_route, "_build_activity",
-                        lambda limit, since=None: ActivityResponse(items=[]))
+                        lambda limit, since=None, **_kw: ActivityResponse(items=[]))
     monkeypatch.setattr(
         "openexecutive.attunement.open_loops.principal_due_soon",
         lambda **kw: [_due(4, "overdue", "2026-09-23", "Send the revised invoice")],

@@ -3473,6 +3473,11 @@ export interface Today {
   // Executive-voice "what's going on" narrative for the briefing header.
   // Null/absent until the backend has generated one.
   narrative?: string | null;
+  // When the served narrative was written (ISO UTC), and whether a fresher
+  // one is being written right now — the page re-polls while it is.
+  // Optional for older API builds + test mocks.
+  narrative_generated_at?: string | null;
+  narrative_stale?: boolean;
   // In-flight commitments (pending follow-ups/nudges) + people we're awaiting
   // a reply from. Optional/default-empty for older API builds + test mocks.
   in_flight?: InFlightItem[];
@@ -3491,7 +3496,8 @@ export interface Today {
 }
 
 export async function getToday(): Promise<Today> {
-  const res = await fetch(`${API_BASE}/today`);
+  // Never a cached copy: the header is re-polled while it is being rewritten.
+  const res = await fetch(`${API_BASE}/today`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load today: ${res.statusText}`);
   return res.json();
 }

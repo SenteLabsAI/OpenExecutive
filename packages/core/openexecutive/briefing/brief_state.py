@@ -341,6 +341,8 @@ def build_brief_fingerprint(
     since: datetime | None,
     pending_watch_suggestions: int = 0,
     mode: str = "team",
+    live_keys: dict[str, Any] | None = None,
+    reflection_flags: str = "",
 ) -> str:
     """Stable hash of everything the brief would say. Deliberately free of
     dates and timestamps so an unchanged day yields the same fingerprint
@@ -355,7 +357,14 @@ def build_brief_fingerprint(
     one that falls due today or goes overdue un-suppresses the brief. And
     the TOP THREE TODAY items by key (in order — no dates, no slot times),
     plus only a coarse hash of today's calendar (``top_three.calendar_hash``)
-    when one was read, so an unchanged day still suppresses."""
+    when one was read, so an unchanged day still suppresses.
+
+    ``live_keys`` (``LiveSignals.keys`` — who wrote and about what, what is
+    stuck, the calendar's shape; no times) and ``reflection_flags`` make the
+    principal's actual world count: a brief is "unchanged" only when no mail
+    came in, nothing got stuck and the day looks the same. Both are carried
+    only when non-empty, so a caller that passes neither keeps its old
+    fingerprint."""
     new, carried = split_proposals(today_data.get("proposals", []), since)
     payload = {
         "new": sorted(int(p.get("alert_id") or 0) for p in new),
@@ -399,8 +408,49 @@ def build_brief_fingerprint(
         calendar = today_data.get("today_calendar")
         if isinstance(calendar, dict) and calendar.get("hash"):
             payload["calendar"] = str(calendar["hash"])
+    if live_keys and any(live_keys.values()):
+        payload["live"] = live_keys
+    if reflection_flags:
+        payload["reflection_flags"] = reflection_flags
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+_FLAGGED_RE = re.compile(
+    r"\*\*Flagged for the brief:?\*\*:?\s*(.*?)(?=\n\s*\*\*[^*\n]+:?\*\*|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+_REFLECTION_FLAGS_MAX = 800
+
+
+def reflection_flags_since(since: datetime) -> str:
+    """The "Flagged for the brief" bullets of the latest executive reflection
+    that finished at/after ``since``, or "".
+
+    The reflection runs just before the morning brief and is told to write
+    what the principal should see there; nothing carried it across, so the
+    brief only ever saw an activity line with the run's title. Cut to a few
+    hundred characters. Never raises."""
+    try:
+        from openexecutive.workflows import persistence
+
+        for run in persistence.list_runs(
+            workflow_name="executive_reflection", status="done", limit=3,
+        ):
+            finished = parse_aware(run.get("updated_at"))
+            if finished is None or finished < since:
+                continue
+            full = persistence.get_run(str(run["run_id"])) or {}
+            match = _FLAGGED_RE.search(str(full.get("artifact") or ""))
+            if match is None:
+                return ""
+            text = match.group(1).strip()
+            if len(text) > _REFLECTION_FLAGS_MAX:
+                text = text[: _REFLECTION_FLAGS_MAX - 1].rstrip() + "…"
+            return text
+    except Exception:
+        logger.debug("brief_state: reflection flags unavailable", exc_info=True)
+    return ""
 
 
 def suppress_unchanged_enabled() -> bool:

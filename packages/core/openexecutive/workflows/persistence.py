@@ -118,6 +118,21 @@ def create_run(
         )
 
 
+# Stored in place of an artifact that drew on what is private to the
+# principal (a run reports it as `private_to_principal` on its `result`
+# event). Run history is readable by everyone signed in to the workspace; the
+# principal got the full text where it was delivered to them.
+PRIVATE_RUN_ARTIFACT = (
+    "(Delivered to the principal. It drew on what is private to them, so its "
+    "text is not kept in the shared run history.)"
+)
+
+
+def stored_artifact(artifact: str, *, private_to_principal: bool) -> str:
+    """What a run's history keeps for ``artifact``."""
+    return PRIVATE_RUN_ARTIFACT if private_to_principal and artifact else artifact
+
+
 def complete_run(
     run_id: str,
     artifact: str,

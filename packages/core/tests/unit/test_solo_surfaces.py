@@ -699,10 +699,10 @@ def test_morning_brief_and_eod_follow_the_workspace_mode(
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
     monkeypatch.setattr(
         today_route, "_build_today",
-        lambda: TodayResponse(departments=[], people=[], proposals=[]),
+        lambda **_kw: TodayResponse(departments=[], people=[], proposals=[]),
     )
     monkeypatch.setattr(
-        today_route, "_build_activity", lambda limit, since=None: ActivityResponse(items=[])
+        today_route, "_build_activity", lambda limit, since=None, **_kw: ActivityResponse(items=[])
     )
 
     async def _drain(wf: Any, inputs: Any) -> list[Any]:
@@ -1332,7 +1332,7 @@ def test_scheduled_solo_brief_is_written_for_and_delivered_to_the_principal(
     wf_persistence.initialize_runs_db(tmp_path / "runs.db")
     monkeypatch.setattr(
         today_route, "_build_today",
-        lambda: TodayResponse(departments=[], people=[], proposals=[]),
+        lambda **_kw: TodayResponse(departments=[], people=[], proposals=[]),
     )
     monkeypatch.setattr(
         today_route, "_build_activity",

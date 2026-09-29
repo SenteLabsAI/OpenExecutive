@@ -758,3 +758,39 @@ def test_eval_run_of_a_principal_only_workflow_allows_the_principal(
                     headers={"x-caller-email": TEAMMATE_EMAIL})
     assert r.status_code == 200, r.text
     assert _refusals(principal_only.audit) == []
+
+
+class _PrivateBriefWorkflow(_GateRouteWorkflow):
+    """Finishes with an artifact and reports it drew on private rows."""
+
+    name = "private_brief"
+
+    async def run(self, inputs, store):  # noqa: ANN001, ANN201
+        from openexecutive.workflows.base import WorkflowEvent
+
+        yield WorkflowEvent(type="result", data={"private_to_principal": True})
+        yield WorkflowEvent(type="artifact", content="PRIVATE TEXT")
+        yield WorkflowEvent(type="done")
+
+
+def test_http_run_keeps_a_private_artifact_out_of_run_history(temp_db: Path) -> None:
+    """The stream carries the text to the caller; the shared run history keeps
+    a stand-in, as the scheduler and the chat tool do."""
+    from openexecutive.workflows.persistence import PRIVATE_RUN_ARTIFACT
+
+    with patch("openexecutive.workflows.persistence.DB_PATH", temp_db), \
+         patch("openexecutive.api.routes.workflows.create_run",
+               side_effect=lambda **kw: create_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.complete_run",
+               side_effect=lambda **kw: complete_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.get_workflow",
+               lambda name: _PrivateBriefWorkflow()), \
+         TestClient(create_app()) as c:
+        r = c.post("/workflows/private_brief/runs", json={"topic": "x"})
+    events = _sse_events(r.text)
+    assert r.status_code == 200, r.text
+    assert any(e.get("content") == "PRIVATE TEXT" for e in events)
+    run_id = next(e["run_id"] for e in events if e["type"] == "run_created")
+    run = get_run(run_id, db_path=temp_db)
+    assert run is not None and run["status"] == "done"
+    assert run["artifact"] == PRIVATE_RUN_ARTIFACT

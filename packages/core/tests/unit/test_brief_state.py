@@ -217,3 +217,38 @@ def test_fingerprint_moves_when_a_carried_item_is_rewritten() -> None:
     assert brief_state.build_brief_fingerprint(
         today_data={"proposals": [again], "departments": [], "people": []}, **base,
     ) == fp_rewritten
+
+
+def test_fingerprint_counts_the_live_world_only_when_given() -> None:
+    since = datetime.now(UTC) - timedelta(hours=12)
+    base = {"today_data": {}, "activity": [], "handled": [], "since": since}
+    legacy = brief_state.build_brief_fingerprint(**base)
+    # Nothing live → the fingerprint is exactly what it was before.
+    empty_live = {"inbound": [], "stuck": [], "drafts": 0, "conversations": [], "calendar": ""}
+    assert brief_state.build_brief_fingerprint(**base, live_keys=empty_live) == legacy
+    mail = brief_state.build_brief_fingerprint(
+        **base, live_keys={**empty_live, "inbound": ["sam@x.com|renewal|1"]},
+    )
+    assert mail != legacy
+    assert brief_state.build_brief_fingerprint(**base, reflection_flags="- x") != legacy
+
+
+def test_reflection_flags_since_reads_the_latest_reflection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows import persistence
+
+    monkeypatch.setattr(persistence, "DB_PATH", tmp_path / "runs.db")
+    persistence.initialize_runs_db()
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert brief_state.reflection_flags_since(since) == ""
+    persistence.create_run("r", "executive_reflection", "Executive Reflection", {})
+    persistence.complete_run(
+        "r", "**Flagged for the brief:**\n- Board deck due Friday\n\n**Quiet:** rest is calm",
+    )
+    assert brief_state.reflection_flags_since(since) == "- Board deck due Friday"
+    later = datetime.now(UTC) + timedelta(minutes=1)
+    assert brief_state.reflection_flags_since(later) == ""  # older than the window
+    persistence.create_run("s", "executive_reflection", "Executive Reflection", {})
+    persistence.complete_run("s", "**Acted on:**\n- DM'd Sam")
+    assert brief_state.reflection_flags_since(since) == ""  # latest has no flags

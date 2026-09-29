@@ -49,6 +49,7 @@ from openexecutive.workflows.persistence import (
     get_run,
     initialize_runs_db,
     list_runs,
+    stored_artifact,
 )
 from openexecutive.workflows.tool_catalog import resolve as resolve_tools_catalog
 from openexecutive.workflows.tool_catalog import search as search_tools_catalog
@@ -423,6 +424,7 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
     async def event_stream():
         t_start = time.monotonic()
         artifact: str = ""
+        private_to_principal = False
         paused = False
         try:
             # Tell the client which run_id to track and what the planned steps are.
@@ -472,6 +474,8 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
                 event_dict = event.model_dump()
                 if event.type == "artifact" and event.content is not None:
                     artifact = event.content
+                elif event.type == "result" and event.data and event.data.get("private_to_principal"):
+                    private_to_principal = True
                 yield _sse(event_dict)
 
             if paused:
@@ -479,7 +483,13 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
                 # was terminal, so nothing more is emitted.
                 pass
             elif artifact:
-                complete_run(run_id=run_id, artifact=artifact)
+                # Run history is readable by everyone signed in; a run that
+                # drew on what is private to the principal keeps a stand-in
+                # (the stream above already carried the text to this caller).
+                complete_run(
+                    run_id=run_id,
+                    artifact=stored_artifact(artifact, private_to_principal=private_to_principal),
+                )
                 yield _sse({"type": "done", "run_id": run_id})
             else:
                 fail_run(run_id=run_id, error="Workflow finished without producing an artifact")

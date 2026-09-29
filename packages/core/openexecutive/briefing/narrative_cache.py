@@ -7,10 +7,12 @@ the request hot path — `/today` serves the cached text instantly and, when
 the state hash has moved, regenerates in a FastAPI background task (same
 pattern as the per-person insight notes).
 
-Keyed by a `scope` string rather than a person id: the principal and any
-unrostered/unresolved viewer share the whole-company narrative under
-`"principal"` (the default), while each non-principal teammate gets their own
-role-scoped narrative under `person:<id>` (see `today._attach_narrative`).
+Keyed by a `scope` string rather than a person id: the principal's own
+whole-company narrative lives under `"principal"` (the default) and may carry
+what is private to them; an unrostered/unresolved viewer gets the shared
+`"company"` narrative written from what everyone may see; each non-principal
+teammate gets their own role-scoped narrative under `person:<id>` (see
+`today._attach_narrative`).
 """
 from __future__ import annotations
 
@@ -36,6 +38,25 @@ logger = logging.getLogger(__name__)
 DB_PATH: Path | None = None
 
 DEFAULT_SCOPE = "principal"
+# The whole-company narrative for a caller who resolved to no roster row.
+COMPANY_SCOPE = "company"
+
+
+def local_today(now: datetime | None = None) -> str:
+    """The principal's local date (``YYYY-MM-DD``), in the workspace's zone.
+
+    The header's daily floor and its PERIOD line: a UTC date rolled the
+    narrative over mid-evening in the Americas and kept yesterday's header
+    until mid-morning east of UTC. Never raises (UTC when the zone is
+    unreadable).
+    """
+    now = now or datetime.now(UTC)
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        return now.astimezone(get_user_timezone()).strftime("%Y-%m-%d")
+    except Exception:
+        return now.strftime("%Y-%m-%d")
 
 
 class BriefingNarrative(BaseModel):
@@ -86,7 +107,7 @@ def initialize_db(db_path: Path | None = None) -> None:
 # into the input hash so a prompt change invalidates every cached narrative on
 # the next view — otherwise a wording fix wouldn't surface until the underlying
 # state changed (or the daily date rollover).
-NARRATIVE_PROMPT_VERSION = "4"
+NARRATIVE_PROMPT_VERSION = "5"
 
 
 # Stands in for the rendered context when nothing on the viewer's board wants
@@ -122,8 +143,9 @@ def build_narrative_input_hash(
 
     ``scope`` keeps two viewers whose contexts coincide under distinct keys,
     ``NARRATIVE_PROMPT_VERSION`` invalidates every entry when a prompt is
-    reworded, and the UTC date gives a daily floor (it is also inside the
-    rendered context's PERIOD line, but the quiet sentinel has no such line).
+    reworded, and the principal's local date (:func:`local_today`) gives a
+    daily floor (it is also inside the rendered context's PERIOD line, but
+    the quiet sentinel has no such line).
 
     ``mode`` is the workspace mode. Solo and team use different system
     prompts over what can be the very same context, so a solo key carries the
@@ -141,7 +163,7 @@ def build_narrative_input_hash(
     payload = {
         "scope": scope,
         "prompt_version": NARRATIVE_PROMPT_VERSION,
-        "date": datetime.now(UTC).strftime("%Y-%m-%d"),
+        "date": local_today(),
         "context": rendered_context,
     }
     if mode != "team":
@@ -195,12 +217,14 @@ def utc_now_iso() -> str:
 
 
 __all__ = [
+    "COMPANY_SCOPE",
     "DEFAULT_SCOPE",
     "QUIET_CONTEXT",
     "BriefingNarrative",
     "build_narrative_input_hash",
     "get",
     "initialize_db",
+    "local_today",
     "put",
     "utc_now_iso",
 ]

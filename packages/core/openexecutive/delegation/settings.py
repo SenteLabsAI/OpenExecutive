@@ -213,10 +213,12 @@ def _speaker(session: Any) -> Person | None:
 _DM_SESSION_PREFIXES = {"slack": "slack:dm:", "discord": "discord:dm:"}
 
 
-def _private_conversation(session: Any) -> bool:
+def private_conversation(session: Any) -> bool:
     """Whether only the speaker (and the Executive) can read this
     conversation: the web chat, a Slack or Discord DM, or a Telegram chat
-    (``is_principal_on_verified_surface`` already accepts only a private one)."""
+    (``is_principal_on_verified_surface`` already accepts only a private one).
+    Also the morning brief's rule for reading what is private to the
+    principal from a chat turn (``workflows.morning_brief``)."""
     if getattr(session, "from_web_chat", False) is True:
         return True
     channel = str(getattr(session, "origin_channel", "") or "")
@@ -241,7 +243,7 @@ def speaker_surface_ok(session: Any, person: Person | None) -> bool:
     except Exception:
         logger.warning("delegation: surface check failed — not offering it", exc_info=True)
         return False
-    if not _private_conversation(session):
+    if not private_conversation(session):
         return False
     if getattr(session, "from_web_chat", False) is True:
         return getattr(session, "web_caller_signed_in", False) is True or local_login()

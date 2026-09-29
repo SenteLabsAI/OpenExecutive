@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Children, useCallback, useEffect, useState } from "react";
+import { Children, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -35,6 +35,12 @@ import {
 import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-memory";
 import { clientCountsSummary, renewalBadge } from "@/lib/practice";
 import { dueSoon, loopText, principalIdOf } from "@/lib/dueSoon";
+import {
+  BRIEFING_REFRESH_INTERVAL_MS,
+  narrativeRepollDelay,
+  narrativeUpdatedLabel,
+  shouldRefreshOnFocus,
+} from "@/lib/narrativeFreshness";
 import { reviewExcerpt, reviewRanLabel, topThreeSlot, topThreeWhy } from "@/lib/rhythmCards";
 import {
   HANDLED_REOPENABLE,
@@ -1877,9 +1883,49 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   // re-syncs. The optimistic actedAlertIds set already hides the card; this
   // refreshes everything computed from it. Best-effort: a failed refresh leaves
   // the stale-but-still-usable view rather than erroring the briefing.
+  const lastFetchRef = useRef(Date.now());
   const refreshToday = useCallback(() => {
+    lastFetchRef.current = Date.now();
     getToday().then(setToday).catch(() => { /* keep current view on failure */ });
   }, []);
+
+  // Keep "What's going on" current. /today serves the cached header and
+  // rewrites it in the background when the picture moved (narrative_stale);
+  // re-poll a few times so the new one lands without a reload.
+  // Keyed on the whole response: a poll that comes back still stale is a new
+  // object with the same fields, and must schedule the next attempt.
+  const repollAttemptRef = useRef(0);
+  useEffect(() => {
+    if (!today?.narrative_stale) {
+      repollAttemptRef.current = 0;
+      return;
+    }
+    const delay = narrativeRepollDelay(repollAttemptRef.current);
+    if (delay === null) return;
+    const timer = setTimeout(() => {
+      repollAttemptRef.current += 1;
+      refreshToday();
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [today, refreshToday]);
+
+  // …and when the tab comes back, and every few minutes while it is open.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && shouldRefreshOnFocus(lastFetchRef.current, Date.now())) {
+        repollAttemptRef.current = 0;
+        refreshToday();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") refreshToday();
+    }, BRIEFING_REFRESH_INTERVAL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(interval);
+    };
+  }, [refreshToday]);
 
   const handleApprove = useCallback(async (proposal: ProposalItem) => {
     const prev = actedAlertIds;
@@ -2192,6 +2238,17 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                 )}
               </div>
 
+              {!today.narrative && today.narrative_stale && (
+                <section className="mb-6" aria-live="polite">
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-3">
+                    What&apos;s going on
+                  </h2>
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-5 py-4 text-sm text-fg-muted animate-pulse">
+                    Catching up on today…
+                  </div>
+                </section>
+              )}
+
               {today.narrative && (
                 <section className="mb-6">
                   <div className="flex items-center gap-1.5 mb-3">
@@ -2200,9 +2257,15 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
                     </h2>
                     <InfoTip align="left">
                       The Executive&apos;s read on {solo ? "your work" : "the company"} right
-                      now — synthesized from proposals, at-risk goals, and recent
-                      activity. Regenerates as the picture changes.
+                      now — what came in today, what&apos;s stuck, what&apos;s next on
+                      your calendar, plus proposals and at-risk goals. Rewritten
+                      as the picture changes.
                     </InfoTip>
+                    <span className="ml-auto text-[11px] text-fg-muted" aria-live="polite">
+                      {today.narrative_stale
+                        ? "Refreshing…"
+                        : narrativeUpdatedLabel(today.narrative_generated_at, new Date())}
+                    </span>
                   </div>
                   <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-5 py-4">
                     <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-headings:text-fg prose-strong:text-fg">

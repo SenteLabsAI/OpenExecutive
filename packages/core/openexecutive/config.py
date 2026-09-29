@@ -768,6 +768,21 @@ class Settings(BaseSettings):
         True, alias="PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED"
     )
 
+    # How often the scheduler checks whether the principal's /today "What's
+    # going on" header is out of date (new mail, something stuck, the hour
+    # turned) and rewrites it before anyone opens the page. Only between the
+    # two local hours below. 0 turns it off (the header then refreshes only
+    # when the page is opened).
+    briefing_narrative_refresh_minutes: int = Field(
+        10, alias="BRIEFING_NARRATIVE_REFRESH_MINUTES"
+    )
+    briefing_narrative_refresh_start_hour: int = Field(
+        6, alias="BRIEFING_NARRATIVE_REFRESH_START_HOUR"
+    )
+    briefing_narrative_refresh_end_hour: int = Field(
+        22, alias="BRIEFING_NARRATIVE_REFRESH_END_HOUR"
+    )
+
     # Proactive nudge engine — heartbeat that scans for stalled workflows,
     # stale commitments, and idle initiatives and emits per-channel nudges
     # routed via Person.preferred_channel + availability windows.

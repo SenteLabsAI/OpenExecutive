@@ -203,7 +203,7 @@ def test_gather_evidence_collects_watch_signals_related_alerts_roster_and_workfl
     from openexecutive.api.routes import today as today_route
     from openexecutive.api.routes.today import ActivityItem, ActivityResponse
 
-    monkeypatch.setattr(today_route, "_build_activity", lambda limit, since=None: ActivityResponse(items=[
+    monkeypatch.setattr(today_route, "_build_activity", lambda limit, since=None, **_kw: ActivityResponse(items=[
         ActivityItem(kind="decision_logged", summary="Switched checkout to backup PSP", actor="Executive",
                      target=None, department="finance", at=(NOW - timedelta(hours=2)).isoformat()),
     ]))
@@ -557,7 +557,7 @@ def test_run_alert_review_end_to_end_with_stubbed_agent(db: Path, audit_events, 
     from openexecutive.api.routes import today as today_route
     from openexecutive.api.routes.today import ActivityItem, ActivityResponse
 
-    monkeypatch.setattr(today_route, "_build_activity", lambda limit, since=None: ActivityResponse(items=[
+    monkeypatch.setattr(today_route, "_build_activity", lambda limit, since=None, **_kw: ActivityResponse(items=[
         # Mentions the alert's subject ("resolved one"), so it is citable as A1.
         ActivityItem(kind="decision_logged", summary="Closed out 'resolved one' — vendor chosen", actor="Executive",
                      target=None, department=None, at=(NOW - timedelta(hours=2)).isoformat()),
@@ -909,7 +909,7 @@ def test_activity_refs_only_for_items_about_this_alert(db: Path, monkeypatch) ->
     from openexecutive.api.routes import today as today_route
     from openexecutive.api.routes.today import ActivityItem, ActivityResponse
 
-    monkeypatch.setattr(today_route, "_build_activity", lambda limit, since=None: ActivityResponse(items=[
+    monkeypatch.setattr(today_route, "_build_activity", lambda limit, since=None, **_kw: ActivityResponse(items=[
         ActivityItem(kind="decision_logged", summary="Renewed the Acme contract", actor="Executive",
                      target=None, department=None, at=(NOW - timedelta(hours=1)).isoformat()),
         ActivityItem(kind="dm_sent", summary="DM'd Sam about hiring", actor="Executive",
