@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 
 from openexecutive.api.models import CompanyProfileResponse, CompanyProfileUpdateRequest
@@ -20,6 +22,14 @@ async def get_company_profile() -> CompanyProfileResponse:
 
 @router.patch("/company-profile", response_model=CompanyProfileResponse)
 async def update_company_profile(body: CompanyProfileUpdateRequest) -> CompanyProfileResponse:
+    # A worker thread: the edit holds PROFILE_EDIT_LOCK (shared with the
+    # update_company_profile chat tool) around blocking file I/O, which must
+    # never wait on the event loop every SSE stream shares.
+    validated = await asyncio.to_thread(_apply_update, body)
+    return CompanyProfileResponse(**validated.model_dump())
+
+
+def _apply_update(body: CompanyProfileUpdateRequest) -> CompanyProfile:
     settings = get_settings()
     with PROFILE_EDIT_LOCK:
         profile = load_or_create_profile()
@@ -36,5 +46,4 @@ async def update_company_profile(body: CompanyProfileUpdateRequest) -> CompanyPr
         updated = profile.model_copy(update=update_data)
         validated = CompanyProfile.model_validate(updated.model_dump())
         validated.save_to_yaml(settings.company_profile_path)
-
-    return CompanyProfileResponse(**validated.model_dump())
+    return validated

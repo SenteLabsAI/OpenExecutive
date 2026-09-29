@@ -871,7 +871,8 @@ class Executive:
 
             working_style = build_style_block(person_id)
             if standing_facts is None:
-                standing_facts = render_facts_for_prompt()
+                # A SQLite read: off the event loop, like the other context.
+                standing_facts = await asyncio.to_thread(render_facts_for_prompt)
             messages = self._build_messages(
                 session,
                 user_message,
@@ -1180,7 +1181,7 @@ class Executive:
 
         working_style = build_style_block(person_id)
         if standing_facts is None:
-            standing_facts = render_facts_for_prompt()
+            standing_facts = await asyncio.to_thread(render_facts_for_prompt)
         messages = self._build_messages(
             session,
             user_message,

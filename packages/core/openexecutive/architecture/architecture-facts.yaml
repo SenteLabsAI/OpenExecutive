@@ -1601,7 +1601,8 @@ memory:
     one: it stores only decisions backed by a commitment quote.
     WRITE PATH — chat tools in `orchestrator/fact_tools.py`:
       - `remember_fact(subject, statement, previous_value?, replaces_fact_id?,
-        source_quote)` and `forget_fact(fact_id, rationale)`.
+        source_quote)` and `forget_fact(fact_id, rationale, source_quote)` —
+        a retire needs the same quote proof as a write.
       - `update_company_profile(field, operation set|add|remove, value,
         metric?, source_quote)` over a whitelist of `CompanyProfile` fields
         (text / int / number set; list add/remove; financials.key_metrics by
@@ -1629,6 +1630,12 @@ memory:
       - Profile edits run load → change → save under
         `company_profile.PROFILE_EDIT_LOCK`, which PATCH /company-profile
         also takes (no lost update between the two).
+      - All three handlers are sync bodies run via `asyncio.to_thread`
+        (context copied, so current_session / the speaker pin / audit ids
+        resolve), and PATCH /company-profile does its locked edit in a
+        thread too: neither blocks the event loop on SQLite, the YAML file
+        or PROFILE_EDIT_LOCK. stream_chat / committee and the alert review
+        read `render_facts_for_prompt` via `asyncio.to_thread` as well.
     STORE — one active fact per subject: a new row supersedes active rows
     with the same folded `subject_key` (or the id in replaces_fact_id) in one
     `BEGIN IMMEDIATE` transaction; old rows become `superseded` with
