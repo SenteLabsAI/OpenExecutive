@@ -668,12 +668,12 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
     }
     provenance = _provenance(session)
     if teammate is not None:
+        # Attributed. Whether the principal asked to approve this teammate's
+        # facts first is read by record_fact, in the write's own transaction.
         provenance.update(
             recorded_by_person_id=teammate.id, recorded_by_role="teammate",
             recorded_by_name=teammate.full_name,
         )
-        # The principal asked to see this teammate's facts before they count.
-        args["proposed"] = facts.needs_approval(int(teammate.id))
     if held:
         was = previous or (existing.statement if existing is not None else "")
         summary = f"Keep as a standing fact: {subject}: {statement}" + (
@@ -700,7 +700,7 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
     }
     try:
         try:
-            fact, superseded = facts.record_fact(**record, proposed=bool(args.get("proposed")))
+            fact, superseded = facts.record_fact(**record)
         except facts.PrincipalFactConflict as conflict:
             outranked = conflict.fact
             fact, superseded = facts.record_fact(**record, proposed=True)

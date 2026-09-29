@@ -353,3 +353,18 @@ def test_proposals_are_left_out_unless_asked_for(roster: SimpleNamespace) -> Non
     _remember()
     assert "proposed" in facts.render_teammate_changes(since)
     assert facts.render_teammate_changes(since, include_proposed=False) == ""
+
+
+def test_the_approval_rule_is_read_in_the_write_itself(roster: SimpleNamespace) -> None:
+    """The store, not the tool, applies "needs my approval", inside the
+    write's transaction: turning it on just before a write still holds it."""
+    facts.set_needs_approval(roster.sam, True)
+    row, superseded = facts.record_fact(
+        subject="Oak Row", statement="Oak Row has 12 units.", source_quote="q",
+        recorded_by_role="teammate", recorded_by_name="Sam Lee", recorded_by_person_id=roster.sam,
+    )
+    assert row.status == "proposed" and superseded == []
+    # The principal's own writes are never held.
+    mine, _ = facts.record_fact(subject="Elm Yard", statement="Elm Yard has 9 units.", source_quote="q",
+                                recorded_by_person_id=roster.owner)
+    assert mine.status == "active"

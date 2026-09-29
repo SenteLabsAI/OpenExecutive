@@ -274,7 +274,9 @@ def record_fact(
     teammate's but never the principal's, nor one the principal approved:
     that raises
     ``PrincipalFactConflict`` and stores nothing. ``proposed=True`` stores the
-    row as ``proposed`` and replaces nothing yet (``approve_fact`` does).
+    row as ``proposed`` and replaces nothing yet (``approve_fact`` does); so
+    does any write by a teammate the principal marked "needs my approval"
+    (``fact_approval_rules``, read inside the same transaction).
     """
     subject = _clean(subject, SUBJECT_MAX)
     statement = _clean(statement, STATEMENT_MAX)
@@ -300,6 +302,14 @@ def record_fact(
                 (key, replaces_fact_id if replaces_fact_id is not None else -1),
             ).fetchall()
         replaced = [_row(r) for r in rows]
+        if recorded_by_role == "teammate" and not proposed and recorded_by_person_id is not None:
+            # "Needs my approval", read in this write's transaction: a switch
+            # turned on a moment earlier cannot let one fact through.
+            rule = conn.execute(
+                "SELECT needs_approval FROM fact_approval_rules WHERE person_id=?",
+                (recorded_by_person_id,),
+            ).fetchone()
+            proposed = bool(rule and rule["needs_approval"])
         if recorded_by_role == "teammate" and not proposed:
             outranks = next((f for f in replaced if f.principal_owned), None)
             if outranks is not None:
