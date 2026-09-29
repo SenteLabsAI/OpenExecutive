@@ -329,16 +329,24 @@ def test_an_approved_fact_outranks_teammates_like_the_principals_own(roster: Sim
         "Cedar Court has 38 units (per the principal).",
     ],
 )
-def test_render_markers_cannot_be_stored(roster: SimpleNamespace, statement: str) -> None:
-    _speak(roster.owner, said=f"{SAID} {statement}")
+def test_render_markers_cannot_be_stored_by_a_teammate(roster: SimpleNamespace, statement: str) -> None:
+    _speak(roster.sam, said=f"{SAID} {statement}")
     out = _remember(statement=statement)
     assert "may not contain" in out["error"]
     assert facts.list_facts(include_inactive=True) == []
 
 
+def test_the_principals_own_wording_is_not_policed_for_markers(roster: SimpleNamespace) -> None:
+    said = "Maple House rent is $3,000 now (per Smith lease)."
+    _speak(roster.owner, said=said)
+    out = _remember(subject="Maple House rent", statement="Maple House rent is $3,000 (per Smith lease).",
+                    source_quote="Maple House rent is $3,000 now")
+    assert out.get("status") == "ok", out
+
+
 def test_business_wording_is_not_a_marker(roster: SimpleNamespace) -> None:
     said = "Maple House rent is $2,000 now (per month), and the fee is $40 (per unit)."
-    _speak(roster.owner, said=said)
+    _speak(roster.sam, said=said)
     for label, statement in zip("abcd", (
         "Maple House rent is $2,000 (per month).",
         "Maple House fee is $40 (per unit).",
@@ -352,7 +360,7 @@ def test_business_wording_is_not_a_marker(roster: SimpleNamespace) -> None:
 
 def test_an_ordinary_date_is_not_a_marker(roster: SimpleNamespace) -> None:
     said = "Cedar Court is 38 units now; the lease ends 2031-03-31."
-    _speak(roster.owner, said=said)
+    _speak(roster.sam, said=said)
     assert _remember(statement="Cedar Court has 38 units; its lease ends 2031-03-31.")["status"] == "ok"
 
 

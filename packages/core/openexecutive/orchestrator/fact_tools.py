@@ -546,9 +546,9 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
 
 
 # What the STANDING FACTS render adds to each line itself: "[fact N]", a
-# teammate's "(per <name>)" and the "— YYYY-MM-DD" stamp. Inside a stored
-# field they would read as a second, forged marker ("… (per Olivia Owner) —
-# 2026-09-01" in a teammate's statement), so no field may carry one.
+# teammate's "(per <name>)" and the "— YYYY-MM-DD" stamp. Inside a teammate's
+# stored field they would read as a second, forged marker ("… (per Olivia
+# Owner) — 2026-09-01"), so none of theirs may carry one.
 _RENDER_MARKERS = re.compile(
     r"\[\s*fact\s*\d+\s*\]|(?:^|\s)[-\u2010-\u2015\u2212]\s*\d{4}-\d{2}-\d{2}", re.IGNORECASE,
 )
@@ -662,7 +662,13 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
     # the principal's own correction — and every stored field renders: the
     # subject as "[fact N] subject:", the previous value as "(corrects: …)".
     for label, text in (("statement", statement), ("subject", subject), ("previous_value", previous)):
-        claim_error = _marker_error(label, text) or _claim_error(label, text, session)
+        # A forged marker only matters in a teammate's attributed line (it
+        # could pass as someone else's word); the principal's own line is
+        # unmarked, and "(per Smith lease)" is ordinary wording for them.
+        claim_error = (
+            (_marker_error(label, text) if teammate is not None else None)
+            or _claim_error(label, text, session)
+        )
         if claim_error:
             return _bad(tool, claim_error, subject=subject[:120])
     replaces = _positive_int(tool_input.get("replaces_fact_id"))

@@ -1710,7 +1710,7 @@ memory:
         approval is not a one-shot gate. `decline_fact` → `declined`.
         forget_fact and update_company_profile stay principal-only; a
         teammate retires only their own unapproved facts, from the Pulse
-        page. No field may contain `(per <anyone>` (any case; units such as
+        page. No field of a TEAMMATE's fact may contain `(per <anyone>` (any case; units such as
         month/unit/square foot excepted, `_PER_UNITS`), `[fact N]` or a dash + `YYYY-MM-DD`
         stamp (`_marker_error`): the render adds those, so a stored one
         would be a forged second attribution. Columns added by `_migrate` on
