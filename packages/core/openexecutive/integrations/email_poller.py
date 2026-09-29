@@ -689,7 +689,8 @@ async def _hold_for_roster(
     from the raw message) is acknowledged. The printed headers never carry
     Authentication-Results, so without that read a forged From would draw
     the acknowledgement to whoever it names: backscatter from the
-    Executive's mailbox. An unauthenticated sender is still held, silently."""
+    Executive's mailbox. An unauthenticated sender is still held, silently.
+    The raw read happens only once intake has claimed an acknowledgement."""
     from openexecutive.integrations import roster_intake
     from openexecutive.integrations.fact_confirmation import sender_authenticated
 
@@ -703,18 +704,21 @@ async def _hold_for_roster(
     preview = f"{subject} — {' '.join(new_lines)}" if subject else " ".join(new_lines)
 
     async def _ack(_text: str) -> None:
+        if not await sender_authenticated(gateway, message_id, from_addr):
+            raise roster_intake.AckWithheld("Gmail did not authenticate the sender")
         await roster_intake.send_email_ack(gateway, from_addr)
 
-    authenticated = await sender_authenticated(gateway, message_id, from_addr)
     request = await roster_intake.intake(
         "email", from_addr,
         external_id=message_id,
         payload={"message_id": message_id, "thread_id": thread_id},
         preview=preview,
         display_name=display_name,
-        send_ack=_ack if authenticated else None,
+        send_ack=_ack,
     )
-    return request is not None, request is not None and authenticated
+    if request is None:
+        return False, False
+    return True, request.ack_sent_at is not None
 
 
 async def replay_held_email(message: Any, _request: Any) -> bool:
@@ -822,7 +826,7 @@ async def _run_executive(
     session_id: str | None = None,
     *,
     held_for_roster: bool = False,
-    roster_acknowledged: bool = True,
+    roster_acknowledged: bool = False,
 ) -> None:
     from openexecutive.knowledge.retriever import retrieve
     from openexecutive.memory.episodic import format_for_prompt
@@ -934,8 +938,7 @@ async def _run_executive(
             + (
                 "They have already been told their message arrived and is waiting, "
                 if roster_acknowledged
-                else "They have not been told anything (their email could not be "
-                "confirmed as really from that address), "
+                else "They have not been told anything yet, "
             )
             + "and the principal has been asked who they are (a card on "
             "their Today page) — do not raise another alert or proposal just to "

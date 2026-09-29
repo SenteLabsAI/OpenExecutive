@@ -82,7 +82,9 @@ def principal_address() -> str:
 _RAW_MIME_SEPARATOR = "\n\n--- RAW MIME ---\n"
 # The authserv-id Gmail stamps on the Authentication-Results of mail it receives.
 _GMAIL_AUTHSERV = "mx.google.com"
-_HEADER_FROM = re.compile(r"\bheader\.from=([^\s;()]+)")
+# Gmail's DMARC resinfo once its comment is stripped, e.g.
+# "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com".
+_DMARC_PASS = re.compile(r"dmarc=pass\s+header\.from=([^\s;]+)")
 # Marks of an automatic reply (an out-of-office, a vacation responder) in the
 # raw headers. The printed headers the poller reads carry only Precedence and
 # the List-* ones, so an Exchange out-of-office — Auto-Submitted only — would
@@ -135,7 +137,7 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     authenticated. Only the topmost Authentication-Results header counts:
     Gmail adds it on receipt, above every header the sender wrote, so a forged
     one sits below it. It must be Gmail's (``mx.google.com``) and report
-    ``dmarc=pass`` for the From domain, and the raw From must be
+    ``dmarc=pass`` for the From domain as its last resinfo, and the raw From must be
     ``from_addr``. Anything missing or unreadable — no header, ``dmarc=none``,
     a temporary error — is False: this gate fails closed."""
     address = from_addr.strip().lower()
@@ -155,16 +157,15 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     authserv, _sep, rest = newest.partition(";")
     if authserv.strip() != _GMAIL_AUTHSERV:
         return False
-    verdicts = [c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")]
-    if len(verdicts) != 1:
+    # Gmail writes its dmarc= verdict once, as the last resinfo, and nothing
+    # else in it. Anything else — two verdicts, one elsewhere, extra text —
+    # is sender-written text Gmail echoed (a HELO, an envelope sender), not
+    # Gmail's own verdict.
+    resinfos = [c.strip() for c in rest.split(";") if c.strip()]
+    if sum(c.startswith("dmarc=") for c in resinfos) != 1 or not resinfos[-1].startswith("dmarc="):
         return False
-    [dmarc] = verdicts
-    header_from = _HEADER_FROM.search(dmarc)
-    return (
-        re.match(r"dmarc=pass\b", dmarc) is not None
-        and header_from is not None
-        and header_from.group(1) == address.rsplit("@", 1)[1]
-    )
+    verdict = _DMARC_PASS.fullmatch(resinfos[-1])
+    return verdict is not None and verdict.group(1) == address.rsplit("@", 1)[1]
 
 
 def automatic_reply(raw: str) -> bool:

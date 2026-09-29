@@ -197,6 +197,55 @@ def test_a_failed_acknowledgement_can_be_retried(roster: SimpleNamespace) -> Non
     assert rr.claim_ack("slack", "U1")
 
 
+@pytest.mark.parametrize("error", [
+    roster_intake.AckWithheld("not authenticated"), RuntimeError("send failed"),
+], ids=["withheld", "failed"])
+def test_an_ack_that_did_not_go_out_is_never_reported_as_told(
+    roster: SimpleNamespace, error: Exception,
+) -> None:
+    """The card and the principal's prompt follow what was actually sent:
+    a withheld or failed acknowledgement leaves ``ack_sent_at`` empty and
+    the claim released."""
+    told: list[bool] = []
+
+    async def _refuse(_text: str) -> None:
+        raise error
+
+    async def _notify(_request: rr.RosterRequest, *, acknowledged: bool) -> str:
+        told.append(acknowledged)
+        return "email"
+
+    with patch.object(roster_intake, "notify_principal", new=_notify):
+        request = asyncio.run(roster_intake.intake(
+            "email", STRANGER, external_id="m1", payload={"message_id": "m1"}, send_ack=_refuse,
+        ))
+    assert request is not None and request.ack_sent_at is None
+    assert told == [False]
+    card = alerts_store.get_alert_by_external(rr.ALERT_SOURCE, rr.alert_external_id(request.id))
+    assert card is not None and "haven't been told anything" in card.body
+    stored = rr.get_request(request.id)
+    assert stored is not None and stored.ack_sent_at is None
+    assert rr.claim_ack("email", STRANGER)
+
+
+def test_an_ack_past_the_daily_cap_is_not_reported_as_told(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROSTER_ACK_DAILY_CAP", "0")
+    told: list[bool] = []
+    sent = AsyncMock()
+
+    async def _notify(_request: rr.RosterRequest, *, acknowledged: bool) -> str:
+        told.append(acknowledged)
+        return "email"
+
+    with patch.object(roster_intake, "notify_principal", new=_notify):
+        request = asyncio.run(roster_intake.intake(
+            "email", STRANGER, external_id="m1", payload={"message_id": "m1"}, send_ack=sent,
+        ))
+    assert request is not None and sent.await_count == 0 and told == [False]
+
+
 def test_a_chat_senders_profile_email_suggests_who_they_are(roster: SimpleNamespace) -> None:
     with patch.object(roster_intake, "notify_principal", new=AsyncMock()):
         req = asyncio.run(roster_intake.intake(

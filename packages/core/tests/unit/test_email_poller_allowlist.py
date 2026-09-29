@@ -352,6 +352,26 @@ def test_a_sender_gmail_did_not_authenticate_is_held_but_never_acknowledged(
     assert [s["to"] for s in _sends(gateway)] == ["annamarie@example.com"]
 
 
+def _raw_reads(gateway: AsyncMock) -> int:
+    return sum(
+        1 for c in gateway.call_tool.await_args_list
+        if c.args[0]["arguments"].get("body_format") == "raw"
+    )
+
+
+def test_the_raw_read_happens_only_when_an_ack_is_due(principal: int) -> None:
+    """Authenticating the sender costs a full raw read, so it is done only
+    once intake has claimed an acknowledgement — not for a sender already
+    told, whose next mail is held without one."""
+    raw = _raw_email("Annamarie Chen <annamarie@example.com>")
+    _run, gateway = _run_with_gateway(raw)
+    assert _raw_reads(gateway) == 1 and len(_sends(gateway)) == 1
+    run_exec, gateway = _run_with_gateway(raw.replace("Hello", "Following up"))
+    assert _raw_reads(gateway) == 0 and _sends(gateway) == []
+    # Already told on the first mail, so the notice still says so.
+    assert run_exec.await_args.kwargs["roster_acknowledged"] is True
+
+
 def test_machine_mail_is_not_held_or_acknowledged(principal: int) -> None:
     from openexecutive.people import roster_requests as rr
 

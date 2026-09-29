@@ -533,9 +533,16 @@ def claim_ack(
     return True
 
 
-def release_ack(channel: str, channel_ref: str, db_path: Path | None = None) -> None:
-    """Undo the newest ``claim_ack`` for this sender (the send failed), so the
-    next message may try again."""
+def release_ack(
+    channel: str,
+    channel_ref: str,
+    db_path: Path | None = None,
+    *,
+    request_id: int | None = None,
+) -> None:
+    """Undo the newest ``claim_ack`` for this sender (the send failed or was
+    withheld), so the next message may try again — and, with ``request_id``,
+    the request's ``ack_sent_at``, so nothing reads as told."""
     ref = _clean_ref(channel, channel_ref)
     with _conn(db_path) as conn:
         conn.execute(
@@ -543,6 +550,10 @@ def release_ack(channel: str, channel_ref: str, db_path: Path | None = None) -> 
             " WHERE channel = ? AND channel_ref = ? ORDER BY id DESC LIMIT 1)",
             (channel, ref),
         )
+        if request_id is not None:
+            conn.execute(
+                "UPDATE roster_requests SET ack_sent_at = NULL WHERE id = ?", (request_id,)
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -704,8 +715,8 @@ def surface_card(
 ) -> int | None:
     """Put a pending request on the principal's /today. Best-effort; returns
     the alert id (None when it was already there or the insert failed).
-    ``acknowledged`` is False when the sender gets no acknowledgement (an
-    email Gmail did not authenticate), so the card doesn't say they were told."""
+    ``acknowledged`` is False when the sender was not sent the acknowledgement,
+    so the card doesn't say they were told."""
     from openexecutive.alerts.models import PRIVATE_ALERT_TAG
     from openexecutive.alerts.store import insert_alert
 
@@ -718,8 +729,7 @@ def surface_card(
     told = (
         "They were told their message arrived and is waiting for you."
         if acknowledged
-        else "They haven't been told anything: their email couldn't be confirmed as "
-        "really from that address."
+        else "They haven't been told anything yet."
     )
     body = f"{describe(request)}. {told} Add them, say who they are, or ignore them."
     try:

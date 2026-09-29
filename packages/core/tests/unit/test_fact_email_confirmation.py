@@ -542,15 +542,39 @@ def test_authenticated_by_gmail(headers: tuple[str, ...], sender: str, ok: bool)
         # Unbalanced quoting or comments: unreadable, so not authenticated.
         'Authentication-Results: mx.google.com; smtp.mailfrom="x; dmarc=pass header.from=northwind.test',
         "Authentication-Results: mx.google.com; (x; dmarc=pass header.from=northwind.test",
+        # Unquoted text Gmail might echo, on a From domain with no DMARC of its own.
+        "Authentication-Results: mx.google.com; spf=pass smtp.mailfrom=x;dmarc=pass "
+        "header.from=northwind.test @attacker.test",
+        "Authentication-Results: mx.google.com; dmarc=pass header.from=northwind.test; "
+        "spf=pass smtp.mailfrom=attacker.test",
     ],
     ids=["quoted-mailfrom", "quoted-in-spf-comment", "comment-only", "two-verdicts",
-         "unbalanced-quote", "unbalanced-comment"],
+         "unbalanced-quote", "unbalanced-comment", "unquoted-echo", "verdict-not-last"],
 )
 def test_sender_written_text_in_gmails_stamp_is_no_verdict(stamp: str) -> None:
     """Gmail copies the envelope sender (and DKIM tags) into its own
     Authentication-Results; a quoted string or comment there must not read
     as a DMARC pass."""
     assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is False
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        GMAIL_PASS,
+        "Authentication-Results: mx.google.com;\r\n       arc=pass (i=1 spf=pass "
+        "spf.mailfrom=owner@northwind.test dmarc=pass fromdomain=northwind.test);"
+        "\r\n       spf=pass (google.com: domain of owner@northwind.test designates "
+        "2a00:1450:4864::12c as permitted sender) smtp.mailfrom=owner@northwind.test;"
+        "\r\n       dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=northwind.test",
+        'Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test '
+        'header.s=s1 header.b="Ab/+cd12"; spf=pass smtp.mailfrom="john.doe"@northwind.test; '
+        "dmarc=pass (p=QUARANTINE sp=QUARANTINE dis=NONE) header.from=northwind.test",
+    ],
+    ids=["gmail-pass", "arc-and-spf-comment", "quoted-values"],
+)
+def test_real_gmail_stamps_still_pass(stamp: str) -> None:
+    assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is True
 
 
 def test_a_subject_imitating_the_raw_separator_cannot_supply_the_headers() -> None:

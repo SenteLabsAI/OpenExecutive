@@ -100,6 +100,13 @@ def _suggest(channel: str, ref: str, display_name: str, profile_email: str | Non
     return on_company, suggested
 
 
+class AckWithheld(Exception):
+    """Raised by an adapter's ``send_ack`` to decline the acknowledgement
+    without sending anything — e.g. an email Gmail did not authenticate, whose
+    From may be forged. Its claim is released, so a later message may be
+    acknowledged."""
+
+
 async def intake(
     channel: str,
     channel_ref: str,
@@ -156,16 +163,8 @@ async def _intake(
     if outcome is None:
         return None
     request = outcome.request
-    if outcome.created:
-        await asyncio.to_thread(
-            rr.surface_card, request, principal.id, acknowledged=send_ack is not None
-        )
-        _audit(
-            "roster_request_created",
-            f"Roster request {request.id} opened ({channel})",
-            {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
-        )
-        await notify_principal(request, acknowledged=send_ack is not None)
+    # Acknowledge first, so the card and the principal's prompt say what the
+    # sender was actually told (``ack_sent_at``), not what was attempted.
     if send_ack is not None and await asyncio.to_thread(
         rr.claim_ack, channel, request.channel_ref, request_id=request.id
     ):
@@ -176,9 +175,26 @@ async def _intake(
                 f"Told a new {rr.channel_label(channel)} sender their message is waiting",
                 {"request_id": request.id, "channel": channel},
             )
+        except AckWithheld:
+            await asyncio.to_thread(
+                rr.release_ack, channel, request.channel_ref, request_id=request.id
+            )
         except Exception:
             logger.warning("roster_intake: acknowledgement on %s failed", channel, exc_info=True)
-            await asyncio.to_thread(rr.release_ack, channel, request.channel_ref)
+            await asyncio.to_thread(
+                rr.release_ack, channel, request.channel_ref, request_id=request.id
+            )
+    fresh = await asyncio.to_thread(rr.get_request, request.id)
+    request = fresh if fresh is not None else request
+    if outcome.created:
+        told = request.ack_sent_at is not None
+        await asyncio.to_thread(rr.surface_card, request, principal.id, acknowledged=told)
+        _audit(
+            "roster_request_created",
+            f"Roster request {request.id} opened ({channel})",
+            {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
+        )
+        await notify_principal(request, acknowledged=told)
     return request
 
 
@@ -195,14 +211,10 @@ def _pending_for(channel: str, ref: str) -> rr.RosterRequest | None:
 # --------------------------------------------------------------------------- #
 
 def _told(acknowledged: bool) -> str:
-    """What the sender was told: the fixed acknowledgement, or nothing when
-    their email could not be shown to come from that address."""
+    """What the sender was told: the fixed acknowledgement, or nothing yet."""
     if acknowledged:
         return "I told them their message arrived and is waiting for you"
-    return (
-        "I haven't told them anything: I couldn't confirm the email really came "
-        "from that address"
-    )
+    return "I haven't told them anything yet"
 
 
 def _chat_prompt(request: rr.RosterRequest, acknowledged: bool = True) -> str:
@@ -675,6 +687,7 @@ __all__ = [
     "intake",
     "looks_automated",
     "notify_principal",
+    "AckWithheld",
     "register_replayer",
     "replay_request",
     "schedule_replay",
