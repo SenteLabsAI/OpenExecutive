@@ -14,11 +14,11 @@ prompt, so one from a forged email or a run nobody is watching would be text
 carrying the principal's authority. ``remember_fact`` is also open to a
 teammate on the People list talking from a surface that verified who they are
 (the web app signed in, their own Slack or Discord). Their fact is attributed
-— rendered "(per <name>)", so no prompt reads it as the principal's — and the
-principal's outrank theirs: a teammate's fact that would replace one the
-principal set is held as a proposal, as is every fact from a teammate the
-principal marked "needs my approval" (``memory.facts``). A proposal never
-renders until the principal approves it on the Pulse page. Retiring a fact
+— rendered "(per <name>)", so no prompt reads it as the principal's — and is
+held as a proposal until the principal approves it on the Pulse page, unless
+the principal marked that teammate trusted ("needs my approval" off;
+``memory.facts``). Even a trusted teammate's fact that would replace one the
+principal set is held. A proposal never renders. Retiring a fact
 and editing the company profile stay the principal's alone.
 The principal's own email (their primary address, DMARC passing, not mail
 they forwarded) is checked like chat, then held: the change applies only when
@@ -78,8 +78,8 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
         "confirms it is them, or by email from their own address (held until "
         "they confirm it by reply). A teammate on the People list can record "
         "one from the web app or their own Slack or Discord: it is kept as "
-        "theirs, shown as (per their name), and one that would replace the "
-        "principal's fact waits for the principal's approval. source_quote must "
+        "theirs, shown as (per their name), and waits for the principal's "
+        "approval unless the principal trusts that teammate. source_quote must "
         "be the speaker's exact words from this message, and every figure, name "
         "and date you store (in the subject, statement or previous value) must "
         "be one they wrote. Never record your own inference, a figure from a "
@@ -746,7 +746,7 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
             f"it would replace fact {outranked.id}, which the principal set themselves, "
             "and the principal's facts outrank a teammate's"
             if outranked is not None
-            else "the principal asked to approve this teammate's facts before they are used"
+            else "the principal approves this teammate's facts before they are used"
         )
         return json.dumps({
             "status": "awaiting_approval",

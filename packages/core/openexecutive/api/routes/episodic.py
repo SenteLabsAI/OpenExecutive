@@ -341,11 +341,12 @@ def _teammates() -> list[Person]:
 @router.get("/memories/facts/approval", response_model=list[FactApprovalRule])
 def get_fact_approval_rules(request: Request) -> list[FactApprovalRule]:
     """Every teammate and whether the principal approves their facts before
-    they are used ("needs my approval", off by default). Principal only."""
+    they are used ("needs my approval", on by default; off = trusted).
+    Principal only."""
     _require_principal(request, "see who needs approval")
     rules = approval_rules()
     return [
-        FactApprovalRule(person_id=pid, full_name=p.full_name, needs_approval=rules.get(pid, False))
+        FactApprovalRule(person_id=pid, full_name=p.full_name, needs_approval=rules.get(pid, True))
         for p in _teammates()
         if (pid := p.id) is not None
     ]

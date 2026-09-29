@@ -25,12 +25,13 @@ from every prompt from the next one on.
 
 A teammate's fact is attributed: ``recorded_by_role="teammate"`` and their
 name, rendered as "(per <name>)" so every prompt reads it as their word, not
-the principal's. The principal's facts outrank theirs: a teammate's write that
-would replace an active fact the principal set is stored as ``proposed``
-instead, as is every write by a teammate the principal marked "needs my
-approval" (``fact_approval_rules``). A proposed row never renders; the
-principal approves it (it then replaces what it names) or declines it from
-the Pulse page.
+the principal's. A teammate's write is stored as ``proposed`` unless the
+principal marked that teammate trusted ("needs my approval" off,
+``fact_approval_rules``; on by default). Even a trusted teammate's write
+that would replace an active fact the principal set, or one they approved,
+is stored as ``proposed``. A proposed row never renders; the principal
+approves it (it then replaces what it names) or declines it from the Pulse
+page.
 
 ``kind="profile"`` rows are the audit trail of company-profile fields changed
 from chat (``update_company_profile``). The profile itself already renders in
@@ -304,12 +305,13 @@ def record_fact(
         replaced = [_row(r) for r in rows]
         if recorded_by_role == "teammate" and not proposed and recorded_by_person_id is not None:
             # "Needs my approval", read in this write's transaction: a switch
-            # turned on a moment earlier cannot let one fact through.
+            # turned on a moment earlier cannot let one fact through. On
+            # unless the principal marked this teammate trusted.
             rule = conn.execute(
                 "SELECT needs_approval FROM fact_approval_rules WHERE person_id=?",
                 (recorded_by_person_id,),
             ).fetchone()
-            proposed = bool(rule and rule["needs_approval"])
+            proposed = rule is None or bool(rule["needs_approval"])
         if recorded_by_role == "teammate" and not proposed:
             outranks = next((f for f in replaced if f.principal_owned), None)
             if outranks is not None:
@@ -411,13 +413,13 @@ def decline_fact(fact_id: int, *, reason: str = "", db_path: Path | None = None)
 
 
 def needs_approval(person_id: int, db_path: Path | None = None) -> bool:
-    """Whether the principal wants to approve this teammate's facts before
-    they are used. Off unless they turned it on."""
+    """Whether the principal approves this teammate's facts before they are
+    used. On by default: off only for a teammate the principal trusts."""
     with _conn(db_path) as conn:
         r = conn.execute(
             "SELECT needs_approval FROM fact_approval_rules WHERE person_id=?", (person_id,),
         ).fetchone()
-    return bool(r and r["needs_approval"])
+    return r is None or bool(r["needs_approval"])
 
 
 def set_needs_approval(person_id: int, on: bool, db_path: Path | None = None) -> None:
@@ -432,7 +434,8 @@ def set_needs_approval(person_id: int, on: bool, db_path: Path | None = None) ->
 
 
 def approval_rules(db_path: Path | None = None) -> dict[int, bool]:
-    """person_id → needs approval, for every teammate the principal set."""
+    """person_id → needs approval, for every teammate the principal set; a
+    teammate with no row needs approval (the default)."""
     with _conn(db_path) as conn:
         rows = conn.execute("SELECT person_id, needs_approval FROM fact_approval_rules").fetchall()
     return {int(r["person_id"]): bool(r["needs_approval"]) for r in rows}

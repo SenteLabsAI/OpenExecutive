@@ -130,6 +130,13 @@ def test_a_failed_audit_row_is_logged_not_swallowed(monkeypatch: pytest.MonkeyPa
 SAM, KIM = 7, 8
 
 
+@pytest.fixture(autouse=True)
+def _trusted_teammates(db: list[dict[str, Any]]) -> None:
+    # Approval is on by default; these tests store active teammate facts.
+    for person in (SAM, KIM):
+        facts.set_needs_approval(person, False)
+
+
 def _as_teammate(monkeypatch: pytest.MonkeyPatch, person_id: int) -> TestClient:
     monkeypatch.setattr(episodic_route, "_caller_id", lambda request: person_id)
     return _client(monkeypatch, principal=False)
@@ -214,14 +221,16 @@ def test_the_principal_sets_who_needs_approval(
         f"/memories/facts/approval/{sam}", json={"needs_approval": False},
     ).status_code == 403
     client = _client(monkeypatch, principal=True)
+    # On by default: a teammate's facts wait for the principal until trusted.
     assert client.get("/memories/facts/approval").json() == [
-        {"person_id": sam, "full_name": "Sam Lee", "needs_approval": False},
+        {"person_id": sam, "full_name": "Sam Lee", "needs_approval": True},
     ]
-    res = client.put(f"/memories/facts/approval/{sam}", json={"needs_approval": True})
-    assert res.json()["needs_approval"] is True and facts.needs_approval(sam) is True
-    assert client.put(f"/memories/facts/approval/{carl}", json={"needs_approval": True}).status_code == 404
+    assert facts.needs_approval(sam) is True
+    res = client.put(f"/memories/facts/approval/{sam}", json={"needs_approval": False})
+    assert res.json()["needs_approval"] is False and facts.needs_approval(sam) is False
+    assert client.put(f"/memories/facts/approval/{carl}", json={"needs_approval": False}).status_code == 404
     [row] = [r for r in db if r["event_type"] == "fact_approval_changed"]
-    assert row["details"] == {"person_id": sam, "needs_approval": True} and row["private"] is True
+    assert row["details"] == {"person_id": sam, "needs_approval": False} and row["private"] is True
     people_registry.invalidate()
 
 

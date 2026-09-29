@@ -18,11 +18,11 @@ import { EmptyState, formatDate } from "./shared";
 // fields changed from chat (`update_company_profile`). Active facts are read by
 // every prompt that produces output — chat, briefs, scheduled runs, the alert
 // review — so this is where the owner checks a correction actually held, and
-// retires one that no longer does. A teammate's fact is marked with their name;
-// one waiting for the owner's approval (it would replace the owner's own fact,
-// or the owner asked to approve that teammate's) is listed first, with Approve
-// and Decline for the owner. The owner also sets, per teammate, whether their
-// facts need approval.
+// retires one that no longer does. A teammate's fact is marked with their name
+// and waits for the owner's approval (listed first, with Approve and Decline)
+// unless the owner trusts that teammate — and even then when it would replace
+// the owner's own fact. The owner sets, per teammate, whether theirs need
+// approval (on by default).
 
 const EMPTY =
   "No corrections yet — when you correct a figure or a fact in chat, the Executive keeps it here and uses it everywhere.";
@@ -187,8 +187,9 @@ export default function CorrectionsTab({ onCount }: { onCount: (n: number) => vo
         <div className="border-t border-line pt-3">
           <div className="text-xs font-medium text-fg">Teammates&apos; corrections</div>
           <p className="text-xs text-fg-muted mb-2">
-            Teammates can correct facts too; theirs are marked with their name and never replace yours.
-            Turn on &ldquo;Needs my approval&rdquo; to check a teammate&apos;s corrections before they are used.
+            Teammates can correct facts too; theirs are marked with their name and wait for your
+            approval. Untick &ldquo;needs my approval&rdquo; to trust a teammate&apos;s corrections straight
+            away (one that would replace yours still waits).
           </p>
           <ul className="space-y-1">
             {rules.map((r) => (

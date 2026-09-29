@@ -48,6 +48,10 @@ def roster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     )
     people_store.archive_person(ids.gone)
     people_registry.invalidate()
+    # Teammates' facts wait for approval by default; most tests here are
+    # about what happens once one applies, so Sam is trusted. Tests of the
+    # default use someone else.
+    facts.set_needs_approval(ids.sam, False)
     token = current_session.set(None)
     yield ids
     current_session.reset(token)
@@ -176,6 +180,7 @@ def test_naming_the_principals_fact_by_id_is_held_too(roster: SimpleNamespace) -
 def test_teammates_replace_each_others_facts(roster: SimpleNamespace) -> None:
     kim = people_store.upsert_person(full_name="Kim Park", email="kim@northwind.test")
     people_registry.invalidate()
+    facts.set_needs_approval(kim, False)
     _speak(kim)
     assert _remember(statement="Cedar Court has 38 units.")["status"] == "ok"
     _speak(roster.sam, said="Cedar Court is 38 units now, 2 of them are offices")
@@ -200,7 +205,7 @@ def test_needs_my_approval_holds_every_fact_of_that_teammate(roster: SimpleNames
     assert facts.approval_rules() == {roster.sam: True}
     _speak(roster.sam)
     out = _remember()
-    assert out["status"] == "awaiting_approval" and "asked to approve" in out["message"]
+    assert out["status"] == "awaiting_approval" and "approves this teammate's" in out["message"]
     assert facts.list_facts() == [] and facts.render_facts_for_prompt() == ""
     facts.set_needs_approval(roster.sam, False)
     assert _remember(subject="Maple House unit count", statement="Maple House has 48 units.",
@@ -386,3 +391,17 @@ def test_the_approval_rule_is_read_in_the_write_itself(roster: SimpleNamespace) 
     mine, _ = facts.record_fact(subject="Elm Yard", statement="Elm Yard has 9 units.", source_quote="q",
                                 recorded_by_person_id=roster.owner)
     assert mine.status == "active"
+
+
+def test_a_teammates_facts_wait_for_approval_by_default(roster: SimpleNamespace) -> None:
+    kim = people_store.upsert_person(full_name="Kim Park", email="kim@northwind.test")
+    people_registry.invalidate()
+    assert facts.needs_approval(kim) is True and kim not in facts.approval_rules()
+    _speak(kim)
+    out = _remember()
+    assert out["status"] == "awaiting_approval" and "approves this teammate's" in out["message"]
+    assert facts.list_facts() == [] and facts.render_facts_for_prompt() == ""
+    # Trusted, theirs apply at once.
+    facts.set_needs_approval(kim, False)
+    assert _remember(subject="Maple House unit count", statement="Maple House has 48 units.",
+                     source_quote="Maple House is 48 units")["status"] == "ok"
