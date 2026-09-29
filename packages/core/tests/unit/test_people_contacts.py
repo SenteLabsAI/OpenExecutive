@@ -953,7 +953,12 @@ def _poller_audit_rows() -> list[tuple[str, str, dict[str, Any], bool]]:
         patch.object(poller, "_mark_read", new=AsyncMock()),
     ):
         asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
-    return audited
+    # A stranger's mail also opens a roster request ("who is this?"); its
+    # rows are the principal's alone, like every row about a contact, so no
+    # other /audit reader can tell the two senders apart by them.
+    roster = [row for row in audited if row[0].startswith("roster_")]
+    assert all(row[3] for row in roster)
+    return [row for row in audited if not row[0].startswith("roster_")]
 
 
 def test_contact_mail_is_audited_like_any_outside_sender_but_privately(

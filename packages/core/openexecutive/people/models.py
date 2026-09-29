@@ -96,6 +96,10 @@ class Person(BaseModel):
     kind: PersonKind = "team"
     department_slugs: list[str] = Field(default_factory=list)
     email: str | None = None
+    # Other addresses the same person writes from (``person_emails``). They
+    # match inbound mail and may be emailed like ``email``, but never sign
+    # in: web sign-in and caller resolution read ``email`` only.
+    email_aliases: list[str] = Field(default_factory=list)
     slack_user_id: str | None = None
     telegram_chat_id: str | None = None
     discord_user_id: str | None = None

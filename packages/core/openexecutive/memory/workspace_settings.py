@@ -20,6 +20,10 @@ One row (``id = 1``) in the ``workspace_settings`` table of the episodic DB:
   how the Executive and its specialists learn which. Only solo mode reads it
   (the solo org block and the specialists' ``<principal_role>`` tag); it is
   kept, not cleared, in team mode.
+- ``company_domains`` — the company's own email domains (a JSON list), or
+  NULL to derive them from the principal's addresses (``people.identity``).
+  An address on one of them matches a teammate by its local part, so
+  anna+x@acme.io is the Anna whose address is anna@acme.com.
 
 The row lives in its own table rather than on ``CompanyProfile`` on purpose:
 onboarding's commit and the form wizard rebuild the profile from scratch,
@@ -34,7 +38,9 @@ DB leave no trace.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,9 +95,14 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     role_title TEXT,
     reports_to TEXT,
     remit TEXT,
-    measured_on TEXT
+    measured_on TEXT,
+    company_domains TEXT
 )
 """
+
+# Company domains: at most this many, each a plain lowercase DNS name.
+MAX_COMPANY_DOMAINS = 10
+_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
 
 class PrincipalRole(BaseModel):
@@ -119,6 +130,8 @@ class WorkspaceSettings(PrincipalRole):
 
     mode: WorkspaceMode = DEFAULT_MODE
     timezone: str | None = None
+    # None: derive from the principal's addresses (people.identity).
+    company_domains: list[str] | None = None
 
 
 def _resolve_db_path(db_path: Path | None) -> Path:
@@ -143,7 +156,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     concurrent boot counts as success)."""
     conn.execute(_CREATE_SQL)
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({TABLE})")}
-    for col in ROLE_FIELDS:
+    for col in (*ROLE_FIELDS, "company_domains"):
         if col in existing:
             continue
         try:
@@ -234,6 +247,50 @@ def validate_role_field(field: str, value: object) -> str | None:
     if field == "role_kind":
         return validate_role_kind(value)
     return validate_role_text(field, value)
+
+
+def validate_company_domains(value: object) -> list[str] | None:
+    """``value`` as a list of company email domains, lowercased, deduplicated
+    and sorted; None means "derive them". Raises ``ValueError`` for anything
+    that is not a list of plain domain names, for more than
+    ``MAX_COMPANY_DOMAINS``, and for a free-mail domain (gmail.com and the
+    like): matching by local part there would make anna@gmail.com anyone
+    called anna. The message never quotes the value."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("company_domains must be a list of domain names")
+    from openexecutive.people.identity import FREEMAIL_DOMAINS
+
+    out: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("company_domains must be a list of domain names")
+        name = item.strip().lower().lstrip("@").rstrip(".")
+        if not name:
+            continue
+        if not _DOMAIN_RE.match(name):
+            raise ValueError("company_domains holds a value that is not a domain name")
+        if name in FREEMAIL_DOMAINS:
+            raise ValueError(
+                "company_domains cannot hold a free email provider's domain"
+            )
+        out.add(name)
+    if len(out) > MAX_COMPANY_DOMAINS:
+        raise ValueError(f"company_domains holds at most {MAX_COMPANY_DOMAINS} domains")
+    return sorted(out)
+
+
+def _stored_domains(row: sqlite3.Row) -> list[str] | None:
+    """The stored company domains, or None (derive) when the column is
+    missing, empty or no longer validates. Never raises."""
+    if "company_domains" not in set(row.keys()) or row["company_domains"] is None:
+        return None
+    try:
+        return validate_company_domains(json.loads(row["company_domains"]))
+    except (ValueError, TypeError):
+        logger.warning("workspace: ignoring invalid stored company_domains")
+        return None
 
 
 def _stored_role(row: sqlite3.Row) -> dict[str, str | None]:
@@ -328,7 +385,12 @@ def get_workspace(db_path: Path | None = None) -> WorkspaceSettings:
         logger.warning("workspace: ignoring unknown stored mode %r", mode)
         mode = DEFAULT_MODE
     return WorkspaceSettings.model_validate(
-        {"mode": mode, "timezone": _stored_zone(row["timezone"]), **_stored_role(row)}
+        {
+            "mode": mode,
+            "timezone": _stored_zone(row["timezone"]),
+            "company_domains": _stored_domains(row),
+            **_stored_role(row),
+        }
     )
 
 
@@ -442,7 +504,7 @@ def _upsert(db_path: Path | None, **columns: str | None) -> None:
     """Write the given columns of the row (``mode`` / ``timezone`` / the role
     fields), leaving the others as they are. Creates the table, any missing
     column and the row as needed."""
-    unknown = set(columns) - {"mode", "timezone", *ROLE_FIELDS}
+    unknown = set(columns) - {"mode", "timezone", "company_domains", *ROLE_FIELDS}
     if unknown:
         raise ValueError(f"unknown workspace column(s): {sorted(unknown)}")
     names = list(columns)
@@ -543,6 +605,15 @@ def set_principal_role(**fields: object) -> WorkspaceSettings:
     return get_workspace()
 
 
+def set_company_domains(domains: list[str] | None) -> WorkspaceSettings:
+    """Store the company's email domains; None (or an empty list) goes back
+    to deriving them from the principal's addresses. Raises ``ValueError``
+    (``validate_company_domains``) before anything is written."""
+    clean = validate_company_domains(domains)
+    _upsert(None, company_domains=json.dumps(clean) if clean else None)
+    return get_workspace()
+
+
 def restore_workspace_settings(
     settings: WorkspaceSettings, db_path: Path | None = None
 ) -> None:
@@ -553,6 +624,11 @@ def restore_workspace_settings(
         db_path,
         mode=settings.mode,
         timezone=validate_timezone(settings.timezone),
+        company_domains=(
+            json.dumps(domains)
+            if (domains := validate_company_domains(settings.company_domains))
+            else None
+        ),
         **{f: validate_role_field(f, getattr(settings, f)) for f in ROLE_FIELDS},
     )
 

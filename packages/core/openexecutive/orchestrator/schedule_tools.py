@@ -1638,6 +1638,7 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "forget_fact",
     "record_decision_outcome",
     "remember_fact",
+    "resolve_roster_request",
     "update_company_profile",
 })
 

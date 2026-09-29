@@ -326,6 +326,12 @@ class WorkspaceResponse(BaseModel):
     reports_to: str | None = None
     remit: str | None = None
     measured_on: str | None = None
+    # The company's own email domains: on one of them an address matches a
+    # teammate by its local part (people.identity). `company_domains_custom`
+    # is false when they are derived from the principal's addresses. Returned
+    # only to the principal, like the role; empty for anyone else.
+    company_domains: list[str] = Field(default_factory=list)
+    company_domains_custom: bool = False
 
 
 class WorkspaceUpdateRequest(BaseModel):
@@ -343,6 +349,16 @@ class WorkspaceUpdateRequest(BaseModel):
     reports_to: str | None = None
     remit: str | None = None
     measured_on: str | None = None
+    # null (or []) goes back to deriving them from the principal's addresses.
+    company_domains: list[str] | None = None
+
+    @field_validator("company_domains", mode="before")
+    @classmethod
+    def _domains(cls, v: object) -> object:
+        from openexecutive.memory.workspace_settings import validate_company_domains
+
+        # Runs only when sent; the message never quotes the value.
+        return validate_company_domains(v)
 
     @field_validator("mode", mode="before")
     @classmethod

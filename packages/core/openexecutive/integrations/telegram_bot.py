@@ -373,6 +373,107 @@ async def _process_and_reply(
 _COMMAND_RE = re.compile(r"^/(start|help|ask)(?:@\w+)?\s*", re.IGNORECASE)
 
 
+def _message_content(message: dict[str, Any]) -> tuple[str, list[tuple[str, str, str]]]:
+    """A Telegram message's text (known bot commands stripped) and its
+    attachments as ``(file_id, filename, content_type)``. Downloads happen
+    later, in ``_process_and_reply``, so the webhook stays fast."""
+    text: str = message.get("text", "") or message.get("caption", "")
+    text = text.strip()
+    # Only strip known bot commands (/start, /help, /ask), not arbitrary slash-prefixed content.
+    text = _COMMAND_RE.sub("", text).strip()
+
+    attachment_file_ids: list[tuple[str, str, str]] = []
+
+    # Single document (any file type).
+    doc = message.get("document")
+    if doc:
+        file_id = doc.get("file_id", "")
+        filename = doc.get("file_name") or f"file_{file_id}"
+        content_type = doc.get("mime_type") or ""
+        if file_id:
+            attachment_file_ids.append((file_id, filename, content_type))
+
+    # Photos — Telegram sends an array of sizes; pick the largest.
+    photos = message.get("photo")
+    if photos and isinstance(photos, list) and photos:
+        largest = max(photos, key=lambda p: p.get("file_size", 0))
+        file_id = largest.get("file_id", "")
+        if file_id:
+            attachment_file_ids.append((file_id, f"photo_{file_id}.jpg", "image/jpeg"))
+    return text, attachment_file_ids
+
+
+async def _hold_unknown_sender(
+    *,
+    message_text: str,
+    sender_name: str,
+    chat_id: int,
+    message_id: int,
+    token: str,
+    attachment_file_ids: list[tuple[str, str, str]],
+) -> None:
+    """Hold a private-chat message from someone off the roster for the
+    principal to confirm (``integrations.roster_intake``) and tell them it
+    arrived. One of the principal's contacts gets nothing: contacts have no
+    chat access."""
+    from openexecutive.integrations import roster_intake
+    from openexecutive.people.store import find_person_by_telegram_chat_id
+
+    if await asyncio.to_thread(
+        find_person_by_telegram_chat_id, str(chat_id), include_contacts=True
+    ):
+        return
+
+    async def _ack(text: str) -> None:
+        await send_message(token, chat_id, text)
+
+    await roster_intake.intake(
+        "telegram", str(chat_id),
+        external_id=str(message_id),
+        payload={
+            "message_text": message_text,
+            "sender_name": sender_name,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "attachment_file_ids": [list(a) for a in attachment_file_ids],
+        },
+        preview=message_text,
+        display_name=sender_name if not sender_name.startswith("chat:") else "",
+        send_ack=_ack,
+    )
+
+
+async def _replay_held(message: Any, _request: Any) -> bool:
+    """Replay a message held while its chat was off the roster."""
+    token = get_settings().telegram_bot_token
+    payload = message.payload
+    if not token or not payload.get("chat_id"):
+        return False
+    attachments = [
+        (str(a[0]), str(a[1]), str(a[2]))
+        for a in payload.get("attachment_file_ids") or []
+        if isinstance(a, (list, tuple)) and len(a) == 3
+    ]
+    await _process_and_reply(
+        message_text=str(payload.get("message_text") or ""),
+        sender_name=str(payload.get("sender_name") or ""),
+        chat_id=int(payload["chat_id"]),
+        message_id=int(payload.get("message_id") or 0),
+        token=token,
+        attachment_file_ids=attachments or None,
+    )
+    return True
+
+
+def _register_replayer() -> None:
+    from openexecutive.integrations.roster_intake import register_replayer
+
+    register_replayer("telegram", _replay_held)
+
+
+_register_replayer()
+
+
 @router.post("/webhook/telegram", status_code=200)
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     settings = get_settings()
@@ -441,33 +542,30 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
                 "outcome": "rejected_unknown_sender",
             },
         )
+        # A private chat, on a webhook only Telegram can call: hold the
+        # message for the principal to confirm and tell the sender it
+        # arrived. A group (everyone in it) or an unverified webhook (anyone
+        # could forge the update) stays silent, as before.
+        chat = message.get("chat") or {}
+        if (
+            chat.get("type") == "private"
+            and settings.telegram_webhook_secret
+            and settings.telegram_webhook_secret_valid
+        ):
+            text, attachment_file_ids = _message_content(message)
+            if text or attachment_file_ids:
+                background_tasks.add_task(
+                    _hold_unknown_sender,
+                    message_text=text,
+                    sender_name=sender_name,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    token=settings.telegram_bot_token,
+                    attachment_file_ids=attachment_file_ids,
+                )
         return {}
 
-    text: str = message.get("text", "") or message.get("caption", "")
-    text = text.strip()
-    # Only strip known bot commands (/start, /help, /ask), not arbitrary slash-prefixed content.
-    text = _COMMAND_RE.sub("", text).strip()
-
-    # Collect attachment metadata (file_id, filename, content_type).
-    # Downloads happen inside _process_and_reply so this handler stays fast.
-    attachment_file_ids: list[tuple[str, str, str]] = []
-
-    # Single document (any file type).
-    doc = message.get("document")
-    if doc:
-        file_id = doc.get("file_id", "")
-        filename = doc.get("file_name") or f"file_{file_id}"
-        content_type = doc.get("mime_type") or ""
-        if file_id:
-            attachment_file_ids.append((file_id, filename, content_type))
-
-    # Photos — Telegram sends an array of sizes; pick the largest.
-    photos = message.get("photo")
-    if photos and isinstance(photos, list) and photos:
-        largest = max(photos, key=lambda p: p.get("file_size", 0))
-        file_id = largest.get("file_id", "")
-        if file_id:
-            attachment_file_ids.append((file_id, f"photo_{file_id}.jpg", "image/jpeg"))
+    text, attachment_file_ids = _message_content(message)
 
     # Require either text or at least one attachment to proceed.
     if not text and not attachment_file_ids:

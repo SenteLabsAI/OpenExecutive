@@ -1342,6 +1342,11 @@ export interface WorkspaceSettings extends PrincipalRole {
   timezone: string | null;
   // The zone in effect: `timezone`, else the server's USER_TIMEZONE, else UTC.
   effective_timezone: string;
+  // The company's own email domains (principal only): on one of them an
+  // address matches a teammate by its local part. Derived from the
+  // principal's addresses unless `company_domains_custom`.
+  company_domains?: string[];
+  company_domains_custom?: boolean;
 }
 
 // Partial update: only the fields present change. `timezone: null` (or "")
@@ -1349,6 +1354,8 @@ export interface WorkspaceSettings extends PrincipalRole {
 export interface WorkspaceUpdate extends Partial<PrincipalRole> {
   mode?: WorkspaceMode;
   timezone?: string | null;
+  // null goes back to deriving them from the principal's addresses.
+  company_domains?: string[] | null;
 }
 
 export async function getWorkspace(signal?: AbortSignal): Promise<WorkspaceSettings> {
@@ -3154,6 +3161,9 @@ export interface Person {
   kind: PersonKind;
   department_slugs: string[];
   email: string | null;
+  // Other addresses they write from: they match their mail and may be
+  // emailed, but never sign in (only `email` does).
+  email_aliases?: string[];
   slack_user_id: string | null;
   telegram_chat_id: string | null;
   discord_user_id: string | null;
@@ -3202,6 +3212,7 @@ export interface PersonCreate {
   kind?: PersonKind;
   department_slugs?: string[];
   email?: string | null;
+  email_aliases?: string[];
   slack_user_id?: string | null;
   telegram_chat_id?: string | null;
   discord_user_id?: string | null;
@@ -3223,6 +3234,7 @@ export async function createPerson(body: PersonCreate): Promise<Person> {
     body: JSON.stringify(body),
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
+  if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
   if (!res.ok) throw new Error(`Failed to create person: ${res.statusText}`);
   return res.json();
 }
@@ -3232,6 +3244,8 @@ export interface PersonPatch {
   role?: string;
   kind?: PersonKind;
   email?: string | null;
+  // The full list; replaces the current one.
+  email_aliases?: string[];
   slack_user_id?: string | null;
   telegram_chat_id?: string | null;
   discord_user_id?: string | null;
@@ -3251,8 +3265,63 @@ export async function updatePerson(id: number, patch: PersonPatch): Promise<Pers
     body: JSON.stringify(patch),
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
+  if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
   if (!res.ok) throw new Error(`Failed to update person: ${res.statusText}`);
   return res.json();
+}
+
+// The server's `detail` for a refused request, or `fallback`.
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    return typeof body?.detail === "string" ? body.detail : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+// A roster request: someone not on the People list wrote in, was told their
+// message is waiting, and is held until the principal says who they are.
+// Everything here is server-derived; `display_name` is the name the sender
+// gave (unverified) and `previews` are the first lines of what they wrote.
+export interface RosterRequestCard {
+  id: number;
+  channel: "email" | "slack" | "discord" | "telegram" | string;
+  channel_ref: string;
+  display_name: string;
+  profile_email: string | null;
+  on_company_domain: boolean;
+  suggested_kind: PersonKind | null;
+  suggested_person_id: number | null;
+  suggested_person_name: string | null;
+  message_count: number;
+  ack_sent: boolean;
+  first_seen_at: string;
+  previews: string[];
+}
+
+// Either add them (`full_name` + `kind`) or say they are someone already on
+// the list (`link_person_id`).
+export interface RosterRequestAnswer {
+  full_name?: string;
+  kind?: PersonKind;
+  role?: string;
+  link_person_id?: number;
+  replace_channel_id?: boolean;
+}
+
+export async function approveRosterRequest(id: number, answer: RosterRequestAnswer): Promise<void> {
+  const res = await fetch(`${API_BASE}/people/requests/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(answer),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `Could not add them: ${res.statusText}`));
+}
+
+export async function declineRosterRequest(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/people/requests/${id}/decline`, { method: "POST" });
+  if (!res.ok) throw new Error(await errorDetail(res, `Could not ignore them: ${res.statusText}`));
 }
 
 export async function archivePerson(id: number): Promise<void> {
@@ -3442,6 +3511,9 @@ export interface ProposalItem {
   // /decisions endpoints (which book/cancel server-side) instead of the
   // ack-and-handoff-to-chat flow. Null/absent for ordinary alert proposals.
   decision_instance_id?: number | null;
+  // Set when the card is a roster request ("who is this new sender?"): the
+  // briefing answers it at /people/requests/{id} instead of ack-and-chat.
+  roster_request?: RosterRequestCard | null;
   // Alert lifecycle (alerts/lifecycle.py + alerts/review.py). All optional so
   // older API builds and test mocks keep compiling.
   // Coalescing: how many times the same situation re-fired, and when last.

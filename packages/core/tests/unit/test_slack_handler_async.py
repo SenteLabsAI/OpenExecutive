@@ -142,7 +142,7 @@ class _Harness:
         self._patches = [
             patch.object(slack_bot, "_bot_user_id", "UBOT"),
             patch("openexecutive.people.store.find_person_by_slack_id",
-                  side_effect=lambda _uid: self.person),
+                  side_effect=lambda _uid, **_kw: self.person),
             audit_patch,
             patch("openexecutive.knowledge.retriever.retrieve",
                   side_effect=self._record_retrieve),
@@ -971,3 +971,74 @@ async def test_other_message_subtypes_are_still_ignored() -> None:
                 event=dict(DM_EVENT, subtype="message_changed"), say=h.say, client=h.client
             )
             h.chat.assert_not_awaited()
+
+
+# --- someone off the roster: held for the principal, told it arrived ---------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("event", "mode"), [(DM_EVENT, "dm"), (MENTION_EVENT, "mention")])
+async def test_an_unknown_sender_is_held_and_told_privately(event: dict[str, Any], mode: str) -> None:
+    intake = AsyncMock(return_value=None)
+    async with _listeners() as listeners:
+        with _Harness() as h, patch("openexecutive.integrations.roster_intake.intake", new=intake):
+            h.person = None
+            h.client.users_info = AsyncMock(return_value={
+                "user": {"profile": {"real_name": "Annamarie Chen", "email": "am@acme.com"}}
+            })
+            h.client.chat_postEphemeral = AsyncMock()
+            name = "handle_message" if mode == "dm" else "handle_mention"
+            await listeners[name](event=dict(event), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            intake.assert_awaited_once()
+            kwargs = intake.await_args.kwargs
+            assert intake.await_args.args == ("slack", "U123")
+            assert kwargs["display_name"] == "Annamarie Chen"
+            assert kwargs["profile_email"] == "am@acme.com"
+            assert kwargs["payload"]["mode"] == mode
+            assert kwargs["payload"]["event"]["text"] == event["text"]
+            await kwargs["send_ack"]("received")
+            if mode == "dm":
+                h.say.assert_awaited_once()
+                h.client.chat_postEphemeral.assert_not_awaited()
+            else:
+                # Only the sender sees it: the channel learns nothing.
+                h.say.assert_not_awaited()
+                assert h.client.chat_postEphemeral.await_args.kwargs["user"] == "U123"
+
+
+@pytest.mark.asyncio
+async def test_a_contact_writing_on_slack_is_not_held() -> None:
+    intake = AsyncMock()
+    contact = _person()
+    async with _listeners() as listeners:
+        with _Harness() as h, patch("openexecutive.integrations.roster_intake.intake", new=intake):
+            with patch(
+                "openexecutive.people.store.find_person_by_slack_id",
+                side_effect=lambda _uid, include_contacts=False: contact if include_contacts else None,
+            ):
+                await listeners["handle_message"](event=dict(DM_EVENT), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            h.say.assert_not_awaited()
+    intake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_held_slack_message_is_replayed_once_they_are_on_the_roster() -> None:
+    from openexecutive.integrations import roster_intake
+    from openexecutive.people.roster_requests import HeldMessage
+
+    posted = AsyncMock()
+    async with _listeners() as _listeners_by_name:
+        replay = roster_intake._REPLAYERS["slack"]
+        with _Harness() as h, patch(
+            "slack_sdk.web.async_client.AsyncWebClient.chat_postMessage", new=posted
+        ):
+            message = HeldMessage(
+                id=1, request_id=1, external_id="1700000100.0",
+                payload={"event": dict(DM_EVENT), "mode": "dm"},
+            )
+            assert await replay(message, None) is True
+            h.chat.assert_awaited_once()
+    # The answer goes back to the DM it came from.
+    assert posted.await_args.kwargs["channel"] == "D9"
+    assert posted.await_args.kwargs["text"] == "the reply"

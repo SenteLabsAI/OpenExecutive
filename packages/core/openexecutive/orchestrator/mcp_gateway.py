@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import html
 import json
 import logging
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openexecutive.config import get_settings, mcp_config_file_present
+from openexecutive.people.identity import RosterAllow
 from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
@@ -691,7 +693,7 @@ def _check_attachment_urls(tool: str, arguments: dict[str, Any]) -> str | None:
     )
 
 
-def _roster_allow_set() -> set[str]:
+def _roster_allow_set() -> RosterAllow:
     """The set of lowercased addresses the Executive may reach outbound.
 
     Derived from the People roster plus the Executive's own address — the single
@@ -717,9 +719,77 @@ def _roster_allow_set() -> set[str]:
     if turn_is_private_to_principal():
         # A turn about the principal's private mail reaches the principal only.
         everyone = [p for p in everyone if p.is_principal]
-    allow = {p.email.lower() for p in everyone if p.email}
-    allow.add(settings.exec_email_address.lower())
-    return allow
+    # Primary addresses and aliases exactly; for a teammate, also their
+    # local part on the company's own domains (people.identity) — the same
+    # rule inbound mail is matched by.
+    return RosterAllow(everyone, extra=[settings.exec_email_address])
+
+
+# The one send that may reach an address off the roster: the fixed
+# acknowledgement ``integrations.roster_intake.send_email_ack`` sends an
+# unknown sender. Set only around that call; admits one send with exactly
+# the granted recipient, subject and body and nothing else, then is spent.
+_roster_ack: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "roster_ack_grant", default=None
+)
+_ROSTER_ACK_KEYS = frozenset({"user_google_email", "to", "subject", "body"})
+
+# A roster request's one-time answer token ("RR-" + 20 base32 characters,
+# people.roster_requests) proves an email answer came from the principal's
+# mailbox. The confirmation email carrying it sits in the Executive's own
+# Sent folder, so every Google Workspace result is scrubbed of tokens — a
+# model turn (anyone's) reading that mail sees "RR-[hidden]" — except the
+# email poller's own fetch of an inbound message, inside reveal_roster_tokens.
+_ROSTER_TOKEN_RE = re.compile(r"\bRR-[A-Z2-7]{20}\b", re.IGNORECASE)
+_reveal_tokens: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "reveal_roster_tokens", default=False
+)
+
+
+def hide_roster_tokens(text: str) -> str:
+    """``text`` with every roster answer token replaced by "RR-[hidden]"."""
+    return _ROSTER_TOKEN_RE.sub("RR-[hidden]", text)
+
+
+@contextlib.contextmanager
+def reveal_roster_tokens() -> Iterator[None]:
+    """Leave roster answer tokens in Google Workspace results (the poller's
+    read of one inbound message, before any model sees it)."""
+    token = _reveal_tokens.set(True)
+    try:
+        yield
+    finally:
+        _reveal_tokens.reset(token)
+
+
+@contextlib.contextmanager
+def roster_ack_grant(*, to: str, subject: str, body: str) -> Iterator[None]:
+    """Let the Gmail gate pass one send of ``subject`` / ``body`` to ``to``."""
+    token = _roster_ack.set({"to": to, "subject": subject, "body": body, "used": False})
+    try:
+        yield
+    finally:
+        _roster_ack.reset(token)
+
+
+def _roster_ack_admits(tool: str, arguments: dict[str, Any]) -> bool:
+    """Whether this call is exactly the granted acknowledgement (and spend
+    the grant if so). Any other key, a list recipient, a different body or
+    subject, a draft instead of a send, or a second call: no."""
+    grant = _roster_ack.get()
+    if grant is None or grant["used"]:
+        return False
+    if tool != "google_workspace__send_gmail_message":
+        return False
+    if set(arguments) != _ROSTER_ACK_KEYS:
+        return False
+    to = arguments.get("to")
+    if not isinstance(to, str) or to != grant["to"] or any(c in to for c in ",;<>\r\n"):
+        return False
+    if arguments.get("subject") != grant["subject"] or arguments.get("body") != grant["body"]:
+        return False
+    grant["used"] = True
+    return True
 
 
 # Artifact attachments on one email. Gmail caps a message at 25 MB and base64
@@ -908,6 +978,18 @@ def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
                     "(header-injection risk) — refusing to send."
                 ),
             )
+
+    if _roster_ack_admits(tool, arguments):
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "integration_outbound",
+            "Sent the fixed acknowledgement to a sender not on the roster",
+            actor="mcp_gateway",
+            details={"tool": tool, "kind": "roster_ack"},
+            private=True,
+        )
+        return None
 
     # Egress gate: the Executive may only send mail to addresses on the
     # People roster or to its own exec address. Used to be a static env
@@ -1544,6 +1626,13 @@ class MCPGateway:
                 {"tool_name": tool_input["name"], "arguments": arguments},
             )
             result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        # On the final result, retry or not: roster answer tokens are hidden
+        # from every Google Workspace read but the poller's own.
+        if (
+            isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX)
+            and not _reveal_tokens.get()
+        ):
+            result_text = hide_roster_tokens(result_text)
         # Record an outbound-context linkage only for a genuinely-sent email.
         # The send tool returns its outcome as text; a soft-error payload
         # (`{"error": ...}`) means nothing was sent, so skip it to avoid a

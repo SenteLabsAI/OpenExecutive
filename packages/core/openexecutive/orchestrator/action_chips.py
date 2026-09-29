@@ -44,6 +44,7 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # People roster mutations
     "upsert_person",
     "archive_person",
+    "resolve_roster_request",
     "set_department_head",
     # Attunement: closing an open loop stops the nudge engine chasing it
     "close_open_loop",
@@ -251,6 +252,17 @@ def summarize_action(
     elif tool_name == "close_open_loop":
         loop_id = tool_input.get("loop_id")
         payload["summary"] = f"Closed open loop #{loop_id}" if loop_id else "Closed an open loop"
+    elif tool_name == "resolve_roster_request":
+        decision = str(tool_input.get("decision", "") or "")
+        name = str((parsed or {}).get("full_name") or tool_input.get("full_name") or "")
+        if decision == "decline":
+            payload["summary"] = "Left a new sender off the People list"
+        else:
+            payload["summary"] = f"Added {name} to the People list" if name else "Updated the People list"
+        pid = (parsed or {}).get("person_id") if parsed else None
+        payload["target"] = name or None
+        if isinstance(pid, int):
+            payload["link"] = f"/people/{pid}"
     elif tool_name == "archive_person":
         pid = tool_input.get("person_id")
         payload["summary"] = f"Archived person #{pid}" if pid else "Archived a person"

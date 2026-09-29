@@ -547,10 +547,11 @@ def test_an_archived_holder_does_not_block_the_owner_email(people_db: Path) -> N
 def test_an_unreadable_roster_rejects_rather_than_risking_a_duplicate(
     people_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _locked(email: str) -> None:
+    def _locked(email: str, *_a: object, **_kw: object) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(people_store, "find_person_by_email", _locked)
+    # The owner-email check matches aliases too (find_person_by_address).
+    monkeypatch.setattr(people_store, "find_person_by_address", _locked)
     with pytest.raises(OwnerEmailError):
         check_owner_email("dana@example.com", "Dana Reyes")
 
@@ -624,3 +625,10 @@ def test_link_never_replaces_a_different_email(people_db: Path) -> None:
     assert link_owner_email(pid, "ops@example.com") is False
     person = people_store.get_person(pid, db_path=people_db)
     assert person is not None and person.email == "dana@example.com"
+
+
+def test_someone_elses_alias_is_not_the_owners_email(people_db: Path) -> None:
+    pid = people_store.upsert_person(full_name="Ben Teammate", email="ben@example.com")
+    people_store.set_person_emails(pid, ["dana@example.com"])
+    with pytest.raises(OwnerEmailError):
+        check_owner_email("dana@example.com", "Dana Reyes")

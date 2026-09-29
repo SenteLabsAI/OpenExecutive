@@ -243,6 +243,19 @@ _SHAPE_PROMPTS: dict[str, str] = {
     "document": (
         'Return: {"received": true, "text_preview": "<first 200 chars of content>"}'
     ),
+    # The owner saying who a new sender is (integrations.roster_intake).
+    "roster_identity": (
+        'Return: {"decision": "approve|link|decline|unrelated", '
+        '"name": "<the person\'s name as the owner wrote it, or null>", '
+        '"kind": "team|contact|null"}\n'
+        "Rules: approve = add them (\"add her\", \"yes\", \"that\'s Annamarie, add "
+        "her\"); link = they are someone the owner names as already known "
+        "(\"that\'s Anna from finance\", \"same as Ben\") without asking to add a "
+        "new person; decline = do not add them (\"ignore\", \"no\", \"spam\"). "
+        "kind = team for a colleague / teammate / employee, contact for a client, "
+        "vendor, advisor or anyone outside, null when the owner did not say. "
+        "name = only a name the owner actually wrote, never one you infer."
+    ),
 }
 
 # Appended to every shape. Without it only `approve_reject` could decline to
@@ -271,6 +284,7 @@ _FALLBACKS: dict[str, dict[str, Any]] = {
     "free_text": {"text": ""},
     "numeric": {"value": None, "unit": ""},
     "document": {"received": False, "text_preview": ""},
+    "roster_identity": {"decision": "unrelated", "name": None, "kind": None},
 }
 
 
