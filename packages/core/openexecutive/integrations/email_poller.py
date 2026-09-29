@@ -837,7 +837,11 @@ async def _run_executive(
         )
 
         session.email_from = from_addr.strip().lower()
-        principal = await asyncio.to_thread(principal_address)
+        try:
+            principal = await asyncio.to_thread(principal_address)
+        except Exception:  # noqa: BLE001 - optional step; must not lose the email.
+            logger.warning("principal lookup failed; email turn left unauthenticated", exc_info=True)
+            principal = ""
         session.email_authenticated = bool(principal) and session.email_from == principal and (
             await sender_authenticated(gateway, message_id, from_addr)
         )

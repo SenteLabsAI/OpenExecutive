@@ -580,3 +580,40 @@ def test_the_poller_marks_the_session_with_the_sender_and_authentication(
     assert session.email_from == sender.lower()
     assert session.email_authenticated is authenticated
     assert mailbox.call_tool.await_count == raw_reads
+
+
+def test_a_failed_principal_lookup_leaves_the_email_turn_unauthenticated_not_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Exec:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        async def chat(self, **kwargs: Any) -> str:
+            captured["session"] = kwargs["session"]
+            return "ok"
+
+    def locked() -> str:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(fc, "principal_address", locked)
+    mailbox = _mailbox(GMAIL_PASS)
+    raw = f"Subject: Units\nFrom: {OWNER}\n\n--- BODY ---\nMaple House is 48 units.\n"
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", new=_Exec),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              return_value=SimpleNamespace(is_empty=lambda: True)),
+        patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch.object(poller, "get_settings",
+                     return_value=SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)),
+    ):
+        asyncio.run(poller._run_executive(
+            gateway=mailbox, raw_email=raw, message_id="m1", thread_id="t1",  # type: ignore[arg-type]
+            from_addr=OWNER,
+        ))
+    session = captured["session"]
+    assert session.email_from == OWNER and session.email_authenticated is False
+    assert mailbox.call_tool.await_count == 0
