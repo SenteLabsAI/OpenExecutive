@@ -586,6 +586,33 @@ def test_run_alert_review_end_to_end_with_stubbed_agent(db: Path, audit_events, 
     assert summary3.reviewed == 1 and seen_batches
 
 
+def test_run_alert_review_reads_standing_facts_from_its_own_db(
+    db: Path, monkeypatch, tmp_path: Path,
+) -> None:
+    """The batch carries the facts of the DB the review runs against, not the
+    default one."""
+    from openexecutive.agents import alert_review as agent_module
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.api.routes.today import ActivityResponse
+    from openexecutive.memory import episodic, facts
+
+    monkeypatch.setattr(episodic, "DB_PATH", tmp_path / "some_other.db")
+    facts.record_fact(subject="Units", statement="Maple House has 48 units.", source_quote="q", db_path=db)
+    _insert(db, "Maple House rent roll", hours_ago=10)
+    seen: list[str] = []
+
+    async def fake_review(self, batch_context: str) -> list[AlertVerdict]:
+        seen.append(batch_context)
+        return []
+
+    monkeypatch.setattr(agent_module.AlertReviewAgent, "review", fake_review)
+    monkeypatch.setattr(review, "_seed_outbound_session", lambda: None)
+    monkeypatch.setattr(today_route, "_build_activity",
+                        lambda limit, since=None, **_kw: ActivityResponse(items=[]))
+    asyncio.run(review.run_alert_review(now=NOW, db_path=db, settings=_settings()))
+    assert seen and "Maple House has 48 units." in seen[0]
+
+
 def test_run_alert_review_provider_failure_changes_nothing(db: Path, monkeypatch) -> None:
     from openexecutive.agents import alert_review as agent_module
 

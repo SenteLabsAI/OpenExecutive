@@ -1109,7 +1109,7 @@ async def _run_locked(
         # Read once per pass: every batch of it sees the same facts.
         from openexecutive.memory.facts import render_facts_for_prompt
 
-        standing_facts = await asyncio.to_thread(render_facts_for_prompt)
+        standing_facts = await asyncio.to_thread(render_facts_for_prompt, db_path=db_path)
         for start in range(0, len(candidates), settings.batch_size):
             batch = candidates[start : start + settings.batch_size]
             evidence: dict[int, dict[str, Any]] = {}
