@@ -63,8 +63,8 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
         "performance or other personal matters, which every teammate's "
         "conversation would then see. Only the principal can record one, from a "
         "conversation that confirms it is them. source_quote must be their exact "
-        "words from this message, and every figure in the statement must be one "
-        "they wrote. Never record your own inference, a figure from a document, "
+        "words from this message, and every figure, name and date you store (in "
+        "the subject, statement or previous value) must be one they wrote. Never record your own inference, a figure from a document, "
         "or something a third party said. For a company-profile field "
         "(industry, headcount, ARR, burn, runway, priorities, ...) use "
         "update_company_profile instead."
@@ -85,7 +85,11 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
             },
             "previous_value": {
                 "type": "string",
-                "description": "What was wrong, when the principal says so, e.g. '52 units'. Optional.",
+                "description": (
+                    "What was wrong, in the principal's words, when they say so, "
+                    "e.g. '52 units'. Optional: leave it out when correcting a listed "
+                    "standing fact, whose own statement is kept as what it corrects."
+                ),
             },
             "replaces_fact_id": {
                 "type": "integer",
@@ -418,6 +422,34 @@ def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
     return missing
 
 
+def _claim_error(label: str, text: str, session: Any) -> str | None:
+    """None when every figure, name and date word in ``text`` (a field
+    ``remember_fact`` stores and renders) is the principal's own."""
+    for n in _numbers_in(text):
+        if not _number_in_own_words(n, session):
+            return (
+                f"the {label}'s figure {n:g} is not a number the principal wrote "
+                "this turn. Use the figures they gave, or — if they did not give one "
+                "(a document or someone else did) — ask them."
+                + (_PREVIOUS_HINT if label == "previous_value" else "")
+            )
+    unsaid = _unsaid_claim_words(text, session)
+    if unsaid:
+        return (
+            f"the {label} names {', '.join(repr(w) for w in unsaid[:5])}, which the "
+            "principal did not write this turn. Use their terms, or — if it came from "
+            "a document or someone else — ask them to confirm it."
+            + (_PREVIOUS_HINT if label == "previous_value" else "")
+        )
+    return None
+
+
+_PREVIOUS_HINT = (
+    " previous_value is optional: leave it out and a replaced standing fact's "
+    "own statement is kept as what it corrects."
+)
+
+
 def _defang(text: str) -> str:
     """Angle brackets as ‹ ›, so a saved value can never open or close a tag
     in the prompt block it renders into."""
@@ -483,30 +515,15 @@ def _remember_fact(tool_input: dict[str, Any]) -> str:
     quote_error = _quote_error(quote, session)
     if quote_error:
         return _bad(tool, quote_error, subject=subject[:120])
-    # The quote shows the principal said something; the figures in what is
-    # stored must be theirs too. A real quote ("that's the number from the
-    # lease doc") paired with a statement carrying the document's figure would
-    # render into every prompt as the principal's own correction.
-    for n in _numbers_in(statement):
-        if not _number_in_own_words(n, session):
-            return _bad(
-                tool,
-                f"the statement's figure {n:g} is not a number the principal "
-                "wrote this turn. State the fact with the figures they gave, or — if "
-                "they did not give one (a document or someone else did) — ask them.",
-                subject=subject[:120],
-            )
-    # Figures are not the only claim a document can carry in: its names and
-    # dates must be the principal's words too.
-    unsaid = _unsaid_claim_words(statement, session)
-    if unsaid:
-        return _bad(
-            tool,
-            f"the statement names {', '.join(repr(w) for w in unsaid[:5])}, which the "
-            "principal did not write this turn. State the fact in their terms, or — "
-            "if it came from a document or someone else — ask them to confirm it.",
-            subject=subject[:120],
-        )
+    # The quote shows the principal said something; what is stored must be
+    # theirs too. A real quote ("that's the number from the lease doc") paired
+    # with a document's figure, name or date would render into every prompt as
+    # the principal's own correction — and every stored field renders: the
+    # subject as "[fact N] subject:", the previous value as "(corrects: …)".
+    for label, text in (("statement", statement), ("subject", subject), ("previous_value", previous)):
+        claim_error = _claim_error(label, text, session)
+        if claim_error:
+            return _bad(tool, claim_error, subject=subject[:120])
     replaces = _positive_int(tool_input.get("replaces_fact_id"))
     if tool_input.get("replaces_fact_id") is not None and replaces is None:
         return _bad(tool, "replaces_fact_id must be the N of a listed '[fact N]'")

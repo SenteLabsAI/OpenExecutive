@@ -1622,7 +1622,9 @@ memory:
         None (refused) when the message carries an attachment. Otherwise a
         Discord/Slack reply to the Executive's DM about an attacker's alert
         could have the alert's text stored as the principal's fact.
-      - remember_fact: every number in `statement` must be one the principal
+      - remember_fact (statement, subject and previous_value alike — each is
+        rendered; `_claim_error`; an omitted previous_value falls back to
+        the replaced row's statement): every number must be one the principal
         wrote this turn (`_numbers_in` / `_number_in_own_words`, compared at
         magnitude: "$180k" ↔ "180,000" either way, never "180m" → "$180k"),
         and every name (a capitalised or non-ASCII-letter word other than
