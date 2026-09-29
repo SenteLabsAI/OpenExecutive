@@ -96,6 +96,43 @@ def _make_private(
     return tags, principal_id, f"private:{dedup_key}", persisted_only
 
 
+def _ground_decision(
+    decision: TriageDecision, event: AlertEvent, initiatives: list[Any],
+) -> TriageDecision:
+    """``decision`` with any headline / body sentence / suggested action that
+    names a person or figure absent from the event dropped (see
+    ``briefing.grounding``). Unchanged when grounded, and on any error."""
+    from openexecutive.briefing.grounding import (
+        ground_alert_text,
+        profile_sources,
+        sources_from_text,
+    )
+
+    event_text = "\n".join(
+        part for part in (
+            event.subject, event.from_ or "", event.title or "", event.body,
+        ) if part
+    )
+    sources = (
+        sources_from_text(event_text, "Event", "event")
+        + sources_from_text("\n".join(str(i) for i in initiatives), "Initiatives", "init")
+        + profile_sources()
+    )
+    headline, body, action, changed = ground_alert_text(
+        decision.headline, decision.body, decision.suggested_action,
+        sources=sources,
+        fallback_headline=event.subject or event.title or "",
+        fallback_body=event.body,
+        surface="alert triage",
+        private=event.private,
+    )
+    if not changed:
+        return decision
+    return decision.model_copy(
+        update={"headline": headline, "body": body, "suggested_action": action}
+    )
+
+
 async def evaluate_and_dispatch(
     event: AlertEvent,
     db_path: Path | None = None,
@@ -167,6 +204,11 @@ async def evaluate_and_dispatch(
         # triaged, 1 surfaced" if we ever want it. For now keep it simple:
         # only persist when the decision says alert=true.
         return decision, None
+
+    # Triage rewrote the event into a headline and body nobody reads before
+    # dispatch: keep only what the event itself (or the profile, or the
+    # initiatives triage was shown) supports.
+    decision = _ground_decision(decision, event, initiatives)
 
     effective_channels = preferences.resolve_channels(
         decision.channels, decision.severity, prefs

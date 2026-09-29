@@ -660,7 +660,16 @@ def _apply_changed(ctx: _MoveContext) -> None:
     v, alert = ctx.verdict, ctx.alert
     headline = None if ctx.sensitive else v.headline
     body = None if ctx.sensitive else v.body
+    # A rewrite nobody reads before it lands must not bring in a person or a
+    # figure that neither the alert nor its evidence holds; the old text stays.
+    unsupported = _ungrounded_rewrite(ctx, headline, body)
+    if unsupported:
+        headline = body = None
     if headline is None and body is None and v.severity is None:
+        if unsupported:
+            _audit(EVENT_REVIEWED, f"Rewrite refused for '{alert.headline[:80]}': ungrounded",
+                   {**ctx.base_details, "text_ungrounded": unsupported[:10]})
+            return
         _audit(EVENT_REVIEWED, f"Text change refused for sensitive '{alert.headline[:80]}'",
                {**ctx.base_details, "text_frozen": True})
         return
@@ -673,8 +682,40 @@ def _apply_changed(ctx: _MoveContext) -> None:
         EVENT_CHANGED,
         f"Updated '{alert.headline[:80]}' — {ctx.note[:100]}",
         {**ctx.base_details, "prior_headline": alert.headline, "prior_body": alert.body[:2000],
-         "new_headline": headline, "new_severity": v.severity, "text_frozen": ctx.sensitive},
+         "new_headline": headline, "new_severity": v.severity, "text_frozen": ctx.sensitive,
+         **({"text_ungrounded": unsupported[:10]} if unsupported else {})},
     )
+
+
+def _ungrounded_rewrite(ctx: _MoveContext, headline: str | None, body: str | None) -> list[str]:
+    """Names / figures in the proposed rewrite that neither the alert's own
+    text nor the evidence it was reviewed against holds. [] when grounding is
+    off or report-only (report mode still audits the finding)."""
+    if headline is None and body is None:
+        return []
+    from openexecutive.briefing.grounding import (
+        grounding_mode,
+        sources_from_text,
+        ungrounded,
+    )
+
+    mode = grounding_mode()
+    if mode == "off":
+        return []
+    alert = ctx.alert
+    lines = [alert.headline, alert.body, alert.suggested_action or ""]
+    for group in ("newer_signals", "related_alerts", "activity_since", "roster"):
+        lines.extend(
+            json.dumps(item, default=str, ensure_ascii=False)
+            for item in ctx.evidence.get(group) or []
+        )
+    sources = sources_from_text("\n".join(lines), "Alert and evidence", "ev")
+    items = ungrounded("\n".join(x for x in (headline, body) if x), sources)
+    if items and mode != "enforce":
+        _audit(EVENT_REVIEWED, f"Rewrite of '{alert.headline[:80]}' is ungrounded (report only)",
+               {**ctx.base_details, "text_ungrounded": items[:10]})
+        return []
+    return items
 
 
 def _apply_merge(ctx: _MoveContext) -> bool:

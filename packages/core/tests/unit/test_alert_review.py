@@ -949,3 +949,42 @@ def test_review_endpoint_runs_the_review_on_demand(monkeypatch: pytest.MonkeyPat
     assert body["reviewed"] == 3 and body["closed"] == 1 and body["annotated"] == 2
     assert body["routed"] == 0
     assert calls == {"reason": "manual", "ignore_interval": True}
+
+
+def test_changed_rewrite_naming_what_the_evidence_lacks_keeps_the_old_text(
+    db: Path, audit_events, monkeypatch,
+) -> None:
+    """The fabricated colleague the review once affirmed: a rewrite may not
+    bring in a person or figure neither the alert nor its evidence holds."""
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    aid = _insert(db, "Payments degraded", severity="high")
+    label = _apply(db, aid, _verdict(
+        aid, verdict="changed", note="rewritten",
+        headline="Marcus Lee says payments are 40% down",
+        body="Escalated by Marcus Lee.", severity="medium",
+    ))
+    assert label == "changed"
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None
+    assert row.headline == "Payments degraded" and row.body == "body of Payments degraded"
+    assert row.severity == "medium"  # severity still moves
+    ev = next(e for e in audit_events if e[0] == review.EVENT_CHANGED)
+    assert ev[2]["text_ungrounded"] == ["Marcus Lee", "40%"]
+    assert ev[2]["new_headline"] is None
+
+
+def test_ungrounded_rewrite_without_a_severity_change_changes_nothing(
+    db: Path, audit_events, monkeypatch,
+) -> None:
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    aid = _insert(db, "Payments degraded", severity="high")
+    _apply(db, aid, _verdict(aid, verdict="changed", headline="Marcus Lee flagged payments"))
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None and row.headline == "Payments degraded" and row.severity == "high"
+    assert not any(e[0] == review.EVENT_CHANGED for e in audit_events)
+    refused = [e for e in audit_events if e[2].get("text_ungrounded")]
+    assert refused and refused[0][2]["text_ungrounded"] == ["Marcus Lee"]

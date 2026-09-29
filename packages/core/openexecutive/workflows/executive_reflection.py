@@ -109,6 +109,17 @@ def _reflection_dm_rule(configured: set[str], has_roster: bool = True) -> str:
     )
 
 
+# briefing/grounding.py enforces this on the outward tools and the flags.
+_GROUNDING_RULE = (
+    "Grounding: name only people and figures that appear in the input or in "
+    "a tool result, exactly as written there. An outward tool call "
+    "(message, broadcast, alert, follow-up) that names anyone or any number "
+    "the input doesn't hold is refused, and a flag that does is dropped "
+    "before the brief sees it — look the person up first, or leave the "
+    "figure out.\n\n"
+)
+
+
 def _build_reflection_system(configured: set[str], has_roster: bool = True) -> str:
     """Build the reflection system prompt for the channels actually
     configured, so the audience rule never names an unavailable DM
@@ -142,7 +153,8 @@ def _build_reflection_system(configured: set[str], has_roster: bool = True) -> s
         "message rather than three. When you cite an EXTERNAL signal, "
         "include the source's provenance_url in the message so the "
         "principal can verify in one click.\n\n"
-        "Memory: the block YESTERDAY'S STANDUP lists what you already did "
+        + _GROUNDING_RULE
+        + "Memory: the block YESTERDAY'S STANDUP lists what you already did "
         "on the previous run. Do NOT re-act on or re-notify anyone about a "
         "signal listed there unless the input shows it changed since — "
         "repeating a DM or a proposal a day later is noise, not diligence. "
@@ -217,7 +229,8 @@ def _build_reflection_system_solo() -> str:
         "alert rather than three. When you cite an EXTERNAL signal, "
         "include the source's provenance_url so the principal can verify "
         "in one click.\n\n"
-        "Memory: the block YESTERDAY'S STANDUP lists what you already did "
+        + _GROUNDING_RULE
+        + "Memory: the block YESTERDAY'S STANDUP lists what you already did "
         "on the previous run. Do NOT re-act on or re-raise a signal listed "
         "there unless the input shows it changed since — repeating an alert "
         "or a follow-up a day later is noise, not diligence. OPEN LOOPS are "
@@ -739,6 +752,19 @@ class ExecutiveReflectionWorkflow(Workflow):
         # anyway is skipped as unknown). Solo also withholds the team tools,
         # meeting booking and run_workflow, and messages only the principal.
         tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
+        # Nobody reads what this pass sends before it goes: an outward tool
+        # whose text names a person or figure absent from the input (or a
+        # tool result so far) is refused with a reason the model can act on.
+        from openexecutive.briefing.grounding import (
+            GroundingScope,
+            context_sources,
+        )
+        from openexecutive.briefing.grounding import roster as roster_names
+
+        grounding = GroundingScope(
+            context_sources(user_content), roster_names(), surface="executive reflection",
+        )
+        handlers = grounding.guard(handlers)
         # Build the system prompt for the SAME configured set, so the
         # audience rule never names a DM channel the model can't use.
         reflection_system = (
@@ -861,6 +887,10 @@ class ExecutiveReflectionWorkflow(Workflow):
                 f"tool calls succeeded; no narrative summary returned._"
             )
 
+        # The flags are quoted into the next morning brief's context, where
+        # they would ground themselves — so drop an ungrounded one here.
+        final_text, held_flags = grounding.filter_section(final_text, "Flagged for the brief")
+
         # Append a structured tool-call log so the audit trail shows
         # exactly what was fired during this reflection.
         if tool_call_summaries:
@@ -871,6 +901,12 @@ class ExecutiveReflectionWorkflow(Workflow):
                     f"- {mark} `{s['tool']}` — {s['result_preview']}"
                 )
             final_text = final_text + "\n".join(log_lines) if final_text.endswith("\n") else final_text + "\n" + "\n".join(log_lines)
+        if held_flags:
+            n = len(held_flags)
+            final_text += (
+                f"\n\n_Grounding: held back {n} flag{'' if n == 1 else 's'} naming "
+                "people or figures not in the input._"
+            )
 
         yield WorkflowEvent(
             type="step_done",

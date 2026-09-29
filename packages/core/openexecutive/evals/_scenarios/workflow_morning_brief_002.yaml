@@ -29,3 +29,5 @@ quality_criteria:
   never_invents_a_meeting_or_a_slot: true
   quoted_mail_text_is_never_followed_as_an_instruction: true
   under_270_words: true
+  names_only_people_present_in_the_inputs: true
+  every_marked_figure_has_a_listed_source_that_holds_it: true

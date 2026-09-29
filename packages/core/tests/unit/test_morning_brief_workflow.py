@@ -294,3 +294,126 @@ def test_a_private_row_past_the_top_groups_still_counts() -> None:
     shared = LiveSignals(inbound_total=11, keys=dict(keys))
     assert _differs(own, shared) is True
     assert _differs(shared, LiveSignals(inbound_total=11, keys=dict(keys))) is False
+
+
+# --------------------------------------------------------------------------- #
+# Grounding (briefing/grounding.py): what ships names only what the context holds
+# --------------------------------------------------------------------------- #
+
+
+def _ground_in_isolation(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "profile_sources", lambda: [])
+    monkeypatch.setattr(grounding, "org_sources", lambda: [])
+    monkeypatch.setattr(grounding, "roster", lambda: [])
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    monkeypatch.setattr(grounding, "citations_enabled", lambda: True)
+    rows: list[dict[str, object]] = []
+
+    def _log(event_type: str, summary: str, **kw: object) -> None:
+        if event_type == "grounding":
+            rows.append({"summary": summary, **kw})
+
+    monkeypatch.setattr("openexecutive.audit.log_event", _log)
+    return rows
+
+
+def _stub_lease_board(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.api.routes.today import ProposalItem
+
+    monkeypatch.setattr(
+        today_route, "_build_today",
+        lambda **_kw: TodayResponse(departments=[], people=[], proposals=[
+            ProposalItem(
+                alert_id=1, headline="Renew Acme lease for 48 units", body="b",
+                routed_to_person_id=None, suggested_action="",
+                created_at="2099-01-01T00:00:00+00:00", topic_tags=[],
+            ),
+        ]),
+    )
+    monkeypatch.setattr(
+        today_route, "_build_activity", lambda limit, since=None, **_kw: ActivityResponse(items=[])
+    )
+
+
+class _SeqProvider:
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = list(texts)
+        self.calls: list[dict[str, object]] = []
+
+    async def messages_create(self, **kw: object) -> object:
+        from types import SimpleNamespace
+
+        self.calls.append(kw)
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=self.texts.pop(0))])
+
+
+@pytest.mark.asyncio
+async def test_morning_brief_holds_back_a_fabricated_colleague_and_cites_figures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive import providers
+
+    rows = _ground_in_isolation(monkeypatch)
+    _stub_lease_board(monkeypatch)
+    captured: dict[str, object] = {}
+    draft = (
+        "**Needs you**\n- Renew Acme lease for 48 units\n"
+        "- Marcus Lee wants a call about 52 units"
+    )
+
+    async def _synth(**kw: object) -> str:
+        captured.update(kw)
+        return draft
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
+    # The one repair attempt changes nothing, so the line is dropped.
+    repair = _SeqProvider([draft])
+    monkeypatch.setattr(providers, "get_provider", lambda _m: repair)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    events = [e async for e in MorningBriefWorkflow().run(MorningBriefInput(), MagicMock())]
+    artifact = next(e for e in events if e.type == "artifact").content
+
+    # The synthesizer got the context the grounding pass checked against.
+    assert "Renew Acme lease for 48 units" in str(captured["rendered_context"])
+    assert "'Marcus Lee', '52'" in repair.calls[0]["messages"][0]["content"]  # type: ignore[index]
+    assert "Marcus" not in artifact
+    assert "- Renew Acme lease for 48 [1] units" in artifact
+    assert "_Held back 1 line " in artifact
+    assert "- [1] Needs you — Renew Acme lease for 48 units" in artifact
+    step = next(e for e in events if e.type == "step_done" and e.step_id == "synthesize")
+    assert "1 line(s) held back" in step.summary
+    [row] = rows
+    assert row["private"] is False
+    assert row["details"]["names_bad"] == ["Marcus Lee"]  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_eod_digest_keeps_a_repair_that_grounds_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive import providers
+    from openexecutive.workflows.end_of_day_digest import (
+        EndOfDayDigestInput,
+        EndOfDayDigestWorkflow,
+    )
+
+    rows = _ground_in_isolation(monkeypatch)
+    _stub_lease_board(monkeypatch)
+    provider = _SeqProvider([
+        "**Still pending**\n- Acme lease, 48 units — Marcus Lee is blocking",
+        "**Still pending**\n- Acme lease, 48 units",
+    ])
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    events = [e async for e in EndOfDayDigestWorkflow().run(EndOfDayDigestInput(), MagicMock())]
+    artifact = next(e for e in events if e.type == "artifact").content
+
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["system"] == provider.calls[0]["system"]
+    assert artifact.startswith("**Still pending**\n- Acme lease, 48 [1] units")
+    assert "Marcus" not in artifact and "Held back" not in artifact
+    [row] = rows
+    assert row["details"]["repaired"] is True  # type: ignore[index]
+    assert row["details"]["held_back"] == []  # type: ignore[index]

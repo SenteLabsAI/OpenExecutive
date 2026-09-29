@@ -25,6 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from openexecutive.briefing.narrative import GROUNDING_RULE
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.workflows.base import (
     Workflow,
@@ -70,6 +71,7 @@ _EOD_DIGEST_SYSTEM = (
     "overnight or first-thing.\n"
     "  4. **Sleep on this** — at most ONE open question worth the "
     "principal mulling overnight. Skip if there isn't one.\n\n"
+    + GROUNDING_RULE + " "
     "Skip headers for empty sections. If the day was genuinely quiet, "
     "output one line: 'Quiet day — nothing carrying forward.'"
 )
@@ -97,6 +99,7 @@ _EOD_DIGEST_SOLO_SYSTEM = (
     "might trip if nothing happens overnight or first thing.\n"
     "  4. **Sleep on this** — at most ONE open question worth the "
     "principal mulling overnight. Skip if there isn't one.\n\n"
+    + GROUNDING_RULE + " "
     "This digest is for one person: name goals by their area, never a "
     "department, and add no sections about a team roster or people waiting "
     "on the principal. Skip headers for empty sections. If the day was "
@@ -347,12 +350,13 @@ class EndOfDayDigestWorkflow(Workflow):
             since=since, handled=handled, mode=mode,
         )
 
+        system = _EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM
         try:
             model = get_fast_model()
             response = await get_provider(model).messages_create(
                 model=model,
                 max_tokens=600,
-                system=_EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM,
+                system=system,
                 messages=[{"role": "user", "content": user_content}],
             )
             text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
@@ -365,10 +369,22 @@ class EndOfDayDigestWorkflow(Workflow):
         if not artifact_text:
             artifact_text = "Quiet day — nothing carrying forward."
 
+        # Nobody reads this before it ships: hold back any line naming a
+        # person or figure the context doesn't hold, and cite the figures.
+        # The context never carries private rows (see `_build_today` above).
+        from openexecutive.briefing.grounding import ground_brief
+
+        artifact_text, grounding = await ground_brief(
+            artifact_text, context=user_content, kind=BRIEF_KIND, private=False,
+            system=system, surface="end-of-day digest",
+        )
+        held = len(grounding.held) if grounding and grounding.mode == "enforce" else 0
+
         yield WorkflowEvent(
             type="step_done",
             step_id="synthesize",
-            summary=artifact_text.split("\n", 1)[0][:160],
+            summary=artifact_text.split("\n", 1)[0][:160]
+            + (f" (grounding: {held} line(s) held back)" if held else ""),
         )
 
         yield WorkflowEvent(type="artifact", content=artifact_text)
