@@ -167,7 +167,7 @@ def test_with_standing_facts() -> None:
 
 def test_the_tools_are_withheld_from_unattended_and_private_turns() -> None:
     assert {"remember_fact", "forget_fact", "update_company_profile"} <= UNATTENDED_WITHHELD_TOOLS
-    assert {"remember_fact", "update_company_profile"} <= PRIVATE_TURN_WITHHELD_TOOLS
+    assert {"remember_fact", "forget_fact", "update_company_profile"} <= PRIVATE_TURN_WITHHELD_TOOLS
     names = {t["name"] for t in fact_tools.FACT_TOOLS}
     assert names == set(fact_tools.FACT_TOOL_HANDLERS)
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
@@ -270,6 +270,27 @@ def test_remember_fact_stores_and_corrects_with_provenance(principal: SimpleName
     assert row.previous_statement == "52 units"
     rendered = facts.render_facts_for_prompt()
     assert "48 units" in rendered and "has 52 units" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("statement", "ok"),
+    [
+        ("St. Albans has 48 units.", True),
+        ("St. Albans has 48 units across 52 flats.", True),   # both figures are the principal's
+        ("St. Albans has 60 units.", False),                   # a figure they never wrote
+        ("St. Albans has 48 units; lease ends 2031.", False),  # an invented date
+    ],
+)
+def test_remember_fact_statement_figures_must_be_the_principals(
+    principal: SimpleNamespace, statement: str, ok: bool,
+) -> None:
+    out = _call(fact_tools.handle_remember_fact, subject="St. Albans unit count",
+                statement=statement, source_quote="St. Albans is 48 units, not 52")
+    if ok:
+        assert out["status"] == "ok"
+    else:
+        assert "not a number the principal wrote" in out["error"]
+        assert facts.list_facts(include_inactive=True) == []
 
 
 def test_remember_fact_rejects_an_unknown_replaces_id(principal: SimpleNamespace) -> None:
