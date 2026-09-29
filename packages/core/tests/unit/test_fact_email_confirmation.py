@@ -275,6 +275,10 @@ def test_an_unclear_reply_keeps_it_waiting(monkeypatch: pytest.MonkeyPatch, gate
         ("Cancel — yes, I changed my mind", "cancel"),
         ("Thanks, please confirm it", "confirm"),
         ("Thanks — yes, but no, wait", ""),
+        ("Yes, but don't apply that", ""),
+        ("Approved? No, cancel it", ""),
+        ("Confirm — actually wait", ""),
+        ("No. Confirm nothing.", "cancel"),
         ("hmm, let me think", ""),
     ],
 )

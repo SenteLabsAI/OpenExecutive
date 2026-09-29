@@ -47,6 +47,11 @@ logger = logging.getLogger(__name__)
 
 _CONFIRM_WORDS = re.compile(r"\b(confirm|confirmed|yes|approve|approved)\b", re.IGNORECASE)
 _CANCEL_WORDS = re.compile(r"\b(cancel|cancelled|no|reject|don'?t|do not)\b", re.IGNORECASE)
+# Words that take back an opening "yes" ("Yes, but don't apply that"). A bare
+# "no" is not one: "Confirm, no rush" still confirms.
+_TAKE_BACK_WORDS = re.compile(
+    r"\b(cancel|cancelled|reject|don'?t|do not|wait|hold|stop)\b", re.IGNORECASE,
+)
 
 
 def principal_address() -> str:
@@ -263,14 +268,17 @@ async def request_confirmation(action: dict[str, Any], summary: str) -> str | No
 
 def _decision(text: str) -> str:
     """"confirm", "cancel" or "" (unclear) from the principal's reply. A
-    reply that opens with a confirm or cancel word is decided by it ("Confirm,
-    no rush" confirms); otherwise it must hold words of one kind only."""
+    reply that opens with a cancel word cancels. One that opens with a
+    confirm word confirms ("Confirm, no rush") unless it also takes it back
+    ("Yes, but don't apply that" is unclear, and they are asked again).
+    Otherwise it must hold words of one kind only. Every doubt falls on the
+    side of not applying."""
     words = text[:400]
     opening = words.lstrip(" \t\r\n>*_-\"'")[:20]
-    if _CONFIRM_WORDS.match(opening):
-        return "confirm"
     if _CANCEL_WORDS.match(opening):
         return "cancel"
+    if _CONFIRM_WORDS.match(opening):
+        return "" if _TAKE_BACK_WORDS.search(words) else "confirm"
     yes, no = bool(_CONFIRM_WORDS.search(words)), bool(_CANCEL_WORDS.search(words))
     if yes and not no:
         return "confirm"
