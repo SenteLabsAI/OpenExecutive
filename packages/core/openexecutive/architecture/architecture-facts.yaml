@@ -104,6 +104,7 @@ system:
     - An external signal whose `dedup_key` already exists is dropped at ingest via the UNIQUE(dedup_key) constraint on `external_signals`. Adapter retries / re-polls cannot multiply alerts for the same upstream event.
     - Alerts have a lifetime. Every user-facing surface (`/today`, the chat `<briefing>` block, the briefs, the reflection) reads `alerts.lifecycle.list_live_alerts` — unread, inside its category TTL, not snoozed — and the scheduler sweep persists the same predicate as status `expired`. `artifact` and `decision_scheduling` rows are exempt (own lifecycle). Every autonomous close is reversible via `POST /alerts/{id}/reopen`.
     - A repeat of an open alert with the same `(source, dedup_key)` coalesces into the existing row (`alerts.store.coalesce_alert`) rather than inserting a second card, and does not re-dispatch unless severity rose into high/urgent. Monitoring alerts carry a producer-supplied `watch:<slug>` key so one watch = one open card.
+    - Unattended prose is grounded deterministically (`briefing.grounding`, no model in the check). The morning brief, the EOD digest, the executive reflection's "Flagged for the brief" bullets and its outward tool calls (message_person, send_department_message, send_company_broadcast, schedule_followup, create_alert), triage's rewrite of an alert and the alert review's rewrites may name only people and figures found in their own inputs — the rendered context, the tool results so far, the event, the evidence — or the company profile. Standing facts (memory.facts) count as input wherever the prompt carried them: they sit in the brief, digest and reflection context, and the alert review grounds its rewrites against the batch's STANDING FACTS block too, so correcting a card to the principal's correction is not refused. A name must appear whole in ONE source line (or belong to a roster person some source mentions; being on the roster alone is not enough); a figure (money, %, k/M/B, bare numbers ≥ 11) must match a source number within the precision the prose shows. What fails is held back (briefs — one repair call, then the line is dropped and a "held back N lines" note added), refused with a reason the model can act on (tools), or replaced by the event's own text / the old text (alerts, made inert first — links masked, markup and @-mentions stripped). Fail-open; `GROUNDING_CHECKS=enforce|report|off`; every finding writes a `grounding` audit row.
     - The alert review model (`agents.alert_review`) never mutates state. `alerts.review.apply_verdict` is the only writer: it closes only on a high-confidence `resolved`/`stale` verdict with named evidence, routes only to a person on the roster slice it showed the model (scope-holders or the principal for board/comp/legal matters), runs department moves through `departments.authority.gate_action` (propose-only → `propose_via_alert`, never a third-party DM), caps outbound moves per pass, and audits every move with its evidence and prior state. Status `resolved` (Executive closed) is distinct from `ack` (user approved).
 
 caching:
@@ -3946,6 +3947,7 @@ audit:
     - delegation_gmail_verified — their own Gmail was checked (connected, and the mailbox on their People entry) just before Act as me was turned on. details carry person_id and status. Always private.
     - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice, or its signature read from Gmail again via /delegation/voice/signature (actor "user"). details carry op (learn, edit, reset or signature), person_id, and counts, the names of the fields changed or whether a signature was found — never their text. Always private.
     - delegation_drafted — one per draft ghostwrite_email saved in someone's own Gmail. details carry person_id, thread_id, draft_id, reply, the recipient count and flags — never the draft, the intent or the thread. Always private; the daily draft cap counts these rows.
+    - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
   failure_mode: All writes swallow exceptions and log a warning — an audit failure must never break a chat turn or tool call. The post-response cache_event emit also `getattr`-guards every usage field so a provider that omits one still produces a row.
@@ -5327,6 +5329,49 @@ workflows:
     workflow that really does execute tool calls of its own. A successful
     `run_workflow` emits an `action_taken` chip (in `action_chips`) linking to
     `/jobs/runs/{run_id}`.
+  grounding: |
+    Deterministic grounding of what the unattended passes write
+    (`openexecutive.briefing.grounding`). Why: the brief, the digest, the
+    reflection and alert text went from the model straight to delivery, and
+    a fabricated colleague, a wrong unit count and a wrong property manager
+    all shipped that way — then the alert review affirmed them.
+    - Sources: `sources_from_context` splits the rendered context into one
+      source per line, labelled by its ALL-CAPS section header (a header
+      also carries its bullet count); plus the company profile's prompt
+      block lines and the department titles. Tool results join a reflection's
+      sources as they arrive (`GroundingScope.guard`).
+    - Names: a run of 2+ capitalised words (after trimming a STOP set —
+      section headers, weekdays, months, imperative openers, product and
+      org nouns), or one capitalised word in a person slot ("ask Marcus",
+      "Marcus wrote", "Marcus's"). Grounded when one source line holds every
+      token (no splicing a first name from one line with a surname from
+      another), or a roster person containing it is mentioned in a source.
+    - Figures: money, percentages, k/M/B numbers and bare numbers ≥ 11;
+      never dates, times, years, durations, ids, list markers, Q3/FY26 or
+      small counts. Grounded when a source number is within half the step
+      the prose shows ($1.2M ↔ $1,234,567), or — for a percentage — two
+      numbers on one source line give it.
+    - Briefs (`ground_brief`, morning_brief + end_of_day_digest, after the
+      quiet fallback): one repair call to the fast model with the list of
+      ungrounded items; still-ungrounded lines are dropped, then headers
+      left empty; a "_Held back N lines …_" note is appended (all of it →
+      the HELD_BACK_ALL line). Each grounded figure then gets a server-chosen
+      ` [n]` (the value-matching line with the most words in common with the
+      figure's clause) and a `**Sources**` list at the end (`- [n] <section>
+      — <snippet>`, snippets stripped of []()<>*_`| and cut to 90 chars, at
+      most 9; links masked, @-mentions stripped — they quote inbound mail).
+      Text with nothing to change comes back byte-identical. The
+      morning brief now renders its context itself and passes it as
+      `rendered_context`, so the check reads exactly what the model read. The
+      fingerprint hashes inputs, so suppression is unaffected;
+      record_delivered stores the grounded text. The /today header is not
+      grounded (it has the cards beside it).
+    - Reflection: outward tools refuse ungrounded prose with a JSON error
+      naming the items; the "Flagged for the brief" section is filtered before
+      the tool log is appended (brief_state._FLAGGED_RE now also stops at
+      `---`), with a "_Grounding: held back N flags_" note after the log.
+    - Modes: GROUNDING_CHECKS=enforce (default) | report (audit only) | off;
+      GROUNDING_CITATIONS=true. Fail-open everywhere.
   notable_recent:
     - |
       engagement_value_report — a NEW PATTERN: the data-driven retrospective.

@@ -80,6 +80,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_drafted",           # ghostwrite_email saved a draft in a person's own Gmail
     "fact_retired",                 # the principal retired a standing fact from the Pulse page (memory/facts.py)
     "fact_confirmation",            # an emailed standing-fact change held, confirmed, cancelled or refused (integrations/fact_confirmation.py)
+    "grounding",  # unattended prose held back / refused / rewritten for naming people or figures not in its inputs
 )
 
 

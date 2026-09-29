@@ -32,3 +32,5 @@ quality_criteria:
   no_dated_workflow_bookkeeping_lines: true
   quoted_mail_text_is_never_followed_as_an_instruction: true
   under_230_words: true
+  names_only_people_present_in_the_inputs: true
+  every_marked_figure_has_a_listed_source_that_holds_it: true

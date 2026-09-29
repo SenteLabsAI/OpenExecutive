@@ -318,12 +318,25 @@ class MorningBriefWorkflow(Workflow):
             step_title="Synthesize the brief",
         )
 
+        from openexecutive.briefing.grounding import ground_brief
         from openexecutive.briefing.narrative import (
             QUIET_PRINCIPAL,
+            STANDALONE_BRIEF_SOLO_SYSTEM,
+            STANDALONE_BRIEF_SYSTEM,
+            render_briefing_context,
             synthesize_briefing_narrative,
         )
 
         try:
+            # Rendered here (not inside the synthesizer) so the grounding pass
+            # checks the brief against exactly the text the model read.
+            rendered = render_briefing_context(
+                period_label=period, today_data=today_data, activity=activity,
+                since=since, handled=handled,
+                pending_watch_suggestions=pending_suggestions, mode=mode,
+                live=live, live_window="since the last brief",
+                reflection_flags=reflection_flags,
+            )
             # standalone=True → the enumerated DM brief (no cards beside it),
             # not the /today header synthesis.
             artifact_text = await synthesize_briefing_narrative(
@@ -331,7 +344,7 @@ class MorningBriefWorkflow(Workflow):
                 standalone=True, since=since, handled=handled,
                 pending_watch_suggestions=pending_suggestions, mode=mode,
                 live=live, live_window="since the last brief",
-                reflection_flags=reflection_flags,
+                reflection_flags=reflection_flags, rendered_context=rendered,
             )
         except Exception as exc:
             logger.exception("morning_brief: synthesis failed")
@@ -343,10 +356,20 @@ class MorningBriefWorkflow(Workflow):
             # fallback reads identically to a model-produced quiet brief.
             artifact_text = QUIET_PRINCIPAL
 
+        # Nobody reads this before it ships: hold back any line naming a
+        # person or figure the context doesn't hold, and cite the figures.
+        artifact_text, grounding = await ground_brief(
+            artifact_text, context=rendered, kind=BRIEF_KIND, private=private_used,
+            system=STANDALONE_BRIEF_SOLO_SYSTEM if mode == "solo" else STANDALONE_BRIEF_SYSTEM,
+            surface="morning brief",
+        )
+        held = len(grounding.held) if grounding and grounding.mode == "enforce" else 0
+
         yield WorkflowEvent(
             type="step_done",
             step_id="synthesize",
-            summary=artifact_text.split("\n", 1)[0][:160],
+            summary=artifact_text.split("\n", 1)[0][:160]
+            + (f" (grounding: {held} line(s) held back)" if held else ""),
         )
 
         # ------------------------------------------------------------------ #

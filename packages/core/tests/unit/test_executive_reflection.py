@@ -442,3 +442,68 @@ def test_previous_reflection_artifact_reads_last_done_run(
     wf_persistence.create_run("r4", "executive_reflection", "Reflection empty", {})
     wf_persistence.complete_run("r4", "(no artifact)")
     assert _previous_reflection_artifact() is None
+
+
+# ---------------------------------------------------------------------------
+# Grounding: outward prose and flags must name only what the input holds
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reflection_refuses_ungrounded_alert_and_drops_ungrounded_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_isolated_db(tmp_path / "refl_ground.db", monkeypatch)
+    from openexecutive import providers
+    from openexecutive.briefing import grounding
+    from openexecutive.orchestrator import executive
+
+    monkeypatch.setattr(grounding, "profile_sources", lambda: [])
+    monkeypatch.setattr(grounding, "org_sources", lambda: [])
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: audits.append({"type": event_type, **kw}),
+    )
+    called: list[dict[str, Any]] = []
+
+    async def _stub_create_alert(payload: dict[str, Any]) -> str:
+        called.append(payload)
+        return '{"status": "alert_scheduled"}'
+
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "create_alert", _stub_create_alert)
+    seq = _SequenceProvider([
+        _FakeMixedResponse(
+            "create_alert",
+            {"subject": "Lease renewal", "body": "Marcus Lee says the renewal is 52 units."},
+            "",
+        ),
+        _FakeFinalResponse(
+            "**Acted on:**\n- Tried an alert\n\n"
+            "**Flagged for the brief:**\n- Marcus Lee wants a call\n- Nothing else pressing"
+        ),
+    ])
+    monkeypatch.setattr(providers, "get_provider", lambda _model: seq)
+
+    events = [
+        e async for e in ExecutiveReflectionWorkflow().run(
+            inputs=ExecutiveReflectionInput(), store=None,  # type: ignore[arg-type]
+        )
+    ]
+    artifact = next(e for e in events if e.type == "artifact").content
+
+    assert called == []
+    assert "✗ `create_alert`" in artifact and "Not sent" in artifact
+    assert "Marcus Lee wants a call" not in artifact
+    assert "- Nothing else pressing" in artifact
+    assert "_Grounding: held back 1 flag naming" in artifact
+    tools = [a for a in audits if a["type"] == "grounding" and "tool" in a["details"]]
+    assert tools and tools[0]["details"]["names_bad"] == ["Marcus Lee"]
+
+    # What the next brief reads stops at the tool log.
+    from openexecutive.briefing.brief_state import _FLAGGED_RE
+
+    match = _FLAGGED_RE.search(artifact)
+    assert match is not None
+    assert "Tool calls" not in match.group(1)
+    assert match.group(1).strip() == "- Nothing else pressing"

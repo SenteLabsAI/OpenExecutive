@@ -789,6 +789,18 @@ class Settings(BaseSettings):
         10, alias="ALERT_REVIEW_MAX_MOVES_PER_SCAN"
     )
 
+    # Grounding checks on unattended prose (briefing/grounding.py): the
+    # morning brief, EOD digest, reflection flags and outward tool calls, and
+    # the alert text triage/review writes must name only people and figures
+    # found in their own inputs or the company profile. "enforce" holds back
+    # (briefs) or refuses (tools) what it can't ground, "report" only writes
+    # a `grounding` audit row, "off" skips the pass. Citations put [n] after
+    # each grounded figure in a brief, with a Sources list at the end.
+    grounding_checks: Literal["enforce", "report", "off"] = Field(
+        "enforce", alias="GROUNDING_CHECKS"
+    )
+    grounding_citations: bool = Field(True, alias="GROUNDING_CITATIONS")
+
     # Principal briefs: when nothing changed since the last delivered brief,
     # send a one-line "nothing new" instead of re-synthesising the same list.
     principal_brief_suppress_unchanged: bool = Field(

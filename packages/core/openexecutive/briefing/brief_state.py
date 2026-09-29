@@ -417,7 +417,7 @@ def build_brief_fingerprint(
 
 
 _FLAGGED_RE = re.compile(
-    r"\*\*Flagged for the brief:?\*\*:?\s*(.*?)(?=\n\s*\*\*[^*\n]+:?\*\*|\Z)",
+    r"\*\*Flagged for the brief:?\*\*:?\s*(.*?)(?=\n\s*\*\*[^*\n]+:?\*\*|\n---|\Z)",
     re.DOTALL | re.IGNORECASE,
 )
 _REFLECTION_FLAGS_MAX = 800

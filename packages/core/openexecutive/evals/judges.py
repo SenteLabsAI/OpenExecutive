@@ -212,6 +212,10 @@ Expected sections (should appear as headings or clear sections):
 Quality criteria the artifact should satisfy:
 {json.dumps(quality_criteria, indent=2)}
 
+Inline markers like [1] after a figure, a trailing **Sources** list and a
+"Held back N lines" note are added by the server's grounding check, not the
+writer: leave them out of any word count and do not score them as sections.
+
 Rate each dimension 1-5 (1=poor, 3=acceptable, 5=excellent):
 1. structure: All expected sections present and well-organized.
 2. specificity: Uses concrete facts from the inputs; no fabricated numbers.

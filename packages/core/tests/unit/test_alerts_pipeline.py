@@ -380,3 +380,74 @@ def test_pipeline_dedup_hint_overrides_model_key(monkeypatch, db: Path) -> None:
     assert a is not None and b is None
     row = alert_store.get_alert(a, db_path=db)
     assert row is not None and row.dedup_key == "watch:acme-news" and row.occurrence_count == 2
+
+
+def test_triage_text_naming_people_or_figures_not_in_the_event_is_dropped(
+    monkeypatch, db: Path,
+) -> None:
+    """Triage rewrites the event into the text that ships; a colleague or a
+    figure the event never mentioned must not reach the stored alert."""
+    from openexecutive.agents import triage as triage_module
+    from openexecutive.alerts import pipeline
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "profile_sources", lambda: [])
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    audits: list[dict] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: audits.append({"type": event_type, **kw}),
+    )
+
+    async def fake_triage(self, event, **kwargs):  # noqa: ARG001
+        return TriageDecision(
+            alert=True,
+            severity=AlertSeverity.HIGH,
+            channels=[AlertChannel.PERSISTED],
+            headline="Marcus Lee: lease renewal",
+            body="Dana wants to renew 48 units by Friday. Marcus Lee manages the site.",
+            suggested_action="Call Marcus Lee",
+            dedup_key="lease",
+        )
+
+    monkeypatch.setattr(triage_module.TriageAgent, "triage", fake_triage)
+    event = AlertEvent(
+        source="email", external_id="m-lease", subject="Lease renewal",
+        body="Hi — can we renew all 48 units by Friday? Dana", **{"from": "Dana Whitfield"},
+    )
+    decision, alert_id = asyncio.run(pipeline.evaluate_and_dispatch(event, db_path=db))
+
+    assert alert_id is not None
+    [stored] = list_alerts(db_path=db)
+    assert stored.headline == "Lease renewal"
+    assert stored.body == "Dana wants to renew 48 units by Friday."
+    assert stored.suggested_action == ""
+    assert decision.body == stored.body
+    [row] = [a for a in audits if a["type"] == "grounding"]
+    assert "Marcus Lee" in row["details"]["items"]
+
+
+def test_grounded_triage_text_is_stored_unchanged(monkeypatch, db: Path) -> None:
+    from openexecutive.agents import triage as triage_module
+    from openexecutive.alerts import pipeline
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "profile_sources", lambda: [])
+
+    async def fake_triage(self, event, **kwargs):  # noqa: ARG001
+        return TriageDecision(
+            alert=True, severity=AlertSeverity.HIGH, channels=[AlertChannel.PERSISTED],
+            headline="Dana Whitfield: renew 48 units", body="Renewal of 48 units due Friday.",
+            suggested_action="Reply to Dana", dedup_key="lease-ok",
+        )
+
+    monkeypatch.setattr(triage_module.TriageAgent, "triage", fake_triage)
+    event = AlertEvent(
+        source="email", external_id="m-ok", subject="Lease renewal",
+        body="Can we renew all 48 units by Friday?", **{"from": "Dana Whitfield"},
+    )
+    asyncio.run(pipeline.evaluate_and_dispatch(event, db_path=db))
+    [stored] = list_alerts(db_path=db)
+    assert (stored.headline, stored.body, stored.suggested_action) == (
+        "Dana Whitfield: renew 48 units", "Renewal of 48 units due Friday.", "Reply to Dana",
+    )

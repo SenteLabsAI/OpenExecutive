@@ -949,3 +949,72 @@ def test_review_endpoint_runs_the_review_on_demand(monkeypatch: pytest.MonkeyPat
     assert body["reviewed"] == 3 and body["closed"] == 1 and body["annotated"] == 2
     assert body["routed"] == 0
     assert calls == {"reason": "manual", "ignore_interval": True}
+
+
+def test_changed_rewrite_naming_what_the_evidence_lacks_keeps_the_old_text(
+    db: Path, audit_events, monkeypatch,
+) -> None:
+    """The fabricated colleague the review once affirmed: a rewrite may not
+    bring in a person or figure neither the alert nor its evidence holds."""
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    aid = _insert(db, "Payments degraded", severity="high")
+    label = _apply(db, aid, _verdict(
+        aid, verdict="changed", note="rewritten",
+        headline="Marcus Lee says payments are 40% down",
+        body="Escalated by Marcus Lee.", severity="medium",
+    ))
+    assert label == "changed"
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None
+    assert row.headline == "Payments degraded" and row.body == "body of Payments degraded"
+    assert row.severity == "medium"  # severity still moves
+    ev = next(e for e in audit_events if e[0] == review.EVENT_CHANGED)
+    assert ev[2]["text_ungrounded"] == ["Marcus Lee", "40%"]
+    assert ev[2]["new_headline"] is None
+
+
+def test_a_rewrite_applying_a_standing_fact_is_grounded_by_it(
+    db: Path, audit_events, monkeypatch,
+) -> None:
+    """The review is shown the principal's standing facts so it can correct a
+    card to them; the grounding check must accept a figure they hold."""
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    aid = _insert(db, "Maple House rent roll due", severity="medium")
+    alert = alert_store.get_alert(aid, db_path=db)
+    assert alert is not None
+    verdict = _verdict(aid, verdict="changed", note="rewritten",
+                       headline="Maple House rent roll due for all 48 units")
+    facts_block = "STANDING FACTS\n- [fact 1] Maple House unit count: Maple House has 48 units."
+    label = asyncio.run(review.apply_verdict(
+        alert, verdict, review.gather_evidence(alert, NOW, db_path=db), now=NOW,
+        settings=_settings(), summary=review.ReviewSummary(), db_path=db,
+        standing_facts=facts_block,
+    ))
+    assert label == "changed"
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None and row.headline == "Maple House rent roll due for all 48 units"
+    # Without the facts, the same figure is not grounded.
+    aid2 = _insert(db, "Cedar Court rent roll due", severity="medium")
+    _apply(db, aid2, _verdict(aid2, verdict="changed", note="rewritten",
+                              headline="Cedar Court rent roll due for all 48 units"))
+    row2 = alert_store.get_alert(aid2, db_path=db)
+    assert row2 is not None and row2.headline == "Cedar Court rent roll due"
+
+
+def test_ungrounded_rewrite_without_a_severity_change_changes_nothing(
+    db: Path, audit_events, monkeypatch,
+) -> None:
+    from openexecutive.briefing import grounding
+
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    aid = _insert(db, "Payments degraded", severity="high")
+    _apply(db, aid, _verdict(aid, verdict="changed", headline="Marcus Lee flagged payments"))
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None and row.headline == "Payments degraded" and row.severity == "high"
+    assert not any(e[0] == review.EVENT_CHANGED for e in audit_events)
+    refused = [e for e in audit_events if e[2].get("text_ungrounded")]
+    assert refused and refused[0][2]["text_ungrounded"] == ["Marcus Lee"]
