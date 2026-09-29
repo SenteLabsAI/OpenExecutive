@@ -297,9 +297,24 @@ def _handle(raw: str) -> list[tuple[str, bool]]:
         patch.object(poller, "_mark_read", new=AsyncMock()),
     ):
         asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
-    return [
+    return _without_roster_rows([
         (e.event_type, e.private) for e in _audit().query(limit=1000) if e.id not in before
-    ]
+    ])
+
+
+def _without_roster_rows(rows: list[Any]) -> list[Any]:
+    """The rows about the mail itself. A stranger's mail also opens a roster
+    request ("who is this?"): those rows are the principal's alone whatever
+    the mail, so they are checked here and set aside."""
+    def event(row: Any) -> str:
+        return row[0] if isinstance(row, tuple) else row.event_type
+
+    def private(row: Any) -> bool:
+        return row[1] if isinstance(row, tuple) else row.private
+
+    roster = [r for r in rows if event(r).startswith("roster_")]
+    assert all(private(r) for r in roster)
+    return [r for r in rows if not event(r).startswith("roster_")]
 
 
 @pytest.mark.parametrize(("sender", "body", "private"), [
@@ -406,7 +421,7 @@ def _handle_through_the_turn(raw: str) -> list[Any]:
 def test_every_row_written_while_a_private_mail_is_handled_is_private(
     roster: SimpleNamespace, sender: str, body: str, private: bool
 ) -> None:
-    rows = _handle_through_the_turn(_raw(sender, body))
+    rows = _without_roster_rows(_handle_through_the_turn(_raw(sender, body)))
     assert {"knowledge_retrieval", "integration_inbound", "chat_turn"} <= {
         e.event_type for e in rows
     }

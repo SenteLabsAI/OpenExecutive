@@ -1636,6 +1636,7 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "create_goal",
     "record_decision_outcome",
+    "resolve_roster_request",
 })
 
 

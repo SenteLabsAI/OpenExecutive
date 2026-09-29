@@ -44,6 +44,13 @@ class AckBody(BaseModel):
 @router.post("/alerts/{alert_id}/ack", response_model=Alert)
 def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
     existing = _visible_alert(alert_id, request)
+    if existing.source == "roster_request":
+        # Answered at /people/requests/{id}: acking the card alone would
+        # leave the request (and its sender) waiting with nothing to show it.
+        raise HTTPException(
+            status_code=409,
+            detail="Answer this one from its card: add them, say who they are, or ignore them.",
+        )
     if not store.set_status(alert_id, body.status):
         raise HTTPException(status_code=404, detail="Alert not found")
     # Feedback loop: a dismiss on a watch-sourced alert lowers that watch's

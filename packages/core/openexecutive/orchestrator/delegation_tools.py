@@ -183,7 +183,7 @@ def _roster_by_email() -> dict[str, Any]:
     from openexecutive.people.store import list_people
 
     people = list_people(include_contacts=contacts_reachable_now())
-    return {p.email.lower(): p for p in people if p.email}
+    return {a.lower(): p for p in people for a in [p.email, *p.email_aliases] if a}
 
 
 def _recipient(email: str, roster: dict[str, Any]) -> Any:

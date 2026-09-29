@@ -108,6 +108,62 @@ class PersonBriefItem(BaseModel):
     insight: str | None  # utility-fast note, served from cache (None until warm)
 
 
+class RosterRequestCard(BaseModel):
+    """What a roster-request card shows (all server-derived; ``display_name``
+    is what the sender called themselves, sanitised and unverified)."""
+
+    id: int
+    channel: str
+    channel_ref: str
+    display_name: str
+    profile_email: str | None
+    on_company_domain: bool
+    suggested_kind: str | None
+    suggested_person_id: int | None
+    suggested_person_name: str | None
+    message_count: int
+    ack_sent: bool
+    first_seen_at: str
+    previews: list[str]
+
+
+def _roster_request_card(topic_tags: list[str]) -> RosterRequestCard | None:
+    """The card for a ``roster_request:{id}`` alert whose request is still
+    pending, else None. Never raises."""
+    from openexecutive.people import roster_requests as rr
+
+    request_id = rr.parse_alert_tag(topic_tags)
+    if request_id is None:
+        return None
+    try:
+        req = rr.get_request(request_id)
+        if req is None or req.status != "pending":
+            return None
+        from openexecutive.people.store import get_person
+
+        suggested = (
+            get_person(req.suggested_person_id) if req.suggested_person_id is not None else None
+        )
+        return RosterRequestCard(
+            id=req.id,
+            channel=req.channel,
+            channel_ref=req.channel_ref,
+            display_name=req.display_name,
+            profile_email=req.profile_email,
+            on_company_domain=req.on_company_domain,
+            suggested_kind=req.suggested_kind,
+            suggested_person_id=suggested.id if suggested is not None else None,
+            suggested_person_name=suggested.full_name if suggested is not None else None,
+            message_count=req.message_count,
+            ack_sent=req.ack_sent_at is not None,
+            first_seen_at=req.first_seen_at,
+            previews=rr.previews(req.id),
+        )
+    except Exception:
+        logger.warning("today: roster request card failed", exc_info=True)
+        return None
+
+
 class ProposalItem(BaseModel):
     alert_id: int
     headline: str
@@ -136,6 +192,11 @@ class ProposalItem(BaseModel):
     # the /decisions endpoints (which book/cancel server-side) instead of the
     # ack-and-handoff-to-chat flow. Null for ordinary alert-backed proposals.
     decision_instance_id: int | None = None
+    # Set when this card is a roster request ("who is this new sender?",
+    # people.roster_requests): the UI answers it at /people/requests/{id}
+    # (add / same person as / ignore) instead of ack-and-chat. Private to the
+    # principal, like the request.
+    roster_request: RosterRequestCard | None = None
     # Lifecycle signals (alerts/lifecycle.py, alerts/review.py). Coalescing:
     # how many times this situation re-fired and when it was last seen.
     occurrence_count: int = 1
@@ -769,6 +830,10 @@ def _build_today(
             category=item_category,
             surfaced_reason=item_reason,
             decision_instance_id=_parse_decision_instance_id(alert.topic_tags or []),
+            roster_request=(
+                _roster_request_card(alert.topic_tags or [])
+                if alert.source == "roster_request" else None
+            ),
             occurrence_count=alert.occurrence_count,
             last_seen_at=alert.last_seen_at,
             last_reviewed_at=alert.last_reviewed_at,
@@ -904,8 +969,9 @@ def _build_channel_lookup() -> dict[tuple[str, str], str]:
             lookup[("slack_dm", person.slack_user_id)] = person.full_name
         if person.telegram_chat_id:
             lookup[("telegram", person.telegram_chat_id)] = person.full_name
-        if person.email:
-            lookup[("email", person.email.lower())] = person.full_name
+        for address in [person.email, *person.email_aliases]:
+            if address:
+                lookup[("email", address.lower())] = person.full_name
     return lookup
 
 
@@ -1266,9 +1332,12 @@ def _action_proposals(
     """
     from openexecutive.alerts.models import is_private_alert
 
+    # A roster-request card names a stranger by the name they gave: it stays
+    # a card and never reaches the narrative model.
     return [
         p for p in proposals
         if p.category == "action" and (include_private or not is_private_alert(p))
+        and p.roster_request is None
     ]
 
 

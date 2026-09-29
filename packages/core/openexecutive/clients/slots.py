@@ -157,6 +157,12 @@ _BLANK_WIPE_TABLES = (
     "agent_overrides",
     "review_annotations",
     "review_items",
+    # Roster requests (people.roster_requests) name who wrote to this
+    # company, and aliases are its people's addresses: children first.
+    "roster_ack_log",
+    "roster_request_messages",
+    "roster_requests",
+    "person_emails",
     "person_authority_scope",
     "person_availability",
     "people",

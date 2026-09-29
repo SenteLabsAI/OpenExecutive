@@ -440,6 +440,18 @@ class Settings(BaseSettings):
     exec_display_name: str = Field("Open Executive", alias="EXEC_DISPLAY_NAME")
     email_poll_interval_seconds: int = Field(60, alias="EMAIL_POLL_INTERVAL_SECONDS")
 
+    # Roster requests (people.roster_requests): someone off the roster who
+    # writes in is held for the principal to confirm, and told so — at most
+    # once per sender per ROSTER_ACK_WINDOW_DAYS, and at most
+    # ROSTER_ACK_DAILY_CAP acknowledgements a day across all senders, so a
+    # forged sender cannot turn the Executive into a mail cannon. At most
+    # ROSTER_REQUEST_DAILY_CAP new requests a day; an unanswered one closes
+    # after ROSTER_REQUEST_TTL_DAYS.
+    roster_ack_window_days: int = Field(7, ge=1, le=365, alias="ROSTER_ACK_WINDOW_DAYS")
+    roster_ack_daily_cap: int = Field(20, ge=0, le=10_000, alias="ROSTER_ACK_DAILY_CAP")
+    roster_request_daily_cap: int = Field(30, ge=0, le=10_000, alias="ROSTER_REQUEST_DAILY_CAP")
+    roster_request_ttl_days: int = Field(14, ge=1, le=365, alias="ROSTER_REQUEST_TTL_DAYS")
+
     # Telegram + Discord channel access is roster-driven: a sender's
     # channel ID must be present on a non-archived Person row. The old
     # TELEGRAM_ALLOWED_CHAT_IDS / DISCORD_ALLOWED_USER_IDS / EMAIL_ALLOWED_SENDERS

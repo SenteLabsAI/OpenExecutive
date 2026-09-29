@@ -7,6 +7,8 @@ import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   getDecisionClassMode,
+  getPeopleViewer,
+  getWorkspace,
   MEETING_SCHEDULING_CLASS,
   setDecisionClassMode,
   updateWorkspace,
@@ -188,6 +190,8 @@ export default function WorkspaceCard() {
           )}
         </div>
 
+        <CompanyDomainsSection />
+
         <MeetingAutonomySwitch />
       </div>
 
@@ -195,6 +199,91 @@ export default function WorkspaceCard() {
       <p className="mt-4 text-xs text-fg-subtle">
         A persona you customised in Council stays in place in either mode.
       </p>
+    </div>
+  );
+}
+
+// "Company email domains": addresses on these match a teammate by the part
+// before the @ (anna+invoices@acme.io is the Anna at anna@acme.com); a new
+// address there is pre-filled as a teammate when someone writes in. Derived
+// from your own address unless set here. The server returns them only to the
+// principal, so the row shows only to them.
+function CompanyDomainsSection() {
+  const [domains, setDomains] = useState<string[] | null>(null);
+  const [custom, setCustom] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function apply(ws: { company_domains?: string[]; company_domains_custom?: boolean }) {
+    const list = ws.company_domains ?? [];
+    setDomains(list);
+    setCustom(Boolean(ws.company_domains_custom));
+    setDraft(list.join(", "));
+  }
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    getPeopleViewer()
+      .then((viewer) => (viewer.is_principal ? getWorkspace(ctrl.signal).then(apply) : undefined))
+      .catch(() => setDomains(null));
+    return () => ctrl.abort();
+  }, []);
+
+  async function save(value: string[] | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      apply(await updateWorkspace({ company_domains: value }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the domains");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (domains === null) return null;
+  const parsed = draft.split(/[\s,;]+/).map((d) => d.trim().toLowerCase()).filter(Boolean);
+  return (
+    <div className="py-4 first:pt-0 last:pb-0">
+      <label htmlFor="ws-domains" className="text-xs font-medium text-fg">
+        Company email domains
+      </label>
+      <p className="text-xs text-fg-muted mt-0.5 mb-1.5">
+        Mail from these domains matches a teammate by the part before the @, so
+        anna+invoices@ reaches the Anna already on your People list. Someone new
+        writing from one is suggested as a teammate — you still confirm them.
+        {!custom && " Taken from your own address until you set them."}
+      </p>
+      <div className="flex gap-2">
+        <input
+          id="ws-domains"
+          value={draft}
+          disabled={busy}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="acme.com, acme.io"
+          className="min-w-0 flex-1 px-2.5 py-1.5 rounded-lg text-sm bg-surface border border-line text-fg focus:outline-none focus:border-line-strong disabled:opacity-60"
+        />
+        <button
+          type="button"
+          disabled={busy || parsed.join(",") === domains.join(",")}
+          onClick={() => void save(parsed.length ? parsed : null)}
+          className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer disabled:opacity-50"
+        >
+          Save
+        </button>
+        {custom && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void save(null)}
+            className="text-xs text-fg-muted hover:text-fg cursor-pointer disabled:opacity-50"
+          >
+            Use my address
+          </button>
+        )}
+      </div>
+      {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
     </div>
   );
 }

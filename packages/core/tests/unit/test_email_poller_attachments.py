@@ -214,7 +214,7 @@ def _run(raw: str, gateway: _Gateway, *, person: Any = None, contact: Any = None
         ),
         patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
         patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
-        patch("openexecutive.people.store.find_person_by_email", new=find_person),
+        patch("openexecutive.people.identity.resolve_email_sender", new=find_person),
         patch.object(
             poller,
             "get_settings",

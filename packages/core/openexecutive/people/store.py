@@ -147,6 +147,19 @@ def initialize_db(db_path: Path | None = None) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_pa_person
                 ON person_availability(person_id);
+
+            CREATE TABLE IF NOT EXISTS person_emails (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                email_norm TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL DEFAULT 'manual',
+                roster_request_id INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_person_emails_person
+                ON person_emails(person_id);
         """)
         # Additive migration: discord_user_id added after initial schema.
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(people)")}
@@ -171,6 +184,10 @@ def initialize_db(db_path: Path | None = None) -> None:
         conn.execute(
             "UPDATE people SET kind = 'team' WHERE is_principal = 1 AND kind != 'team'"
         )
+    # The roster-request ledger lives with the roster it grows.
+    from openexecutive.people.roster_requests import initialize_tables
+
+    initialize_tables(db_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -216,6 +233,20 @@ def _load_availability(
     return windows
 
 
+def normalize_email(email: str) -> str:
+    """An address as every lookup compares it: trimmed and lowercased."""
+    return (email or "").strip().lower()
+
+
+def _load_aliases(person_id: int, conn: sqlite3.Connection) -> list[str]:
+    if not _table_exists(conn, "person_emails"):
+        return []
+    rows = conn.execute(
+        "SELECT email FROM person_emails WHERE person_id = ? ORDER BY id", (person_id,)
+    ).fetchall()
+    return [row["email"] for row in rows]
+
+
 def _row_to_person(row: sqlite3.Row, conn: sqlite3.Connection) -> Person:
     person_id = int(row["id"])
     try:
@@ -242,6 +273,7 @@ def _row_to_person(row: sqlite3.Row, conn: sqlite3.Connection) -> Person:
         kind=kind,
         department_slugs=dept_slugs,
         email=row["email"],
+        email_aliases=_load_aliases(person_id, conn),
         slack_user_id=row["slack_user_id"],
         telegram_chat_id=row["telegram_chat_id"],
         discord_user_id=row["discord_user_id"],
@@ -484,6 +516,185 @@ def find_person_by_email(
         return _row_to_person(row, conn)
 
 
+def find_person_by_address(
+    email: str,
+    db_path: Path | None = None,
+    *,
+    include_contacts: bool = False,
+) -> Person | None:
+    """Like ``find_person_by_email``, but an address also matches the person
+    it is an alias of (``person_emails``). Exact, case-insensitive; the team
+    row wins over a contact. This is how mail is matched to its sender —
+    ``people.identity.resolve_email_sender`` adds the company-domain rule on
+    top. Sign-in never uses it: an alias is not a login."""
+    norm = normalize_email(email)
+    if not norm or not _resolve_db_path(db_path).exists():
+        return None
+    with _get_conn(db_path) as conn:
+        if not _table_exists(conn, "people"):
+            return None
+        alias_clause = (
+            " OR id IN (SELECT person_id FROM person_emails WHERE email_norm = ?)"
+            if _table_exists(conn, "person_emails") else ""
+        )
+        params: tuple[str, ...] = (norm, norm) if alias_clause else (norm,)
+        row = conn.execute(
+            "SELECT * FROM people WHERE (LOWER(TRIM(email)) = ?" + alias_clause + ")"
+            " AND archived = 0" + _kind_filter(include_contacts)
+            + " ORDER BY kind = 'team' DESC, id LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_person(row, conn)
+
+
+class AddressInUseError(ValueError):
+    """Raised when an address is already someone else's (primary or alias)."""
+
+
+_MAX_ALIASES = 10
+
+
+def address_holder(
+    email: str, db_path: Path | None = None, *, exclude_person_id: int | None = None
+) -> int | None:
+    """The id of the non-archived person (any kind) holding ``email`` as
+    their address or an alias, other than ``exclude_person_id``; else None."""
+    norm = normalize_email(email)
+    if not norm or not _resolve_db_path(db_path).exists():
+        return None
+    with _get_conn(db_path) as conn:
+        if not _table_exists(conn, "people"):
+            return None
+        rows = conn.execute(
+            "SELECT id FROM people WHERE archived = 0 AND LOWER(TRIM(email)) = ?",
+            (norm,),
+        ).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        if _table_exists(conn, "person_emails"):
+            ids += [
+                int(r["person_id"]) for r in conn.execute(
+                    "SELECT pe.person_id FROM person_emails pe JOIN people p"
+                    " ON p.id = pe.person_id WHERE pe.email_norm = ? AND p.archived = 0",
+                    (norm,),
+                ).fetchall()
+            ]
+    for pid in ids:
+        if pid != exclude_person_id:
+            return pid
+    return None
+
+
+def alias_holder(
+    email: str, db_path: Path | None = None, *, exclude_person_id: int | None = None
+) -> int | None:
+    """The id of the non-archived person holding ``email`` as an alias (not
+    as their primary address), other than ``exclude_person_id``; else None."""
+    norm = normalize_email(email)
+    if not norm or not _resolve_db_path(db_path).exists():
+        return None
+    with _get_conn(db_path) as conn:
+        if not _table_exists(conn, "person_emails"):
+            return None
+        rows = conn.execute(
+            "SELECT pe.person_id FROM person_emails pe JOIN people p ON p.id = pe.person_id"
+            " WHERE pe.email_norm = ? AND p.archived = 0",
+            (norm,),
+        ).fetchall()
+    for row in rows:
+        if int(row["person_id"]) != exclude_person_id:
+            return int(row["person_id"])
+    return None
+
+
+def clean_aliases(emails: list[str], *, primary: str | None = None) -> list[str]:
+    """``emails`` trimmed, deduplicated case-insensitively (first spelling
+    wins), without blanks or the person's own primary address. Raises
+    ``ValueError`` for more than ``_MAX_ALIASES`` or a value that is not an
+    address (the message never quotes it)."""
+    out: list[str] = []
+    seen = {normalize_email(primary)} if primary else set()
+    for raw in emails:
+        addr = (raw or "").strip()
+        norm = normalize_email(addr)
+        if not norm or norm in seen:
+            continue
+        local, sep, domain = addr.rpartition("@")
+        if (
+            not sep or not local or "." not in domain or len(addr) > 254
+            or any(ch.isspace() or ord(ch) < 0x20 for ch in addr)
+            or any(ch in addr for ch in "<>,;\"")
+        ):
+            raise ValueError("an alias is not a valid email address")
+        seen.add(norm)
+        out.append(addr)
+    if len(out) > _MAX_ALIASES:
+        raise ValueError(f"a person holds at most {_MAX_ALIASES} other addresses")
+    return out
+
+
+def set_person_emails(
+    person_id: int,
+    emails: list[str],
+    *,
+    source: str = "manual",
+    db_path: Path | None = None,
+) -> list[str]:
+    """Replace ``person_id``'s aliases with ``emails`` (``clean_aliases``).
+    Raises ``AddressInUseError`` when one is someone else's address or alias,
+    before anything is written. Returns the stored list."""
+    person = get_person(person_id, db_path)
+    if person is None:
+        raise ValueError(f"person {person_id} not found")
+    clean = clean_aliases(emails, primary=person.email)
+    for addr in clean:
+        if address_holder(addr, db_path, exclude_person_id=person_id) is not None:
+            raise AddressInUseError("that address is already on another person")
+    now = _now()
+    with _get_conn(db_path) as conn:
+        conn.execute("DELETE FROM person_emails WHERE person_id = ?", (person_id,))
+        for addr in clean:
+            conn.execute(
+                "INSERT INTO person_emails (person_id, email, email_norm, source, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (person_id, addr, normalize_email(addr), source, now),
+            )
+    return clean
+
+
+def add_person_email(
+    person_id: int,
+    email: str,
+    *,
+    source: str = "manual",
+    roster_request_id: int | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Add one alias to ``person_id``. False when it is already theirs (their
+    address or an alias); raises ``AddressInUseError`` when it is someone
+    else's and ``ValueError`` when it is not an address or the person is
+    full or missing."""
+    person = get_person(person_id, db_path)
+    if person is None:
+        raise ValueError(f"person {person_id} not found")
+    norm = normalize_email(email)
+    if norm in {normalize_email(e) for e in [person.email or "", *person.email_aliases]}:
+        return False
+    clean = clean_aliases([*person.email_aliases, email], primary=person.email)
+    if address_holder(email, db_path, exclude_person_id=person_id) is not None:
+        raise AddressInUseError("that address is already on another person")
+    addr = clean[-1]
+    with _get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO person_emails"
+            " (person_id, email, email_norm, source, roster_request_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (person_id, addr, norm, source, roster_request_id, _now()),
+        )
+    return True
+
+
 def find_person_by_discord_id(
     discord_user_id: str,
     db_path: Path | None = None,
@@ -503,6 +714,18 @@ def find_person_by_discord_id(
         if row is None:
             return None
         return _row_to_person(row, conn)
+
+
+def _find_email_sender(
+    email: str, db_path: Path | None = None, *, include_contacts: bool = False
+) -> Person | None:
+    """An email recipient or sender as mail is matched: aliases and, on the
+    live store, the company-domain rule (``people.identity``)."""
+    if db_path is not None:
+        return find_person_by_address(email, db_path, include_contacts=include_contacts)
+    from openexecutive.people.identity import resolve_email_sender
+
+    return resolve_email_sender(email, include_contacts=include_contacts)
 
 
 def find_person_by_channel_ref(
@@ -526,7 +749,7 @@ def find_person_by_channel_ref(
         "slack_dm": find_person_by_slack_id,
         "discord_dm": find_person_by_discord_id,
         "telegram": find_person_by_telegram_chat_id,
-        "email": find_person_by_email,
+        "email": _find_email_sender,
     }.get(channel)
     if finder is None:
         return None
@@ -624,6 +847,10 @@ def archive_person(person_id: int, db_path: Path | None = None) -> bool:
             (_now(), person_id),
         )
         archived = cursor.rowcount > 0
+        # Free the aliases: the addresses are unique across the roster, and an
+        # archived person must not keep someone else from using them.
+        if archived and _table_exists(conn, "person_emails"):
+            conn.execute("DELETE FROM person_emails WHERE person_id = ?", (person_id,))
     if archived and db_path is None:
         # An archived person can no longer be chased, so their open loops
         # would otherwise sit in /today forever. Only on the live store: a

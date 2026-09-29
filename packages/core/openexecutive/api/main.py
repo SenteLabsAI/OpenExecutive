@@ -399,6 +399,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # departments code references person IDs (FK ordering).
     from openexecutive.people.store import initialize_db as initialize_people_db
     initialize_people_db()
+    # Replays of held roster-request messages run on this loop, whichever
+    # thread resolves the request (integrations.roster_intake).
+    from openexecutive.integrations.roster_intake import bind_loop
+    bind_loop()
 
     # One-shot cleanup of reminders the removed talent / staff-onboarding
     # workflows left pending on the principal's DM channel (see the function's

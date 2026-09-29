@@ -907,9 +907,21 @@ async def reset_all_state(
 
         # 4. People (child tables first to satisfy FK ordering)
         from openexecutive.people import store as people_store
+        from openexecutive.people.roster_requests import TABLES as ROSTER_REQUEST_TABLES
+
+        if people_store.DB_PATH.exists():
+            # So the alias and roster-request tables exist to be wiped on a
+            # DB created before them (idempotent).
+            people_store.initialize_db()
         people_cleared = _delete_all_rows(
             people_store.DB_PATH,
-            ("person_authority_scope", "person_availability", "people"),
+            (
+                *ROSTER_REQUEST_TABLES,
+                "person_emails",
+                "person_authority_scope",
+                "person_availability",
+                "people",
+            ),
         )
 
         # 5. Departments + Goals, then re-seed defaults. ``departments_meta``
@@ -1308,7 +1320,7 @@ def _apply_workspace(
                 restore_workspace_settings(wanted)
         except Exception:
             logger.exception("fixture: applying the workspace settings failed")
-    return get_workspace().model_dump(exclude=set(ROLE_FIELDS))
+    return get_workspace().model_dump(exclude={*ROLE_FIELDS, "company_domains"})
 
 
 def _dump_workspace(workspace_path: Path) -> None:
@@ -1685,6 +1697,15 @@ def _seed_people(people_path: Path) -> int:
             # Child tables first to satisfy foreign-key ordering when PRAGMA
             # foreign_keys=ON. department_slugs are stored as a JSON column on
             # `people` itself (no separate junction table).
+            existing = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            # A fixture's people come with no aliases and nobody waiting.
+            for table in (
+                "roster_ack_log", "roster_request_messages", "roster_requests", "person_emails",
+            ):
+                if table in existing:
+                    conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed names
             conn.execute("DELETE FROM person_authority_scope")
             conn.execute("DELETE FROM person_availability")
             conn.execute("DELETE FROM people")

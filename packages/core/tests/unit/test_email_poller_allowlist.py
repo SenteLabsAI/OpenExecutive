@@ -226,3 +226,117 @@ def test_adversarial_from_header_does_not_smuggle_into_policy_notice() -> None:
         assert "ignore" not in from_addr_arg.lower(), f"smuggled instruction via {adversarial!r}"
         assert "credentials" not in from_addr_arg.lower(), f"smuggled instruction via {adversarial!r}"
         assert "x-injected" not in from_addr_arg.lower(), f"smuggled header via {adversarial!r}"
+
+
+# --- roster requests: held, acknowledged, answered by the principal ----------
+
+@pytest.fixture
+def principal(monkeypatch: pytest.MonkeyPatch, isolated_people_db: Path) -> int:
+    from openexecutive.alerts import store as alerts_store
+    from openexecutive.memory import episodic
+
+    monkeypatch.setattr(alerts_store, "DB_PATH", isolated_people_db)
+    monkeypatch.setattr(episodic, "DB_PATH", isolated_people_db)
+    alerts_store.initialize_db()
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **kw: None)
+    monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "exec@example.com")
+    # Telling the principal is tested in test_roster_intake.
+    monkeypatch.setattr(
+        "openexecutive.integrations.roster_intake.notify_principal", AsyncMock(return_value=None)
+    )
+    return people_store.upsert_person(
+        full_name="Olivia Owner", is_principal=True, email="olivia@example.com"
+    )
+
+
+def _sends(gateway: AsyncMock) -> list[dict[str, Any]]:
+    return [
+        c.args[0]["arguments"] for c in gateway.call_tool.await_args_list
+        if c.args[0]["name"] == "google_workspace__send_gmail_message"
+    ]
+
+
+def _run_with_gateway(raw: str) -> tuple[AsyncMock, AsyncMock]:
+    gateway = AsyncMock()
+    gateway.call_tool = AsyncMock(return_value=raw)
+    with (
+        patch.object(poller, "get_settings", return_value=_settings()),
+        patch.object(poller, "_run_executive", new=AsyncMock()) as run_exec,
+        patch.object(poller, "_mark_read", new=AsyncMock()),
+    ):
+        asyncio.run(poller._handle_email(gateway, message_id="m1", thread_id="t1",
+                                         user_email="exec@example.com"))
+    return run_exec, gateway
+
+
+def test_a_new_sender_is_held_acknowledged_and_still_triaged(principal: int) -> None:
+    from openexecutive.integrations.roster_intake import ACK_TEXT
+    from openexecutive.people import roster_requests as rr
+
+    run_exec, gateway = _run_with_gateway(_raw_email("Annamarie Chen <annamarie@example.com>"))
+    assert run_exec.await_count == 1
+    assert run_exec.await_args.kwargs["held_for_roster"] is True
+    [request] = rr.list_requests()
+    assert request.channel_ref == "annamarie@example.com"
+    assert request.display_name == "Annamarie Chen"
+    # The one reply they get: fixed text, to them alone, never quoting them.
+    [ack] = [s for s in _sends(gateway) if s.get("to") == "annamarie@example.com"]
+    assert ack["body"] == ACK_TEXT and "Hello" not in ack["subject"]
+
+
+def test_machine_mail_is_not_held_or_acknowledged(principal: int) -> None:
+    from openexecutive.people import roster_requests as rr
+
+    run_exec, gateway = _run_with_gateway(_raw_email("noreply@shop.example"))
+    assert rr.list_requests() == [] and _sends(gateway) == []
+
+
+def test_a_new_senders_notice_says_they_were_told(principal: int) -> None:
+    message = _capture_user_message_from_run_executive_held("new@example.com")
+    assert "already been told their message arrived" in message
+    assert "surface a proposal to add the sender" not in message
+
+
+def _capture_user_message_from_run_executive_held(from_addr: str) -> str:
+    captured: dict[str, Any] = {}
+
+    class _Exec:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        async def chat(self, **kwargs: Any) -> str:
+            captured.update(kwargs)
+            return "ok"
+
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", new=_Exec),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              return_value=SimpleNamespace(is_empty=lambda: True)),
+        patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch.object(poller, "get_settings", return_value=_settings()),
+    ):
+        asyncio.run(poller._run_executive(
+            gateway=AsyncMock(), raw_email=_raw_email(from_addr), message_id="m1",
+            thread_id="t1", from_addr=from_addr, held_for_roster=True,
+        ))
+    return str(captured["user_message"])
+
+
+def test_the_principals_token_reply_answers_the_request_before_any_turn(principal: int) -> None:
+    from openexecutive.people import roster_requests as rr
+
+    request = rr.hold("email", "annamarie@example.com", external_id="m0", payload={}).request
+    token = rr.issue_email_token(request.id)
+    raw = (
+        f"Subject: Re: Who is Annamarie? [{token}]\nFrom: olivia@example.com\n\n"
+        "--- BODY ---\nThat's Annamarie, add her as a contact\n"
+    )
+    with patch(
+        "openexecutive.integrations.roster_intake._parse_answer",
+        new=AsyncMock(return_value={"decision": "approve", "name": "Annamarie", "kind": "contact"}),
+    ), patch("openexecutive.integrations.roster_intake.schedule_replay"):
+        run_exec, _gateway = _run_with_gateway(raw)
+    assert run_exec.await_count == 0
+    done = rr.get_request(request.id)
+    assert done.status == "approved" and done.resolved_kind == "contact"

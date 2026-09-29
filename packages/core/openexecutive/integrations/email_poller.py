@@ -528,6 +528,15 @@ async def _handle_one_email(
         logger.debug("skipping automated sender for message=%s", message_id)
         return
 
+    # The principal answering a roster request ("who is this?") by replying
+    # from their own address to the confirmation email. Handled here, before
+    # any model turn: the answer carries the request's one-time token.
+    from openexecutive.integrations.roster_intake import try_email_roster_answer
+
+    if await try_email_roster_answer(gateway, raw, from_addr, message_id):
+        await _mark_read(gateway, message_id, user_email)
+        return
+
     # Sender-roster awareness. Unrostered senders are NOT dropped — the
     # Executive still reads, classifies, and decides. What protects us
     # from auto-replying to spam is the outbound gate
@@ -538,8 +547,8 @@ async def _handle_one_email(
     # to a human instead.
     from openexecutive.audit import log_event as audit_log
     from openexecutive.audit import private_rows
-    from openexecutive.people.store import find_person_by_email
-    sender_in_roster = find_person_by_email(from_addr) is not None
+    from openexecutive.people.identity import resolve_email_sender
+    sender_in_roster = resolve_email_sender(from_addr) is not None
     # Mail from one of the principal's contacts, or mail they forwarded: its
     # turn is private to the principal (see `_run_executive`), and so is every
     # audit row about it — these two included, which name the sender and the
@@ -556,6 +565,7 @@ async def _handle_one_email(
     # is, however early it is written: the knowledge retrieval, for one,
     # runs before the turn binds its private session. The scope ends with
     # the handling.
+    held_for_roster = False
     with private_rows(private):
         if not sender_in_roster:
             # A contact, like any non-team sender, gets no reply from this turn
@@ -578,6 +588,10 @@ async def _handle_one_email(
                 },
                 private=private,
             )
+            if not private:
+                held_for_roster = await _hold_for_roster(
+                    gateway, raw, from_value, from_addr, message_id, thread_id
+                )
 
         logger.info("routing message=%s to Executive", message_id)
         header, body_lines, attachment_lines = _split_gmail_content(raw)
@@ -628,12 +642,67 @@ async def _handle_one_email(
         )
         try:
             await _run_executive(
-                gateway, _strip_reply_to(raw), message_id, thread_id, from_addr, session_id
+                gateway, _strip_reply_to(raw), message_id, thread_id, from_addr, session_id,
+                held_for_roster=held_for_roster,
             )
         except Exception:
             logger.exception("Executive raised for message=%s", message_id)
 
         await _mark_read(gateway, message_id, user_email)
+
+
+async def _hold_for_roster(
+    gateway: MCPGateway,
+    raw: str,
+    from_value: str,
+    from_addr: str,
+    message_id: str,
+    thread_id: str,
+) -> bool:
+    """Hold mail from someone off the roster for the principal to confirm
+    (``integrations.roster_intake``) and acknowledge the sender once. Not for
+    machine-sent mail (newsletters, notifications, bounces), nor for one of
+    the principal's contacts (the caller only calls this for a non-private
+    mail, which a contact's never is). True when a request now holds it."""
+    from openexecutive.integrations import roster_intake
+
+    if not from_addr or roster_intake.looks_automated(raw, from_addr):
+        return False
+    display_name, _addr = parseaddr(from_value)
+    header, body_lines, _att = _split_gmail_content(raw)
+    new_lines, _fw = _new_text_lines(body_lines)
+    subject_line = next((ln for ln in header if ln.lower().startswith("subject:")), "")
+    subject = subject_line[len("subject:"):].strip()
+    preview = f"{subject} — {' '.join(new_lines)}" if subject else " ".join(new_lines)
+
+    async def _ack(_text: str) -> None:
+        await roster_intake.send_email_ack(gateway, from_addr)
+
+    request = await roster_intake.intake(
+        "email", from_addr,
+        external_id=message_id,
+        payload={"message_id": message_id, "thread_id": thread_id},
+        preview=preview,
+        display_name=display_name,
+        send_ack=_ack,
+    )
+    return request is not None
+
+
+async def replay_held_email(message: Any, _request: Any) -> bool:
+    """Replay a held email once its sender is on the roster: fetch it from
+    Gmail again and handle it as new mail from a known sender."""
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+
+    gateway = get_active_gateway()
+    message_id = str(message.payload.get("message_id") or "")
+    if gateway is None or not message_id:
+        return False
+    await _handle_email(
+        gateway, message_id, str(message.payload.get("thread_id") or ""),
+        get_settings().exec_email_address,
+    )
+    return True
 
 
 def _one_line(value: str, limit: int) -> str:
@@ -683,11 +752,11 @@ def _private_to_principal_mail(from_addr: str, raw_email: str) -> bool:
     or mail the principal forwarded."""
     if not from_addr:
         return False
-    from openexecutive.people.store import find_person_by_email
+    from openexecutive.people.identity import resolve_email_sender
 
-    person = find_person_by_email(from_addr)
+    person = resolve_email_sender(from_addr)
     if person is None:
-        return find_person_by_email(from_addr, include_contacts=True) is not None
+        return resolve_email_sender(from_addr, include_contacts=True) is not None
     return person.is_principal is True and _forwarded(raw_email)
 
 
@@ -723,6 +792,8 @@ async def _run_executive(
     thread_id: str,
     from_addr: str = "",
     session_id: str | None = None,
+    *,
+    held_for_roster: bool = False,
 ) -> None:
     from openexecutive.knowledge.retriever import retrieve
     from openexecutive.memory.episodic import format_for_prompt
@@ -746,12 +817,12 @@ async def _run_executive(
         # already ensures we only get here for known senders, but
         # re-verify defensively — _run_executive is also reachable from
         # other code paths.
-        from openexecutive.people.store import find_person_by_email
+        from openexecutive.people.identity import resolve_email_sender
 
         settings = get_settings()
         if (
             from_addr.lower() == settings.exec_email_address.lower()
-            or find_person_by_email(from_addr) is not None
+            or resolve_email_sender(from_addr) is not None
         ):
             session.seen_channel_refs.add(("email", f"{from_addr}|{thread_id}"))
             session.seen_channel_refs.add(("email", from_addr))
@@ -760,16 +831,16 @@ async def _run_executive(
     # No match → person_id stays None and the Honcho layer no-ops. Team
     # only: a contact is not a speaker the Executive keeps memory for or
     # acts for — they get a notice below instead.
-    from openexecutive.people.store import find_person_by_email
+    from openexecutive.people.identity import resolve_email_sender
 
     person_id: int | None = None
     person: Any = None
     contact: Any = None
     if from_addr:
-        person = find_person_by_email(from_addr)
+        person = resolve_email_sender(from_addr)
         person_id = person.id if person else None
         if person is None:
-            contact = find_person_by_email(from_addr, include_contacts=True)
+            contact = resolve_email_sender(from_addr, include_contacts=True)
 
     # Multi-peer co-presence: parse To+Cc headers and resolve each
     # recipient to a Person via find_person_by_email. Skip the From
@@ -785,7 +856,7 @@ async def _run_executive(
             addr_lower = addr.lower()
             if addr_lower in (exec_email, from_addr_lower):
                 continue
-            other = find_person_by_email(addr)
+            other = resolve_email_sender(addr)
             if other and other.id is not None and other.id not in co_present_person_ids:
                 co_present_person_ids.append(other.id)
     except Exception:
@@ -806,6 +877,20 @@ async def _run_executive(
         # Contacts are private to the principal: an alert this turn raises
         # is theirs alone, and it may not publish a team-visible artifact.
         session.private_to_principal = True
+    elif from_addr and person_id is None and held_for_roster:
+        policy_notice = (
+            # Keep this opening sentence identical to _contact_notice's.
+            f"[POLICY] This inbound is from {from_addr}, who is NOT on your team's "
+            "People roster. They have already been told their message arrived and "
+            "is waiting, and the principal has been asked who they are (a card on "
+            "their Today page) — do not raise another alert or proposal just to "
+            "add them. You can classify it, log a decision, schedule an internal "
+            "follow-up, or alert the principal about what the email itself needs. "
+            f"You cannot send an outbound reply to {from_addr} — the email gateway "
+            "will block it. Once the principal says who they are, this email comes "
+            "back to you and you can answer it then.\n\n"
+            "---\n\n"
+        )
     elif from_addr and person_id is None:
         policy_notice = (
             # Keep this opening sentence identical to _contact_notice's.
@@ -915,6 +1000,9 @@ async def run_email_poller(gateway: MCPGateway) -> None:
     from openexecutive.scheduler.pause import is_paused
 
     logger.info("started (interval=%ds)", POLL_INTERVAL_SECONDS)
+    from openexecutive.integrations.roster_intake import register_replayer
+
+    register_replayer("email", replay_held_email)
     holding_for_pause = False
     while True:
         try:

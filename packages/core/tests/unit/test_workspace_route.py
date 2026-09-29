@@ -56,8 +56,12 @@ def _roster_principal_and_teammate() -> None:
 
 PRINCIPAL = {"x-caller-email": "ceo@example.com"}
 
-# The role fields every response carries (null until set).
-NO_ROLE: dict[str, Any] = dict.fromkeys(ws.ROLE_FIELDS)
+# The role fields every response carries (null until set), and the company
+# email domains (none: the principal's example.com addresses are on no
+# company domain until one is set).
+NO_ROLE: dict[str, Any] = {
+    **dict.fromkeys(ws.ROLE_FIELDS), "company_domains": [], "company_domains_custom": False,
+}
 
 
 def test_get_defaults_before_onboarding(client: TestClient) -> None:
@@ -92,7 +96,8 @@ def test_put_timezone_and_mode(
     assert resp.status_code == 200
     assert resp.json() == {
         "mode": "team", "timezone": "America/Denver", "effective_timezone": "America/Denver",
-        **NO_ROLE,
+        # Derived from the principal's own address.
+        **NO_ROLE, "company_domains": ["example.com"],
     }
     # The zone change re-timed the principal's rhythm in place: same rows,
     # still pending, nothing inserted or cancelled.
@@ -195,3 +200,34 @@ def test_principal_lookup_failure_denies(client: TestClient, monkeypatch: pytest
 
     monkeypatch.setattr(people_store, "find_principal_person", _boom)
     assert client.put("/workspace", json={"mode": "solo"}).status_code == 403
+
+
+def test_company_domains_are_the_principals_to_set(
+    client: TestClient, audit_events: list[tuple[str, dict[str, Any]]]
+) -> None:
+    _roster_principal_and_teammate()
+    assert client.get("/workspace", headers=PRINCIPAL).json()["company_domains"] == ["example.com"]
+    resp = client.put(
+        "/workspace", json={"company_domains": ["Acme.com", "@acme.io"]}, headers=PRINCIPAL
+    )
+    assert resp.status_code == 200
+    assert resp.json()["company_domains"] == ["acme.com", "acme.io"]
+    assert resp.json()["company_domains_custom"] is True
+    assert audit_events[-1][1]["details"]["company_domains"] == ["acme.com", "acme.io"]
+    # A teammate sees none of it and may not change it.
+    teammate = {"x-caller-email": "tia@example.com"}
+    assert client.get("/workspace", headers=teammate).json()["company_domains"] == []
+    assert client.put(
+        "/workspace", json={"company_domains": ["evil.com"]}, headers=teammate
+    ).status_code == 403
+    # null goes back to deriving them.
+    resp = client.put("/workspace", json={"company_domains": None}, headers=PRINCIPAL)
+    assert resp.json()["company_domains"] == ["example.com"]
+    assert resp.json()["company_domains_custom"] is False
+
+
+@pytest.mark.parametrize("domains", [["gmail.com"], ["not a domain"], [f"d{i}.com" for i in range(11)]])
+def test_company_domains_refuse_free_mail_and_junk(client: TestClient, domains: list[str]) -> None:
+    _roster_principal_and_teammate()
+    resp = client.put("/workspace", json={"company_domains": domains}, headers=PRINCIPAL)
+    assert resp.status_code == 422
