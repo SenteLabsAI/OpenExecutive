@@ -49,6 +49,12 @@ class Session:
     # LIVE card; see `format_open_alerts_for_prompt` for the limits of this
     # control. Empty means the turn was shown no board and can ack nothing.
     trusted_alert_ids: set[int] = field(default_factory=set)
+    # Pending roster requests ("who is this new sender?") the server showed
+    # this turn in its <roster_requests> block — the principal's own verified
+    # turn only (`briefing.context.render_and_trust`). `resolve_roster_request`
+    # answers nothing else, so an id the model invents or reads out of text
+    # cannot add anyone.
+    trusted_roster_request_ids: set[int] = field(default_factory=set)
     # Per-session override of the install's workspace mode ("solo" / "team";
     # None = use the workspace setting). Evals run scenarios concurrently on
     # one Executive, so they set it here instead of flipping the global. Read

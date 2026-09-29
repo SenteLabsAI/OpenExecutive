@@ -1,0 +1,13 @@
+id: capabilities_001
+domain: mcp
+description: "Asked what it can do, the Executive answers from its Connected Systems section — the Google services it is signed into and what it can do with each — without searching for tools or inventing systems"
+requires_mcp: true
+query: "What can you actually do for me? Which of our systems are you connected to — can you see email, calendars, docs?"
+expected_tool_calls: []
+quality_criteria:
+  names_gmail_calendar_drive_docs_sheets_as_connected: true
+  says_it_acts_from_its_own_google_account: true
+  gives_concrete_examples_of_what_it_can_do_with_each: true
+  does_not_say_it_cannot_see_gmail: true
+  does_not_claim_systems_that_are_not_connected: true
+  does_not_list_internal_tool_names_to_the_user: true

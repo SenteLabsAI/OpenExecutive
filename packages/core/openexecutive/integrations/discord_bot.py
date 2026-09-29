@@ -24,7 +24,7 @@ import re
 import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
 
@@ -579,6 +579,90 @@ def _is_rostered(discord_user_id: str) -> bool:
         return False
 
 
+async def _hold_unknown_sender(
+    *,
+    text: str,
+    discord_user_id: str,
+    discord_channel: str,
+    message_id: str,
+    thread_id: str | None,
+    is_dm: bool,
+    session_id: str,
+    session_title: str,
+    author_display_name: str | None,
+    send_ack: Callable[[str], Awaitable[Any]] | None,
+) -> None:
+    """Hold a message from a Discord user off the roster for the principal to
+    confirm (``integrations.roster_intake``) and tell them, privately, that it
+    arrived: in the DM, or by DM for a channel mention (a reply in the
+    channel would tell everyone there who is not on the roster). One of the
+    principal's contacts gets nothing: contacts have no chat access.
+    ``send_ack`` None sends no acknowledgement at all."""
+    from openexecutive.integrations import roster_intake
+    from openexecutive.people.store import find_person_by_discord_id
+
+    if await asyncio.to_thread(find_person_by_discord_id, discord_user_id, include_contacts=True):
+        return
+
+    async def _ack_by_dm(ack_text: str) -> None:
+        await send_dm(discord_user_id, ack_text)
+
+    await roster_intake.intake(
+        "discord", discord_user_id,
+        external_id=message_id,
+        payload={
+            "text": text,
+            "discord_user_id": discord_user_id,
+            "discord_channel": discord_channel,
+            "message_id": message_id,
+            "thread_id": thread_id,
+            "is_dm": is_dm,
+            "session_id": session_id,
+            "session_title": session_title,
+            "author_display_name": author_display_name,
+        },
+        preview=text,
+        display_name=author_display_name or "",
+        send_ack=send_ack if send_ack is not None else (_ack_by_dm if not is_dm else None),
+    )
+
+
+async def _replay_held(message: Any, _request: Any) -> bool:
+    """Replay a message held while its sender was off the roster."""
+    p = message.payload
+    user_id = str(p.get("discord_user_id") or "")
+    text = str(p.get("text") or "")
+    if not user_id or not text:
+        return False
+    is_dm = bool(p.get("is_dm"))
+    channel = str(p.get("discord_channel") or "")
+
+    async def _send(reply: str) -> None:
+        if is_dm or not channel:
+            await send_dm(user_id, reply)
+        else:
+            await send_channel_message(channel, reply)
+
+    await _handle_message(
+        text=text,
+        discord_user_id=user_id,
+        discord_channel=channel,
+        message_id=str(p.get("message_id") or ""),
+        thread_id=p.get("thread_id"),
+        send_fn=_send,
+        is_dm=is_dm,
+        session_id=str(p.get("session_id") or f"discord:dm:{user_id}"),
+        session_title=str(p.get("session_title") or "Discord"),
+        author_display_name=p.get("author_display_name"),
+    )
+    return True
+
+
+async def _already_acknowledged(_text: str) -> None:
+    """The /ask reply already told the sender (ephemerally, within Discord's
+    3 seconds): claim the acknowledgement window without a second message."""
+
+
 def _find_discord_sender(discord_user_id: str) -> object:
     from openexecutive.people.store import find_person_by_discord_id
 
@@ -676,6 +760,22 @@ async def _handle_message(
                 "outcome": "rejected_unknown_sender",
             },
         )
+        # Someone off the roster writing to the bot directly (a DM or a
+        # mention — not a thread the bot merely follows): hold it for the
+        # principal to confirm and tell them it arrived.
+        if discord_user_id and not gate_eligible:
+            await _hold_unknown_sender(
+                text=text,
+                discord_user_id=discord_user_id,
+                discord_channel=discord_channel,
+                message_id=message_id,
+                thread_id=thread_id,
+                is_dm=is_dm,
+                session_id=session_id,
+                session_title=session_title,
+                author_display_name=author_display_name,
+                send_ack=send_fn if is_dm else None,
+            )
         return
 
     # WaitForHuman inbound resolver — check before alert triage.
@@ -1036,6 +1136,10 @@ def create_discord_bot():
 
     bot = commands.Bot(command_prefix="!", intents=intents)
 
+    from openexecutive.integrations.roster_intake import register_replayer
+
+    register_replayer("discord", _replay_held)
+
     # ------------------------------------------------------------------ #
     # Slash commands
     # ------------------------------------------------------------------ #
@@ -1060,10 +1164,32 @@ def create_discord_bot():
                     "outcome": "rejected_unknown_sender",
                 },
             )
-            await interaction.response.send_message(
-                "You don't appear in the People roster — ask the admin to add you.",
-                ephemeral=True,
-            )
+            from openexecutive.integrations.roster_intake import ACK_TEXT
+
+            # One of the principal's contacts: nothing is held for them, so
+            # promise nothing (contacts have no chat access).
+            if find_person_by_discord_id(str(interaction.user.id), include_contacts=True):
+                await interaction.response.send_message(
+                    "You don't appear in the People roster — ask the admin to add you.",
+                    ephemeral=True,
+                )
+                return
+            # Answer the interaction first (Discord allows 3 seconds), only
+            # to the sender; then hold the prompt for the principal.
+            await interaction.response.send_message(ACK_TEXT, ephemeral=True)
+            if prompt.strip():
+                await _hold_unknown_sender(
+                    text=prompt.strip(),
+                    discord_user_id=str(interaction.user.id),
+                    discord_channel=str(interaction.channel_id),
+                    message_id=str(interaction.id),
+                    thread_id=None,
+                    is_dm=isinstance(interaction.channel, discord.DMChannel),
+                    session_id=f"discord:dm:{interaction.user.id}",
+                    session_title=f"Discord DM ({interaction.user.display_name})",
+                    author_display_name=getattr(interaction.user, "display_name", None),
+                    send_ack=_already_acknowledged,
+                )
             return
 
         await interaction.response.defer(thinking=True)

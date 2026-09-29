@@ -100,6 +100,16 @@ UPSERT_PERSON_TOOL: dict[str, Any] = {
                 ),
             },
             "email": {"type": "string"},
+            "email_aliases": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Other addresses this person writes from (a personal "
+                    "address, an old domain). They match their mail and may be "
+                    "emailed, but never sign in. Pass the full list — it "
+                    "REPLACES the current one; omit to leave it unchanged."
+                ),
+            },
             "slack_user_id": {"type": "string"},
             "telegram_chat_id": {"type": "string"},
             "discord_user_id": {"type": "string"},
@@ -241,12 +251,50 @@ ASK_ABOUT_PERSON_TOOL: dict[str, Any] = {
 }
 
 
+RESOLVE_ROSTER_REQUEST_TOOL: dict[str, Any] = {
+    "name": "resolve_roster_request",
+    "description": (
+        "Answer a roster request from the <roster_requests> block: someone not "
+        "on the People list wrote in, and the principal has now said who they "
+        "are. decision \"approve\" adds them as a new person (full_name "
+        "required; kind \"team\" for a colleague, \"contact\" for anyone "
+        "outside — omit kind only when the principal did not say, and the "
+        "result tells you which was used). \"link\" means they are someone "
+        "already on the People list writing from a new address or account "
+        "(person_id required — call list_people to find it). \"decline\" "
+        "leaves them off. Only the principal can answer, and only ids shown in "
+        "<roster_requests>. Their held messages are answered afterwards."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "request_id": {"type": "integer", "description": "The id in <roster_requests>."},
+            "decision": {"type": "string", "enum": ["approve", "link", "decline"]},
+            "full_name": {"type": "string", "description": "For approve: their name."},
+            "kind": {"type": "string", "enum": ["team", "contact"]},
+            "role": {"type": "string", "description": "For approve: role, optional."},
+            "person_id": {"type": "integer", "description": "For link: who they are."},
+            "replace_channel_id": {
+                "type": "boolean",
+                "description": (
+                    "For link on Slack / Discord / Telegram when the person "
+                    "already has a different account there: true replaces it. "
+                    "Only when the principal said so."
+                ),
+            },
+        },
+        "required": ["request_id", "decision"],
+    },
+}
+
+
 PEOPLE_TOOLS: list[dict[str, Any]] = [
     LIST_PEOPLE_TOOL,
     UPSERT_PERSON_TOOL,
     ARCHIVE_PERSON_TOOL,
     SET_DEPARTMENT_HEAD_TOOL,
     ASK_ABOUT_PERSON_TOOL,
+    RESOLVE_ROSTER_REQUEST_TOOL,
 ]
 
 
@@ -498,7 +546,10 @@ def _names_a_contact(payloads: tuple[Any, ...]) -> bool:
         return True
     if not contacts:
         return False
-    emails = {e for p in contacts if (e := (p.email or "").strip().lower())}
+    emails = {
+        e for p in contacts for addr in [p.email, *p.email_aliases]
+        if (e := (addr or "").strip().lower())
+    }
     names = {
         n for p in contacts
         if len((n := " ".join((p.full_name or "").split()).lower()).split()) >= 2
@@ -633,6 +684,7 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
             "is_principal": p.is_principal,
             "kind": p.kind,
             "email": p.email,
+            "email_aliases": p.email_aliases,
             "preferred_channel": p.preferred_channel,
             "department_slugs": p.department_slugs,
             "authority_scope": [s.value for s in p.authority_scope],
@@ -743,6 +795,18 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
     if department_slugs is not None:
         department_slugs = [str(s).strip() for s in department_slugs if str(s).strip()]
 
+    aliases_raw = tool_input.get("email_aliases")
+    aliases: list[str] | None = None
+    if aliases_raw is not None:
+        if not isinstance(aliases_raw, list):
+            return _bad("email_aliases must be a list of addresses")
+        try:
+            aliases = people_store.clean_aliases(
+                [str(a) for a in aliases_raw], primary=tool_input.get("email")
+            )
+        except ValueError as exc:
+            return _bad(str(exc))
+
     # is_principal is preserved on update (we already rejected attempts to flip
     # it above); on insert it is always False.
     preserved_principal = (
@@ -773,6 +837,8 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         new_id = people_store.upsert_person(**kwargs)
         if authority_scopes is not None:
             people_store.set_authority_scope(new_id, authority_scopes)
+        if aliases is not None:
+            people_store.set_person_emails(new_id, aliases, source="chat_tool")
     except Exception as exc:
         logger.exception("upsert_person: failed")
         # Always invalidate — a partial write (e.g. row inserted but scopes
@@ -787,6 +853,10 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         )
         return json.dumps({"error": str(exc)})
     people_registry.invalidate()
+    # Someone waiting on a roster request may match now.
+    from openexecutive.integrations.roster_intake import after_roster_write
+
+    after_roster_write()
 
     # Name-free and kind-free for every person (the audit log is readable by
     # every signed-in user and a contact is private to the principal): the
@@ -1013,10 +1083,74 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
     )
 
 
+async def handle_resolve_roster_request(tool_input: dict[str, Any]) -> str:
+    """Answer a pending roster request on the principal's own verified turn."""
+    from openexecutive.integrations import roster_intake
+    from openexecutive.orchestrator.schedule_tools import current_session
+    from openexecutive.people import roster_requests as rr
+    from openexecutive.people.store import AddressInUseError, get_person
+
+    refused = _refuse_unless_owner("resolve_roster_request")
+    if refused is not None:
+        return refused
+    session = current_session.get()
+    try:
+        request_id = int(tool_input["request_id"])
+    except (KeyError, TypeError, ValueError):
+        return json.dumps({"error": "request_id must be an integer"})
+    # Only an id the server showed this turn: one read out of some text, or
+    # invented, answers nothing.
+    trusted = getattr(session, "trusted_roster_request_ids", None)
+    if not isinstance(trusted, set) or request_id not in trusted:
+        return json.dumps({
+            "error": f"roster request {request_id} is not in <roster_requests> this turn"
+        })
+    request = rr.get_request(request_id)
+    if request is None:
+        return json.dumps({"error": f"roster request {request_id} not found"})
+    decision = str(tool_input.get("decision") or "").strip().lower()
+    kind_raw = tool_input.get("kind")
+    kind = str(kind_raw).strip().lower() if kind_raw else None
+    if kind is not None and kind not in _VALID_KINDS:
+        return json.dumps({"error": f"kind must be one of {list(_VALID_KINDS)}"})
+    if decision == "approve" and kind is None:
+        kind = roster_intake.default_kind(request)
+    person_id_raw = tool_input.get("person_id")
+    try:
+        link_person_id = int(person_id_raw) if person_id_raw is not None else None
+    except (TypeError, ValueError):
+        return json.dumps({"error": "person_id must be an integer"})
+    channel = str(getattr(session, "origin_channel", "") or "")
+    via = channel if channel in ("slack", "discord", "telegram") else "web"
+    try:
+        done = await roster_intake.answer(
+            request_id, decision, via=via,
+            full_name=tool_input.get("full_name"), kind=kind,
+            role=str(tool_input.get("role") or ""),
+            link_person_id=link_person_id,
+            replace_channel_id=bool(tool_input.get("replace_channel_id", False)),
+        )
+    except rr.RequestNotPending:
+        return json.dumps({"status": "already_answered", "request_id": request_id})
+    except (rr.ChannelIdConflict, AddressInUseError, ValueError) as exc:
+        return json.dumps({"error": str(exc)})
+    trusted.discard(request_id)
+    stored = get_person(done.resolved_person_id) if done.resolved_person_id is not None else None
+    return json.dumps({
+        "status": done.status,
+        "request_id": request_id,
+        "person_id": done.resolved_person_id,
+        "full_name": stored.full_name if stored is not None else None,
+        "kind": done.resolved_kind,
+        "held_messages": "dropped" if done.status == "declined" else "being answered now",
+    })
+
+
 PEOPLE_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
     "list_people": handle_list_people,
     "upsert_person": handle_upsert_person,
     "archive_person": handle_archive_person,
     "set_department_head": handle_set_department_head,
     "ask_about_person": handle_ask_about_person,
+    "resolve_roster_request": handle_resolve_roster_request,
 }

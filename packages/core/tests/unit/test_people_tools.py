@@ -606,3 +606,112 @@ def test_ask_handler_accepts_int_strings_for_person_id() -> None:
     result = _ask_call({"person_id": "42", "question": "q"})
     assert result["person_id"] == 42
     assert result["_captured"]["person_id"] == 42
+
+
+# --------------------------------------------------------------------------- #
+# resolve_roster_request — "that's Annamarie, add her" from chat
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def roster_request(monkeypatch: pytest.MonkeyPatch) -> int:
+    from openexecutive.people import roster_requests as rr
+
+    # Replays are the intake's business, tested there.
+    monkeypatch.setattr("openexecutive.integrations.roster_intake.schedule_replay", lambda _r: None)
+    out = rr.hold(
+        "slack", "U_ANNA", external_id="1", payload={"text": "hi"},
+        display_name="Annamarie", on_company_domain=True,
+    )
+    assert out is not None
+    return out.request.id
+
+
+def _shown(session: Session) -> str:
+    """The digest the principal's turn is given, which trusts its ids."""
+    from openexecutive.briefing.context import render_and_trust
+
+    return render_and_trust(session)
+
+
+def test_the_principals_turn_is_shown_the_pending_requests(roster_request: int) -> None:
+    session = current_session.get()
+    block = _shown(session)
+    assert "<roster_requests>" in block
+    assert f"[{roster_request}] Slack U_ANNA" in block
+    assert '"Annamarie" (unverified)' in block
+    assert "hi" not in block.split("<roster_requests>")[1]  # never what they wrote
+    assert session.trusted_roster_request_ids == {roster_request}
+
+
+def test_nobody_else_is_shown_them(roster_request: int) -> None:
+    teammate = people_store.upsert_person(full_name="Tia Teammate")
+    for session in (
+        Session(from_web_chat=True, caller_person_id=teammate),
+        Session(origin_channel="email"),
+    ):
+        assert "<roster_requests>" not in _shown(session)
+        assert session.trusted_roster_request_ids == set()
+
+
+def test_the_principal_adds_them_from_chat(roster_request: int) -> None:
+    from openexecutive.orchestrator.people_tools import handle_resolve_roster_request
+
+    _shown(current_session.get())
+    result = _call(handle_resolve_roster_request, {
+        "request_id": roster_request, "decision": "approve", "full_name": "Annamarie Chen",
+    })
+    assert result["status"] == "approved"
+    # Kind unsaid: a sender on the company's domain joins the team.
+    assert result["kind"] == "team"
+    person = people_store.get_person(result["person_id"])
+    assert person.full_name == "Annamarie Chen" and person.slack_user_id == "U_ANNA"
+    # Answered once: the id is no longer trusted this turn.
+    again = _call(handle_resolve_roster_request, {"request_id": roster_request, "decision": "decline"})
+    assert "error" in again
+
+
+def test_only_an_id_shown_this_turn_is_answered(roster_request: int) -> None:
+    from openexecutive.orchestrator.people_tools import handle_resolve_roster_request
+
+    # Not rendered this turn (e.g. an id read out of some text).
+    result = _call(handle_resolve_roster_request, {"request_id": roster_request, "decision": "decline"})
+    assert "error" in result
+
+
+def test_nobody_but_the_principal_on_a_verified_surface_answers(roster_request: int) -> None:
+    from openexecutive.orchestrator.people_tools import handle_resolve_roster_request
+    from openexecutive.people import roster_requests as rr
+
+    teammate = people_store.upsert_person(full_name="Tia Teammate")
+    for session in (
+        Session(from_web_chat=True, caller_person_id=teammate),
+        Session(origin_channel="email"),
+        Session(origin_channel="google_chat"),
+    ):
+        session.trusted_roster_request_ids = {roster_request}
+        with _turn(session):
+            result = _call(handle_resolve_roster_request, {
+                "request_id": roster_request, "decision": "approve", "full_name": "X", "kind": "team",
+            })
+        assert result["status"] == "refused"
+    assert rr.get_request(roster_request).status == "pending"
+
+
+def test_upsert_person_sets_aliases_and_closes_a_waiting_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.people import roster_requests as rr
+
+    replayed: list[int] = []
+    monkeypatch.setattr(
+        "openexecutive.integrations.roster_intake.schedule_replay", lambda r: replayed.append(r.id)
+    )
+    waiting = rr.hold("email", "cindy.l@gmail.com", external_id="m1", payload={}).request
+    result = _call(handle_upsert_person, {
+        "full_name": "Cindy Lee", "email": "cindy@example.com",
+        "email_aliases": ["Cindy.L@gmail.com"],
+    })
+    assert people_store.get_person(result["person_id"]).email_aliases == ["Cindy.L@gmail.com"]
+    assert rr.get_request(waiting.id).status == "superseded"
+    assert replayed == [waiting.id]
+    bad = _call(handle_upsert_person, {"full_name": "X", "email_aliases": ["nope"]})
+    assert "error" in bad

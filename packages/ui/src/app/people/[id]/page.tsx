@@ -461,6 +461,8 @@ export default function PersonDetailPage() {
     role: "",
     kind: "team" as PersonKind,
     email: "",
+    // Other addresses, one per line or comma-separated.
+    email_aliases: "",
     slack_user_id: "",
     telegram_chat_id: "",
     discord_user_id: "",
@@ -478,7 +480,7 @@ export default function PersonDetailPage() {
         setPerson(p);
         resetForm(p);
         // Auto-open sections that already have data so existing values aren't hidden
-        if (p.email || p.slack_user_id || p.discord_user_id || p.telegram_chat_id || p.preferred_channel !== "any" || p.response_sla_hours !== 24) {
+        if (p.email || (p.email_aliases?.length ?? 0) > 0 || p.slack_user_id || p.discord_user_id || p.telegram_chat_id || p.preferred_channel !== "any" || p.response_sla_hours !== 24) {
           setShowContact(true);
         }
         if (p.on_leave_until) {
@@ -500,6 +502,7 @@ export default function PersonDetailPage() {
       role: p.role,
       kind: p.kind ?? "team",
       email: p.email ?? "",
+      email_aliases: (p.email_aliases ?? []).join("\n"),
       slack_user_id: p.slack_user_id ?? "",
       telegram_chat_id: p.telegram_chat_id ?? "",
       discord_user_id: p.discord_user_id ?? "",
@@ -563,6 +566,7 @@ export default function PersonDetailPage() {
         // change anyone's kind; the server refuses otherwise.
         ...(person?.is_principal || !viewerIsPrincipal ? {} : { kind: form.kind }),
         email: form.email.trim() || null,
+        email_aliases: form.email_aliases.split(/[\s,;]+/).map((a) => a.trim()).filter(Boolean),
         slack_user_id: form.slack_user_id.trim() || null,
         telegram_chat_id: form.telegram_chat_id.trim() || null,
         discord_user_id: form.discord_user_id.trim() || null,
@@ -782,6 +786,21 @@ export default function PersonDetailPage() {
                       </label>
 
                       <label className="text-xs text-fg-muted flex flex-col gap-1">
+                        Other addresses
+                        <textarea
+                          value={form.email_aliases}
+                          onChange={(e) => setForm((f) => ({ ...f, email_aliases: e.target.value }))}
+                          rows={2}
+                          placeholder="anna.personal@gmail.com"
+                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                        />
+                        <span className="text-[10px] text-fg-subtle">
+                          One per line. Mail from these reaches them, and they can be emailed
+                          here — but only the address above signs in.
+                        </span>
+                      </label>
+
+                      <label className="text-xs text-fg-muted flex flex-col gap-1">
                         Slack user ID
                         <input
                           value={form.slack_user_id}
@@ -839,6 +858,7 @@ export default function PersonDetailPage() {
                       ["Preferred channel", person.preferred_channel],
                       ...(contact ? [] : [["Expected reply within", `${person.response_sla_hours} hours`]]),
                       ["Email", person.email ?? "—"],
+                      ["Other addresses", (person.email_aliases ?? []).join(", ") || "—"],
                       ["Slack user ID", person.slack_user_id ?? "—"],
                       ["Discord user ID", person.discord_user_id ?? "—"],
                       ["Telegram chat ID", person.telegram_chat_id ?? "—"],

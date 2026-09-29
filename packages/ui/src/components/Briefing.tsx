@@ -53,6 +53,7 @@ import {
   type HandledRow,
 } from "@/lib/handled";
 import InfoTip from "./InfoTip";
+import RosterRequestCard from "./RosterRequestCard";
 import { hostOf } from "@/lib/url";
 import { SectionHeading } from "./memories/shared";
 import { useWorkspace } from "./workspace/WorkspaceContext";
@@ -699,6 +700,20 @@ function ProposalCard({
   // Body expand/collapse for long action bodies (see isLongBody below). The
   // elevated "Start here" card opts out of clamping via defaultBodyExpanded.
   const [bodyOpen, setBodyOpen] = useState(defaultBodyExpanded);
+  // A roster request ("who is this new sender?") is answered on its own
+  // card (add / someone already on the list / ignore) — never through chat,
+  // so what a stranger wrote never seeds a turn. The card calls the
+  // /people/requests endpoints itself, then onDismiss drops it here. Below
+  // the hooks, which must run on every render.
+  if (proposal.roster_request) {
+    return (
+      <RosterRequestCard
+        request={proposal.roster_request}
+        emphasized={emphasized}
+        onResolved={() => onDismiss?.(proposal)}
+      />
+    );
+  }
   function startEditing() {
     setEditedBody(proposal.body || proposal.headline);
     setEditing(true);
@@ -1979,6 +1994,12 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
     const prev = actedAlertIds;
     setActedAlertIds(new Set(prev).add(proposal.alert_id));
     try {
+      // A roster request was already answered by its own card (which also
+      // clears the companion alert): only hide it and re-sync.
+      if (proposal.roster_request) {
+        refreshToday();
+        return;
+      }
       // Decision-backed cards reject server-side (which also clears the
       // companion alert); ordinary alerts just get acked "dismissed".
       if (proposal.decision_instance_id != null) {
@@ -2152,7 +2173,11 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   // so mineProposals[0] is the sharpest.
   const startHereProposal = mineProposals[0] ?? null;
   const restProposals = mineProposals.slice(1);
-  const staleNeedsYouIds = olderThan(mineProposals, NEEDS_YOU_DISMISS_OLDER_THAN_DAYS);
+  // A roster request is answered on its card, never swept (the server skips
+  // it too), so it is not counted here.
+  const staleNeedsYouIds = olderThan(
+    mineProposals.filter((p) => !p.roster_request), NEEDS_YOU_DISMISS_OLDER_THAN_DAYS,
+  );
   const handledOvernight = today?.handled_overnight ?? [];
 
   // Status-strip inputs, all from data already computed above.

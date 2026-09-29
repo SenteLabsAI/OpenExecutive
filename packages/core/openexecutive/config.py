@@ -292,11 +292,26 @@ class Settings(BaseSettings):
     # Ollama / LM Studio / vLLM. Off, a PDF for a local model is OCR'd on
     # this server instead (knowledge/pdf_reader.py).
     local_pdf_input: bool = Field(False, alias="LOCAL_PDF_INPUT")
+    # Optional `reasoning_effort` sent on every local request (e.g. "low").
+    # Thinking-only models (GLM on Fireworks) otherwise spend the whole
+    # max_tokens budget reasoning and return no tool call. Unset = not sent.
+    # A Literal so a typo fails at startup instead of 400ing every local call.
+    local_reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high"] | None
+    ) = Field(None, alias="LOCAL_REASONING_EFFORT")
 
     @field_validator("local_models", mode="before")
     @classmethod
     def _parse_local_models(cls, v: Any) -> list[str]:
         return _parse_csv_list(v)
+
+    @field_validator("local_reasoning_effort", mode="before")
+    @classmethod
+    def _parse_local_reasoning_effort(cls, v: Any) -> Any:
+        # `LOCAL_REASONING_EFFORT=` (or a bare `# comment`) means unset.
+        if _blank_or_comment(v):
+            return None
+        return v.strip().lower() if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def _validate_local_models(self) -> "Settings":
@@ -439,6 +454,18 @@ class Settings(BaseSettings):
     # falls back to signing as a person from the company People roster.
     exec_display_name: str = Field("Open Executive", alias="EXEC_DISPLAY_NAME")
     email_poll_interval_seconds: int = Field(60, alias="EMAIL_POLL_INTERVAL_SECONDS")
+
+    # Roster requests (people.roster_requests): someone off the roster who
+    # writes in is held for the principal to confirm, and told so — at most
+    # once per sender per ROSTER_ACK_WINDOW_DAYS, and at most
+    # ROSTER_ACK_DAILY_CAP acknowledgements a day across all senders, so a
+    # forged sender cannot turn the Executive into a mail cannon. At most
+    # ROSTER_REQUEST_DAILY_CAP new requests a day; an unanswered one closes
+    # after ROSTER_REQUEST_TTL_DAYS.
+    roster_ack_window_days: int = Field(7, ge=1, le=365, alias="ROSTER_ACK_WINDOW_DAYS")
+    roster_ack_daily_cap: int = Field(20, ge=0, le=10_000, alias="ROSTER_ACK_DAILY_CAP")
+    roster_request_daily_cap: int = Field(30, ge=0, le=10_000, alias="ROSTER_REQUEST_DAILY_CAP")
+    roster_request_ttl_days: int = Field(14, ge=1, le=365, alias="ROSTER_REQUEST_TTL_DAYS")
 
     # Telegram + Discord channel access is roster-driven: a sender's
     # channel ID must be present on a non-archived Person row. The old

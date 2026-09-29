@@ -42,8 +42,12 @@ _SWEEP_PAGE = 5000
 
 # Sources whose rows have their own lifecycle and must never be expired,
 # closed or routed by the automatic machinery: artifacts persist in the
-# gallery until archived; decision-backed alerts end via /decisions.
-TTL_EXEMPT_SOURCES: frozenset[str] = frozenset({"artifact", "decision_scheduling"})
+# gallery until archived; decision-backed alerts end via /decisions; a roster
+# request's card ends when the request is answered or expires
+# (people.roster_requests).
+TTL_EXEMPT_SOURCES: frozenset[str] = frozenset(
+    {"artifact", "decision_scheduling", "roster_request"}
+)
 
 
 def parse_aware(iso: str | None) -> datetime | None:

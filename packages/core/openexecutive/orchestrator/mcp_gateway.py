@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import html
 import json
 import logging
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openexecutive.config import get_settings, mcp_config_file_present
+from openexecutive.people.identity import RosterAllow
 from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
@@ -691,7 +693,7 @@ def _check_attachment_urls(tool: str, arguments: dict[str, Any]) -> str | None:
     )
 
 
-def _roster_allow_set() -> set[str]:
+def _roster_allow_set() -> RosterAllow:
     """The set of lowercased addresses the Executive may reach outbound.
 
     Derived from the People roster plus the Executive's own address — the single
@@ -717,9 +719,77 @@ def _roster_allow_set() -> set[str]:
     if turn_is_private_to_principal():
         # A turn about the principal's private mail reaches the principal only.
         everyone = [p for p in everyone if p.is_principal]
-    allow = {p.email.lower() for p in everyone if p.email}
-    allow.add(settings.exec_email_address.lower())
-    return allow
+    # Primary addresses and aliases exactly; for a teammate, also their
+    # local part on the company's own domains (people.identity) — the same
+    # rule inbound mail is matched by.
+    return RosterAllow(everyone, extra=[settings.exec_email_address])
+
+
+# The one send that may reach an address off the roster: the fixed
+# acknowledgement ``integrations.roster_intake.send_email_ack`` sends an
+# unknown sender. Set only around that call; admits one send with exactly
+# the granted recipient, subject and body and nothing else, then is spent.
+_roster_ack: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "roster_ack_grant", default=None
+)
+_ROSTER_ACK_KEYS = frozenset({"user_google_email", "to", "subject", "body"})
+
+# A roster request's one-time answer token ("RR-" + 20 base32 characters,
+# people.roster_requests) proves an email answer came from the principal's
+# mailbox. The confirmation email carrying it sits in the Executive's own
+# Sent folder, so every Google Workspace result is scrubbed of tokens — a
+# model turn (anyone's) reading that mail sees "RR-[hidden]" — except the
+# email poller's own fetch of an inbound message, inside reveal_roster_tokens.
+_ROSTER_TOKEN_RE = re.compile(r"\bRR-[A-Z2-7]{20}\b", re.IGNORECASE)
+_reveal_tokens: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "reveal_roster_tokens", default=False
+)
+
+
+def hide_roster_tokens(text: str) -> str:
+    """``text`` with every roster answer token replaced by "RR-[hidden]"."""
+    return _ROSTER_TOKEN_RE.sub("RR-[hidden]", text)
+
+
+@contextlib.contextmanager
+def reveal_roster_tokens() -> Iterator[None]:
+    """Leave roster answer tokens in Google Workspace results (the poller's
+    read of one inbound message, before any model sees it)."""
+    token = _reveal_tokens.set(True)
+    try:
+        yield
+    finally:
+        _reveal_tokens.reset(token)
+
+
+@contextlib.contextmanager
+def roster_ack_grant(*, to: str, subject: str, body: str) -> Iterator[None]:
+    """Let the Gmail gate pass one send of ``subject`` / ``body`` to ``to``."""
+    token = _roster_ack.set({"to": to, "subject": subject, "body": body, "used": False})
+    try:
+        yield
+    finally:
+        _roster_ack.reset(token)
+
+
+def _roster_ack_admits(tool: str, arguments: dict[str, Any]) -> bool:
+    """Whether this call is exactly the granted acknowledgement (and spend
+    the grant if so). Any other key, a list recipient, a different body or
+    subject, a draft instead of a send, or a second call: no."""
+    grant = _roster_ack.get()
+    if grant is None or grant["used"]:
+        return False
+    if tool != "google_workspace__send_gmail_message":
+        return False
+    if set(arguments) != _ROSTER_ACK_KEYS:
+        return False
+    to = arguments.get("to")
+    if not isinstance(to, str) or to != grant["to"] or any(c in to for c in ",;<>\r\n"):
+        return False
+    if arguments.get("subject") != grant["subject"] or arguments.get("body") != grant["body"]:
+        return False
+    grant["used"] = True
+    return True
 
 
 # Artifact attachments on one email. Gmail caps a message at 25 MB and base64
@@ -908,6 +978,18 @@ def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
                     "(header-injection risk) — refusing to send."
                 ),
             )
+
+    if _roster_ack_admits(tool, arguments):
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "integration_outbound",
+            "Sent the fixed acknowledgement to a sender not on the roster",
+            actor="mcp_gateway",
+            details={"tool": tool, "kind": "roster_ack"},
+            private=True,
+        )
+        return None
 
     # Egress gate: the Executive may only send mail to addresses on the
     # People roster or to its own exec address. Used to be a static env
@@ -1280,6 +1362,26 @@ def _record_email_outbound_context(arguments: dict[str, Any]) -> None:
         )
 
 
+# extensible-mcp's refusal for a tool no search in this session has returned
+# (DiscoveredToolsFilter, surfaced by its call_tool handler as "Error: ...").
+_UNDISCOVERED_MARKER = "has not been discovered via search_tools"
+
+
+def _is_undiscovered_refusal(tool_name: object, result_text: object) -> bool:
+    """Whether the gateway refused a pinned Google tool only because this
+    session had not discovered it yet. Pinned names only: any other tool
+    still needs the model's own search, as before."""
+    from openexecutive.prompts.connected_systems import PINNED_GOOGLE_TOOLS
+
+    return (
+        isinstance(tool_name, str)
+        and tool_name in PINNED_GOOGLE_TOOLS
+        and isinstance(result_text, str)
+        and result_text.startswith(f"Error: Tool '{tool_name}' ")
+        and _UNDISCOVERED_MARKER in result_text
+    )
+
+
 # Ceiling on the MCP config we will read into memory. The real file is a
 # handful of server entries; anything past this is a mistake or a symlink to
 # something that is not a config, and reading it during startup is how you get
@@ -1360,6 +1462,10 @@ class MCPGateway:
     def __init__(self) -> None:
         self._session: Any = None
         self._stdio_cm: Any = None
+        # The servers the config named when this gateway started. The
+        # Connected Systems prompt section reads it, so a gateway that never
+        # started never reads as connected.
+        self.server_names: tuple[str, ...] = ()
 
     async def start(self, config_path: Path) -> None:
         from mcp import ClientSession, StdioServerParameters
@@ -1376,6 +1482,7 @@ class MCPGateway:
         self._session = ClientSession(read, write)
         await self._session.__aenter__()
         await self._session.initialize()
+        self.server_names = tuple(configured_server_names(config_path))
         logger.info("MCPGateway started — config=%s", config_path)
 
     async def close(self) -> None:
@@ -1402,6 +1509,45 @@ class MCPGateway:
             args["top_k"] = tool_input["top_k"]
         result = await session.call_tool("search_tools", args)
         return result.content[0].text if result.content else json.dumps({"tools": []})
+
+    async def _discover(self, tool_name: str) -> bool:
+        """Run the exact-name search that registers ``tool_name`` with
+        extensible-mcp's discovered-tools filter (it only runs a tool one of
+        this session's ``search_tools`` results returned, and remembers it for
+        the session's life), the way ``tool_catalog.resolve`` does. True when
+        the search returned it. Best-effort: never raises."""
+        from openexecutive.workflows.tool_catalog import parse_search_results
+
+        query = re.sub(r"[_\-]+", " ", tool_name).strip()
+        try:
+            text = await self.search_tools({"query": query, "top_k": 10})
+        except Exception as exc:
+            logger.warning(
+                "MCPGateway: discovering %s failed (%s)", tool_name, type(exc).__name__
+            )
+            return False
+        if any(info.name == tool_name for info in parse_search_results(text)):
+            return True
+        logger.warning(
+            "MCPGateway: pinned tool %s not found by search — has workspace-mcp "
+            "renamed it? (prompts/connected_systems.GOOGLE_TOOL_MANIFEST)",
+            tool_name,
+        )
+        return False
+
+    async def prime_pinned_tools(self) -> list[str]:
+        """Discover every pinned Google tool (PINNED_GOOGLE_TOOLS) up front, so
+        the model's direct ``call_tool`` on one works without a search of its
+        own. Returns the names not found, a drift signal. Run once at startup
+        when Google is configured."""
+        from openexecutive.prompts.connected_systems import PINNED_GOOGLE_TOOLS
+
+        missing = [n for n in sorted(PINNED_GOOGLE_TOOLS) if not await self._discover(n)]
+        logger.info(
+            "MCPGateway: primed %d pinned Google tools (%d missing)",
+            len(PINNED_GOOGLE_TOOLS) - len(missing), len(missing),
+        )
+        return missing
 
     async def call_tool(self, tool_input: dict[str, Any]) -> str:
         session = self._require_session()
@@ -1470,6 +1616,23 @@ class MCPGateway:
             {"tool_name": tool_input["name"], "arguments": arguments},
         )
         result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        # A pinned tool called before startup priming reached it: the prompt
+        # told the model to call it directly, so discover it and retry once.
+        # The refused call ran nothing, and every gate above has already
+        # passed these same arguments.
+        if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
+            result = await session.call_tool(
+                "call_tool",
+                {"tool_name": tool_input["name"], "arguments": arguments},
+            )
+            result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        # On the final result, retry or not: roster answer tokens are hidden
+        # from every Google Workspace read but the poller's own.
+        if (
+            isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX)
+            and not _reveal_tokens.get()
+        ):
+            result_text = hide_roster_tokens(result_text)
         # Record an outbound-context linkage only for a genuinely-sent email.
         # The send tool returns its outcome as text; a soft-error payload
         # (`{"error": ...}`) means nothing was sent, so skip it to avoid a
@@ -1580,3 +1743,12 @@ def set_active_gateway(gateway: MCPGateway | None) -> None:
 
 def get_active_gateway() -> MCPGateway | None:
     return _active_gateway
+
+
+def gateway_server_names(gateway: object) -> tuple[str, ...]:
+    """The servers ``gateway`` started with, or () for no gateway (or a
+    stand-in without the attribute)."""
+    names = getattr(gateway, "server_names", ())
+    if not isinstance(names, tuple | list):
+        return ()
+    return tuple(n for n in names if isinstance(n, str))

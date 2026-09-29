@@ -14,6 +14,7 @@ import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -242,6 +243,7 @@ def _stub_gateway(
     gateway = MagicMock()
     gateway.start = AsyncMock(side_effect=start)
     gateway.close = AsyncMock()
+    gateway.prime_pinned_tools = AsyncMock(return_value=[])
     set_active = MagicMock()
 
     monkeypatch.setattr(
@@ -359,6 +361,7 @@ def test_successful_start_wires_the_gateway_and_the_email_poller(
 
     async def _run() -> asyncio.Task[None] | None:
         task = await _start_mcp_gateway(app, settings)  # type: ignore[arg-type]
+        await app.state.mcp_prime_task
         if task is not None:
             task.cancel()
         return task
@@ -369,6 +372,30 @@ def test_successful_start_wires_the_gateway_and_the_email_poller(
     assert app.state.mcp_gateway is gateway
     set_active.assert_called_once_with(gateway)
     gateway.start.assert_awaited_once_with(settings.mcp_servers_config_path)
+    # Google is configured, so its pinned tools are discovered at startup.
+    gateway.prime_pinned_tools.assert_awaited_once_with()
+
+
+def test_no_google_server_primes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway, _ = _stub_gateway(monkeypatch, None)
+    settings = _mcp_settings(
+        tmp_path, monkeypatch, json.dumps({"mcpServers": {"fetch": {}}})
+    )
+    app = _FakeApp()
+    app.state = SimpleNamespace()  # a MagicMock would invent mcp_prime_task
+
+    async def _run() -> None:
+        task = await _start_mcp_gateway(app, settings)  # type: ignore[arg-type]
+        if task is not None:
+            task.cancel()
+
+    asyncio.run(_run())
+
+    assert app.state.mcp_gateway is gateway
+    assert getattr(app.state, "mcp_prime_task", None) is None
+    gateway.prime_pinned_tools.assert_not_called()
 
 
 def test_mcp_disabled_starts_nothing(

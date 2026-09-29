@@ -14,6 +14,9 @@ first-run setup can choose a mode before onboarding has created one.
 The principal's role (who they report to, what they are measured on) is
 theirs: ``GET`` returns it only to a caller that ``PUT`` would let through,
 and reads it back as nulls for anyone else (a teammate on a team install).
+So are the company's email domains (``company_domains``, empty for anyone
+else): they decide which addresses match a teammate by local part
+(``people.identity``).
 
 Both routes work before onboarding: nothing here needs a company profile.
 """
@@ -30,10 +33,17 @@ router = APIRouter()
 def _response(*, with_role: bool = True) -> WorkspaceResponse:
     ws = workspace_settings.get_workspace()
     role = ws.principal_role() if with_role else workspace_settings.PrincipalRole()
+    domains: list[str] = []
+    if with_role:
+        from openexecutive.people.identity import company_domains
+
+        domains = sorted(company_domains())
     return WorkspaceResponse(
         mode=ws.mode,
         timezone=ws.timezone,
         effective_timezone=workspace_settings.get_user_timezone().key,
+        company_domains=domains,
+        company_domains_custom=with_role and bool(ws.company_domains),
         **role.model_dump(),
     )
 
@@ -67,6 +77,11 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
     }
     if role_update:
         workspace_settings.set_principal_role(**role_update)
+    domains_changed = False
+    if "company_domains" in sent:
+        stored_before = workspace_settings.get_workspace().company_domains
+        workspace_settings.set_company_domains(body.company_domains)
+        domains_changed = workspace_settings.get_workspace().company_domains != stored_before
 
     after = _response()
     mode_or_zone_changed = (after.mode, after.timezone) != (before.mode, before.timezone)
@@ -76,7 +91,7 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
     role_changed = sorted(
         f for f in workspace_settings.ROLE_FIELDS if getattr(after, f) != getattr(before, f)
     )
-    if mode_or_zone_changed or role_changed:
+    if mode_or_zone_changed or role_changed or domains_changed:
         from openexecutive.audit import log_event as audit_log
 
         caller = (request.headers.get("x-caller-email") or "").strip()[:200] or "api"
@@ -93,6 +108,9 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
         if role_changed:
             details["role_fields_changed"] = role_changed
             parts.append("principal's role updated")
+        if domains_changed:
+            details["company_domains"] = after.company_domains
+            parts.append("company email domains updated")
         audit_log(
             "workspace_settings_changed",
             "Workspace settings changed: " + ", ".join(parts),

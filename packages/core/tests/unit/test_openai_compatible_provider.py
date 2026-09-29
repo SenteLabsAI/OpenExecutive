@@ -12,6 +12,9 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from openexecutive.providers import openai_compatible
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -105,3 +108,49 @@ def test_anthropic_only_fields_stripped_for_local_model() -> None:
     assert "output_config" not in body
     # system flattened into a plain string message — no cache_control survives.
     assert isinstance(body["messages"][0]["content"], str)
+
+
+def _effort_provider(effort: str | None) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(
+        base_url="https://api.fireworks.ai/inference/v1",
+        spec_lookup={"llama3.3": _LOCAL_SPEC},
+        reasoning_effort=effort,
+    )
+
+
+def test_reasoning_effort_omitted_by_default() -> None:
+    """Most OpenAI-compatible servers don't know the field; unset = not sent."""
+    captured = _run_create(_local_provider())
+    assert "reasoning_effort" not in captured["json"]
+
+
+def test_reasoning_effort_sent_when_configured() -> None:
+    """Thinking-only models (GLM on Fireworks) otherwise burn the whole
+    max_tokens budget reasoning and return no tool call."""
+    captured = _run_create(_effort_provider("low"))
+    assert captured["json"]["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_sent_on_stream() -> None:
+    provider = _effort_provider("low")
+    stream = provider.messages_stream(
+        model="llama3.3",
+        max_tokens=8,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert stream._body["reasoning_effort"] == "low"  # type: ignore[attr-defined]
+
+
+def test_reasoning_effort_logged_once_per_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The effort in play is what decides whether a thinking-only model
+    answers at all, so it's logged, but once per model, not per call."""
+    monkeypatch.setattr(openai_compatible, "_effort_announced", set())
+    fake_logger = MagicMock()
+    monkeypatch.setattr(openai_compatible, "logger", fake_logger)
+    provider = _effort_provider("low")
+    _run_create(provider)
+    _run_create(provider)
+    assert fake_logger.info.call_count == 1
+    assert fake_logger.info.call_args.args[1:] == ("low", "llama3.3")

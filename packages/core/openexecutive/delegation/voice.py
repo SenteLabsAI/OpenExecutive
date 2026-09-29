@@ -480,7 +480,7 @@ def _audience(addresses: list[str]) -> str:
         people = list_people(include_contacts=True)
     except Exception:
         return "other"
-    kinds = {p.email.lower(): p.kind for p in people if p.email}
+    kinds = {a.lower(): p.kind for p in people for a in [p.email, *p.email_aliases] if a}
     found = {kinds.get(a.lower()) for a in addresses}
     if "team" in found:
         return "team"

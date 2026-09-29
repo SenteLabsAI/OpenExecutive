@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import re
+from typing import Any
 
 from openexecutive.audit.redaction import ERROR_DETAIL_LEN
 from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
@@ -142,6 +143,61 @@ def _find_slack_sender(slack_user_id: str) -> object:
     from openexecutive.people.store import find_person_by_slack_id
 
     return find_person_by_slack_id(slack_user_id)
+
+
+# The event fields a held message keeps for its replay.
+_HELD_EVENT_KEYS = (
+    "type", "text", "user", "channel", "channel_type", "ts", "thread_ts",
+    "files", "subtype",
+)
+
+
+async def _hold_unknown_sender(
+    event: dict, say: Any, client: Any, mode: str, slack_user_id: str, text: str
+) -> None:
+    """Hold a DM or mention from a Slack user off the roster for the
+    principal to confirm, and tell the sender — privately — that it arrived.
+    One of the principal's contacts gets nothing: contacts have no chat
+    access, and their messages are dropped as before."""
+    from openexecutive.integrations import roster_intake
+    from openexecutive.people.store import find_person_by_slack_id
+
+    if await asyncio.to_thread(find_person_by_slack_id, slack_user_id, include_contacts=True):
+        return
+    display_name, profile_email = "", None
+    if client is not None:
+        try:
+            info = await asyncio.wait_for(client.users_info(user=slack_user_id), timeout=5)
+            user = (info.get("user") or {}) if hasattr(info, "get") else {}
+            profile = user.get("profile") or {}
+            display_name = str(
+                profile.get("real_name") or profile.get("display_name") or user.get("real_name") or ""
+            )
+            profile_email = str(profile.get("email") or "") or None
+        except Exception:
+            logger.debug("Slack: users_info failed for an unknown sender", exc_info=True)
+    thread_ts = event.get("thread_ts") or event.get("ts")
+
+    async def _ack(ack_text: str) -> None:
+        if mode == "dm":
+            await say(text=ack_text, thread_ts=thread_ts if event.get("thread_ts") else None)
+        else:
+            # Only the sender sees it: a reply in the channel would tell
+            # everyone there who is and is not on the roster.
+            await client.chat_postEphemeral(
+                channel=event.get("channel", ""), user=slack_user_id, text=ack_text,
+                thread_ts=event.get("thread_ts"),
+            )
+
+    await roster_intake.intake(
+        "slack", slack_user_id,
+        external_id=str(event.get("ts") or ""),
+        payload={"event": {k: event[k] for k in _HELD_EVENT_KEYS if k in event}, "mode": mode},
+        preview=text,
+        display_name=display_name,
+        profile_email=profile_email,
+        send_ack=_ack if (mode == "dm" or client is not None) else None,
+    )
 
 
 def _thread_root_author(thread_replies: list[dict] | None) -> str:
@@ -523,6 +579,12 @@ async def create_slack_app():
                     "outcome": "rejected_unknown_sender",
                 },
             )
+            # Someone off the roster writing to the bot directly: hold the
+            # message for the principal to confirm and tell them it arrived
+            # (integrations.roster_intake). Not a thread continuation — the
+            # bot was not addressed there.
+            if mode in ("dm", "mention") and slack_user_id:
+                await _hold_unknown_sender(event, say, client, mode, slack_user_id, cleaned)
             return
 
         # WaitForHuman inbound resolver — check BEFORE alert triage.
@@ -914,6 +976,26 @@ async def create_slack_app():
             await _handle_message(
                 event, say, client=client, mode="thread_continuation"
             )
+
+    async def _replay_held(message, _request) -> bool:
+        """Replay a message held while its sender was off the roster, now
+        that they are on it (``roster_intake.replay_request``)."""
+        event = dict(message.payload.get("event") or {})
+        mode = str(message.payload.get("mode") or "dm")
+        channel = str(event.get("channel") or "")
+        if not channel or not event.get("user") or mode not in ("dm", "mention"):
+            return False
+
+        async def _say(text: str | None = None, **kwargs: Any) -> Any:
+            return await app.client.chat_postMessage(channel=channel, text=text, **kwargs)
+
+        async with inflight:
+            await _handle_message(event, _say, client=app.client, mode=mode)
+        return True
+
+    from openexecutive.integrations.roster_intake import register_replayer
+
+    register_replayer("slack", _replay_held)
 
     handler = AsyncSocketModeHandler(app, settings.slack_app_token)
     return app, handler

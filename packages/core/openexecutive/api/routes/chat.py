@@ -896,6 +896,7 @@ async def _run_chat_turn(
     # Clearing here makes "shown nothing, can ack nothing" hold on every path
     # instead of only the ones that reach the recorder.
     session.trusted_alert_ids = set()
+    session.trusted_roster_request_ids = set()
 
     # What this reply looks at, from this search on, and which areas it has to
     # leave out. Owned here rather than by the Executive so it is sent and

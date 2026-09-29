@@ -199,11 +199,12 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
         return None
     if len(email) > _OWNER_EMAIL_MAX_LEN or not _OWNER_EMAIL_RE.fullmatch(email):
         raise OwnerEmailError("That email address doesn't look right. Check it and try again.")
-    from openexecutive.people.store import find_person_by_email, list_people
+    from openexecutive.people.store import find_person_by_address, list_people
 
     key = principal_name.strip().lower()
     try:
-        holder = find_person_by_email(email)
+        # A teammate's alias counts as theirs, like their address.
+        holder = find_person_by_address(email)
         # The same dict save_onboarding_people builds, so the same row wins.
         own_row = {p.full_name.strip().lower(): p for p in list_people()}.get(key)
     except (OSError, sqlite3.Error) as exc:
@@ -290,10 +291,10 @@ def link_owner_email(person_id: int, email: str) -> bool:
     again adds it.
     """
     try:
-        from openexecutive.people.store import find_person_by_email, get_person, update_person
+        from openexecutive.people.store import find_person_by_address, get_person, update_person
 
         person = get_person(person_id)
-        holder = find_person_by_email(email)
+        holder = find_person_by_address(email)
         if (
             person is None
             or (person.email and person.email.strip().lower() != email)
