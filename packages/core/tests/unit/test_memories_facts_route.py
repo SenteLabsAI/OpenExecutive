@@ -37,7 +37,8 @@ def _client(monkeypatch: pytest.MonkeyPatch, *, principal: bool) -> TestClient:
 def _seed() -> tuple[int, int, int]:
     old, _ = facts.record_fact(subject="Units", statement="St. Albans has 52 units.", source_quote="52")
     new, _ = facts.record_fact(subject="Units", statement="St. Albans has 48 units.",
-                               source_quote="St. Albans is 48 units, not 52", source_channel="web")
+                               source_quote="St. Albans is 48 units, not 52", source_channel="web",
+                               session_id="s-principal", turn_id="t-1", recorded_by_person_id=1)
     prof, _ = facts.record_fact(kind="profile", subject="Company profile — Headcount",
                                 statement="Headcount set to 42", source_quote="we're 42 now")
     return old.id, new.id, prof.id
@@ -51,6 +52,7 @@ def test_the_principal_sees_everything_with_history(monkeypatch: pytest.MonkeyPa
     assert set(by_id) == {old, new, prof}
     assert by_id[new]["kind"] == "correction" and by_id[new]["status"] == "active"
     assert by_id[new]["source_quote"] == "St. Albans is 48 units, not 52"
+    assert by_id[new]["session_id"] == "s-principal" and by_id[new]["recorded_by_person_id"] == 1
     assert by_id[old]["status"] == "superseded" and by_id[old]["superseded_by"] == new
     active = _client(monkeypatch, principal=True).get("/memories/facts?include_inactive=false").json()
     assert {f["id"] for f in active["facts"]} == {new, prof}
@@ -62,6 +64,10 @@ def test_a_teammate_sees_the_facts_but_not_the_principals_words(monkeypatch: pyt
     body = _client(monkeypatch, principal=False).get("/memories/facts").json()
     assert body["can_retire"] is False
     assert body["facts"] and all(f["source_quote"] == "" for f in body["facts"])
+    assert all(
+        f["session_id"] is None and f["turn_id"] is None and f["recorded_by_person_id"] is None
+        for f in body["facts"]
+    )
     # Only what is in force: no retired or replaced text, whatever is asked.
     assert all(f["status"] == "active" for f in body["facts"])
     assert "52 units" not in str(body) and "48 units" not in str(body)
@@ -85,3 +91,12 @@ def test_only_the_principal_retires(monkeypatch: pytest.MonkeyPatch, db: list[di
     # Profile rows are the audit trail of a profile edit, not something to retire.
     assert client.post(f"/memories/facts/{prof}/retire").status_code == 404
     assert client.post("/memories/facts/999/retire").status_code == 404
+
+
+def test_a_teammate_never_gets_the_principals_session_or_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, new, _ = _seed()
+    body = _client(monkeypatch, principal=False).get("/memories/facts").json()
+    row = next(f for f in body["facts"] if f["id"] == new)
+    assert row["statement"] == "St. Albans has 48 units." and row["status"] == "active"
+    assert row["session_id"] is None and row["turn_id"] is None
+    assert row["recorded_by_person_id"] is None and row["source_quote"] == ""

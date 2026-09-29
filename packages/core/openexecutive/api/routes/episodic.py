@@ -154,15 +154,23 @@ def get_facts(
     active rows only.
 
     The facts themselves are company knowledge every conversation already
-    sees; the provenance quote and a retire reason are the principal's own
-    words and are shown to the principal only."""
+    sees; the provenance (the quote, a retire reason, and the session, turn
+    and person it came from) is shown to the principal only."""
     principal = _caller_is_principal(request)
     # A teammate sees only what is in force: a fact the principal retired or
     # replaced (perhaps because it was wrong or too sensitive) no longer
     # renders anywhere, so its text is not theirs to read either.
     rows = list_facts(include_inactive=include_inactive and principal, limit=limit)
     if not principal:
-        rows = [f.model_copy(update={"source_quote": "", "retired_reason": ""}) for f in rows]
+        # Provenance is the principal's: their words, and which of their
+        # chats and turns a fact came from (ids other routes may key on).
+        rows = [
+            f.model_copy(update={
+                "source_quote": "", "retired_reason": "",
+                "session_id": None, "turn_id": None, "recorded_by_person_id": None,
+            })
+            for f in rows
+        ]
     return FactsPage(facts=rows, can_retire=principal)
 
 

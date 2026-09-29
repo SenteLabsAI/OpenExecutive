@@ -1690,7 +1690,8 @@ memory:
     and the judge sees them (`_standing_facts_section`).
     SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
     `POST /memories/facts/{id}/retire`, principal only). Other viewers get
-    the active rows only, quote and retire reason blanked. A subject that
+    the active rows only, with the quote, retire reason, session_id, turn_id
+    and recorded_by_person_id blanked. A subject that
     folds to an empty key ("???") is refused, so such subjects never
     supersede one another. `/memories?tab=corrections` opens it; the chat
     chips for the three tools link there / to /company-profile.
