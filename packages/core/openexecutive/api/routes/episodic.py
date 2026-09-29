@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
@@ -30,6 +32,7 @@ from openexecutive.memory.honcho_client import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class DecisionUpdate(BaseModel):
@@ -195,13 +198,16 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
             "fact_retired",
             f"Standing fact {fact_id} retired: {existing.subject[:80]}",
             actor="principal",
-            # Not the reason: it is the principal's own words, and the audit
-            # log is readable by every signed-in teammate.
+            # Not the reason: it is the principal's own words. And private:
+            # the row names what was retired, and a teammate must not read a
+            # fact the principal took down (perhaps as wrong or too
+            # sensitive) through /audit when GET /memories/facts hides it.
             details={"fact_id": fact_id, "subject": existing.subject,
                      "statement": existing.statement},
+            private=True,
         )
     except Exception:  # noqa: BLE001 - the retire already landed.
-        pass
+        logger.warning("fact_retired audit row failed for fact %s", fact_id, exc_info=True)
     return retired
 
 

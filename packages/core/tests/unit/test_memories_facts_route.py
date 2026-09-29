@@ -87,6 +87,9 @@ def test_only_the_principal_retires(monkeypatch: pytest.MonkeyPatch, db: list[di
     assert facts.render_facts_for_prompt() == ""
     assert [r["event_type"] for r in db] == ["fact_retired"]
     assert "annex sold" not in str(db)
+    # It names what was retired: the principal's alone, never on /audit for
+    # a teammate who can no longer read the fact itself.
+    assert db[0]["private"] is True
     assert client.post(f"/memories/facts/{new}/retire").status_code == 409
     # Profile rows are the audit trail of a profile edit, not something to retire.
     assert client.post(f"/memories/facts/{prof}/retire").status_code == 404
@@ -100,3 +103,21 @@ def test_a_teammate_never_gets_the_principals_session_or_turn(monkeypatch: pytes
     assert row["statement"] == "Maple House has 48 units." and row["status"] == "active"
     assert row["session_id"] is None and row["turn_id"] is None
     assert row["recorded_by_person_id"] is None and row["source_quote"] == ""
+
+
+def test_a_failed_audit_row_is_logged_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, new, _ = _seed()
+    warned: list[tuple[Any, ...]] = []
+
+    def broken(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr("openexecutive.audit.log_event", broken)
+    # The logger itself, not caplog: another test's logging setup can stop
+    # propagation to caplog's handler in a full run.
+    monkeypatch.setattr(episodic_route.logger, "warning", lambda *a, **k: warned.append(a))
+    res = _client(monkeypatch, principal=True).post(f"/memories/facts/{new}/retire")
+    assert res.status_code == 200 and res.json()["status"] == "retired"
+    assert warned and "fact_retired audit row failed" in warned[0][0]
+    # The fact's text never reaches the log line.
+    assert "Maple House" not in str(warned)

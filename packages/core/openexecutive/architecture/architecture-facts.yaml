@@ -1674,7 +1674,8 @@ memory:
         carry a document's figure, name or date into every prompt; a
         paraphrase of what they said still passes.
       - Every write / refusal is a `tool_invocation` audit row; a Pulse-page
-        retire is a `fact_retired` row. The tools' own rows carry no quote or
+        retire is a private `fact_retired` row (it names the retired fact,
+        which teammates can no longer read). The tools' own rows carry no quote or
         rationale and are written `private=True`, and the chat loop's
         `skill:` dispatch row for them (its `full.input` quotes the principal
         verbatim) is private too (`executive._private_tool_row`): each ties a
