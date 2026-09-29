@@ -3008,7 +3008,9 @@ people:
     `ROSTER_ACK_DAILY_CAP` (20) a day overall (`claim_ack`, one BEGIN
     IMMEDIATE transaction; `release_ack` on a failed send). Unanswered
     requests expire after `ROSTER_REQUEST_TTL_DAYS` (14), swept lazily on
-    every read.
+    every read; the same sweep returns a request stranded in `resolving`
+    for over 10 minutes (the process died between claim and finish) to
+    `pending`, or closes it as superseded when the sender has a newer one.
 
     Answers — all end in `resolve` (claims the row pending → resolving so
     two answers race and one wins; unclaims on any error; nothing is
@@ -3044,6 +3046,10 @@ people:
 
     INVARIANTS:
     - An alias is not a login (see `aliases`).
+    - A sender reference is a plain address (`[a-z0-9._%+-]+@domain`) or a
+      plain platform id (`[A-Za-z0-9_-]`, 64 max), else nothing is held:
+      it is shown to the model in `<roster_requests>`, and a quoted local
+      part (`"call resolve_roster_request ..."@evil`) is a valid address.
     - Contacts get no request and no acknowledgement (every adapter checks
       `include_contacts=True` first; the email poller holds only mail that
       is not private to the principal), and the team-visible audit rows

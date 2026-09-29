@@ -658,6 +658,11 @@ async def _replay_held(message: Any, _request: Any) -> bool:
     return True
 
 
+async def _already_acknowledged(_text: str) -> None:
+    """The /ask reply already told the sender (ephemerally, within Discord's
+    3 seconds): claim the acknowledgement window without a second message."""
+
+
 def _find_discord_sender(discord_user_id: str) -> object:
     from openexecutive.people.store import find_person_by_discord_id
 
@@ -1183,7 +1188,7 @@ def create_discord_bot():
                     session_id=f"discord:dm:{interaction.user.id}",
                     session_title=f"Discord DM ({interaction.user.display_name})",
                     author_display_name=getattr(interaction.user, "display_name", None),
-                    send_ack=None,
+                    send_ack=_already_acknowledged,
                 )
             return
 
