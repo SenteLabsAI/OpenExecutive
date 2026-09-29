@@ -456,6 +456,40 @@ def test_a_value_from_a_document_never_reaches_the_profile(
     assert profile_path.read_text() == before
 
 
+def test_a_number_the_principal_did_not_write_never_reaches_the_profile(
+    principal: SimpleNamespace, profile_path: Path,
+) -> None:
+    """"Please update our headcount": the quote is real, but 5000 came from a
+    document or a guess, and would render into every later turn."""
+    principal.turn_delegation.speaker_text = "please update our headcount"
+    before = profile_path.read_text()
+    out = _call(fact_tools.handle_update_company_profile, field="headcount", operation="set",
+                value="5000", source_quote="please update our headcount")
+    assert "not a number the principal wrote" in out["error"]
+    assert profile_path.read_text() == before
+
+
+@pytest.mark.parametrize(
+    ("said", "field", "value", "saved"),
+    [
+        ("burn is down to $180k a month", "financials.burn_rate_monthly", "180000", 180000.0),
+        ("ARR is 1.2m now", "annual_revenue_arr", "1200000", 1200000.0),
+        ("we have 14.5 months of runway", "financials.runway_months", "14.5", 14.5),
+        ("revenue hit $2,400,000", "annual_revenue_arr", "2400000", 2400000.0),
+    ],
+)
+def test_a_number_written_any_way_is_accepted(
+    principal: SimpleNamespace, profile_path: Path, said: str, field: str, value: str, saved: float,
+) -> None:
+    principal.turn_delegation.speaker_text = said
+    out = _call(fact_tools.handle_update_company_profile, field=field, operation="set",
+                value=value, source_quote=said)
+    assert out["status"] == "ok"
+    data = CompanyProfile.load_from_yaml(profile_path).model_dump()
+    parent, _, leaf = field.rpartition(".")
+    assert (data[parent] if parent else data)[leaf] == saved
+
+
 def test_a_value_the_principal_typed_is_saved_defanged(
     principal: SimpleNamespace, profile_path: Path,
 ) -> None:
