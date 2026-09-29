@@ -1450,6 +1450,11 @@ knowledge:
           .xlsx / txt / md / csv are downloaded and read with
           loader.extract_text_from_file, with no model call, so a scanned PDF
           yields nothing. Anything else, and anything over 20 MB, is skipped.
+          Downloads stream and stop at the cap. A .docx / .xlsx whose zip
+          declares more than 100 MB uncompressed is not parsed. Extraction
+          has a 120 s deadline (the worker thread cannot be killed, but the
+          tick moves on). An unreadable file is recorded with no chunks, so
+          it is not refetched until it changes.
         - A file with no text is recorded with no chunks, so it is not
           refetched until it changes.
         - Text is written under <company_profile_dir>/docs/drive/
@@ -1466,10 +1471,12 @@ knowledge:
 
         At retrieval: n=3, below NOTION_WIKI, under "Synced Google Drive
         (unreviewed, multi-writer …)". Each chunk is labelled
-        `[drive:<name> · file id … · synced …]`; the name is flattened, with
-        brackets and # neutralised. The block tells the Executive to open
-        the live file with get_drive_file_content when the latest version
-        matters. Recorded as `drive` answer sources with the Drive link.
+        `[drive · file id … · synced … · "<name>"]`. The trusted fields come
+        first. The name comes last, NFKC-normalised, quoted and stripped of [ ] " · • ∙ ⋅ # |, so a
+        folder editor cannot plant a second `file id` for the Executive to
+        open with its own, broader account. The block tells the Executive to
+        open the live file with get_drive_file_content, using only the id
+        after "file id" at the start of a label. Recorded as `drive` answer sources with the Drive link.
         Manual: `openexecutive sync-drive` / `purge-drive`.
     - name: FAILURES
       what: Recorded failure cases used to teach specialists what to avoid.

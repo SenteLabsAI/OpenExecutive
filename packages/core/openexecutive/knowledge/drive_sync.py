@@ -21,10 +21,12 @@ boot, one tick per run, chain the next.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import re
 import tempfile
+import zipfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -54,6 +56,13 @@ HEARTBEAT_INTENT = "Google Drive folder sync — incremental file ingest into is
 
 _MAX_FILE_CHARS = 200_000
 _MAX_FILE_BYTES = 20 * 1024 * 1024
+# A .docx / .xlsx is a zip: the download cap bounds only the compressed size,
+# so the archive's declared uncompressed size is checked before parsing.
+_MAX_UNZIPPED_BYTES = 100 * 1024 * 1024
+# How long one file's text extraction may run before it is given up on. The
+# worker thread cannot be killed, but the tick moves on and the file is
+# recorded as unreadable, so it is not retried until it changes.
+_EXTRACT_TIMEOUT_S = 120.0
 _MAX_VISIBLE_ITEMS = 2000  # files + folders listed per tick, all folders together
 _MAX_DEPTH = 4  # subfolder levels below a configured folder
 _REQUEST_PAUSE_S = 0.2
@@ -224,9 +233,26 @@ async def _list_tree(
     return list(files.values())
 
 
+class _Unreadable(Exception):
+    """A file that downloaded but cannot be read safely. Recorded with no
+    chunks, like an oversize one, so it is not refetched every tick."""
+
+
+def _check_archive(data: bytes) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            total = sum(info.file_size for info in archive.infolist())
+    except zipfile.BadZipFile as exc:
+        raise _Unreadable("not a valid Office archive") from exc
+    if total > _MAX_UNZIPPED_BYTES:
+        raise _Unreadable(f"unzips to {total} bytes")
+
+
 def _extract(data: bytes, suffix: str) -> str:
     if suffix in _TEXT_SUFFIXES:
         return data.decode("utf-8", errors="replace")
+    if suffix in (".docx", ".xlsx"):
+        _check_archive(data)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / f"file{suffix}"
         path.write_bytes(data)
@@ -243,7 +269,16 @@ async def _file_text(client: DriveClient, item: DriveItem) -> str:
         if item.size is not None and item.size > _MAX_FILE_BYTES:
             raise DriveFileTooLarge(item.id)
         data = await client.download(item.id, max_bytes=_MAX_FILE_BYTES)
-    return await asyncio.to_thread(_extract, data, suffix)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_extract, data, suffix), timeout=_EXTRACT_TIMEOUT_S
+        )
+    except _Unreadable:
+        raise
+    except TimeoutError as exc:
+        raise _Unreadable(f"text extraction took over {_EXTRACT_TIMEOUT_S:.0f}s") from exc
+    except Exception as exc:
+        raise _Unreadable(f"text extraction failed: {type(exc).__name__}") from exc
 
 
 async def _fetch_tick(
@@ -284,6 +319,9 @@ async def _fetch_tick(
             text = await _file_text(client, item)
         except DriveFileTooLarge:
             logger.info("drive_sync: %s is over %d bytes — not synced", item.id, _MAX_FILE_BYTES)
+            text = ""
+        except _Unreadable as exc:
+            logger.warning("drive_sync: %s is unreadable (%s) — not synced", item.id, exc)
             text = ""
         except Exception:
             stats["failed"] += 1

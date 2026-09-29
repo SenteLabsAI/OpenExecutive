@@ -136,6 +136,38 @@ class DriveClient:
             return response
         raise AssertionError("unreachable: the last attempt returns or raises")
 
+    async def _get_bytes(self, path: str, params: dict[str, Any], *, max_bytes: int) -> bytes:
+        """GET a body, streamed, aborting with ``DriveFileTooLarge`` as soon
+        as it passes ``max_bytes`` — never buffering more than that. Retries
+        429 / 5xx like ``_get``."""
+        for attempt in range(_MAX_ATTEMPTS):
+            headers = {"Authorization": f"Bearer {await self._token()}"}
+            async with self._http.stream(
+                "GET", f"{DRIVE_API}{path}", params=params, headers=headers
+            ) as response:
+                retryable = response.status_code == 429 or response.status_code >= 500
+                if retryable and attempt < _MAX_ATTEMPTS - 1:
+                    await response.aclose()
+                    await _backoff(attempt)
+                    continue
+                if not response.is_success:
+                    # A 3xx is not followed (the token stays on googleapis.com)
+                    # and must fail the fetch, not read as an empty file.
+                    await response.aread()
+                    response.raise_for_status()
+                    raise httpx.HTTPStatusError(
+                        f"unexpected {response.status_code} from Drive",
+                        request=response.request,
+                        response=response,
+                    )
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > max_bytes:
+                        raise DriveFileTooLarge(path)
+                return bytes(body)
+        raise AssertionError("unreachable: the last attempt returns or raises")
+
     async def list_folder(
         self, folder_id: str, *, max_items: int
     ) -> tuple[list[DriveItem], bool]:
@@ -177,19 +209,15 @@ class DriveClient:
         safe = sanitize_drive_id(file_id)
         if not safe:
             raise ValueError(f"unsafe Drive file id: {file_id!r}")
-        response = await self._get(f"/files/{safe}/export", {"mimeType": mime_type})
-        if len(response.content) > max_bytes:
-            raise DriveFileTooLarge(safe)
-        return response.content
+        return await self._get_bytes(
+            f"/files/{safe}/export", {"mimeType": mime_type}, max_bytes=max_bytes
+        )
 
     async def download(self, file_id: str, *, max_bytes: int) -> bytes:
         """A stored (non-Google) file's bytes."""
         safe = sanitize_drive_id(file_id)
         if not safe:
             raise ValueError(f"unsafe Drive file id: {file_id!r}")
-        response = await self._get(
-            f"/files/{safe}", {"alt": "media", "supportsAllDrives": "true"}
+        return await self._get_bytes(
+            f"/files/{safe}", {"alt": "media", "supportsAllDrives": "true"}, max_bytes=max_bytes
         )
-        if len(response.content) > max_bytes:
-            raise DriveFileTooLarge(safe)
-        return response.content
