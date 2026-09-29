@@ -371,11 +371,12 @@ class EndOfDayDigestWorkflow(Workflow):
 
         # Nobody reads this before it ships: hold back any line naming a
         # person or figure the context doesn't hold, and cite the figures.
-        # The context never carries private rows (see `_build_today` above).
+        # Its audit row is private: the HANDLED block re-renders review audit
+        # summaries, which can quote a private alert's headline.
         from openexecutive.briefing.grounding import ground_brief
 
         artifact_text, grounding = await ground_brief(
-            artifact_text, context=user_content, kind=BRIEF_KIND, private=False,
+            artifact_text, context=user_content, kind=BRIEF_KIND, private=True,
             system=system, surface="end-of-day digest",
         )
         held = len(grounding.held) if grounding and grounding.mode == "enforce" else 0

@@ -699,10 +699,22 @@ def _drop_lines(text: str, bad: set[int]) -> tuple[str, list[str]]:
 
 
 _SNIPPET_STRIP = re.compile(r"[\[\]()<>*_`|\\]")
+_LINKISH = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_MENTION = re.compile(r"(?<![\w.])@(?=\w)")
+
+
+def _plain(text: str) -> str:
+    """Quoted text made inert for every channel the prose reaches: links
+    masked (the Sources list and a fallback quote attacker-written mail, and
+    Gmail / Slack / Discord linkify bare URLs), Markdown and Slack's
+    ``<!channel>`` / ``<url|text>`` syntax stripped, @-mentions broken."""
+    text = _SNIPPET_STRIP.sub(" ", _LINKISH.sub("\x00", text))
+    text = _MENTION.sub("", text).replace("\x00", "(link removed)")
+    return " ".join(text.split())
 
 
 def _snippet(text: str, limit: int = _SNIPPET_CHARS) -> str:
-    clean = " ".join(_SNIPPET_STRIP.sub(" ", text).split())
+    clean = _plain(text)
     return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
 
 
@@ -1047,7 +1059,9 @@ def ground_alert_text(
     """Ground model-written alert text against what it was written from.
 
     An ungrounded headline becomes ``fallback_headline``; ungrounded body
-    sentences are dropped (all of them → ``fallback_body`` cut to 280); an
+    sentences are dropped (all of them → ``fallback_body`` cut to 280); both
+    fallbacks are made inert first (links masked, markup and mentions
+    stripped), because they are raw event text; an
     ungrounded suggested action is dropped. Returns ``(headline, body,
     suggested_action, changed)``. Fails open."""
     mode = grounding_mode()
@@ -1060,7 +1074,9 @@ def ground_alert_text(
         head_report = check_text(headline, sources, index=idx)
         if not head_report.ok and fallback_headline.strip():
             bad += head_report.names_bad + head_report.figures_bad
-            new_headline = fallback_headline.strip()[:100]
+            # The fallback is raw event text (inbound mail, a feed): quote it
+            # inert, never verbatim, since broadcasts post it as written.
+            new_headline = _plain(fallback_headline)[:100]
         sentences = [s for s in _SENTENCE_SPLIT.split(body.strip()) if s]
         kept: list[str] = []
         for sentence in sentences:
@@ -1070,7 +1086,7 @@ def ground_alert_text(
             else:
                 bad += r.names_bad + r.figures_bad
         if len(kept) != len(sentences):
-            new_body = " ".join(kept) if kept else fallback_body.strip()[:280]
+            new_body = " ".join(kept) if kept else _plain(fallback_body)[:280]
         action_report = check_text(suggested_action, sources, index=idx)
         if not action_report.ok:
             bad += action_report.names_bad + action_report.figures_bad

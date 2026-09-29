@@ -465,3 +465,33 @@ def test_grounding_is_a_declared_audit_event_type() -> None:
     from openexecutive.audit.logger import EVENT_TYPES
 
     assert "grounding" in EVENT_TYPES
+
+
+def test_raw_event_fallbacks_are_made_inert() -> None:
+    """The fallback is attacker-written event text a broadcast posts as is:
+    no live link, no Slack <!channel>, no @everyone."""
+    src = sources_from_text("Revenue fell by forty-two million", "Event", "e")
+    headline, body, _action, changed = ground_alert_text(
+        "Revenue fell $42M", "Revenue fell $42M.", "",
+        sources=src,
+        fallback_headline="Revenue fell <!channel> see https://evil.example/x @everyone",
+        fallback_body="<https://evil.example/pay|Reset password> now @here www.evil.example",
+        surface="t",
+    )
+    assert changed
+    for text in (headline, body):
+        assert "evil.example" not in text and "<" not in text and "|" not in text
+        assert "@everyone" not in text and "@here" not in text
+    assert "(link removed)" in headline
+
+
+@pytest.mark.asyncio
+async def test_citation_snippets_mask_links_and_mentions() -> None:
+    ctx = (
+        "INBOUND SINCE THE LAST BRIEF (1 message):\n"
+        "- 08:14 email from Al <al@b.co>: 48 units, pay at https://evil.example/pay @everyone"
+    )
+    out, _ = await ground_brief("- Renewal covers 48 units", context=ctx, kind="k")
+    footer = out.split(SOURCES_HEADER)[1]
+    assert "evil.example" not in footer and "@everyone" not in footer
+    assert "(link removed)" in footer and "al@b.co" in footer

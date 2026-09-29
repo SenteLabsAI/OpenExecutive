@@ -574,8 +574,14 @@ class ExecutiveReflectionWorkflow(Workflow):
             logger.exception("reflection: /today/activity aggregation failed")
             activity = []
 
+        # Whether a private-to-principal alert reached this context: the
+        # grounding audit rows quote the pass's text, so they stay private then.
+        private_context = False
         try:
             recent_alerts_objs = list_live_alerts(limit=10)
+            from openexecutive.alerts.models import is_private_alert
+
+            private_context = any(is_private_alert(a) for a in recent_alerts_objs)
             recent_alerts = [
                 {
                     "alert_id": a.id,
@@ -762,7 +768,8 @@ class ExecutiveReflectionWorkflow(Workflow):
         from openexecutive.briefing.grounding import roster as roster_names
 
         grounding = GroundingScope(
-            context_sources(user_content), roster_names(), surface="executive reflection",
+            context_sources(user_content), roster_names(),
+            surface="executive reflection", private=private_context,
         )
         handlers = grounding.guard(handlers)
         # Build the system prompt for the SAME configured set, so the
