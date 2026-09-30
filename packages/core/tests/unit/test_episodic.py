@@ -468,14 +468,18 @@ def test_extraction_gate_has_no_length_floor() -> None:
     `_is_valid_user_commitment` is the gate that actually tests for a
     commitment.
     """
+    from unittest.mock import patch
+
     from openexecutive.memory import episodic
     from openexecutive.orchestrator.session import Session
 
     web = Session(from_web_chat=True)
-    for decision in ("Do B.", "Approve option B.", "Kill it.", "no, drop that"):
-        assert episodic.should_extract(decision, session=web)
-    for blank in ("", "  "):
-        assert not episodic.should_extract(blank, session=web)
+    # A single-user install: no principal on the roster yet.
+    with patch("openexecutive.people.store.find_principal_person", return_value=None):
+        for decision in ("Do B.", "Approve option B.", "Kill it.", "no, drop that"):
+            assert episodic.should_extract(decision, session=web)
+        for blank in ("", "  "):
+            assert not episodic.should_extract(blank, session=web)
     assert not hasattr(episodic, "MIN_USER_CHARS_FOR_EXTRACTION")
     assert not hasattr(episodic, "MIN_TURN_CHARS_FOR_EXTRACTION")
 

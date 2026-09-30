@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.agents.base import BaseAgent
@@ -116,7 +117,7 @@ TRIAGE_TOOL: dict[str, Any] = {
 }
 
 
-_EVENT_CLOSE_RE = re.compile(r"</\s*event", re.IGNORECASE)
+_EVENT_CLOSE_RE = re.compile(r"<\s*/\s*event", re.IGNORECASE)
 
 
 def _format_event_block(event: AlertEvent) -> str:
@@ -136,7 +137,9 @@ def _format_event_block(event: AlertEvent) -> str:
     parts.append(body)
     # Every field is sender-written (a mail body, a chat line, a watched
     # page's text): none may close the <event> block and speak outside it.
-    return _EVENT_CLOSE_RE.sub(r"<\\/event", "\n".join(parts))
+    # NFKC first, so a fullwidth "＜/event＞" is caught as the ASCII one.
+    text = unicodedata.normalize("NFKC", "\n".join(parts))
+    return _EVENT_CLOSE_RE.sub(r"<\\/event", text)
 
 
 def _format_recent_alerts(recent: list[dict]) -> str:

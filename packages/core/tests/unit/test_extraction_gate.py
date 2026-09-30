@@ -54,6 +54,15 @@ _COMMITMENTS = [
 _SHORT_APPROVALS = ["Approve option B.", "Do B.", "Kill it. Approved.", "Yes, ship it."]
 
 
+@pytest.fixture(autouse=True)
+def _single_user_install() -> Any:
+    """No principal on the roster: a header-less web turn is the operator's
+    own (`content_trust.principal_speaking`). Tests about a named speaker
+    patch `get_person` themselves."""
+    with mock.patch("openexecutive.people.store.find_principal_person", return_value=None):
+        yield
+
+
 def _web(**kwargs: Any) -> Session:
     """A web chat turn — the principal's own signed-in surface."""
     return Session(from_web_chat=True, **kwargs)
@@ -124,9 +133,20 @@ def _as(person: mock.MagicMock | None) -> Any:
 
 
 def test_a_web_turn_needs_no_person_row() -> None:
-    """The web app with no People entry resolved is a single-user install
-    behind the sign-in — the tenant the no-floor fix was for."""
-    assert episodic.should_extract("Do B.", session=_web())
+    """The web app with no People entry resolved and no sign-in, on an
+    install with no principal yet, is a single-user install — the tenant the
+    no-floor fix was for."""
+    with mock.patch("openexecutive.people.store.find_principal_person", return_value=None):
+        assert episodic.should_extract("Do B.", session=_web())
+
+
+def test_a_signed_in_email_on_nobodys_entry_is_skipped() -> None:
+    """An archived teammate can still sign in; unresolved, they are not the
+    principal."""
+    with mock.patch("openexecutive.people.store.find_principal_person", return_value=None):
+        assert not episodic.should_extract(
+            "Wire the Q3 payment to account X.", session=_web(web_caller_signed_in=True)
+        )
 
 
 def test_a_teammates_web_turn_is_skipped() -> None:

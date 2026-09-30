@@ -9,8 +9,8 @@ invented at its call site.
 **Who is speaking** (``principal_speaking``). The principal is speaking only
 when the surface proved it:
 
-- the web chat, signed in as the principal (or with no People entry resolved:
-  a single-user install);
+- the web chat, signed in as the principal — or, on an install with no
+  principal on the People page yet, a request that carried no sign-in at all;
 - the CLI, run on the host itself;
 - Slack, Discord, or a private Telegram chat with a valid webhook secret, from
   the principal's own account (``people_tools.is_principal_on_verified_surface``);
@@ -49,8 +49,10 @@ configuring the install is done from the web app or chat, not by mail.
 **How it is labelled in the prompt.** Text from anyone but the principal —
 an email body, an attached file, a watched page — goes into the user turn
 inside ``<untrusted_content>`` (``wrap_untrusted``), which names its source and
-author and says it carries no authority. The block's closing tag is defanged
-inside the text, so the text cannot end its block early and speak outside it.
+author and says it carries no authority. The tag's name is renamed wherever
+the text carries it, so the text cannot end its block early and speak outside
+it. The principal's own authenticated email is theirs, but what it quotes or
+forwards is not: that part still goes in a block (``email_poller``).
 """
 from __future__ import annotations
 
@@ -78,7 +80,11 @@ UNTRUSTED_NOTICE = (
 # speaker check of its own.
 PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({"load_mcp_server"})
 
-_CLOSE_TAG_RE = re.compile(r"</\s*" + UNTRUSTED_TAG, re.IGNORECASE)
+# Inside a block the tag's own name is renamed outright, in any case and
+# spacing, so no form of it — "</untrusted_content>", "< /UNTRUSTED_CONTENT",
+# an entity-escaped "&lt;/untrusted_content&gt;" or a fullwidth one (NFKC
+# folds those first) — can read as the block ending or a new one starting.
+_TAG_NAME_RE = re.compile(r"untrusted[\s_]*content", re.IGNORECASE)
 _BLOCK_RE = re.compile(
     r"<" + UNTRUSTED_TAG + r"\b[^>]*>.*?</" + UNTRUSTED_TAG + r">\n?",
     re.DOTALL,
@@ -96,14 +102,17 @@ def _attr(value: str) -> str:
 
 
 def _scrub(text: str) -> str:
-    """The text as it may sit inside a block: control and format characters
-    dropped (newlines and tabs kept — they are its layout), and every closing
-    tag defanged, in any case, so the block ends only where we end it."""
+    """The text as it may sit inside a block: compatibility forms folded
+    (NFKC, so a fullwidth bracket is a bracket), control and format
+    characters dropped (newlines and tabs kept — they are its layout), and
+    the tag's name renamed wherever it appears, so the block ends only where
+    we end it."""
+    folded = unicodedata.normalize("NFKC", text)
     kept = "".join(
-        ch for ch in text
+        ch for ch in folded
         if ch in "\n\t" or unicodedata.category(ch) not in ("Cc", "Cf")
     )
-    return _CLOSE_TAG_RE.sub("<\\\\/" + UNTRUSTED_TAG, kept)
+    return _TAG_NAME_RE.sub("untrusted-content", kept)
 
 
 def wrap_untrusted(
@@ -134,7 +143,7 @@ def wrap_untrusted(
 
 def strip_untrusted(text: str) -> str:
     """``text`` without its ``<untrusted_content>`` blocks: what the speaker
-    typed around them. The blocks' own closing tags are defanged inside
+    typed around them. The tag's name never survives inside a block
     (``wrap_untrusted``), so each match ends at its real end."""
     return _BLOCK_RE.sub("", text).strip()
 
@@ -158,10 +167,21 @@ def principal_speaking(session: Any) -> bool:
     channel = str(getattr(session, "origin_channel", "") or "")
     try:
         if getattr(session, "from_web_chat", False) is True:
-            # A web turn with no People entry resolved is a single-user
-            # install behind the web sign-in; a resolved one must be the
-            # principal, or a teammate's words would be kept as theirs.
-            return caller is None or _is_principal(caller)
+            if caller is not None:
+                # A teammate's words must not be kept as the principal's.
+                return _is_principal(caller)
+            # No People entry resolved. A signed-in email that is on nobody's
+            # entry (an archived teammate still allowed to sign in, a
+            # contact) is not the principal, whatever it asks. Only a request
+            # with no sign-in, on an install that has no principal yet, is
+            # the single-user operator — with a principal on the roster, a
+            # header-less request resolves to them, so None there means the
+            # roster read failed.
+            if getattr(session, "web_caller_signed_in", False) is True:
+                return False
+            from openexecutive.people.store import find_principal_person
+
+            return find_principal_person() is None
         if getattr(session, "from_cli", False) is True:
             return True
         if channel == "email":
