@@ -44,7 +44,7 @@ _UVX_CMD = "uvx"
 # pads MiniLM batches to a fixed 128 tokens but truncates at 256, so any batch
 # mixing shorter and 129-256-token texts fails to stack, and the Google
 # Workspace tool index is such a batch — the gateway died building it.
-_EXTENSIBLE_MCP_REV = "90800ca3e823f73975099b362b1bb3a7b20dd6eb"
+_EXTENSIBLE_MCP_REV = "b5043b8bd163a8e4c175c395715744a1bf37cc8e"
 _EXTENSIBLE_MCP_EXCLUDE_NEWER = "2026-09-23T00:00:00Z"
 _EXTENSIBLE_MCP_GIT = f"git+https://github.com/SenteLabsAI/extensible-mcp@{_EXTENSIBLE_MCP_REV}"
 _EXTENSIBLE_MCP_CMD = "extensible-mcp"
