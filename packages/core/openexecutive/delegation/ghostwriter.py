@@ -77,19 +77,6 @@ _COMPOSE_TOOL: dict[str, Any] = {
     },
 }
 
-# The prompt's own blocks: text inside <thread> may neither open nor close
-# one, so nothing it says can pass for the writer's words or the intent.
-_BLOCK_TAGS = ("thread", "writer_said", "writer", "intent", "recipients", "voice")
-
-
-def _defang_blocks(line: str) -> str:
-    """A line already through ``scrub_block_line`` (plain, so no hidden or
-    look-alike character is left in a tag) with every block tag defanged."""
-    from openexecutive.utils.prompt_blocks import defang_tag
-
-    for tag in _BLOCK_TAGS:
-        line = defang_tag(line, tag)
-    return line
 
 
 _URL_TOKEN = re.compile(r"(?i)\b(?:https?://|www\.)[^\s<>\"')\]]+")
@@ -193,13 +180,16 @@ def _render_user_turn(
     today: str,
     writer_said: str | None = None,
 ) -> str:
-    from openexecutive.utils.prompt_blocks import scrub_block_line
+    from openexecutive.utils.prompt_blocks import no_tags, scrub_block_line
 
     def block(tag: str, text: str, *, untrusted: bool = False) -> str:
         close = f"</{tag}>"
         lines = [scrub_block_line(line, close) for line in text.splitlines()]
         if untrusted:
-            lines = [_defang_blocks(line) for line in lines]
+            # Other people's words can't open or close any tag, however it's
+            # spelled, so nothing in them can pass for the writer's words
+            # (<writer_said>) or the intent.
+            lines = [no_tags(line) for line in lines]
         return f"<{tag}>\n" + "\n".join(lines).strip() + f"\n{close}"
 
     people = "\n".join(
