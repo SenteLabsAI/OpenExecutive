@@ -5933,6 +5933,54 @@ auth:
     Onboarding saves the owner's sign-in email on the principal's row
     (company_onboarding.people_and_contacts), so a Google-signed-in
     owner resolves to themselves from the first turn.
+  caller_helper: |
+    Routes read the caller only through api/caller.py (caller,
+    caller_email, signed_in, actor, identity_key); a test fails on any
+    other read of an x-caller-* header in the package. It answers a
+    Caller(kind, email). kind "open" (no signing keys): the header as
+    sent, and no header means the principal. "user" / "operator" /
+    "service" come from the signed-caller gate: an operator names no
+    one and runs as the principal (Caller.defaults_to_principal); a
+    service never does, so _resolve_caller_person_id gives None,
+    workflows' principal-only runs refuse it, and Act as me answers
+    sign_in_required.
+  signed_callers: |
+    Optional. With CALLER_ASSERTION_PUBLIC_KEYS set on the API
+    (kid:base64url raw Ed25519 public key, comma-separated for
+    rotation), api.caller.caller_gate runs on every request after the
+    shared-secret gate. The UI proxy signs x-caller-assertion with
+    CALLER_ASSERTION_PRIVATE_KEY (lib/callerAssertion.ts): the value is
+    v1.<base64url JSON claims>.<signature over "v1.<claims>">, and the
+    claims are aud "openexecutive-api", iat, exp (the UI signs 60 s; the
+    API accepts at most 120 s and 30 s of clock skew), jti, kid, kind
+    user|operator, m (method), p (raw path + query as the API receives
+    it) and sub (the email, lowercased; "" for the operator).
+    Every jti is single-use (JtiLedger, in memory; the API runs as one
+    process). It prunes expired ids and refuses when full of live ones.
+    Local-login sessions sign as the operator.
+
+    What the gate decides:
+      - no caller header at all: Caller("service");
+      - an x-caller-email with no assertion: 401 caller_assertion_required;
+      - a bad, unknown-key, wrong-audience, wrong-method or wrong-path,
+        expired, reused or duplicated assertion, or an x-caller-email that
+        disagrees with it: 401 caller_assertion_invalid. The log carries
+        the reason, the method and the path, never the token or email.
+    The UI keeps stamping x-caller-email, so a UI with the key works
+    against an API without it. Unreadable public keys stop create_app
+    (RuntimeError); an unreadable private key makes the proxy answer
+    500 to every call. Neither falls back to the header.
+
+    Other consequences:
+      - MCP ask_executive ignores caller_email and asks as no one
+        (person_id None).
+      - Setup's api_secret check warns when a shared secret is set
+        without the keys.
+      - scripts/make-caller-keys.py makes a pair, and
+        scripts/mint-caller-assertion.py signs one request for curl.
+      - Parity: packages/core/tests/unit/caller_assertion_vectors.json
+        (the public RFC 8032 test key) is signed byte-identically by the
+        script and by the UI (scripts/callerAssertion.test.mjs).
 
 integrations:
   channel_access: |

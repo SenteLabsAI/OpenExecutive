@@ -39,6 +39,9 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiohttp>=3.9.0",
     "google-auth>=2.29.0",
+    # Ed25519 for signed callers (api/caller.py). Already here through
+    # google-auth and others; declared because the API now imports it itself.
+    "cryptography>=42",
     "google-api-python-client>=2.131.0",
     "mcp<2,>=1.2.0",
     "honcho-ai>=2.1,<3",

@@ -12,6 +12,7 @@ Two independent layers. Either one alone would be insufficient; together they fa
 |---|---|---|
 | **UI: Auth.js v5 + Google OAuth** | Anyone hitting the public UI is redirected to `/signin`. Only Google accounts on the allow-list can complete sign-in — the **union** of `ALLOWED_EMAILS` and the People roster (see below). | [packages/ui/src/auth.ts](../packages/ui/src/auth.ts), [packages/ui/src/middleware.ts](../packages/ui/src/middleware.ts), [packages/ui/src/app/signin/page.tsx](../packages/ui/src/app/signin/page.tsx) |
 | **API: shared-secret header** | The FastAPI backend is reachable over the network. It rejects every request whose `x-api-key` header doesn't match `BACKEND_SHARED_SECRET`. The UI proxy stamps this header on every upstream call. | [packages/core/openexecutive/api/main.py](../packages/core/openexecutive/api/main.py), [packages/ui/src/app/api/backend/[...path]/route.ts](../packages/ui/src/app/api/backend/%5B...path%5D/route.ts) |
+| **API: signed callers** (optional, recommended on a server) | The proxy also signs *who* is signed in, with a key only the UI holds; the API checks the signature instead of taking `x-caller-email` from whoever holds the shared secret. See [Signed callers](#signed-callers). | [packages/core/openexecutive/api/caller.py](../packages/core/openexecutive/api/caller.py), [packages/ui/src/lib/callerAssertion.ts](../packages/ui/src/lib/callerAssertion.ts) |
 
 ### Who is on the allow-list
 
@@ -50,10 +51,12 @@ Browser ──► exec.example.com (UI) ──► (middleware: session check)
                 ├── no session  ──► redirect to /signin → Google → callback → cookie set
                 │
                 └── has session ──► /api/backend/[...path] (proxy)
-                                        │ stamps x-api-key
+                                        │ stamps x-api-key and x-caller-email,
+                                        │ and signs x-caller-assertion (signed callers)
                                         ▼
                                  api.example.com (FastAPI)
                                         │ middleware verifies x-api-key (constant-time)
+                                        │ and, with signed callers on, the assertion
                                         ▼
                                     route handler
 ```
@@ -199,6 +202,64 @@ OE_PUBLIC_DEPLOYMENT=1
 
 > **Production fails closed.** With `OE_PUBLIC_DEPLOYMENT` set and no `BACKEND_SHARED_SECRET`, [api/main.py](../packages/core/openexecutive/api/main.py) raises `RuntimeError` at startup rather than serve traffic without auth. Set it on every internet-reachable instance — see [deployment.md](deployment.md).
 
+### Signed callers
+
+The shared secret proves a request came from the UI, but not *who* is signed in: the proxy
+says so in `x-caller-email`, and the API believes whoever holds the secret. Anyone with it
+could name the owner and use owner-only routes. Signed callers close that gap. The proxy
+signs who is calling with an Ed25519 key that only the UI holds, and the API checks the
+signature with the public key. **Setup** warns while a shared secret is set without them.
+
+Make the pair once:
+
+```bash
+uv run --with cryptography python scripts/make-caller-keys.py
+```
+
+It prints two lines. Put `CALLER_ASSERTION_PRIVATE_KEY` on the **UI** only and
+`CALLER_ASSERTION_PUBLIC_KEYS` on the **API** only, then restart both, UI first. The UI
+keeps sending `x-caller-email` as well, so it works against an API without the keys.
+
+With the keys set:
+
+- **Each assertion covers one request.** It holds only for the method and the exact path
+  and query it was signed for, expires within 60 seconds, and works once.
+- **No caller header at all is a service.** A script, `curl` with only `x-api-key`, or an
+  MCP client can still use the API, but it is **never the owner**. For MCP,
+  `ask_executive` asks as no one, and its `caller_email` is ignored.
+- **The UI's local-login session is the operator.** It is signed, names no one and runs as
+  the owner, as before.
+- **Refusals are 401.** You get one for:
+  - an `x-caller-email` with no assertion (`code: caller_assertion_required`);
+  - a bad, expired, reused or mismatched assertion (`caller_assertion_invalid`).
+
+  The API logs the reason, never the assertion.
+- **A bad key stops startup.** A public key that can't be read stops the API at boot. A
+  private key that can't be read makes the UI refuse every call with `500`. Neither falls
+  back to trusting the header.
+
+**To call an owner-only route from a terminal**, sign that one request with the UI's key:
+
+```bash
+export CALLER_ASSERTION_PRIVATE_KEY=...   # the UI's; never print or store it
+curl -H "x-api-key: $SHARED" \
+     -H "x-caller-assertion: $(uv run --with cryptography python scripts/mint-caller-assertion.py GET /today)" \
+     https://api.example.com/today
+```
+
+It signs as the operator. Pass `--email` to sign as a signed-in person. Sign the path
+exactly as `curl` sends it, query included.
+
+**Rotate** without downtime:
+
+1. Make a new pair.
+2. Add its public key to the API's comma-separated list, then restart the API.
+3. Move the UI to the new private key.
+4. Drop the old public key.
+
+The API remembers used assertions in memory, so it must run as one process. It does
+already, because the scheduler runs inside it.
+
 ---
 
 ## Operations
@@ -263,6 +324,11 @@ If `AUTH_GOOGLE_SECRET` is leaked, regenerate in Google Cloud Console (Clients �
 | A removed teammate can still sign in | Their email is still in `ALLOWED_EMAILS`. The roster is additive, so archiving the Person alone doesn't revoke access |
 | API returns `401` for every request | UI and API have different `BACKEND_SHARED_SECRET` values (very common after rotating in two separate terminal sessions) |
 | API refuses to start with `RuntimeError: BACKEND_SHARED_SECRET is required` | `OE_PUBLIC_DEPLOYMENT` is set and the secret is missing. Set it; the next restart will boot |
+| Every call is `401` with `caller_assertion_required` | The API has `CALLER_ASSERTION_PUBLIC_KEYS` but the UI has no `CALLER_ASSERTION_PRIVATE_KEY`. Set it on the UI and restart it |
+| Calls are `401` with `caller_assertion_invalid` | The UI's private key isn't the pair of any public key on the API, or a clock is off by more than a minute. The API log gives the reason. `reason=path` means something between the two rewrote the path, such as a proxy that strips a prefix |
+| Every UI call fails with `caller signing is misconfigured` | `CALLER_ASSERTION_PRIVATE_KEY` on the UI isn't `<key id>:<key>` as `scripts/make-caller-keys.py` prints it |
+| API refuses to start with `CALLER_ASSERTION_PUBLIC_KEYS can't be used` | The list is malformed. Paste the line the script printed |
+| An owner-only route refuses your `curl` | With signed callers on, a request carrying only `x-api-key` is a service and never the owner. Sign it with `scripts/mint-caller-assertion.py` |
 | Sign-in works but the chat stays empty | Backend is auth'd but `ANTHROPIC_API_KEY` is missing on the API. Its logs will show the error |
 | Signed in, but no past chats are listed | Your email isn't on your own People entry, so the API can't tell who you are. Setup saves it from the **Your sign-in email** field; to fix it afterwards, add the email to your row on the People page |
 | **Open** says it only works on this computer | You opened the app by a network address. Use `http://localhost:3000` in a browser on the machine running `make dev` |
@@ -289,12 +355,14 @@ curl -sv -H "x-api-key: $SHARED" https://api.example.com/sessions           # 20
 - Random internet visitors reaching the UI or the API
 - A leaked UI URL being usable by anyone with a Google account (allowlist)
 - Direct API hits bypassing the UI (shared secret)
+- Someone who holds the shared secret acting as another user or as the owner (signed callers, when set: only the UI's private key can say who is calling)
 - Cookie theft from one session leaking *another* user's data (each session is independent JWT; no shared state)
 - Missing-secret deploys silently exposing the API (the `OE_PUBLIC_DEPLOYMENT` fail-closed guard)
 - Other pages on the same site — to a browser, every `localhost` port is one site — posting to the UI proxy with your cookie (it refuses writes whose `Sec-Fetch-Site` isn't `same-origin`)
 
 **Does not mitigate:**
-- A compromised `BACKEND_SHARED_SECRET` — anyone who learns it can hit the API as if they were the UI. Rotate if leaked.
+- A compromised `BACKEND_SHARED_SECRET` — anyone who learns it can hit the API as if they were the UI. Rotate if leaked. With signed callers on, they can use it only as a service, never as a signed-in user or the owner.
+- A compromised `CALLER_ASSERTION_PRIVATE_KEY` — whoever holds it can sign as anyone. It lives only on the UI; rotate it (above) if the UI's environment leaks.
 - A compromised Google account on the allow-list — that user has full access to all shared data. The product is currently a **shared workspace**; there is no per-user data isolation.
 - A compromised deploy credential — attacker can change secrets, redeploy, or read logs. Rotate deploy credentials if a CI workflow is compromised.
 - Browser-side XSS — Auth.js sessions are httpOnly cookies, so JS can't read them, but a successful XSS could make authenticated requests from the victim's browser. Standard same-origin protections apply.

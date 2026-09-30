@@ -144,6 +144,7 @@ with "no company profile" on a fresh volume is expected, not a fault.
 |---|---|
 | `ANTHROPIC_API_KEY` | Every agent call. The app will not start without it. |
 | `BACKEND_SHARED_SECRET` | Gates every API route via `x-api-key`. Generate with `openssl rand -hex 32`; the UI needs the same value. |
+| `CALLER_ASSERTION_PUBLIC_KEYS` (API), `CALLER_ASSERTION_PRIVATE_KEY` (UI) | Signed callers: the UI signs who is signed in and the API checks it, so the shared secret alone can't act as the owner. Recommended. Make the pair with `scripts/make-caller-keys.py`; see [auth.md](auth.md#signed-callers). |
 | `OE_PUBLIC_DEPLOYMENT=1` | **Set this on every internet-reachable instance.** See below. |
 | `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. |
 | `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in. See [auth.md](auth.md). |
@@ -294,6 +295,7 @@ the host — a plain file copy of a live SQLite database can be torn.
 | Container is killed and restarted repeatedly during startup | Health-check grace period too short | Raise it to ~5 minutes (see above) |
 | API refuses to start: `BACKEND_SHARED_SECRET is required` | `OE_PUBLIC_DEPLOYMENT` is set with no secret | Working as intended — set the secret |
 | Every UI request errors, API is healthy | UI proxy can't reach the API, or the shared secret differs between them | Check `BACKEND_BASE_URL` on the UI and that both sides carry the same `BACKEND_SHARED_SECRET` |
+| Every UI request is `401` with a `caller_assertion_*` code | Signed callers are half set up | See [auth.md → Debugging](auth.md#debugging) |
 | Browser console shows CORS errors | UI origin missing from `BACKEND_ALLOWED_ORIGINS` | Add the exact scheme + host |
 | Scheduled actions firing twice | More than one API replica | Scale the API to exactly 1 (see the warning at the top) |
 | Onboarding wizard says "no company profile" | Empty volume on first boot | Expected — complete the wizard; output lands at `/data/company/profile.yaml` |

@@ -14,6 +14,9 @@ os.environ.setdefault("EXEC_EMAIL_ADDRESS", "ceo.test@example.com")
 # full-app test errors at construction — the same trap BACKEND_SHARED_SECRET sets
 # (see CLAUDE.md → Testing). Clear it so the suite matches CI either way.
 os.environ.pop("OE_PUBLIC_DEPLOYMENT", None)
+# Same for signed callers: with public keys in the shell, every full-app test
+# that names its caller with x-caller-email is refused with 401.
+os.environ.pop("CALLER_ASSERTION_PUBLIC_KEYS", None)
 # The RAG distance gates are read by retrieve() at call time and several
 # retrieval tests hard-code distances either side of the 0.55 default. Because
 # config.py loads a developer's .env, putting a tuning value there — the

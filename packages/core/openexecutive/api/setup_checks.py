@@ -313,7 +313,23 @@ def check_exec_email(snap: Snapshot) -> SetupCheck:
 
 def check_api_protection(snap: Snapshot) -> SetupCheck:
     if os.environ.get("BACKEND_SHARED_SECRET", "").strip():
-        return _result("api_secret", "ok", "Only the web app can use the API: BACKEND_SHARED_SECRET is set.")
+        from openexecutive.api.caller import signing_on
+
+        if signing_on():
+            return _result(
+                "api_secret",
+                "ok",
+                "Only the web app can use the API, and it signs who is signed in.",
+            )
+        return _result(
+            "api_secret",
+            "warn",
+            "Only the web app can use the API, but it takes the web app's word for who is "
+            "signed in: anyone holding BACKEND_SHARED_SECRET can act as anyone, the owner "
+            "included.",
+            "Run scripts/make-caller-keys.py once, set CALLER_ASSERTION_PRIVATE_KEY on the web "
+            "app and CALLER_ASSERTION_PUBLIC_KEYS on the API, then restart both (docs/auth.md).",
+        )
     if snap.local_login:
         return _result(
             "api_secret",
