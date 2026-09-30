@@ -107,7 +107,7 @@ def render_email(message: Any, *, relation: str) -> str:
     data in one ``<email>`` block."""
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
-    from openexecutive.utils.prompt_blocks import scrub_block_line
+    from openexecutive.utils.prompt_blocks import defang_tag, scrub_block_line
 
     body = sender_new_text(getattr(message, "text", "") or "")[:MAX_BODY_CHARS]
     others = len({*getattr(message, "to", []), *getattr(message, "cc", [])})
@@ -120,8 +120,8 @@ def render_email(message: Any, *, relation: str) -> str:
         f"Subject: {one_line(getattr(message, 'subject', '') or '', 200)}",
     ]
     lines = [scrub_block_line(line, "</email>") for line in [*header, "", *body.splitlines()]]
-    # Angle brackets in the text can't open or close a tag of ours.
-    text = "\n".join(lines).replace("<email", "&lt;email").strip()
+    # The text can't open or close an <email> of its own, in any spelling.
+    text = defang_tag("\n".join(lines), "email").strip()
     return f"<email>\n{text}\n</email>"
 
 

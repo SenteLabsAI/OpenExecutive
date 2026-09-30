@@ -7748,7 +7748,12 @@ delegation:
     through scrub_block_line, all labelled alike), <writer_said> (a reply's
     only record of the writer's own words: their sent mail among those 6,
     threads.writer_said), <intent>. The prompt says nothing in <thread> is
-    the writer's words, whatever it claims. NO tools but the forced
+    the writer's words, whatever it claims. utils.prompt_blocks makes every
+    untrusted line plain before anything is matched against it (NFKC, so a
+    full-width < is <; format and control characters, such as zero-width
+    spaces, dropped), then defangs the block's closing tag in any case or
+    spacing; in <thread> and <recipients> every block tag, opening or
+    closing, is defanged too (ghostwriter._defang_blocks). NO tools but the forced
     compose_reply; no company profile, memory or roster. Not a Council
     agent: PATCH /agents and /personas have no principal check. Model
     DELEGATION_COMPOSER_MODEL, else the default model;

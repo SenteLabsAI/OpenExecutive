@@ -48,11 +48,13 @@ def thread_text(thread: Any, own: str) -> str:
     (``writer_said`` does)."""
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
+    from openexecutive.utils.prompt_blocks import plain
 
     parts = []
     for i, m in enumerate(_shown_messages(thread), 1):
         who = one_line(m.from_name or m.from_addr, 120)
-        text = _quote_headers(sender_new_text(m.text or "")[:THREAD_MESSAGE_CHARS])
+        # Plain first, so no hidden or look-alike character dodges the quoting.
+        text = _quote_headers(plain(sender_new_text(m.text or "")[:THREAD_MESSAGE_CHARS]))
         parts.append(f"[{i}] From: {who} — {one_line(m.date, 60)}\n{text}")
     return "\n\n".join(parts)
 
