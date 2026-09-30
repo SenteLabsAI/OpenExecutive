@@ -6476,6 +6476,8 @@ integrations:
     servers as tools available to the Executive (Gmail, Calendar, Drive, …).
     The MCP is configured via company/mcp_servers.json (workspace-mcp at
     --tool-tier complete to expose the full Google Workspace tool surface).
+    docker/workspace-mcp-launch.sh also reads WORKSPACE_MCP_TOOLS (default
+    all, or comma-separated service names passed as --tools).
 
     Telling the model what is connected (F004, F009): configured_server_names()
     used to feed only the setup checks and the boot log, while the identity

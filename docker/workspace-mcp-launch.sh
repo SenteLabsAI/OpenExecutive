@@ -23,6 +23,20 @@ set -eu
 
 AUTH_MODE="${GWORKSPACE_AUTH_MODE:-oauth}"
 TOOL_TIER="${WORKSPACE_MCP_TOOL_TIER:-complete}"
+# Which Google services to load: comma-separated service names, or "all"
+# (the default). Passed to workspace-mcp as --tools.
+SERVICES="${WORKSPACE_MCP_TOOLS:-all}"
+
+# extensible-mcp leaves a `$VAR` in the config's env block as that literal text
+# when the API has no such variable, so treat an unexpanded value as unset. So is
+# a value with no service names in it (",").
+case "$TOOL_TIER" in '$'*) TOOL_TIER=complete ;; esac
+case "$SERVICES" in '$'*) SERVICES=all ;; esac
+SERVICES=$(printf '%s' "$SERVICES" | tr ',' ' ')
+case "$SERVICES" in *[![:space:]]*) ;; *) SERVICES=all ;; esac
+# The choice reaches workspace-mcp only as --tools below. Left in the
+# environment it is read again as a fallback, and "all" is not a service name.
+unset WORKSPACE_MCP_TOOLS
 
 # CRITICAL (co-location): in stdio single-user mode workspace-mcp starts a
 # "minimal OAuth server" on WORKSPACE_MCP_PORT, which DEFAULTS TO 8000 — the same
@@ -48,6 +62,14 @@ fi
 # Invoke the binary from its isolated venv (docker/Dockerfile) so its fastmcp/
 # pydantic deps don't collide with the API's system env.
 set -- /opt/workspace-mcp/bin/workspace-mcp --tool-tier "$TOOL_TIER"
+if [ "$SERVICES" != all ]; then
+    # Split on whitespace into one argument per service, with globbing off so a
+    # name is never expanded against the filesystem.
+    set -f
+    # shellcheck disable=SC2086
+    set -- "$@" --tools $SERVICES
+    set +f
+fi
 
 case "$AUTH_MODE" in
     oauth)

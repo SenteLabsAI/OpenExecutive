@@ -89,6 +89,7 @@ _FORWARDED_ENV_VARS = (
     "USER_GOOGLE_EMAIL",
     "WORKSPACE_MCP_CREDENTIALS_DIR",
     "WORKSPACE_MCP_TOOL_TIER",
+    "WORKSPACE_MCP_TOOLS",
 )
 
 # Outbound Gmail tools whose arguments may carry recipients. Any tool name
