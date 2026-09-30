@@ -370,6 +370,13 @@ async def handle_assign_open_loop(tool_input: dict[str, Any]) -> str:
     )
     if result.loop_id is None:
         reason = result.reason or "not_assigned"
+        if reason == "owner_is_contact":
+            from openexecutive.orchestrator.people_tools import contacts_reachable_now
+
+            if not contacts_reachable_now():
+                # Contacts are the principal's alone: to anyone else a contact
+                # reads exactly like an id no one has.
+                reason = "unknown_owner"
         _audit(tool, False, f"assign_open_loop not assigned ({reason})",
                {"owner_person_id": person_id, "caller_person_id": assigner, "reason": reason})
         return json.dumps({

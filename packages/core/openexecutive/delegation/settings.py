@@ -324,7 +324,13 @@ def own_words(speaker_text: str) -> str | None:
     block an adapter added (quoted backstory is not something they typed), or
     None when the message carries an attachment (its text, or a note naming
     the file), whose words can't be told apart from theirs."""
-    text = speaker_text or ""
+    from openexecutive.integrations.inbound_hydration import strip_outbound_reply_context
+
+    # The hydrated reply backstory is removed by its exact, anchored shape
+    # first: text quoted inside it can carry a look-alike closing tag
+    # ("</outbound_reply_context >") that would end the generic match below
+    # early and pass the rest off as the speaker's words.
+    text = strip_outbound_reply_context(speaker_text or "")
     if _ATTACHMENT_MARK.search(text):
         return None
     return _INJECTED_BLOCK.sub(" ", text)

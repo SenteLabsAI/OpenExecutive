@@ -291,6 +291,12 @@ def _clean(text: str, limit: int) -> str:
     return flat[:limit].strip()
 
 
+# The stored text is quoted into the nudge intent ("…") and the runner wraps
+# that in <scheduled_intent> tags, so it must not be able to close either:
+# angle brackets and double quotes are swapped for look-alikes at insert.
+_MARKUP_DEFANG = str.maketrans({"<": "‹", ">": "›", '"': "'"})
+
+
 def _scope_key(owner_person_id: int, text: str) -> str:
     norm = re.sub(r"[^a-z0-9 ]", "", " ".join(text.lower().split()))
     digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
@@ -376,7 +382,7 @@ def open_loop(
     concurrent passes cannot both insert it)."""
     from openexecutive.memory.episodic import insert_scheduled_action
 
-    text = _clean(description, _TEXT_MAX)
+    text = _clean(description, _TEXT_MAX).translate(_MARKUP_DEFANG)
     if len(text) < _TEXT_MIN:
         return None
     try:

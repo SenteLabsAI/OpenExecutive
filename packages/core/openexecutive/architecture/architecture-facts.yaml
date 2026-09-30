@@ -1791,7 +1791,10 @@ memory:
       - `source_quote` (at least 2 words / 8 chars) must appear, normalized
         like the episodic quote gate, in the principal's own words this turn:
         `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
-        adapter-hydrated `<outbound_reply_context>` backstory stripped, and
+        adapter-hydrated `<outbound_reply_context>` backstory stripped (first
+        by its exact anchored shape, `strip_outbound_reply_context`, so a
+        look-alike closing tag like `</outbound_reply_context >` quoted inside
+        it cannot end the block early — security review of F082), and
         None (refused) when the message carries an attachment. Otherwise a
         Discord/Slack reply to the Executive's DM about an attacker's alert
         could have the alert's text stored as the principal's fact.
@@ -2682,7 +2685,14 @@ attunement:
       `task` must appear verbatim in the speaker's own words this turn
       (`delegation.settings.own_words` of the pinned speaker text — adapter
       tag blocks stripped, attachment turns refused), the same rule as
-      verbatim_text, and language-neutral. Cap 5 per turn. Withheld via
+      verbatim_text, and language-neutral. Cap 5 per turn. A contact owner
+      reads as `unknown_owner` unless `contacts_reachable_now()` (no contact
+      oracle for teammates). `open_loop()` swaps `<`, `>` and `"` for
+      look-alikes at insert (both paths): the text is quoted into the nudge
+      intent and the runner's `<scheduled_intent>` block, and the People-page
+      route stores typed text with no model in between. Known: the route has
+      no per-assigner rate limit beyond the per-owner cap, whose 409 tells a
+      teammate the owner is at the cap. Withheld via
       UNATTENDED_WITHHELD_TOOLS and PRIVATE_TURN_WITHHELD_TOOLS. The turn's
       assigned owner ids are kept per (audit session id, turn id)
       (`note_assigned_this_turn`); `schedule_open_loop_pass` passes that

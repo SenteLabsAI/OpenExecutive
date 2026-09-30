@@ -576,7 +576,11 @@ def assign_person_open_loop(person_id: int, body: OpenLoopCreate, request: Reque
     )
     loop = get_open_loop(result.loop_id) if result.loop_id is not None else None
     if loop is None:
-        code, detail = _ASSIGN_REFUSED.get(result.reason or "", (409, "Could not assign the task"))
+        reason = result.reason or ""
+        if reason == "owner_is_contact" and not caller_is_principal(request):
+            # Became a contact after the check above: still not theirs to see.
+            reason = "unknown_owner"
+        code, detail = _ASSIGN_REFUSED.get(reason, (409, "Could not assign the task"))
         raise HTTPException(status_code=code, detail=detail)
     return OpenLoopOut(
         loop_id=loop.id,
