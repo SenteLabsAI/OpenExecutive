@@ -822,6 +822,35 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
+    # Google Drive folder sync — same shape as the Notion sync above: files
+    # in the shared folders go into the isolated DRIVE collection.
+    # ------------------------------------------------------------------
+    if action.kind == "drive_sync_scan":
+        from openexecutive.knowledge.drive_sync import (
+            enqueue_next_drive_sync_scan,
+            run_drive_sync,
+        )
+        try:
+            stats = await run_drive_sync(now=now)
+            logger.info("scheduler: drive_sync_scan %s", stats)
+        except Exception:
+            logger.exception("scheduler: drive_sync_scan (action %d) crashed", action.id)
+        try:
+            mark_action_done(action.id)
+        except Exception:
+            logger.exception(
+                "scheduler: drive_sync_scan (action %d) — mark_done failed", action.id
+            )
+        try:
+            enqueue_next_drive_sync_scan(after=datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "scheduler: failed to chain next drive_sync_scan "
+                "heartbeat — sync will stall until next bootstrap"
+            )
+        return
+
+    # ------------------------------------------------------------------
     # Proactive nudge — re-check reachability at dispatch time before
     # falling through to the ad-hoc dispatch path. The person may have
     # gone on leave between schedule and fire; if so, defer rather than

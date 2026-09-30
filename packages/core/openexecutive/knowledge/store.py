@@ -49,6 +49,11 @@ class ChromaDBStore(KnowledgeStore):
     # who can edit a shared page can inject text the agents will read.
     # Retrieved under its own clearly-labelled, lower-ranked section.
     NOTION_COLLECTION = "notion_wiki"
+    # Files synced from shared Google Drive folders (knowledge.drive_sync).
+    # Separate from COMPANY for the same reason as NOTION: a shared folder is
+    # multi-writer and unreviewed. Retrieved under its own labelled,
+    # lower-ranked section.
+    DRIVE_COLLECTION = "drive_docs"
     # Files attached in an integration channel. Same isolation reasoning as
     # the two above, taken one step further: this collection is NEVER
     # queried — not by ``retriever.retrieve``, not by anything else.
@@ -271,6 +276,10 @@ class ChromaDBStore(KnowledgeStore):
         leftover COMPANY rows tagged ``type=notion`` (pre-isolation ingest)."""
         self.delete_documents(collection=self.NOTION_COLLECTION, where={"type": "notion"})
         self.delete_documents(collection=self.COMPANY_COLLECTION, where={"type": "notion"})
+
+    def delete_drive_docs(self) -> None:
+        """Drop every synced Google Drive chunk."""
+        self.delete_documents(collection=self.DRIVE_COLLECTION, where={"type": "drive"})
 
     def delete_attachment_docs(self) -> None:
         """Drop every inbound attachment chunk, plus any pre-isolation

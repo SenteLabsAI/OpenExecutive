@@ -6,7 +6,7 @@
 // No imports, so `npm test` can exercise this under
 // `node --experimental-strip-types` (see scripts/answerSources.test.mjs).
 
-export type SourceKind = "company" | "knowledge" | "notion" | "research" | "document" | "web";
+export type SourceKind = "company" | "knowledge" | "notion" | "drive" | "research" | "document" | "web";
 
 export interface AnswerSource {
   kind: SourceKind;
@@ -26,6 +26,7 @@ export const SOURCE_GROUPS: ReadonlyArray<{ kind: SourceKind; label: string }> =
   { kind: "company", label: "Your documents" },
   { kind: "document", label: "Earlier documents" },
   { kind: "notion", label: "Notion" },
+  { kind: "drive", label: "Google Drive" },
   { kind: "research", label: "Research notes" },
   { kind: "knowledge", label: "Built-in knowledge" },
   { kind: "web", label: "Web" },

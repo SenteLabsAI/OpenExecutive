@@ -232,6 +232,78 @@ async def _purge_notion(page_id: str | None, stale: bool, purge_all: bool) -> No
     console.print(f"[green]Notion stale purge:[/green] {stats}")
 
 
+@cli.command("sync-drive")
+def sync_drive() -> None:
+    """Run one Google Drive folder → isolated collection sync tick."""
+    asyncio.run(_sync_drive())
+
+
+async def _sync_drive() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.drive_sync import run_drive_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.drive_sync_enabled:
+        console.print(
+            "[yellow]DRIVE_SYNC_ENABLED is false. See docs/drive_sync_setup.md.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_drive_sync(store=store)
+    console.print(f"[green]Drive sync:[/green] {stats}")
+
+
+@cli.command("purge-drive")
+@click.option("--file-id", default=None, help="Purge one synced file by Drive file id.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge files no longer in the synced folders (needs the sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced file.")
+def purge_drive(file_id: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced Google Drive files and Chroma chunks."""
+    asyncio.run(_purge_drive(file_id, stale, purge_all))
+
+
+async def _purge_drive(file_id: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.drive_sync import (
+        load_state,
+        purge_all_synced,
+        purge_file,
+        run_drive_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    if sum(bool(x) for x in (file_id, stale, purge_all)) != 1:
+        console.print("[red]Specify exactly one of --file-id, --stale, or --all.[/red]")
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if file_id:
+        state = load_state()
+        if purge_file(file_id, store, state):
+            save_state(state)
+            console.print(f"[green]Purged Drive file[/green] {file_id}")
+        else:
+            console.print(f"[red]Could not purge[/red] {file_id}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced Drive file(s).[/green]")
+        return
+    if not settings.drive_sync_enabled:
+        console.print(
+            "[yellow]DRIVE_SYNC_ENABLED is false. See docs/drive_sync_setup.md.[/yellow]"
+        )
+        return
+    stats = await run_drive_sync(store=store, reconcile_only=True)
+    console.print(f"[green]Drive stale purge:[/green] {stats}")
+
+
 @cli.command("consolidate-initiatives")
 @click.option(
     "--apply",
