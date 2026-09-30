@@ -2,7 +2,11 @@
 
 This is the approve→execute bridge: proposals written by calendar_tools (and
 future classes) sit in the trust ledger as `status='proposed'` until a human
-acts here.  On approve, the actual calendar event is created via the MCP.
+acts here. What approving, rejecting and cancelling DO is per class: each class
+resolved here has a ``DecisionClassSpec`` in ``DECISION_CLASSES`` (meeting
+booking: create the calendar event on approve, delete it on cancel). An
+instance of any other class is refused with 409, never carried out as some
+other class.
 
 Routes:
   GET  /decisions            — list instances (filter by class, status)
@@ -17,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -24,6 +30,7 @@ from pydantic import BaseModel
 
 from openexecutive.api import caller as api_caller
 from openexecutive.memory.decision_ledger import (
+    DECISION_ALERT_SOURCE,
     STATUS_APPROVED_UNCHANGED,
     STATUS_APPROVED_WITH_EDIT,
     STATUS_PROPOSED,
@@ -98,7 +105,9 @@ def _payload_diff(original: dict[str, Any], final: dict[str, Any]) -> bool:
     return orig_attendees != final_attendees
 
 
-def _clear_decision_alert(instance_id: int, status: str) -> None:
+def _clear_decision_alert(
+    instance_id: int, status: str, source: str | None = DECISION_ALERT_SOURCE
+) -> None:
     """Clear the companion briefing alert when a decision is resolved.
 
     Calendar proposals are surfaced on the briefing as an alert linked by
@@ -106,18 +115,16 @@ def _clear_decision_alert(instance_id: int, status: str) -> None:
     Transition it out of the unread queue when the decision is approved
     (``ack``) or rejected/cancelled (``dismissed``). Best-effort: a missing
     alert (e.g. a decision created before the bridge) is a harmless no-op, and
-    a failure here must not 500 a decision that already executed.
+    a failure here must not 500 a decision that already executed. ``source``
+    is the class's ``alert_source``; a class that raises no alert passes None.
     """
+    if source is None:
+        return
     from openexecutive.alerts.store import set_status_by_external
-    from openexecutive.memory.decision_ledger import (
-        DECISION_ALERT_SOURCE,
-        decision_alert_external_id,
-    )
+    from openexecutive.memory.decision_ledger import decision_alert_external_id
 
     try:
-        set_status_by_external(
-            DECISION_ALERT_SOURCE, decision_alert_external_id(instance_id), status
-        )
+        set_status_by_external(source, decision_alert_external_id(instance_id), status)
     except Exception:
         logger.exception(
             "decisions: failed to clear companion alert for instance %d", instance_id
@@ -159,8 +166,12 @@ def _approver_is_principal(request: Request) -> bool:
 
 
 def _is_private(instance: DecisionInstance) -> bool:
-    """A booking with one of the principal's contacts (``calendar_tools``
-    marks its payload ``private``): the principal's alone to see and act on."""
+    """The principal's alone to see and act on: a class that is
+    (``DecisionClassSpec.principal_only``), or a payload marked ``private``
+    (a booking with one of the principal's contacts, per ``calendar_tools``)."""
+    spec = DECISION_CLASSES.get(instance.decision_class)
+    if spec is not None and spec.principal_only:
+        return True
     payload = _parse_payload(instance)
     return payload.get("private") is True
 
@@ -172,6 +183,50 @@ def _visible_instance(instance_id: int, request: Request) -> DecisionInstance:
     if instance is None or (_is_private(instance) and not _approver_is_principal(request)):
         raise HTTPException(status_code=404, detail="Decision instance not found")
     return instance
+
+
+def _refresh(instance_id: int) -> DecisionInstance:
+    updated = get_decision_instance(instance_id)
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Instance vanished after update")
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Decision classes
+# ---------------------------------------------------------------------------
+
+_Approve = Callable[[DecisionInstance, ApproveBody, Request], Awaitable[DecisionInstance]]
+
+
+@dataclass(frozen=True)
+class DecisionClassSpec:
+    """How the routes below handle one class of gated decision."""
+
+    name: str
+    # Only the principal may see or resolve any instance of it, whatever its
+    # payload says.
+    principal_only: bool
+    # The companion briefing alert's source, cleared when an instance is
+    # resolved; None when the class raises none.
+    alert_source: str | None
+    # Carries out an approval and records it (its own compare-and-set);
+    # raises HTTPException to refuse. Called only on a 'proposed' instance.
+    approve: _Approve
+    # Best effort, after a reject has been recorded.
+    after_reject: Callable[[DecisionInstance], Awaitable[None]] | None = None
+    # Undoes what an approval did; None when it can't be undone (409).
+    cancel: Callable[[DecisionInstance], Awaitable[None]] | None = None
+
+
+def _spec_for(instance: DecisionInstance) -> DecisionClassSpec:
+    spec = DECISION_CLASSES.get(instance.decision_class)
+    if spec is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Decisions of class {instance.decision_class!r} can't be resolved here.",
+        )
+    return spec
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +242,12 @@ def get_decisions(
 ) -> list[DecisionInstance]:
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=400, detail="limit must be 1–500")
-    instances = list_instances(decision_class, status=status, limit=limit)
     if _approver_is_principal(request):
-        return instances
+        return list_instances(decision_class, status=status, limit=limit)
+    spec = DECISION_CLASSES.get(decision_class)
+    if spec is not None and spec.principal_only:
+        return []
+    instances = list_instances(decision_class, status=status, limit=limit)
     return [i for i in instances if not _is_private(i)]
 
 
@@ -198,17 +256,11 @@ def get_decision(instance_id: int, request: Request) -> DecisionInstance:
     return _visible_instance(instance_id, request)
 
 
-@router.post("/decisions/{instance_id}/approve", response_model=DecisionInstance)
-async def approve_decision(
-    instance_id: int, body: ApproveBody, request: Request
+async def _approve_booking(
+    instance: DecisionInstance, body: ApproveBody, request: Request
 ) -> DecisionInstance:
-    instance = _visible_instance(instance_id, request)
-    if instance.status != STATUS_PROPOSED:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot approve a decision with status={instance.status!r}",
-        )
-
+    """Meeting booking: create the calendar event, then record the approval."""
+    instance_id = instance.id
     original_payload = _parse_payload(instance)
     final_payload = dict(original_payload)
 
@@ -288,26 +340,69 @@ async def approve_decision(
 
     # Won the compare-and-set: clear the companion briefing alert.
     _clear_decision_alert(instance_id, "ack")
+    return _refresh(instance_id)
 
-    updated = get_decision_instance(instance_id)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Instance vanished after update")
-    return updated
+
+async def _cancel_booking(instance: DecisionInstance) -> None:
+    """Meeting booking: delete the event an approval created, if any."""
+    if not instance.external_event_id:
+        return
+    from openexecutive.orchestrator.calendar_tools import _do_delete_event
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+
+    gw = get_active_gateway()
+    if gw is None:
+        raise HTTPException(status_code=502, detail="MCP gateway not running")
+    result = await _do_delete_event(gw, instance.external_event_id)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+
+
+_MEETING_BOOKING = DecisionClassSpec(
+    name=_CALENDAR_CLASS,
+    principal_only=False,
+    alert_source=DECISION_ALERT_SOURCE,
+    approve=_approve_booking,
+    cancel=_cancel_booking,
+)
+
+DECISION_CLASSES: dict[str, DecisionClassSpec] = {
+    spec.name: spec for spec in (_MEETING_BOOKING,)
+}
+
+
+@router.post("/decisions/{instance_id}/approve", response_model=DecisionInstance)
+async def approve_decision(
+    instance_id: int, body: ApproveBody, request: Request
+) -> DecisionInstance:
+    instance = _visible_instance(instance_id, request)
+    spec = _spec_for(instance)
+    if instance.status != STATUS_PROPOSED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot approve a decision with status={instance.status!r}",
+        )
+    return await spec.approve(instance, body, request)
 
 
 @router.post("/decisions/{instance_id}/reject", response_model=DecisionInstance)
-def reject_decision(instance_id: int, body: RejectBody, request: Request) -> DecisionInstance:
+async def reject_decision(instance_id: int, body: RejectBody, request: Request) -> DecisionInstance:
     instance = _visible_instance(instance_id, request)
+    spec = _spec_for(instance)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot reject a decision with status={instance.status!r}",
         )
-    mark_resolved(instance_id, STATUS_REJECTED)
-    _clear_decision_alert(instance_id, "dismissed")
-    updated = get_decision_instance(instance_id)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Instance vanished after update")
+    if not mark_resolved(instance_id, STATUS_REJECTED):
+        raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
+    _clear_decision_alert(instance_id, "dismissed", spec.alert_source)
+    updated = _refresh(instance_id)
+    if spec.after_reject is not None:
+        try:
+            await spec.after_reject(updated)
+        except Exception:
+            logger.exception("decisions/reject: after-reject step failed for instance %d", instance_id)
     return updated
 
 
@@ -315,6 +410,9 @@ def reject_decision(instance_id: int, body: RejectBody, request: Request) -> Dec
 async def cancel_decision(instance_id: int, request: Request) -> DecisionInstance:
     """Cancel an approved/executed event (reverse it)."""
     instance = _visible_instance(instance_id, request)
+    spec = _spec_for(instance)
+    if spec.cancel is None:
+        raise HTTPException(status_code=409, detail="This decision can't be undone.")
     if instance.status not in (
         STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT, STATUS_PROPOSED,
     ):
@@ -322,23 +420,10 @@ async def cancel_decision(instance_id: int, request: Request) -> DecisionInstanc
             status_code=409,
             detail=f"Cannot cancel a decision with status={instance.status!r}",
         )
-
-    if instance.external_event_id:
-        from openexecutive.orchestrator.calendar_tools import _do_delete_event
-        from openexecutive.orchestrator.mcp_gateway import get_active_gateway
-        gw = get_active_gateway()
-        if gw is None:
-            raise HTTPException(status_code=502, detail="MCP gateway not running")
-        result = await _do_delete_event(gw, instance.external_event_id)
-        if "error" in result:
-            raise HTTPException(status_code=502, detail=result["error"])
-
+    await spec.cancel(instance)
     mark_reversed(instance_id, reason="cancelled_via_ui")
-    _clear_decision_alert(instance_id, "dismissed")
-    updated = get_decision_instance(instance_id)
-    if updated is None:
-        raise HTTPException(status_code=500, detail="Instance vanished after update")
-    return updated
+    _clear_decision_alert(instance_id, "dismissed", spec.alert_source)
+    return _refresh(instance_id)
 
 
 def _class_mode_response(decision_class: str) -> DecisionClassMode:

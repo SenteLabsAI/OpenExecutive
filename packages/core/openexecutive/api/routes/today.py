@@ -1004,6 +1004,7 @@ _DECISION_STATUS_LABEL = {
     "reversed": "Reversed",
     "executed": "Executed",
     "failed": "Failed",
+    "closed_externally": "Closed",
 }
 
 

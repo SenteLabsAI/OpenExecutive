@@ -7987,7 +7987,16 @@ trust_ledger: |
       Status lifecycle: proposed → approved_unchanged | approved_with_edit |
         rejected | auto_no_response | failed | reversed (from approved/executed)
         executed → reversed | failed  (auto-execute path, Build 3)
+        proposed → executing → approved_unchanged | approved_with_edit | failed,
+          or back to proposed (release_claim: nothing was done)
+        proposed | executing → closed_externally (settled outside the app;
+          the reason code goes in reversal_reason)
       All status transitions are compare-and-set — no silent overwrites.
+      "executing" is for an approval with an outside effect that must happen
+      once (sending an email): claim_for_execution claims the row BEFORE
+      acting, so of two taps only one acts; a failure that leaves it unclear
+      whether the effect happened stays executing for a reconciler, never
+      retried. get_live_by_idem counts executing as open.
 
     decision_class_state — one row per class; holds the promoted/propose mode.
       Columns: decision_class (PK), mode (propose|auto_execute), updated_at,
@@ -7996,11 +8005,22 @@ trust_ledger: |
 
   CRUD + reliability reader: openexecutive.memory.decision_ledger
     create_decision_instance / get_decision_instance / mark_resolved /
-    mark_reversed / mark_executed / record_high_severity_miss /
+    mark_reversed / mark_executed / claim_for_execution / finish_execution /
+    release_claim / close_externally / record_high_severity_miss /
     list_instances / get_class_mode / set_class_mode /
     aggregate_reliability → ReliabilityCard
 
   API: openexecutive.api.routes.decisions
+    What approve / reject / cancel do is per class: DECISION_CLASSES maps a
+    class name to a DecisionClassSpec(name, principal_only, alert_source,
+    approve, after_reject, cancel). Meeting booking is the spec for
+    meeting_scheduling (approve books the event, cancel deletes it). An
+    instance of a class with no spec gets 409 on every action, never
+    carried out as another class. A principal_only class is hidden from
+    everyone else like a private payload (left out of GET /decisions, a 404
+    on the rest). A reject that loses its compare-and-set is a 409; the
+    class's after_reject runs after it, best effort. A class with no cancel
+    answers 409 to /cancel.
     GET  /decisions              — list instances (filterable by class, status)
     GET  /decisions/{id}         — single instance detail
     POST /decisions/{id}/approve — approve proposal; creates calendar event via MCP
