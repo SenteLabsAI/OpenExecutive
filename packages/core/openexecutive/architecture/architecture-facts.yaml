@@ -3285,8 +3285,12 @@ people:
       False). A withheld ack is audited `roster_ack_withheld` (private);
       `release_ack` nulls `ack_sent_at` only when it still holds the stamp
       of the claim being released, so an ack that really went out earlier
-      on the same request stays on record. If the request can't be
-      re-read, the card still goes up, reading "not told".
+      on the same request stays on record. The card goes up whatever
+      happens during the ack (a failed claim or release, a lock, a failed
+      re-read, even a cancelled send — `surface_card` runs synchronously
+      in a `finally`), reading "not told" when the ack can't be confirmed:
+      a later message from the sender finds the request open and would
+      never surface it.
     - Replays run in a FRESH `contextvars.Context` (`_spawn`): the answer
       may come from the principal's own verified turn, and a stranger's
       message must never run with the principal's session (and contacts,

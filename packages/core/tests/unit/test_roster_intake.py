@@ -284,6 +284,47 @@ def test_the_card_still_goes_up_when_the_request_cannot_be_reread(
     assert card is not None
 
 
+def test_the_card_still_goes_up_when_the_ack_claim_fails(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _locked(*_a: Any, **_k: Any) -> bool:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(rr, "claim_ack", _locked)
+    told: list[bool] = []
+
+    async def _notify(_request: rr.RosterRequest, *, acknowledged: bool) -> str:
+        told.append(acknowledged)
+        return "email"
+
+    with patch.object(roster_intake, "notify_principal", new=_notify):
+        request = asyncio.run(roster_intake.intake(
+            "email", STRANGER, external_id="m1", payload={"message_id": "m1"}, send_ack=AsyncMock(),
+        ))
+    assert request is not None and told == [False]
+    card = alerts_store.get_alert_by_external(rr.ALERT_SOURCE, rr.alert_external_id(request.id))
+    assert card is not None and "haven't been told anything" in card.body
+
+
+def test_the_card_still_goes_up_when_the_send_is_cancelled(roster: SimpleNamespace) -> None:
+    """A shutdown mid-send cancels intake; the request exists by then, and a
+    later message from the same sender would never surface it."""
+    async def _cancelled(_text: str) -> None:
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(roster_intake, "notify_principal", new=AsyncMock()),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(roster_intake._intake(
+            "email", STRANGER, external_id="m1", payload={"message_id": "m1"}, preview="",
+            display_name="", profile_email=None, send_ack=_cancelled,
+        ))
+    [request] = rr.list_requests()
+    card = alerts_store.get_alert_by_external(rr.ALERT_SOURCE, rr.alert_external_id(request.id))
+    assert card is not None
+
+
 def test_an_ack_past_the_daily_cap_is_not_reported_as_told(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

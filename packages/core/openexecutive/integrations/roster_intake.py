@@ -164,7 +164,40 @@ async def _intake(
         return None
     request = outcome.request
     # Acknowledge first, so the card and the principal's prompt say what the
-    # sender was actually told (``ack_sent_at``), not what was attempted.
+    # sender was actually told (``ack_sent_at``), not what was attempted. The
+    # card goes up whatever happens here — a failed claim or release, a
+    # database lock, even a cancelled send — since a later message from this
+    # sender finds the request already open and never surfaces it.
+    told = False
+    try:
+        request = await _acknowledge(channel, request, send_ack)
+        told = request.ack_sent_at is not None
+    except Exception:
+        logger.warning("roster_intake: acknowledging on %s failed", channel, exc_info=True)
+    finally:
+        if outcome.created:
+            # Synchronous, so it still runs when the send was cancelled.
+            try:
+                rr.surface_card(request, principal.id, acknowledged=told)
+            except Exception:
+                logger.exception("roster_intake: surfacing request %d failed", request.id)
+    if outcome.created:
+        _audit(
+            "roster_request_created",
+            f"Roster request {request.id} opened ({channel})",
+            {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
+        )
+        await notify_principal(request, acknowledged=told)
+    return request
+
+
+async def _acknowledge(
+    channel: str,
+    request: rr.RosterRequest,
+    send_ack: Callable[[str], Awaitable[Any]] | None,
+) -> rr.RosterRequest:
+    """Send the acknowledgement if one is due, and return the request as
+    stored afterwards (``ack_sent_at`` set only when it really went out)."""
     if send_ack is not None and await asyncio.to_thread(
         rr.claim_ack, channel, request.channel_ref, request_id=request.id
     ):
@@ -189,24 +222,8 @@ async def _intake(
             await asyncio.to_thread(
                 rr.release_ack, channel, request.channel_ref, request_id=request.id
             )
-    try:
-        fresh = await asyncio.to_thread(rr.get_request, request.id)
-    except Exception:
-        # The card must still go up; without a fresh read, say nothing was told.
-        logger.warning("roster_intake: re-reading request %d failed", request.id, exc_info=True)
-        fresh = None
-        request = request.model_copy(update={"ack_sent_at": None})
-    request = fresh if fresh is not None else request
-    if outcome.created:
-        told = request.ack_sent_at is not None
-        await asyncio.to_thread(rr.surface_card, request, principal.id, acknowledged=told)
-        _audit(
-            "roster_request_created",
-            f"Roster request {request.id} opened ({channel})",
-            {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
-        )
-        await notify_principal(request, acknowledged=told)
-    return request
+    fresh = await asyncio.to_thread(rr.get_request, request.id)
+    return fresh if fresh is not None else request.model_copy(update={"ack_sent_at": None})
 
 
 def _pending_for(channel: str, ref: str) -> rr.RosterRequest | None:
