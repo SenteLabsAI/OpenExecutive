@@ -28,7 +28,7 @@ RUN pip install uv
 # unreachable, and such an image fetches the commit — and needs network — on
 # its first gateway start. `uv` itself (installed above) is not pinned.
 RUN uvx --exclude-newer 2026-09-23T00:00:00Z \
-        --from git+https://github.com/SenteLabsAI/extensible-mcp@ac2001a09646a8044210042e12e62974f4c9687c extensible-mcp --help \
+        --from git+https://github.com/SenteLabsAI/extensible-mcp@90800ca3e823f73975099b362b1bb3a7b20dd6eb extensible-mcp --help \
     || true
 
 COPY packages/core/pyproject.toml packages/core/uv.lock ./
