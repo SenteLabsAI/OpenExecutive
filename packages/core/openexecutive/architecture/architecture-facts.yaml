@@ -1190,6 +1190,25 @@ routing:
     carrying the matched term.
 
 knowledge:
+  embedding_function: |
+    Every ChromaDBStore collection is opened with one shared embedding
+    function (knowledge.store._embedding_function): all-MiniLM-L6-v2 ONNX,
+    the same model and vectors as Chroma's DefaultEmbeddingFunction.
+
+    Why not Chroma's default: it builds a new ONNXMiniLM_L6_V2 per call, so
+    every query reloads the model (~240 ms), and its session keeps ONNX
+    Runtime's CPU memory arena, which retains the peak of a 32-text batch
+    padded to 256 tokens. A 300-chunk upload peaked near 760 MB. The shared
+    session is built once, runs with enable_cpu_mem_arena=False and embeds 4
+    texts per run: ~300 MB peak, ~30 ms per query, ~90 MB more at idle
+    because the model stays loaded.
+
+    Compatibility invariants: collections persist the function they were
+    created with ({"name": "default", "config": {}} on every existing
+    install), and Chroma raises on a differently named function, so the
+    shared one answers name() == "default" with an empty config. It must NOT
+    be a DefaultEmbeddingFunction instance: Collection._embed ignores those
+    and embeds with a fresh default rebuilt from the collection config.
   distance_gates: |
     Two gates. KNOWLEDGE_DISTANCE_THRESHOLD (default 0.55) is the shared one,
     applied to COMPANY, NOTION_WIKI and RECENT_RESEARCH.

@@ -1,9 +1,77 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
+
+# Chroma's DefaultEmbeddingFunction builds a new ONNXMiniLM_L6_V2 on every
+# call, so every query and upsert loads the model from disk (about 200 ms a
+# query). Its ONNX session also keeps the CPU memory arena on and embeds 32
+# texts per run, each padded to 256 tokens, so a large ingest peaks several
+# hundred MB above the model. The stores share one session per process
+# instead, with the arena off and _EMBED_BATCH texts per run: the same model,
+# the same vectors, a bounded peak.
+#
+# It answers to DefaultEmbeddingFunction's name ("default") with an empty
+# config, which is what existing collections record: Chroma refuses to open
+# a collection with a differently named function, and rebuilds "default"
+# from the stored config if older code opens one this created. It must NOT
+# be a DefaultEmbeddingFunction instance: Chroma's Collection._embed skips
+# any such instance and embeds with a fresh one from the config instead.
+_EMBED_BATCH = 4
+_embedding_function_lock = threading.Lock()
+_shared_embedding_function: Any = None
+
+
+def _embedding_function() -> Any:
+    global _shared_embedding_function
+    with _embedding_function_lock:
+        if _shared_embedding_function is None:
+            _shared_embedding_function = _build_embedding_function()
+        return _shared_embedding_function
+
+
+def _build_embedding_function() -> Any:
+    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+
+    class _SharedMiniLM(ONNXMiniLM_L6_V2):  # type: ignore[misc]
+        _session: Any = None
+        _session_lock = threading.Lock()
+
+        @staticmethod
+        def name() -> str:
+            return "default"
+
+        def get_config(self) -> dict[str, Any]:
+            return {}
+
+        @property
+        def model(self) -> Any:
+            with self._session_lock:
+                if self._session is None:
+                    so = self.ort.SessionOptions()
+                    so.log_severity_level = 3
+                    so.graph_optimization_level = self.ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    so.enable_cpu_mem_arena = False
+                    # Chroma's own choice: every available provider but CoreML.
+                    providers = [
+                        p for p in self.ort.get_available_providers()
+                        if p != "CoreMLExecutionProvider"
+                    ]
+                    self._session = self.ort.InferenceSession(
+                        os.path.join(self.DOWNLOAD_PATH, self.EXTRACTED_FOLDER_NAME, "model.onnx"),
+                        providers=providers,
+                        sess_options=so,
+                    )
+                return self._session
+
+        def _forward(self, documents: list[str], batch_size: int = _EMBED_BATCH) -> Any:
+            return super()._forward(documents, batch_size=_EMBED_BATCH)
+
+    return _SharedMiniLM()
 
 
 class KnowledgeStore(ABC):
@@ -84,6 +152,7 @@ class ChromaDBStore(KnowledgeStore):
         return self._client.get_or_create_collection(
             name=name,
             metadata={"hnsw:space": "cosine"},
+            embedding_function=_embedding_function(),
         )
 
     def add_documents(
