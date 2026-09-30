@@ -22,6 +22,24 @@ os.environ.pop("OE_PUBLIC_DEPLOYMENT", None)
 os.environ.pop("KNOWLEDGE_DISTANCE_THRESHOLD", None)
 os.environ.pop("KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD", None)
 
+# The same trap, one layer down. `Settings` reads the deployment's `.env`, so
+# the suite inherits whatever the developer's machine happens to be running.
+#
+# That is untidy until a `.env` is valid for a service and not for a test, at
+# which point it breaks collection. A deployment that keeps its secrets in a
+# manager and hydrates them at boot writes `HONCHO_ENABLED=true` with no
+# `HONCHO_API_KEY` beside it — correct for that service, and fatal for a
+# `Settings()` built in a test: "HONCHO_ENABLED=true requires HONCHO_API_KEY",
+# raised at COLLECTION time, so 32 tests across 7 modules died before one of
+# them ran. Nothing in the suite touched any of them.
+#
+# Cutting the file out is the fix, not clearing whichever flags happen to hurt
+# today: os.environ is something this file controls and a test can monkeypatch,
+# `.env` is neither, and a test that does `monkeypatch.delenv("HONCHO_ENABLED")`
+# to assert the default would have the deployment's value quietly reappear
+# underneath it. Everything Settings genuinely requires is set above.
+Settings.model_config["env_file"] = None
+
 
 @pytest.fixture(autouse=True)
 def reset_active_gateway():
