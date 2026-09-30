@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openexecutive.integrations import slack_bot
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 MENTION_EVENT = {
     "text": "<@UBOT> where are we on hiring?",
@@ -922,8 +923,11 @@ async def test_a_shared_pdf_is_read_into_the_turn() -> None:
             h.chat.assert_awaited_once()
             kwargs = h.chat.await_args.kwargs
             assert kwargs["user_message"].startswith(
-                "[Attached: appraisal.pdf] (converted from scanned pages)\n"
-                "APPRAISED VALUE 4.2M"
+                wrap_untrusted(
+                    "[Attached: appraisal.pdf] (converted from scanned pages)\n"
+                    "APPRAISED VALUE 4.2M",
+                    source="attachment", author="appraisal.pdf",
+                )
             )
             # Memory and history record the file's name, not its text as the
             # sender's words.

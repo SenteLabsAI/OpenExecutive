@@ -192,7 +192,7 @@ def test_an_email_hold_still_needs_the_principals_own_words(
         "subject": "Maple House unit count", "statement": "Maple House has 60 units.",
         "source_quote": "remember what the lease doc says about Maple House",
     })))
-    assert "not a number the principal wrote" in out["error"]
+    assert "not a number the speaker wrote" in out["error"]
     assert _sent(gateway) == []
 
 

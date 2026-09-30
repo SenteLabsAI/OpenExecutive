@@ -26,6 +26,7 @@ from openexecutive.integrations.email_attachments import (
     EmailAttachmentRef,
     read_email_attachments,
 )
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 if TYPE_CHECKING:
     from openexecutive.orchestrator.mcp_gateway import MCPGateway
@@ -817,6 +818,35 @@ def _forwarded_by_principal_notice(principal: Any) -> str:
     )
 
 
+def _principal_email_text(raw_email: str, from_addr: str) -> str:
+    """The principal's own authenticated email as the turn shows it.
+
+    Their new text is theirs. What it quotes or forwards — a stranger's
+    message they replied to or passed on — is not, whoever sent it on: left
+    unlabelled beside every other inbound mail, labelled, it would read as
+    the principal speaking. So when anything was cut from their new text, the
+    message as received goes in an ``<untrusted_content>`` block below their
+    own words (which it repeats: the cut is a heuristic, and the whole message
+    is what the Executive must be able to read)."""
+    _header, body, _attachments = _split_gmail_content(raw_email)
+    new_lines, _forwarded = _new_text_lines(body)
+    own = "\n".join(new_lines).strip()
+    whole = "\n".join(
+        ln.rstrip() for ln in body
+        if ln.strip() and ln.strip() != _NO_BODY_PLACEHOLDER
+    ).strip()
+    if "\n".join(ln for ln in own.splitlines() if ln.strip()) == whole:
+        return raw_email
+    return (
+        "Gmail authenticated this email as the principal's own. Their new text "
+        "in it:\n"
+        f"{own or '(none)'}\n\n"
+        "The message as received, including what it quotes or forwards — "
+        "written by others, whoever passed it on:\n"
+        + wrap_untrusted(raw_email, source="email_quoted", author=from_addr)
+    )
+
+
 async def _run_executive(
     gateway: MCPGateway,
     raw_email: str,
@@ -840,7 +870,11 @@ async def _run_executive(
     }
     if session_id:
         session_kwargs["session_id"] = session_id
-    session = Session(**session_kwargs)
+    # The channel tag is what tells the untrusted-content policy this is mail,
+    # not the principal's web app: left empty, every stranger's body went
+    # through the decision extractor as the principal's own words
+    # (`content_trust.principal_speaking`).
+    session = Session(**session_kwargs, origin_channel="email")
     if from_addr:
         # Who the mail claims to be from, and whether Gmail authenticated it:
         # the fact tools let the principal's own authenticated mail ask for a
@@ -985,9 +1019,20 @@ async def _run_executive(
                 )
         except Exception:
             logger.exception("email: reading attachments failed for message=%s", message_id)
+    # The mail itself is someone else's text unless Gmail authenticated the
+    # principal's own address on it: it goes in labelled as such, with its
+    # sender, so nothing in it reads as the principal or the system speaking
+    # (`content_trust.wrap_untrusted`). The framing and the [POLICY] notice
+    # above it are ours and stay outside the block.
+    principal_sent = session.email_authenticated and getattr(person, "is_principal", False) is True
+    email_text = (
+        _principal_email_text(raw_email, from_addr)
+        if principal_sent
+        else wrap_untrusted(raw_email, source="email", author=from_addr)
+    )
     base_message = (
         f"You have an inbound email (message_id={message_id}, thread_id={thread_id}).\n\n"
-        f"{policy_notice}{raw_email}"
+        f"{policy_notice}{email_text}"
     )
     if attachment_text:
         base_message += f"\n\n--- ATTACHMENT TEXT ---\n{attachment_text}"

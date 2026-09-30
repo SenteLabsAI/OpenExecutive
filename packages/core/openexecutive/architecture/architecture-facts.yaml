@@ -88,6 +88,7 @@ system:
     - The model cannot reach a delegated mailbox. delegation.gmail.DelegateGmail talks to the Gmail REST API directly and is never registered with the MCP gateway, so only typed handlers (ghostwrite_email, the voice learner) call it, and its credential never lives in WORKSPACE_MCP_CREDENTIALS_DIR. Every google_workspace__* call through the gateway acts as the Executive's own account (mcp_gateway._check_acting_account refuses any other user_google_email).
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
+    - The untrusted-content policy (orchestrator.content_trust) is the one rule for text the principal did not write — inbound email, chat, attached files, watched pages. WHO SPEAKS - the principal only when the surface proved it (principal_speaking - web chat as the principal, CLI, their own Slack/Discord or secret-verified Telegram, their own address with Gmail dmarc=pass); an empty origin_channel is never read as trust. MEMORY - episodic extraction only then, and only on words outside <untrusted_content> blocks; peer memory and open loops are recorded under the speaker's own name, never as the principal's. TOOLS - writes on the principal's authority refuse others in their handlers; PRINCIPAL_ONLY_TOOLS (load_mcp_server - it connects the install to any URL) are not offered unless the principal is speaking on an interactive surface (email excluded, even authenticated), and a call emitted anyway is refused with a not_principal audit row. LABEL - outside text sits in the user turn inside <untrusted_content source author author_verified> with a fixed no-authority notice; NFKC folds compatibility forms, control characters are dropped and the tag's name is renamed wherever the text carries it (any case, spacing, entity-escaped), so the text cannot close its block. The principal's authenticated mail is theirs, but what it quotes or forwards still goes in a block (source email_quoted). A new inbound surface is an entry in this module, not a gate invented at its call site.
     - The workspace mode (memory.workspace_settings, `workspace_settings` table) is per install and defaults to team. Solo (one person using Open Executive just for themselves) runs no department check-ins anywhere — bootstrap_cadences and enqueue_next are no-ops and the runner cancels a stray dept_cadence row without running or chaining it — but department rows are kept, so switching back is instant. A Session may carry an explicit `workspace_mode` override (read via effective_workspace_mode) so a caller running several conversations on one Executive, such as evals, can pick the mode per session; otherwise the install-wide mode is read fresh at the start of each turn and pinned on the session for that turn only (Session.turn_workspace_mode, via pin_turn_workspace_mode), so every tool handler in the turn uses the mode its persona and tools were built in. The same row holds the principal's role (role_kind owner | in_house | independent | other, role_title, reports_to, remit, measured_on; all nullable) — solo is about who uses Open Executive, not the principal's level. Only solo mode reads it (the solo org block's role lines and the specialists' <principal_role> tag), and team output is byte-identical whether a role is stored or not. A Session may carry a `principal_role` override (effective_principal_role) for the same reason as the mode override.
     - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it.
     - Each specialist gets its own RAG fetch filtered by its declared domain alias.
@@ -647,7 +648,7 @@ routing:
     side-effecting tool so a chip surfaces in the live stream
     ("Approved proposal #N" / "Dismissed proposal #N"). The button-driven
     Approve / Dismiss path on the briefing page still acks via the HTTP
-    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — additive only, so an address dropped from the roster stays scheduleable for the life of the in-memory session. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because origin_channel names an inbound chat adapter and the email poller, alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave it empty while legitimately recording linkage. scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set.
+    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — additive only, so an address dropped from the roster stays scheduleable for the life of the in-memory session. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave origin_channel empty while legitimately recording linkage (the email poller, which records it too, tags its turns origin_channel="email"). scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set.
     route — the tool exists for the chat-driven path that the model
     self-detects from natural-language approval. The same feedback loop as
     the HTTP ack applies: a `dismissed` on a watch-sourced alert lowers
@@ -1421,6 +1422,63 @@ knowledge:
         (unreviewed, multi-writer …)" section ranked BELOW curated company
         documents and above recent research. Manual: `openexecutive
         sync-notion` / `openexecutive purge-notion`.
+    - name: DRIVE
+      what: |
+        Files synced from shared Google Drive folders (ChromaDB collection
+        `drive_docs`, metadata `drive_file_id` / `type=drive` / `name` /
+        `url` / `synced_at`), by knowledge.drive_sync. SEPARATE from COMPANY
+        for NOTION_WIKI's reason: a shared folder is multi-writer and
+        unreviewed. Optional (`DRIVE_SYNC_ENABLED`, off by default; setup in
+        docs/drive_sync_setup.md): a scheduler heartbeat (`drive_sync_scan`)
+        lists `DRIVE_SYNC_FOLDER_IDS` and their subfolders (depth 4, 2000
+        items per tick) through knowledge.drive_client. That client calls the
+        Drive v3 API directly with httpx, as a SERVICE ACCOUNT with
+        drive.readonly (`DRIVE_SYNC_SERVICE_ACCOUNT_FILE`; token via
+        google-auth, refreshed off the loop). It is deliberately NOT the
+        workspace-mcp gateway: that acts as the Executive's own account at
+        the complete tier and returns display text. Here Google enforces the
+        folder scope (only what is shared with the service account), the sync
+        can change nothing, and results are JSON; ids are checked against
+        [A-Za-z0-9_-]{1,128} before use.
+
+        Change detection: a file is dirty when its (modifiedTime,
+        md5Checksum) differs from its record in
+        <company_profile_dir>/drive_sync_state.json. Dirty files are handled
+        newest first, capped at DRIVE_MAX_FILES_PER_SCAN; the overflow waits
+        for the next tick.
+        - Text: Docs / Slides are exported as text/plain and Sheets as .xlsx
+          (Drive's CSV export holds only the first sheet). PDF / .docx /
+          .xlsx / txt / md / csv are downloaded and read with
+          loader.extract_text_from_file, with no model call, so a scanned PDF
+          yields nothing. Anything else, and anything over 20 MB, is skipped.
+          Downloads stream and stop at the cap. A .docx / .xlsx whose zip
+          declares more than 100 MB uncompressed is not parsed. Extraction
+          has a 120 s deadline (the worker thread cannot be killed, but the
+          tick moves on). An unreadable file is recorded with no chunks, so
+          it is not refetched until it changes.
+        - A file with no text is recorded with no chunks, so it is not
+          refetched until it changes.
+        - Text is written under <company_profile_dir>/docs/drive/
+          (drive-<id8>-<slug>.md, with a drive_file_id comment); subdirectory,
+          so never in company_docs.
+
+        Reconcile purges files no longer listed. It is skipped when a folder
+        failed to list, the 2000-item cap was hit, or every folder listed
+        nothing while files are on record; the reconcile_skips streak is
+        logged. Locking matches Notion: skip while _FIXTURE_OP_LOCK is held,
+        fetch unlocked, apply under the lock, discard if the active client
+        changed. Fixture load/reset and client-slot switches wipe the
+        collection and the state file.
+
+        At retrieval: n=3, below NOTION_WIKI, under "Synced Google Drive
+        (unreviewed, multi-writer …)". Each chunk is labelled
+        `[drive · file id … · synced … · "<name>"]`. The trusted fields come
+        first. The name comes last, NFKC-normalised, quoted and stripped of [ ] " · • ∙ ⋅ # |, so a
+        folder editor cannot plant a second `file id` for the Executive to
+        open with its own, broader account. The block tells the Executive to
+        open the live file with get_drive_file_content, using only the id
+        after "file id" at the start of a label. Recorded as `drive` answer sources with the Drive link.
+        Manual: `openexecutive sync-drive` / `purge-drive`.
     - name: FAILURES
       what: Recorded failure cases used to teach specialists what to avoid.
     - name: RECENT_RESEARCH
@@ -1622,9 +1680,9 @@ memory:
     cannot close the tag, and labelled data, not instructions. A search that
     matched nothing also gets empty_search_note appended to its tool result
     (report the exact query; never say the file does not exist).
-    session_store.delete_session drops the rows. First step only: Drive is
-    still not synced into the company collection (the Notion sync is the
-    pattern for that).
+    session_store.delete_session drops the rows. Complements, not replaces,
+    the folder sync (knowledge collections: DRIVE): a synced folder is known
+    without a search; this remembers whatever else a conversation read.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking
@@ -1681,11 +1739,55 @@ memory:
         `session.company_profile` so the NEXT turn's cached company block
         carries it (one cache miss per change), and records a
         `kind='profile'` row for the Pulse page.
-      - Gate: the principal on a verified surface only
+      - Gate: the principal on a verified surface
         (`is_principal_on_verified_surface`), never an unattended session;
         all three in `UNATTENDED_WITHHELD_TOOLS` and in
         `PRIVATE_TURN_WITHHELD_TOOLS` (what they write or retire is read on
         everyone's turns).
+      - TEAMMATES (remember_fact only): a rostered `team` member, not
+        archived, not the principal, on a verified surface (web signed in,
+        own Slack / Discord — `people_tools._is_verified_speaker_surface`),
+        not unattended, not a private or email turn
+        (`fact_tools._teammate_speaker`; fails closed). Same own-words gates
+        on the TEAMMATE's words. The row is attributed:
+        `recorded_by_role='teammate'`, `recorded_by_name` (People-list name
+        at write time), rendered "(per <name>)"; the header says such a line
+        is the teammate's word and the principal's unmarked line wins a
+        conflict. PRINCIPAL OUTRANKS: a teammate write whose subject /
+        replaces_fact_id hits an active principal fact raises
+        `PrincipalFactConflict` → stored `proposed` (never renders) with
+        `replaces_fact_id` naming it; teammates supersede each other freely;
+        the principal supersedes anyone. "NEEDS MY APPROVAL":
+        `fact_approval_rules(person_id, needs_approval)`, DEFAULT ON (no row
+        = needs approval; the owner chose opt-in trust over opt-in review),
+        principal-only `GET/PUT /memories/facts/approval[/{person_id}]` →
+        every write from that teammate is `proposed` unless the principal
+        marked them trusted (off). Read inside record_fact's BEGIN
+        IMMEDIATE, so a switch flipped mid-request cannot leak one fact; a
+        teammate write with no person id is never trusted. At most
+        MAX_PENDING_PROPOSALS_PER_PERSON (20) proposals per teammate
+        (TooManyProposals). A teammate retire guards ownership in the UPDATE
+        (`retire_fact(teammate_id=)`: role teammate, their id, not approved). The tool answers
+        `awaiting_approval` (no chip). `approve_fact` → active, supersedes
+        what it names (the principal's own included — approval is their
+        word) and stamps `approved_at`: from then on the row is
+        `principal_owned` (outranks teammates, principal-only to retire), so
+        approval is not a one-shot gate. `decline_fact` → `declined`.
+        forget_fact and update_company_profile stay principal-only; a
+        teammate retires only their own unapproved facts, from the Pulse
+        page. No field of a TEAMMATE's fact may contain `(per <anyone>` (any case; units such as
+        month/unit/square foot excepted, `_PER_UNITS`), `[fact N]` or a dash + `YYYY-MM-DD`
+        stamp (`_marker_error`): the render adds those, so a stored one
+        would be a forged second attribution. Columns added by `_migrate` on
+        first write (old rows read as the principal's; the read-only render
+        tolerates an unmigrated DB).
+      - BRIEF FYI: `facts.render_teammate_changes(since)` → the morning
+        brief's TEAMMATE CORRECTIONS SINCE LAST BRIEF block (active teammate
+        facts created in the window; proposed ones too only when
+        `_private_ok()` — any teammate may run the brief and its run history
+        is shared — and then `private_used`), rendered before the
+        quiet check and carried in `build_brief_fingerprint(teammate_changes=)`
+        so a correction alone un-suppresses the brief.
       - `source_quote` (at least 2 words / 8 chars) must appear, normalized
         like the episodic quote gate, in the principal's own words this turn:
         `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
@@ -1826,10 +1928,14 @@ memory:
       - Audit: private `fact_confirmation` rows (held / applied / cancelled
         / refused_unauthenticated / auto_reply_ignored / no_live_token); the applied change writes the
         tools' usual private rows with source_channel "email".
-    SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`,
-    `POST /memories/facts/{id}/retire`, principal only). Other viewers get
-    the active rows only, with the quote, retire reason, session_id, turn_id
-    and recorded_by_person_id blanked. A subject that
+    SURFACE — Pulse page Memory → Corrections tab (`GET /memories/facts`
+    with `retirable_ids` / `can_review`; `POST /memories/facts/{id}/retire`
+    — principal any, a teammate their own; `/approve`, `/decline` —
+    principal only). Other viewers get the active rows plus their own
+    proposals, with the retire reason, session_id, turn_id and
+    recorded_by_person_id blanked, and the quote blanked except on their own
+    facts. Proposals show first with Approve / Decline; the principal sets
+    "needs my approval" per teammate at the bottom of the tab. A subject that
     folds to an empty key ("???") is refused, so such subjects never
     supersede one another. `/memories?tab=corrections` opens it; the chat
     chips for the three tools link there / to /company-profile.
@@ -1849,7 +1955,7 @@ memory:
     populates `domain` but not `department`, so today the mirror only
     fires for explicit dept-scoped writers; falling back to `domain`
     is a deliberate follow-up decision, not silent drift.
-    Extraction is gated by `should_extract(user_message)`, which has NO
+    Extraction is gated by `should_extract(speaker_text, session=...)`, which has NO
     length floor — it admits any non-blank user message. There used to be a
     combined user+assistant floor of 1500 chars, which on a live tenant
     blocked 9 of 16 turns — every instruction the principal gave — while
@@ -1876,11 +1982,31 @@ memory:
     would be stored in `decisions` with no speaker attached, and an inbound
     email body is text the sender chose (a self-quote is free). Removing the
     length floor is what makes this bite — short channel traffic used to fall
-    under it incidentally — so `should_extract` also takes `origin_channel`
-    and `person_id`. Empty channel = web / CLI / API, the principal's own
-    authenticated surfaces, where person_id is legitimately None in a
-    single-user install. A named channel must resolve to `is_principal`;
-    an unresolvable speaker fails closed.
+    under it incidentally — so `should_extract` asks the untrusted-content
+    policy, `orchestrator.content_trust.principal_speaking(session)`: the web
+    chat as the principal (or, with no principal on the roster yet, a request
+    carrying no sign-in — a signed-in email on nobody's entry, e.g. an
+    archived teammate still allowed to sign in, is NOT the principal), the CLI (`Session.from_cli`), the principal's own Slack/Discord
+    or a secret-verified private Telegram chat
+    (`is_principal_on_verified_surface`), or the principal's primary address
+    with Gmail's own `dmarc=pass` (`Session.email_authenticated`). Anything
+    else fails closed — teammates (web included), strangers, unauthenticated
+    mail claiming the principal's address, Google Chat, the MCP server,
+    unattended runs, an unreadable roster.
+    WHY IT CHANGED (the email gate bug): the old rule read an EMPTY
+    `origin_channel` as "web / CLI / API", and the email poller left it
+    empty, so every stranger's email ran through the extractor with the
+    whole prompt (headers, quoted chain) as the principal's words, and what
+    it stored rendered to every specialist on every later turn. The poller
+    now sets `origin_channel="email"`, and no gate may treat an empty
+    channel as trust — name the principal's surfaces instead.
+    `schedule_extraction` strips every `<untrusted_content>` block
+    (`content_trust.strip_untrusted`) before the model or the quote check
+    sees the text, so an attached document's sentence can never be stored
+    as the principal's commitment.
+    `format_for_prompt` tags a decision recorded on a channel with its
+    source from the session_id prefix — `(via email)`, `(via Slack)`, … —
+    so rows extracted from mail before the policy read as mail.
     Every pass writes a `memory_extraction` audit row (proposed / stored /
     dropped-with-reason / malformed, plus a `failure` reason when the pass
     raises — the handler catches BaseException too, so a CancelledError at
@@ -4935,8 +5061,9 @@ workflows:
     both checkpoint sites (api/routes/workflows.py and
     orchestrator/workflow_run_tools.py) BEFORE `save_checkpoint`, so
     state_json carries the routing fields. Two modes. Self-approval: the
-    chat session's `origin_channel` is set and its `caller_person_id` is
-    the gate's person — nothing is sent (the question rides in the
+    chat session's `origin_channel` is set (and is not `email` — an email
+    turn's answer is no chat reply, so nothing would ever send the
+    question) and its `caller_person_id` is the gate's person — nothing is sent (the question rides in the
     Executive's own reply) and the gate records `origin_session_id` plus
     the session's channel/ref. Out-of-band: delegate to
     `schedule_tools.handle_message_person` (preferred-channel selection,

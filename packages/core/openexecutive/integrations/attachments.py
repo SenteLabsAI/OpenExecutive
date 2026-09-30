@@ -270,7 +270,10 @@ def format_attached_text(
     """A document's text as the Executive sees it inlined in a message:
     ``[Attached: <name>]`` (the label other passes key on — see
     ``attunement.open_loops``), notes on conversion or truncation, then the
-    text with runs of whitespace collapsed."""
+    text with runs of whitespace collapsed — all inside an
+    ``<untrusted_content>`` block (``orchestrator.content_trust``). A file's
+    words are never the speaker's, whoever shared it: the block says so to
+    the model, and the extractor reads only what lies outside it."""
     truncated = len(text) > max_chars
     if truncated:
         text = text[:max_chars]
@@ -287,7 +290,9 @@ def format_attached_text(
         label += f" (truncated to {max_chars} chars)"
     if note:
         label += f" ({note})"
-    return f"{label}\n{text.strip()}"
+    from openexecutive.orchestrator.content_trust import wrap_untrusted
+
+    return wrap_untrusted(f"{label}\n{text.strip()}", source="attachment", author=filename)
 
 
 async def build_attachment_output(

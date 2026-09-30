@@ -384,7 +384,10 @@ async def test_scanned_pdf_attachment_is_read_and_labelled_converted():
         )
 
     assert image_blocks == []
-    assert extra_text.startswith("[Attached: scan.pdf] (converted from scanned pages)")
+    # Labelled as someone else's text (content_trust.wrap_untrusted), with
+    # the "[Attached: …]" line other passes key on at the head of its body.
+    assert extra_text.startswith('<untrusted_content source="attachment" author="scan.pdf"')
+    assert "\n[Attached: scan.pdf] (converted from scanned pages)\n" in extra_text
     assert "Revenue grew to 4.2M" in extra_text
     mock_ingest.assert_called_once_with("Revenue grew to 4.2M", "scan.pdf")
 

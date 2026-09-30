@@ -76,6 +76,9 @@ async def deliver_gate_question(
     if (
         session is not None
         and origin_channel
+        # An email turn's answer is no chat reply: nothing sends it unless the
+        # model mails it, so the question must be asked on its own (mode 2).
+        and origin_channel != "email"
         and session_caller_id(session) == event.person_id
     ):
         return (

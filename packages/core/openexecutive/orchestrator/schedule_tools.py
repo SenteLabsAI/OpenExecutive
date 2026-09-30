@@ -258,12 +258,13 @@ def _record_outbound_context(
     product decision, so it is held here rather than carried in unannounced.
 
     It is keyed on ``from_web_chat``, NOT on an empty ``origin_channel``.
-    Those are not the same set: ``origin_channel`` names an inbound chat
-    adapter, and the email poller, alert review's outbound session, the CLI,
-    the MCP server, the scheduler and the unattended workflows all leave it
-    empty while legitimately recording linkage — the email path in particular
-    both writes it here and reads it back through `hydrate_user_message`.
-    Keying on the empty string would silently break every one of them.
+    Those are not the same set: ``origin_channel`` names an inbound channel,
+    and alert review's outbound session, the CLI, the MCP server, the
+    scheduler and the unattended workflows all leave it empty while
+    legitimately recording linkage, as does the email path (tagged "email"),
+    which both writes it here and reads it back through
+    `hydrate_user_message`. Keying on the empty string would silently break
+    every one of them.
     """
     try:
         session = current_session.get()

@@ -1827,6 +1827,27 @@ def last_contact_at_by_person(
     return {int(r["pid"]): r["last"] for r in rows}
 
 
+# Session-id prefixes the inbound channels mint (``email:<thread>``,
+# ``slack:dm:<user>``, …), and how a decision recorded on one is sourced in the
+# prompt. A web or CLI session id is a bare uuid and gets no tag.
+_DECISION_SOURCES = {
+    "email": "email",
+    "slack": "Slack",
+    "discord": "Discord",
+    "telegram": "Telegram",
+    "google_chat": "Google Chat",
+}
+
+
+def _decision_source(session_id: str) -> str:
+    """Where a decision was recorded, from its session id — "" for the web
+    app, the CLI or a row with none. Rendered next to the decision so a row
+    extracted from mail before the untrusted-content policy (when any sender's
+    body could be stored) reads as mail, not as the principal's own word."""
+    prefix, sep, _rest = (session_id or "").partition(":")
+    return _DECISION_SOURCES.get(prefix, "") if sep else ""
+
+
 def format_for_prompt(
     db_path: Path | None = None,
     max_chars: int = 2500,
@@ -1853,7 +1874,9 @@ def format_for_prompt(
     decision_lines: list[str] = []
     for d in decisions:
         date = d.timestamp[:10]
-        line = f"- {date} [{d.domain}]: {d.summary}"
+        source = _decision_source(d.session_id)
+        via = f" (via {source})" if source else ""
+        line = f"- {date} [{d.domain}]{via}: {d.summary}"
         if d.outcome:
             line += f" (Outcome: {d.outcome})"
         decision_lines.append(line)
@@ -2146,12 +2169,7 @@ _MAX_INPUT_CHARS = 20_000  # cap each side to avoid runaway cost
 # bad it is.
 _MAX_DROPPED_IN_AUDIT = 10
 
-def should_extract(
-    user_message: str,
-    *,
-    origin_channel: str = "",
-    person_id: int | None = None,
-) -> bool:
+def should_extract(user_message: str, *, session: Any) -> bool:
     """True when this turn is worth an extraction pass.
 
     **No length floor.** There used to be one on the combined user+assistant
@@ -2179,36 +2197,25 @@ def should_extract(
     attached, indistinguishable from the principal's own; an inbound email
     body is text the sender chose, and a self-quote is free.
 
-    Removing the length floor is what makes this matter — short channel
-    traffic used to fall under it incidentally — so the speaker check lands
-    with it. A turn with no `origin_channel` came from the web app, the CLI or
-    the API, all of which are the principal's own authenticated surfaces, and
-    `person_id` is legitimately None there in a single-user install. A turn
-    that names a channel must resolve to a person marked `is_principal`.
+    So the speaker must be the principal on a surface that proved it
+    (`orchestrator.content_trust.principal_speaking`) — the one rule the
+    untrusted-content policy keeps for every surface. It used to be keyed on
+    an empty `origin_channel` meaning "the web app", and the email poller left
+    it empty too, so every stranger's email ran through the extractor with its
+    body as the principal's words. The rule now asks for the principal's
+    surfaces by name and fails closed on anything else.
 
     The single decision point for both call sites in `orchestrator.executive`,
     so the rule is testable directly and the two paths cannot drift apart.
     """
-    if not user_message.strip():
-        return False
-    if not origin_channel:
-        return True
-    if person_id is None:
-        return False
-    try:
-        from openexecutive.people.store import get_person
+    from openexecutive.orchestrator.content_trust import (
+        principal_speaking,
+        strip_untrusted,
+    )
 
-        person = get_person(person_id)
-    except Exception:
-        # Fail closed: an unresolvable speaker is not the principal.
-        logger.warning(
-            "extraction_speaker_lookup_failed person_id=%s channel=%s",
-            person_id,
-            origin_channel,
-            exc_info=True,
-        )
+    if not strip_untrusted(user_message).strip():
         return False
-    return bool(person is not None and person.is_principal)
+    return principal_speaking(session)
 
 
 # Drop reasons for a payload SHAPE the model got wrong, as opposed to an item
@@ -2870,8 +2877,15 @@ def schedule_extraction(
 
     Pass `session_id` to tag extracted decisions and advice with the
     originating conversation so format_for_prompt can scope them later.
+
+    The extractor reads only the words outside every `<untrusted_content>`
+    block (an attached document's text, say): a sentence the principal did
+    not type can never be quoted back as their commitment.
     """
     from openexecutive.audit.context import get_active_ids
+    from openexecutive.orchestrator.content_trust import strip_untrusted
+
+    user_message = strip_untrusted(user_message)
 
     # Snapshot the audit ContextVars at scheduling time. By the time the
     # background task runs, the caller's ``with set_turn(...)`` block has

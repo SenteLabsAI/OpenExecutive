@@ -78,7 +78,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_gmail_verified",    # a person's own Gmail was checked and found usable when turning it on
     "delegation_voice_changed",     # "How I write" learned, edited, locked, reset or its signature re-read
     "delegation_drafted",           # ghostwrite_email saved a draft in a person's own Gmail
-    "fact_retired",                 # the principal retired a standing fact from the Pulse page (memory/facts.py)
+    "fact_retired",                 # the principal (or the teammate who recorded it) retired a standing fact from the Pulse page (memory/facts.py)
+    "fact_reviewed",                # the principal approved or declined a teammate's proposed standing fact
+    "fact_approval_changed",        # the principal turned "needs my approval" on or off for a teammate's standing facts
     "fact_confirmation",            # an emailed standing-fact change held, confirmed, cancelled or refused (integrations/fact_confirmation.py)
     "grounding",  # unattended prose held back / refused / rewritten for naming people or figures not in its inputs
 )

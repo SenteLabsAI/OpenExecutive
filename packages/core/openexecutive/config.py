@@ -1023,6 +1023,44 @@ class Settings(BaseSettings):
         40, alias="NOTION_MAX_PAGES_PER_SCAN"
     )
 
+    # Google Drive folder → isolated collection sync. OFF by default. When on,
+    # a scheduler heartbeat re-indexes the files in DRIVE_SYNC_FOLDER_IDS (and
+    # their subfolders) into the DRIVE Chroma collection (not COMPANY — a
+    # shared folder is multi-writer and unreviewed). It reads as a service
+    # account with drive.readonly, so only folders shared with that account's
+    # email are visible. See docs/drive_sync_setup.md.
+    drive_sync_enabled: bool = Field(False, alias="DRIVE_SYNC_ENABLED")
+    drive_sync_service_account_file: str | None = Field(
+        None, alias="DRIVE_SYNC_SERVICE_ACCOUNT_FILE"
+    )
+    drive_sync_folder_ids: str = Field("", alias="DRIVE_SYNC_FOLDER_IDS")
+    drive_sync_interval_minutes: int = Field(60, alias="DRIVE_SYNC_INTERVAL_MINUTES")
+    drive_max_files_per_scan: int = Field(40, alias="DRIVE_MAX_FILES_PER_SCAN")
+
+    @property
+    def drive_sync_folder_id_list(self) -> list[str]:
+        """``DRIVE_SYNC_FOLDER_IDS`` split on commas, blanks dropped, order kept."""
+        return list(
+            dict.fromkeys(p.strip() for p in self.drive_sync_folder_ids.split(",") if p.strip())
+        )
+
+    @model_validator(mode="after")
+    def _validate_drive_sync(self) -> "Settings":
+        if not self.drive_sync_enabled:
+            return self
+        if not self.drive_sync_service_account_file:
+            raise ValueError(
+                "DRIVE_SYNC_ENABLED=true requires DRIVE_SYNC_SERVICE_ACCOUNT_FILE "
+                "(a service-account key JSON; see docs/drive_sync_setup.md)"
+            )
+        ids = self.drive_sync_folder_id_list
+        if not ids:
+            raise ValueError("DRIVE_SYNC_ENABLED=true requires DRIVE_SYNC_FOLDER_IDS")
+        bad = [i for i in ids if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", i)]
+        if bad:
+            raise ValueError(f"DRIVE_SYNC_FOLDER_IDS has ids Drive would not issue: {bad}")
+        return self
+
     @model_validator(mode="after")
     def _validate_notion_sync(self) -> "Settings":
         if self.notion_sync_enabled and not self.notion_api_key:
