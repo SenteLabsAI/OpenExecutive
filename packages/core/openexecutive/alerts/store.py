@@ -244,7 +244,6 @@ def search_alerts(
     limit: int = 10,
     db_path: Path | None = None,
     exclude_source: str | None = None,
-    exclude_private: bool = False,
 ) -> list[Alert]:
     """Alerts of any status whose headline or body contains every word of
     ``query`` (case-insensitive, any order), newest first.
@@ -252,9 +251,6 @@ def search_alerts(
     The match runs in SQL so an old row is as findable as a new one; the
     words are LIKE-escaped, so ``%`` and ``_`` in a query match literally.
     An empty query returns nothing rather than the whole store.
-    ``exclude_private`` drops alerts tagged private to the principal
-    (``models.PRIVATE_ALERT_TAG``) in the query, so they cannot use up
-    ``limit`` for a caller that would filter them out anyway.
     """
     words = query.split()
     if not words or not _resolve_db_path(db_path).exists():
@@ -270,11 +266,6 @@ def search_alerts(
     if exclude_source:
         clauses.append("source != ?")
         params.append(exclude_source)
-    if exclude_private:
-        from openexecutive.alerts.models import PRIVATE_ALERT_TAG
-
-        clauses.append("LOWER(COALESCE(topic_tags, '')) NOT LIKE ? ESCAPE '\\'")
-        params.append(f'%{_like_escape(json.dumps(PRIVATE_ALERT_TAG))}%')
     params.append(limit)
     with _get_conn(db_path) as conn:
         rows = conn.execute(

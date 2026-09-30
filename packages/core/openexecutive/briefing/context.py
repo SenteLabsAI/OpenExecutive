@@ -309,6 +309,7 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
         logger.exception("briefing_context.render_and_trust_failed")
         trusted = []
         block = ""
+        verified = False
     roster_ids: list[int] = []
     roster_block = ""
     if verified:
@@ -321,6 +322,9 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
         try:
             session.trusted_alert_ids = set(trusted)  # type: ignore[attr-defined]
             session.trusted_roster_request_ids = set(roster_ids)  # type: ignore[attr-defined]
+            # What lets `find_alerts` run and widen the set above this turn.
+            session.principal_board_shown = verified  # type: ignore[attr-defined]
+            session.found_alert_ids = set()  # type: ignore[attr-defined]
         except Exception:
             logger.exception("briefing_context.trust_record_failed")
     if roster_block:

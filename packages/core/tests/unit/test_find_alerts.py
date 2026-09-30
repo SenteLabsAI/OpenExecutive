@@ -10,10 +10,10 @@ opened. The Executive named all three ids correctly and then refused, because by
 then the rows were `read` and off the board.
 
 So `find_alerts` widens the set, within bounds that `TestTheWideningIsNotAHole`
-shows refusing: only ids its own SQL returned, only on the principal's own
-verified surface (an empty set is how every other turn refuses acks, and a
-default `Session()` has one), only still-open rows, never roster-request cards,
-and private alerts hidden from anyone but the principal.
+shows refusing: only in a turn `render_and_trust` showed the principal their
+own board (an empty set is how every other turn refuses acks, and a default
+`Session()` has one), only ids its own SQL returned, only still-open rows,
+never roster-request cards, and at most 25 per turn across calls.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ import pytest
 from openexecutive.alerts import store as alert_store
 from openexecutive.alerts.models import PRIVATE_ALERT_TAG
 from openexecutive.alerts.store import initialize_db, insert_alert, set_status
+from openexecutive.briefing.context import render_and_trust
 from openexecutive.orchestrator.schedule_tools import (
     current_session,
     handle_ack_alert,
@@ -74,9 +75,17 @@ def _bind(session: Session) -> Iterator[Session]:
 
 @pytest.fixture()
 def session(people: SimpleNamespace) -> Iterator[Session]:
-    """The principal in the web app — the surface the observed failure was on."""
-    with _bind(Session(from_web_chat=True, caller_person_id=people.principal)) as s:
+    """The principal in the web app — the surface the observed failure was on —
+    with the board rendered the way the chat route does it every turn."""
+    s = Session(from_web_chat=True, caller_person_id=people.principal)
+    render_and_trust(s)
+    assert s.principal_board_shown
+    with _bind(s):
         yield s
+
+
+def _refused(out: dict) -> bool:
+    return "error" in out and "matches" not in out
 
 
 def _alert(
@@ -148,7 +157,7 @@ class TestReachingAnItemOffTheLiveBoard:
 
     def test_like_wildcards_in_the_query_match_literally(self, db, session):
         _alert(db, "Gulf Coast port disruption")
-        assert _find("%")["count"] == 0
+        assert _find("gulf%")["count"] == 0
         assert _find("g_lf")["count"] == 0
 
     def test_an_old_alert_is_found_behind_a_full_store(self, db, session):
@@ -178,7 +187,8 @@ class TestTheWideningIsNotAHole:
         # not produce that id. The victim's text holds no digits, so the only
         # way this search could return it is by id.
         victim = _alert(db, "Wire transfer approval", "Release the vendor payment.")
-        assert _find(str(victim))["count"] == 0
+        assert not _find(str(victim)).get("matches")
+        assert not _find(f"wire {victim}").get("matches")
         assert victim not in session.trusted_alert_ids
         assert "error" in _ack(victim)
         assert alert_store.get_alert(victim).status == "unread"
@@ -227,42 +237,60 @@ class TestTheWideningIsNotAHole:
         assert "error" in _ack(aid)
         assert alert_store.get_alert(aid).status == "unread"
 
-    def test_a_channel_turn_that_was_shown_no_board_cannot_widen(self, db, people):
+    def test_a_channel_turn_that_was_shown_no_board_gets_nothing(self, db, people):
         """A default `Session()` has an EMPTY trusted set, not None — that
         empty set is how Google Chat, someone else's DM and email-started
-        turns refuse every ack. Widening it whenever it exists would let any
-        of them find-then-ack anything."""
+        turns refuse every ack. Widening it whenever it exists let any of them
+        find-then-ack anything; and the board is company-wide, so it must not
+        be readable there either."""
         aid = _alert(db, "Wire transfer approval")
-        with _bind(Session(origin_channel="google_chat")) as s:
-            found = _find("wire transfer")
-            assert found["count"] == 1
-            assert found["matches"][0]["can_ack"] is False
-            assert "note" in found
-            assert s.trusted_alert_ids == set()
+        set_status(aid, "read", db_path=db)
+        # The adapter never renders the board (no roster gate, no sender
+        # identity), so the turn holds the default empty set.
+        s = Session(origin_channel="google_chat")
+        with _bind(s):
+            assert _refused(_find("wire transfer"))
             assert "error" in _ack(aid, "dismissed")
-        assert alert_store.get_alert(aid).status == "unread"
+        assert alert_store.get_alert(aid).status == "read"
 
-    def test_a_teammate_on_a_verified_surface_cannot_widen(self, db, people):
+    def test_the_principal_in_a_shared_thread_gets_nothing(self, db, people):
+        # Slack and Discord verify the speaker, so the principal's turn in a
+        # shared thread passes is_principal_on_verified_surface. But the
+        # adapters render the board only in their DM, and others in the thread
+        # read the reply and write into what the model reasons over.
         aid = _alert(db, "Wire transfer approval")
-        with _bind(Session(from_web_chat=True, caller_person_id=people.teammate)) as s:
-            assert _find("wire transfer")["matches"][0]["can_ack"] is False
-            assert s.trusted_alert_ids == set()
+        set_status(aid, "read", db_path=db)
+        s = Session(origin_channel="slack", caller_person_id=people.principal)
+        with _bind(s):
+            assert _refused(_find("wire transfer"))
             assert "error" in _ack(aid, "dismissed")
-        assert alert_store.get_alert(aid).status == "unread"
+        assert alert_store.get_alert(aid).status == "read"
 
-    def test_a_private_alert_is_hidden_from_anyone_but_the_principal(self, db, people):
-        _alert(db, "Board pay review", topic_tags=[PRIVATE_ALERT_TAG])
-        with _bind(Session(from_web_chat=True, caller_person_id=people.teammate)):
-            assert _find("pay review")["count"] == 0
+    def test_a_teammate_in_the_web_app_gets_nothing(self, db, people):
+        aid = _alert(db, "Wire transfer approval")
+        set_status(aid, "read", db_path=db)
+        s = Session(from_web_chat=True, caller_person_id=people.teammate)
+        render_and_trust(s)
+        with _bind(s):
+            assert _refused(_find("wire transfer"))
+            assert "error" in _ack(aid, "dismissed")
+        assert alert_store.get_alert(aid).status == "read"
 
-    def test_a_private_alert_does_not_crowd_out_the_limit(self, db, people):
-        public = _alert(db, "Gulf Coast port disruption")
-        for n in range(3):
-            _alert(db, f"Gulf Coast private note {n}", external_id=f"p-{n}",
-                   topic_tags=[PRIVATE_ALERT_TAG])
-        with _bind(Session(origin_channel="google_chat")):
-            found = _find("gulf coast", limit=1)
-        assert [m["alert_id"] for m in found["matches"]] == [public]
+    def test_an_unattended_run_with_the_principals_identity_gets_nothing(self, db, people):
+        s = Session(from_web_chat=True, caller_person_id=people.principal, unattended=True)
+        s.principal_board_shown = True
+        _alert(db, "Wire transfer approval")
+        with _bind(s):
+            assert _refused(_find("wire transfer"))
+
+    def test_the_next_turn_starts_without_last_turns_finds(self, db, session):
+        aid = _alert(db, "Gulf Coast port disruption")
+        set_status(aid, "read", db_path=db)
+        _find("gulf coast")
+        assert aid in session.trusted_alert_ids
+        render_and_trust(session)  # what the chat route runs each turn
+        assert aid not in session.trusted_alert_ids
+        assert session.found_alert_ids == set()
 
     def test_a_turn_with_no_session_cannot_trust_itself_into_acking(self, db):
         """No session at all: a background job, an eval, a direct API caller.
@@ -283,14 +311,16 @@ class TestTheWideningIsNotAHole:
             return found, acked
 
         found, acked = asyncio.run(find_then_ack())
-        assert found["count"] == 1, "the search itself is not gated — only the trust is"
-        assert found["matches"][0]["can_ack"] is False
+        assert _refused(found)
         assert "error" in acked
         assert alert_store.get_alert(aid).status == "unread"
 
-    def test_an_empty_query_is_refused(self, db, session):
+    @pytest.mark.parametrize("query", ["   ", "e", "a b", "q3"])
+    def test_a_query_without_a_real_word_is_refused(self, db, session, query):
+        # One letter matches nearly everything: a steered model calling it
+        # per letter would otherwise sweep the store.
         _alert(db, "Gulf Coast port disruption")
-        assert "error" in _find("   ")
+        assert _refused(_find(query))
         assert session.trusted_alert_ids == set()
 
 
@@ -300,6 +330,20 @@ class TestBounds:
             _alert(db, f"Battlecard {n}", external_id=f"bc-{n}")
         assert _find("battlecard", limit=999)["count"] == 25
         assert len(session.trusted_alert_ids) == 25
+
+    def test_the_per_turn_cap_holds_across_calls(self, db, session):
+        # 25 per call bounds nothing if the model can simply call again.
+        for n in range(20):
+            _alert(db, f"Battlecard {n}", external_id=f"bc-{n}")
+        for n in range(20):
+            _alert(db, f"Pricing sheet {n}", external_id=f"ps-{n}")
+        assert _find("battlecard", limit=25)["count"] == 20
+        second = _find("pricing sheet", limit=25)
+        assert sum(m["can_ack"] for m in second["matches"]) == 5
+        assert "note" in second
+        assert len(session.trusted_alert_ids) == 25
+        refused = next(m["alert_id"] for m in second["matches"] if not m["can_ack"])
+        assert "error" in _ack(refused)
 
     def test_a_junk_limit_falls_back_to_the_default(self, db, session):
         for n in range(15):
