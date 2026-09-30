@@ -16,7 +16,6 @@ from openexecutive.api.routes import decisions as decisions_route
 from openexecutive.api.routes import delegation as route
 from openexecutive.delegation import inbox
 from openexecutive.delegation.settings import set_enabled
-from openexecutive.memory import decision_ledger as ledger
 from openexecutive.memory import episodic
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
@@ -161,10 +160,43 @@ def test_dismiss_through_decisions_deletes_the_unedited_draft(
     assert client.get("/delegation/replies", headers=OWNER).json()["cards"] == []
 
 
-def test_approving_a_reply_points_to_gmail(
+def test_send_through_decisions(
     client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _mailbox, card_id = _card(ids["principal"], monkeypatch)
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    # A server without signed callers never sends.
     resp = client.post(f"/decisions/{card_id}/approve", json={}, headers=OWNER)
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "send_in_gmail"
-    assert ledger.get_decision_instance(card_id).status == "proposed"  # type: ignore[union-attr]
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    # A teammate can't see it, let alone send it.
+    assert client.post(f"/decisions/{card_id}/approve", json={}, headers=TEAMMATE).status_code == 404
+    # What changed since the card was made needs a second yes, naming who it goes to.
+    mailbox.edit("d1", cc=["sam@northpeak.example"])
+    resp = client.post(f"/decisions/{card_id}/approve", json={"edits": {"recipients": ["dana@northpeak.example"]}},
+                       headers=OWNER)
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "confirm" and detail["reasons"] == ["recipients_changed"]
+    assert detail["recipients"] == ["dana@northpeak.example", "sam@northpeak.example"]
+    assert mailbox.sent == []
+    resp = client.post(f"/decisions/{card_id}/approve", json={"edits": {"recipients": detail["recipients"]}},
+                       headers=OWNER)
+    assert resp.status_code == 200 and resp.json()["status"] == "approved_with_edit"
+    assert mailbox.sent == ["d1"]
+    # Once: a second tap finds it settled.
+    assert client.post(f"/decisions/{card_id}/approve", json={}, headers=OWNER).status_code == 409
+    assert mailbox.sent == ["d1"]
+    assert client.get("/delegation/replies", headers=OWNER).json()["cards"] == []
+
+
+def test_local_login_sends_with_no_caller_header(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The local-login web app sends no caller: the person at the keyboard."""
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    resp = client.post(f"/decisions/{card_id}/approve", json={})
+    assert resp.status_code == 200 and resp.json()["status"] == "approved_unchanged"
+    assert mailbox.sent == ["d1"]

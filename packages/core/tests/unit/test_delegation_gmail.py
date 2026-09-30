@@ -324,17 +324,62 @@ def test_no_credential_is_not_configured(tmp_path: Path, monkeypatch: pytest.Mon
         asyncio.run(DelegateGmail(EMAIL).profile_email())
 
 
-def test_it_cannot_send() -> None:
-    """Drafts only: no method sends, and no send endpoint is ever named. A
-    new public method fails here until someone decides it belongs."""
+def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
+    """One way to send, and only an existing draft: a new public method
+    fails here until someone decides it belongs."""
     public = {n for n, _ in inspect.getmembers(DelegateGmail, inspect.isfunction) if not n.startswith("_")}
     assert public == {
         "profile_email", "search_threads", "get_thread", "list_sent", "send_as_signature", "create_draft",
         # The inbox watcher: reads, and deleting a draft it wrote.
         "list_message_ids", "get_message", "send_as_addresses", "get_draft", "delete_draft",
+        # Send on the person's tap (delegation.reply_send).
+        "send_draft",
     }
-    # Gmail's send endpoints (/settings/sendAs is a read, and allowed).
-    assert not re.search(r"/(messages|drafts)/send\b", inspect.getsource(gm))
+    # Gmail's send endpoints (/settings/sendAs is a read, and allowed): the
+    # draft one, once, and never messages.send, which sends any text.
+    source = inspect.getsource(gm)
+    assert re.findall(r"/(?:messages|drafts)/send\b", source) == ["/drafts/send"]
+    assert "/messages/send" not in source
+
+
+def test_send_draft_sends_the_draft_by_its_id_and_nothing_else() -> None:
+    google = FakeGoogle()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/send"):
+            google.requests.append(request)
+            return httpx.Response(200, json={"id": "sent1", "threadId": "t1", "labelIds": ["SENT"]})
+        return FakeGoogle.handler(google, request)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    sent = asyncio.run(client.send_draft("d1"))
+    assert (sent.id, sent.thread_id) == ("sent1", "t1")
+    post = next(r for r in google.requests if r.url.path.endswith("/drafts/send"))
+    assert post.method == "POST" and json.loads(post.content) == {"id": "d1"}
+    with pytest.raises(GmailError):
+        asyncio.run(client.send_draft("d1/../../messages"))
+
+
+@pytest.mark.parametrize(("response", "maybe_done"), [
+    (httpx.Response(500, json={}), True),
+    (httpx.Response(503, json={}), True),
+    (httpx.Response(200, content=b"<html>"), True),
+    (httpx.Response(400, json={}), False),
+    (httpx.ConnectError("refused"), False),
+    (httpx.ReadTimeout("slow"), True),
+])
+def test_a_failed_send_says_whether_it_may_have_gone(response: Any, maybe_done: bool) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": " ".join(gm.SCOPES)})
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    with pytest.raises(GmailError) as err:
+        asyncio.run(client.send_draft("d1"))
+    assert err.value.maybe_done is maybe_done
 
 
 # --------------------------------------------------------------------------- #

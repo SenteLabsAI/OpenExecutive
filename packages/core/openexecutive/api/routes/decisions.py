@@ -62,6 +62,11 @@ class ApproveBody(BaseModel):
     Any field present in `edits` overwrites the corresponding field in the
     original proposed_payload.  Missing fields retain their proposed values.
     Supported edit keys: title, start, end, attendee_emails, description.
+
+    For a reply card (``delegation_reply``) nothing is edited here: the draft
+    is sent as it is in Gmail. ``edits`` carries the person's second yes when
+    something changed since the card was made: ``recipients`` (the list they
+    were shown) and ``thread_moved_on: true``.
     """
     edits: dict[str, Any] | None = None
 
@@ -396,14 +401,23 @@ _MEETING_BOOKING = DecisionClassSpec(
 )
 
 
-async def _approve_reply(
+async def _send_reply(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
-    """A reply the inbox watcher drafted is sent from Gmail itself."""
-    raise HTTPException(
-        status_code=409,
-        detail={"code": "send_in_gmail", "message": "Open the draft in Gmail to send it."},
-    )
+    """Send the reply's exact Gmail draft, on the principal's tap
+    (``delegation.reply_send``, which checks everything again first)."""
+    from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
+
+    try:
+        await send_approved_reply(
+            instance, caller=api_caller.caller(request), resolver=resolver, confirm=body.edits,
+        )
+    except SendRefused as refused:
+        raise HTTPException(
+            status_code=refused.status,
+            detail={"code": refused.code, "message": refused.message, **refused.extra},
+        ) from None
+    return _refresh(instance.id)
 
 
 async def _dismiss_reply(instance: DecisionInstance) -> None:
@@ -419,7 +433,7 @@ _DELEGATED_REPLY = DecisionClassSpec(
     name="delegation_reply",
     principal_only=True,
     alert_source=None,
-    approve=_approve_reply,
+    approve=_send_reply,
     after_reject=_dismiss_reply,
 )
 

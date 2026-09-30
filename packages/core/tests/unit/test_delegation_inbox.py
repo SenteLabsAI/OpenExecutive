@@ -25,6 +25,7 @@ from openexecutive.delegation.gmail import (
     GmailRateLimited,
     MailMessage,
     MailThread,
+    SentMessage,
 )
 from openexecutive.delegation.settings import set_enabled
 from openexecutive.memory import decision_ledger as ledger
@@ -52,6 +53,10 @@ class FakeInbox:
         self.profile_error: Exception | None = None
         self.list_error: Exception | None = None
         self.draft_error: Exception | None = None
+        self.sent: list[str] = []
+        self.send_error: Exception | None = None
+        # Gmail sent it and then failed to say so (a timeout after sending).
+        self.send_then_fail: Exception | None = None
 
     def add(self, *messages: MailMessage) -> None:
         for m in messages:
@@ -102,6 +107,20 @@ class FakeInbox:
             thread.messages = [m for m in thread.messages if m.id != info.message.id]
         return info is not None
 
+    async def send_draft(self, draft_id: str) -> SentMessage:
+        self.calls.append(f"send:{draft_id}")
+        await asyncio.sleep(0)  # a real send yields: let a second tap interleave
+        if self.send_error is not None:
+            raise self.send_error
+        if draft_id not in self.drafts:
+            raise GmailNotFound("404")
+        self.sent.append(draft_id)
+        info = self.drafts[draft_id]
+        self.send_from_gmail(draft_id)
+        if self.send_then_fail is not None:
+            raise self.send_then_fail
+        return SentMessage(id=info.message.id, thread_id=info.message.thread_id)
+
     async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
         n = len(self.specs) + 1
         self.specs.append(spec)
@@ -115,9 +134,16 @@ class FakeInbox:
         return CreatedDraft(draft_id=f"d{n}", message_id=f"dm{n}", thread_id=draft_message.thread_id)
 
     # What the owner does in Gmail itself.
-    def edit(self, draft_id: str) -> None:
+    def edit(self, draft_id: str, *, cc: list[str] | None = None, bcc: list[str] | None = None,
+             to: list[str] | None = None) -> None:
         info = self.drafts[draft_id]
         info.message.id = info.message.id + "-edited"
+        if cc is not None:
+            info.message.cc = cc
+        if bcc is not None:
+            info.message.bcc = bcc
+        if to is not None:
+            info.message.to = to
 
     def send_from_gmail(self, draft_id: str) -> None:
         info = self.drafts.pop(draft_id)

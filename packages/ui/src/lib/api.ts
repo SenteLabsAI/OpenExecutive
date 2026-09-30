@@ -1438,7 +1438,8 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
 // ----------------------------------------------------------------------------
 // Act as me — the Executive drafts email AS you, in your own Gmail Drafts,
 // when you ask it to or (with Draft replies to my inbox on) for mail that
-// needs you. It never sends. Only the owner can have it for now.
+// needs you. It sends only a reply card's draft, when you tap Send. Only the
+// owner can have it for now.
 // ----------------------------------------------------------------------------
 export type DelegationGmailStatus =
   | "connected"
@@ -1478,7 +1479,9 @@ export interface InboxWatch {
 }
 
 // One reply the inbox watcher drafted: a `delegation_reply` decision, yours
-// alone. Dismiss rejects it (POST /decisions/{id}/reject).
+// alone. Send approves it (POST /decisions/{id}/approve); Dismiss rejects it
+// (POST /decisions/{id}/reject). `status` is "executing" while a send Gmail
+// didn't confirm is being checked.
 export interface ReplyCard {
   decision_id: number;
   status: string;
@@ -1585,6 +1588,50 @@ export async function getReplyCards(signal?: AbortSignal): Promise<ReplyCard[] |
   if (!res.ok) throw await delegationError(res, "Couldn't load the replies waiting for you.");
   const body = (await res.json()) as { cards: ReplyCard[] };
   return body.cards;
+}
+
+// Why a Send didn't go: the backend's code (draft_gone, you_replied,
+// already_handled, send_unconfirmed, caller_signing_required, …) and what to
+// tell you.
+export class ReplySendError extends Error {
+  code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export type SendReplyResult =
+  | { status: "sent" }
+  // Something changed since the card was made: send again with what you
+  // were shown to go ahead.
+  | { status: "confirm"; message: string; reasons: string[]; recipients: string[] };
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+// Send the reply's draft from your Gmail, exactly as it is there (POST
+// /decisions/{id}/approve). `confirm` is your second yes: the recipients you
+// were shown, and that a newer message in the thread is fine.
+export async function sendReplyCard(
+  id: number,
+  confirm?: { recipients: string[]; thread_moved_on?: boolean },
+): Promise<SendReplyResult> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits: confirm ?? null }),
+  });
+  if (res.ok) return { status: "sent" };
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
+  const message = typeof detail.message === "string" ? detail.message : "Couldn't send that reply.";
+  const code = typeof detail.code === "string" ? detail.code : res.status === 404 ? "draft_gone" : "error";
+  if (res.status === 409 && code === "confirm") {
+    return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
+  }
+  throw new ReplySendError(message, code);
 }
 
 // Dismiss a reply card. Its draft is deleted from your Gmail unless you

@@ -237,6 +237,11 @@ With the keys set:
 - **A bad key stops startup.** A public key that can't be read stops the API at boot. A
   private key that can't be read makes the UI refuse every call with `500`. Neither falls
   back to trusting the header.
+- **Send on a drafted reply needs them.** Act as me's **Send** (a reply the Executive drafted
+  in the owner's own Gmail, waiting on Today) sends mail as the owner, so it works only when
+  the API can tell it is the owner asking: with the keys set, or under local login. On a
+  server without them it answers `409 caller_signing_required`, and the owner sends the
+  draft from Gmail instead.
 
 **To call an owner-only route from a terminal**, sign that one request with the UI's key:
 

@@ -238,7 +238,10 @@ refuses a call whose `user_google_email` names any other address.
 ### Your own Gmail (Act as me, optional)
 
 Act as me lets the Executive draft replies **as the owner**, in the owner's
-own Gmail Drafts, when they ask it to — it never sends. It uses a separate
+own Gmail Drafts, when they ask it to, and (with **Draft replies to my
+inbox** on) for mail that needs them. Nothing goes out unless the owner sends
+it: from Gmail, or with **Send** on a reply card on Today, which needs signed
+sign-ins on a server (see `docs/auth.md`). It uses a separate
 credential for the owner's mailbox, read by the API directly and never handed
 to workspace-mcp, so it must not live in the credentials directory above.
 

@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict
 
 from openexecutive.api import caller as api_caller
 from openexecutive.delegation.gmail import (
+    BLOCKING_CODES,
     STATUS_MESSAGES,
     GmailAuthError,
     GmailError,
@@ -74,14 +75,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Gmail status -> the 409 code a caller gets when it blocks turning it on.
-_BLOCKING_CODES: dict[str, str] = {
-    "not_configured": "gmail_not_connected",
-    "needs_reconnect": "gmail_needs_reconnect",
-    "mismatch": "gmail_mismatch",
-    "no_email": "no_email",
-    "shared_mailbox": "shared_mailbox",
-    "error": "gmail_error",
-}
+_BLOCKING_CODES = BLOCKING_CODES
 
 
 class GmailConnection(BaseModel):

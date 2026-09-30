@@ -18,6 +18,7 @@ export function relationLabel(relation: string): string {
 
 // asks_if_ai is left out: the card's open questions already say it.
 const FLAG_TEXT: Record<string, string> = {
+  send_failed: "Sending didn't go through last time, so nothing was sent. Try again, or send it from Gmail.",
   sender_unverified: "Gmail couldn't confirm this came from that address. Check it before you reply.",
   thread_moved_on: "A newer message arrived in this thread after the draft was written.",
   others_on_thread: "Others were on this email. The draft goes to the sender only.",
@@ -51,4 +52,19 @@ export function senderLine(card: { from_name: string; from_email: string }): str
  * builds it from a fixed prefix, and the page never links anywhere else. */
 export function safeGmailLink(link: string): string {
   return link.startsWith("https://mail.google.com/") ? link : "";
+}
+
+/** The first Send's question: who it goes to, from where. */
+export function sendQuestion(recipients: readonly string[]): string {
+  const to = recipients.length ? recipients.join(", ") : "the sender";
+  return `Send this reply to ${to} from your Gmail, exactly as the draft is there?`;
+}
+
+// Send refusals after which the card is gone for good: its draft was sent or
+// deleted in Gmail, you replied yourself, or another tap already sent it.
+const GONE_CODES = new Set(["draft_gone", "you_replied", "already_handled"]);
+
+/** Whether a Send refused with ``code`` leaves nothing to act on. */
+export function sendLeftNothing(code: string): boolean {
+  return GONE_CODES.has(code);
 }

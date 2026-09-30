@@ -138,7 +138,7 @@ def test_the_inbox_scenarios_are_their_own_kind() -> None:
     assert case.person.email == "olivia@fernway.example" and case.person.is_principal
     assert case.relation == "contact" and case.expect_draft is True
     shipped = {s["id"] for s in load_scenarios(kind="inbox")}
-    assert {f"delegation_inbox_00{i}" for i in range(1, 7)} <= shipped
+    assert {f"delegation_inbox_00{i}" for i in range(1, 8)} <= shipped
     assert not shipped & {s["id"] for s in load_scenarios(kind="chat")}
 
 

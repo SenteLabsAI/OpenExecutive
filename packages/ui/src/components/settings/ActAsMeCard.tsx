@@ -23,14 +23,14 @@ import { formatAgo } from "@/lib/setupStatus";
 
 // Settings → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
-// for mail that needs you — it never sends. Backed by GET/PUT /delegation,
-// /delegation/inbox and /delegation/voice. Hidden for anyone who can't have it yet
+// for mail that needs you, which it sends only when you tap Send on Today.
+// Backed by GET/PUT /delegation, /delegation/inbox and /delegation/voice. Hidden for anyone who can't have it yet
 // (only the owner can) and on a backend without it — so, unlike the other
 // sections, this one renders its own heading and tells the page (via
 // `onVisible`) whether it is on the page at all.
 
 const INTRO =
-  "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own Gmail for you to review and send — it never sends anything. Everything else it writes stays in its own name.";
+  "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own Gmail for you to review and send. Nothing goes out as you unless you send it, from Gmail or with Send on a reply waiting on Today. Everything else it writes stays in its own name.";
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -263,7 +263,7 @@ function InboxSection({
           </div>
           <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
             {on
-              ? "When mail comes in that needs you, it writes a first reply in your Gmail Drafts and puts it on Today for you to review. It never sends."
+              ? "When mail comes in that needs you, it writes a first reply in your Gmail Drafts and puts it on Today, where you send it, edit it in Gmail or dismiss it. Nothing is sent until you tap Send."
               : actAsMeOn
                 ? "Off: it only drafts when you ask it to in chat."
                 : "Turn on Write drafts as me first."}

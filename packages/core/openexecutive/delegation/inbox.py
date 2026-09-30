@@ -960,58 +960,129 @@ def _create_card(
 # --------------------------------------------------------------------------- #
 
 
+# Cards being sent right now in this process (delegation.reply_send adds a
+# card before claiming it and removes it once the send is settled): the
+# reconciler leaves them alone.
+SENDING: set[int] = set()
+
+
+def later_messages(thread: Any, payload: dict[str, Any], *, now: datetime) -> list[Any]:
+    """The thread's messages after the one a card answers (drafts left out)."""
+    inbound_at = _parse(str(payload.get("received_at") or ""))
+    return [
+        m for m in thread.messages
+        if "DRAFT" not in m.labels and (inbound_at is None or ((_parse(m.received_at) or now) > inbound_at))
+    ]
+
+
+def _close_card(person_id: int, card_id: int, message_id: str, reason: str, outcome: str) -> bool:
+    """Close a card Gmail settled (compare-and-set), unless it is being sent."""
+    from openexecutive.memory.decision_ledger import close_externally
+
+    if card_id in SENDING or not close_externally(card_id, reason=reason):
+        return False
+    _set_outcome(person_id, message_id, outcome, reason=reason)
+    _audit("delegation_reply_closed", f"Closed a reply card for person {person_id}", {
+        "person_id": person_id, "decision_id": card_id, "reason": reason,
+    })
+    return True
+
+
 async def reconcile(person: Any, client: Any, *, now: datetime, own: set[str]) -> int:
     """Close the person's open cards that Gmail settled; returns how many."""
     from openexecutive.delegation import drafts
     from openexecutive.delegation.gmail import GmailNotFound
-    from openexecutive.memory.decision_ledger import STATUS_PROPOSED, close_externally
+    from openexecutive.memory.decision_ledger import STATUS_EXECUTING, STATUS_PROPOSED
 
     closed = 0
     for card in open_cards(person.id):
-        if card.status != STATUS_PROPOSED:
-            continue  # one being sent is the send path's
+        if card.id in SENDING:
+            continue  # the send path's, right now
         payload = card_payload(card)
         message_id = str(payload.get("message_id") or "")
+        if card.status == STATUS_EXECUTING:
+            closed += await _settle_unconfirmed_send(person, client, card, payload, own=own, now=now)
+            continue
+        if card.status != STATUS_PROPOSED:
+            continue
         created = _parse(card.created_at)
-
-        def close(reason: str, outcome: str, card_id: int = card.id, mid: str = message_id) -> bool:
-            if not close_externally(card_id, reason=reason):
-                return False
-            _set_outcome(person.id, mid, outcome, reason=reason)
-            _audit("delegation_reply_closed", f"Closed a reply card for person {person.id}", {
-                "person_id": person.id, "decision_id": card_id, "reason": reason,
-            })
-            return True
-
         if created is not None and now - created > CARD_TTL:
-            closed += close("expired", EXPIRED)
+            closed += _close_card(person.id, card.id, message_id, "expired", EXPIRED)
             continue
         draft = await client.get_draft(str(payload.get("draft_id") or ""))
         try:
             thread = await client.get_thread(str(payload.get("thread_id") or ""))
         except GmailNotFound:
-            closed += close("thread_gone", CLOSED)
+            closed += _close_card(person.id, card.id, message_id, "thread_gone", CLOSED)
             continue
-        inbound_at = _parse(str(payload.get("received_at") or ""))
-        later = [
-            m for m in thread.messages
-            if "DRAFT" not in m.labels and (inbound_at is None or ((_parse(m.received_at) or now) > inbound_at))
-        ]
+        later = later_messages(thread, payload, now=now)
         sent_by_them = [m for m in later if "SENT" in m.labels and m.from_addr in own]
         if draft is None:
             if sent_by_them:
-                if close("sent_in_gmail", SENT):
+                if _close_card(person.id, card.id, message_id, "sent_in_gmail", SENT):
                     drafts.mark_sent(person.id, str(payload.get("draft_id")), sent_by_them[-1].id)
                     closed += 1
             else:
-                closed += close("draft_deleted", CLOSED)
+                closed += _close_card(person.id, card.id, message_id, "draft_deleted", CLOSED)
             continue
         if sent_by_them:
-            closed += close("you_replied", CLOSED)
+            closed += _close_card(person.id, card.id, message_id, "you_replied", CLOSED)
             continue
         if any(m.from_addr not in own and "SENT" not in m.labels for m in later):
             _add_flag(person.id, message_id, "thread_moved_on")
     return closed
+
+
+async def _settle_unconfirmed_send(
+    person: Any, client: Any, card: Any, payload: dict[str, Any], *, own: set[str], now: datetime
+) -> int:
+    """A card left ``executing`` by a send whose outcome was unclear (a
+    timeout, a 5xx, a crash mid-send). Gmail deletes a draft it sends, so the
+    draft still being there means it was not sent: the card goes back for the
+    person to try again. Gone, with their reply in the thread: it was sent.
+    Gone without one: it was deleted in Gmail. Never sends anything itself."""
+    from openexecutive.delegation import drafts
+    from openexecutive.delegation.gmail import GmailNotFound
+    from openexecutive.memory.decision_ledger import (
+        STATUS_APPROVED_UNCHANGED,
+        STATUS_APPROVED_WITH_EDIT,
+        finish_execution,
+        release_claim,
+    )
+
+    message_id = str(payload.get("message_id") or "")
+    draft_id = str(payload.get("draft_id") or "")
+    draft = await client.get_draft(draft_id)
+    if card.id in SENDING:
+        return 0
+    if draft is not None:
+        if release_claim(card.id):
+            _add_flag(person.id, message_id, "send_failed")
+        return 0
+    try:
+        thread = await client.get_thread(str(payload.get("thread_id") or ""))
+    except GmailNotFound:
+        thread = None
+    if card.id in SENDING:
+        return 0
+    later = later_messages(thread, payload, now=now) if thread is not None else []
+    sent = [m for m in later if "SENT" in m.labels and m.from_addr in own]
+    if not sent:
+        return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
+    edited = "edited_in_gmail" in ledger_flags(person.id, [message_id]).get(message_id, [])
+    status = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
+    if not finish_execution(
+        card.id, status, final_payload={"sent_message_id": sent[-1].id, "confirmed_later": True},
+        external_event_id=sent[-1].id or None,
+    ):
+        return 0
+    _set_outcome(person.id, message_id, SENT, reason="sent")
+    drafts.mark_sent(person.id, draft_id, sent[-1].id)
+    _audit("delegation_reply_sent", f"Sent a reply as person {person.id}", {
+        "person_id": person.id, "decision_id": card.id, "thread_id": str(payload.get("thread_id") or ""),
+        "sent_message_id": sent[-1].id, "edited": edited, "confirmed_later": True,
+    })
+    return 1
 
 
 # --------------------------------------------------------------------------- #

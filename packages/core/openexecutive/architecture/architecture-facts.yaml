@@ -4210,7 +4210,8 @@ audit:
     - delegation_inbox_scanned — one per completed inbox scan. actor "executive"; details carry person_id, the status and the counts (drafted, skipped, not_needed, deferred, failed, closed). Always private.
     - delegation_reply_drafted — the inbox watcher saved a reply in someone's own Gmail and made its card. details carry person_id, thread_id, draft_id, decision_id, relation, kind and flags — never the email or the draft. Always private.
     - delegation_reply_dismissed — a reply card was dismissed. details carry person_id, decision_id and what happened to the draft (deleted, kept_edited, already_gone, not_connected, gmail_error). Always private.
-    - delegation_reply_closed — the reconciler closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, you_replied, thread_gone). Always private.
+    - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
+    - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
@@ -7644,8 +7645,10 @@ delegation:
     as itself. Here, only when the person asks — or, with the second switch
     (Draft replies to my inbox), for mail in their inbox that needs them —
     it writes an email in their voice and saves it as a DRAFT in their own
-    Gmail for them to review and send. Nothing in the package can send, and
-    only the principal may turn it on. Off by default; off changes nothing —
+    Gmail for them to review and send. The only thing it ever sends is one of
+    those inbox drafts, exactly as it is in Gmail, when the person taps Send
+    on its card (delegation.send); chat never sends. Only the principal may
+    turn it on. Off by default; off changes nothing —
     prompts, tool lists and prompt caches are byte-identical to an install
     without it.
   who: |
@@ -7784,8 +7787,13 @@ delegation:
     registered with the MCP gateway. Methods profile_email, search_threads
     (metadata only), list_message_ids, get_thread, get_message, list_sent,
     send_as_signature, send_as_addresses, create_draft, get_draft (None on
-    a 404) and delete_draft (False on a 404). NO send method (a unit test
-    pins the method set). A parsed message also carries received_at
+    a 404) and delete_draft (False on a 404), and ONE send method, send_draft:
+    an existing draft by its id — POST drafts/send with the body {"id": ...}
+    and nothing else, never messages.send — called only by
+    delegation.reply_send (unit tests pin the method set, the one endpoint,
+    the body and the call site). A GmailError carries maybe_done when the
+    request may have been carried out anyway (a timeout after connecting, a
+    5xx, an unreadable 2xx). A parsed message also carries received_at
     (internalDate), bcc, bulk, delivery_report, calendar_invite and
     sender_authenticated; a 429 or a rate-limit 403 raises GmailRateLimited
     and a 404 GmailNotFound, both GmailErrors.
@@ -7934,8 +7942,8 @@ delegation:
     subject and body, open_questions, flags, kind and confidence.
     GET /delegation/replies lists the caller's open cards from the database
     alone (delegation.replies.cards: no Gmail call, so Today never waits on
-    Google) with a Gmail link built from the fixed prefix. Approving one is
-    a 409 send_in_gmail: the draft is sent from Gmail itself. Dismiss is
+    Google) with a Gmail link built from the fixed prefix. Approving one
+    sends its draft (see send). Dismiss is
     POST /decisions/{id}/reject; its after_reject (replies.dismiss) deletes
     the draft only when it is unedited — its message id still the one
     saved (Gmail gives an edited draft a new one) — and records the outcome
@@ -7945,8 +7953,43 @@ delegation:
     and the person's message after it; the draft row's sent_message_id is
     set), draft_deleted, you_replied, thread_gone — each a compare-and-set
     close_externally with the reason — and a newer message from someone
-    else adds the flag thread_moved_on. A card being sent (executing) is
-    left to the send path.
+    else adds the flag thread_moved_on. A card being sent right now
+    (inbox.SENDING, this process) is left alone; one left executing by an
+    unconfirmed send is settled (see send).
+  send: |
+    delegation.reply_send.send_approved_reply — the approve hook of
+    delegation_reply, the only caller of DelegateGmail.send_draft, reached
+    only from POST /decisions/{id}/approve (a principal-only class; an AST
+    test pins both call sites). It runs under private_rows(True) and checks
+    again at send time: the caller is the card's person and the API knows it
+    — signed callers on and a user assertion for their email (or an
+    operator under local login), or local login (the API answers loopback
+    only); anything else is 409 caller_signing_required, because with only
+    the shared secret whoever holds it could send as the owner — and the
+    resolver is that person; Act as me and the inbox switch are on and no
+    client slot is active; gmail_status is connected; the draft exists in
+    the same thread and the person hasn't replied there since (draft_gone /
+    you_replied close the card); its recipients (To, Cc and Bcc) are 1-10,
+    never the Executive's address, and it is From one of their send-as
+    addresses. Recipients that differ from the card's, or a newer message
+    from someone else, need a second yes: a 409 confirm {reasons
+    recipients_changed / thread_moved_on, recipients}, answered by approving
+    again with edits {recipients: the list shown, thread_moved_on: true}.
+    Then inbox.SENDING, claim_for_execution (proposed → executing,
+    compare-and-set: a double tap sends once), send_draft, and
+    finish_execution — approved_with_edit when the draft's message id
+    changed (edited in Gmail), with sent_message_id as external_event_id —
+    the ledger outcome sent, delegation_drafts.sent_message_id and a private
+    delegation_reply_sent row. A refusal that proves nothing went (a 4xx,
+    auth, a rate limit, a 404) hands the card back (release_claim); a
+    maybe_done failure leaves it executing and answers 502
+    send_unconfirmed. The reconciler then asks Gmail
+    (inbox._settle_unconfirmed_send): Gmail deletes a draft it sends, so a
+    draft still there was not sent (back to proposed, flagged send_failed);
+    gone with the person's message in the thread, it was sent (finished,
+    confirmed_later); gone without one, it was deleted. Nothing is ever
+    retried on its own. Send is the person's act, so it works while the
+    Executive is paused.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -7969,7 +8012,11 @@ delegation:
     inbox field is {enabled, status, message, watch_since, last_poll_at,
     checking}); POST /delegation/inbox/check (202 with the inbox state; 409
     inbox_off / in_progress); GET /delegation/replies ({cards: [...]}, see
-    reply_cards). Dismiss is POST /decisions/{id}/reject.
+    reply_cards). Send is POST /decisions/{id}/approve (edits carry the
+    second yes; 409 confirm / caller_signing_required / draft_gone /
+    you_replied / inbox_off / client_slot / the Gmail codes, 429
+    rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST
+    /decisions/{id}/reject.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
     command and Check again, the Write drafts as me switch, the Draft
@@ -7981,20 +8028,24 @@ delegation:
     Refresh from Gmail and Don't add my signature — or Add my Gmail
     signature — and each exemplar quoted, with Remove examples). Setup
     status light your_gmail (amber while the inbox watcher is erroring,
-    rate-limited or has 25 cards waiting). The chat chip "Drafted an email as you
+    rate-limited or has 25 cards waiting); the API protection light says
+    Send needs signed callers. The chat chip "Drafted an email as you
     to … — in your Gmail Drafts" opens the draft (target=_blank,
     rel=noopener noreferrer). Today: Replies waiting (RepliesWaiting, top
     of the left column, hidden unless GET /delegation/replies answers with
     cards) — each card shows the sender with their relation and whether the
     address was verified, the subject, They wrote (plain text), the draft,
-    Decide before sending (open_questions) and the warnings, with Edit in
-    Gmail and Dismiss. Evals: a scenario's delegation block runs the
+    Decide before sending (open_questions) and the warnings, with Send
+    (an inline confirm naming the recipients, and a second one when they or
+    the thread changed), Edit in Gmail and Dismiss. Evals: a scenario's
+    delegation block runs the
     turn against evals.mailbox.ScenarioMailbox and hands the saved drafts to
     the judge (delegation_001-003); type: inbox scenarios (an inbox block:
     person, relation, expect draft|no_draft, thread) run the watcher's two
     model calls on the thread's newest inbound message
     (inbox.reply_for) — whether it drafts must match, and a draft goes to
-    judge_inbox (delegation_inbox_001-006).
+    judge_inbox (delegation_inbox_001-007; 007 checks the watcher's draft
+    never claims anything was sent).
   config: |
     DELEGATION_GOOGLE_CREDENTIALS_DIR, DELEGATION_COMPOSER_MODEL,
     DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50),
@@ -8010,8 +8061,8 @@ delegation:
     cli.fixture_loader.reset_all_state. A reply card is a decision_instances
     row (see trust_ledger).
   later_phases: |
-    Each is its own change behind its own switch, off by default: send after
-    a tap from a private card; act within per-category rules, with a hold and
+    Each is its own change behind its own switch, off by default: act
+    within per-category rules, with a hold and
     a disclosure footer on unreviewed sends; stand in on positions the person
     approved; teammates, once audit rows can be private to any person.
 
@@ -8165,8 +8216,10 @@ trust_ledger: |
     approve, after_reject, cancel). Meeting booking is the spec for
     meeting_scheduling (approve books the event, cancel deletes it).
     delegation_reply is the inbox watcher's reply card (see
-    delegation.reply_cards): principal_only, no alert; approve is a 409
-    send_in_gmail, and after_reject deletes the draft when unedited. An
+    delegation.reply_cards): principal_only, no alert; approve sends its
+    draft (delegation.send: claim_for_execution before the send,
+    finish_execution after, an unconfirmed send left executing for the
+    reconciler), and after_reject deletes the draft when unedited. An
     instance of a class with no spec gets 409 on every action, never
     carried out as another class. A principal_only class is hidden from
     everyone else like a private payload (left out of GET /decisions, a 404

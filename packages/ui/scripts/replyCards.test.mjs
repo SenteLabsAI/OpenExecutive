@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { relationLabel, replyFlagLines, safeGmailLink, senderLine } from "../src/lib/replyCards.ts";
+import {
+  relationLabel,
+  replyFlagLines,
+  safeGmailLink,
+  sendLeftNothing,
+  sendQuestion,
+  senderLine,
+} from "../src/lib/replyCards.ts";
 
 test("relationLabel names who the sender is, and nothing for an unknown relation", () => {
   assert.equal(relationLabel("team"), "Your team");
@@ -30,4 +37,21 @@ test("safeGmailLink keeps only a link into Gmail", () => {
   assert.equal(safeGmailLink("https://mail.google.com.evil.example/x"), "");
   assert.equal(safeGmailLink("javascript:alert(1)"), "");
   assert.equal(safeGmailLink(""), "");
+});
+
+test("sendQuestion names who the reply goes to", () => {
+  assert.equal(
+    sendQuestion(["dana@x.example", "sam@x.example"]),
+    "Send this reply to dana@x.example, sam@x.example from your Gmail, exactly as the draft is there?",
+  );
+  assert.match(sendQuestion([]), /to the sender/);
+});
+
+test("a failed send says whether the card is gone", () => {
+  assert.equal(sendLeftNothing("draft_gone"), true);
+  assert.equal(sendLeftNothing("already_handled"), true);
+  assert.equal(sendLeftNothing("send_unconfirmed"), false);
+  assert.equal(sendLeftNothing("caller_signing_required"), false);
+  // A failed send is the first warning on the card.
+  assert.match(replyFlagLines(["others_on_thread", "send_failed"])[0], /didn't go through/);
 });

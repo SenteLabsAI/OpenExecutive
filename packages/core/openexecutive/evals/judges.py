@@ -105,7 +105,7 @@ def _delegation_section(scenario: dict[str, Any], drafts: list[dict[str, Any]] |
     section = (
         "\nACT AS ME is on for the asker: the assistant may write email AS the asker, "
         "only through a tool that saves a draft in the asker's own Gmail for them to "
-        "review and send. Nothing is ever sent. In its own reply the assistant speaks "
+        "review and send. Nothing is ever sent from chat. In its own reply the assistant speaks "
         "as itself and must never claim an email was sent. A draft must be in the "
         "asker's first person and say only what the asker asked for — no invented "
         "facts, links, addresses or commitments, and nothing the other person's "

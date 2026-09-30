@@ -4,7 +4,8 @@ The Executive's own mailbox is reached through the MCP gateway, where the
 model can call any Gmail tool by name. A mailbox someone lent the Executive
 must never be reachable that way, so this client talks to the Gmail REST API
 itself and is never registered with the gateway: only typed handlers
-(``orchestrator.delegation_tools``, the voice learner) call it.
+(``orchestrator.delegation_tools``, the voice learner, the inbox watcher and
+the reply cards) call it.
 
 **Credential.** One file per person in ``DELEGATION_GOOGLE_CREDENTIALS_DIR``,
 named from a hash of the address and written by
@@ -14,9 +15,12 @@ named from a hash of the address and written by
 address, which would hand the model this mailbox. Scopes: ``gmail.readonly``
 and ``gmail.compose``.
 
-**Drafts only.** There is deliberately no send method (a unit test pins the
-public methods and fails if one appears). ``gmail.compose`` could send;
-nothing here does. It reads mail, and saves or deletes drafts.
+**One way to send.** It reads mail and saves or deletes drafts. The only
+send is ``send_draft``: an existing draft, by its id, exactly as it is in
+Gmail (the request body is the id and nothing else). Only
+``delegation.reply_send`` calls it, after the person tapped Send on that
+draft's card; unit tests pin the public methods, the one send endpoint and
+that call site.
 
 **Always checked.** ``gmail_status`` asks Google whose mailbox the token opens
 and compares it with the person's People email on every use — a roster email
@@ -70,6 +74,16 @@ GmailStatus = Literal[
 ]
 
 # What each status tells the person, in the tool result and on Settings.
+# A status that blocks using the mailbox → the 409 code a caller gets.
+BLOCKING_CODES: dict[str, str] = {
+    "not_configured": "gmail_not_connected",
+    "needs_reconnect": "gmail_needs_reconnect",
+    "mismatch": "gmail_mismatch",
+    "no_email": "no_email",
+    "shared_mailbox": "shared_mailbox",
+    "error": "gmail_error",
+}
+
 STATUS_MESSAGES: dict[str, str] = {
     "connected": "Connected.",
     "not_configured": (
@@ -104,7 +118,14 @@ _TOKENS: dict[str, tuple[str, float]] = {}
 
 
 class GmailError(Exception):
-    """A Gmail call failed (network, 5xx, an unexpected response)."""
+    """A Gmail call failed (network, 5xx, an unexpected response).
+    ``maybe_done`` is True when the request may have reached Google and been
+    carried out anyway (a timeout after sending, a 5xx, an unreadable
+    success): for a send, not knowing is not the same as not sent."""
+
+    def __init__(self, message: str = "", *, maybe_done: bool = False) -> None:
+        super().__init__(message)
+        self.maybe_done = maybe_done
 
 
 class GmailNotConfigured(GmailError):
@@ -195,6 +216,14 @@ class DraftSpec:
 class CreatedDraft:
     draft_id: str
     message_id: str
+    thread_id: str
+
+
+@dataclass
+class SentMessage:
+    """What ``send_draft`` sent: the new message's id and its thread."""
+
+    id: str
     thread_id: str
 
 
@@ -649,8 +678,11 @@ class DelegateGmail:
                 json=json_body,
                 headers={"Authorization": f"Bearer {token}"},
             )
-        except httpx.HTTPError as exc:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Never reached Google: nothing was done.
             raise GmailError(f"gmail {method} failed: {type(exc).__name__}") from exc
+        except httpx.HTTPError as exc:
+            raise GmailError(f"gmail {method} failed: {type(exc).__name__}", maybe_done=True) from exc
         if resp.status_code == 401:
             _TOKENS.pop(_token_key(self._cred()), None)
             raise GmailAuthError("unauthorized")
@@ -660,6 +692,8 @@ class DelegateGmail:
             raise GmailRateLimited(f"gmail {method} returned {resp.status_code}")
         if resp.status_code == 404:
             raise GmailNotFound(f"gmail {method} returned 404")
+        if resp.status_code >= 500:
+            raise GmailError(f"gmail {method} returned {resp.status_code}", maybe_done=True)
         if resp.status_code >= 400:
             raise GmailError(f"gmail {method} returned {resp.status_code}")
         if not resp.content:
@@ -667,7 +701,7 @@ class DelegateGmail:
         try:
             data = resp.json()
         except ValueError as exc:
-            raise GmailError("gmail returned a non-JSON response") from exc
+            raise GmailError("gmail returned a non-JSON response", maybe_done=True) from exc
         return data if isinstance(data, dict) else {}
 
     async def profile_email(self) -> str:
@@ -801,6 +835,18 @@ class DelegateGmail:
             except GmailNotFound:
                 return False
         return True
+
+    async def send_draft(self, draft_id: str) -> SentMessage:
+        """Send the draft ``draft_id`` exactly as it is in Gmail now: the
+        request body is its id and nothing else, so nothing here can change
+        what goes, or to whom. Gmail deletes a draft it sends. Only
+        ``delegation.reply_send`` calls this (a unit test holds it to that).
+        A ``GmailError`` whose ``maybe_done`` is set may have sent it."""
+        if not valid_id(draft_id):
+            raise GmailError("invalid draft id")
+        async with self._client() as client:
+            data = await self._request(client, "POST", "/drafts/send", json_body={"id": draft_id})
+        return SentMessage(id=str(data.get("id") or ""), thread_id=str(data.get("threadId") or ""))
 
     async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
         """Save ``spec`` as a draft in the person's Gmail. Nothing is sent."""

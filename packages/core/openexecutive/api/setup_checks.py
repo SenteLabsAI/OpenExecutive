@@ -326,7 +326,7 @@ def check_api_protection(snap: Snapshot) -> SetupCheck:
             "warn",
             "Only the web app can use the API, but it takes the web app's word for who is "
             "signed in: anyone holding BACKEND_SHARED_SECRET can act as anyone, the owner "
-            "included.",
+            "included. Until that's fixed, a reply drafted in your inbox can't be sent from here.",
             "Run scripts/make-caller-keys.py once, set CALLER_ASSERTION_PRIVATE_KEY on the web "
             "app and CALLER_ASSERTION_PUBLIC_KEYS on the API, then restart both (docs/auth.md).",
         )
@@ -341,7 +341,8 @@ def check_api_protection(snap: Snapshot) -> SetupCheck:
         "warn",
         "The API has no shared secret, so anything that can reach it can use it.",
         "Fine on your own computer. On a server, set BACKEND_SHARED_SECRET to the same random value for both "
-        "apps (openssl rand -hex 32), then restart them.",
+        "apps (openssl rand -hex 32), then restart them. Sending drafted replies from the web app also "
+        "needs signed sign-ins (docs/auth.md).",
     )
 
 
