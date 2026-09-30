@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
+from openexecutive.api import caller as api_caller
 from openexecutive.workflows import (
     get_workflow,
     list_workflows,
@@ -573,7 +574,7 @@ def refuse_principal_only_run(
     audit_log(
         "tool_invocation",
         f"run_workflow {name} refused over HTTP ({surface}): not the principal",
-        actor=(request.headers.get("x-caller-email") or "").strip()[:200] or "api",
+        actor=api_caller.actor(request),
         details={
             "tool": "run_workflow",
             "kind": "write",
@@ -604,8 +605,11 @@ def _caller_is_the_principal(request: Request) -> bool:
     the principal's own, on an entry that is not archived. Fails closed: a
     roster that cannot be read answers no.
     """
-    if not (request.headers.get("x-caller-email") or "").strip():
+    who = api_caller.caller(request)
+    if who.defaults_to_principal:
         return True
+    if not who.email:  # a verified service call is never the principal
+        return False
     from openexecutive.api.routes.chat import _resolve_caller_person_id
     from openexecutive.people.store import is_principal_or_self
 

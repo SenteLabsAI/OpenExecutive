@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from openexecutive.api import caller as api_caller
 from openexecutive.api.models import WorkspaceResponse, WorkspaceUpdateRequest
 from openexecutive.memory import workspace_settings
 
@@ -94,7 +95,7 @@ def update_workspace(request: Request, body: WorkspaceUpdateRequest) -> Workspac
     if mode_or_zone_changed or role_changed or domains_changed:
         from openexecutive.audit import log_event as audit_log
 
-        caller = (request.headers.get("x-caller-email") or "").strip()[:200] or "api"
+        caller = api_caller.actor(request)
         details: dict[str, object] = {
             "mode": {"from": before.mode, "to": after.mode},
             "timezone": {"from": before.timezone, "to": after.timezone},

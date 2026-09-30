@@ -7,6 +7,7 @@ import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from openexecutive.api import caller as api_caller
 from openexecutive.config import get_settings
 from openexecutive.memory.episodic import (
     ScheduledAction,
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 _VALID_STATUS_FILTERS = {"pending", "running", "done", "failed", "cancelled"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
-_MAX_ACTOR_LEN = 200
 
 
 def _signed_in_caller(request: Request) -> str | None:
@@ -40,8 +40,7 @@ def _signed_in_caller(request: Request) -> str | None:
     provided = request.headers.get("x-api-key", "")
     if not hmac.compare_digest(provided.encode(), secret.encode()):
         return None
-    email = (request.headers.get("x-caller-email") or "").strip().lower()
-    return email[:_MAX_ACTOR_LEN] or None
+    return api_caller.caller_email(request)[: api_caller.MAX_ACTOR_LEN] or None
 
 
 def require_cancel_permission(

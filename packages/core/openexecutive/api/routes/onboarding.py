@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
+from openexecutive.api import caller as api_caller
 from openexecutive.api.intake_uploads import (
     _INTAKE_GEN_CHARS_PER_FILE,
     _gather_intake_attachments,
@@ -624,7 +625,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Someone who isn't the owner may fill in the owner's missing email only
     # with the address they signed in with (owner_email_blocked explains why).
-    caller_email = (request.headers.get("x-caller-email") or "").strip().lower()
+    caller_email = api_caller.caller_email(request)
     try:
         email_blocked = owner_email_blocked(owner_email, caller_person_id, caller_email)
     except (OSError, sqlite3.Error) as exc:

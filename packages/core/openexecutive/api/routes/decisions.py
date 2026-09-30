@@ -22,6 +22,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from openexecutive.api import caller as api_caller
 from openexecutive.memory.decision_ledger import (
     STATUS_APPROVED_UNCHANGED,
     STATUS_APPROVED_WITH_EDIT,
@@ -403,11 +404,10 @@ def set_meeting_class_mode(
         set_class_mode(_CALENDAR_CLASS, body.mode)
         from openexecutive.audit import log_event as audit_log
 
-        caller = (request.headers.get("x-caller-email") or "").strip()[:200] or "api"
         audit_log(
             "decision_class_mode_changed",
             f"Meeting scheduling mode changed: {before} → {body.mode}",
-            actor=caller,
+            actor=api_caller.actor(request),
             details={
                 "decision_class": _CALENDAR_CLASS,
                 "mode": {"from": before, "to": body.mode},

@@ -40,6 +40,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
+from openexecutive.api import caller as api_caller
 from openexecutive.delegation.gmail import (
     STATUS_MESSAGES,
     GmailAuthError,
@@ -141,11 +142,11 @@ def _caller(request: Request) -> Person:
     """The signed-in caller, when they may have Act as me; else 403."""
     from openexecutive.people.store import find_person_by_email, find_principal_person
 
-    email = (request.headers.get("x-caller-email") or "").strip().lower()
+    who = api_caller.caller(request)
     try:
-        if email:
-            person = find_person_by_email(email)
-        elif local_login():
+        if who.email:
+            person = find_person_by_email(who.email)
+        elif who.defaults_to_principal and local_login():
             person = find_principal_person()
         else:
             raise _refuse(403, "sign_in_required", "Sign in to change Act as me.")
