@@ -984,6 +984,7 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         mark_reversed,
     )
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.orchestrator.people_tools import contacts_reachable_now
 
     try:
         instance_id = int(tool_input["decision_instance_id"])
@@ -991,7 +992,14 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         return json.dumps({"error": "decision_instance_id must be an integer"})
 
     instance = get_decision_instance(instance_id)
-    if instance is None:
+    # Only a meeting booking, and one private to the principal (a meeting
+    # with their contact) only on their own verified turn. Anything else reads
+    # exactly like a missing id, so this tool can neither act on another class
+    # of decision (a reply drafted in the owner's own Gmail) nor reveal that
+    # one exists.
+    if instance is None or instance.decision_class != "meeting_scheduling" or (
+        _payload_private(instance) and not contacts_reachable_now()
+    ):
         return json.dumps({"error": f"decision_instance {instance_id} not found"})
 
     if instance.status not in (
@@ -1010,8 +1018,17 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         if "error" in result:
             return json.dumps(result)
 
-    mark_reversed(instance_id, reason="cancelled_by_executive")
+    mark_reversed(instance_id, reason="cancelled_by_executive", decision_class="meeting_scheduling")
     return json.dumps({"status": "cancelled", "decision_instance_id": instance_id})
+
+
+def _payload_private(instance: Any) -> bool:
+    """Whether a booking's payload marks it private to the principal."""
+    try:
+        payload = json.loads(instance.proposed_payload_json or "{}")
+    except (TypeError, ValueError):
+        return True  # unreadable: fail closed
+    return isinstance(payload, dict) and payload.get("private") is True
 
 
 CALENDAR_TOOL_HANDLERS: dict[str, Any] = {

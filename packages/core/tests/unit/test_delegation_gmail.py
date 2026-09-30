@@ -238,6 +238,9 @@ def test_links_open_the_draft_in_the_right_account() -> None:
     )
     assert gmail_link(EMAIL, message_id="18d") .endswith("#drafts?compose=18d")
     assert gmail_link(EMAIL, thread_id="../evil").endswith("#drafts")
+    # "$" would match before a trailing newline; the whole id must match.
+    assert gmail_link(EMAIL, thread_id="18c2f\n").endswith("#drafts")
+    assert not gm.valid_id("18c2f\n")
 
 
 # --------------------------------------------------------------------------- #

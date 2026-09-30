@@ -35,7 +35,8 @@ and one in a thread whose card is still open (``deferred``).
 
 **Two model calls, then code.** ``inbox_classifier`` decides whether it
 needs a reply, with a bar that rises the less the sender is known (their team
-or contacts, someone they have written to, a stranger). The ghostwriter then
+or contacts, someone they have written to, a stranger). A sender Gmail
+couldn't authenticate is handled as a stranger (``handling_relation``). The ghostwriter then
 writes the reply in the person's voice, from a fixed intent this module
 builds: acknowledge, restate only what the person themselves already said in
 the thread, promise nothing new, and put every unanswered ask in
@@ -356,6 +357,28 @@ def _add_flag(person_id: int, message_id: str, flag: str, *, db_path: Path | Non
         conn.close()
 
 
+def _remove_flag(person_id: int, message_id: str, flag: str, *, db_path: Path | None = None) -> None:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT flags FROM {INBOX_MESSAGES_TABLE} WHERE person_id = ? AND message_id = ?",  # noqa: S608
+            (person_id, message_id),
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            flags = json.loads(row["flags"] or "[]")
+        except ValueError:
+            flags = []
+        conn.execute(
+            f"UPDATE {INBOX_MESSAGES_TABLE} SET flags = ? WHERE person_id = ? AND message_id = ?",  # noqa: S608
+            (json.dumps([f for f in flags if f != flag]), person_id, message_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ledger_flags(person_id: int, message_ids: list[str], *, db_path: Path | None = None) -> dict[str, list[str]]:
     """The flags the reconciler added, by message id."""
     if not message_ids:
@@ -485,6 +508,14 @@ def _roster_relation(address: str) -> str | None:
         if address in {a.lower() for a in [person.email, *person.email_aliases] if a}:
             return "team" if person.kind == "team" else "contact"
     return None
+
+
+def handling_relation(relation: str, message: Any) -> str:
+    """The rules ``message`` is handled by: its sender's ``relation``, or a
+    stranger's (the highest bar, a holding reply, the tighter limits) when
+    Gmail couldn't confirm the From address, which anyone can set to a
+    colleague's or a client's."""
+    return relation if getattr(message, "sender_authenticated", False) is True else "stranger"
 
 
 async def relation_of(address: str, gmail: Any) -> str:
@@ -640,6 +671,7 @@ async def reply_for(
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.inbox_classifier import classify, wants_draft
 
+    relation = handling_relation(relation, message)
     verdict = await classify(message, relation=relation)
     if verdict is None or not wants_draft(verdict, relation):
         return verdict, None
@@ -650,7 +682,8 @@ async def reply_for(
 
 
 def _card_payload(
-    person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, verdict: Any
+    person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, verdict: Any,
+    handled_as: str,
 ) -> dict[str, Any]:
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
@@ -668,6 +701,7 @@ def _card_payload(
         "from_name": one_line(message.from_name, 120),
         "from_email": message.from_addr,
         "relation": relation,
+        "handled_as": handled_as,
         "sender_verified": bool(message.sender_authenticated),
         "subject": one_line(message.subject, 200),
         "received_at": message.received_at,
@@ -860,7 +894,8 @@ async def _consider(
         if _claim(person.id, message, relation="", outcome=SKIPPED, reason=reason, now=now):
             result.skipped += 1
         return False
-    relation = await relation_of(message.from_addr, client)
+    known_as = await relation_of(message.from_addr, client)
+    relation = handling_relation(known_as, message)
     limit = _cap_reason(person.id, message, relation, now)
     if limit is not None:
         # Not recorded: a later scan tries again once the limit allows.
@@ -916,7 +951,9 @@ async def _consider(
             logger.warning("delegation.inbox: couldn't record the draft", exc_info=True)
     finally:
         caps.release(person.id, saved=saved)
-    decision_id = _create_card(person, message, thread, reply, draft, relation=relation, verdict=verdict)
+    decision_id = _create_card(
+        person, message, thread, reply, draft, relation=known_as, handled_as=relation, verdict=verdict,
+    )
     _set_outcome(person.id, message.id, DRAFTED, decision_id=decision_id)
     result.drafted += 1
     _audit("delegation_reply_drafted", f"Drafted a reply as person {person.id} for review", {
@@ -932,7 +969,8 @@ async def _consider(
 
 
 def _create_card(
-    person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, verdict: Any
+    person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
+    verdict: Any,
 ) -> int | None:
     """The card for this reply, made once per message (a crash between the
     draft and here, then a rescan, finds the one it made)."""
@@ -944,7 +982,9 @@ def _create_card(
             decision_class=DECISION_CLASS,
             department="",
             originating_session_id=None,
-            proposed_payload=_card_payload(person, message, thread, reply, draft, relation=relation, verdict=verdict),
+            proposed_payload=_card_payload(
+                person, message, thread, reply, draft, relation=relation, handled_as=handled_as, verdict=verdict,
+            ),
             idempotency_key=key,
             gate_mode="propose",
             approver_person_id=person.id,
@@ -1037,10 +1077,12 @@ async def _settle_unconfirmed_send(
     person: Any, client: Any, card: Any, payload: dict[str, Any], *, own: set[str], now: datetime
 ) -> int:
     """A card left ``executing`` by a send whose outcome was unclear (a
-    timeout, a 5xx, a crash mid-send). Gmail deletes a draft it sends, so the
-    draft still being there means it was not sent: the card goes back for the
-    person to try again. Gone, with their reply in the thread: it was sent.
-    Gone without one: it was deleted in Gmail. Never sends anything itself."""
+    timeout, a 5xx, a crash mid-send). Their reply in the thread means it was
+    sent. Gmail deletes a draft it sends, so the draft still there and
+    nothing sent means it was not, but only once two scans in a row see that
+    (Gmail can take a moment to settle a send): then the card goes back for
+    the person to try again. Draft gone and nothing sent: it was deleted in
+    Gmail. Never sends anything itself."""
     from openexecutive.delegation import drafts
     from openexecutive.delegation.gmail import GmailNotFound
     from openexecutive.memory.decision_ledger import (
@@ -1053,12 +1095,6 @@ async def _settle_unconfirmed_send(
     message_id = str(payload.get("message_id") or "")
     draft_id = str(payload.get("draft_id") or "")
     draft = await client.get_draft(draft_id)
-    if card.id in SENDING:
-        return 0
-    if draft is not None:
-        if release_claim(card.id):
-            _add_flag(person.id, message_id, "send_failed")
-        return 0
     try:
         thread = await client.get_thread(str(payload.get("thread_id") or ""))
     except GmailNotFound:
@@ -1067,9 +1103,18 @@ async def _settle_unconfirmed_send(
         return 0
     later = later_messages(thread, payload, now=now) if thread is not None else []
     sent = [m for m in later if "SENT" in m.labels and m.from_addr in own]
+    flags = ledger_flags(person.id, [message_id]).get(message_id, [])
     if not sent:
-        return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
-    edited = "edited_in_gmail" in ledger_flags(person.id, [message_id]).get(message_id, [])
+        if draft is None:
+            return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
+        if "unconfirmed_seen" not in flags:
+            _add_flag(person.id, message_id, "unconfirmed_seen")
+            return 0
+        if release_claim(card.id):
+            _remove_flag(person.id, message_id, "unconfirmed_seen")
+            _add_flag(person.id, message_id, "send_failed")
+        return 0
+    edited = "edited_in_gmail" in flags
     status = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
     if not finish_execution(
         card.id, status, final_payload={"sent_message_id": sent[-1].id, "confirmed_later": True},

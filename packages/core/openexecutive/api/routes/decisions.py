@@ -495,7 +495,7 @@ async def cancel_decision(instance_id: int, request: Request) -> DecisionInstanc
             detail=f"Cannot cancel a decision with status={instance.status!r}",
         )
     await spec.cancel(instance)
-    mark_reversed(instance_id, reason="cancelled_via_ui")
+    mark_reversed(instance_id, reason="cancelled_via_ui", decision_class=spec.name)
     _clear_decision_alert(instance_id, "dismissed", spec.alert_source)
     return _refresh(instance_id)
 

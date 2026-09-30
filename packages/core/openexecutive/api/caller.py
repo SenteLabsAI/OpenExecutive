@@ -167,7 +167,9 @@ def _b64url(text: str) -> bytes:
 def parse_public_keys(raw: str) -> dict[str, Ed25519PublicKey]:
     """``kid:key[,kid:key…]``, each key 32 raw bytes in base64url, as
     ``scripts/make-caller-keys.py`` prints them. More than one while a key is
-    being rotated. Empty is no keys; anything malformed raises."""
+    being rotated. Empty is no keys; anything malformed raises, and so does a
+    value that lists none (" , "): set means signed callers are on
+    (``signing_on``), so it must hold a key the gate can check."""
     keys: dict[str, Ed25519PublicKey] = {}
     for entry in raw.split(","):
         entry = entry.strip()
@@ -184,6 +186,8 @@ def parse_public_keys(raw: str) -> dict[str, Ed25519PublicKey]:
             keys[kid] = Ed25519PublicKey.from_public_bytes(_b64url(encoded.rstrip("=")))
         except ValueError as exc:
             raise CallerKeysError(f"key {kid} is not an Ed25519 public key") from exc
+    if raw.strip() and not keys:
+        raise CallerKeysError("it is set but lists no key")
     return keys
 
 

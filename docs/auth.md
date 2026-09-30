@@ -103,7 +103,12 @@ There is no password, so the protection is *where* a request can come from:
   can prove it sent it.
 
 The session has no email. The UI proxy then sends no `x-caller-email`, and the
-API treats the request as the principal's, the same way it treats the CLI. If
+API treats the request as the principal's, the same way it treats the CLI.
+That includes **Send** on a reply Act as me drafted in your own Gmail: under
+local login, any program on this computer that can reach port 8000 can tap it
+for you (it sends only a draft already waiting on Today, to the people shown on
+it). On a computer other people or untrusted programs use, set up Google
+sign-in with signed callers instead. If
 `AUTH_SECRET` is blank in both files, `make dev` uses a temporary one for that
 run, so you click **Open** again after a restart. `AUTH_TRUST_HOST` isn't
 needed in this mode.

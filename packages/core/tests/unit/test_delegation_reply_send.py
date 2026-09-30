@@ -258,10 +258,26 @@ def test_an_unconfirmed_send_that_did_not_go_is_handed_back_by_the_reconciler(
     mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
     assert _refused(card, mailbox, owner).code == "send_unconfirmed"
     assert _status(card) == "executing"
-    # The draft is still there, so it was not sent: back to the person.
+    # The draft is still there and nothing was sent. Gmail can take a moment
+    # to settle a send, so one look isn't enough...
     assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+    assert _status(card) == "executing"
+    # ...the second one hands it back to the person.
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=36), own={OWNER})) == 0
     assert _status(card) == "proposed"
     assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["send_failed"]}
+
+
+def test_an_unconfirmed_send_whose_draft_lingers_but_went_is_not_handed_back(
+    owner: Any, models: dict[str, Any]
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    # Gmail delivered it; the draft hasn't disappeared yet.
+    mailbox.add(_msg("sent-late", "t1", sender=OWNER, name="Olivia", minutes_ago=-5, labels=("SENT",), to=[DANA]))
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 1
+    assert _status(card) == "approved_unchanged"
 
 
 def test_an_unconfirmed_send_that_went_is_recorded_by_the_reconciler(
@@ -275,6 +291,28 @@ def test_an_unconfirmed_send_that_went_is_recorded_by_the_reconciler(
     row = ledger.get_decision_instance(card.id)
     assert row is not None and row.status == "approved_unchanged" and row.external_event_id == "sent-d1"
     assert _ledger(db)["m1"] == ("sent", "sent")
+
+
+def test_a_draft_edited_while_sending_is_not_sent(owner: Any, models: dict[str, Any]) -> None:
+    """Everything is checked against the draft as it was read; one edited in
+    Gmail between that read and the send is refused, not sent unchecked."""
+    mailbox, card = _card(owner)
+    reads = 0
+    get_draft = mailbox.get_draft
+
+    async def edited_on_the_second_read(draft_id: str) -> Any:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            mailbox.edit(draft_id, bcc=["someone@else.example"])
+        return await get_draft(draft_id)
+
+    mailbox.get_draft = edited_on_the_second_read  # type: ignore[method-assign]
+    assert _refused(card, mailbox, owner).code == "draft_changed"
+    assert mailbox.sent == [] and _status(card) == "proposed"
+    # Looked at again, the new recipient needs a yes like any other change.
+    confirm = _refused(card, mailbox, owner)
+    assert confirm.code == "confirm" and "someone@else.example" in confirm.extra["recipients"]
 
 
 def test_the_reconciler_leaves_a_card_being_sent_alone(owner: Any, models: dict[str, Any]) -> None:

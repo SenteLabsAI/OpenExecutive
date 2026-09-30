@@ -5982,7 +5982,9 @@ auth:
         the reason, the method and the path, never the token or email.
     The UI keeps stamping x-caller-email, so a UI with the key works
     against an API without it. Unreadable public keys stop create_app
-    (RuntimeError); an unreadable private key makes the proxy answer
+    (RuntimeError), and so does a value that is set but lists no key
+    (" , "): signing_on() reads "set" as on, so set must mean a key the
+    gate checks; an unreadable private key makes the proxy answer
     500 to every call. Neither falls back to the header.
 
     Other consequences:
@@ -6879,7 +6881,13 @@ integrations:
         step — the user asked to meet now) and SKIPS the horizon + business-hours/
         weekday caps; still enforces roster, principal-protect, max-attendees, and
         max-events/day, and records an `executed` ledger row for audit.
-      cancel_calendar_event  — cancel by decision_instance_id.
+      cancel_calendar_event  — cancel by decision_instance_id. Only a
+        meeting_scheduling instance, and one whose payload is private (a
+        meeting with the principal's contact) only when contacts are reachable
+        (the principal's own verified turn); any other id reads exactly like a
+        missing one, so the tool can neither reverse another class (a reply
+        card) nor reveal that one exists. mark_reversed is also called with
+        decision_class, so the ledger refuses the wrong class itself.
 
     Google Meet links: every booking requests a Meet link by default via
     add_google_meet=true on the manage_event call (workspace-mcp builds the
@@ -7912,12 +7920,23 @@ delegation:
     Code decides: a draft only when needs_reply, kind is question, request,
     scheduling, introduction or follow_up, and confidence clears 0.6 (team
     or contact), 0.7 (someone the person has written to, found by a Gmail
-    in:sent to: search) or 0.85 (a stranger, or an unknown relation).
+    in:sent to: search) or 0.85 (a stranger, or an unknown relation). A
+    sender whose From address Gmail couldn't authenticate
+    (fact_confirmation.headers_authenticated) is handled as a stranger
+    whatever the roster says (inbox.handling_relation): the bar, the holding
+    reply and the stranger limits; the card still shows who they claim to
+    be (payload relation) beside handled_as.
     fyi, thanks, pitch, notification, newsletter, phishing and other never
     get one, and any failure or malformed answer means none.
   inbox_drafting: |
     delegation.inbox.compose_reply — ghostwriter.compose and the person's
-    voice block unchanged, with a constant intent in place of a person's:
+    voice block unchanged, with a constant intent in place of a person's.
+    The thread it is shown (threads.thread_text, shared with chat) marks the
+    writer's own messages "(the writer)" in code, and only a message the
+    mailbox itself sent (SENT, from their address): the mark is cut out of
+    every other name, date and body, and a body line that reads like one of
+    the block's "[n] From:" headers is quoted, so nobody else's words can
+    pass for the writer's. The intents:
     INBOX_REPLY_INTENT (acknowledge; say again only what the person's OWN
     earlier messages in the thread already said; no yes or no, date, time,
     price, fact or promise of its own; "I'll get back to you"; every ask it
@@ -7976,18 +7995,23 @@ delegation:
     recipients_changed / thread_moved_on, recipients}, answered by approving
     again with edits {recipients: the list shown, thread_moved_on: true}.
     Then inbox.SENDING, claim_for_execution (proposed → executing,
-    compare-and-set: a double tap sends once), send_draft, and
-    finish_execution — approved_with_edit when the draft's message id
+    compare-and-set: a double tap sends once), one more get_draft — the draft
+    must still be the version every check above read (its message id),
+    since drafts.send sends whatever the draft is when Gmail gets the
+    request; a changed one is refused (409 draft_changed) and handed back —
+    then send_draft, and finish_execution — approved_with_edit when the draft's message id
     changed (edited in Gmail), with sent_message_id as external_event_id —
     the ledger outcome sent, delegation_drafts.sent_message_id and a private
     delegation_reply_sent row. A refusal that proves nothing went (a 4xx,
     auth, a rate limit, a 404) hands the card back (release_claim); a
     maybe_done failure leaves it executing and answers 502
     send_unconfirmed. The reconciler then asks Gmail
-    (inbox._settle_unconfirmed_send): Gmail deletes a draft it sends, so a
-    draft still there was not sent (back to proposed, flagged send_failed);
-    gone with the person's message in the thread, it was sent (finished,
-    confirmed_later); gone without one, it was deleted. Nothing is ever
+    (inbox._settle_unconfirmed_send): the person's message in the thread
+    means it was sent (finished, confirmed_later), whether or not the draft
+    has gone yet; Gmail deletes a draft it sends, so the draft still there
+    and nothing sent on two scans in a row (the first adds the ledger flag
+    unconfirmed_seen) means it was not (back to proposed, flagged
+    send_failed); gone with nothing sent, it was deleted. Nothing is ever
     retried on its own. Send is the person's act, so it works while the
     Executive is paused.
   prompt: |

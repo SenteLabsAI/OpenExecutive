@@ -316,24 +316,28 @@ def mark_reversed(
     instance_id: int,
     *,
     reason: str = "",
+    decision_class: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """Mark an approved/executed instance as reversed."""
+    """Mark an approved/executed instance as reversed. With
+    ``decision_class``, only an instance of that class: a caller that
+    reverses one kind of decision can never reverse another."""
     now = datetime.now(UTC).isoformat()
+    sql = (
+        "UPDATE decision_instances SET status = ?, resolved_at = ?, reversal_reason = ? "
+        "WHERE id = ? AND status IN (?,?,?,?)"
+    )
+    params: tuple[Any, ...] = (
+        STATUS_REVERSED, now, reason,
+        instance_id,
+        STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT,
+        STATUS_EXECUTED, STATUS_PROPOSED,
+    )
+    if decision_class is not None:
+        sql += " AND decision_class = ?"
+        params = (*params, decision_class)
     with _get_conn(db_path or _db_path()) as conn:
-        result = conn.execute(
-            """
-            UPDATE decision_instances
-            SET status = ?, resolved_at = ?, reversal_reason = ?
-            WHERE id = ? AND status IN (?,?,?,?)
-            """,
-            (
-                STATUS_REVERSED, now, reason,
-                instance_id,
-                STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT,
-                STATUS_EXECUTED, STATUS_PROPOSED,
-            ),
-        )
+        result = conn.execute(sql, params)
         return result.rowcount == 1
 
 

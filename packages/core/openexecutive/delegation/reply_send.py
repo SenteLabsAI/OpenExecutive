@@ -30,13 +30,15 @@ At send time it checks again, in this order:
    back (``{"recipients": [...], "thread_moved_on": true}``).
 
 Then it claims the card (``claim_for_execution``, proposed → executing, a
-compare-and-set: a double tap sends once), sends, and records it
-(``finish_execution``: ``approved_with_edit`` when the draft was edited in
-Gmail). A failure that shows nothing was sent hands the card back. One that
-leaves it unclear (a timeout, a 5xx) leaves it ``executing`` for the
-reconciler (``inbox._settle_unconfirmed_send``), which looks at Gmail: Gmail
-deletes a draft it sends, so a draft still there was not sent. Nothing is
-ever retried on its own. Every row it writes is private to the principal.
+compare-and-set: a double tap sends once), reads the draft once more and sends
+only if it is still the version checked above (``drafts.send`` sends whatever
+the draft is when Gmail gets the request, so an edit made meanwhile in another
+tab is refused, not sent unchecked), and records it (``finish_execution``:
+``approved_with_edit`` when the draft was edited in Gmail). A failure that
+shows nothing was sent hands the card back. One that leaves it unclear (a
+timeout, a 5xx) leaves it ``executing`` for the reconciler
+(``inbox._settle_unconfirmed_send``), which asks Gmail what happened. Nothing
+is ever retried on its own. Every row it writes is private to the principal.
 """
 from __future__ import annotations
 
@@ -239,6 +241,26 @@ async def _send(
             raise SendRefused(409, "already_handled", "This reply was already sent or dismissed.")
         if edited:
             _add_flag(person.id, message_id, "edited_in_gmail")
+        # drafts.send sends the draft as it is when Gmail gets the request,
+        # and everything above checked the version read before the claim:
+        # read it once more, so an edit made meanwhile (another tab, a
+        # delegate) is never sent unchecked.
+        try:
+            current = await client.get_draft(draft.draft_id)
+        except GmailError as exc:
+            release_claim(instance.id)
+            raise SendRefused(502, "gmail_error", unreadable) from exc
+        if current is None:
+            release_claim(instance.id)
+            SENDING.discard(instance.id)
+            _close_card(person.id, instance.id, message_id, "draft_gone", CLOSED)
+            raise SendRefused(409, "draft_gone", "That draft isn't in your Gmail any more: it was sent or deleted there.")
+        if current.message.id != draft.message.id:
+            release_claim(instance.id)
+            raise SendRefused(
+                409, "draft_changed",
+                "The draft changed in Gmail just now, so nothing was sent. Look it over and tap Send again.",
+            )
         try:
             sent = await client.send_draft(draft.draft_id)
         except GmailError as exc:

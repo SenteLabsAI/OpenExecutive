@@ -240,6 +240,9 @@ def _new_pair(kid: str) -> tuple[str, str]:
         "bad kid!:" + "A" * 43,
         "k1:" + "A" * 43 + ",k1:" + "B" * 43,
         ":" + "A" * 43,
+        # Set, but no key: the gate would check nothing while signing_on()
+        # said it was on.
+        " , ",
     ],
 )
 def test_unusable_public_keys_raise(raw: str) -> None:
@@ -249,7 +252,7 @@ def test_unusable_public_keys_raise(raw: str) -> None:
 
 def test_no_public_keys_is_no_keys() -> None:
     assert api_caller.parse_public_keys("") == {}
-    assert api_caller.parse_public_keys(" , ") == {}
+    assert api_caller.parse_public_keys("  ") == {}
 
 
 def test_the_ledger_forgets_only_what_expired() -> None:

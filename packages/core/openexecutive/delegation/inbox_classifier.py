@@ -6,8 +6,9 @@ confidence}``, and code decides: a draft is written only when the email needs
 a reply, is a kind worth answering (a question, a request, scheduling, an
 introduction, a follow-up), and the confidence clears a bar that rises the
 less the sender is known: 0.6 for the team or a contact, 0.7 for someone the
-person has written to before, 0.85 for a stranger. Anything else, and any
-failure, means no draft.
+person has written to before, 0.85 for a stranger (and for anyone whose
+address Gmail couldn't authenticate: ``inbox.handling_relation``). Anything
+else, and any failure, means no draft.
 
 The model sees a few header lines and the sender's own new words (quoted
 replies stripped, at most 3000 characters), as data in a labelled block. It

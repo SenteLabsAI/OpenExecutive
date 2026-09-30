@@ -107,7 +107,7 @@ STATUS_MESSAGES: dict[str, str] = {
 }
 
 # Gmail ids are short hex strings; anything else never reaches a URL path.
-_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TOKEN_URI_RE = re.compile(r"^https://oauth2\.googleapis\.com/")
 _MAX_HEADER = 900
 _TOKEN_SLACK_SECONDS = 60
@@ -556,15 +556,15 @@ def gmail_link(email: str, *, thread_id: str | None = None, message_id: str | No
     """A link that opens the draft in Gmail, built from a fixed prefix: the
     thread for a reply, the draft itself for a new email."""
     base = f"https://mail.google.com/mail/u/?authuser={quote(normalize_email(email))}"
-    if thread_id and _ID_RE.match(thread_id):
+    if thread_id and _ID_RE.fullmatch(thread_id):
         return f"{base}#all/{thread_id}"
-    if message_id and _ID_RE.match(message_id):
+    if message_id and _ID_RE.fullmatch(message_id):
         return f"{base}#drafts?compose={message_id}"
     return f"{base}#drafts"
 
 
 def valid_id(value: object) -> bool:
-    return isinstance(value, str) and bool(_ID_RE.match(value))
+    return isinstance(value, str) and bool(_ID_RE.fullmatch(value))
 
 
 # --------------------------------------------------------------------------- #
