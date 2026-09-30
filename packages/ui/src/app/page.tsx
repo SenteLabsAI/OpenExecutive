@@ -27,6 +27,34 @@ interface HealthData {
 // Upper bound on a `?draft=` seed — a deep link pre-fills a prompt, not a document.
 const MAX_DRAFT_PARAM_CHARS = 2000;
 
+// Which chat session this browser was last in. Without it every page load
+// minted a fresh uuid, so the Executive started every visit cold and re-asked
+// what the previous one had already been told — 14 sessions in a single day on
+// one deployment, none of them continued.
+//
+// Per-browser and deliberately not server state: it answers "where was I", not
+// "which session is current", and two tabs are allowed to disagree.
+const ACTIVE_SESSION_KEY = "oe.activeSessionId";
+
+function readStoredSessionId(): string | undefined {
+  // Wrapped: localStorage throws outright in a browser set to block site data,
+  // and a landing page that white-screens is far worse than one that forgets.
+  try {
+    return window.localStorage.getItem(ACTIVE_SESSION_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function storeSessionId(sessionId: string | undefined) {
+  try {
+    if (sessionId) window.localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
+    else window.localStorage.removeItem(ACTIVE_SESSION_KEY);
+  } catch {
+    // Non-fatal: the tab just forgets where it was.
+  }
+}
+
 export default function HomePage() {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
@@ -57,6 +85,14 @@ export default function HomePage() {
   // pre-fills it, since the text comes from a URL the user didn't type.
   const [autoSubmitPending, setAutoSubmitPending] = useState(true);
 
+  // Rehydrate the last session, WITHOUT touching `mode`: opening the app still
+  // lands on the briefing. This only decides which thread is behind it, so
+  // clicking into chat continues the conversation instead of starting one.
+  useEffect(() => {
+    const stored = readStoredSessionId();
+    if (stored) setActiveSessionId(stored);
+  }, []);
+
   useEffect(() => {
     fetch("/api/backend/health")
       .then((r) => r.json())
@@ -76,6 +112,7 @@ export default function HomePage() {
       const msgs = await getSessionMessages(sessionId);
       if (gen !== selectGenRef.current) return;
       setActiveSessionId(sessionId);
+      storeSessionId(sessionId);
       setActiveMessages(msgs);
       setDebugEvents([]);
       setMobileNavOpen(false);
@@ -90,6 +127,7 @@ export default function HomePage() {
   const handleNewChat = useCallback(() => {
     selectGenRef.current++;
     setActiveSessionId(undefined);
+    storeSessionId(undefined);
     setActiveMessages([]);
     setDebugEvents([]);
     activeTurnIdRef.current = null;
@@ -134,7 +172,10 @@ export default function HomePage() {
     // "the parent selected a different session" and clears the transcript
     // with — losing the very reply the stop was meant to keep. The in-flight
     // flag is cleared either way, so the Agent Activity panel never sticks.
-    if (sessionId) setActiveSessionId(sessionId);
+    if (sessionId) {
+      setActiveSessionId(sessionId);
+      storeSessionId(sessionId);
+    }
     setIsTurnInFlight(false);
     refreshSessions();
   }, [refreshSessions]);
