@@ -2657,6 +2657,42 @@ attunement:
       surfaces in the solo brief's DUE THIS WEEK block and the Briefing's
       Due soon card (see today.solo_mode). Team behaviour is unchanged
       (`principal_commitment`). Eval: `attunement_002` (workspace_mode solo).
+    assign: |
+      Explicit assignment (F082) — the deterministic path beside the pass,
+      which only runs on English keyword hits and what its model catches.
+      `open_loops.assign_open_loop(owner_person_id, text, assigned_by_person_id,
+      due_date)` returns `AssignResult(loop_id, reason, due_at)`; shared by the
+      `assign_open_loop` chat tool and POST /people/{id}/open-loops. Refuses
+      (reason): disabled (ATTUNEMENT_ENABLED / _OPEN_LOOPS_ENABLED off),
+      unknown_owner, owner_is_contact (never chased), owner_archived,
+      unknown_assigner (not an active team member), missing_text,
+      owner_at_cap, duplicate (the scope_key index). Description has the
+      pass's shape — "{assigner} asked {owner} for: {text}", or "{owner}
+      committed to: {text}" when self-assigned (the principal included, in
+      either mode). due_date is a local date → `_resolve_due` (17:00 user
+      zone, clamped [today, +60d], default 2 days). Audited op `loop_assigned`.
+      Nobody is messaged at assignment: the owner is chased once due, like
+      any loop (the Executive may also call message_person when asked).
+      Who: the principal or any active team member may assign anyone on the
+      team. Tool gate (`open_loop_tools._assigner`): principal on a verified
+      surface (`is_principal_on_verified_surface`) or a teammate on one
+      (`people_tools.teammate_on_verified_surface`, shared with
+      fact_tools' teammate facts); never an unattended run, a turn private to
+      the principal, or an email (even the principal's own). The tool's
+      `task` must appear verbatim in the speaker's own words this turn
+      (`delegation.settings.own_words` of the pinned speaker text — adapter
+      tag blocks stripped, attachment turns refused), the same rule as
+      verbatim_text, and language-neutral. Cap 5 per turn. Withheld via
+      UNATTENDED_WITHHELD_TOOLS and PRIVATE_TURN_WITHHELD_TOOLS. The turn's
+      assigned owner ids are kept per (audit session id, turn id)
+      (`note_assigned_this_turn`); `schedule_open_loop_pass` passes that
+      turn key and `_apply_opens` drops `assigned_this_turn` for those owners,
+      so one ask is never two loops (closes still apply). Route: caller via
+      `_resolve_caller_person_id`, 403 unless an active team member, contact
+      404 to non-principals (`_visible_person`); refusals 404/409/422. GET
+      stays principal-or-owner, so a teammate who assigns Ben a task does
+      not see Ben's other loops. UI: People page "Assign a task" form under
+      Open loops (list only for the principal or the person themselves).
     due_soon: |
       `open_loops.principal_due_soon(within_days=7, limit=10)` — the
       principal's (find_principal_person) open loops overdue or due within 7
@@ -2689,7 +2725,8 @@ attunement:
       (ATTUNEMENT_LOOP_TTL_DAYS=21) at the start of every nudge scan.
       Every open/close audited as event_type `attunement`.
     tools: |
-      list_open_loops, close_open_loop (orchestrator/open_loop_tools.py).
+      list_open_loops, close_open_loop, assign_open_loop (see assign)
+      (orchestrator/open_loop_tools.py).
       Visibility: the principal sees everyone's loops only on a private surface
       (web chat, slack:dm:, discord:dm:, telegram:<positive id>); shared
       channels/threads, Telegram groups, Google Chat spaces and email threads
@@ -2706,7 +2743,10 @@ attunement:
       message (drop reason `text_not_verbatim`): it is re-injected into the
       nudge intent a tool-using turn executes, so a model paraphrase could
       smuggle instructions. The nudge intent also says to treat it as data.
-    api: GET /people/{id}/open-loops, POST /open-loops/{loop_id}/close (both principal-or-owner)
+    api: |
+      GET /people/{id}/open-loops, POST /open-loops/{loop_id}/close (both
+      principal-or-owner); POST /people/{id}/open-loops {task, due_date?} →
+      201 OpenLoopOut (any active team member; see assign).
     reset: |
       Loops live in scheduled_actions and attribution in chat_messages (both
       already wiped by client-slot switches and reset_all_state);

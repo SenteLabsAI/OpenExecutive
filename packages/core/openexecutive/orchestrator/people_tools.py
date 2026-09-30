@@ -630,6 +630,36 @@ def is_principal_on_verified_surface(session: Any) -> bool:
         return False
 
 
+def teammate_on_verified_surface(session: Any) -> Any:
+    """The rostered teammate talking, when this turn is one a teammate may act
+    in on their own account (record an attributed fact, assign a task): a team
+    member (not a contact, not archived, not the principal) on a surface that
+    verified who they are — the web app signed in, their own Slack or Discord —
+    in a turn someone is watching, that no email started. None otherwise, or
+    when the lookup fails (fails closed)."""
+    if (
+        session is None
+        or getattr(session, "unattended", False)
+        or getattr(session, "private_to_principal", False)
+        or getattr(session, "email_from", "")
+        or not _is_verified_speaker_surface(session)
+    ):
+        return None
+    person_id = getattr(session, "caller_person_id", None)
+    if person_id is None:
+        return None
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(int(person_id))
+    except Exception:
+        logger.warning("people_tools: teammate lookup failed — refusing", exc_info=True)
+        return None
+    if person is None or person.is_principal or person.archived or person.kind != "team":
+        return None
+    return person
+
+
 def _refuse_unless_owner(tool: str) -> str | None:
     """The refusal tool result when this turn may not change the roster, else None.
 

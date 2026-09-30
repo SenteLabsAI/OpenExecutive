@@ -300,33 +300,10 @@ def _principal_email_turn(session: Any) -> bool:
 
 def _teammate_speaker(session: Any) -> Any:
     """The rostered teammate talking, when this turn may record an attributed
-    fact for them: a team member (not a contact, not archived, not the
-    principal) on a surface that verified who they are — the web app signed
-    in, their own Slack or Discord — in a turn someone is watching. None
-    otherwise, or when the lookup fails (fails closed)."""
-    from openexecutive.orchestrator.people_tools import _is_verified_speaker_surface
+    fact for them (``people_tools.teammate_on_verified_surface``)."""
+    from openexecutive.orchestrator.people_tools import teammate_on_verified_surface
 
-    if (
-        session is None
-        or getattr(session, "unattended", False)
-        or getattr(session, "private_to_principal", False)
-        or getattr(session, "email_from", "")
-        or not _is_verified_speaker_surface(session)
-    ):
-        return None
-    person_id = getattr(session, "caller_person_id", None)
-    if person_id is None:
-        return None
-    try:
-        from openexecutive.people.store import get_person
-
-        person = get_person(int(person_id))
-    except Exception:
-        logger.warning("fact_tools: teammate lookup failed — refusing", exc_info=True)
-        return None
-    if person is None or person.is_principal or person.archived or person.kind != "team":
-        return None
-    return person
+    return teammate_on_verified_surface(session)
 
 
 def _gate(tool: str, *, teammates: bool = False) -> tuple[str | None, bool, Any]:

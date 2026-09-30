@@ -399,6 +399,107 @@ def open_loop(
         return None
 
 
+@dataclass(frozen=True)
+class AssignResult:
+    """What :func:`assign_open_loop` did: the new loop's id, or why not."""
+
+    loop_id: int | None
+    reason: str | None = None
+    due_at: str | None = None
+
+
+# Explicit assignments made this turn, per owner, keyed like
+# ``department_tools._goals_created_by_turn`` (audit session id, turn id): the
+# chat tool's per-turn cap reads it, and the turn's own extraction pass skips
+# opening another loop for an owner the speaker just assigned one to — the same
+# ask worded two ways would otherwise be two loops. Bounded, oldest turn first.
+_assigned_by_turn: dict[tuple[str | None, str], list[int]] = {}
+_ASSIGNED_TURNS_MAX = 256
+
+
+def current_turn_key() -> tuple[str | None, str] | None:
+    """This turn's audit ids, or None outside a turn."""
+    from openexecutive.audit.context import get_active_ids
+
+    session_id, turn_id = get_active_ids()
+    return (session_id, turn_id) if turn_id else None
+
+
+def note_assigned_this_turn(owner_person_id: int, key: tuple[str | None, str] | None) -> None:
+    if key is None:
+        return
+    _assigned_by_turn.setdefault(key, []).append(owner_person_id)
+    while len(_assigned_by_turn) > _ASSIGNED_TURNS_MAX:
+        _assigned_by_turn.pop(next(iter(_assigned_by_turn)))
+
+
+def assigned_this_turn(key: tuple[str | None, str] | None) -> list[int]:
+    """Owner ids assigned a loop explicitly in this turn (one per assignment)."""
+    return list(_assigned_by_turn.get(key, [])) if key is not None else []
+
+
+def assign_open_loop(
+    *,
+    owner_person_id: int,
+    text: str,
+    assigned_by_person_id: int,
+    due_date: date | None = None,
+    originating_session_id: str | None = None,
+    db_path: Path | None = None,
+) -> AssignResult:
+    """Open a loop someone asked for explicitly — the chat tool and the People
+    page's "Assign a task" form, as opposed to the extraction pass.
+
+    The owner must be an active team member (a contact is never chased) and
+    the assigner an active team member too; callers gate on WHO may assign.
+    The stored description has the extraction pass's shape, so the nudge
+    engine's intent reads the same either way. ``due_date`` is a local date
+    (17:00 in the user's timezone, clamped to 60 days out); None means the
+    default due window. Never raises on a refusal: ``reason`` is one of
+    ``disabled``, ``unknown_owner``, ``owner_is_contact``, ``owner_archived``,
+    ``unknown_assigner``, ``missing_text``, ``owner_at_cap``, ``duplicate``."""
+    from openexecutive.config import get_settings
+    from openexecutive.people.store import get_person
+
+    settings = get_settings()
+    if not (settings.attunement_enabled and settings.attunement_open_loops_enabled):
+        return AssignResult(None, "disabled")
+    owner = get_person(owner_person_id)
+    if owner is None or owner.id is None:
+        return AssignResult(None, "unknown_owner")
+    if owner.kind != "team":
+        return AssignResult(None, "owner_is_contact")
+    if owner.archived:
+        return AssignResult(None, "owner_archived")
+    assigner = get_person(assigned_by_person_id)
+    if assigner is None or assigner.archived or assigner.kind != "team":
+        return AssignResult(None, "unknown_assigner")
+    clean = _clean(text, _TEXT_MAX)
+    if len(clean) < _TEXT_MIN:
+        return AssignResult(None, "missing_text")
+    if count_open_loops(owner.id, db_path=db_path) >= settings.attunement_max_open_loops_per_person:
+        return AssignResult(None, "owner_at_cap")
+    description = (
+        f"{owner.full_name} committed to: {clean}"
+        if assigner.id == owner.id
+        else f"{assigner.full_name} asked {owner.full_name} for: {clean}"
+    )
+    today = datetime.now(_user_tz()).date()
+    due = _resolve_due(due_date.isoformat() if due_date else None, today=today,
+                       default_days=settings.attunement_loop_default_due_days)
+    loop_id = open_loop(owner_person_id=owner.id, description=description, due_at=due,
+                        originating_session_id=originating_session_id, db_path=db_path)
+    if loop_id is None:
+        return AssignResult(None, "duplicate")
+    _audit(
+        f"open loop #{loop_id} assigned to person {owner.id}",
+        {"op": "loop_assigned", "loop_id": loop_id, "owner_person_id": owner.id,
+         "assigned_by_person_id": assigner.id, "due_at": due.isoformat()},
+        session_id=originating_session_id,
+    )
+    return AssignResult(loop_id, None, due.isoformat())
+
+
 def close_open_loop(
     loop_id: int,
     *,
@@ -719,6 +820,7 @@ async def run_open_loop_pass(
     session_id: str = "",
     workspace_mode: str | None = None,
     principal_verified: bool = False,
+    turn_key: tuple[str | None, str] | None = None,
     db_path: Path | None = None,
 ) -> dict[str, int]:
     """One extraction pass for one attributed turn. Never raises; returns the
@@ -728,7 +830,11 @@ async def run_open_loop_pass(
     workspace. Solo uses ``_SYSTEM_SOLO`` and opens the principal's own DATED
     commitments (see the module docstring) — only when ``principal_verified``:
     the turn is the principal on a surface that verified it is them
-    (``people_tools.is_principal_on_verified_surface``). Team is unchanged."""
+    (``people_tools.is_principal_on_verified_surface``). Team is unchanged.
+
+    ``turn_key`` is the turn's audit ids: an owner the speaker explicitly
+    assigned a loop to in that turn (``assign_open_loop``) gets no second one
+    from this pass; closes still apply."""
     from openexecutive.config import get_settings
     from openexecutive.people.store import get_person, list_people
 
@@ -771,6 +877,7 @@ async def run_open_loop_pass(
             payload, user_message, speaker=speaker, roster=roster, today=today,
             settings=settings, session_id=session_id, dropped=dropped, db_path=db_path,
             solo=solo, principal_verified=principal_verified,
+            assigned_owner_ids=set(assigned_this_turn(turn_key)),
         )
     except Exception as exc:
         failure = type(exc).__name__
@@ -871,6 +978,7 @@ def _apply_opens(
     db_path: Path | None,
     solo: bool = False,
     principal_verified: bool = False,
+    assigned_owner_ids: set[int] | None = None,
 ) -> int:
     """Open the loops that pass every gate. Returns how many opened."""
     principal = next((p for p in roster if p.is_principal), None)
@@ -883,6 +991,11 @@ def _apply_opens(
             dropped.append({"kind": "open", "reason": accepted})
             continue
         owner, text, kind = accepted
+        if assigned_owner_ids and owner.id in assigned_owner_ids:
+            # The speaker assigned this owner a loop explicitly this turn; the
+            # same ask, extracted in other words, would be a second loop.
+            dropped.append({"kind": "open", "reason": "assigned_this_turn"})
+            continue
         if count_open_loops(owner.id, db_path=db_path) >= settings.attunement_max_open_loops_per_person:
             dropped.append({"kind": "open", "reason": "owner_at_cap"})
             continue
@@ -1023,6 +1136,7 @@ def schedule_open_loop_pass(
             await run_open_loop_pass(
                 user_message, assistant_response, person_id=person_id, session_id=session_id,
                 workspace_mode=workspace_mode, principal_verified=principal_verified,
+                turn_key=(audit_sid, audit_tid) if audit_tid else None,
             )
 
     try:

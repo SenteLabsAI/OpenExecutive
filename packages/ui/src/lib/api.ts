@@ -3399,6 +3399,23 @@ export async function getPersonOpenLoops(id: number): Promise<OpenLoop[]> {
   return res.json();
 }
 
+// Assign this person a task: an open loop they are followed up on once it is
+// due (nobody is messaged now). The principal or anyone on the team may.
+// `dueDate` is a local YYYY-MM-DD; omit it for the default due window.
+export async function assignOpenLoop(
+  personId: number,
+  task: string,
+  dueDate?: string,
+): Promise<OpenLoop> {
+  const res = await fetch(`${API_BASE}/people/${personId}/open-loops`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task, ...(dueDate ? { due_date: dueDate } : {}) }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `Couldn't assign the task (${res.status})`));
+  return res.json();
+}
+
 export async function closeOpenLoop(
   loopId: number,
   reason: "done" | "not_needed" | "cancelled" = "done",

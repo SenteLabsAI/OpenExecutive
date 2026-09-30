@@ -46,8 +46,10 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "archive_person",
     "resolve_roster_request",
     "set_department_head",
-    # Attunement: closing an open loop stops the nudge engine chasing it
+    # Attunement: closing an open loop stops the nudge engine chasing it;
+    # assigning one starts it
     "close_open_loop",
+    "assign_open_loop",
     # Department goal mutations (Phase B — chat-driven progress updates)
     "update_department_goal",
     # A new goal (and, when its area did not exist, a new area)
@@ -186,6 +188,9 @@ def summarize_action(
     if tool_name == "close_open_loop" and (parsed or {}).get("status") != "closed":
         # Refused, or the loop was no longer open — nothing changed.
         return None
+    if tool_name == "assign_open_loop" and (parsed or {}).get("status") != "assigned":
+        # Refused, or not assigned (duplicate, at cap, …) — nothing changed.
+        return None
 
     payload: dict[str, Any] = {
         "type": "action_taken",
@@ -256,6 +261,15 @@ def summarize_action(
     elif tool_name == "close_open_loop":
         loop_id = tool_input.get("loop_id")
         payload["summary"] = f"Closed open loop #{loop_id}" if loop_id else "Closed an open loop"
+    elif tool_name == "assign_open_loop":
+        owner = str((parsed or {}).get("owner") or "")
+        task = " ".join(str(tool_input.get("task", "") or "").split())[:80]
+        who = owner or "someone"
+        payload["summary"] = f"Assigned {who}: {task}" if task else f"Assigned {who} a task"
+        payload["target"] = owner or None
+        pid = (parsed or {}).get("owner_person_id")
+        if isinstance(pid, int):
+            payload["link"] = f"/people/{pid}"
     elif tool_name == "resolve_roster_request":
         decision = str(tool_input.get("decision", "") or "")
         name = str((parsed or {}).get("full_name") or tool_input.get("full_name") or "")

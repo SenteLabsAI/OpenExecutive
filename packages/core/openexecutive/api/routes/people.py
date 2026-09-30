@@ -530,6 +530,64 @@ def get_person_open_loops(person_id: int, request: Request) -> list[OpenLoopOut]
     ]
 
 
+class OpenLoopCreate(BaseModel):
+    task: str = Field(min_length=1, max_length=200)
+    # A local date; the loop is due at 17:00 that day in the user's timezone
+    # (clamped to 60 days out). Omit for the default due window.
+    due_date: date | None = None
+
+
+# Why an assignment was refused, as the People page shows it.
+_ASSIGN_REFUSED: dict[str, tuple[int, str]] = {
+    "disabled": (409, "Open loops are turned off for this workspace"),
+    "unknown_owner": (404, "Person not found"),
+    "owner_is_contact": (409, "Tasks are assigned to team members, not contacts"),
+    "owner_archived": (409, "This person is archived"),
+    "unknown_assigner": (403, "Only someone on the team can assign a task"),
+    "missing_text": (422, "Describe the task"),
+    "owner_at_cap": (409, "They already have as many open loops as they can carry — close some first"),
+    "duplicate": (409, "That task is already open for them"),
+}
+
+
+@router.post(
+    "/people/{person_id}/open-loops",
+    response_model=OpenLoopOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def assign_person_open_loop(person_id: int, body: OpenLoopCreate, request: Request) -> OpenLoopOut:
+    """Assign this person a task: an open loop, followed up once it is due.
+
+    The principal or any active team member may assign one to anyone on the
+    team (themselves included); nobody is messaged now. Listing stays the
+    principal's or the owner's (``GET`` above), so a teammate who assigns Ben
+    a task gets it back here but does not see Ben's other loops."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.attunement.open_loops import assign_open_loop, get_open_loop
+
+    _visible_person(person_id, request)
+    caller = _resolve_caller_person_id(request)
+    assigner = people_store.get_person(caller) if caller is not None else None
+    if assigner is None or assigner.id is None or assigner.archived or assigner.kind != "team":
+        raise HTTPException(status_code=403, detail="Only someone on the team can assign a task")
+    result = assign_open_loop(
+        owner_person_id=person_id, text=body.task, assigned_by_person_id=assigner.id,
+        due_date=body.due_date,
+    )
+    loop = get_open_loop(result.loop_id) if result.loop_id is not None else None
+    if loop is None:
+        code, detail = _ASSIGN_REFUSED.get(result.reason or "", (409, "Could not assign the task"))
+        raise HTTPException(status_code=code, detail=detail)
+    return OpenLoopOut(
+        loop_id=loop.id,
+        owner_person_id=loop.owner_person_id,
+        owner_name=loop.owner_name,
+        description=loop.description,
+        due_at=loop.due_at,
+        created_at=loop.created_at,
+    )
+
+
 @router.post("/open-loops/{loop_id}/close", status_code=status.HTTP_204_NO_CONTENT)
 def close_open_loop_route(loop_id: int, body: OpenLoopClose, request: Request) -> Response:
     """Close one open loop. Only the principal or the loop's owner may."""

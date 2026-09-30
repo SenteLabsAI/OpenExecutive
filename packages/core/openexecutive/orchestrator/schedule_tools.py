@@ -1634,7 +1634,11 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # stored or inbound text in their context and nobody watching. create_goal and
 # record_decision_outcome also refuse anyone but the principal on a verified
 # surface; this keeps them out of the unattended toolkits altogether.
+# assign_open_loop puts someone on the nudge engine's chase list, so it is a
+# person's own request, never something stored text talks an unattended run
+# into (its handler refuses an unattended session too).
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "assign_open_loop",
     "create_goal",
     "forget_fact",
     "record_decision_outcome",
@@ -1673,6 +1677,8 @@ def unattended_withheld_error(tool_name: str) -> str:
 #   the entry is on everyone's /watchlist.
 # - draft_artifact: artifacts are visible to the whole team (the handler also
 #   refuses on a private turn).
+# - assign_open_loop: the assignee is chased by the nudge engine, and the
+#   loop is on their People page (the handler also refuses such a turn).
 # - update_department_goal: goal status and progress text render in every
 #   turn's org block and on /today.
 # - save_workflow: the definition is listed on everyone's /jobs.
@@ -1700,6 +1706,7 @@ def unattended_withheld_error(tool_name: str) -> str:
 # included.
 PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "add_watchlist_entry",
+    "assign_open_loop",
     "cancel_calendar_event",
     "create_calendar_event",
     "create_instant_meeting",

@@ -1,12 +1,13 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { type ReactNode, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   archivePerson,
+  assignOpenLoop,
   closeOpenLoop,
   getPeopleViewer,
   getPerson,
@@ -233,16 +234,32 @@ function WorkingStyleSection({ personId }: { personId: number }) {
 // Open loops — what this person owes (attunement)
 // ---------------------------------------------------------------------------
 
-function OpenLoopsSection({ personId }: { personId: number }) {
+function OpenLoopsSection({
+  personId,
+  canList,
+  canAssign,
+}: {
+  personId: number;
+  // The principal or this person: what someone owes is not roster-public.
+  canList: boolean;
+  // Anyone on the team may assign them a task (the API decides).
+  canAssign: boolean;
+}) {
   const [loops, setLoops] = useState<OpenLoop[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState<number | null>(null);
+  const [task, setTask] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [assigning, setAssigning] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [assigned, setAssigned] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!canList) return;
     getPersonOpenLoops(personId)
       .then(setLoops)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
-  }, [personId]);
+  }, [personId, canList]);
 
   async function close(loopId: number) {
     setClosing(loopId);
@@ -257,6 +274,33 @@ function OpenLoopsSection({ personId }: { personId: number }) {
     }
   }
 
+  async function assign(e: FormEvent) {
+    e.preventDefault();
+    const text = task.trim();
+    if (!text || assigning) return;
+    setAssigning(true);
+    setAssignError(null);
+    setAssigned(null);
+    try {
+      const loop = await assignOpenLoop(personId, text, dueDate || undefined);
+      if (canList) {
+        setLoops((prev) =>
+          [...(prev ?? []), loop].sort((a, b) => a.due_at.localeCompare(b.due_at)),
+        );
+      }
+      setAssigned(
+        `Assigned — due ${new Date(loop.due_at).toLocaleDateString()}. They'll be followed up if it isn't done by then.`,
+      );
+      setTask("");
+      setDueDate("");
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "Couldn't assign the task");
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  if (!canList && !canAssign) return null;
   const now = Date.now();
   return (
     <section className="mb-6">
@@ -264,43 +308,79 @@ function OpenLoopsSection({ personId }: { personId: number }) {
         Open loops
       </h2>
       <p className="text-xs text-fg-muted mb-3">
-        Things they committed to or were asked for in conversation. Overdue ones are
-        followed up automatically; close one once it&apos;s done.
+        Things they committed to, were asked for in conversation, or were assigned here.
+        Overdue ones are followed up automatically; close one once it&apos;s done.
       </p>
-      {error && <p className="text-xs text-rose-300 mb-2">{error}</p>}
-      {loops === null ? (
-        !error && <p className="text-sm text-fg-muted">Loading…</p>
-      ) : loops.length === 0 ? (
-        <p className="text-sm text-fg-muted">Nothing open.</p>
-      ) : (
-        <div className="space-y-2">
-          {loops.map((l) => {
-            const overdue = new Date(l.due_at).getTime() <= now;
-            return (
-              <div
-                key={l.loop_id}
-                className="flex items-start justify-between gap-3 px-4 py-2.5 rounded-lg border border-line bg-surface-elevated text-sm"
-              >
-                <div className="min-w-0">
-                  <p className="text-fg">{l.description}</p>
-                  <p className={`text-xs mt-0.5 ${overdue ? "text-amber-300" : "text-fg-muted"}`}>
-                    {overdue ? "Overdue since " : "Due "}
-                    {new Date(l.due_at).toLocaleDateString()}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={closing === l.loop_id}
-                  onClick={() => close(l.loop_id)}
-                  className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
-                >
-                  {closing === l.loop_id ? "Closing…" : "Mark done"}
-                </button>
-              </div>
-            );
-          })}
-        </div>
+      {canList && (
+        <>
+          {error && <p className="text-xs text-rose-300 mb-2">{error}</p>}
+          {loops === null ? (
+            !error && <p className="text-sm text-fg-muted">Loading…</p>
+          ) : loops.length === 0 ? (
+            <p className="text-sm text-fg-muted">Nothing open.</p>
+          ) : (
+            <div className="space-y-2">
+              {loops.map((l) => {
+                const overdue = new Date(l.due_at).getTime() <= now;
+                return (
+                  <div
+                    key={l.loop_id}
+                    className="flex items-start justify-between gap-3 px-4 py-2.5 rounded-lg border border-line bg-surface-elevated text-sm"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-fg">{l.description}</p>
+                      <p className={`text-xs mt-0.5 ${overdue ? "text-amber-300" : "text-fg-muted"}`}>
+                        {overdue ? "Overdue since " : "Due "}
+                        {new Date(l.due_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={closing === l.loop_id}
+                      onClick={() => close(l.loop_id)}
+                      className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+                    >
+                      {closing === l.loop_id ? "Closing…" : "Mark done"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
+      {canAssign && (
+        <form onSubmit={assign} className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-end">
+          <label className="flex-1 text-xs text-fg-muted flex flex-col gap-1">
+            Assign a task
+            <input
+              value={task}
+              onChange={(e) => setTask(e.target.value)}
+              maxLength={200}
+              placeholder="e.g. send the vendor quote"
+              className="w-full bg-surface-elevated border border-line rounded-lg px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:border-indigo-500"
+            />
+          </label>
+          <label className="text-xs text-fg-muted flex flex-col gap-1">
+            Due (optional)
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              className="bg-surface-elevated border border-line rounded-lg px-3 py-2 text-sm text-fg focus:outline-none focus:border-indigo-500"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={assigning || !task.trim()}
+            className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm disabled:opacity-50"
+          >
+            {assigning ? "Assigning…" : "Assign"}
+          </button>
+        </form>
+      )}
+      {assignError && <p className="text-xs text-rose-300 mt-2">{assignError}</p>}
+      {assigned && <p className="text-xs text-fg-muted mt-2">{assigned}</p>}
     </section>
   );
 }
@@ -432,11 +512,19 @@ export default function PersonDetailPage() {
   // Only the principal may move someone between team and contacts (contacts
   // are theirs alone); for anyone else the API 404s a contact's page anyway.
   const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
+  // The viewer's own People entry, if any: who may see and assign open loops.
+  const [viewerPersonId, setViewerPersonId] = useState<number | null>(null);
 
   useEffect(() => {
     getPeopleViewer()
-      .then((v) => setViewerIsPrincipal(v.is_principal))
-      .catch(() => setViewerIsPrincipal(false));
+      .then((v) => {
+        setViewerIsPrincipal(v.is_principal);
+        setViewerPersonId(v.person_id);
+      })
+      .catch(() => {
+        setViewerIsPrincipal(false);
+        setViewerPersonId(null);
+      });
   }, []);
   const rawId = params?.id;
   const personId = rawId ? parseInt(String(rawId), 10) : NaN;
@@ -997,7 +1085,13 @@ export default function PersonDetailPage() {
 
               )}
 
-              {!person.archived && !contact && <OpenLoopsSection personId={personId} />}
+              {!person.archived && !contact && (
+                <OpenLoopsSection
+                  personId={personId}
+                  canList={viewerIsPrincipal || viewerPersonId === personId}
+                  canAssign={viewerPersonId !== null}
+                />
+              )}
               {!person.archived && !contact && <OutreachSection personId={personId} />}
               {!person.archived && !contact && <WorkingStyleSection personId={personId} />}
 
