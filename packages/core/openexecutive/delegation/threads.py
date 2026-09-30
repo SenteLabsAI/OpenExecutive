@@ -6,11 +6,13 @@ Recipients are decided here, never by a model: a reply goes to the last
 message's sender (never its ``Reply-To``), with the thread's other recipients
 only on ``reply_all``.
 
-The composer may restate what the writer already said in the thread, so the
-writer's own messages are marked, in code, and nothing anyone else wrote can
-pass for one: the mark goes only on a message the mailbox itself sent (SENT,
-from their address), it is cut out of every other name, date and body, and a
-body line that reads like one of these message headers is quoted.
+The composer may restate what the writer already said in the thread, so which
+words are theirs is never written inside the thread text, where a sender's
+name, date or body could imitate it with any look-alike. ``thread_text``
+labels every message alike; ``writer_said`` lists the writer's own words
+apart, taken only from mail their mailbox sent (SENT, from their address),
+and the composer gets it as its own block after the thread, which text inside
+the thread cannot close (``ghostwriter``).
 """
 from __future__ import annotations
 
@@ -21,35 +23,51 @@ MAX_RECIPIENTS = 10
 THREAD_MESSAGES = 6
 THREAD_MESSAGE_CHARS = 1500
 
-WRITER_MARK = "(the writer)"
-_MARK_RE = re.compile(r"\(\s*the\s+writer\s*\)", re.IGNORECASE)
 _HEADER_LINE_RE = re.compile(r"^(\s*)(\[\s*\d+\s*\]\s*From\s*:)", re.IGNORECASE | re.MULTILINE)
 
 
-def _shown(text: str, *, mine: bool) -> str:
-    """``text`` as the composer is shown it: only the writer's own words may
-    carry the writer's mark, and no line may pass for a message header."""
-    if not mine:
-        text = _MARK_RE.sub("(…)", text)
+def _quote_headers(text: str) -> str:
+    """A body line that reads like one of these message headers, quoted, so
+    a body can't pass for a message of its own."""
     return _HEADER_LINE_RE.sub(r"\1> \2", text)
 
 
+def _shown_messages(thread: Any) -> list[Any]:
+    return [m for m in thread.messages if "DRAFT" not in m.labels][-THREAD_MESSAGES:]
+
+
+def mine(message: Any, own: str) -> bool:
+    """Whether the writer wrote ``message``: their own mailbox sent it. A
+    From header alone can name anyone."""
+    return message.from_addr == own and "SENT" in message.labels
+
+
 def thread_text(thread: Any, own: str) -> str:
-    """The last few messages of the thread, each only its sender's own words."""
+    """The last few messages of the thread, each only its sender's own words,
+    all labelled alike: nothing here says which are the writer's
+    (``writer_said`` does)."""
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
 
-    shown = [m for m in thread.messages if "DRAFT" not in m.labels][-THREAD_MESSAGES:]
     parts = []
-    for i, m in enumerate(shown, 1):
-        # Their own sent mail: a From header alone can name anyone.
-        mine = m.from_addr == own and "SENT" in m.labels
-        who = _shown(one_line(m.from_name or m.from_addr, 120), mine=mine)
-        if mine:
-            who = f"{who} {WRITER_MARK}"
-        date = _shown(one_line(m.date, 60), mine=mine)
-        text = _shown(sender_new_text(m.text or "")[:THREAD_MESSAGE_CHARS], mine=mine)
-        parts.append(f"[{i}] From: {who} — {date}\n{text}")
+    for i, m in enumerate(_shown_messages(thread), 1):
+        who = one_line(m.from_name or m.from_addr, 120)
+        text = _quote_headers(sender_new_text(m.text or "")[:THREAD_MESSAGE_CHARS])
+        parts.append(f"[{i}] From: {who} — {one_line(m.date, 60)}\n{text}")
+    return "\n\n".join(parts)
+
+
+def writer_said(thread: Any, own: str) -> str:
+    """What the writer themselves wrote among ``thread_text``'s messages,
+    numbered as there: only mail their own mailbox sent. "" when none."""
+    from openexecutive.delegation.ghostwriter import one_line
+    from openexecutive.integrations.email_poller import sender_new_text
+
+    parts = []
+    for i, m in enumerate(_shown_messages(thread), 1):
+        if mine(m, own):
+            text = sender_new_text(m.text or "")[:THREAD_MESSAGE_CHARS]
+            parts.append(f"[{i}] {one_line(m.date, 60)}\n{text}")
     return "\n\n".join(parts)
 
 

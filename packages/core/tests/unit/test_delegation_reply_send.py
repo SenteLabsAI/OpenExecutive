@@ -268,6 +268,39 @@ def test_an_unconfirmed_send_that_did_not_go_is_handed_back_by_the_reconciler(
     assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["send_failed"]}
 
 
+def test_an_unconfirmed_send_whose_draft_vanished_waits_for_the_sent_message(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    """The draft is gone but the sent message isn't in the thread yet: one
+    look isn't enough to call it deleted."""
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    sent_message = mailbox.drafts.pop("d1").message
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+    assert _status(card) == "executing"
+    # It shows up by the next scan: recorded as sent, not as deleted.
+    sent_message.labels = ["SENT"]
+    sent_message.id = "sent-d1"
+    sent_message.received_at = (NOW + timedelta(minutes=5)).isoformat()
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=36), own={OWNER})) == 1
+    assert _status(card) == "approved_unchanged"
+    assert _ledger(db)["m1"] == ("sent", "sent")
+
+
+def test_an_unconfirmed_send_whose_draft_was_deleted_closes_on_the_second_look(
+    owner: Any, models: dict[str, Any]
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    asyncio.run(mailbox.delete_draft("d1"))
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=36), own={OWNER})) == 1
+    row = ledger.get_decision_instance(card.id)
+    assert row is not None and row.status == "closed_externally" and row.reversal_reason == "draft_deleted"
+
+
 def test_an_unconfirmed_send_whose_draft_lingers_but_went_is_not_handed_back(
     owner: Any, models: dict[str, Any]
 ) -> None:

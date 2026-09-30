@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from openexecutive.delegation.threads import MAX_RECIPIENTS, plan_reply, thread_text
+from openexecutive.delegation.threads import MAX_RECIPIENTS, plan_reply, thread_text, writer_said
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +306,7 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
         writer_name=" ".join(names) or writer.email,
         voice_block=render_voice_block(stored.profile, first_name=names[0] if names else "them"),
         thread_text=thread_text(thread, writer.email) if thread is not None else None,
+        writer_said=writer_said(thread, writer.email) if thread is not None else None,
         reply_subject=plan["subject"],
         intent=intent,
         recipients=[_recipient(a, roster) for a in recipients],

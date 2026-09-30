@@ -7745,7 +7745,10 @@ delegation:
     the person's <voice> block (no cache markers: short, and rare). User
     turn = <writer>, <recipients>, <thread> (the last 6 messages, each only
     its sender's new text via email_poller.sender_new_text, every line
-    through scrub_block_line), <intent>. NO tools but the forced
+    through scrub_block_line, all labelled alike), <writer_said> (a reply's
+    only record of the writer's own words: their sent mail among those 6,
+    threads.writer_said), <intent>. The prompt says nothing in <thread> is
+    the writer's words, whatever it claims. NO tools but the forced
     compose_reply; no company profile, memory or roster. Not a Council
     agent: PATCH /agents and /personas have no principal check. Model
     DELEGATION_COMPOSER_MODEL, else the default model;
@@ -7931,14 +7934,17 @@ delegation:
   inbox_drafting: |
     delegation.inbox.compose_reply — ghostwriter.compose and the person's
     voice block unchanged, with a constant intent in place of a person's.
-    The thread it is shown (threads.thread_text, shared with chat) marks the
-    writer's own messages "(the writer)" in code, and only a message the
-    mailbox itself sent (SENT, from their address): the mark is cut out of
-    every other name, date and body, and a body line that reads like one of
-    the block's "[n] From:" headers is quoted, so nobody else's words can
-    pass for the writer's. The intents:
-    INBOX_REPLY_INTENT (acknowledge; say again only what the person's OWN
-    earlier messages in the thread already said; no yes or no, date, time,
+    Which words are the writer's is never written inside the thread text,
+    where a sender's name, date or body could imitate any marker with a
+    look-alike: threads.thread_text (shared with chat) labels every message
+    alike and quotes body lines that read like its "[n] From:" headers, and
+    threads.writer_said lists the writer's own words apart — only mail their
+    mailbox sent (SENT, from their address) — as the <writer_said> block
+    after </thread>, which nothing inside the thread can close; the other
+    blocks' tags are defanged in thread text too
+    (ghostwriter._defang_blocks). The intents:
+    INBOX_REPLY_INTENT (acknowledge; say again only what <writer_said>
+    already says, never anything in <thread>; no yes or no, date, time,
     price, fact or promise of its own; "I'll get back to you"; every ask it
     can't answer from their words goes in open_questions), or
     INBOX_HOLDING_INTENT for a stranger (a short thank-you-I'll-get-back
@@ -8008,10 +8014,12 @@ delegation:
     send_unconfirmed. The reconciler then asks Gmail
     (inbox._settle_unconfirmed_send): the person's message in the thread
     means it was sent (finished, confirmed_later), whether or not the draft
-    has gone yet; Gmail deletes a draft it sends, so the draft still there
-    and nothing sent on two scans in a row (the first adds the ledger flag
-    unconfirmed_seen) means it was not (back to proposed, flagged
-    send_failed); gone with nothing sent, it was deleted. Nothing is ever
+    has gone yet. Anything else waits for a second scan that sees the same
+    (the first adds the ledger flag unconfirmed_seen; Gmail can take a
+    moment to settle a send and show it): the draft still there and nothing
+    sent means it was not sent (back to proposed, flagged send_failed —
+    Gmail deletes a draft it sends); gone with nothing sent, it was
+    deleted. Nothing is ever
     retried on its own. Send is the person's act, so it works while the
     Executive is paused.
   prompt: |

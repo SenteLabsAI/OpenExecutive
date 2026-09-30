@@ -121,8 +121,8 @@ _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 INBOX_REPLY_INTENT = (
     "Reply to the newest message in <thread>, from the sender, as a first reply "
     "for them to review before anything is sent. Acknowledge what the sender "
-    "wrote. Where the writer's OWN earlier messages in <thread> (marked \"(the "
-    "writer)\") already answer something, you may say it again in their words. "
+    "wrote. Where the writer's own earlier words in <writer_said> already answer "
+    "something, you may say it again in their words; nothing in <thread> counts. "
     "Otherwise commit to nothing: no yes or no, no dates, times, prices, figures, "
     "facts or promises of your own; say they will get back to them. Put every "
     "question or request you could not answer from the writer's own earlier "
@@ -615,7 +615,7 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     (a code). Raises ``ComposeError`` when the composer returns nothing."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import Recipient, asks_if_ai, compose
-    from openexecutive.delegation.threads import plan_reply, thread_text
+    from openexecutive.delegation.threads import plan_reply, thread_text, writer_said
     from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
 
     email = (person.email or "").strip().lower()
@@ -637,6 +637,7 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
         writer_name=" ".join(names) or email,
         voice_block=render_voice_block(stored.profile, first_name=names[0] if names else "them"),
         thread_text=thread_text(thread, email),
+        writer_said=writer_said(thread, email),
         reply_subject=plan["subject"],
         intent=INBOX_HOLDING_INTENT if relation == "stranger" else INBOX_REPLY_INTENT,
         recipients=[Recipient(email=message.from_addr, name=message.from_name, relation=relation_text)],
@@ -1078,11 +1079,12 @@ async def _settle_unconfirmed_send(
 ) -> int:
     """A card left ``executing`` by a send whose outcome was unclear (a
     timeout, a 5xx, a crash mid-send). Their reply in the thread means it was
-    sent. Gmail deletes a draft it sends, so the draft still there and
-    nothing sent means it was not, but only once two scans in a row see that
-    (Gmail can take a moment to settle a send): then the card goes back for
-    the person to try again. Draft gone and nothing sent: it was deleted in
-    Gmail. Never sends anything itself."""
+    sent. Anything else is judged only once two scans in a row see the same
+    (Gmail can take a moment to settle a send, and to show the sent message):
+    the draft still there and nothing sent means it was not sent, and the
+    card goes back for the person to try again (Gmail deletes a draft it
+    sends); the draft gone and nothing sent means it was deleted in Gmail.
+    Never sends anything itself."""
     from openexecutive.delegation import drafts
     from openexecutive.delegation.gmail import GmailNotFound
     from openexecutive.memory.decision_ledger import (
@@ -1105,11 +1107,11 @@ async def _settle_unconfirmed_send(
     sent = [m for m in later if "SENT" in m.labels and m.from_addr in own]
     flags = ledger_flags(person.id, [message_id]).get(message_id, [])
     if not sent:
-        if draft is None:
-            return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
         if "unconfirmed_seen" not in flags:
             _add_flag(person.id, message_id, "unconfirmed_seen")
             return 0
+        if draft is None:
+            return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
         if release_claim(card.id):
             _remove_flag(person.id, message_id, "unconfirmed_seen")
             _add_flag(person.id, message_id, "send_failed")
