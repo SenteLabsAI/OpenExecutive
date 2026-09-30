@@ -104,3 +104,13 @@ def test_reset_all_state_wipe_list_includes_run_history_tables() -> None:
             "reset will stop clearing it and previously-run jobs/audit/eval "
             "rows will reappear after reset."
         )
+
+
+def test_reset_all_state_wipes_the_decision_ledger_and_act_as_me() -> None:
+    """A reset box has proposed nothing, and keeps nobody's Act as me state.
+    Act as me's tables come from its own list, so a new one is wiped too."""
+    src = inspect.getsource(reset_all_state)
+    for table in ("decision_instances", "decision_class_state"):
+        assert f'"{table}"' in src
+    assert "*DELEGATION_TABLES" in src
+

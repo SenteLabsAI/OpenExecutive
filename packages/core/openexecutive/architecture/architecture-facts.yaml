@@ -8038,7 +8038,16 @@ trust_ledger: |
                                    stays allowed;
                                    a change writes a
                                    decision_class_mode_changed audit row
-    GET  /audit/reliability      — ReliabilityCard for a class+window
+    GET  /audit/reliability      — ReliabilityCard for a class+window. The
+                                   principal's alone (403 otherwise): it
+                                   counts private decisions too
+    Who may resolve: the principal, or the person the decision went to for
+    approval (approver_person_id). Anyone else gets 403 on approve, reject
+    and cancel (decisions._resolver). One nobody was asked about
+    (approver_person_id NULL), or one private to the principal, is the
+    principal's alone. The resolver's Person id is recorded in
+    resolver_person_id. reset_all_state wipes decision_instances and
+    decision_class_state, as the client-slot wipe already did.
 
   Briefing bridge: a proposed booking is surfaced as a companion briefing alert
     (calendar_tools._propose_via_decision_alert; source='decision_scheduling',

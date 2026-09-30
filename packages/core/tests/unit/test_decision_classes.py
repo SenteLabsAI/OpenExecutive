@@ -61,7 +61,9 @@ def private_class(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """A principal-only class whose hooks record what ran."""
     seen: dict[str, Any] = {"approved": [], "after_reject": []}
 
-    async def approve(instance: ledger.DecisionInstance, body: Any, request: Request) -> Any:
+    async def approve(
+        instance: ledger.DecisionInstance, body: Any, request: Request, resolver: int | None
+    ) -> Any:
         seen["approved"].append(instance.id)
         assert ledger.mark_resolved(instance.id, ledger.STATUS_APPROVED_UNCHANGED)
         return ledger.get_decision_instance(instance.id)
@@ -161,7 +163,7 @@ def test_a_reject_that_loses_the_race_is_a_409(
 def test_the_spec_approve_refusal_passes_through(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def refuse(instance: Any, body: Any, request: Request) -> Any:
+    async def refuse(instance: Any, body: Any, request: Request, resolver: int | None) -> Any:
         raise HTTPException(status_code=409, detail={"code": "confirm_needed"})
 
     monkeypatch.setitem(route.DECISION_CLASSES, "test_refuse", route.DecisionClassSpec(

@@ -185,6 +185,30 @@ def _visible_instance(instance_id: int, request: Request) -> DecisionInstance:
     return instance
 
 
+_NOT_YOURS = (
+    "Only the person this went to for approval, or the owner, can decide it."
+)
+
+
+def _resolver(instance: DecisionInstance, request: Request) -> int | None:
+    """The caller's Person id when they may approve, reject or cancel
+    ``instance``: the principal, or the person it went to for approval
+    (``approver_person_id``) unless it is private to the principal. Anyone
+    else gets 403. Fails closed: a roster that can't be read is a 403."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    caller = _resolve_caller_person_id(request)
+    if _approver_is_principal(request):
+        return caller
+    if caller is not None and caller == instance.approver_person_id and not _is_private(instance):
+        return caller
+    logger.info(
+        "decisions: caller may not resolve instance %d (class %s)",
+        instance.id, instance.decision_class,
+    )
+    raise HTTPException(status_code=403, detail=_NOT_YOURS)
+
+
 def _refresh(instance_id: int) -> DecisionInstance:
     updated = get_decision_instance(instance_id)
     if updated is None:
@@ -196,7 +220,10 @@ def _refresh(instance_id: int) -> DecisionInstance:
 # Decision classes
 # ---------------------------------------------------------------------------
 
-_Approve = Callable[[DecisionInstance, ApproveBody, Request], Awaitable[DecisionInstance]]
+# (instance, body, request, the resolver's Person id) → the updated instance.
+_Approve = Callable[
+    [DecisionInstance, ApproveBody, Request, int | None], Awaitable[DecisionInstance]
+]
 
 
 @dataclass(frozen=True)
@@ -210,8 +237,9 @@ class DecisionClassSpec:
     # The companion briefing alert's source, cleared when an instance is
     # resolved; None when the class raises none.
     alert_source: str | None
-    # Carries out an approval and records it (its own compare-and-set);
-    # raises HTTPException to refuse. Called only on a 'proposed' instance.
+    # Carries out an approval and records it (its own compare-and-set, with
+    # the resolver); raises HTTPException to refuse. Called only on a
+    # 'proposed' instance, and only for a caller who may resolve it.
     approve: _Approve
     # Best effort, after a reject has been recorded.
     after_reject: Callable[[DecisionInstance], Awaitable[None]] | None = None
@@ -257,7 +285,7 @@ def get_decision(instance_id: int, request: Request) -> DecisionInstance:
 
 
 async def _approve_booking(
-    instance: DecisionInstance, body: ApproveBody, request: Request
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
     """Meeting booking: create the calendar event, then record the approval."""
     instance_id = instance.id
@@ -317,6 +345,7 @@ async def _approve_booking(
         instance_id,
         outcome,
         final_payload=final_payload,
+        resolver_person_id=resolver,
         external_event_id=external_event_id,
     )
     if not recorded:
@@ -377,24 +406,26 @@ async def approve_decision(
 ) -> DecisionInstance:
     instance = _visible_instance(instance_id, request)
     spec = _spec_for(instance)
+    resolver = _resolver(instance, request)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot approve a decision with status={instance.status!r}",
         )
-    return await spec.approve(instance, body, request)
+    return await spec.approve(instance, body, request, resolver)
 
 
 @router.post("/decisions/{instance_id}/reject", response_model=DecisionInstance)
 async def reject_decision(instance_id: int, body: RejectBody, request: Request) -> DecisionInstance:
     instance = _visible_instance(instance_id, request)
     spec = _spec_for(instance)
+    resolver = _resolver(instance, request)
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot reject a decision with status={instance.status!r}",
         )
-    if not mark_resolved(instance_id, STATUS_REJECTED):
+    if not mark_resolved(instance_id, STATUS_REJECTED, resolver_person_id=resolver):
         raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
     _clear_decision_alert(instance_id, "dismissed", spec.alert_source)
     updated = _refresh(instance_id)
@@ -411,6 +442,7 @@ async def cancel_decision(instance_id: int, request: Request) -> DecisionInstanc
     """Cancel an approved/executed event (reverse it)."""
     instance = _visible_instance(instance_id, request)
     spec = _spec_for(instance)
+    _resolver(instance, request)
     if spec.cancel is None:
         raise HTTPException(status_code=409, detail="This decision can't be undone.")
     if instance.status not in (
@@ -503,9 +535,14 @@ def set_meeting_class_mode(
 
 @router.get("/audit/reliability", response_model=ReliabilityCard)
 def get_reliability(
+    request: Request,
     decision_class: str = _CALENDAR_CLASS,
     days: int = 30,
 ) -> ReliabilityCard:
+    """How a class's decisions went. The principal's alone: it counts every
+    instance, private ones included."""
+    if not _approver_is_principal(request):
+        raise HTTPException(status_code=403, detail="Only the owner can see this.")
     if days < 1 or days > 365:
         raise HTTPException(status_code=400, detail="days must be 1–365")
     return aggregate_reliability(decision_class, window_days=days)
