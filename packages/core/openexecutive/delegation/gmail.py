@@ -210,6 +210,9 @@ class DraftSpec:
     in_reply_to: str | None = None
     references: str | None = None
     from_name: str = ""
+    # One of the person's own send-as addresses to write from (the one the
+    # mail being answered went to); None is their primary address.
+    from_addr: str | None = None
 
 
 @dataclass
@@ -538,6 +541,7 @@ def build_raw(sender: str, spec: DraftSpec) -> str:
     """The draft as a base64url RFC 2822 message (Gmail's ``raw``)."""
     msg = EmailMessage()
     name = clean_header(spec.from_name)
+    sender = clean_header(spec.from_addr) if spec.from_addr else sender
     msg["From"] = formataddr((name, sender)) if name else sender
     msg["To"] = ", ".join(clean_header(a) for a in spec.to)
     if spec.cc:

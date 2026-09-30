@@ -7881,7 +7881,10 @@ delegation:
     Turning it on needs Act as me on and gmail_status connected, and sets
     watch_since to now every time, so mail from before is never drafted
     for; turning Act as me off turns it off too. Off means no Gmail call and
-    no row. It runs from a throttled scheduler-tick hook
+    no row, with one exception: a send the person started that Gmail never
+    confirmed is still followed through (inbox.settle_sends, on the same
+    interval, throttled in memory by _LAST_SETTLE). It runs from a throttled
+    scheduler-tick hook
     (runner._maybe_scan_inbox → inbox.maybe_scan, after the pause, profile
     and rotation gates), not a scheduled_actions row (those are on
     /scheduled for everyone and anyone may cancel them): every
@@ -7889,17 +7892,27 @@ delegation:
     time and one scan per person (inbox._SCANNING), never while a client
     slot is active; POST /delegation/inbox/check runs the same scan. A scan
     runs entirely under private_rows(True) and logs counts and codes only.
-    It first settles open cards (reconcile), stops with backlog_full at 25
-    open cards, then lists in:inbox -in:chats -from:me minus the
-    promotions, social, updates and forums tabs after watch_since — at most
-    25 ids, the newest per thread, 10 threads — and never marks mail read or
-    changes a label. delegation_inbox_messages is its durable cursor (id,
-    person_id, message_id, thread_id, received_at, sender_key — sha256[:16]
-    of the address, never the address — relation, outcome, reason,
-    classified, draft_id, decision_id, flags, created_at, updated_at;
-    UNIQUE(person_id, message_id)); outcome is processing, skipped,
+    It first settles open cards (reconcile; one card's error never stops the
+    rest), stops with backlog_full at 25 open cards (counting the drafts it
+    makes), then lists in:inbox -in:chats -from:me minus the promotions,
+    social, updates and forums tabs after watch_since — up to 100 ids — and
+    takes the newest message of each thread that still needs a look,
+    passing over settled messages and threads with an open card before the
+    10-thread cap, so a burst of mail or a pause never hides older threads
+    for good. It never marks mail read or changes a label.
+    delegation_inbox_messages is its durable cursor (id, person_id,
+    message_id, thread_id, received_at, sender_key — sha256[:16] of the
+    address, never the address — relation, outcome, reason, classified,
+    attempts, draft_id, decision_id, flags, created_at, updated_at;
+    UNIQUE(person_id, message_id)); outcome is processing, retry, skipped,
     not_needed, deferred, failed, drafted, sent, dismissed, closed or
-    expired. Skipped with a reason (skip_reason, in code): before_watch,
+    expired. retry is a message left for a later scan, which claims it
+    again: a failure that may pass — the classifier giving no verdict, the
+    writer failing, Gmail refusing the draft (the scan then backs off), a
+    card that couldn't be made (its draft is deleted first, so no draft is
+    left without a card) or any other error with one message (which never
+    stops the rest) — is final (failed) after MAX_ATTEMPTS (3); a daily
+    limit reached while it was being read is not counted. Skipped with a reason (skip_reason, in code): before_watch,
     stale (over 3 days), no_sender, from_you (the person or a send-as
     address), from_executive, ours (X-OE-Ghostwritten), automatic
     (Auto-Submitted, Precedence bulk/junk/list/auto_reply, X-Autoreply, a
@@ -7908,16 +7921,20 @@ delegation:
     you_replied (the person wrote last) and draft_exists. Not recorded, so
     a later scan looks again: a message under 10 minutes old (mail the
     person answers at once never gets a card), one in a thread whose card
-    is open, and one a daily limit holds back. Order per message, safe to
-    crash anywhere: claim the row → classify → reserve the shared daily
-    slot → write → create_draft and store its id → create the card
-    (idempotency key delegation_reply:{person}:{message}) → drafted. Limits:
+    is open, and one a daily limit holds back. A thread gone between the
+    listing and the read is recorded skipped (thread_gone). Order per
+    message: claim the row → classify → reserve the shared daily slot →
+    write → create_draft (from the send-as address the mail went to, when
+    that was an alias rather than the primary) and store its id → create
+    the card (idempotency key delegation_reply:{person}:{message}) →
+    drafted. Limits:
     5 drafts a scan; DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20)
     within the shared DELEGATION_MAX_DRAFTS_PER_DAY; 200 classifications, 2
     drafts per sender (1 for a stranger) and 10 stranger drafts a day. A
     lapsed sign-in sets the status and is looked at again every 30 minutes;
-    a rate limit or other Gmail error backs off from 5 minutes, doubling to
-    2 hours. Neither turns the switch off; the card shows the status.
+    a rate limit, an error reaching Gmail or a crash backs off from 5
+    minutes, doubling to 2 hours. Neither turns the switch off; the card
+    shows the status.
   inbox_classifier: |
     delegation.inbox_classifier — one forced-tool call (classify_email →
     needs_reply, kind, confidence) on DELEGATION_CLASSIFIER_MODEL, else

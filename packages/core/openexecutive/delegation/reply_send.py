@@ -235,6 +235,9 @@ async def _send(
         )
 
     edited = draft.message.id != str(payload.get("draft_message_id") or "")
+    if instance.id in SENDING:
+        # Another tap is sending it right now; its mark is its own to clear.
+        raise SendRefused(409, "already_handled", "This reply is being sent already.")
     SENDING.add(instance.id)
     try:
         if not claim_for_execution(instance.id, resolver_person_id=resolver):
@@ -285,20 +288,25 @@ async def _send(
             raise SendRefused(
                 502, "gmail_error", "Gmail refused to send it. Nothing was sent; try again, or send it from Gmail.",
             ) from exc
-        final = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
-        if not finish_execution(
-            instance.id, final,
-            final_payload={"sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited},
-            external_event_id=sent.id or None,
-        ):
-            logger.warning("delegation.reply_send: a sent reply's card changed under it")
-        _set_outcome(person.id, message_id, SENT, reason="sent")
-        if sent.id:
-            drafts.mark_sent(person.id, draft.draft_id, sent.id)
-        _audit("delegation_reply_sent", f"Sent a reply as person {person.id}, on their tap", {
-            "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
-            "sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited,
-        })
+        # It went: whatever happens to the bookkeeping, say so. A card left
+        # executing is settled by the reconciler from the sent message.
+        try:
+            final = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
+            if not finish_execution(
+                instance.id, final,
+                final_payload={"sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited},
+                external_event_id=sent.id or None,
+            ):
+                logger.warning("delegation.reply_send: a sent reply's card changed under it")
+            _set_outcome(person.id, message_id, SENT, reason="sent")
+            if sent.id:
+                drafts.mark_sent(person.id, draft.draft_id, sent.id)
+            _audit("delegation_reply_sent", f"Sent a reply as person {person.id}, on their tap", {
+                "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
+                "sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited,
+            })
+        except Exception as exc:
+            logger.warning("delegation.reply_send: recording a sent reply failed (%s)", type(exc).__name__)
         return sent.id
     finally:
         SENDING.discard(instance.id)

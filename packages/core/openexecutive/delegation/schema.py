@@ -92,6 +92,7 @@ _DDL: tuple[str, ...] = (
     "  outcome TEXT NOT NULL,"
     "  reason TEXT,"
     "  classified INTEGER NOT NULL DEFAULT 0,"
+    "  attempts INTEGER NOT NULL DEFAULT 0,"
     "  draft_id TEXT,"
     "  decision_id INTEGER,"
     "  flags TEXT NOT NULL DEFAULT '[]',"

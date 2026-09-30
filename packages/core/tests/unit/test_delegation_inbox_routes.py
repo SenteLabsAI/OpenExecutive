@@ -38,6 +38,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **kw: None)
     monkeypatch.setattr(inbox, "_client_slot_active", lambda: False)
     inbox._SCANNING.clear()
+    inbox._LAST_SETTLE.clear()
     people_registry.invalidate()
     yield path
     people_registry.invalidate()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import InfoTip from "./InfoTip";
 import { SectionHeading } from "./memories/shared";
@@ -29,6 +29,11 @@ import {
 // Dismiss deletes it unless you edited it. GET /delegation/replies answers
 // only the owner, so this hides itself for everyone else, on a backend
 // without it, and when nothing is waiting.
+
+// While a send Gmail hasn't confirmed is being settled (the card is
+// "executing"), how often the cards are read again.
+const SETTLE_POLL_MS = 20_000;
+
 export default function RepliesWaiting({ id }: { id?: string }) {
   const [cards, setCards] = useState<ReplyCard[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -40,6 +45,22 @@ export default function RepliesWaiting({ id }: { id?: string }) {
       .catch(() => { /* no card is better than a broken one */ });
     return () => controller.abort();
   }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await getReplyCards();
+      if (next) setCards(next);
+    } catch {
+      // Keep what's shown; the next look may work.
+    }
+  }, []);
+
+  const settling = (cards ?? []).some((c) => c.status === "executing");
+  useEffect(() => {
+    if (!settling) return;
+    const timer = setInterval(() => void refresh(), SETTLE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [settling, refresh]);
 
   if (!cards || (cards.length === 0 && !notice)) return null;
   const gone = (decisionId: number, note?: string) => {
@@ -60,7 +81,7 @@ export default function RepliesWaiting({ id }: { id?: string }) {
       {notice && <p className="mb-2 text-xs text-emerald-300">{notice}</p>}
       <div className="max-h-[40rem] overflow-y-auto pr-1 divide-y divide-line">
         {cards.map((card) => (
-          <ReplyCardRow key={card.decision_id} card={card} onGone={gone} />
+          <ReplyCardRow key={card.decision_id} card={card} onGone={gone} onRefresh={refresh} />
         ))}
       </div>
     </section>
@@ -78,13 +99,17 @@ type Step =
 function ReplyCardRow({
   card,
   onGone,
+  onRefresh,
 }: {
   card: ReplyCard;
   onGone: (id: number, note?: string) => void;
+  onRefresh: () => Promise<void>;
 }) {
   const [step, setStep] = useState<Step>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
-  const [unconfirmed, setUnconfirmed] = useState(card.status === "executing");
+  // Being settled: Gmail didn't confirm a send. The server says so, and the
+  // section reads the cards again until it's settled.
+  const unconfirmed = card.status === "executing";
   const relation = relationLabel(card.relation);
   const warnings = replyFlagLines(card.flags);
   const received = formatRelativeTime(card.received_at);
@@ -125,9 +150,9 @@ function ReplyCardRow({
         onGone(card.decision_id, message);
         return;
       }
-      if (code === "send_unconfirmed") setUnconfirmed(true);
       setError(message);
       setStep({ kind: "idle" });
+      if (code === "send_unconfirmed") void onRefresh();
     }
   };
 
@@ -188,7 +213,7 @@ function ReplyCardRow({
       {unconfirmed ? (
         <p className="mt-2.5 text-xs text-fg-muted">
           Gmail hasn&apos;t confirmed this was sent. Check your Sent folder in Gmail; this card
-          updates on its own.
+          updates on its own within a few minutes.
         </p>
       ) : step.kind === "ask" || step.kind === "confirm" ? (
         <div className="mt-2.5 rounded-md border border-indigo-500/30 bg-indigo-500/5 px-2.5 py-2">

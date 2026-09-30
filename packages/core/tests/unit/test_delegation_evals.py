@@ -172,25 +172,32 @@ def _reply(**kw: Any) -> Any:
     return Reply(**{**base, **kw})
 
 
-@pytest.mark.parametrize(("expect", "reply", "judged", "overall", "passed"), [
-    ("draft", "reply", True, 4, True),
-    ("draft", None, False, 1, False),
-    ("no_draft", "reply", False, 1, False),
-    ("no_draft", None, False, 5, True),
-    # Composing failed: that is no draft, whatever was expected.
-    ("draft", "compose_failed", False, 1, False),
+@pytest.mark.parametrize(("expect", "wants", "reply", "judged", "overall", "passed"), [
+    ("draft", True, "reply", True, 4, True),
+    ("draft", False, None, False, 1, False),
+    ("no_draft", True, "reply", False, 1, False),
+    ("no_draft", False, None, False, 5, True),
+    # A draft was wanted but composing failed: that's a failure either way.
+    ("draft", True, "compose_failed", False, 1, False),
+    ("no_draft", True, "compose_failed", False, 1, False),
+    # No verdict is a failed call, never a pass for "no draft".
+    ("no_draft", None, None, False, 0, False),
 ])
-def test_the_inbox_runner_checks_whether_it_drafted_before_judging(
-    monkeypatch: pytest.MonkeyPatch, expect: str, reply: str | None, judged: bool, overall: int, passed: bool,
+def test_the_inbox_runner_checks_the_verdict_before_judging(
+    monkeypatch: pytest.MonkeyPatch, expect: str, wants: bool | None, reply: str | None, judged: bool,
+    overall: int, passed: bool,
 ) -> None:
     from openexecutive.delegation import inbox
     from openexecutive.delegation.inbox_classifier import Verdict
 
     seen: dict[str, Any] = {}
+    verdict = None if wants is None else (
+        Verdict(True, "scheduling", 0.9) if wants else Verdict(False, "thanks", 0.9)
+    )
 
     async def fake_reply_for(person: Any, message: Any, thread: Any, *, relation: str, own: set[str]) -> Any:
         seen["args"] = (person.email, message.text, relation, own)
-        return Verdict(True, "scheduling", 0.9), _reply() if reply == "reply" else reply
+        return verdict, _reply() if reply == "reply" else reply
 
     async def fake_judge(scenario: dict[str, Any], outcome: dict[str, Any]) -> dict[str, Any]:
         seen["outcome"] = outcome
@@ -203,7 +210,8 @@ def test_the_inbox_runner_checks_whether_it_drafted_before_judging(
     assert seen["args"] == ("olivia@fernway.example", "2pm or 4pm?", "contact", {"olivia@fernway.example"})
     assert ("outcome" in seen) is judged
     assert result["scores"]["overall"] == overall and result["passed"] is passed
-    assert result["outcome"]["verdict"]["kind"] == "scheduling"
+    # Its newest message isn't verified: handled as a stranger, and said so.
+    assert result["outcome"]["handled_as"] == "stranger"
     assert result["outcome"]["drafted"] is (reply == "reply")
     if reply == "reply":
         assert result["outcome"]["reply"]["open_questions"] == ["2pm or 4pm?"]

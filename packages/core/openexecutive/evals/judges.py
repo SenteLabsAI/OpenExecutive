@@ -259,7 +259,7 @@ Questions it cannot answer from the person's own words belong in the open questi
 
 SCENARIO: {scenario.get('description', '')}
 THE PERSON: {(case.get('person') or {}).get('full_name')}
-THE SENDER IS: {case.get('relation')}
+THE SENDER IS: {case.get('relation')}, handled as: {outcome.get('handled_as') or case.get('relation')}
 
 THE THREAD (the newest message from someone else is the one answered):
 {thread}

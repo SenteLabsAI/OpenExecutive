@@ -93,20 +93,32 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
   }, [state, onVisible]);
 
   // While an inbox check runs, look again every few seconds until it's done.
+  // A failed look keeps the card as it is and tries again; after
+  // MAX_CHECK_POLLS it stops waiting and offers Check now again.
   const checking = settings?.inbox?.checking ?? false;
   const polls = useRef(0);
+  const [pollTick, setPollTick] = useState(0);
+  const [stoppedWaiting, setStoppedWaiting] = useState(false);
   useEffect(() => {
     if (!checking) {
       polls.current = 0;
       return;
     }
-    if (polls.current >= MAX_CHECK_POLLS) return;
+    if (polls.current >= MAX_CHECK_POLLS) {
+      setStoppedWaiting(true);
+      return;
+    }
     const timer = setTimeout(() => {
       polls.current += 1;
-      void load();
+      getDelegation()
+        .then((next) => {
+          if (next) setSettings(next);
+        })
+        .catch(() => { /* keep the card; the next look may work */ })
+        .finally(() => setPollTick((n) => n + 1));
     }, CHECK_POLL_MS);
     return () => clearTimeout(timer);
-  }, [checking, settings, load]);
+  }, [checking, pollTick]);
 
   if (state === "hidden" || state === "loading") return null;
   if (state === "error" || !settings) {
@@ -199,10 +211,14 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
 
         {settings.inbox && (
           <InboxSection
-            inbox={settings.inbox}
+            inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
             actAsMeOn={on}
             onSettings={setSettings}
-            onInbox={(inbox) => setSettings((prev) => (prev ? { ...prev, inbox } : prev))}
+            onInbox={(inbox) => {
+              setStoppedWaiting(false);
+              polls.current = 0;
+              setSettings((prev) => (prev ? { ...prev, inbox } : prev));
+            }}
           />
         )}
 

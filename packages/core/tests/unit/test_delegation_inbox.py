@@ -56,6 +56,7 @@ class FakeInbox:
         self.draft_error: Exception | None = None
         self.sent: list[str] = []
         self.send_error: Exception | None = None
+        self.create_error: Exception | None = None
         # Gmail sent it and then failed to say so (a timeout after sending).
         self.send_then_fail: Exception | None = None
 
@@ -125,6 +126,8 @@ class FakeInbox:
         return SentMessage(id=info.message.id, thread_id=info.message.thread_id)
 
     async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
+        if self.create_error is not None:
+            raise self.create_error
         n = len(self.specs) + 1
         self.specs.append(spec)
         draft_message = MailMessage(
@@ -190,6 +193,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     caps._SAVED_TODAY.clear()
     caps._IN_FLIGHT.clear()
     inbox._SCANNING.clear()
+    inbox._LAST_SETTLE.clear()
     yield path
     caps._SAVED_TODAY.clear()
     caps._IN_FLIGHT.clear()
@@ -383,15 +387,31 @@ def test_what_needs_no_reply_gets_none(db: Path, owner: Any, models: dict[str, A
     assert mailbox.specs == []
 
 
-def test_a_classifier_failure_drafts_nothing(db: Path, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_classifier_failure_is_tried_again_then_given_up(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model outage drafts nothing, and loses nothing: the message is tried
+    again on later scans, and only given up on after MAX_ATTEMPTS."""
+    working = ic._call_model
+
     async def broken(model: str, turn: str) -> dict[str, Any]:
         raise RuntimeError("model down")
 
     monkeypatch.setattr(ic, "_call_model", broken)
     mailbox = FakeInbox()
-    mailbox.add(_msg("m1", "t1"))
-    assert _scan(owner, mailbox).failed == 1
-    assert _ledger(db)["m1"] == ("failed", "classify_failed") and mailbox.specs == []
+    mailbox.add(_msg("m1", "t1"), _msg("m2", "t2", sender="ben@northpeak.example"))
+    assert _scan(owner, mailbox).deferred == 2
+    assert _ledger(db)["m1"] == ("retry", "classify_failed") and mailbox.specs == []
+    # The outage passes: the next scan drafts it.
+    monkeypatch.setattr(ic, "_call_model", working)
+    assert _scan(owner, mailbox, now=NOW + timedelta(minutes=5)).drafted == 2
+    assert _ledger(db)["m1"][0] == "drafted"
+    # One that keeps failing is given up on, once.
+    monkeypatch.setattr(ic, "_call_model", broken)
+    mailbox.add(_msg("m3", "t3", sender="sam@northpeak.example"))
+    results = [_scan(owner, mailbox, now=NOW + timedelta(minutes=10 + i)) for i in range(inbox.MAX_ATTEMPTS + 1)]
+    assert [r.failed for r in results] == [0] * (inbox.MAX_ATTEMPTS - 1) + [1, 0]
+    assert _ledger(db)["m3"] == ("failed", "classify_failed")
 
 
 def test_a_stranger_needs_more_certainty_and_gets_a_holding_reply(
@@ -716,3 +736,171 @@ def test_an_unverified_sender_is_handled_as_a_stranger(owner: Any, models: dict[
     payload = inbox.card_payload(inbox.open_cards(owner.id)[0])
     assert payload["relation"] == "contact" and payload["handled_as"] == "stranger"
     assert payload["sender_verified"] is False
+
+
+# ── nothing is lost when something fails ──────────────────────────────────────
+
+
+def test_a_draft_gmail_refused_is_written_again_later(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation.gmail import GmailError
+
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    mailbox.create_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _scan(owner, mailbox).status == "error"  # the scan backs off
+    assert _ledger(db)["m1"] == ("retry", "draft_failed")
+    mailbox.create_error = None
+    assert _scan(owner, mailbox, now=NOW + timedelta(minutes=10)).drafted == 1
+    assert _ledger(db)["m1"][0] == "drafted"
+
+
+def test_a_writer_error_is_tried_again(db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    compose = gw._call_model
+
+    async def overloaded(model: str, system: str, turn: str) -> dict[str, Any]:
+        raise RuntimeError("529 overloaded")
+
+    monkeypatch.setattr(gw, "_call_model", overloaded)
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    assert _scan(owner, mailbox).deferred == 1
+    assert _ledger(db)["m1"] == ("retry", "compose_error")
+    monkeypatch.setattr(gw, "_call_model", compose)
+    assert _scan(owner, mailbox, now=NOW + timedelta(minutes=5)).drafted == 1
+
+
+def test_a_card_that_couldnt_be_made_takes_its_draft_back(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    make_card = inbox._create_card
+
+    def locked(*a: Any, **kw: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(inbox, "_create_card", locked)
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    _scan(owner, mailbox)
+    # No draft left without a card (it would also mute the thread).
+    assert mailbox.deleted == ["d1"] and mailbox.drafts == {}
+    assert _ledger(db)["m1"] == ("retry", "card_failed")
+    monkeypatch.setattr(inbox, "_create_card", make_card)
+    assert _scan(owner, mailbox, now=NOW + timedelta(minutes=5)).drafted == 1
+    assert len(inbox.open_cards(owner.id)) == 1
+
+
+def test_a_limit_reached_while_reading_leaves_the_message_for_later(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reserve = caps.reserve
+    monkeypatch.setattr(caps, "reserve", lambda *a, **kw: "daily_limit")
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    assert _scan(owner, mailbox).status == "daily_limit"
+    assert _ledger(db)["m1"] == ("retry", "daily_limit")
+    monkeypatch.setattr(caps, "reserve", reserve)
+    assert _scan(owner, mailbox, now=NOW + timedelta(minutes=5)).drafted == 1
+
+
+def test_older_threads_are_reached_after_a_burst(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    """The cap on threads a scan looks at applies after settled ones are
+    passed over, so the older ones are reached on the next scans."""
+    mailbox = FakeInbox()
+    for i in range(12):
+        sender = f"s{i}@clients.example"
+        mailbox.written_to.add(sender)
+        mailbox.add(_msg(f"m{i}", f"t{i}", sender=sender, minutes_ago=30 + i))
+    drafted = sum(_scan(owner, mailbox, now=NOW + timedelta(minutes=5 * n)).drafted for n in range(3))
+    assert drafted == 12
+    assert all(outcome == "drafted" for outcome, _ in _ledger(db).values())
+
+
+def test_one_bad_message_never_holds_up_the_rest(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", minutes_ago=20), _msg("m2", "t2", sender="ben@northpeak.example", minutes_ago=30),
+                _msg("m3", "t3", sender="sam@northpeak.example", minutes_ago=40))
+    get_thread = mailbox.get_thread
+
+    async def gone_or_real(thread_id: str) -> MailThread:
+        if thread_id == "t1":
+            raise GmailNotFound("404")
+        return await get_thread(thread_id)
+
+    relation_of = inbox.relation_of
+
+    async def broken_for_ben(address: str, gmail: Any) -> str:
+        if address.startswith("ben@"):
+            raise ValueError("unexpected")
+        return await relation_of(address, gmail)
+
+    monkeypatch.setattr(mailbox, "get_thread", gone_or_real)
+    monkeypatch.setattr(inbox, "relation_of", broken_for_ben)
+    result = _scan(owner, mailbox)
+    assert result.drafted == 1 and result.skipped == 1 and result.deferred == 1
+    ledger_rows = _ledger(db)
+    assert ledger_rows["m1"] == ("skipped", "thread_gone")
+    assert ledger_rows["m2"] == ("retry", "error")
+    assert ledger_rows["m3"][0] == "drafted"
+
+
+def test_the_backlog_cap_holds_within_a_scan(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(inbox, "OPEN_CARDS_MAX", 2)
+    mailbox = FakeInbox()
+    for i in range(4):
+        sender = f"s{i}@clients.example"
+        mailbox.written_to.add(sender)
+        mailbox.add(_msg(f"m{i}", f"t{i}", sender=sender))
+    result = _scan(owner, mailbox)
+    assert result.drafted == 2 and result.status == "backlog_full"
+    assert len(inbox.open_cards(owner.id)) == 2
+
+
+def test_not_reaching_gmail_backs_off_like_any_error(owner: Any) -> None:
+    from openexecutive.delegation.gmail import GmailError
+
+    mailbox = FakeInbox()
+    mailbox.profile_error = GmailError("timeout")
+    assert _scan(owner, mailbox).status == "error"
+    watch = inbox.get_watch(owner.id)
+    assert watch.failures == 1
+    backoff = inbox._parse(watch.backoff_until)
+    assert backoff is not None and backoff - NOW == inbox.BACKOFF_FIRST
+
+
+def test_a_reply_goes_from_the_address_the_mail_went_to(owner: Any, models: dict[str, Any]) -> None:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", to=["olivia@olivia.example"]))  # one of their send-as aliases
+    mailbox.add(_msg("m2", "t2", sender="ben@northpeak.example"))  # to their primary address
+    _scan(owner, mailbox)
+    by_thread = {spec.thread_id: spec.from_addr for spec in mailbox.specs}
+    assert by_thread == {"t1": "olivia@olivia.example", "t2": None}
+
+
+def test_a_send_nobody_confirmed_is_followed_through_with_the_switch_off(
+    owner: Any, models: dict[str, Any]
+) -> None:
+    """The one Gmail call the watcher makes with its switch off: settling a
+    send the person started."""
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    _scan(owner, mailbox)
+    card = inbox.open_cards(owner.id)[0]
+    assert ledger.claim_for_execution(card.id, resolver_person_id=owner.id)
+    inbox.set_watch(owner.id, False, updated_by="test")
+    later = NOW + timedelta(hours=1)
+    assert owner.id in inbox._due(later)
+    mailbox.calls.clear()
+    inbox._LAST_SETTLE.clear()
+    assert asyncio.run(inbox.scan_person(owner, gmail=mailbox, now=later)).status == "off"
+    assert "draft:d1" in mailbox.calls
+    assert owner.id not in inbox._due(later + timedelta(minutes=1))  # throttled like a scan
+    asyncio.run(inbox.scan_person(owner, gmail=mailbox, now=later + timedelta(minutes=5)))
+    assert ledger.get_decision_instance(card.id).status == "proposed"  # type: ignore[union-attr]
+    # Nothing left to settle: off is off again.
+    mailbox.calls.clear()
+    assert asyncio.run(inbox.scan_person(owner, gmail=mailbox, now=later + timedelta(minutes=10))).status == "off"
+    assert mailbox.calls == []

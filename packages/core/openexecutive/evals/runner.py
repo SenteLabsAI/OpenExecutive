@@ -279,7 +279,8 @@ def _make_triage_runner(
 
 async def run_inbox_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     """One ``type: inbox`` scenario: ``{"outcome", "scores", "passed"}``."""
-    from openexecutive.delegation.inbox import reply_for
+    from openexecutive.delegation.inbox import handling_relation, reply_for
+    from openexecutive.delegation.inbox_classifier import wants_draft
 
     case = scenario_inbox(scenario)
     if case is None:
@@ -287,21 +288,31 @@ async def run_inbox_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     verdict, reply = await reply_for(
         case.person, case.message, case.thread, relation=case.relation, own={case.person.email}
     )
+    handled_as = handling_relation(case.relation, case.message)
+    wanted = verdict is not None and wants_draft(verdict, handled_as)
     drafted = reply is not None and not isinstance(reply, str)
     outcome: dict[str, Any] = {
         "verdict": asdict(verdict) if verdict is not None else None,
+        "handled_as": handled_as,
         "drafted": drafted,
         "reply": asdict(reply) if drafted and reply is not None and not isinstance(reply, str) else None,
         "no_reply_because": reply if isinstance(reply, str) else None,
     }
-    if drafted != case.expect_draft:
-        scores: dict[str, Any] = {
+    scores: dict[str, Any]
+    if verdict is None:
+        # No verdict is a failed call, never a pass for "no draft".
+        scores = {"overall": 0, "notes": "the classifier gave no verdict (a failed or malformed call)"}
+    elif wanted != case.expect_draft:
+        scores = {
             "overall": 1,
             "notes": f"expected {'a draft' if case.expect_draft else 'no draft'}, "
-            f"got {'a draft' if drafted else 'none'}",
+            f"the classifier {'wanted one' if wanted else 'did not want one'} "
+            f"({verdict.kind}, {verdict.confidence:.2f}, as {handled_as})",
         }
-    elif not drafted:
+    elif not wanted:
         scores = {"overall": 5, "notes": "drafted nothing, as expected"}
+    elif not drafted:
+        scores = {"overall": 1, "notes": f"a draft was wanted but not written ({reply})"}
     else:
         scores = await judge_inbox(scenario, outcome)
     return {

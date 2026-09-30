@@ -5,7 +5,8 @@ me (``delegation_inbox_watch``, one row per person, absent means off). It
 needs Act as me on and the person's own Gmail connected, and turning it on
 sets ``watch_since`` to now, every time: it never drafts for mail that came in
 before. Off means no Gmail call, no row written and no prompt, tool or cache
-changed anywhere.
+changed anywhere, except to follow through a send the person started that
+Gmail never confirmed (``settle_sends``).
 
 **When it looks.** A throttled hook in the scheduler tick (``maybe_scan``),
 not a ``scheduled_actions`` row (those are on ``/scheduled`` for everyone and
@@ -17,9 +18,9 @@ process log carries counts and codes, never an address or text.
 
 **What it drafts for.** The newest message per thread in the inbox since
 ``watch_since`` (not chats, not from the person, not in a promotions, social,
-updates or forums tab), at most 25 messages and 10 threads a scan. Each is
-recorded once in ``delegation_inbox_messages``, its durable cursor, with
-what happened to it. It is left alone (recorded with the reason) when:
+updates or forums tab): up to 100 listed, and the 10 newest threads that
+still need a look, settled ones passed over first. Each is recorded once in
+``delegation_inbox_messages``, its durable cursor, with what happened to it. It is left alone (recorded with the reason) when:
 
 - it came before ``watch_since``, or more than three days ago;
 - it is from the person or one of their send-as addresses, from the
@@ -49,9 +50,13 @@ within the shared daily limit (``delegation.caps``), 200 classifications, 2
 drafts per sender (1 for a stranger) and 10 for strangers in all; and never
 more than 25 open cards. A limit reached leaves the message for a later scan.
 
-**Crash-safe order.** Record the message → classify → write → save the draft
-in Gmail and store its id → create the card (a ``delegation_reply`` decision,
-idempotent on the message) → mark it drafted.
+**Order, and nothing lost.** Record the message → classify → write → save
+the draft in Gmail and store its id → create the card (a ``delegation_reply``
+decision, idempotent on the message) → mark it drafted. A failure that may
+pass (a model call, Gmail refusing the draft, a card that couldn't be made,
+whose draft is then deleted) leaves the message for a later scan (``RETRY``),
+given up on after ``MAX_ATTEMPTS``; one message's trouble never stops the
+scan.
 
 **Failures.** A lapsed sign-in sets the status and is checked again every 30
 minutes; a rate limit or other error backs off from 5 minutes up to 2 hours.
@@ -85,7 +90,7 @@ DECISION_CLASS = "delegation_reply"
 GRACE = timedelta(minutes=10)
 STALE = timedelta(days=3)
 CARD_TTL = timedelta(days=7)
-SCAN_MESSAGES = 25
+SCAN_LIST = 100
 SCAN_THREADS = 10
 DRAFTS_PER_SCAN = 5
 CLASSIFICATIONS_PER_DAY = 200
@@ -95,12 +100,16 @@ STRANGER_DRAFTS_PER_DAY = 10
 OPEN_CARDS_MAX = 25
 MAX_RECIPIENTS = 10
 AUTH_RECHECK = timedelta(minutes=30)
+# Tries at one message before a failure that may pass (a model or Gmail
+# error) is final.
+MAX_ATTEMPTS = 3
 BACKOFF_FIRST = timedelta(minutes=5)
 BACKOFF_MAX = timedelta(hours=2)
 _THEY_WROTE_CHARS = 2000
 
 # What happened to a message (delegation_inbox_messages.outcome).
 PROCESSING = "processing"
+RETRY = "retry"  # left for a later scan (a failure that may pass, a daily limit)
 SKIPPED = "skipped"
 NOT_NEEDED = "not_needed"
 DEFERRED = "deferred"
@@ -295,7 +304,8 @@ def _claim(
     person_id: int, message: Any, *, relation: str, outcome: str, reason: str | None = None,
     now: datetime, db_path: Path | None = None,
 ) -> bool:
-    """Record ``message`` once; False when it already was (another scan)."""
+    """Record ``message`` once; False when it already was (another scan). A
+    message left for a later scan (``RETRY``) is claimed again."""
     moment = now.isoformat()
     conn = _connect(db_path)
     try:
@@ -309,10 +319,70 @@ def _claim(
                 outcome, reason, moment, moment,
             ),
         )
+        if cur.rowcount != 1:
+            cur = conn.execute(
+                f"UPDATE {INBOX_MESSAGES_TABLE} SET outcome = ?, reason = ?, relation = ?, "  # noqa: S608
+                "updated_at = ? WHERE person_id = ? AND message_id = ? AND outcome = ?",
+                (outcome, reason, relation or None, moment, person_id, message.id, RETRY),
+            )
         conn.commit()
         return cur.rowcount == 1
     finally:
         conn.close()
+
+
+def _record_ids(
+    person_id: int, message_id: str, thread_id: str, outcome: str, reason: str, *, now: datetime,
+    db_path: Path | None = None,
+) -> bool:
+    """Record a message known only by its ids (its thread vanished)."""
+    moment = now.isoformat()
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            f"INSERT OR IGNORE INTO {INBOX_MESSAGES_TABLE} "  # noqa: S608 — constant table name
+            "(person_id, message_id, thread_id, outcome, reason, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (person_id, message_id, thread_id or None, outcome, reason, moment, moment),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def _retry_later(
+    person_id: int, message_id: str, reason: str, *, count: bool = True, thread_id: str = "",
+    db_path: Path | None = None,
+) -> str:
+    """Leave a message for a later scan (``RETRY``), recording it first if it
+    wasn't. ``count``: a failure that may pass, which is final
+    (``FAILED``) after ``MAX_ATTEMPTS``; a daily limit doesn't count.
+    Returns the outcome it now has."""
+    moment = datetime.now(UTC).isoformat()
+    step = 1 if count else 0
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"INSERT OR IGNORE INTO {INBOX_MESSAGES_TABLE} "  # noqa: S608 — constant table name
+            "(person_id, message_id, thread_id, outcome, reason, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (person_id, message_id, thread_id or None, RETRY, reason, moment, moment),
+        )
+        conn.execute(
+            f"UPDATE {INBOX_MESSAGES_TABLE} SET attempts = attempts + ?, "  # noqa: S608
+            "outcome = CASE WHEN attempts + ? >= ? THEN ? ELSE ? END, reason = ?, updated_at = ? "
+            "WHERE person_id = ? AND message_id = ?",
+            (step, step, MAX_ATTEMPTS, FAILED, RETRY, reason, moment, person_id, message_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            f"SELECT outcome FROM {INBOX_MESSAGES_TABLE} WHERE person_id = ? AND message_id = ?",  # noqa: S608
+            (person_id, message_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return str(row["outcome"]) if row else RETRY
 
 
 def _set_outcome(
@@ -417,9 +487,12 @@ def _day_start(now: datetime) -> str:
 
 
 def _recorded(person_id: int, message_id: str, db_path: Path | None = None) -> bool:
+    """Whether ``message_id`` is settled: recorded, and not left for a
+    later scan."""
     return _count(
-        f"SELECT COUNT(*) FROM {INBOX_MESSAGES_TABLE} WHERE person_id = ? AND message_id = ?",  # noqa: S608
-        (person_id, message_id), db_path,
+        f"SELECT COUNT(*) FROM {INBOX_MESSAGES_TABLE} "  # noqa: S608 — constant table name
+        "WHERE person_id = ? AND message_id = ? AND outcome != ?",
+        (person_id, message_id, RETRY), db_path,
     ) > 0
 
 
@@ -432,8 +505,9 @@ def open_cards(person_id: int) -> list[Any]:
     """``person_id``'s open reply cards (proposed or being sent), newest first."""
     from openexecutive.memory.decision_ledger import OPEN_STATUSES, list_instances
 
-    cards = list_instances(DECISION_CLASS, limit=200)
-    return [c for c in cards if c.approver_person_id == person_id and c.status in OPEN_STATUSES]
+    cards = [c for status in OPEN_STATUSES for c in list_instances(DECISION_CLASS, status=status, limit=1000)]
+    mine = [c for c in cards if c.approver_person_id == person_id]
+    return sorted(mine, key=lambda c: c.created_at, reverse=True)
 
 
 def card_payload(card: Any) -> dict[str, Any]:
@@ -752,7 +826,9 @@ def _audit(event_type: str, summary: str, details: dict[str, Any]) -> None:
 
 async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = None) -> ScanResult:
     """One scan of ``person``'s inbox. Never raises; the switch's status
-    records how it went."""
+    records how it went. With the switch off it only follows through a send
+    the person started that Gmail never confirmed, and does nothing at all
+    when there is none."""
     from openexecutive.audit import private_rows
     from openexecutive.delegation.gmail import (
         GmailAuthError,
@@ -766,17 +842,22 @@ async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = 
     moment = now or datetime.now(UTC)
     if person is None or person.id is None:
         return ScanResult("off")
-    watch = get_watch(person.id)
-    if not watch.enabled:
-        return ScanResult("off")
     if person.id in _SCANNING:
         return ScanResult("checking")
-    if not can_delegate(person) or not is_enabled(person.id):
-        _update_watch(person.id, status="act_as_me_off", last_poll_at=moment.isoformat())
-        return ScanResult("act_as_me_off")
-    if _client_slot_active():
-        _update_watch(person.id, status="client_slot", last_poll_at=moment.isoformat())
-        return ScanResult("client_slot")
+    try:
+        watch = get_watch(person.id)
+        settle_only = not watch.enabled
+        if settle_only and not unsettled_sends(person.id):
+            return ScanResult("off")
+        if not can_delegate(person) or not is_enabled(person.id):
+            _update_watch(person.id, status="act_as_me_off", last_poll_at=moment.isoformat())
+            return ScanResult("act_as_me_off")
+        if _client_slot_active():
+            _update_watch(person.id, status="client_slot", last_poll_at=moment.isoformat())
+            return ScanResult("client_slot")
+    except Exception:
+        logger.exception("delegation.inbox: couldn't start a scan")
+        return ScanResult("error")
     email = (person.email or "").strip().lower()
     client = gmail if gmail is not None else gmail_for(email)
     _SCANNING.add(person.id)
@@ -784,11 +865,19 @@ async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = 
         with private_rows(True):
             status = await gmail_status(email, gmail=client)
             if status != "connected":
+                # A sign-in problem is looked at again in half an hour; not
+                # reaching Gmail backs off like any other error.
+                failures = watch.failures + 1 if status == "error" else watch.failures
+                wait = _backoff(failures) if status == "error" else AUTH_RECHECK
                 _update_watch(
-                    person.id, status=status, last_poll_at=moment.isoformat(),
-                    backoff_until=(moment + AUTH_RECHECK).isoformat(),
+                    person.id, status=status, failures=failures, last_poll_at=moment.isoformat(),
+                    backoff_until=(moment + wait).isoformat(),
                 )
                 return ScanResult(status)
+            if settle_only:
+                _LAST_SETTLE[person.id] = moment
+                own = {email, *await client.send_as_addresses()}
+                return ScanResult("off", closed=await settle_sends(person, client, now=moment, own=own))
             try:
                 result = await _scan(person, client, watch, moment)
             except GmailAuthError:
@@ -823,45 +912,85 @@ async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = 
             return result
     except Exception:
         logger.exception("delegation.inbox: scan crashed")
-        _update_watch(person.id, status="error", last_poll_at=moment.isoformat(),
-                      backoff_until=(moment + BACKOFF_FIRST).isoformat())
+        try:
+            failures = watch.failures + 1
+            _update_watch(
+                person.id, status="error", failures=failures, last_poll_at=moment.isoformat(),
+                backoff_until=(moment + _backoff(failures)).isoformat(),
+            )
+        except Exception:
+            logger.warning("delegation.inbox: couldn't record the crash", exc_info=True)
         return ScanResult("error")
     finally:
         _SCANNING.discard(person.id)
 
 
+def _count_retry(result: ScanResult, outcome: str) -> None:
+    if outcome == FAILED:
+        result.failed += 1
+    else:
+        result.deferred += 1
+
+
 async def _scan(person: Any, client: Any, watch: InboxWatch, now: datetime) -> ScanResult:
     from openexecutive.config import get_settings
+    from openexecutive.delegation.gmail import GmailError, GmailNotFound
 
     email = (person.email or "").strip().lower()
     own = {email, *await client.send_as_addresses()}
     exec_address = (get_settings().exec_email_address or "").strip().lower()
     result = ScanResult("ok")
     result.closed = await reconcile(person, client, now=now, own=own)
-    if len(open_cards(person.id)) >= OPEN_CARDS_MAX:
+    cards = open_cards(person.id)
+    if len(cards) >= OPEN_CARDS_MAX:
         result.status = "backlog_full"
         return result
+    carded = {str(card_payload(c).get("thread_id") or "") for c in cards}
     since = _parse(watch.watch_since) or now
     query = (
         "in:inbox -in:chats -from:me -category:promotions -category:social "
         f"-category:updates -category:forums after:{int(since.timestamp())}"
     )
-    listed = await client.list_message_ids(query, max_results=SCAN_MESSAGES)
-    threads: list[tuple[str, str]] = []
+    listed = await client.list_message_ids(query, max_results=SCAN_LIST)
+    # The newest message of each thread that still needs a look, newest
+    # first. Settled threads are passed over before the cap, so a burst of
+    # mail, or a pause (a limit, a full backlog, a back-off), never hides
+    # older threads for good.
+    candidates: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for message_id, thread_id in listed:  # newest first: the first one per thread
+    for message_id, thread_id in listed:
         if thread_id in seen:
             continue
         seen.add(thread_id)
-        threads.append((message_id, thread_id))
-        if len(threads) >= SCAN_THREADS:
-            break
-    for message_id, thread_id in threads:
-        if result.drafted >= DRAFTS_PER_SCAN:
-            break
+        if thread_id in carded:
+            result.deferred += 1  # not recorded: looked at again once that card is settled
+            continue
         if _recorded(person.id, message_id):
             continue
-        stop = await _consider(person, client, message_id, thread_id, own, exec_address, since, now, result)
+        candidates.append((message_id, thread_id))
+        if len(candidates) >= SCAN_THREADS:
+            break
+    for message_id, thread_id in candidates:
+        if result.drafted >= DRAFTS_PER_SCAN:
+            break
+        if len(cards) + result.drafted >= OPEN_CARDS_MAX:
+            result.status = "backlog_full"
+            break
+        try:
+            stop = await _consider(person, client, message_id, thread_id, own, exec_address, since, now, result)
+        except GmailNotFound:
+            # The thread went between the listing and the read.
+            if _record_ids(person.id, message_id, thread_id, SKIPPED, "thread_gone", now=now):
+                result.skipped += 1
+            continue
+        except GmailError:
+            raise  # Gmail itself is failing: the whole scan backs off
+        except Exception as exc:
+            # One message's trouble never holds up the rest: it is tried again
+            # on later scans, and given up on after MAX_ATTEMPTS.
+            logger.warning("delegation.inbox: a message failed (%s)", type(exc).__name__)
+            _count_retry(result, _retry_later(person.id, message_id, "error", thread_id=thread_id))
+            continue
         if stop:
             break
     return result
@@ -871,13 +1000,16 @@ async def _consider(
     person: Any, client: Any, message_id: str, thread_id: str, own: set[str], exec_address: str,
     since: datetime, now: datetime, result: ScanResult,
 ) -> bool:
-    """Handle one message. True when the rest of the scan should stop."""
+    """Handle one message. True when the rest of the scan should stop.
+    Once claimed, a message is finished or left for a later scan
+    (``_retry_later``); a Gmail failure is raised for the scan to back off."""
     from openexecutive.config import get_settings
     from openexecutive.delegation import caps, drafts
     from openexecutive.delegation.ghostwriter import ComposeError
-    from openexecutive.delegation.gmail import DraftSpec
+    from openexecutive.delegation.gmail import DraftSpec, GmailError
     from openexecutive.delegation.inbox_classifier import classify, wants_draft
 
+    email = (person.email or "").strip().lower()
     thread = await client.get_thread(thread_id)
     message = next((m for m in thread.messages if m.id == message_id), None)
     if message is None:
@@ -885,11 +1017,6 @@ async def _consider(
     received = _parse(message.received_at)
     if received is not None and now - received < GRACE:
         return False  # not yet: mail they answer straight away never gets a card
-    if _open_card_for_thread(person.id, thread.id):
-        # Not recorded: looked at again once that card is settled (the
-        # reconciler flags the card meanwhile).
-        result.deferred += 1
-        return False
     reason = skip_reason(message, thread, own=own, exec_address=exec_address, watch_since=since, now=now)
     if reason is not None:
         if _claim(person.id, message, relation="", outcome=SKIPPED, reason=reason, now=now):
@@ -909,8 +1036,8 @@ async def _consider(
     verdict = await classify(message, relation=relation)
     _set_outcome(person.id, message.id, PROCESSING, classified=1)
     if verdict is None:
-        _set_outcome(person.id, message.id, FAILED, reason="classify_failed")
-        result.failed += 1
+        # The call failed or answered nonsense: that may pass.
+        _count_retry(result, _retry_later(person.id, message.id, "classify_failed"))
         return False
     if not wants_draft(verdict, relation):
         _set_outcome(person.id, message.id, NOT_NEEDED, reason=verdict.kind)
@@ -918,7 +1045,9 @@ async def _consider(
         return False
     settings = get_settings()
     if caps.reserve(person.id, settings.delegation_max_drafts_per_day) is not None:
-        _set_outcome(person.id, message.id, DEFERRED, reason="daily_limit")
+        # Chat took the day's last draft while this one was being read: it
+        # waits for a later scan, like any message a limit holds back.
+        _retry_later(person.id, message.id, "daily_limit", count=False)
         result.status = "daily_limit"
         return True
     saved = False
@@ -927,20 +1056,35 @@ async def _consider(
             reply = await compose_reply(person, message, thread, relation=relation, own=own)
         except ComposeError:
             reply = "compose_failed"
+        except Exception as exc:
+            logger.warning("delegation.inbox: writing a reply failed (%s)", type(exc).__name__)
+            reply = "compose_error"
         if isinstance(reply, str):
-            _set_outcome(person.id, message.id, FAILED, reason=reply)
-            result.failed += 1
+            if reply in ("compose_failed", "compose_error"):
+                _count_retry(result, _retry_later(person.id, message.id, reply))
+            else:
+                _set_outcome(person.id, message.id, FAILED, reason=reply)
+                result.failed += 1
             return False
         names = (person.full_name or "").split()
-        draft = await client.create_draft(DraftSpec(
-            to=reply.to,
-            subject=reply.subject,
-            body=reply.body,
-            thread_id=thread.id,
-            in_reply_to=reply.in_reply_to,
-            references=reply.references,
-            from_name=" ".join(names),
-        ))
+        # Write from the address the mail went to: one of their send-as
+        # addresses rather than the primary when only that one was used.
+        addressed = [*message.to, *message.cc]
+        alias = None if email in addressed else next((a for a in addressed if a in own), None)
+        try:
+            draft = await client.create_draft(DraftSpec(
+                to=reply.to,
+                subject=reply.subject,
+                body=reply.body,
+                thread_id=thread.id,
+                in_reply_to=reply.in_reply_to,
+                references=reply.references,
+                from_name=" ".join(names),
+                from_addr=alias,
+            ))
+        except GmailError:
+            _retry_later(person.id, message.id, "draft_failed")
+            raise
         saved = True
         _set_outcome(person.id, message.id, PROCESSING, draft_id=draft.draft_id)
         try:
@@ -952,9 +1096,24 @@ async def _consider(
             logger.warning("delegation.inbox: couldn't record the draft", exc_info=True)
     finally:
         caps.release(person.id, saved=saved)
-    decision_id = _create_card(
-        person, message, thread, reply, draft, relation=known_as, handled_as=relation, verdict=verdict,
-    )
+    try:
+        decision_id = _create_card(
+            person, message, thread, reply, draft, relation=known_as, handled_as=relation, verdict=verdict,
+        )
+    except Exception as exc:
+        logger.warning("delegation.inbox: couldn't make the card (%s)", type(exc).__name__)
+        # Take the draft back, so a later scan starts over rather than
+        # leaving a draft with no card (which would also mute its thread).
+        try:
+            taken_back = await client.delete_draft(draft.draft_id)
+        except GmailError:
+            taken_back = False
+        if taken_back:
+            _count_retry(result, _retry_later(person.id, message.id, "card_failed"))
+        else:
+            _set_outcome(person.id, message.id, FAILED, reason="card_failed")
+            result.failed += 1
+        return False
     _set_outcome(person.id, message.id, DRAFTED, decision_id=decision_id)
     result.drafted += 1
     _audit("delegation_reply_drafted", f"Drafted a reply as person {person.id} for review", {
@@ -973,8 +1132,8 @@ def _create_card(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
     verdict: Any,
 ) -> int | None:
-    """The card for this reply, made once per message (a crash between the
-    draft and here, then a rescan, finds the one it made)."""
+    """The card for this reply, made once per message (its idempotency key):
+    a second call for the same message finds the one the first made."""
     from openexecutive.memory.decision_ledger import create_decision_instance, get_live_by_idem
 
     key = f"{DECISION_CLASS}:{person.id}:{message.id}"
@@ -1007,6 +1166,27 @@ def _create_card(
 SENDING: set[int] = set()
 
 
+# When a person's unconfirmed sends were last followed through with their
+# switch off (the switch's own row records only scans it was on for).
+_LAST_SETTLE: dict[int, datetime] = {}
+
+
+def unsettled_sends(person_id: int) -> list[Any]:
+    """``person_id``'s cards left ``executing`` by a send nobody is still
+    waiting on in this process: Gmail never confirmed it."""
+    from openexecutive.memory.decision_ledger import STATUS_EXECUTING
+
+    return [c for c in open_cards(person_id) if c.status == STATUS_EXECUTING and c.id not in SENDING]
+
+
+async def settle_sends(person: Any, client: Any, *, now: datetime, own: set[str]) -> int:
+    """Follow through every unconfirmed send of ``person``'s; how many settled."""
+    settled = 0
+    for card in unsettled_sends(person.id):
+        settled += await _settle_unconfirmed_send(person, client, card, card_payload(card), own=own, now=now)
+    return settled
+
+
 def later_messages(thread: Any, payload: dict[str, Any], *, now: datetime) -> list[Any]:
     """The thread's messages after the one a card answers (drafts left out)."""
     inbound_at = _parse(str(payload.get("received_at") or ""))
@@ -1031,47 +1211,56 @@ def _close_card(person_id: int, card_id: int, message_id: str, reason: str, outc
 
 async def reconcile(person: Any, client: Any, *, now: datetime, own: set[str]) -> int:
     """Close the person's open cards that Gmail settled; returns how many."""
-    from openexecutive.delegation import drafts
-    from openexecutive.delegation.gmail import GmailNotFound
-    from openexecutive.memory.decision_ledger import STATUS_EXECUTING, STATUS_PROPOSED
+    from openexecutive.delegation.gmail import GmailError
 
     closed = 0
     for card in open_cards(person.id):
         if card.id in SENDING:
             continue  # the send path's, right now
-        payload = card_payload(card)
-        message_id = str(payload.get("message_id") or "")
-        if card.status == STATUS_EXECUTING:
-            closed += await _settle_unconfirmed_send(person, client, card, payload, own=own, now=now)
-            continue
-        if card.status != STATUS_PROPOSED:
-            continue
-        created = _parse(card.created_at)
-        if created is not None and now - created > CARD_TTL:
-            closed += _close_card(person.id, card.id, message_id, "expired", EXPIRED)
-            continue
-        draft = await client.get_draft(str(payload.get("draft_id") or ""))
         try:
-            thread = await client.get_thread(str(payload.get("thread_id") or ""))
-        except GmailNotFound:
-            closed += _close_card(person.id, card.id, message_id, "thread_gone", CLOSED)
-            continue
-        later = later_messages(thread, payload, now=now)
-        sent_by_them = [m for m in later if "SENT" in m.labels and m.from_addr in own]
-        if draft is None:
-            if sent_by_them:
-                if _close_card(person.id, card.id, message_id, "sent_in_gmail", SENT):
-                    drafts.mark_sent(person.id, str(payload.get("draft_id")), sent_by_them[-1].id)
-                    closed += 1
-            else:
-                closed += _close_card(person.id, card.id, message_id, "draft_deleted", CLOSED)
-            continue
-        if sent_by_them:
-            closed += _close_card(person.id, card.id, message_id, "you_replied", CLOSED)
-            continue
-        if any(m.from_addr not in own and "SENT" not in m.labels for m in later):
-            _add_flag(person.id, message_id, "thread_moved_on")
+            closed += await _reconcile_card(person, client, card, now=now, own=own)
+        except GmailError:
+            raise  # Gmail itself is failing: the scan backs off
+        except Exception as exc:
+            # One card's trouble never stops the rest.
+            logger.warning("delegation.inbox: settling a card failed (%s)", type(exc).__name__)
     return closed
+
+
+async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime, own: set[str]) -> int:
+    """Settle one open card against Gmail; 1 when it closed."""
+    from openexecutive.delegation import drafts
+    from openexecutive.delegation.gmail import GmailNotFound
+    from openexecutive.memory.decision_ledger import STATUS_EXECUTING, STATUS_PROPOSED
+
+    payload = card_payload(card)
+    message_id = str(payload.get("message_id") or "")
+    if card.status == STATUS_EXECUTING:
+        return await _settle_unconfirmed_send(person, client, card, payload, own=own, now=now)
+    if card.status != STATUS_PROPOSED:
+        return 0
+    created = _parse(card.created_at)
+    if created is not None and now - created > CARD_TTL:
+        return int(_close_card(person.id, card.id, message_id, "expired", EXPIRED))
+    draft = await client.get_draft(str(payload.get("draft_id") or ""))
+    try:
+        thread = await client.get_thread(str(payload.get("thread_id") or ""))
+    except GmailNotFound:
+        return int(_close_card(person.id, card.id, message_id, "thread_gone", CLOSED))
+    later = later_messages(thread, payload, now=now)
+    sent_by_them = [m for m in later if "SENT" in m.labels and m.from_addr in own]
+    if draft is None:
+        if not sent_by_them:
+            return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
+        if not _close_card(person.id, card.id, message_id, "sent_in_gmail", SENT):
+            return 0
+        drafts.mark_sent(person.id, str(payload.get("draft_id")), sent_by_them[-1].id)
+        return 1
+    if sent_by_them:
+        return int(_close_card(person.id, card.id, message_id, "you_replied", CLOSED))
+    if any(m.from_addr not in own and "SENT" not in m.labels for m in later):
+        _add_flag(person.id, message_id, "thread_moved_on")
+    return 0
 
 
 async def _settle_unconfirmed_send(
@@ -1138,8 +1327,11 @@ async def _settle_unconfirmed_send(
 
 
 def _due(now: datetime) -> list[int]:
-    """People whose switch is on and whose next check is due."""
+    """People whose switch is on and whose next check is due, and people
+    with a send Gmail never confirmed, followed through even with the
+    switch off."""
     from openexecutive.config import get_settings
+    from openexecutive.memory.decision_ledger import STATUS_EXECUTING, list_instances
 
     interval = timedelta(minutes=get_settings().delegation_inbox_poll_minutes)
     try:
@@ -1162,6 +1354,18 @@ def _due(now: datetime) -> list[int]:
             continue
         if last is None or now - last >= interval:
             due.append(int(row["person_id"]))
+    try:
+        sending = list_instances(DECISION_CLASS, status=STATUS_EXECUTING, limit=1000)
+    except Exception:
+        logger.warning("delegation.inbox: couldn't read the unconfirmed sends", exc_info=True)
+        sending = []
+    for card in sending:
+        person_id = card.approver_person_id
+        if person_id is None or person_id in due or card.id in SENDING:
+            continue
+        last_settle = _LAST_SETTLE.get(person_id)
+        if last_settle is None or now - last_settle >= interval:
+            due.append(person_id)
     return due
 
 
@@ -1175,6 +1379,9 @@ async def _scan_due(person_ids: list[int], now: datetime) -> None:
             logger.warning("delegation.inbox: couldn't read person %s", person_id, exc_info=True)
             continue
         if person is None or person.archived:
+            # Not theirs to have any more: waits the interval like a scan.
+            _update_watch(person_id, status="act_as_me_off", last_poll_at=now.isoformat())
+            _LAST_SETTLE[person_id] = now
             continue
         await scan_person(person, now=now)
 

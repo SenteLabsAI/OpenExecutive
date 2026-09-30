@@ -412,5 +412,37 @@ def test_only_the_send_path_sends_and_only_the_approve_route_reaches_it() -> Non
 
 
 def test_only_dismiss_deletes_a_draft() -> None:
-    assert _uses("delete_draft") == {"delegation/replies.py"}
+    """Dismiss deletes an unedited draft; the watcher takes back only one it
+    has just made, when that draft's card couldn't be made."""
+    assert _uses("delete_draft") == {"delegation/replies.py", "delegation/inbox.py"}
     assert _importers("openexecutive.delegation.replies") == {"api/routes/decisions.py", "api/routes/delegation.py"}
+
+
+def test_a_second_tap_never_clears_the_first_taps_mark(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    inbox.SENDING.add(card.id)  # the first tap, still inside send_draft
+    try:
+        refused = _refused(card, mailbox, owner)
+        assert refused.code == "already_handled"
+        assert card.id in inbox.SENDING and mailbox.sent == []
+    finally:
+        inbox.SENDING.discard(card.id)
+
+
+def test_a_sent_reply_is_reported_sent_even_when_recording_it_fails(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    def locked(*a: Any, **kw: Any) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    finish = ledger.finish_execution
+    monkeypatch.setattr(ledger, "finish_execution", locked)
+    mailbox, card = _card(owner)
+    assert _send(card, mailbox, owner) == "sent-d1"
+    assert mailbox.sent == ["d1"] and card.id not in inbox.SENDING
+    # The reconciler records it from the sent message.
+    monkeypatch.setattr(ledger, "finish_execution", finish)
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 1
+    assert _status(card) == "approved_unchanged"
