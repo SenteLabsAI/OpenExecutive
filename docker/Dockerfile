@@ -27,7 +27,7 @@ RUN pip install uv
 # if this step succeeded: `|| true` keeps the build green if GitHub is briefly
 # unreachable, and such an image fetches the commit — and needs network — on
 # its first gateway start. `uv` itself (installed above) is not pinned.
-RUN uvx --exclude-newer 2026-09-22T00:00:00Z \
+RUN uvx --exclude-newer 2026-09-23T00:00:00Z \
         --from git+https://github.com/SenteLabsAI/extensible-mcp@ac2001a09646a8044210042e12e62974f4c9687c extensible-mcp --help \
     || true
 

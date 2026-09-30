@@ -40,8 +40,12 @@ _UVX_CMD = "uvx"
 # cutoff together, deliberately; tests/unit/
 # test_extensible_mcp_pin.py fails if docker/Dockerfile's pre-warm drifts from
 # _EXTENSIBLE_MCP_LAUNCH_ARGS.
+# The cutoff must admit fastembed 0.8.1 (published 2026-09-22T20:01Z): 0.8.0
+# pads MiniLM batches to a fixed 128 tokens but truncates at 256, so any batch
+# mixing shorter and 129-256-token texts fails to stack, and the Google
+# Workspace tool index is such a batch — the gateway died building it.
 _EXTENSIBLE_MCP_REV = "ac2001a09646a8044210042e12e62974f4c9687c"
-_EXTENSIBLE_MCP_EXCLUDE_NEWER = "2026-09-22T00:00:00Z"
+_EXTENSIBLE_MCP_EXCLUDE_NEWER = "2026-09-23T00:00:00Z"
 _EXTENSIBLE_MCP_GIT = f"git+https://github.com/SenteLabsAI/extensible-mcp@{_EXTENSIBLE_MCP_REV}"
 _EXTENSIBLE_MCP_CMD = "extensible-mcp"
 # Everything after `uvx` up to the command, shared with docker/Dockerfile's pre-warm.
