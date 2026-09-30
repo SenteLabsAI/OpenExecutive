@@ -9,6 +9,27 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.4.4](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.3...v0.4.4) (2026-09-30)
+
+
+### Added
+
+* **alerts:** let the principal find and clear alerts off the live board ([#299](https://github.com/SenteLabsAI/OpenExecutive/issues/299)) ([7bee3dc](https://github.com/SenteLabsAI/OpenExecutive/commit/7bee3dc4fa0e4a4c32e3704ccf3ee23e9264001f))
+* **attunement:** let people assign a task to a teammate ([#285](https://github.com/SenteLabsAI/OpenExecutive/issues/285)) ([13da433](https://github.com/SenteLabsAI/OpenExecutive/commit/13da433bc6f3ae97e78bb8c90f06bb5e49953447))
+* **knowledge:** add the files in chosen Google Drive folders to the knowledge base ([#279](https://github.com/SenteLabsAI/OpenExecutive/issues/279)) ([354ddb4](https://github.com/SenteLabsAI/OpenExecutive/commit/354ddb4c4f1ea66365e0530b583667a16447962d))
+* **memory:** let teammates record attributed standing facts ([#280](https://github.com/SenteLabsAI/OpenExecutive/issues/280)) ([ede7b86](https://github.com/SenteLabsAI/OpenExecutive/commit/ede7b86a83275dd973dd7cd454ed0f11d2bf9247))
+
+
+### Fixed
+
+* **deps:** move the mcp gateway's dependency cutoff past fastembed 0.8.0 ([#288](https://github.com/SenteLabsAI/OpenExecutive/issues/288)) ([8098ed5](https://github.com/SenteLabsAI/OpenExecutive/commit/8098ed552e5b80c50ec3565f4e483921644504ac))
+* **integrations:** acknowledge a new email sender only when Gmail authenticated them ([#283](https://github.com/SenteLabsAI/OpenExecutive/issues/283)) ([35e00d3](https://github.com/SenteLabsAI/OpenExecutive/commit/35e00d34771f85d036fc2c8c684d7a5fcffe886d))
+* **integrations:** pin the mcp gateway to extensible-mcp with a leaner tool index ([#291](https://github.com/SenteLabsAI/OpenExecutive/issues/291)) ([1a49047](https://github.com/SenteLabsAI/OpenExecutive/commit/1a4904797ffc8c1aa4d947ba9c5e8bd74396f9d2))
+* **integrations:** pin the mcp gateway to extensible-mcp with batched embedding ([#290](https://github.com/SenteLabsAI/OpenExecutive/issues/290)) ([5b342bc](https://github.com/SenteLabsAI/OpenExecutive/commit/5b342bc9bc0acff103075f2146511b03d8bc8bd3))
+* **knowledge:** share one lean embedding session across chroma collections ([#292](https://github.com/SenteLabsAI/OpenExecutive/issues/292)) ([b05a75b](https://github.com/SenteLabsAI/OpenExecutive/commit/b05a75b5f43fb1f4b619fecb3550ecea9e4c9cfb))
+* **mcp:** pin extensible-mcp to the commit that supports mcp 2.x ([#298](https://github.com/SenteLabsAI/OpenExecutive/issues/298)) ([d06bae2](https://github.com/SenteLabsAI/OpenExecutive/commit/d06bae2f4fae1ff16d0b2950d21b64336b89ac71))
+* **memory:** keep strangers' email out of decisions under one untrusted-content policy ([#284](https://github.com/SenteLabsAI/OpenExecutive/issues/284)) ([966821a](https://github.com/SenteLabsAI/OpenExecutive/commit/966821aeff3e7162f99704f836f3a6f1aae17c73))
+
 ## [0.4.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.2...v0.4.3) (2026-09-29)
 
 
