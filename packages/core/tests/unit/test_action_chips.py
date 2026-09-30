@@ -309,6 +309,7 @@ def test_non_json_result_still_surfaces() -> None:
 _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     # schedule_tools
     "lookup_person",
+    "find_alerts",
     # people_tools
     "list_people",
     "ask_about_person",
