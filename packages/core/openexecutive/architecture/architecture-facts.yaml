@@ -3288,9 +3288,13 @@ people:
       on the same request stays on record. The card goes up whatever
       happens during the ack (a failed claim or release, a lock, a failed
       re-read, even a cancelled send — `surface_card` runs synchronously
-      in a `finally`), reading "not told" when the ack can't be confirmed:
-      a later message from the sender finds the request open and would
-      never surface it.
+      in a `finally`, with the `roster_request_created` audit row), its
+      text reading "not told" when the ack can't be confirmed: a later
+      message from the sender finds the request open and would never
+      surface it. Residual: a cancel or a failed `release_ack` leaves the
+      claim in place, so `ack_sent_at` (the /today card's `ack_sent`, the
+      [POLICY] notice on later mail) still reads told — fail-closed, no
+      second ack within the window.
     - Replays run in a FRESH `contextvars.Context` (`_spawn`): the answer
       may come from the principal's own verified turn, and a stranger's
       message must never run with the principal's session (and contacts,

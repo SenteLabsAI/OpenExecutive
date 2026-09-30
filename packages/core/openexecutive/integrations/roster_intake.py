@@ -181,12 +181,12 @@ async def _intake(
                 rr.surface_card(request, principal.id, acknowledged=told)
             except Exception:
                 logger.exception("roster_intake: surfacing request %d failed", request.id)
+            _audit(
+                "roster_request_created",
+                f"Roster request {request.id} opened ({channel})",
+                {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
+            )
     if outcome.created:
-        _audit(
-            "roster_request_created",
-            f"Roster request {request.id} opened ({channel})",
-            {"request_id": request.id, "channel": channel, "channel_ref": request.channel_ref},
-        )
         await notify_principal(request, acknowledged=told)
     return request
 
