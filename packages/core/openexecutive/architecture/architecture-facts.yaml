@@ -221,7 +221,10 @@ caching:
     the Gmail connection (the handler checks it per call), so a lapsed token
     never flips the prefix. The ghostwriter's own call carries no cache
     markers: a short constant GHOSTWRITER_PROMPT plus the person's voice
-    block, sent only when a draft is written.
+    block, sent only when a draft is written. The mail-touched lockdown
+    (delegation.lockdown) refuses at dispatch and never removes a tool from
+    the offered list, so a turn that reads the principal's mail keeps the
+    same prefix from its first round to its last.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
   intra_turn_cache: |
     executive._apply_loop_cache_marker moves a single ephemeral marker onto
@@ -7734,6 +7737,30 @@ delegation:
     summaries are free text, so quote-gating alone would not keep it out). "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
     so the tool rows carry no input or result text. The four delegation_*
     events are always private and metadata-only (see audit.event_types).
+  lockdown: |
+    Once a turn has read the principal's own mail — from the round that
+    calls ghostwrite_email, since a round's tools run together — nothing that
+    reaches anyone else runs until the turn ends (delegation.lockdown): no
+    message, post, broadcast or invite, no queued or started work
+    (schedule_followup, suggest_workflow, run_workflow, save_workflow,
+    research), no fetch of an outside address (read_document,
+    load_mcp_server, the watchlist tools), and no write to state others or
+    later turns read (the roster, goals, skills, alerts, open loops,
+    decisions, standing facts, artifacts). Through MCP call_tool only the six
+    Google Workspace reads stay (MAIL_TOUCHED_MCP_READS, a subset of
+    PRIVATE_TURN_MCP_TOOLS). Every tool the Executive can be offered is in
+    exactly one of MAIL_TOUCHED_ALLOWED_TOOLS / MAIL_TOUCHED_WITHHELD_TOOLS
+    (a test fails on an unclassified one) and an unclassified name is
+    withheld. The dispatch guard in executive._stream_agent_loop refuses at
+    dispatch with a private tool_invocation row (details.refused
+    "mail_touched") and an error telling the model to offer it in a new
+    message; the offered list is unchanged, so the cached prefix is the same
+    all turn. Backstops fail closed in the send paths themselves
+    (schedule_tools._guard_outbound, which every DM and message_person goes
+    through; the broadcast, calendar, workflow, research and follow-up
+    handlers; MCPGateway.call_tool and load_mcp_server). The server-side
+    web_search stays, as on a turn private to the principal. The lockdown is
+    per turn: the principal's next message starts afresh.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
