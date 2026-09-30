@@ -630,13 +630,15 @@ def _caller_is_principal_or_unclaimed(request: Request) -> bool:
     settings): the caller resolves to the principal — a request with no
     ``x-caller-email`` does, see ``_resolve_caller_person_id`` — or no
     principal is on the roster yet, so a first-run install is never locked
-    out. Fails closed: if the roster cannot be read, the answer is no.
+    out. That never covers a service (signed callers on, no assertion): it
+    names no one, so it can't set up an install it doesn't own. Fails closed:
+    if the roster cannot be read, the answer is no.
     """
     from openexecutive.people import store as people_store
 
     try:
         if people_store.find_principal_person() is None:
-            return True
+            return api_caller.caller(request).kind != "service"
         return people_store.is_principal_or_self(_resolve_caller_person_id(request), None)
     except Exception:
         logger.exception("principal check failed — refusing the principal-only change")

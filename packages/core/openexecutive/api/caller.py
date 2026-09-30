@@ -217,6 +217,14 @@ class JtiLedger:
         self._seen[jti] = exp
 
 
+def _signs(key: Ed25519PublicKey, signature: bytes, data: bytes) -> bool:
+    try:
+        key.verify(signature, data)
+    except InvalidSignature:
+        return False
+    return True
+
+
 def _seconds(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise AssertionRefused("malformed")
@@ -252,19 +260,23 @@ def verify_assertion(
     try:
         payload = _b64url(parts[1])
         signature = _b64url(parts[2])
-        claims = json.loads(payload)
     except ValueError:
+        raise AssertionRefused("malformed") from None
+    # The signature is checked before anything is parsed, against each key
+    # (one, or two while rotating), so no unsigned byte reaches the JSON
+    # parser. The claims then have to name the key that signed them.
+    signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    signed_by = next((kid for kid, key in keys.items() if _signs(key, signature, signing_input)), None)
+    if signed_by is None:
+        raise AssertionRefused("signature")
+    try:
+        claims = json.loads(payload)
+    except (ValueError, RecursionError):
         raise AssertionRefused("malformed") from None
     if not isinstance(claims, dict):
         raise AssertionRefused("malformed")
-    kid = claims.get("kid")
-    key = keys.get(kid) if isinstance(kid, str) else None
-    if key is None:
-        raise AssertionRefused("unknown_key")
-    try:
-        key.verify(signature, f"{parts[0]}.{parts[1]}".encode("ascii"))
-    except InvalidSignature:
-        raise AssertionRefused("signature") from None
+    if claims.get("kid") != signed_by:
+        raise AssertionRefused("key_id")
 
     iat, exp = _seconds(claims.get("iat")), _seconds(claims.get("exp"))
     if claims.get("aud") != AUDIENCE:

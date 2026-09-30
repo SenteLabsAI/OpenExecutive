@@ -14,7 +14,7 @@ from a terminal, sign it with the web app's private key:
 
 It signs as the operator (the owner at the controls) unless --email names
 the signed-in person to sign as. One assertion is good for one request: that
-method, that exact path and query (as sent, e.g. /audit/logs?limit=5), for 60
+method, that exact path and query (as sent, e.g. /audit/logs?limit=5), for 30
 seconds, once. Never print or store the private key.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 # packages/ui/src/lib/callerAssertion.ts (the tests compare all three).
 VERSION = "v1"
 AUDIENCE = "openexecutive-api"
-LIFETIME_S = 60
+LIFETIME_S = 30
 _KID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _SEED_RE = re.compile(r"[A-Za-z0-9_-]{43}=?")
 

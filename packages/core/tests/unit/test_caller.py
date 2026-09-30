@@ -143,3 +143,23 @@ def test_act_as_me_needs_local_login_for_a_caller_who_names_no_one(
         with pytest.raises(HTTPException) as refused:
             delegation_route._caller(request)
         assert refused.value.detail["code"] == "sign_in_required"
+
+
+def test_a_service_never_claims_an_install_with_no_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    path = tmp_path / "episodic.db"
+    monkeypatch.setattr(episodic, "DB_PATH", path)
+    monkeypatch.setattr(people_store, "DB_PATH", path)
+    episodic.initialize_db(path)
+    people_store.initialize_db(path)
+    people_registry.invalidate()
+    # No owner yet: open to whoever is setting the install up...
+    assert _caller_is_principal_or_unclaimed(_request()) is True
+    assert _caller_is_principal_or_unclaimed(_request(verified=Caller("operator"))) is True
+    assert _caller_is_principal_or_unclaimed(_request(verified=Caller("user", "a@x.example"))) is True
+    # ...but never to a caller that names no one.
+    assert _caller_is_principal_or_unclaimed(_request(verified=Caller("service"))) is False
+

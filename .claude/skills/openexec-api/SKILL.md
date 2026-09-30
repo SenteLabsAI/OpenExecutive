@@ -33,7 +33,7 @@ Rules:
   -H "x-caller-assertion: $(uv run --with cryptography python scripts/mint-caller-assertion.py GET /today)"
   ```
 
-  Each assertion covers one request: the same method, the exact path and query, within 60 seconds, once. So mint one per call. It signs as the operator (the owner); `--email <user's-own-email>` signs as that user.
+  Each assertion covers one request: the same method, the exact path and query, within 30 seconds, once. So mint one per call. It signs as the operator (the owner); `--email <user's-own-email>` signs as that user.
 
 ## Safety tiers
 

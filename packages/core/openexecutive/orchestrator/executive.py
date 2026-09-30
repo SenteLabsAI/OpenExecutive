@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -178,6 +179,19 @@ def _contacts_in_prompt(session: Any) -> bool:
     except Exception:
         logger.exception("contacts_in_prompt: check failed — contacts left out")
         return False
+
+
+# A tool name as the process log may show it (see _loggable_tool).
+_LOGGABLE_TOOL_RE = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def _loggable_tool(label: str) -> str:
+    """``label`` for the process log. A call_tool's inner name is the model's
+    own text: on a turn private to the principal, or one that read their
+    mail, it can carry that mail, and the log is not private to anyone. So
+    anything not shaped like a tool name is logged as unlisted (the private
+    audit row keeps it)."""
+    return label if _LOGGABLE_TOOL_RE.fullmatch(label) else "call_tool:<unlisted>"
 
 
 def _trunc(value: Any, limit: int = 200) -> str:
@@ -1923,7 +1937,10 @@ class Executive:
                 if label == "call_tool" and isinstance(tu["input"], dict):
                     named = tu["input"].get("name")
                     label = named[:200] if isinstance(named, str) and named else label
-                logger.warning("%s:%s refused — the turn read the principal's own mail", kind, label)
+                logger.warning(
+                    "%s:%s refused — the turn read the principal's own mail",
+                    kind, _loggable_tool(label),
+                )
                 audit_log(
                     "tool_invocation",
                     f"{kind}:{label} refused: the turn read the principal's own mail",
@@ -1951,7 +1968,8 @@ class Executive:
                         named = tu["input"].get("name")
                         label = named[:200] if isinstance(named, str) and named else label
                     logger.warning(
-                        "%s:%s refused — the turn is private to the principal", kind, label
+                        "%s:%s refused — the turn is private to the principal",
+                        kind, _loggable_tool(label),
                     )
                     audit_log(
                         "tool_invocation",

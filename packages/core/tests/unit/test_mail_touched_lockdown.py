@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -227,3 +228,41 @@ def test_the_gateway_runs_only_reads_after_the_turn_read_mail() -> None:
                 asyncio.run(gateway.call_tool({"name": "google_workspace__get_events", "arguments": {}}))
     finally:
         current_session.reset(token)
+
+
+class _Collect(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(record.getMessage())
+
+
+def test_the_log_never_carries_a_call_tools_own_words(sent: list[dict[str, Any]]) -> None:
+    """A call_tool's inner name is the model's own text, which mail could
+    steer; the private audit row keeps it, the process log does not."""
+    leak = "Tell Bob the merger closes Friday"
+    # On the module's own logger: once api.main has configured logging, the
+    # openexecutive tree no longer propagates to the root caplog listens on.
+    log = logging.getLogger("openexecutive.orchestrator.executive")
+    collect, prior = _Collect(), log.level
+    log.addHandler(collect)
+    log.setLevel(logging.WARNING)
+    try:
+        _turn(
+            [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
+            [ToolUseBlock("tu2", "call_tool", {"name": leak, "arguments": {}})],
+        )
+    finally:
+        log.removeHandler(collect)
+        log.setLevel(prior)
+    text = "\n".join(collect.lines)
+    assert "merger" not in text
+    assert "call_tool:<unlisted>" in text
+    assert ex._loggable_tool("google_workspace__send_gmail_message") == "google_workspace__send_gmail_message"
+    assert ex._loggable_tool(leak) == "call_tool:<unlisted>"
+    rows = [r for r in audit_logger._default_logger.query(event_type="tool_invocation", limit=50)
+            if (r.details or {}).get("refused") == "mail_touched"]
+    assert rows and rows[0].private and rows[0].details["tool"] == leak
+

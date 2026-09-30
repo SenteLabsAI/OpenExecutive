@@ -892,6 +892,28 @@ def test_local_login_and_the_cli_count_as_the_owner(
     assert owner is not None and owner.full_name == "Bob Lin"
 
 
+def test_a_service_cannot_save_a_first_setup(
+    client: TestClient, seeded: list[Any], profile_path: Path
+) -> None:
+    """With signed callers on, a request holding only the shared secret names
+    no one, so it can't choose the owner (and their sign-in email) on an
+    install that has none yet."""
+    import json as _json
+
+    from openexecutive.api import caller as api_caller
+
+    vectors = _json.loads((Path(__file__).parent / "caller_assertion_vectors.json").read_text())
+    client.app.middleware("http")(  # type: ignore[attr-defined]
+        api_caller.caller_gate(api_caller.parse_public_keys(vectors["public_keys"]))
+    )
+    seeded.append(_draft())
+    sid = _start(client)
+    resp = client.post("/onboard/interview/commit", json=_commit_body(sid))
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Sign in to save setup."
+    assert not profile_path.exists()
+
+
 # ── who may fill in the owner's missing email ────────────────────────────────
 # The roster is the web sign-in allow-list, so an address put on an owner entry
 # that has none becomes a way to sign in as the owner.

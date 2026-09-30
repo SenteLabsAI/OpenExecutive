@@ -556,6 +556,11 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
                 "profile on the Company Profile page."
             ),
         )
+    # A service (signed callers on, no assertion) names no one. On a first
+    # setup the owner checks below let anyone choose the owner and their
+    # sign-in email, which must be someone signed in.
+    if api_caller.caller(request).kind == "service":
+        raise HTTPException(status_code=403, detail="Sign in to save setup.")
 
     settings = get_settings()
 

@@ -5953,13 +5953,19 @@ auth:
     shared-secret gate. The UI proxy signs x-caller-assertion with
     CALLER_ASSERTION_PRIVATE_KEY (lib/callerAssertion.ts): the value is
     v1.<base64url JSON claims>.<signature over "v1.<claims>">, and the
-    claims are aud "openexecutive-api", iat, exp (the UI signs 60 s; the
+    claims are aud "openexecutive-api", iat, exp (the UI signs 30 s; the
     API accepts at most 120 s and 30 s of clock skew), jti, kid, kind
     user|operator, m (method), p (raw path + query as the API receives
     it) and sub (the email, lowercased; "" for the operator).
     Every jti is single-use (JtiLedger, in memory; the API runs as one
     process). It prunes expired ids and refuses when full of live ones.
-    Local-login sessions sign as the operator.
+    The signature is checked against each public key before the claims
+    are parsed, so no unsigned byte reaches the JSON parser, and the
+    claims must name the key that signed them. Local-login sessions sign
+    as the operator. A service is never the principal, not even on an
+    install with no owner yet: chat._caller_is_principal_or_unclaimed
+    answers no for it, and the setup commit refuses it (403), since on a
+    first setup it would choose the owner and their sign-in email.
 
     What the gate decides:
       - no caller header at all: Caller("service");
@@ -7810,7 +7816,12 @@ delegation:
     through; the broadcast, calendar, workflow, research and follow-up
     handlers; MCPGateway.call_tool and load_mcp_server). The server-side
     web_search stays, as on a turn private to the principal. The lockdown is
-    per turn: the principal's next message starts afresh.
+    per turn: the principal's next message starts afresh. The process log
+    names a refused call_tool's inner tool only when it is shaped like a
+    tool name (executive._loggable_tool, [a-z0-9_]{1,64}), else
+    "call_tool:<unlisted>": that name is the model's own text, which mail
+    could steer, and the log is not private (the audit row keeps it). The
+    same goes for a turn private to the principal.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while

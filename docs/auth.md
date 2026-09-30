@@ -223,7 +223,7 @@ keeps sending `x-caller-email` as well, so it works against an API without the k
 With the keys set:
 
 - **Each assertion covers one request.** It holds only for the method and the exact path
-  and query it was signed for, expires within 60 seconds, and works once.
+  and query it was signed for, expires within 30 seconds, and works once.
 - **No caller header at all is a service.** A script, `curl` with only `x-api-key`, or an
   MCP client can still use the API, but it is **never the owner**. For MCP,
   `ask_executive` asks as no one, and its `caller_email` is ignored.

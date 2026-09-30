@@ -53,6 +53,13 @@ def _signed(claims: dict[str, Any], version: str = "v1") -> str:
     return f"{signing_input}.{_b64(key.sign(signing_input.encode()))}"
 
 
+def _signed_raw(payload: bytes) -> str:
+    """A token over raw payload bytes, signed with the vectors' key."""
+    _kid, key = mint_script.load_private_key(SIGNING_KEY)
+    signing_input = f"v1.{_b64(payload)}"
+    return f"{signing_input}.{_b64(key.sign(signing_input.encode()))}"
+
+
 def _claims(**over: Any) -> dict[str, Any]:
     now = int(time.time())
     base = {
@@ -133,8 +140,9 @@ _BAD_CLAIMS: dict[str, tuple[dict[str, Any], str]] = {
     "user_not_lowercased": ({"kind": "user", "sub": "Olivia@Co.Example"}, "subject"),
     "user_not_an_email": ({"kind": "user", "sub": "not an email"}, "subject"),
     "user_sub_not_a_string": ({"kind": "user", "sub": None}, "malformed"),
-    "unknown_key": ({"kid": "another-key"}, "unknown_key"),
-    "no_key": ({"kid": None}, "unknown_key"),
+    # Signed with a key the API has, but claiming another.
+    "other_key_id": ({"kid": "another-key"}, "key_id"),
+    "no_key_id": ({"kid": None}, "key_id"),
 }
 
 
@@ -162,8 +170,9 @@ _MALFORMED: dict[str, Any] = {
     "other_version": lambda: "v2." + _mint().split(".", 1)[1],
     "four_parts": lambda: _mint() + ".extra",
     "not_base64url": lambda: "v1.!!!.abc",
-    "not_json": lambda: "v1." + _b64(b"not json") + "." + _b64(b"x" * 64),
-    "not_an_object": lambda: "v1." + _b64(b"[1, 2]") + "." + _b64(b"x" * 64),
+    # Signed, so they get as far as the parser.
+    "not_json": lambda: _signed_raw(b"not json"),
+    "not_an_object": lambda: _signed_raw(b"[1, 2]"),
     "too_long": lambda: "v1." + "A" * 5000 + ".x",
     "not_ascii": lambda: "v1.\u00e9.x",
 }
@@ -188,6 +197,18 @@ def test_a_changed_payload_or_another_key_fails_the_signature() -> None:
     signing_input = f"v1.{_b64(json.dumps(_claims()).encode())}"
     with pytest.raises(AssertionRefused, match="signature"):
         _verify(f"{signing_input}.{_b64(stranger.sign(signing_input.encode()))}")
+
+
+def test_nothing_unsigned_reaches_the_json_parser() -> None:
+    """A payload nested deep enough to blow the parser's stack is refused as
+    unsigned before it is parsed; signed (only the UI could), it is still a
+    clean refusal, not a 500."""
+    nested = b"[" * 5000 + b"]" * 5000
+    body = _b64(nested)[:3000]
+    with pytest.raises(AssertionRefused, match="signature"):
+        _verify(f"v1.{body}.{_b64(b'x' * 64)}")
+    with pytest.raises(AssertionRefused, match="malformed"):
+        _verify(_signed_raw(b"[" * 2000 + b"]" * 2000))
 
 
 def test_several_keys_while_rotating() -> None:
