@@ -55,6 +55,10 @@ from openexecutive.orchestrator.calendar_tools import (
     CALENDAR_TOOL_HANDLERS,
     CALENDAR_TOOLS,
 )
+from openexecutive.orchestrator.content_trust import (
+    principal_only_withheld,
+    principal_only_withheld_error,
+)
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.decision_tools import (
     DECISION_TOOL_HANDLERS,
@@ -1031,11 +1035,7 @@ class Executive:
             # call time, so scheduling it out here would snapshot (None,
             # None) and the memory_extractor's model call would record
             # unattributed however correct the snapshot itself was.
-            if should_extract(
-                speaker_text,
-                origin_channel=session.origin_channel,
-                person_id=person_id,
-            ):
+            if should_extract(speaker_text, session=session):
                 schedule_extraction(
                     speaker_text, full_response, session_id=session.session_id
                 )
@@ -1520,11 +1520,7 @@ class Executive:
         speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
         # private_rows: see stream_chat — the scheduled passes copy it.
         with private_rows(touched_mail):
-            if should_extract(
-                speaker_text,
-                origin_channel=session.origin_channel,
-                person_id=person_id,
-            ):
+            if should_extract(speaker_text, session=session):
                 schedule_extraction(
                     speaker_text, final_response, session_id=session.session_id
                 )
@@ -1627,7 +1623,13 @@ class Executive:
         # recipient-gated Gmail send (`PRIVATE_TURN_MCP_TOOLS`).
         private_turn = turn_is_private_to_principal()
         private_withheld = PRIVATE_TURN_WITHHELD_TOOLS if private_turn else frozenset()
-        not_offered = unattended_withheld | private_withheld
+        # The untrusted-content policy: a tool that changes the install for
+        # every later turn (load_mcp_server) is offered only while the
+        # principal is speaking on a verified, interactive surface — never on
+        # an inbound email, a teammate's turn or Google Chat
+        # (`content_trust.principal_only_withheld`).
+        principal_withheld = principal_only_withheld(current_session.get())
+        not_offered = unattended_withheld | private_withheld | principal_withheld
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         # Act as me: ghostwrite_email joins the toolkit only on a turn
         # pin_turn_delegation offered it to. Its own registry, never
@@ -1801,6 +1803,10 @@ class Executive:
                 tu for tu in mcp_tool_uses
                 if private_turn and private_turn_withholds(tu["name"], tu["input"])
             ]
+            withheld_mcp_uses += [
+                tu for tu in mcp_tool_uses
+                if tu["name"] in principal_withheld and tu not in withheld_mcp_uses
+            ]
             if withheld_mcp_uses:
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
                 withheld_uses = [*withheld_uses, *withheld_mcp_uses]
@@ -1920,6 +1926,27 @@ class Executive:
                 if tu["name"] in unattended_withheld:
                     logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
                     results_by_id[tu["id"]] = unattended_withheld_error(tu["name"])
+                    continue
+                if tu["name"] in principal_withheld:
+                    logger.warning(
+                        "%s refused — offered only while the principal is speaking", tu["name"]
+                    )
+                    audit_log(
+                        "tool_invocation",
+                        f"{tu['name']} refused: the principal is not speaking on this turn",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor="executive",
+                        details={
+                            "tool": tu["name"],
+                            "kind": "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill",
+                            "iteration": iteration,
+                            "ok": False,
+                            "refused": "not_principal",
+                        },
+                        private=private_turn,
+                    )
+                    results_by_id[tu["id"]] = principal_only_withheld_error(tu["name"])
                     continue
                 logger.warning(
                     "skill:%s refused — not offered in %s mode", tu["name"], workspace_mode

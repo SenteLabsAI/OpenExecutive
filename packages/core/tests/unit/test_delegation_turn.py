@@ -120,6 +120,8 @@ def _turn(tool_uses: list[Any]) -> Session:
     person = people_store.get_person(principal)
     session = Session(
         delegation_override=DelegationOverride(enabled=True, gmail=FakeMailbox(), person=person),
+        # The principal's own web chat: the surface extraction reads from.
+        from_web_chat=True,
     )
     finals = [FinalMsg(tool_uses, "tool_use")] if tool_uses else []
     finals.append(FinalMsg([TextBlock("Your draft is waiting in your Gmail Drafts.")], "end_turn"))

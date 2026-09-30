@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.agents.base import BaseAgent
@@ -115,6 +116,9 @@ TRIAGE_TOOL: dict[str, Any] = {
 }
 
 
+_EVENT_CLOSE_RE = re.compile(r"</\s*event", re.IGNORECASE)
+
+
 def _format_event_block(event: AlertEvent) -> str:
     body = (event.body or "")[:_MAX_EVENT_CHARS]
     parts = [f"source: {event.source}", f"external_id: {event.external_id}"]
@@ -130,7 +134,9 @@ def _format_event_block(event: AlertEvent) -> str:
         parts.append(f"title: {event.title}")
     parts.append("---")
     parts.append(body)
-    return "\n".join(parts)
+    # Every field is sender-written (a mail body, a chat line, a watched
+    # page's text): none may close the <event> block and speak outside it.
+    return _EVENT_CLOSE_RE.sub(r"<\\/event", "\n".join(parts))
 
 
 def _format_recent_alerts(recent: list[dict]) -> str:

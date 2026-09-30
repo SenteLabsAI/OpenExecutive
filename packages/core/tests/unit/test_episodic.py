@@ -469,11 +469,13 @@ def test_extraction_gate_has_no_length_floor() -> None:
     commitment.
     """
     from openexecutive.memory import episodic
+    from openexecutive.orchestrator.session import Session
 
+    web = Session(from_web_chat=True)
     for decision in ("Do B.", "Approve option B.", "Kill it.", "no, drop that"):
-        assert episodic.should_extract(decision)
+        assert episodic.should_extract(decision, session=web)
     for blank in ("", "  "):
-        assert not episodic.should_extract(blank)
+        assert not episodic.should_extract(blank, session=web)
     assert not hasattr(episodic, "MIN_USER_CHARS_FOR_EXTRACTION")
     assert not hasattr(episodic, "MIN_TURN_CHARS_FOR_EXTRACTION")
 
@@ -536,8 +538,10 @@ def test_executive_call_sites_use_the_shared_gate() -> None:
         )
         # The speaker check is not optional: a channel turn carries someone
         # else's words, and the quote validator cannot tell whose they are.
-        assert {kw.arg for kw in test.keywords} == {"origin_channel", "person_id"}, (
-            f"line {guard.lineno}: guard must pass the speaker's channel and id"
+        # The session is what names the surface and the speaker
+        # (`content_trust.principal_speaking`).
+        assert {kw.arg for kw in test.keywords} == {"session"}, (
+            f"line {guard.lineno}: guard must pass the turn's session"
         )
 
     # No extraction may be scheduled outside a guard.

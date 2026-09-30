@@ -35,7 +35,9 @@ async def _ask(question: str) -> None:
             "[yellow]No company profile found. Run 'openexecutive onboard' to set one up.[/yellow]"
         )
 
-    session = Session(company_profile=profile if not profile.is_empty() else None)
+    session = Session(
+        company_profile=profile if not profile.is_empty() else None, from_cli=True
+    )
     retrieved = retrieve(query=question)
     episodic = format_for_prompt()
 
@@ -77,7 +79,9 @@ async def _chat() -> None:
     else:
         console.print(f"[green]Company profile loaded: {profile.name}[/green]\n")
 
-    session = Session(company_profile=profile if not profile.is_empty() else None)
+    session = Session(
+        company_profile=profile if not profile.is_empty() else None, from_cli=True
+    )
     executive = Executive()
 
     console.print("[bold]Open Executive[/bold] — type 'exit' to quit\n")

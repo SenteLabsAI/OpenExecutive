@@ -114,6 +114,13 @@ def _drive(entry: str, **kwargs: Any) -> dict[str, list[str]]:
         ),
         patch("openexecutive.memory.episodic.schedule_extraction", new=_extract),
         patch("openexecutive.attunement.open_loops.schedule_open_loop_pass", new=_loops),
+        # Person 42 is the principal speaking on a verified surface: this is
+        # about which text each pass reads, not who may be extracted from
+        # (test_extraction_gate).
+        patch(
+            "openexecutive.orchestrator.content_trust.principal_speaking",
+            return_value=True,
+        ),
     ):
         asyncio.run(_run())
     return seen

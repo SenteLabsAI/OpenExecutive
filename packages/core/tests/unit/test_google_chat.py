@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import openexecutive.integrations.google_chat as gc_module
 from openexecutive.integrations.google_chat import _process_and_reply, send_reply  # noqa: F401
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -480,10 +481,10 @@ def test_uploaded_pdf_is_downloaded_and_read(monkeypatch: pytest.MonkeyPatch) ->
     captured = _run_with_attachments(monkeypatch, [_UPLOADED], download)
 
     assert downloads == ["spaces/AAA/attachments/RES1"]
-    assert captured["user_message"] == (
-        "[Attached: scan.pdf] (converted from scanned pages)\nAPPRAISED VALUE 4.2M"
-        "\n\nWhat is this worth?"
-    )
+    assert captured["user_message"] == wrap_untrusted(
+        "[Attached: scan.pdf] (converted from scanned pages)\nAPPRAISED VALUE 4.2M",
+        source="attachment", author="scan.pdf",
+    ) + "\n\nWhat is this worth?"
 
 
 def test_drive_file_is_left_to_the_drive_tools(monkeypatch: pytest.MonkeyPatch) -> None:

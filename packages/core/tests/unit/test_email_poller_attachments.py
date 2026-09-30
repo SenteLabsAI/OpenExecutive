@@ -23,6 +23,7 @@ from openexecutive.integrations.email_attachments import (
     read_email_attachments,
 )
 from openexecutive.knowledge import pdf_reader
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 EXEC = "ai@example.com"
 
@@ -126,9 +127,10 @@ async def test_a_scanned_pdf_attachment_is_downloaded_and_read(download_dir, sca
 
     text = await read_email_attachments(gateway, "m1", EXEC, refs)
 
-    assert text == (
+    assert text == wrap_untrusted(
         "[Attached: Harbor Point appraisal.pdf] (converted from scanned pages)\n"
-        "APPRAISED VALUE 4.2M"
+        "APPRAISED VALUE 4.2M",
+        source="attachment", author="Harbor Point appraisal.pdf",
     )
     assert gateway.calls == [{
         "name": "google_workspace__get_gmail_attachment_content",
@@ -244,8 +246,10 @@ def test_a_contacts_attachment_reaches_their_private_turn(download_dir, scanned)
     assert captured["session"].private_to_principal is True
     message = captured["user_message"]
     assert message.endswith(
-        "--- ATTACHMENT TEXT ---\n"
-        "[Attached: appraisal.pdf] (converted from scanned pages)\nAPPRAISED VALUE 4.2M"
+        "--- ATTACHMENT TEXT ---\n" + wrap_untrusted(
+            "[Attached: appraisal.pdf] (converted from scanned pages)\nAPPRAISED VALUE 4.2M",
+            source="attachment", author="appraisal.pdf",
+        )
     )
 
 

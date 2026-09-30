@@ -26,6 +26,7 @@ from openexecutive.integrations.email_attachments import (
     EmailAttachmentRef,
     read_email_attachments,
 )
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 if TYPE_CHECKING:
     from openexecutive.orchestrator.mcp_gateway import MCPGateway
@@ -824,7 +825,11 @@ async def _run_executive(
     }
     if session_id:
         session_kwargs["session_id"] = session_id
-    session = Session(**session_kwargs)
+    # The channel tag is what tells the untrusted-content policy this is mail,
+    # not the principal's web app: left empty, every stranger's body went
+    # through the decision extractor as the principal's own words
+    # (`content_trust.principal_speaking`).
+    session = Session(**session_kwargs, origin_channel="email")
     if from_addr:
         # Who the mail claims to be from, and whether Gmail authenticated it:
         # the fact tools let the principal's own authenticated mail ask for a
@@ -964,9 +969,20 @@ async def _run_executive(
                 )
         except Exception:
             logger.exception("email: reading attachments failed for message=%s", message_id)
+    # The mail itself is someone else's text unless Gmail authenticated the
+    # principal's own address on it: it goes in labelled as such, with its
+    # sender, so nothing in it reads as the principal or the system speaking
+    # (`content_trust.wrap_untrusted`). The framing and the [POLICY] notice
+    # above it are ours and stay outside the block.
+    principal_sent = session.email_authenticated and getattr(person, "is_principal", False) is True
+    email_text = (
+        raw_email
+        if principal_sent
+        else wrap_untrusted(raw_email, source="email", author=from_addr)
+    )
     base_message = (
         f"You have an inbound email (message_id={message_id}, thread_id={thread_id}).\n\n"
-        f"{policy_notice}{raw_email}"
+        f"{policy_notice}{email_text}"
     )
     if attachment_text:
         base_message += f"\n\n--- ATTACHMENT TEXT ---\n{attachment_text}"

@@ -1098,9 +1098,41 @@ def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None
     refusal = [e for e in _audit().query(event_type="tool_invocation", limit=100)
                if e.summary.startswith("mcp:load_mcp_server refused")]
     assert len(refusal) == 1 and refusal[0].private is True
-    # On a normal turn it still runs.
-    _run_loop(Session(session_id="email:t9"), [tool_use], gateway=gateway)
+    # On the principal's own verified turn it still runs.
+    _run_loop(_principal_web(roster), [tool_use], gateway=gateway)
     gateway.load_mcp_server.assert_awaited_once()
+
+
+@pytest.mark.parametrize("surface", ["stranger_email", "principal_email", "teammate_web"])
+def test_load_mcp_server_is_the_principals_alone(roster: SimpleNamespace, surface: str) -> None:
+    """The untrusted-content policy: loading an MCP server connects the whole
+    install to any URL, so it is offered only while the principal is speaking
+    on a verified, interactive surface — not on an inbound email (even the
+    principal's own, authenticated), nor on a teammate's turn. A call the
+    model emits anyway is refused and leaves a trace."""
+    from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS
+
+    session = {
+        "stranger_email": Session(session_id="email:t9", origin_channel="email"),
+        "principal_email": Session(
+            session_id="email:t10", origin_channel="email", email_authenticated=True,
+            caller_person_id=roster.principal,
+        ),
+        "teammate_web": _teammate_web(roster),
+    }[surface]
+    gateway = _gateway()
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name="load_mcp_server",
+        input={"name": "x", "url": "https://collector.example/mcp"},
+    )
+    provider = _run_loop(session, [tool_use], gateway=gateway)
+    gateway.load_mcp_server.assert_not_awaited()
+    assert not PRINCIPAL_ONLY_TOOLS & set(_offered(provider))
+    result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
+    assert "only the principal" in result["error"]
+    refusals = [e for e in _audit().query(event_type="tool_invocation", limit=100)
+                if e.summary.startswith("load_mcp_server refused")]
+    assert len(refusals) == 1 and refusals[0].details["refused"] == "not_principal"
 
 
 # --- MCP tools: Google Workspace reads and the gated Gmail send only --------
@@ -1246,7 +1278,9 @@ def test_other_turns_search_and_call_every_mcp_tool_unchanged(
     assert called[:len(_REFUSED_CALLS) + 1] == [
         *(tool for tool, _ in _REFUSED_CALLS), "google_workspace__get_gmail_message_content",
     ]
-    assert "load_mcp_server" in _offered(provider)
+    # Only the principal's verified turn is offered load_mcp_server
+    # (`content_trust.principal_only_withheld`).
+    assert ("load_mcp_server" in _offered(provider)) is (surface == "principal_web")
     assert not any("refused" in e.summary for e in _audit().query(limit=1000))
 
 
@@ -1299,6 +1333,7 @@ def test_which_mcp_tools_a_private_turn_may_call(name: Any, allowed: bool) -> No
 
 def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -> None:
     from openexecutive.orchestrator import executive as executive_module
+    from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS
     from openexecutive.orchestrator.executive import _ALL_SKILL_TOOLS, SPECIALIST_TOOLS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOLS
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
@@ -1310,9 +1345,11 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
         provider = _run_loop(_teammate_web(roster), [tool_use], gateway=_gateway())
     handler.assert_awaited_once()
     offered = _offered(provider)
-    assert set(offered) >= PRIVATE_TURN_WITHHELD_TOOLS
+    # A teammate's turn: everything but the principal-only tools.
+    assert set(offered) >= PRIVATE_TURN_WITHHELD_TOOLS - PRINCIPAL_ONLY_TOOLS
     assert offered == sorted(
         t["name"] for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *MCP_TOOLS]
+        if t["name"] not in PRINCIPAL_ONLY_TOOLS
     )
     assert not any(e.private for e in _audit().query(limit=1000))
 

@@ -21,20 +21,27 @@ class Session:
     # Used by schedule_followup to refuse scheduling sends to refs the user
     # never actually used — anti-spam guard.
     seen_channel_refs: set[tuple[str, str]] = field(default_factory=set)
-    # Which inbound chat channel this session arrived on ("slack", "discord",
-    # "telegram", "google_chat"), and the address on it. Empty for web/CLI
-    # turns. Used when a workflow raises an approval gate mid-conversation:
-    # the gate records where to look for the answer, so a reply on this
-    # channel can resolve it. Inbound vocabulary — see `normalize_channel`.
+    # Which inbound channel this session arrived on ("slack", "discord",
+    # "telegram", "google_chat", "email"), and the address on it. Empty for
+    # web/CLI turns and runs nobody started from a channel. Used when a
+    # workflow raises an approval gate mid-conversation: the gate records
+    # where to look for the answer, so a reply on this channel can resolve it
+    # (not on email, whose reply is no chat message — see `gate_delivery`).
+    # Also how `content_trust.principal_speaking` tells an inbound email from
+    # the principal's own surfaces: an email turn that left it empty was read
+    # as the web app's. Inbound vocabulary — see `normalize_channel`.
     origin_channel: str = ""
     origin_channel_ref: str = ""
     # True only for a session minted by the web chat route. `origin_channel`
-    # cannot stand in for this: it names an INBOUND CHAT ADAPTER, and the email
-    # poller, alert review, the CLI, the MCP server, the scheduler and the
-    # unattended workflows all leave it empty while being nothing like a
-    # browser turn. Anything that wants to treat browser turns differently has
-    # to ask for them by name.
+    # cannot stand in for this: alert review, the CLI, the MCP server, the
+    # scheduler and the unattended workflows all leave it empty while being
+    # nothing like a browser turn. Anything that wants to treat browser turns
+    # differently has to ask for them by name.
     from_web_chat: bool = False
+    # True only for a session minted by the CLI (`openexecutive ask` / `chat`),
+    # which runs on the host itself — the principal's own surface for
+    # `content_trust.principal_speaking`, as the web chat is.
+    from_cli: bool = False
     # The rostered Person behind this conversation, when one is resolved. The
     # adapters already pass this to `Executive.chat(person_id=...)`; holding it
     # on the session too lets tool handlers running mid-turn tell "the approver
