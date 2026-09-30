@@ -52,6 +52,19 @@ _EXTENSIBLE_MCP_CMD = "extensible-mcp"
 _EXTENSIBLE_MCP_LAUNCH_ARGS = (
     "--exclude-newer",
     _EXTENSIBLE_MCP_EXCLUDE_NEWER,
+    # `--with "mcp<2"` is load-bearing, and --exclude-newer does NOT cover it:
+    # mcp 2.0.0 shipped 2026-07-28, well inside the cutoff above. extensible-mcp
+    # unpacks a 3-tuple from streamable_http_client (read, write, _), which mcp
+    # 1.x yields; mcp 2.x yields only (read, write), so an unpinned resolve kills
+    # EVERY remote (url) server with "ValueError: not enough values to unpack
+    # (expected 3, got 2)", surfaced as the opaque "Could not connect to any
+    # downstream MCP server". stdio servers are unaffected, which is why this
+    # only shows up once a url-based server is configured.
+    #
+    # Before --from, so the tail stays ("--from", GIT, CMD) and the shape
+    # test_extensible_mcp_pin pins still holds.
+    "--with",
+    "mcp<2",
     "--from",
     _EXTENSIBLE_MCP_GIT,
     _EXTENSIBLE_MCP_CMD,

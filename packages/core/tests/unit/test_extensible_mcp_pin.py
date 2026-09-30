@@ -13,6 +13,7 @@ the network.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 from openexecutive.orchestrator import mcp_gateway
@@ -31,7 +32,11 @@ def _dockerfile_prewarm_args() -> list[tuple[str, ...]]:
     ]
     joined = "\n".join(lines).replace("\\\n", " ")
     return [
-        tuple(match.split())
+        # shlex, not .split(): a constraint containing a shell metacharacter has
+        # to be quoted in the Dockerfile (`--with "mcp<2"`, or sh reads the `<`
+        # as a redirect), and a naive split would compare the quotes too and
+        # report a mismatch that is not one.
+        tuple(shlex.split(match))
         for instruction in joined.splitlines()
         if instruction.strip().startswith("RUN ")
         for match in PREWARM.findall(instruction)
