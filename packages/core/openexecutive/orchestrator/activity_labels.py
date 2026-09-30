@@ -60,6 +60,7 @@ _LABELS: dict[str, str] = {
     "message_person": "Sending a message…",
     "lookup_person": "Looking up people…",
     "ack_alert": "Updating a proposal…",
+    "find_alerts": "Looking through the briefing board…",
 
     # Calendar. These write, so none of them says "checking" — the label is
     # emitted before the call runs and must not promise a read.

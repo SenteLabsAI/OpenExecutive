@@ -505,6 +505,43 @@ ACK_ALERT_TOOL: dict[str, Any] = {
 }
 
 
+FIND_ALERTS_TOOL: dict[str, Any] = {
+    "name": "find_alerts",
+    "description": (
+        "Look up briefing items by keyword when the user names one you have no "
+        "trusted alert_id for — an item they have already read or acked, one they "
+        "snoozed, or one older than the live board. Searches headline and body "
+        "across EVERY status and returns the real alert_id, headline and status "
+        "for each match. "
+        "Call this before ack_alert whenever the user refers to an item that is "
+        "not in the OPEN ITEMS block, instead of guessing an id or telling them "
+        "you cannot act. The ids this tool returns become valid ack_alert "
+        "arguments, because the server read them out of its own store — an id "
+        "that appears only in a card body or a suggested action still is not "
+        "trusted, and this tool will not make it so. "
+        "Do NOT call it to re-confirm an id the briefing block already gave you."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Words from the item as the user described it, e.g. "
+                    "'battlecard' or 'Gulf Coast port'. Matched "
+                    "case-insensitively against the headline and body."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max matches to return (default 10, max 25).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
 LOOKUP_PERSON_TOOL: dict[str, Any] = {
     "name": "lookup_person",
     "description": (
@@ -1513,6 +1550,7 @@ SCHEDULE_TOOLS: list[dict[str, Any]] = [
     MESSAGE_PERSON_TOOL,
     LOOKUP_PERSON_TOOL,
     ACK_ALERT_TOOL,
+    FIND_ALERTS_TOOL,
 ]
 
 
@@ -2096,6 +2134,79 @@ async def handle_suggest_workflow(tool_input: dict[str, Any]) -> str:
     })
 
 
+async def handle_find_alerts(tool_input: dict[str, Any]) -> str:
+    """Keyword search over alerts of ANY status, trusting what it finds.
+
+    The widening half of `ack_alert`'s trust gate. `render_and_trust` records
+    the LIVE board — unread, inside TTL, not snoozed — which is right for the
+    cards the principal is looking at and wrong the moment they name one that
+    has scrolled off it. Observed: a principal asked to retire three duplicate
+    alerts they had already opened; the Executive named all three ids correctly
+    from its own memory of the turn and then refused, because by then the rows
+    were `read` and no longer on the board. A gate that can only narrow
+    eventually refuses the person it protects.
+
+    Trusting here is safe for the reason the gate works at all: the ids come
+    from this function's own SQL against the alerts store, never from the
+    model's arguments. `query` steers WHICH rows come back; it cannot conjure
+    an id, so an id planted in a document body still earns nothing.
+    """
+    from openexecutive.alerts import store as alert_store
+
+    query = str(tool_input.get("query") or "").strip()
+    if not query:
+        return json.dumps({"error": "query is required"})
+    try:
+        limit = int(tool_input.get("limit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 25))
+
+    try:
+        # Status-agnostic on purpose. Over-fetch because the filter below is
+        # applied in Python: a `limit`-sized page would come back short.
+        rows = alert_store.list_alerts(status=None, limit=400)
+    except Exception:
+        logger.exception("find_alerts: list_alerts failed")
+        return json.dumps({"error": "could not read the alerts store"})
+
+    needle = query.lower()
+    matches = [
+        a for a in rows
+        if needle in (a.headline or "").lower() or needle in (a.body or "").lower()
+    ][:limit]
+
+    if not matches:
+        return json.dumps({"query": query, "matches": [], "count": 0})
+
+    # Widen this turn's trusted set with what the query returned, the same
+    # place `render_and_trust` writes and `ack_alert` reads. Safe for the same
+    # reason the gate works at all: these ids came out of the store's own SQL,
+    # not from the model's arguments. `query` steers WHICH rows come back; it
+    # cannot conjure an id, so an id planted in a document body still grants
+    # nothing. A session that was never shown the board stays at zero — there
+    # is no set to widen — so this cannot bootstrap authority for a caller
+    # that had none.
+    _session = current_session.get()
+    _trusted = getattr(_session, "trusted_alert_ids", None)
+    if _trusted is not None:
+        _trusted.update(int(a.id) for a in matches if a.id is not None)
+
+    return json.dumps({
+        "query": query,
+        "count": len(matches),
+        "matches": [
+            {
+                "alert_id": a.id,
+                "headline": a.headline,
+                "status": a.status,
+                "created_at": a.created_at,
+            }
+            for a in matches
+        ],
+    })
+
+
 async def handle_ack_alert(tool_input: dict[str, Any]) -> str:
     """Mark an alert ack/dismissed from a chat turn.
 
@@ -2203,4 +2314,5 @@ SCHEDULE_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = 
     "message_person": handle_message_person,
     "lookup_person": handle_lookup_person,
     "ack_alert": handle_ack_alert,
+    "find_alerts": handle_find_alerts,
 }
