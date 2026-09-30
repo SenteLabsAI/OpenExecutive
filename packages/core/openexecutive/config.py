@@ -894,6 +894,17 @@ class Settings(BaseSettings):
     delegation_max_drafts_per_day: int = Field(
         50, alias="DELEGATION_MAX_DRAFTS_PER_DAY", ge=1, le=1000
     )
+    # The inbox watcher (delegation.inbox): how often it checks a person's
+    # inbox while their "Draft replies to my inbox" switch is on, how many of
+    # the day's drafts it may write (within the limit above), and the model
+    # that decides whether an email needs a reply (unset = ROUTING_MODEL).
+    delegation_inbox_poll_minutes: int = Field(
+        5, alias="DELEGATION_INBOX_POLL_MINUTES", ge=1, le=1440
+    )
+    delegation_inbox_max_drafts_per_day: int = Field(
+        20, alias="DELEGATION_INBOX_MAX_DRAFTS_PER_DAY", ge=1, le=1000
+    )
+    delegation_classifier_model: str | None = Field(None, alias="DELEGATION_CLASSIFIER_MODEL")
 
     # External-condition monitoring — heartbeat that polls source adapters
     # (vendor_status in PR-A; RSS + stock in PR-B) and emits external_signals

@@ -65,16 +65,20 @@ def record(
         conn.close()
 
 
-def count_since(person_id: int, since: datetime, *, db_path: Path | None = None) -> int:
+def count_since(
+    person_id: int, since: datetime, *, source: str | None = None, db_path: Path | None = None
+) -> int:
     """Drafts saved as ``person_id`` at or after ``since``, from chat and the
-    inbox alike. Raises on a read error: the cap must not fail open."""
+    inbox alike, or from one ``source``. Raises on a read error: a cap must
+    not fail open."""
+    sql = f"SELECT COUNT(*) FROM {DRAFTS_TABLE} WHERE person_id = ? AND created_at >= ?"  # noqa: S608
+    params: tuple[object, ...] = (person_id, since.isoformat())
+    if source is not None:
+        sql += " AND source = ?"
+        params = (*params, source)
     conn = _connect(db_path)
     try:
-        row = conn.execute(
-            f"SELECT COUNT(*) FROM {DRAFTS_TABLE} "  # noqa: S608 — constant table name
-            "WHERE person_id = ? AND created_at >= ?",
-            (person_id, since.isoformat()),
-        ).fetchone()
+        row = conn.execute(sql, params).fetchone()
     finally:
         conn.close()
     return int(row[0]) if row else 0

@@ -395,8 +395,36 @@ _MEETING_BOOKING = DecisionClassSpec(
     cancel=_cancel_booking,
 )
 
+
+async def _approve_reply(
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
+) -> DecisionInstance:
+    """A reply the inbox watcher drafted is sent from Gmail itself."""
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "send_in_gmail", "message": "Open the draft in Gmail to send it."},
+    )
+
+
+async def _dismiss_reply(instance: DecisionInstance) -> None:
+    """Delete the reply's draft from Gmail when nobody edited it."""
+    from openexecutive.delegation.replies import dismiss
+
+    await dismiss(instance)
+
+
+# A reply the inbox watcher drafted as the principal (delegation.inbox): the
+# principal's alone, whatever its payload says, and never an alert.
+_DELEGATED_REPLY = DecisionClassSpec(
+    name="delegation_reply",
+    principal_only=True,
+    alert_source=None,
+    approve=_approve_reply,
+    after_reject=_dismiss_reply,
+)
+
 DECISION_CLASSES: dict[str, DecisionClassSpec] = {
-    spec.name: spec for spec in (_MEETING_BOOKING,)
+    spec.name: spec for spec in (_MEETING_BOOKING, _DELEGATED_REPLY)
 }
 
 

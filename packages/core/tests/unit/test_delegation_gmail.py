@@ -324,11 +324,14 @@ def test_no_credential_is_not_configured(tmp_path: Path, monkeypatch: pytest.Mon
         asyncio.run(DelegateGmail(EMAIL).profile_email())
 
 
-def test_phase_one_cannot_send() -> None:
-    """Drafts only: no method sends, and no send endpoint is ever named."""
+def test_it_cannot_send() -> None:
+    """Drafts only: no method sends, and no send endpoint is ever named. A
+    new public method fails here until someone decides it belongs."""
     public = {n for n, _ in inspect.getmembers(DelegateGmail, inspect.isfunction) if not n.startswith("_")}
     assert public == {
         "profile_email", "search_threads", "get_thread", "list_sent", "send_as_signature", "create_draft",
+        # The inbox watcher: reads, and deleting a draft it wrote.
+        "list_message_ids", "get_message", "send_as_addresses", "get_draft", "delete_draft",
     }
     # Gmail's send endpoints (/settings/sendAs is a read, and allowed).
     assert not re.search(r"/(messages|drafts)/send\b", inspect.getsource(gm))
@@ -401,3 +404,113 @@ def test_a_parent_too_long_for_the_header_gives_no_header() -> None:
 @pytest.mark.parametrize("body", [{"error": {"errors": 1}}, {"error": "denied"}, ["x"]])
 def test_an_odd_403_body_is_not_a_rate_limit(body: object) -> None:
     assert gm._rate_limited(httpx.Response(403, json=body)) is False
+
+
+# --------------------------------------------------------------------------- #
+# What the inbox watcher reads, and deleting a draft it wrote
+# --------------------------------------------------------------------------- #
+
+
+class FakeInboxGoogle(FakeGoogle):
+    """FakeGoogle with the inbox watcher's endpoints."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.drafts: dict[str, dict[str, Any]] = {
+            "d1": {"id": "d1", "message": _message({"From": EMAIL, "To": "dana@x.example"}, plain="Hi", mid="dm1")},
+        }
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.url.host != "oauth2.googleapis.com" and self.api_status == 200:
+            self.requests.append(request)
+            if path.endswith("/messages") and request.method == "GET":
+                return httpx.Response(200, json={"messages": [
+                    {"id": "m2", "threadId": "t2"}, {"id": "../x", "threadId": "t9"}, {"id": "m1", "threadId": "t1"},
+                ]})
+            if "/drafts/" in path:
+                draft_id = path.rsplit("/", 1)[1]
+                if draft_id not in self.drafts:
+                    return httpx.Response(404, json={"error": {"code": 404}})
+                if request.method == "DELETE":
+                    del self.drafts[draft_id]
+                    return httpx.Response(204)
+                return httpx.Response(200, json=self.drafts[draft_id])
+            if path.endswith("/settings/sendAs"):
+                return httpx.Response(200, json={"sendAs": [
+                    {"sendAsEmail": "Olivia@Co.Example", "isPrimary": True}, {"sendAsEmail": "o@alias.example"},
+                    {"sendAsEmail": ""},
+                ]})
+            self.requests.pop()  # recorded again below
+        return super().handler(request)
+
+
+def test_it_lists_message_ids_newest_first() -> None:
+    google = FakeInboxGoogle()
+    ids = asyncio.run(google.client().list_message_ids("in:inbox after:1", max_results=500))
+    assert ids == [("m2", "t2"), ("m1", "t1")]  # a malformed id is dropped
+    listed = next(r for r in google.requests if r.url.path.endswith("/messages"))
+    assert listed.url.params["q"] == "in:inbox after:1" and listed.url.params["maxResults"] == "100"
+
+
+def test_a_draft_is_read_and_deleted_and_gone_is_not_an_error() -> None:
+    google = FakeInboxGoogle()
+    client = google.client()
+    draft = asyncio.run(client.get_draft("d1"))
+    assert draft is not None and draft.draft_id == "d1" and draft.message.id == "dm1"
+    assert asyncio.run(client.delete_draft("d1")) is True
+    assert asyncio.run(client.get_draft("d1")) is None
+    assert asyncio.run(client.delete_draft("d1")) is False
+    deletes = [r for r in google.requests if r.method == "DELETE"]
+    assert [r.url.path.rsplit("/", 1)[1] for r in deletes] == ["d1", "d1"]
+    with pytest.raises(GmailError):
+        asyncio.run(client.delete_draft("../messages/m1"))
+
+
+def test_their_send_as_addresses() -> None:
+    assert asyncio.run(FakeInboxGoogle().client().send_as_addresses()) == ["olivia@co.example", "o@alias.example"]
+
+
+@pytest.mark.parametrize(("status", "reason", "error"), [
+    (429, "rateLimitExceeded", gm.GmailRateLimited),
+    (403, "userRateLimitExceeded", gm.GmailRateLimited),
+    (404, "", gm.GmailNotFound),
+])
+def test_a_rate_limit_and_a_missing_thread_are_their_own_errors(status: int, reason: str, error: type) -> None:
+    with pytest.raises(error):
+        asyncio.run(FakeGoogle(api_status=status, api_reason=reason).client().get_thread("t1"))
+
+
+def test_what_the_watcher_reads_off_a_message() -> None:
+    raw = _message(
+        {
+            "From": "Dana <dana@northpeak.example>",
+            "To": EMAIL,
+            "Bcc": "Olivia <olivia@co.example>",
+            "Precedence": "bulk",
+            "Authentication-Results": "mx.google.com; dkim=pass header.i=@northpeak.example; "
+            "spf=pass smtp.mailfrom=dana@northpeak.example; "
+            "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=northpeak.example",
+        },
+        plain="Hi",
+    )
+    raw["internalDate"] = "1790000000000"
+    parsed = parse_message(raw)
+    assert parsed.received_at == "2026-09-21T14:13:20+00:00"
+    assert parsed.bcc == ["olivia@co.example"]
+    assert parsed.bulk is True and parsed.sender_authenticated is True
+    assert parsed.delivery_report is False and parsed.calendar_invite is False
+    # A spoofed From: the verdict is for another domain.
+    raw["payload"]["headers"][0]["value"] = "Dana <dana@elsewhere.example>"
+    assert parse_message(raw).sender_authenticated is False
+
+
+def test_bounces_and_invites_are_marked() -> None:
+    bounce = _message({"From": "Mail Delivery Subsystem <mailer-daemon@googlemail.com>"}, plain="Failed")
+    assert parse_message(bounce).delivery_report is True
+    invite = _message({"From": "dana@northpeak.example"}, plain="Invitation")
+    invite["payload"]["parts"].append({"mimeType": "text/calendar", "body": {"data": _b64("BEGIN:VCALENDAR")}})
+    assert parse_message(invite).calendar_invite is True
+    ooo = _message({"From": "dana@northpeak.example", "X-Autoreply": "yes"}, plain="Away")
+    assert parse_message(ooo).bulk is True
+    assert parse_message(_message({"From": "dana@northpeak.example"}, plain="Hi")).received_at == ""

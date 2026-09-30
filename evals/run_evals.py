@@ -229,6 +229,11 @@ async def main() -> None:
         help="Run type=workflow scenarios via WORKFLOW_REGISTRY (skip the Executive loop)",
     )
     parser.add_argument(
+        "--inbox",
+        action="store_true",
+        help="Run the inbox watcher's scenarios (type: inbox): whether it drafts, and the draft.",
+    )
+    parser.add_argument(
         "--mcp",
         action="store_true",
         help=(
@@ -237,9 +242,9 @@ async def main() -> None:
         ),
     )
     args = parser.parse_args()
-    mode_flags = [args.triage, args.workflow, args.mcp]
+    mode_flags = [args.triage, args.workflow, args.mcp, args.inbox]
     if sum(mode_flags) > 1:
-        parser.error("--triage, --workflow, and --mcp are mutually exclusive")
+        parser.error("--triage, --workflow, --mcp and --inbox are mutually exclusive")
 
     os.environ.setdefault("COMPANY_PROFILE_PATH", "./company/profile.yaml")
     os.environ.setdefault("VECTOR_STORE_PATH", "./chroma_db")
@@ -273,6 +278,8 @@ async def main() -> None:
             return "triage"
         if s.get("type") == "workflow":
             return "workflow"
+        if s.get("type") == "inbox":
+            return "inbox"
         if s.get("requires_mcp"):
             return "mcp"
         return "chat"
@@ -283,6 +290,8 @@ async def main() -> None:
         target_kind = "workflow"
     elif args.mcp:
         target_kind = "mcp"
+    elif args.inbox:
+        target_kind = "inbox"
     else:
         target_kind = "chat"
 
@@ -313,6 +322,20 @@ async def main() -> None:
                 results.append(result)
                 status = "PASS" if result["passed"] else "FAIL"
                 print(f"    → {status} (overall: {scores.get('overall', 0):.1f}/5)")
+            except Exception as e:
+                print(f"    → ERROR: {e}")
+                results.append({"id": scenario["id"], "error": str(e), "passed": False})
+    elif target_kind == "inbox":
+        # The inbox watcher's two model calls, judged in the package runner.
+        from openexecutive.evals.runner import run_inbox_scenario
+
+        for scenario in scenarios:
+            print(f"  [{scenario['id']}] {scenario['description']}")
+            try:
+                result = {"id": scenario["id"], **await run_inbox_scenario(scenario)}
+                results.append(result)
+                status = "PASS" if result["passed"] else "FAIL"
+                print(f"    → {status} (overall: {result['scores'].get('overall', 0):.1f}/5)")
             except Exception as e:
                 print(f"    → ERROR: {e}")
                 results.append({"id": scenario["id"], "error": str(e), "passed": False})

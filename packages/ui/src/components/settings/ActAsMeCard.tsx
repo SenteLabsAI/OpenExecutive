@@ -6,20 +6,25 @@ import Icon from "@/components/Icon";
 import SettingsSection from "@/components/settings/SettingsSection";
 import Switch from "@/components/Switch";
 import {
+  checkInboxNow,
   getDelegation,
   getVoiceProfile,
   learnVoiceProfile,
   refreshVoiceSignature,
   resetVoiceProfile,
   setDelegationEnabled,
+  setInboxWatch,
   updateVoiceProfile,
   type DelegationSettings,
+  type InboxWatch,
   type VoiceProfile,
 } from "@/lib/api";
+import { formatAgo } from "@/lib/setupStatus";
 
 // Settings → Act as me: let the Executive draft email AS you, in your own
-// Gmail Drafts, when you ask it to — it never sends. Backed by GET/PUT
-// /delegation and /delegation/voice. Hidden for anyone who can't have it yet
+// Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
+// for mail that needs you — it never sends. Backed by GET/PUT /delegation,
+// /delegation/inbox and /delegation/voice. Hidden for anyone who can't have it yet
 // (only the owner can) and on a backend without it — so, unlike the other
 // sections, this one renders its own heading and tells the page (via
 // `onVisible`) whether it is on the page at all.
@@ -38,6 +43,9 @@ const AUDIENCE_LABEL: Record<string, string> = {
   other: "To anyone else",
 };
 const GREETING_MAX_CHARS = 60;
+// While Check now runs, how often the card looks again, and for how long.
+const CHECK_POLL_MS = 3000;
+const MAX_CHECK_POLLS = 40;
 
 function lines(text: string): string[] {
   return text
@@ -83,6 +91,22 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
   useEffect(() => {
     onVisible?.(state === "ready" || state === "error");
   }, [state, onVisible]);
+
+  // While an inbox check runs, look again every few seconds until it's done.
+  const checking = settings?.inbox?.checking ?? false;
+  const polls = useRef(0);
+  useEffect(() => {
+    if (!checking) {
+      polls.current = 0;
+      return;
+    }
+    if (polls.current >= MAX_CHECK_POLLS) return;
+    const timer = setTimeout(() => {
+      polls.current += 1;
+      void load();
+    }, CHECK_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [checking, settings, load]);
 
   if (state === "hidden" || state === "loading") return null;
   if (state === "error" || !settings) {
@@ -173,9 +197,103 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
           {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
         </div>
 
+        {settings.inbox && (
+          <InboxSection
+            inbox={settings.inbox}
+            actAsMeOn={on}
+            onSettings={setSettings}
+            onInbox={(inbox) => setSettings((prev) => (prev ? { ...prev, inbox } : prev))}
+          />
+        )}
+
         <VoiceSection connected={connected} />
       </div>
     </SettingsSection>
+  );
+}
+
+// "Draft replies to my inbox" (PUT /delegation/inbox; Check now is POST
+// /delegation/inbox/check). Needs Act as me on; the replies wait on Today.
+function InboxSection({
+  inbox,
+  actAsMeOn,
+  onSettings,
+  onInbox,
+}: {
+  inbox: InboxWatch;
+  actAsMeOn: boolean;
+  onSettings: (next: DelegationSettings) => void;
+  onInbox: (next: InboxWatch) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = inbox.enabled;
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSettings(await setInboxWatch(!on));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the setting.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkNow = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onInbox(await checkInboxNow());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't check your inbox.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const last = inbox.last_poll_at && !inbox.checking ? ` Last checked ${formatAgo(inbox.last_poll_at)}.` : "";
+  return (
+    <div className="py-4 first:pt-0 last:pb-0">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-fg" id="act-as-me-inbox-label">
+            Draft replies to my inbox
+          </div>
+          <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
+            {on
+              ? "When mail comes in that needs you, it writes a first reply in your Gmail Drafts and puts it on Today for you to review. It never sends."
+              : actAsMeOn
+                ? "Off: it only drafts when you ask it to in chat."
+                : "Turn on Write drafts as me first."}
+          </p>
+        </div>
+        <Switch
+          checked={on}
+          onChange={() => void toggle()}
+          disabled={busy || (!on && !actAsMeOn)}
+          labelledBy="act-as-me-inbox-label"
+        />
+      </div>
+      {on && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-xs text-fg-muted">
+            {inbox.message}
+            {last}
+          </span>
+          <button
+            type="button"
+            onClick={() => void checkNow()}
+            disabled={busy || inbox.checking}
+            className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+          >
+            {inbox.checking ? "Checking…" : "Check now"}
+          </button>
+        </div>
+      )}
+      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+    </div>
   );
 }
 

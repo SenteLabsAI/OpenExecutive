@@ -12,6 +12,7 @@ Yielded event shapes:
                               #   chat:     "query", "response"
                               #   workflow: "workflow_name", "workflow_inputs", "artifact"
                               #   triage:   "event", "decision"
+                              #   inbox:    "outcome" (verdict, drafted, reply)
                               }
   {"type": "scenario_error",  "index": int, "total": int, "scenario_id": str, "error": str}
   {"type": "suite_done",      "kind": str, "passed": int, "total": int}
@@ -33,6 +34,11 @@ A chat scenario may set a ``delegation`` block (Act as me: the asker, their
 threads) to run with ``ghostwrite_email`` offered against an in-memory
 mailbox (``scenarios.scenario_delegation``); the drafts it saves go to the
 judge alongside the reply.
+
+An ``inbox`` scenario (``type: inbox``) runs the inbox watcher's two model
+calls on one email (``delegation.inbox.reply_for``): whether it drafts at all
+must match ``expect``, and a draft is judged by ``judge_inbox``. Nothing
+reaches Gmail and nothing is stored.
 """
 from __future__ import annotations
 
@@ -44,10 +50,11 @@ from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import asdict
 from typing import Any
 
-from openexecutive.evals.judges import judge_chat, judge_triage, judge_workflow
+from openexecutive.evals.judges import judge_chat, judge_inbox, judge_triage, judge_workflow
 from openexecutive.evals.scenarios import (
     load_scenarios,
     scenario_delegation,
+    scenario_inbox,
     scenario_principal_role,
 )
 from openexecutive.workflows.gate import ensure_workflow_event
@@ -164,6 +171,8 @@ def _make_run_one(
     """Returns a `run_one(i, scenario)` coroutine for the requested kind."""
     if kind == "triage":
         return _make_triage_runner(sem, queue, passed, total, cancel_event)
+    if kind == "inbox":
+        return _make_inbox_runner(sem, queue, passed, total, cancel_event)
     if kind == "workflow":
         return _make_workflow_runner(store, sem, queue, passed, total, cancel_event)
     # chat (default) and mcp both go through Executive.chat
@@ -263,6 +272,89 @@ def _make_triage_runner(
         except asyncio.CancelledError:
             # User clicked Stop. Exit silently — `suite_canceled` will
             # be emitted by the outer generator once all tasks settle.
+            return
+
+    return run_one
+
+
+async def run_inbox_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    """One ``type: inbox`` scenario: ``{"outcome", "scores", "passed"}``."""
+    from openexecutive.delegation.inbox import reply_for
+
+    case = scenario_inbox(scenario)
+    if case is None:
+        raise ValueError("inbox scenarios require an `inbox` block")
+    verdict, reply = await reply_for(
+        case.person, case.message, case.thread, relation=case.relation, own={case.person.email}
+    )
+    drafted = reply is not None and not isinstance(reply, str)
+    outcome: dict[str, Any] = {
+        "verdict": asdict(verdict) if verdict is not None else None,
+        "drafted": drafted,
+        "reply": asdict(reply) if drafted and reply is not None and not isinstance(reply, str) else None,
+        "no_reply_because": reply if isinstance(reply, str) else None,
+    }
+    if drafted != case.expect_draft:
+        scores: dict[str, Any] = {
+            "overall": 1,
+            "notes": f"expected {'a draft' if case.expect_draft else 'no draft'}, "
+            f"got {'a draft' if drafted else 'none'}",
+        }
+    elif not drafted:
+        scores = {"overall": 5, "notes": "drafted nothing, as expected"}
+    else:
+        scores = await judge_inbox(scenario, outcome)
+    return {
+        "outcome": outcome,
+        "scores": scores,
+        "passed": float(scores.get("overall", 0)) >= _PASS_THRESHOLD,
+    }
+
+
+def _make_inbox_runner(
+    sem: asyncio.Semaphore,
+    queue: asyncio.Queue[dict[str, Any] | None],
+    passed: list[int],
+    total: int,
+    cancel_event: asyncio.Event | None,
+) -> RunOne:
+    async def run_one(i: int, scenario: dict[str, Any]) -> None:
+        if _is_canceled(cancel_event):
+            return
+        try:
+            async with sem:
+                if _is_canceled(cancel_event):
+                    return
+                await queue.put({
+                    "type": "scenario_start",
+                    "index": i,
+                    "total": total,
+                    "scenario_id": scenario["id"],
+                    "description": scenario.get("description", ""),
+                })
+                try:
+                    result = await run_inbox_scenario(scenario)
+                    if result["passed"]:
+                        passed[0] += 1
+                    await queue.put({
+                        "type": "scenario_done",
+                        "index": i,
+                        "total": total,
+                        "scenario_id": scenario["id"],
+                        "passed": result["passed"],
+                        "scores": result["scores"],
+                        "outcome": result["outcome"],
+                    })
+                except Exception as exc:
+                    logger.exception("eval scenario %s failed", scenario["id"])
+                    await queue.put({
+                        "type": "scenario_error",
+                        "index": i,
+                        "total": total,
+                        "scenario_id": scenario["id"],
+                        "error": str(exc),
+                    })
+        except asyncio.CancelledError:
             return
 
     return run_one

@@ -140,9 +140,15 @@ def authenticated_by_gmail(raw: str, from_addr: str) -> bool:
     ``dmarc=pass`` for the From domain, and the raw From must be
     ``from_addr``. Anything missing or unreadable — no header, ``dmarc=none``,
     a temporary error — is False: this gate fails closed."""
-    address = from_addr.strip().lower()
     headers = _raw_headers(raw)
-    if headers is None or "@" not in address:
+    return headers is not None and headers_authenticated(headers, from_addr)
+
+
+def headers_authenticated(headers: Message, from_addr: str) -> bool:
+    """``authenticated_by_gmail`` over a message's parsed headers, in the
+    order the message carries them (the Gmail API's own header list, say)."""
+    address = from_addr.strip().lower()
+    if "@" not in address:
         return False
     try:
         _name, raw_from = parseaddr(str(headers.get("From", "")))

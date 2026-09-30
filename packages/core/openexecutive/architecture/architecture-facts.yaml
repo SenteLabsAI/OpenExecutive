@@ -3649,7 +3649,7 @@ scheduler:
     - awaiting_human — placed by the `wait_for_human` workflow step; the run resumes when an inbound message matches.
     - "dynamic_workflow — cadence-fired run of a user-created (dynamic) workflow. Enqueued by `workflows.dynamic_cadence.schedule_dynamic_workflow_cadence` (channel=`__internal__`, channel_ref=the workflow name, assigned_to_person_id=the delivery recipient). The runner's `_run_dynamic_workflow` resolves the stored definition, runs the generic `DynamicWorkflow`, DMs the artifact to the recipient via `handle_message_person`, and re-chains the next occurrence — same crash-survival pattern as the principal briefs. Saving/updating/deleting/deactivating the definition reconciles its pending rows via `dynamic_cadence.cancel_cadence_rows`. See the `workflows:` → `dynamic_user_created` key."
     - nudge_scan — internal heartbeat row owned by the nudge engine; the runner calls `nudge_engine.run_nudge_scan()` and chains the next tick via `nudge_engine.enqueue_next_scan()`. Bypasses outbound dispatch. Emission is also capped per `scope_key` at `NUDGE_MAX_PER_SCOPE` (default 3) delivered nudges (`episodic.count_nudges_for_scope`), so a parked item is not chased forever.
-    - "alert_review_scan — internal heartbeat row owned by the Executive alert review (`alerts.review`). Bootstrapped idempotently at scheduler startup when `ALERT_REVIEW_ENABLED`, fires every `ALERT_REVIEW_INTERVAL_HOURS` (default 6); the runner calls `run_alert_review(reason='heartbeat')`, marks done, and chains the next tick — same crash-resilient shape as nudge_scan. `_run_principal_brief` also runs a `pre_brief` pass before the morning brief so the brief reflects fresh verdicts (a review failure never blocks the brief). Bypasses outbound dispatch itself; the moves it makes go through the real DM / draft handlers. See the `alert_review:` key. Not a kind but loop-level: the runner also calls `_maybe_sweep_alerts` (alert TTL expiry, `alerts.lifecycle.expire_stale_alerts`) once at boot and every 15 min at the top of the tick — BEFORE the company-profile and rotation gates, so an old backlog expires even pre-onboarding — pure DB hygiene, no heartbeat row. Also loop-level: `_maybe_refresh_narrative` (AFTER the pause, profile and rotation gates, since it can spend a model call) starts `today.refresh_principal_narrative` as its own task every BRIEFING_NARRATIVE_REFRESH_MINUTES (default 10; 0 = off) between BRIEFING_NARRATIVE_REFRESH_START_HOUR and _END_HOUR (06–22) local, never while the previous one runs. It refreshes the cached calendar read and rewrites the principal's /today header only when its key moved, so the page is current before anyone opens it."
+    - "alert_review_scan — internal heartbeat row owned by the Executive alert review (`alerts.review`). Bootstrapped idempotently at scheduler startup when `ALERT_REVIEW_ENABLED`, fires every `ALERT_REVIEW_INTERVAL_HOURS` (default 6); the runner calls `run_alert_review(reason='heartbeat')`, marks done, and chains the next tick — same crash-resilient shape as nudge_scan. `_run_principal_brief` also runs a `pre_brief` pass before the morning brief so the brief reflects fresh verdicts (a review failure never blocks the brief). Bypasses outbound dispatch itself; the moves it makes go through the real DM / draft handlers. See the `alert_review:` key. Not a kind but loop-level: the runner also calls `_maybe_sweep_alerts` (alert TTL expiry, `alerts.lifecycle.expire_stale_alerts`) once at boot and every 15 min at the top of the tick — BEFORE the company-profile and rotation gates, so an old backlog expires even pre-onboarding — pure DB hygiene, no heartbeat row. Also loop-level: `_maybe_refresh_narrative` (AFTER the pause, profile and rotation gates, since it can spend a model call) starts `today.refresh_principal_narrative` as its own task every BRIEFING_NARRATIVE_REFRESH_MINUTES (default 10; 0 = off) between BRIEFING_NARRATIVE_REFRESH_START_HOUR and _END_HOUR (06–22) local, never while the previous one runs. It refreshes the cached calendar read and rewrites the principal's /today header only when its key moved, so the page is current before anyone opens it. Also loop-level, after the same gates: `_maybe_scan_inbox` starts the Act as me inbox watcher's due scans (`delegation.inbox.maybe_scan`) as one task, never while the previous one runs — see delegation.inbox_watcher."
     - proactive_nudge — per-channel nudge action emitted by `run_nudge_scan`. Carries a `scope_key` for cooldown dedup and `assigned_to_person_id` for a dispatch-time on-leave re-check that runs BEFORE the ad-hoc dispatch path: if the assignee has gone unreachable since the scan, the runner reschedules into the next available slot (clamped to fall after on_leave_until) or drops the nudge with an audit event rather than dispatching to a deaf channel.
     - "principal_brief_morning — Shift 3 recurring row that runs the `morning_brief` workflow and sends the artifact to the principal via `_deliver_to_principal` (preferred channel honoured, email through the MCP gateway; see `workflows` → morning_brief). When no channel can reach the principal the brief is still generated and stored as a run with its artifact (a web-only principal reads it on the Artifacts page); it is just not delivered, which is audited, and the next occurrence is chained. Seeded once per database at scheduler startup via `seed_principal_briefs()`; each fire chains the next occurrence in `_run_principal_brief()` so the recurring rhythm survives crashes. Time of day defaults to 08:00 in the user's zone (memory.workspace_settings.get_user_timezone: the workspace's zone, else USER_TIMEZONE, else UTC), computed DST-safe via `departments.cadence._parse_cadence_spec('daily@HH:MM', after, tz)`. A valid `PRINCIPAL_BRIEF_MORNING_TIME` (HH:MM) pins the time and is still read as UTC, as before zones existed, so a pinned time never moves; a malformed value is logged and ignored like an unset one. An install that set USER_TIMEZONE but pinned nothing does move to that zone, from each kind's first fire after the upgrade (rows seeded before it keep their old UTC time once). A change of zone runs `reschedule_principal_rhythm()`, which re-times each kind's PENDING, not-yet-due row IN PLACE (UPDATE run_at, guarded on the row being unchanged since it was read) and never inserts or cancels, so it cannot race the chain's mark_done → enqueue gap into a duplicate. New time: the next occurrence in the new zone after max(now, the kind's last fired run + 12h) — never two runs of a kind within 12h — except that if it is more than 12h later than the row's current time (moving would skip a day, e.g. at 07:59Z moving to Europe/London) the row keeps its time once. A kind with no such row (running, between mark_done and its chain insert, or a due row held by a pause / missing profile) is left alone; its chain times the next one in the new zone, and the chain itself starts from max(now, fired run_at + 12h) so a zone change mid-run cannot put a second brief hours after the first."
     - "principal_brief_eod — same shape as morning_brief, fires once per day at 18:00 in the user's zone (an explicitly set `PRINCIPAL_BRIEF_EOD_TIME` is read as UTC). Runs `end_of_day_digest` workflow. Both brief kinds bypass the per-channel anti-spam guards because the principal is by definition deliverable (channel_ref=`principal`, channel=`__internal__` triggers the workflow run rather than a direct send)."
@@ -4205,7 +4205,12 @@ audit:
     - delegation_settings_changed — a person turned Act as me on or off for themselves via PUT /delegation. actor "user"; details carry person_id and enabled. Always private. Setting the current value writes nothing.
     - delegation_gmail_verified — their own Gmail was checked (connected, and the mailbox on their People entry) just before Act as me was turned on. details carry person_id and status. Always private.
     - delegation_voice_changed — "How I write" learned from their sent mail (actor "delegation"), or edited, locked or reset via /delegation/voice, or its signature read from Gmail again via /delegation/voice/signature (actor "user"). details carry op (learn, edit, reset or signature), person_id, and counts, the names of the fields changed or whether a signature was found — never their text. Always private.
-    - delegation_drafted — one per draft ghostwrite_email saved in someone's own Gmail. details carry person_id, thread_id, draft_id, reply, the recipient count and flags — never the draft, the intent or the thread. Always private; the daily draft cap counts these rows.
+    - delegation_drafted — one per draft ghostwrite_email saved in someone's own Gmail. details carry person_id, thread_id, draft_id, reply, the recipient count and flags — never the draft, the intent or the thread. Always private; the daily draft cap counted these rows before delegation_drafts (the voice learner still reads them for older drafts).
+    - delegation_inbox_changed — a person turned Draft replies to my inbox on or off via PUT /delegation/inbox (or off by turning Act as me off). actor "user"; details carry person_id and enabled. Always private.
+    - delegation_inbox_scanned — one per completed inbox scan. actor "executive"; details carry person_id, the status and the counts (drafted, skipped, not_needed, deferred, failed, closed). Always private.
+    - delegation_reply_drafted — the inbox watcher saved a reply in someone's own Gmail and made its card. details carry person_id, thread_id, draft_id, decision_id, relation, kind and flags — never the email or the draft. Always private.
+    - delegation_reply_dismissed — a reply card was dismissed. details carry person_id, decision_id and what happened to the draft (deleted, kept_edited, already_gone, not_connected, gmail_error). Always private.
+    - delegation_reply_closed — the reconciler closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, you_replied, thread_gone). Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
   writer: openexecutive.audit.AuditLogger — synchronous SQLite writer; uses WAL + 5s busy_timeout so concurrent webhook/scheduler/poller threads don't see "database is locked".
@@ -7548,12 +7553,15 @@ clients:
       saved slot carries its row in state.db and a blank slot's wipe
       (_BLANK_WIPE_TABLES) returns it to the defaults before the briefs and
       cadences are re-seeded.
-    - Act as me's tables (delegation_settings, delegation_voice,
-      delegation_voice_history) are per company too - in _BLANK_WIPE_TABLES
-      and reset_all_state - so a blank client starts with it off and no
-      writing profile. The per-person Gmail credential is a file outside the
-      slot, re-checked against the live roster on every use, and no verbatim
-      exemplars are learned while a slot is active.
+    - Act as me's tables (delegation.schema.TABLES - delegation_settings,
+      delegation_voice, delegation_voice_history, delegation_drafts,
+      delegation_inbox_watch, delegation_inbox_messages) are per company
+      too - in _BLANK_WIPE_TABLES and reset_all_state - so a blank client
+      starts with it off, no writing profile and no inbox watcher. The
+      watcher never scans while a slot is active. The per-person Gmail
+      credential is a file outside the slot, re-checked against the live
+      roster on every use, and no verbatim exemplars are learned while a
+      slot is active.
     - First activation with no active client auto-snapshots the user's
       original company to _user_backup (same restore point the fixture
       switcher uses; POST /fixtures/unload brings it back).
@@ -7633,11 +7641,13 @@ delegation:
   intent: |
     Act as me — the one place the Executive writes AS a person instead of as
     itself. Everywhere else it has its own Google account and bots and signs
-    as itself. Here, only when the person asks, it writes an email in their
-    voice and saves it as a DRAFT in their own Gmail for them to review and
-    send. Phase 1 only drafts (nothing in the package can send) and only the
-    principal may turn it on. Off by default; off changes nothing — prompts,
-    tool lists and prompt caches are byte-identical to an install without it.
+    as itself. Here, only when the person asks — or, with the second switch
+    (Draft replies to my inbox), for mail in their inbox that needs them —
+    it writes an email in their voice and saves it as a DRAFT in their own
+    Gmail for them to review and send. Nothing in the package can send, and
+    only the principal may turn it on. Off by default; off changes nothing —
+    prompts, tool lists and prompt caches are byte-identical to an install
+    without it.
   who: |
     delegation.settings.can_delegate(person) is the single rule: a
     non-archived team member flagged is_principal. The rails a teammate's
@@ -7772,8 +7782,13 @@ delegation:
   gmail_client: |
     delegation.gmail.DelegateGmail — direct Gmail REST (httpx), never
     registered with the MCP gateway. Methods profile_email, search_threads
-    (metadata only), get_thread, list_sent, send_as_signature and
-    create_draft. NO send method (a unit test fails if one appears).
+    (metadata only), list_message_ids, get_thread, get_message, list_sent,
+    send_as_signature, send_as_addresses, create_draft, get_draft (None on
+    a 404) and delete_draft (False on a 404). NO send method (a unit test
+    pins the method set). A parsed message also carries received_at
+    (internalDate), bcc, bulk, delivery_report, calendar_invite and
+    sender_authenticated; a 429 or a rate-limit 403 raises GmailRateLimited
+    and a 404 GmailNotFound, both GmailErrors.
     gmail_status answers connected, not_configured, needs_reconnect
     (invalid_grant, a 401/403 or a missing scope; tokens of an app in
     Testing mode expire after 7 days — a 403 whose reason is a rate limit,
@@ -7801,6 +7816,9 @@ delegation:
     summaries are free text, so quote-gating alone would not keep it out). "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
     so the tool rows carry no input or result text. The four delegation_*
     events are always private and metadata-only (see audit.event_types).
+    The inbox watcher is private the same way: every row a scan or a card
+    action writes is private to the principal, and it starts no chat turn,
+    alert, scheduled action or workflow run and teaches no memory.
   lockdown: |
     Once a turn has read the principal's own mail — from the round that
     calls ghostwrite_email, since a round's tools run together — nothing that
@@ -7830,6 +7848,105 @@ delegation:
     "call_tool:<unlisted>": that name is the model's own text, which mail
     could steer, and the log is not private (the audit row keeps it). The
     same goes for a turn private to the principal.
+  inbox_watcher: |
+    delegation.inbox — the second switch, "Draft replies to my inbox"
+    (delegation_inbox_watch: person_id, enabled, watch_since, last_poll_at,
+    status, backoff_until, failures, updated_at, updated_by; absent is off).
+    Turning it on needs Act as me on and gmail_status connected, and sets
+    watch_since to now every time, so mail from before is never drafted
+    for; turning Act as me off turns it off too. Off means no Gmail call and
+    no row. It runs from a throttled scheduler-tick hook
+    (runner._maybe_scan_inbox → inbox.maybe_scan, after the pause, profile
+    and rotation gates), not a scheduled_actions row (those are on
+    /scheduled for everyone and anyone may cancel them): every
+    DELEGATION_INBOX_POLL_MINUTES (default 5) per person, one scan task at a
+    time and one scan per person (inbox._SCANNING), never while a client
+    slot is active; POST /delegation/inbox/check runs the same scan. A scan
+    runs entirely under private_rows(True) and logs counts and codes only.
+    It first settles open cards (reconcile), stops with backlog_full at 25
+    open cards, then lists in:inbox -in:chats -from:me minus the
+    promotions, social, updates and forums tabs after watch_since — at most
+    25 ids, the newest per thread, 10 threads — and never marks mail read or
+    changes a label. delegation_inbox_messages is its durable cursor (id,
+    person_id, message_id, thread_id, received_at, sender_key — sha256[:16]
+    of the address, never the address — relation, outcome, reason,
+    classified, draft_id, decision_id, flags, created_at, updated_at;
+    UNIQUE(person_id, message_id)); outcome is processing, skipped,
+    not_needed, deferred, failed, drafted, sent, dismissed, closed or
+    expired. Skipped with a reason (skip_reason, in code): before_watch,
+    stale (over 3 days), no_sender, from_you (the person or a send-as
+    address), from_executive, ours (X-OE-Ghostwritten), automatic
+    (Auto-Submitted, Precedence bulk/junk/list/auto_reply, X-Autoreply, a
+    bounce, a calendar invite or a no-reply sender), mailing_list, category,
+    not_addressed (not in To or Cc), too_many_recipients (over 10),
+    you_replied (the person wrote last) and draft_exists. Not recorded, so
+    a later scan looks again: a message under 10 minutes old (mail the
+    person answers at once never gets a card), one in a thread whose card
+    is open, and one a daily limit holds back. Order per message, safe to
+    crash anywhere: claim the row → classify → reserve the shared daily
+    slot → write → create_draft and store its id → create the card
+    (idempotency key delegation_reply:{person}:{message}) → drafted. Limits:
+    5 drafts a scan; DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20)
+    within the shared DELEGATION_MAX_DRAFTS_PER_DAY; 200 classifications, 2
+    drafts per sender (1 for a stranger) and 10 stranger drafts a day. A
+    lapsed sign-in sets the status and is looked at again every 30 minutes;
+    a rate limit or other Gmail error backs off from 5 minutes, doubling to
+    2 hours. Neither turns the switch off; the card shows the status.
+  inbox_classifier: |
+    delegation.inbox_classifier — one forced-tool call (classify_email →
+    needs_reply, kind, confidence) on DELEGATION_CLASSIFIER_MODEL, else
+    ROUTING_MODEL, logged as inbox_classifier usage. The system prompt is a
+    short constant (uncached); the user turn is a few one-lined header
+    lines — From, the sender's relation (and "address not verified"), the
+    recipient count, the subject — and the sender's own new words
+    (sender_new_text, at most 3000 characters), every line scrubbed, inside
+    one <email> block marked as data. No other tools, context or memory.
+    Code decides: a draft only when needs_reply, kind is question, request,
+    scheduling, introduction or follow_up, and confidence clears 0.6 (team
+    or contact), 0.7 (someone the person has written to, found by a Gmail
+    in:sent to: search) or 0.85 (a stranger, or an unknown relation).
+    fyi, thanks, pitch, notification, newsletter, phishing and other never
+    get one, and any failure or malformed answer means none.
+  inbox_drafting: |
+    delegation.inbox.compose_reply — ghostwriter.compose and the person's
+    voice block unchanged, with a constant intent in place of a person's:
+    INBOX_REPLY_INTENT (acknowledge; say again only what the person's OWN
+    earlier messages in the thread already said; no yes or no, date, time,
+    price, fact or promise of its own; "I'll get back to you"; every ask it
+    can't answer from their words goes in open_questions), or
+    INBOX_HOLDING_INTENT for a stranger (a short thank-you-I'll-get-back
+    holding reply, answering nothing). lint still strips any link or
+    address that is not the person's own. The reply goes to the sender only
+    (threads.plan_reply with reply_all off, Reply-To ignored); the card is
+    flagged others_on_thread when anyone else was addressed,
+    executive_on_thread when the Executive was, and sender_unverified when
+    Gmail's SPF/DKIM/DMARC results don't vouch for the From address
+    (fact_confirmation.headers_authenticated). A sincere "are you an AI?"
+    becomes an open question for the person.
+  reply_cards: |
+    A drafted reply waits on a card: a delegation_reply decision
+    (DecisionClassSpec principal_only, no alert — alerts feed chat turns,
+    which would put other people's mail into memory; its payload also
+    carries private: true). The payload holds ids (message, thread, draft
+    and the draft's message id), the sender's name and address, relation,
+    whether the sender was verified, the subject, received_at, they_wrote
+    (the sender's new words, at most 2000 characters), the draft's to,
+    subject and body, open_questions, flags, kind and confidence.
+    GET /delegation/replies lists the caller's open cards from the database
+    alone (delegation.replies.cards: no Gmail call, so Today never waits on
+    Google) with a Gmail link built from the fixed prefix. Approving one is
+    a 409 send_in_gmail: the draft is sent from Gmail itself. Dismiss is
+    POST /decisions/{id}/reject; its after_reject (replies.dismiss) deletes
+    the draft only when it is unedited — its message id still the one
+    saved (Gmail gives an edited draft a new one) — and records the outcome
+    (deleted, kept_edited, already_gone, not_connected, gmail_error) even
+    when Gmail fails. Each scan first reconciles the open cards: expired
+    after 7 days (the draft stays in Gmail), sent_in_gmail (the draft gone
+    and the person's message after it; the draft row's sent_message_id is
+    set), draft_deleted, you_replied, thread_gone — each a compare-and-set
+    close_externally with the reason — and a newer message from someone
+    else adds the flag thread_moved_on. A card being sent (executing) is
+    left to the send path.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -7847,27 +7964,51 @@ delegation:
     x-caller-email unless local login; turning it on needs gmail_status
     connected (409 gmail_not_connected / gmail_needs_reconnect /
     gmail_mismatch / no_email / shared_mailbox / gmail_error). Every change
-    writes a private audit row.
+    writes a private audit row. PUT /delegation/inbox {enabled} (409
+    act_as_me_off or the Gmail codes; the same DelegationOut back, whose
+    inbox field is {enabled, status, message, watch_since, last_poll_at,
+    checking}); POST /delegation/inbox/check (202 with the inbox state; 409
+    inbox_off / in_progress); GET /delegation/replies ({cards: [...]}, see
+    reply_cards). Dismiss is POST /decisions/{id}/reject.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
-    command and Check again, the Write drafts as me switch, and How I write
+    command and Check again, the Write drafts as me switch, the Draft
+    replies to my inbox switch with its status line, when it last checked
+    and Check now (the card polls GET /delegation while a check runs), and
+    How I write
     (length and tone, a greeting input per audience, the sign-off and the
     habit / never lists in textareas that grow to fit, the signature with
     Refresh from Gmail and Don't add my signature — or Add my Gmail
     signature — and each exemplar quoted, with Remove examples). Setup
-    status light your_gmail. The chat chip "Drafted an email as you
+    status light your_gmail (amber while the inbox watcher is erroring,
+    rate-limited or has 25 cards waiting). The chat chip "Drafted an email as you
     to … — in your Gmail Drafts" opens the draft (target=_blank,
-    rel=noopener noreferrer). Evals: a scenario's delegation block runs the
+    rel=noopener noreferrer). Today: Replies waiting (RepliesWaiting, top
+    of the left column, hidden unless GET /delegation/replies answers with
+    cards) — each card shows the sender with their relation and whether the
+    address was verified, the subject, They wrote (plain text), the draft,
+    Decide before sending (open_questions) and the warnings, with Edit in
+    Gmail and Dismiss. Evals: a scenario's delegation block runs the
     turn against evals.mailbox.ScenarioMailbox and hands the saved drafts to
-    the judge (delegation_001-003).
+    the judge (delegation_001-003); type: inbox scenarios (an inbox block:
+    person, relation, expect draft|no_draft, thread) run the watcher's two
+    model calls on the thread's newest inbound message
+    (inbox.reply_for) — whether it drafts must match, and a draft goes to
+    judge_inbox (delegation_inbox_001-006).
   config: |
     DELEGATION_GOOGLE_CREDENTIALS_DIR, DELEGATION_COMPOSER_MODEL,
-    DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50).
+    DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50),
+    DELEGATION_INBOX_POLL_MINUTES (default 5),
+    DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20, within the shared
+    limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL).
   state: |
-    delegation_settings, delegation_voice and delegation_voice_history in
-    the episodic DB (created by memory.episodic.initialize_db via
-    delegation.schema.ensure_schema); per company — in
-    clients.slots._BLANK_WIPE_TABLES and cli.fixture_loader.reset_all_state.
+    delegation_settings, delegation_voice, delegation_voice_history,
+    delegation_drafts, delegation_inbox_watch and delegation_inbox_messages
+    (delegation.schema.TABLES) in the episodic DB (created by
+    memory.episodic.initialize_db via delegation.schema.ensure_schema); per
+    company — in clients.slots._BLANK_WIPE_TABLES and
+    cli.fixture_loader.reset_all_state. A reply card is a decision_instances
+    row (see trust_ledger).
   later_phases: |
     Each is its own change behind its own switch, off by default: send after
     a tap from a private card; act within per-category rules, with a hold and
@@ -8022,7 +8163,10 @@ trust_ledger: |
     What approve / reject / cancel do is per class: DECISION_CLASSES maps a
     class name to a DecisionClassSpec(name, principal_only, alert_source,
     approve, after_reject, cancel). Meeting booking is the spec for
-    meeting_scheduling (approve books the event, cancel deletes it). An
+    meeting_scheduling (approve books the event, cancel deletes it).
+    delegation_reply is the inbox watcher's reply card (see
+    delegation.reply_cards): principal_only, no alert; approve is a 409
+    send_in_gmail, and after_reject deletes the draft when unedited. An
     instance of a class with no spec gets 409 on every action, never
     carried out as another class. A principal_only class is hidden from
     everyone else like a private payload (left out of GET /decisions, a 404

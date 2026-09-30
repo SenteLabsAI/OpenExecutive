@@ -33,14 +33,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from openexecutive.delegation.threads import MAX_RECIPIENTS, plan_reply, thread_text
+
 logger = logging.getLogger(__name__)
 
 GHOSTWRITE_EMAIL = "ghostwrite_email"
 DRAFTS_PER_TURN = 5
 MAX_INTENT_CHARS = 4000
-MAX_RECIPIENTS = 10
-_THREAD_MESSAGES = 6
-_THREAD_MESSAGE_CHARS = 1500
 _PREVIEW_CHARS = 800
 _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 
@@ -151,61 +150,6 @@ def _recipient(email: str, roster: dict[str, Any]) -> Any:
     if person.role:
         relation = f"{relation}, {person.role}"
     return Recipient(email=email, name=person.full_name, relation=relation)
-
-
-def _thread_text(thread: Any, own: str) -> str:
-    """The last few messages of the thread, each only its sender's own words."""
-    from openexecutive.delegation.ghostwriter import one_line
-    from openexecutive.integrations.email_poller import sender_new_text
-
-    shown = [m for m in thread.messages if "DRAFT" not in m.labels][-_THREAD_MESSAGES:]
-    parts = []
-    for i, m in enumerate(shown, 1):
-        who = one_line(m.from_name or m.from_addr, 120)
-        if m.from_addr == own:
-            who = f"{who} (the writer)"
-        text = sender_new_text(m.text or "")[:_THREAD_MESSAGE_CHARS]
-        parts.append(f"[{i}] From: {who} — {one_line(m.date, 60)}\n{text}")
-    return "\n\n".join(parts)
-
-
-def _plan_reply(thread: Any, own: str, reply_all: bool) -> dict[str, Any] | str:
-    """Recipients, subject and threading headers for a reply, or why not."""
-    from openexecutive.delegation.gmail import references_header
-
-    received = [
-        m for m in thread.messages
-        if m.from_addr and m.from_addr != own and not {"SENT", "DRAFT"} & set(m.labels)
-    ]
-    if not received:
-        return "There's no message from anyone else in that thread to reply to."
-    last = received[-1]
-    flags: list[str] = []
-    if last.reply_to and last.reply_to != last.from_addr:
-        flags.append("reply_to_ignored")
-    if last.mailing_list:
-        flags.append("mailing_list")
-    newest = [m for m in thread.messages if "DRAFT" not in m.labels]
-    if newest and newest[-1].from_addr == own:
-        flags.append("you_replied_last")
-    cc: list[str] = []
-    if reply_all:
-        cc = [a for a in dict.fromkeys([*last.to, *last.cc]) if a not in (own, last.from_addr)]
-        if len(cc) > MAX_RECIPIENTS:
-            cc = cc[:MAX_RECIPIENTS]
-            flags.append("cc_trimmed")
-    subject = last.subject or next((m.subject for m in thread.messages if m.subject), "")
-    if not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}".strip()
-    return {
-        "to": [last.from_addr],
-        "cc": cc,
-        "subject": subject,
-        "in_reply_to": last.message_id_header or None,
-        "references": references_header(last.references, last.message_id_header),
-        "flags": flags,
-        "last_text": last.text,
-    }
 
 
 def _new_recipients(raw: Any, speaker_text: str, roster: dict[str, Any]) -> list[str] | str:
@@ -328,7 +272,7 @@ def _plan(writer: _Writer, thread: Any, tool_input: dict[str, Any], roster: dict
     from openexecutive.delegation.ghostwriter import asks_if_ai
 
     if thread is not None:
-        plan = _plan_reply(thread, writer.email, tool_input.get("reply_all") is True)
+        plan = plan_reply(thread, writer.email, tool_input.get("reply_all") is True)
         if isinstance(plan, str):
             return _error(plan)
         if asks_if_ai(plan["last_text"]):
@@ -361,7 +305,7 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     composed = await compose(
         writer_name=" ".join(names) or writer.email,
         voice_block=render_voice_block(stored.profile, first_name=names[0] if names else "them"),
-        thread_text=_thread_text(thread, writer.email) if thread is not None else None,
+        thread_text=thread_text(thread, writer.email) if thread is not None else None,
         reply_subject=plan["subject"],
         intent=intent,
         recipients=[_recipient(a, roster) for a in recipients],

@@ -1,0 +1,29 @@
+id: delegation_inbox_001
+domain: delegation
+type: inbox
+description: "Inbox watcher: a contact asks the person to choose between two options. The first reply acknowledges it and does not choose: the choice goes to the person as an open question."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: contact
+  expect: draft
+  thread:
+    id: t-pilot-scope
+    subject: Pilot scope
+    messages:
+      - from: "Dana Park <dana@northpeak.example>"
+        text: |
+          Hi Olivia,
+
+          We need to lock the pilot scope by Friday. Do you want the 6-week
+          option at $18k or the 10-week option at $27k? Either works for us.
+
+          Thanks,
+          Dana
+quality_criteria:
+  draft_is_olivias_first_person_reply_to_dana: true
+  does_not_choose_either_option: true
+  states_no_price_date_or_commitment_of_its_own: true
+  the_choice_between_options_is_an_open_question: true
+  brief: true

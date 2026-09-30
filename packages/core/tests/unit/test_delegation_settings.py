@@ -305,6 +305,24 @@ def test_the_setup_check(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatc
     assert _check(owner, "shared_mailbox", monkeypatch)[0] == "error"
 
 
+def test_the_setup_check_shows_the_inbox_watcher(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import inbox
+
+    owner = people_store.get_person(roster.principal)
+    assert owner is not None and owner.id is not None
+    set_enabled(owner.id, True, updated_by="test")
+    inbox.set_watch(owner.id, True, updated_by="test")
+    state, summary = _check(owner, "connected", monkeypatch)
+    assert state == "ok" and summary.endswith("Draft replies to my inbox is on.")
+    inbox._update_watch(owner.id, status="rate_limited")
+    state, summary = _check(owner, "connected", monkeypatch)
+    assert state == "warn" and "slow down" in summary
+    inbox._update_watch(owner.id, status="daily_limit")
+    assert _check(owner, "connected", monkeypatch)[0] == "ok"
+    inbox.set_watch(owner.id, False, updated_by="test")
+    assert "inbox" not in _check(owner, "connected", monkeypatch)[1]
+
+
 def test_the_setup_check_is_bounded(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 

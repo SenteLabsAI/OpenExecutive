@@ -816,10 +816,16 @@ def check_gmail(snap: Snapshot) -> SetupCheck:
     return _channel_ready(snap, "gmail", summary, actor="email", roster=None)
 
 
+# The inbox watcher's states worth a look (the rest are routine).
+_INBOX_WARN = frozenset({"error", "rate_limited", "backlog_full"})
+
+
 async def check_your_gmail(snap: Snapshot) -> SetupCheck:
     """The owner's own Gmail, for Act as me (optional). Only a connected
     credential reaches Google: a missing one is reported without a call."""
     from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
+    from openexecutive.delegation.inbox import STATUS_MESSAGES as INBOX_STATUS_MESSAGES
+    from openexecutive.delegation.inbox import get_watch
     from openexecutive.delegation.settings import is_enabled
 
     owner = snap.principal
@@ -846,6 +852,17 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
             if on
             else "Turn Act as me on in Settings to let the Executive draft replies as you."
         )
+        watch = await asyncio.to_thread(get_watch, owner.id) if on and owner.id is not None else None
+        if watch is not None and watch.enabled:
+            if watch.status in _INBOX_WARN:
+                return _result(
+                    "your_gmail",
+                    "warn",
+                    f"Connected to {owner.email}. Draft replies to my inbox: "
+                    + INBOX_STATUS_MESSAGES[watch.status],
+                    link="/settings",
+                )
+            summary += " Draft replies to my inbox is on."
         return _result("your_gmail", "ok", summary, link="/settings")
     if status == "not_configured":
         return _result(

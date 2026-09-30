@@ -16,9 +16,18 @@ header is stamped by the UI proxy from the Google sign-in; whoever holds
 route.
 
 Routes:
-  GET    /delegation              — on/off and the Gmail connection
+  GET    /delegation              — on/off, the Gmail connection and the inbox
+                                    watcher's switch and health
   PUT    /delegation              — {enabled}; turning it on needs the caller's
-                                    own Gmail connected (409 otherwise)
+                                    own Gmail connected (409 otherwise); turning
+                                    it off turns the inbox watcher off too
+  PUT    /delegation/inbox        — {enabled}: "Draft replies to my inbox";
+                                    turning it on needs Act as me on and Gmail
+                                    connected (409), and starts from now
+  POST   /delegation/inbox/check  — check the inbox now (202; 409 when the
+                                    switch is off or a check is running)
+  GET    /delegation/replies      — the reply cards waiting for the caller
+                                    (from the database; no Gmail call)
   GET    /delegation/voice        — "How I write"
   POST   /delegation/voice/learn  — learn it from the caller's sent mail (409
                                     in_progress / locked / too_soon /
@@ -33,6 +42,7 @@ Every change writes a private audit row.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import asdict
 from typing import Any
@@ -83,9 +93,49 @@ class GmailConnection(BaseModel):
     connect_command: str
 
 
+class InboxOut(BaseModel):
+    enabled: bool
+    status: str
+    message: str
+    watch_since: str | None = None
+    last_poll_at: str | None = None
+    checking: bool = False
+
+
 class DelegationOut(BaseModel):
     enabled: bool
     gmail: GmailConnection
+    inbox: InboxOut
+
+
+class InboxUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class ReplyCardOut(BaseModel):
+    decision_id: int
+    status: str
+    created_at: str
+    thread_id: str
+    from_name: str
+    from_email: str
+    relation: str
+    sender_verified: bool
+    subject: str
+    received_at: str
+    they_wrote: str
+    draft_to: list[str]
+    draft_subject: str
+    draft_body: str
+    open_questions: list[str]
+    flags: list[str]
+    gmail_link: str
+
+
+class RepliesOut(BaseModel):
+    cards: list[ReplyCardOut]
 
 
 class DelegationUpdate(BaseModel):
@@ -174,6 +224,22 @@ def _connect_command(email: str | None) -> str:
     )
 
 
+def _inbox_out(person_id: int) -> InboxOut:
+    from openexecutive.delegation import inbox
+
+    watch = inbox.get_watch(person_id)
+    checking = inbox.scanning(person_id)
+    status = "checking" if checking else watch.status
+    return InboxOut(
+        enabled=watch.enabled,
+        status=status,
+        message=inbox.STATUS_MESSAGES.get(status, inbox.STATUS_MESSAGES["ok"]),
+        watch_since=watch.watch_since,
+        last_poll_at=watch.last_poll_at,
+        checking=checking,
+    )
+
+
 async def _state(person: Person) -> DelegationOut:
     status = await gmail_status(person.email)
     return DelegationOut(
@@ -184,6 +250,7 @@ async def _state(person: Person) -> DelegationOut:
             email=person.email,
             connect_command=_connect_command(person.email),
         ),
+        inbox=_inbox_out(_person_id(person)),
     )
 
 
@@ -225,6 +292,10 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
         if status != "connected":
             raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
     before = is_enabled(person_id)
+    if not body.enabled:
+        # The inbox watcher needs Act as me; off here, it starts from scratch
+        # (watch_since) when turned on again, never catching up.
+        _set_inbox(person_id, False)
     if before != body.enabled:
         set_enabled(person_id, body.enabled, updated_by=f"person:{person_id}")
         if body.enabled:
@@ -239,6 +310,80 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
             {"person_id": person_id, "enabled": body.enabled},
         )
     return await _state(person)
+
+
+def _set_inbox(person_id: int, enabled: bool) -> None:
+    from openexecutive.delegation import inbox
+
+    before = inbox.get_watch(person_id).enabled
+    if before == enabled:
+        return
+    inbox.set_watch(person_id, enabled, updated_by=f"person:{person_id}")
+    _audit(
+        "delegation_inbox_changed",
+        f"Draft replies to my inbox turned {'on' if enabled else 'off'} by person {person_id}",
+        {"person_id": person_id, "enabled": enabled},
+    )
+
+
+# Checks started from the card, kept so they aren't collected mid-run.
+_CHECKS: set[asyncio.Task[Any]] = set()
+
+
+@router.put("/delegation/inbox", response_model=DelegationOut)
+async def update_delegation_inbox(request: Request, body: InboxUpdate) -> DelegationOut:
+    person = _caller(request)
+    person_id = _person_id(person)
+    if body.enabled:
+        if not is_enabled(person_id):
+            raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+        status = await gmail_status(person.email)
+        if status != "connected":
+            raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
+    _set_inbox(person_id, body.enabled)
+    return await _state(person)
+
+
+@router.post("/delegation/inbox/check", status_code=202, response_model=InboxOut)
+async def check_delegation_inbox(request: Request) -> InboxOut:
+    """Check the caller's inbox now, in the background; ``GET /delegation``
+    shows when it is done."""
+    from openexecutive.audit.context import unscoped_audit_rows
+    from openexecutive.delegation import inbox
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    if not inbox.get_watch(person_id).enabled:
+        raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
+    if inbox.scanning(person_id):
+        raise _refuse(409, "in_progress", "It's checking your inbox already.")
+    with unscoped_audit_rows():
+        task = asyncio.create_task(inbox.scan_person(person))
+    _CHECKS.add(task)
+    task.add_done_callback(_CHECKS.discard)
+    # The scan marks itself as running on its first step; say so either way.
+    out = _inbox_out(person_id)
+    return out.model_copy(update={"checking": True, "status": "checking",
+                                  "message": inbox.STATUS_MESSAGES["checking"]})
+
+
+@router.get("/delegation/replies", response_model=RepliesOut)
+def get_delegation_replies(request: Request) -> RepliesOut:
+    """The reply cards waiting for the caller. Their own only: everyone else
+    gets the 403 every route here gives."""
+    from openexecutive.delegation.replies import cards
+
+    person = _caller(request)
+    _person_id(person)
+    try:
+        found = cards(person)
+    except Exception as exc:
+        logger.exception("delegation: reading the reply cards failed")
+        raise _refuse(503, "unavailable", "Couldn't read the replies waiting for you.") from exc
+    return RepliesOut(cards=[
+        ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+        for card in found
+    ])
 
 
 @router.get("/delegation/voice", response_model=VoiceOut)
