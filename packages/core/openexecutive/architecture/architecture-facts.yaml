@@ -7694,9 +7694,14 @@ delegation:
     pin says offered; otherwise a call is an unknown tool. The handler
     re-checks the pin and (without an override) the verified surface, then
     the caps — 5 drafts per turn, and DELEGATION_MAX_DRAFTS_PER_DAY (default
-    50, at most 1000 = one audit query page) per person per UTC day counted
-    from delegation_drafted rows (with an in-process count as a floor, since
-    log_event swallows a failed write), refusing when they cannot be counted.
+    50, at most 1000) per person per UTC day, shared with the inbox watcher
+    (delegation.caps.reserve/release). The day is counted from
+    delegation_drafts (delegation.drafts: one row of ids per saved draft —
+    person_id, source chat|inbox, thread_id, draft_id, message_id,
+    sent_message_id, created_at; never an address, subject or text), with an
+    in-process count as a floor in case a row was lost, refusing when they
+    cannot be counted. The handler records its row (source chat) after the
+    draft is saved, best effort.
     Each slot is reserved synchronously before the first await and handed
     back when nothing was drafted: _stream_agent_loop gathers a round's tool
     calls, so a check-then-count-later cap let every parallel call through.
@@ -7735,8 +7740,11 @@ delegation:
     mail on request (POST /delegation/voice/learn), unlike attunement.style,
     which learns how to write TO someone. Up to 40 sent messages; quoted
     text stripped (sender_new_text); automatic mail, the package's own
-    X-OE-Ghostwritten drafts and every thread it drafted into (its private
-    delegation_drafted rows) skipped; at least 5 samples; at most once per
+    X-OE-Ghostwritten drafts, every thread chat drafted into (delegation_drafts
+    source chat, plus the delegation_drafted audit rows from before that
+    table) and every sent message that began as a draft for them
+    (delegation_drafts.sent_message_id — the inbox watcher drafts into too
+    many threads to skip them whole) skipped; at least 5 samples; at most once per
     10 minutes; one pass at a time per person (in_progress); never over a
     locked profile, and a lock or edit made while it runs wins (the learned
     profile is dropped: locked / changed). One forced-tool call

@@ -8,8 +8,9 @@ person's drafts.
 **Learned from their sent mail, on request.** ``learn_from_sent_mail`` reads
 up to 40 recent messages from the person's own Sent folder (through
 ``delegation.gmail``), keeps only what they wrote — quoted replies stripped —
-and skips automatic mail and every thread this package drafted into, so the
-profile learns them rather than itself. One forced-tool model call returns the
+and skips automatic mail, every thread chat drafted into and every sent
+message that began as a draft written for them, so the profile learns them
+rather than itself. One forced-tool model call returns the
 profile; code validates every field before it is stored:
 
 - habits and things to avoid: short sentences about the *writing* (length,
@@ -490,16 +491,23 @@ def _audience(addresses: list[str]) -> str:
 
 
 def drafted_thread_ids(person_id: int) -> set[str]:
-    """Threads this package drafted into for ``person_id``, from its own
-    private ``delegation_drafted`` audit rows. Never raises."""
+    """Threads chat drafted into for ``person_id`` (``delegation.drafts``),
+    plus those in the private ``delegation_drafted`` audit rows written before
+    that table existed. Never raises."""
+    from openexecutive.delegation import drafts
+
+    out: set[str] = set()
+    try:
+        out |= drafts.chat_thread_ids(person_id)
+    except Exception:
+        logger.warning("delegation.voice: drafted-thread lookup failed — learning without it", exc_info=True)
     try:
         from openexecutive.audit.logger import get_audit_logger
 
         rows = get_audit_logger().query(event_type="delegation_drafted", limit=1000)
     except Exception:
-        logger.warning("delegation.voice: drafted-thread lookup failed — learning without the skip list", exc_info=True)
-        return set()
-    out: set[str] = set()
+        logger.warning("delegation.voice: drafted-thread audit lookup failed", exc_info=True)
+        return out
     for row in rows:
         details = row.details if isinstance(row.details, dict) else {}
         if details.get("person_id") == person_id and isinstance(details.get("thread_id"), str):
@@ -507,14 +515,34 @@ def drafted_thread_ids(person_id: int) -> set[str]:
     return out
 
 
-def collect_samples(messages: list[Any], *, skip_threads: set[str]) -> list[_Sample]:
+def sent_draft_ids(person_id: int) -> set[str]:
+    """Sent messages that began as a draft written for ``person_id`` (the
+    inbox watcher's, once sent). Never raises."""
+    from openexecutive.delegation import drafts
+
+    try:
+        return drafts.sent_message_ids(person_id)
+    except Exception:
+        logger.warning("delegation.voice: sent-draft lookup failed — learning without it", exc_info=True)
+        return set()
+
+
+def collect_samples(
+    messages: list[Any], *, skip_threads: set[str], skip_messages: frozenset[str] | set[str] = frozenset()
+) -> list[_Sample]:
     """The person's own words from their sent mail, newest first, with
-    automatic mail, drafted-into threads and near-empty texts left out."""
+    automatic mail, drafted-into threads, sent drafts and near-empty texts
+    left out."""
     from openexecutive.integrations.email_poller import sender_new_text
 
     samples: list[_Sample] = []
     for message in messages:
-        if message.auto_generated or message.ghostwritten or message.thread_id in skip_threads:
+        if (
+            message.auto_generated
+            or message.ghostwritten
+            or message.thread_id in skip_threads
+            or message.id in skip_messages
+        ):
             continue
         text = sender_new_text(message.text or "")
         if len(text) < SAMPLE_MIN_CHARS:
@@ -614,7 +642,11 @@ async def _learn(
             raise VoiceError("too_soon", "It learned your writing a few minutes ago. Try again shortly.")
 
     messages = await gmail.list_sent(SAMPLE_LIMIT)
-    samples = collect_samples(messages, skip_threads=drafted_thread_ids(person_id))
+    samples = collect_samples(
+        messages,
+        skip_threads=drafted_thread_ids(person_id),
+        skip_messages=sent_draft_ids(person_id),
+    )
     if len(samples) < MIN_SAMPLES:
         raise VoiceError(
             "not_enough_mail",

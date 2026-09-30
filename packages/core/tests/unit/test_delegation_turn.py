@@ -69,13 +69,13 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 @pytest.fixture(autouse=True)
 def fresh_draft_counters() -> Iterator[None]:
     """Per-person draft counts live at module level; start each test at zero."""
-    from openexecutive.orchestrator import delegation_tools as dt
+    from openexecutive.delegation import caps
 
-    dt._SAVED_TODAY.clear()
-    dt._IN_FLIGHT.clear()
+    caps._SAVED_TODAY.clear()
+    caps._IN_FLIGHT.clear()
     yield
-    dt._SAVED_TODAY.clear()
-    dt._IN_FLIGHT.clear()
+    caps._SAVED_TODAY.clear()
+    caps._IN_FLIGHT.clear()
 
 
 @pytest.fixture

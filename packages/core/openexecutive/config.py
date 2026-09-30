@@ -889,9 +889,8 @@ class Settings(BaseSettings):
     )
     # The model that learns "How I write" and writes drafts; unset = DEFAULT_MODEL.
     delegation_composer_model: str | None = Field(None, alias="DELEGATION_COMPOSER_MODEL")
-    # Ceiling on drafts written as one person per UTC day (a cost guard).
-    # At most 1000: the count is one audit query page
-    # (orchestrator.delegation_tools.DAILY_COUNT_ROWS).
+    # Ceiling on drafts written as one person per UTC day (a cost guard),
+    # from chat and the inbox watcher together (delegation.caps).
     delegation_max_drafts_per_day: int = Field(
         50, alias="DELEGATION_MAX_DRAFTS_PER_DAY", ge=1, le=1000
     )

@@ -53,7 +53,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 @pytest.fixture(autouse=True)
 def quiet(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    from openexecutive.orchestrator import delegation_tools as dt
+    from openexecutive.delegation import caps
 
     async def no_prefetch(*_a: Any, **_kw: Any) -> str:
         return ""
@@ -67,11 +67,11 @@ def quiet(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr("openexecutive.attunement.open_loops.schedule_open_loop_pass", lambda *a, **kw: None)
     monkeypatch.setattr("openexecutive.attunement.style.schedule_style_pass", lambda *a, **kw: None)
     monkeypatch.setattr(gw, "_call_model", composer)
-    dt._SAVED_TODAY.clear()
-    dt._IN_FLIGHT.clear()
+    caps._SAVED_TODAY.clear()
+    caps._IN_FLIGHT.clear()
     yield
-    dt._SAVED_TODAY.clear()
-    dt._IN_FLIGHT.clear()
+    caps._SAVED_TODAY.clear()
+    caps._IN_FLIGHT.clear()
 
 
 @pytest.fixture

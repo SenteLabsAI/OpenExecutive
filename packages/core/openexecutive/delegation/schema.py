@@ -11,8 +11,9 @@ import sqlite3
 SETTINGS_TABLE = "delegation_settings"
 VOICE_TABLE = "delegation_voice"
 VOICE_HISTORY_TABLE = "delegation_voice_history"
+DRAFTS_TABLE = "delegation_drafts"
 
-TABLES: tuple[str, ...] = (SETTINGS_TABLE, VOICE_TABLE, VOICE_HISTORY_TABLE)
+TABLES: tuple[str, ...] = (SETTINGS_TABLE, VOICE_TABLE, VOICE_HISTORY_TABLE, DRAFTS_TABLE)
 
 _DDL: tuple[str, ...] = (
     # One row per person who has ever set it. Absent means off.
@@ -41,6 +42,20 @@ _DDL: tuple[str, ...] = (
     "  locked INTEGER NOT NULL DEFAULT 0,"
     "  updated_by TEXT NOT NULL"
     ")",
+    # Every draft saved in someone's Gmail (delegation.drafts): ids and
+    # times only, never an address, a subject or text.
+    f"CREATE TABLE IF NOT EXISTS {DRAFTS_TABLE} ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  person_id INTEGER NOT NULL,"
+    "  source TEXT NOT NULL,"
+    "  thread_id TEXT,"
+    "  draft_id TEXT,"
+    "  message_id TEXT,"
+    "  sent_message_id TEXT,"
+    "  created_at TEXT NOT NULL"
+    ")",
+    f"CREATE INDEX IF NOT EXISTS idx_{DRAFTS_TABLE}_person_created "
+    f"ON {DRAFTS_TABLE}(person_id, created_at)",
 )
 
 

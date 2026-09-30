@@ -12,8 +12,8 @@ not in the prompt:
   workflows) can ever carry it. The handler re-checks the pin and the surface
   anyway.
 - **Capped**: 5 drafts a turn and ``DELEGATION_MAX_DRAFTS_PER_DAY`` a day per
-  person, each slot taken before the first await (a round's calls run
-  concurrently).
+  person (``delegation.caps``, shared with the inbox watcher), each slot taken
+  before the first await (a round's calls run concurrently).
 - **Recipients are chosen here**, never by the model: a reply goes to the last
   message's sender (never its ``Reply-To``), with the thread's other
   recipients only on ``reply_all``; a new email only to someone on the roster
@@ -37,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 GHOSTWRITE_EMAIL = "ghostwrite_email"
 DRAFTS_PER_TURN = 5
-# The audit query's own page ceiling (``AuditLogger.query`` clamps to it).
-DAILY_COUNT_ROWS = 1000
 MAX_INTENT_CHARS = 4000
 MAX_RECIPIENTS = 10
 _THREAD_MESSAGES = 6
@@ -108,72 +106,29 @@ def _error(message: str, **extra: Any) -> str:
     return json.dumps({"error": message, **extra})
 
 
-def _drafts_today(person_id: int) -> int | None:
-    """Drafts written as ``person_id`` since UTC midnight, from the private
-    ``delegation_drafted`` audit rows; None when they can't be counted (the
-    caller refuses, so the cap never fails open). Never raises. One query page
-    (at most ``DAILY_COUNT_ROWS`` rows) is enough: ``config`` caps
-    ``DELEGATION_MAX_DRAFTS_PER_DAY`` at that number."""
-    try:
-        from openexecutive.audit.logger import get_audit_logger
-
-        start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = get_audit_logger().query(
-            event_type="delegation_drafted", since=start.isoformat(), limit=DAILY_COUNT_ROWS
-        )
-    except Exception:
-        logger.warning("ghostwrite: can't count today's drafts — refusing", exc_info=True)
-        return None
-    return sum(
-        1 for r in rows
-        if isinstance(r.details, dict) and r.details.get("person_id") == person_id
-    )
-
-
-# Drafts this process saved today, per (person_id, UTC day): a floor under the
-# audit count, so the daily cap holds even when an audit write was lost
-# (``log_event`` swallows its errors). Only today's entries are kept.
-_SAVED_TODAY: dict[tuple[int, str], int] = {}
-# Drafts being written right now, per person. The agent loop runs one round's
-# tool calls concurrently, so a slot is taken before the first await — else
-# every call in the round would pass the caps before any of them counted.
-_IN_FLIGHT: dict[int, int] = {}
-
-
-def _utc_day() -> str:
-    return datetime.now(UTC).date().isoformat()
-
-
 def _reserve_draft(pinned: Any, person_id: int, daily_cap: int) -> str | None:
     """Take one of this turn's and today's draft slots, or return why not.
     Synchronous: nothing can run between the checks and the take."""
+    from openexecutive.delegation import caps
+
     if pinned.drafts >= DRAFTS_PER_TURN:
         return _error(f"That's {DRAFTS_PER_TURN} drafts this turn — ask them before writing more.")
-    counted = _drafts_today(person_id)
-    if counted is None:
+    refused = caps.reserve(person_id, daily_cap)
+    if refused == caps.UNCOUNTABLE:
         return _error("Couldn't check today's draft limit just now. Try again in a moment.")
-    saved = max(counted, _SAVED_TODAY.get((person_id, _utc_day()), 0))
-    if saved + _IN_FLIGHT.get(person_id, 0) >= daily_cap:
+    if refused == caps.REACHED:
         return _error("Today's limit of drafts written as them is reached. Try again tomorrow.")
     pinned.drafts += 1
-    _IN_FLIGHT[person_id] = _IN_FLIGHT.get(person_id, 0) + 1
     return None
 
 
 def _release_draft(pinned: Any, person_id: int, *, saved: bool) -> None:
     """Hand the slot back: counted as saved today, or returned to the turn."""
-    left = _IN_FLIGHT.get(person_id, 0) - 1
-    if left > 0:
-        _IN_FLIGHT[person_id] = left
-    else:
-        _IN_FLIGHT.pop(person_id, None)
+    from openexecutive.delegation import caps
+
+    caps.release(person_id, saved=saved)
     if not saved:
         pinned.drafts -= 1
-        return
-    day = _utc_day()
-    for stale in [key for key in _SAVED_TODAY if key[1] != day]:
-        del _SAVED_TODAY[stale]
-    _SAVED_TODAY[(person_id, day)] = _SAVED_TODAY.get((person_id, day), 0) + 1
 
 
 def _roster_by_email() -> dict[str, Any]:
@@ -429,6 +384,25 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     return _drafted(writer, thread, plan, composed, draft), True
 
 
+def _record(person_id: int, thread: Any, draft: Any) -> None:
+    """Keep the draft's ids in ``delegation_drafts`` (the daily count, and
+    what "How I write" leaves out). Best effort: the draft is already in
+    their Gmail, and ``caps`` keeps this process's count if the row is lost."""
+    from openexecutive.delegation import drafts
+
+    try:
+        drafts.record(
+            person_id,
+            source=drafts.SOURCE_CHAT,
+            thread_id=thread.id if thread is not None else None,
+            draft_id=draft.draft_id,
+            message_id=draft.message_id,
+            now=datetime.now(UTC),
+        )
+    except Exception:
+        logger.warning("ghostwrite: couldn't record the draft", exc_info=True)
+
+
 def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, draft: Any) -> str:
     """Audit a saved draft (metadata only) and return what the model sees."""
     from openexecutive.delegation.gmail import gmail_link
@@ -437,6 +411,7 @@ def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, 
     questions = list(composed.open_questions)
     if "asks_if_ai" in flags:
         questions.append("They asked whether they're talking to an AI — answer that yourself.")
+    _record(writer.person.id, thread, draft)
     _audit(writer.person.id, f"Drafted an email as person {writer.person.id} in their Gmail", {
         "thread_id": thread.id if thread is not None else None,
         "draft_id": draft.draft_id,
