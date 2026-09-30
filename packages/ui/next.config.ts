@@ -14,6 +14,14 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(__dirname),
   // mermaid v11 is ESM-only; Next.js webpack needs to transpile it
   transpilePackages: ["mermaid"],
+  experimental: {
+    // The middleware reads every request body, and Next keeps only the first
+    // 10 MB of one unless told otherwise: a larger upload reaches the API cut
+    // off and fails. Above the largest body the API accepts (POST /documents,
+    // 50 MB) with room for the multipart envelope, so the API's own 413 is
+    // what a too-large file gets. scripts/body-limit.test.mjs keeps them in step.
+    proxyClientMaxBodySize: "55mb",
+  },
 };
 
 export default nextConfig;
