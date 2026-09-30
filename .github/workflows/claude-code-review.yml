@@ -11,7 +11,9 @@ name: Claude Code Review
 #      subscription; create it with `claude setup-token`).
 # Until a secret is set the job skips with a notice instead of failing.
 #
-# Fork PRs are skipped: GitHub does not pass secrets to them.
+# Fork PRs are skipped: GitHub does not pass secrets to them. A maintainer
+# reviews one by applying the `claude-review` label, which runs
+# claude-code-review-fork.yml instead.
 
 on:
   pull_request:
