@@ -89,6 +89,14 @@ _FORWARDED_ENV_VARS = (
     "USER_GOOGLE_EMAIL",
     "WORKSPACE_MCP_CREDENTIALS_DIR",
     "WORKSPACE_MCP_TOOL_TIER",
+    # Path to extensible-mcp's bearer-token file, keyed by server name. Remote
+    # (url-based) MCP servers authenticate with `Authorization: Bearer <token>`
+    # read from it on EVERY call, so an external process can rotate the token
+    # underneath without restarting anything. Without this entry the var is
+    # stripped by the allowlist below and remote servers send no Authorization
+    # header at all, which fails as an opaque 401 from the downstream server
+    # rather than as the config error it is.
+    "EXTENSIBLE_MCP_TOKENS_FILE",
     "WORKSPACE_MCP_TOOLS",
 )
 
