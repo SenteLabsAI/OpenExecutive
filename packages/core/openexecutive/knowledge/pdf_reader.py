@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from openexecutive.knowledge.isolated import WorkerStopped, run_isolated
+from openexecutive.knowledge.isolated import ParserBusy, WorkerStopped, run_isolated
 
 logger = logging.getLogger(__name__)
 
@@ -520,6 +520,13 @@ async def read_pdf_text(
         return PdfReadResult(
             "", "none", exc.pages,
             f"the PDF has {exc.pages} pages — more than the {_MAX_PDF_PAGES} this reads",
+        )
+    except ParserBusy:
+        # Never tried, and not cached, so the next read tries again.
+        logger.warning("pdf_reader: no free parser slot for %r", label)
+        return PdfReadResult(
+            "", "none", 0,
+            "the PDF was not read: the server was busy reading other documents, try again shortly",
         )
     except WorkerStopped as exc:
         logger.warning("pdf_reader: could not read %s (%s)", label, exc)

@@ -504,6 +504,27 @@ async def test_the_parser_child_gets_the_syncs_own_time_limit(
 
 
 @pytest.mark.asyncio
+async def test_busy_parsers_are_a_retry_not_an_unreadable_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding: a file never tried because every parser was busy must
+    not be recorded unreadable (which drops its chunks until it changes)."""
+    from openexecutive.knowledge.isolated import ParserBusy
+
+    def busy(path: Path, **_: Any) -> str:
+        raise ParserBusy("_parse_file found no free parser slot")
+
+    monkeypatch.setattr(drive_sync, "extract_text_from_file", busy)
+    drive, store = _drive(), FakeStore()
+
+    stats = await _sync(drive, store)
+
+    assert stats["failed"] >= 1
+    assert DOCX not in store.file_ids()
+    assert DOCX not in _state(tmp_path)["files"], "a busy parser must not mark the file read"
+
+
+@pytest.mark.asyncio
 async def test_a_hung_extraction_is_given_up_and_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

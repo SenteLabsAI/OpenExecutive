@@ -328,3 +328,41 @@ def test_an_unreadable_document_preview_is_a_422(
     assert resp.json()["detail"] == (
         "Could not read budget.xlsx: it is too large or took too long to read."
     )
+
+
+def test_an_upload_met_by_busy_parsers_is_a_503_to_retry(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge import isolated, loader
+
+    def busy(path: Path, **_: Any) -> str:
+        raise isolated.ParserBusy("_parse_file found no free parser slot")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", busy)
+    files = {"file": ("plan.docx", io.BytesIO(b"PK not really"), "application/octet-stream")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 503
+    assert resp.headers["retry-after"] == "30"
+    assert not (tmp_path / "company" / "docs" / "plan.docx").exists()
+
+
+async def test_an_unreadable_intake_upload_is_a_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import HTTPException
+
+    from openexecutive.api.intake_uploads import _extract_intake_upload
+    from openexecutive.knowledge import isolated, loader
+
+    def failed(path: Path, **_: Any) -> str:
+        raise isolated.IsolatedError("BadZipFile: File is not a zip file", kind="BadZipFile")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", failed)
+
+    with pytest.raises(HTTPException) as info:
+        await _extract_intake_upload("notes.docx", b"PK not really")
+
+    assert info.value.status_code == 422
+    assert info.value.detail == (
+        "Could not read notes.docx: the file may be damaged, or not the type its name says."
+    )

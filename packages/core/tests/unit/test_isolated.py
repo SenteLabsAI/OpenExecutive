@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from openexecutive.knowledge import isolated, pdf_reader
-from openexecutive.knowledge.isolated import IsolatedError, WorkerStopped, run_isolated
+from openexecutive.knowledge.isolated import IsolatedError, ParserBusy, WorkerStopped, run_isolated
 from openexecutive.knowledge.loader import _parse_file, extract_text_from_file
 
 from ._isolated_helpers import echo, flood_stderr_and_die
@@ -56,6 +56,8 @@ def test_any_other_exception_is_an_isolated_error() -> None:
     with pytest.raises(IsolatedError, match="ValueError: math domain error") as info:
         run_isolated(math.sqrt, -1.0, timeout=60)
     assert not isinstance(info.value, WorkerStopped)
+    # What callers log: the type, never the message (it can quote the file).
+    assert info.value.kind == "ValueError"
 
 
 def test_a_child_that_dies_without_answering_is_reported() -> None:
@@ -183,12 +185,52 @@ def test_children_wait_for_a_free_slot(monkeypatch) -> None:
     assert run_isolated(math.sqrt, 4.0, timeout=60) == 2.0
     assert run_isolated(math.sqrt, 9.0, timeout=60) == 3.0
 
+    monkeypatch.setattr(isolated, "_MAX_SLOT_WAIT_S", 0.2)
     slots.acquire()
     try:
-        with pytest.raises(WorkerStopped, match="no free parser slot"):
-            run_isolated(math.sqrt, 16.0, timeout=0.2)
+        started = time.monotonic()
+        with pytest.raises(ParserBusy, match="no free parser slot"):
+            run_isolated(math.sqrt, 16.0, timeout=60)
+        # Review finding: two slow files must not hold every other parse
+        # for its whole timeout; the wait is short, not the caller's 60 s.
+        assert time.monotonic() - started < 5
     finally:
         slots.release()
+
+
+def test_the_wait_for_a_slot_counts_against_the_timeout(monkeypatch) -> None:
+    """A caller's limit covers the wait and the parse together, so Drive
+    sync's 120 s still kills the child when its wait_for gives up."""
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(isolated, "_child_slots", slots)
+    slots.acquire()
+    threading.Timer(1.0, slots.release).start()
+
+    started = time.monotonic()
+    with pytest.raises(WorkerStopped, match="timed out") as info:
+        run_isolated(time.sleep, 30, timeout=3.0)
+    assert not isinstance(info.value, ParserBusy)
+    assert time.monotonic() - started < 6
+
+
+def test_the_in_process_fallback_does_not_hold_a_slot(monkeypatch) -> None:
+    """An in-process parse cannot be timed out; a hung one must not keep a
+    slot the child processes need."""
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(isolated, "_child_slots", slots)
+    monkeypatch.setattr(isolated.sys, "executable", "/nonexistent/python")
+
+    def slot_is_free() -> bool:
+        if slots.acquire(blocking=False):
+            slots.release()
+            return True
+        return False
+
+    assert run_isolated(slot_is_free, timeout=60) is True
 
 
 def test_a_caller_with_its_own_gate_does_not_wait_on_the_shared_one(monkeypatch) -> None:
@@ -319,3 +361,23 @@ def test_a_corrupt_docx_raises_naming_the_parser_error(tmp_path: Path) -> None:
 def test_what_a_parser_prints_does_not_spoil_the_answer() -> None:
     """Output a library writes to stdout goes to stderr, not into the JSON."""
     assert run_isolated(print, "noise from a parser", timeout=60) is None
+
+
+async def test_a_pdf_met_by_busy_parsers_says_so_and_is_not_cached(monkeypatch) -> None:
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(isolated, "_child_slots", slots)
+    monkeypatch.setattr(isolated, "_MAX_SLOT_WAIT_S", 0.1)
+    data = _text_pdf("Hire two engineers in the third quarter")
+
+    slots.acquire()
+    try:
+        busy = await pdf_reader.read_pdf_text(data, filename="plan.pdf")
+    finally:
+        slots.release()
+    read = await pdf_reader.read_pdf_text(data, filename="plan.pdf")
+
+    assert busy.method == "none"
+    assert "busy reading other documents" in busy.note
+    assert read.method == "text_layer"

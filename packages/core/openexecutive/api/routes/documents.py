@@ -49,12 +49,20 @@ async def _stage_upload(file: UploadFile, suffix: str) -> Path:
     return tmp_path
 
 
-def _unreadable(name: str, exc: Exception) -> HTTPException:
+def unreadable_document_error(name: str, exc: Exception) -> HTTPException:
     """422 for a document its parser could not read, in words a person can
-    act on. The parser's own message stays in the log: it can quote the file."""
-    from openexecutive.knowledge.isolated import WorkerStopped
+    act on; 503 when every parser was busy and the file was never tried.
+    Only the exception's type is logged: its message can quote the file."""
+    from openexecutive.knowledge.isolated import IsolatedError, ParserBusy, WorkerStopped
 
-    logger.warning("documents: could not read %s (%s)", name, exc)
+    kind = exc.kind if isinstance(exc, IsolatedError) else type(exc).__name__
+    logger.warning("documents: could not read %r (%s)", name, kind)
+    if isinstance(exc, ParserBusy):
+        return HTTPException(
+            status_code=503,
+            detail="Documents are being read right now. Try again in a minute.",
+            headers={"Retry-After": "30"},
+        )
     if isinstance(exc, WorkerStopped):
         reason = "it is too large or took too long to read"
     else:
@@ -137,7 +145,7 @@ async def upload_document(
         except IsolatedError as exc:
             # A Word/Excel parse that failed, died or ran out of time (a PDF
             # never raises: it comes back empty, with a note).
-            raise _unreadable(safe_filename, exc) from exc
+            raise unreadable_document_error(safe_filename, exc) from exc
 
         company_docs_dir = settings.company_profile_path.parent / "docs"
         company_docs_dir.mkdir(parents=True, exist_ok=True)
@@ -414,7 +422,7 @@ async def get_document(
     try:
         content = await extract_text_from_file_async(path)
     except IsolatedError as exc:
-        raise _unreadable(safe, exc) from exc
+        raise unreadable_document_error(safe, exc) from exc
     if not content.strip():
         content = "_No text could be read from this document._"
     return CompanyDocContent(filename=safe, content=content)
