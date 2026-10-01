@@ -7,9 +7,12 @@ never as a hung or crashed API process.
 """
 from __future__ import annotations
 
+import io
+import logging
 import math
 import os
 import time
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -18,6 +21,7 @@ from openexecutive.knowledge import isolated, pdf_reader
 from openexecutive.knowledge.isolated import IsolatedError, WorkerStopped, run_isolated
 from openexecutive.knowledge.loader import _parse_file, extract_text_from_file
 
+from ._isolated_helpers import echo, flood_stderr_and_die
 from .test_pdf_reader import _blank_pdf, _image_pdf, _text_pdf
 
 
@@ -64,6 +68,84 @@ def test_a_child_past_its_timeout_is_killed() -> None:
     with pytest.raises(WorkerStopped, match="timed out"):
         run_isolated(time.sleep, 30, timeout=1)
     assert time.monotonic() - started < 20
+
+
+def test_non_ascii_text_comes_back_intact() -> None:
+    text = "café — 30 % growth, 日本"
+    assert run_isolated(echo, text, timeout=60) == text
+
+
+def test_an_answer_past_the_limit_is_refused(monkeypatch) -> None:
+    monkeypatch.setattr(isolated, "_MAX_ANSWER_BYTES", 100)
+
+    with pytest.raises(WorkerStopped, match="past the limit"):
+        run_isolated(echo, "x" * 200, timeout=60)
+
+
+def test_a_flood_on_stderr_is_never_held_in_memory(caplog) -> None:
+    """Review finding: stderr used to be captured whole. A child that writes
+    40 MB to it must cost this process the logged tail, not 40 MB."""
+    tracemalloc.start()
+    try:
+        with pytest.raises(WorkerStopped, match="exit code 5"):
+            run_isolated(flood_stderr_and_die, 40, timeout=60)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 2 * 1024 * 1024
+    (record,) = [r for r in caplog.records if "no answer" in r.getMessage()]
+    assert record.getMessage().endswith("x" * isolated._MAX_STDERR_LOGGED)
+
+
+def _log_flood_pdf(pages: int = 5, fonts: int = 300, name_len: int = 4000) -> bytes:
+    """A 9 KB PDF that makes pypdf log ~6 MB: every page shares a font dict
+    whose fonts all carry a 4000-character /Encoding name, and pypdf logs
+    that name as an error for each font on each page."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, StreamObject
+
+    writer = PdfWriter()
+    font = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+        NameObject("/Encoding"): NameObject("/" + "A" * name_len),
+    }))
+    font_dict = writer._add_object(
+        DictionaryObject({NameObject(f"/F{i}"): font for i in range(fonts)})
+    )
+    for _ in range(pages):
+        page = writer.add_blank_page(612, 792)
+        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): font_dict})
+        content = StreamObject()
+        content.set_data(b"BT /F0 12 Tf 72 720 Td (Quarterly plan) Tj ET")
+        page[NameObject("/Contents")] = writer._add_object(content)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def test_a_pdf_that_floods_the_parser_log_costs_this_process_nothing() -> None:
+    data = _log_flood_pdf()
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    logging.getLogger("pypdf").addHandler(handler)
+    try:
+        in_process = pdf_reader._text_layer(data)
+    finally:
+        logging.getLogger("pypdf").removeHandler(handler)
+    assert len(log.getvalue()) > 5_000_000, "the fixture must actually flood the log"
+
+    tracemalloc.start()
+    try:
+        isolated_result = run_isolated(pdf_reader._text_layer, data, timeout=120)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert tuple(isolated_result) == in_process
+    assert peak < 2 * 1024 * 1024
 
 
 def test_without_a_child_process_it_parses_in_process(monkeypatch) -> None:
@@ -119,7 +201,7 @@ async def test_a_reader_that_runs_out_of_time_never_raises(monkeypatch) -> None:
     result = await pdf_reader.read_pdf_text(_text_pdf("Quarterly plan"), filename="slow.pdf")
 
     assert result.method == "none"
-    assert result.note == "the PDF could not be read: reading it ran out of memory or time"
+    assert result.note == "the PDF could not be read: it was too large or took too long"
 
 
 async def test_a_missing_file_is_reported_not_raised(tmp_path: Path) -> None:

@@ -468,6 +468,21 @@ def _digest(source: bytes | Path) -> str:
     return digest.hexdigest()
 
 
+async def _cache_if_unchanged(
+    key: str, result: PdfReadResult, source: bytes | Path, digest: str
+) -> None:
+    """Cache ``result`` under ``key``, unless ``source`` is a file that changed
+    while it was read: the key is the hash of what was there first, and the
+    text may be of what replaced it."""
+    if isinstance(source, Path):
+        try:
+            if await asyncio.to_thread(_digest, source) != digest:
+                return
+        except OSError:
+            return
+    _cache_put(key, result)
+
+
 async def read_pdf_text(
     data: bytes | Path, *, filename: str = "", inbound: bool = False
 ) -> PdfReadResult:
@@ -509,7 +524,7 @@ async def read_pdf_text(
     except WorkerStopped as exc:
         logger.warning("pdf_reader: could not read %s (%s)", label, exc)
         return PdfReadResult(
-            "", "none", 0, "the PDF could not be read: reading it ran out of memory or time"
+            "", "none", 0, "the PDF could not be read: it was too large or took too long"
         )
     except Exception as exc:
         logger.warning("pdf_reader: could not open %s (%s)", label, type(exc).__name__)
@@ -519,7 +534,7 @@ async def read_pdf_text(
 
     if pages and not _is_thin(text, pages):
         result = PdfReadResult(text, "text_layer", pages)
-        _cache_put(key, result)
+        await _cache_if_unchanged(key, result, data, digest)
         return result
 
     settings = get_settings()
@@ -548,7 +563,7 @@ async def read_pdf_text(
             ) if n
         )
         result = PdfReadResult(transcript, "model", pages, note)
-        _cache_put(key, result)
+        await _cache_if_unchanged(key, result, data, digest)
         return result
 
     if not settings.pdf_ocr_enabled:
@@ -563,7 +578,7 @@ async def read_pdf_text(
     if not ocr.strip():
         return _fallback(text, pages, "it looks scanned and no text could be read from its pages")
     result = PdfReadResult(ocr, "ocr", pages, _pages_note(read, pages))
-    _cache_put(key, result)
+    await _cache_if_unchanged(key, result, data, digest)
     return result
 
 

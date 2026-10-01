@@ -1595,8 +1595,25 @@ knowledge:
     unpickles anything a parser of a hostile file could have shaped. The
     child's environment is reduced to PATH, HOME, PYTHONPATH/PYTHONHOME,
     VIRTUAL_ENV, LD_LIBRARY_PATH, locale and temp-dir variables: no API
-    keys. In the child, fd 1 carries only the answer (library output goes
-    to stderr) and only errors are logged.
+    keys. That is hygiene, not a sandbox: the child runs as the same user
+    and could read /proc/<ppid>/environ, .env or credential files.
+    Bounded output (security review): the child's stdout and stderr go to
+    temp files, never into the API's memory. pypdf logs text taken from the
+    file (e.g. a font's /Encoding name, once per font per page), so a 9 KB
+    crafted PDF logged ~6 MB and a 2000-page one grew a captured stderr by
+    ~85 MB/s until OOM. The child therefore logs nothing
+    (logging.disable, warnings ignored), fd 1 carries only the answer
+    (library output is dup2'd to stderr), only the last 2000 chars of stderr
+    are read back on a failure, and the answer (UTF-8 JSON,
+    ensure_ascii=False, so non-ASCII text is not inflated 6x) is capped at
+    _MAX_ANSWER_BYTES (32 MB): the child swaps a larger one for an
+    AnswerTooLarge error and the parent refuses a larger file unread, both
+    as WorkerStopped. read_pdf_text's note for WorkerStopped: "the PDF could
+    not be read: it was too large or took too long".
+    A Path source is read more than once (hash, parse, maybe model), so a
+    result is cached only if the file's sha256 is unchanged after the read:
+    an upload rewriting the same name mid-read must not store its text
+    under the old file's hash.
     Contract kept: read_pdf_text never raises (an exception the caller names
     in `reraise` — PdfTooLarge, OcrUnavailable — is rebuilt as itself; a
     child that dies or passes its timeout raises WorkerStopped, which

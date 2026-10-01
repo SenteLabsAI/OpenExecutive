@@ -12,14 +12,21 @@ The call runs ``func(*args)`` in ``python -m openexecutive.knowledge.isolated``.
 ``func`` must be a module-level function (it is sent by reference) and its
 result must be JSON-serialisable: text, numbers, lists. The arguments travel
 to the child pickled on stdin; the answer comes back as JSON on stdout, so
-nothing the child prints is ever unpickled here. The child gets only the
-environment it needs to start Python, not the deployment's keys.
+nothing the child prints is ever unpickled here. Both of the child's output
+streams go to temp files, not this process's memory: the child logs nothing
+(a hostile file can make a parser log without end), only the last
+``_MAX_STDERR_LOGGED`` characters of its stderr are ever read back, and an
+answer past ``_MAX_ANSWER_BYTES`` is refused unread. The child's environment
+holds only what it needs to start Python, so the deployment's keys are not
+in it. That is hygiene, not a sandbox: the child runs as the same user and
+can read what this process can.
 
 An exception raised by ``func`` is raised again here when its class is one
 the caller names in ``reraise``, and as ``IsolatedError`` otherwise. A child
 that dies without answering (OOM kill, crash) or runs past ``timeout``
-raises ``WorkerStopped``. When no child can be started at all, ``func`` runs in
-this process instead, as it did before isolation.
+raises ``WorkerStopped``, and so does an answer too large to take back.
+When no child can be started at all, ``func`` runs in this process instead,
+as it did before isolation.
 """
 from __future__ import annotations
 
@@ -30,6 +37,8 @@ import os
 import pickle
 import subprocess
 import sys
+import tempfile
+import warnings
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -48,7 +57,13 @@ _ENV_KEEP = frozenset({
     "PYTHONPATH", "PYTHONHOME", "PYTHONUTF8", "VIRTUAL_ENV", "SYSTEMROOT",
     "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
 })
+# Run with -m, this module is __main__ in the child, so it names itself.
+_MODULE = "openexecutive.knowledge.isolated"
 _MAX_STDERR_LOGGED = 2000
+# The largest answer taken back from the child, as UTF-8 JSON. A 2,000-page
+# text layer is a few MB; past this, the parse is refused rather than loaded.
+_MAX_ANSWER_BYTES = 32 * 1024 * 1024
+_TOO_LARGE = "AnswerTooLarge"
 
 _warned_spawn_failure = False
 
@@ -93,40 +108,51 @@ def run_isolated(
     if not enabled:
         return func(*args)
     request = pickle.dumps((func.__module__, func.__qualname__, args), pickle.HIGHEST_PROTOCOL)
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", __name__],
-            input=request,
-            capture_output=True,
-            timeout=timeout,
-            env=_child_env(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise WorkerStopped(f"{func.__qualname__} timed out after {timeout:.0f}s") from exc
-    except OSError as exc:
-        if not _warned_spawn_failure:
-            _warned_spawn_failure = True
-            logger.warning(
-                "isolated: could not start a parser process (%s); parsing in-process",
-                type(exc).__name__,
+    name = func.__qualname__
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", _MODULE],
+                input=request,
+                stdout=out,
+                stderr=err,
+                timeout=timeout,
+                env=_child_env(),
+                check=False,
             )
-        return func(*args)
+        except subprocess.TimeoutExpired as exc:
+            raise WorkerStopped(f"{name} timed out after {timeout:.0f}s") from exc
+        except OSError as exc:
+            if not _warned_spawn_failure:
+                _warned_spawn_failure = True
+                logger.warning(
+                    "isolated: could not start a parser process (%s); parsing in-process",
+                    type(exc).__name__,
+                )
+            return func(*args)
+        del request
 
-    try:
-        reply = json.loads(proc.stdout)
-    except ValueError:
-        reply = None
-    if not isinstance(reply, dict) or "ok" not in reply:
-        stderr = proc.stderr.decode("utf-8", "replace")[-_MAX_STDERR_LOGGED:]
-        logger.warning(
-            "isolated: %s exited with code %s and no answer: %s",
-            func.__qualname__, proc.returncode, stderr,
-        )
-        raise WorkerStopped(f"{func.__qualname__} stopped with exit code {proc.returncode}")
+        size = out.seek(0, os.SEEK_END)
+        if size > _MAX_ANSWER_BYTES:
+            raise WorkerStopped(f"{name} answered with {size} bytes, past the limit")
+        out.seek(0)
+        try:
+            reply = json.loads(out.read())
+        except ValueError:
+            reply = None
+        if not isinstance(reply, dict) or "ok" not in reply:
+            err.seek(max(0, err.seek(0, os.SEEK_END) - _MAX_STDERR_LOGGED))
+            logger.warning(
+                "isolated: %s exited with code %s and no answer: %s",
+                name, proc.returncode, err.read().decode("utf-8", "replace"),
+            )
+            raise WorkerStopped(f"{name} stopped with exit code {proc.returncode}")
     if reply["ok"]:
         return reply["result"]  # type: ignore[no-any-return]
-    raise _rebuild(reply.get("error") or {}, reraise)
+    error = reply.get("error") or {}
+    if error.get("type") == _TOO_LARGE and error.get("module") == _MODULE:
+        raise WorkerStopped(f"{name} answer was past the limit")
+    raise _rebuild(error, reraise)
 
 
 def _jsonable(value: Any) -> Any:
@@ -139,12 +165,13 @@ def _jsonable(value: Any) -> Any:
 
 def _main() -> int:
     # The answer gets fd 1 to itself: anything a library prints, from Python
-    # or C, goes to stderr instead. Only errors are logged, so a malformed
-    # file's stream of parser warnings does not pile up in the parent.
+    # or C, goes to stderr instead. Nothing is logged: pypdf logs text taken
+    # from the file, and a crafted one can make it log without end.
     answer = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)
     sys.stdout = sys.stderr
-    logging.basicConfig(level=logging.ERROR)
+    logging.disable(logging.CRITICAL)
+    warnings.simplefilter("ignore")
 
     module, qualname, args = pickle.loads(sys.stdin.buffer.read())
     func: Any = importlib.import_module(module)
@@ -164,7 +191,13 @@ def _main() -> int:
                 "attrs": attrs,
             },
         }
-    answer.write(json.dumps(reply).encode())
+    out = json.dumps(reply, ensure_ascii=False).encode()
+    if len(out) > _MAX_ANSWER_BYTES:
+        out = json.dumps({
+            "ok": False,
+            "error": {"module": _MODULE, "type": _TOO_LARGE, "message": f"{len(out)} bytes"},
+        }).encode()
+    answer.write(out)
     answer.close()
     return 0
 

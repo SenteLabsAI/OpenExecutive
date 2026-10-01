@@ -338,6 +338,35 @@ async def test_the_same_pdf_is_converted_once(monkeypatch):
     assert len(provider.calls) == 1
 
 
+async def test_a_file_read_by_path_is_cached(tmp_path):
+    path = tmp_path / "plan.pdf"
+    path.write_bytes(_text_pdf("Hire two engineers in the third quarter"))
+
+    await read_pdf_text(path, filename="plan.pdf")
+
+    assert len(pdf_reader._cache) == 1
+
+
+async def test_a_file_replaced_while_it_is_read_is_not_cached(tmp_path, monkeypatch):
+    """The cache key is the hash of the file as first read; if the file is
+    rewritten before the parse (an upload under the same name), the text is
+    the new file's and must not be stored under the old file's hash."""
+    path = tmp_path / "plan.pdf"
+    path.write_bytes(_text_pdf("Hire two engineers in the third quarter"))
+    original = pdf_reader._text_layer
+
+    def replaced_mid_read(source: Any, max_pages: int | None = None) -> tuple[str, int]:
+        path.write_bytes(_text_pdf("Freeze hiring until the next board meeting"))
+        return original(source, max_pages)
+
+    monkeypatch.setattr(pdf_reader, "_text_layer", replaced_mid_read)
+
+    result = await read_pdf_text(path, filename="plan.pdf")
+
+    assert "Freeze hiring" in result.text
+    assert len(pdf_reader._cache) == 0
+
+
 async def test_an_unreadable_result_is_not_cached(monkeypatch):
     """A failure (no key yet, OCR off) must not stick once it is fixed."""
     monkeypatch.setenv("PDF_OCR_ENABLED", "false")
