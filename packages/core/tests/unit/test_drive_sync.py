@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -539,3 +540,72 @@ def test_look_alike_separators_are_stripped_from_names() -> None:
 
     label = _drive_label({"name": "a ∙ file id X ［y］", "drive_file_id": DOC})
     assert label.count("·") == 2 and "［" not in label and "(" not in label
+
+
+@pytest.mark.asyncio
+async def test_each_file_records_when_it_was_synced_and_lists_for_the_knowledge_page(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    await _sync(_drive(), FakeStore(), now=now)
+    state = _state(tmp_path)
+    assert state["files"][DOC]["synced_at"] == now.isoformat()
+
+    listing = drive_sync.list_synced_files()
+    assert listing["last_run"] == now.isoformat() and listing["last_error"] is None
+    by_id = {f["id"]: f for f in listing["files"]}
+    assert by_id[DOC]["name"] == "Q3 Finance Plan"
+    assert by_id[DOC]["url"] == f"https://docs.google.com/d/{DOC}"
+    assert by_id[DOC]["synced_at"] == now.isoformat() and by_id[DOC]["indexed"]
+
+    doc = drive_sync.read_synced_file(DOC)
+    assert doc is not None and "Revenue grows 12%" in doc["content"]
+    assert "drive_file_id" not in doc["content"]
+
+
+def test_listing_falls_back_to_last_run_and_drops_unsafe_links(tmp_path: Path) -> None:
+    (tmp_path / "drive_sync_state.json").write_text(
+        json.dumps(
+            {
+                "last_run": "2026-09-01T00:00:00+00:00",
+                "files": {
+                    DOC: {"name": "Old", "filename": "", "url": "javascript:alert(1)"},
+                    "../etc": {"name": "bad"},
+                },
+            }
+        )
+    )
+    files = drive_sync.list_synced_files()["files"]
+    assert [f["id"] for f in files] == [DOC]
+    assert files[0]["synced_at"] == "2026-09-01T00:00:00+00:00"
+    assert files[0]["url"] is None and files[0]["indexed"] is False
+    # No readable text on record, and ids that are not on record, read as nothing.
+    assert drive_sync.read_synced_file(DOC) is None
+    assert drive_sync.read_synced_file("../etc") is None
+
+
+def test_a_state_filename_outside_the_drive_dir_is_never_read(tmp_path: Path) -> None:
+    (tmp_path / "secret.md").write_text("nope")
+    (tmp_path / "drive_sync_state.json").write_text(
+        json.dumps({"files": {DOC: {"name": "x", "filename": "../secret.md"}}})
+    )
+    assert drive_sync.read_synced_file(DOC) is None
+
+
+@pytest.mark.asyncio
+async def test_a_second_tick_while_one_runs_is_skipped_as_busy() -> None:
+    async with drive_sync._RUN_LOCK:
+        assert drive_sync.is_syncing()
+        assert await _sync(_drive(), FakeStore()) == {"busy": 1}
+    assert not drive_sync.is_syncing()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sign_in_is_recorded_and_cleared_by_the_next_good_tick(
+    tmp_path: Path,
+) -> None:
+    # No client passed, and the service-account file does not exist.
+    await drive_sync.run_drive_sync(store=FakeStore())  # type: ignore[arg-type]
+    assert "sign in" in (drive_sync.list_synced_files()["last_error"] or "")
+    await _sync(_drive(), FakeStore())
+    assert drive_sync.list_synced_files()["last_error"] is None

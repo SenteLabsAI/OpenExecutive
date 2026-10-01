@@ -462,7 +462,16 @@ export async function uploadDocument(
     method: "POST",
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload document");
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const data = await res.json();
+      if (typeof data?.detail === "string") detail = data.detail;
+    } catch {
+      // not JSON
+    }
+    throw new Error(detail || `Failed to upload ${file.name}`);
+  }
   return res.json();
 }
 
@@ -470,6 +479,9 @@ export interface CompanyDoc {
   filename: string;
   size_bytes: number;
   modified_at: number;
+  source?: "upload";
+  /** The domain the upload was indexed under ("general" when untagged). */
+  domain?: string | null;
 }
 
 export async function listDocuments(): Promise<CompanyDoc[]> {
@@ -495,6 +507,79 @@ export async function getDocument(filename: string): Promise<CompanyDocContent> 
   const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error("Failed to fetch document content");
   return res.json();
+}
+
+// --- Connected sources (Google Drive, Notion) --------------------------------
+
+export type SyncedSourceId = "drive" | "notion";
+
+export interface SyncedDoc {
+  id: string;
+  name: string;
+  url: string | null;
+  modified_at: string | null;
+  synced_at: string | null;
+  indexed: boolean;
+}
+
+export interface SyncedDocList {
+  enabled: boolean;
+  last_run: string | null;
+  last_error: string | null;
+  files: SyncedDoc[];
+}
+
+export interface SyncedDocContent {
+  id: string;
+  name: string;
+  url: string | null;
+  content: string;
+}
+
+export interface SyncSourceStatus {
+  id: SyncedSourceId;
+  label: string;
+  enabled: boolean;
+  syncing: boolean;
+  last_run: string | null;
+  last_error: string | null;
+  interval_minutes: number;
+  file_count: number;
+}
+
+export async function listSyncSources(): Promise<SyncSourceStatus[]> {
+  const res = await fetch(`${API_BASE}/documents/sources`);
+  if (!res.ok) throw new Error("Failed to load connected sources");
+  const data = await res.json();
+  return data.sources;
+}
+
+export async function listSyncedDocuments(source: SyncedSourceId): Promise<SyncedDocList> {
+  const res = await fetch(`${API_BASE}/documents/${source}`);
+  if (!res.ok) throw new Error("Failed to list synced documents");
+  return res.json();
+}
+
+export async function getSyncedDocument(
+  source: SyncedSourceId,
+  id: string
+): Promise<SyncedDocContent> {
+  const res = await fetch(`${API_BASE}/documents/${source}/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error("Failed to fetch document content");
+  return res.json();
+}
+
+/** Start one sync now. Resolves to an error message the page can show, or null. */
+export async function syncSourceNow(source: SyncedSourceId): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/documents/sources/${source}/sync`, { method: "POST" });
+  if (res.ok) return null;
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === "string") return data.detail;
+  } catch {
+    // fall through
+  }
+  return "Could not start a sync";
 }
 
 export interface BuiltinFileMeta {

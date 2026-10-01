@@ -1391,6 +1391,19 @@ knowledge:
         (DELETE /documents/{filename}) individual docs. Synced Notion pages
         do NOT land here — see NOTION_WIKI.
 
+        The knowledge page shows ONE Company documents list: these uploads
+        plus synced Drive files and Notion pages (GET /documents/drive,
+        GET /documents/notion, each read from that sync's state file, with a
+        text view at /documents/{drive|notion}/{id} whose path comes from the
+        state record, never the caller). Synced rows are read-only — removing
+        the file from the folder / integration is what drops it. Each
+        connected source shows last_run, last_error and a Sync now button
+        (POST /documents/sources/{id}/sync: 202, or 409 not connected /
+        already running, 429 within 60 s of the last run). Both syncs hold a
+        per-process run lock (`_RUN_LOCK`), so a manual tick and the heartbeat
+        never overlap; the loser returns {"busy": 1}. Uploads from the page
+        no longer pick a domain and go in as `general`.
+
         IDENTITY IS THE FILENAME. ingest_file takes an explicit `source_name`
         that becomes the filename/source metadata AND the chunk-id namespace
         (_make_chunk_id is an MD5 of it). The upload endpoint stages the body
@@ -1553,7 +1566,7 @@ knowledge:
     nothing back.
   general_catch_all: |
     `general` is the domain an upload gets when nobody classified it: the
-    default on POST /documents, the default option in the UI's picker, and
+    default on POST /documents (the knowledge page no longer offers a picker), and
     what reconcile_company_docs assigns to a recovered document. It maps to no
     specialist in DOMAIN_ALIASES, so retriever._with_general widens each
     specialist's COMPANY filter to include it — otherwise an unclassified

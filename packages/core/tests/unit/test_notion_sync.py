@@ -822,3 +822,39 @@ async def test_truncated_listing_skips_reconcile_and_counts(
         assert PAGE_GONE not in state["pages"]
         assert state["reconcile_skips"] == 0
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_synced_pages_list_with_link_and_time_for_the_knowledge_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge import notion_sync
+
+    page = _page(PAGE_NEW, "2026-06-02T00:00:00.000Z", "OKRs")
+    page["url"] = "https://www.notion.so/OKRs-abc"
+    _, _, state_file = await _run_sync(tmp_path=tmp_path, monkeypatch=monkeypatch, pages=[page])
+    record = json.loads(state_file.read_text())["pages"][PAGE_NEW]
+    assert record["url"] == "https://www.notion.so/OKRs-abc" and record["synced_at"]
+
+    with (
+        patch("openexecutive.knowledge.notion_sync._state_path", return_value=state_file),
+        patch("openexecutive.knowledge.notion_sync._docs_dir", return_value=tmp_path / "docs"),
+    ):
+        listing = notion_sync.list_synced_pages()
+        assert [p["name"] for p in listing["files"]] == ["OKRs"]
+        assert listing["files"][0]["url"] == "https://www.notion.so/OKRs-abc"
+        assert listing["files"][0]["synced_at"] == record["synced_at"]
+        assert listing["files"][0]["indexed"] is True
+        doc = notion_sync.read_synced_page(PAGE_NEW)
+        assert doc is not None and "Body" in doc["content"]
+        assert "notion_page_id" not in doc["content"]
+        assert notion_sync.read_synced_page("../../etc/passwd") is None
+
+
+@pytest.mark.asyncio
+async def test_a_second_notion_tick_while_one_runs_is_skipped_as_busy() -> None:
+    from openexecutive.knowledge import notion_sync
+
+    async with notion_sync._RUN_LOCK:
+        assert notion_sync.is_syncing()
+        assert await run_notion_sync() == {"busy": 1}

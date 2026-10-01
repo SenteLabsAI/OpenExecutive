@@ -131,6 +131,15 @@ class CompanyDocContent(BaseModel):
     content: str
 
 
+class SyncedDocContent(BaseModel):
+    """One Google Drive file or Notion page as the knowledge base stored it."""
+
+    id: str
+    name: str
+    url: str | None = None
+    content: str
+
+
 class HealthResponse(BaseModel):
     status: str
     builtin_knowledge_chunks: int
