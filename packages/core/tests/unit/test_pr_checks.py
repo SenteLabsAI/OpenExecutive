@@ -136,6 +136,20 @@ def test_eval_scenarios_required_for_new_agent() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["class FooAgent(", "    BaseAgent,", "):", '    name = "foo"'],
+        ["class FooAgent(SalesAgent):", '    name = "foo"'],
+    ],
+    ids=["wrapped-bases", "subclass-of-an-agent"],
+)
+def test_eval_scenarios_required_for_any_agent_class_header(lines: list[str]) -> None:
+    added = {PKG + "agents/foo.py"}
+    level = _level(pr_checks.check_eval_scenarios, added=added, added_lines={PKG + "agents/foo.py": lines})
+    assert level == "FAIL"
+
+
 def test_eval_scenarios_not_required_for_new_helper_module() -> None:
     added = {PKG + "agents/presets.py"}
     lines = {PKG + "agents/presets.py": ["class PresetSpec:", "def target_for(agent: BaseAgent):"]}

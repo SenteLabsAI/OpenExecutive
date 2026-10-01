@@ -213,7 +213,9 @@ def check_no_stubs(c: Change) -> Result:
     return Result("no-stubs", "PASS", "no stub markers added")
 
 
-_AGENT_CLASS_RE = re.compile(r"^class\s+\w+\s*\([^)]*\bBaseAgent\b")
+# A class whose bases name an agent class (BaseAgent, or another agent such
+# as SalesAgent), with the base list possibly wrapped over several lines.
+_AGENT_CLASS_RE = re.compile(r"^class\s+\w+\s*\([^)]*\b\w*Agent\b", re.MULTILINE)
 
 
 def check_eval_scenarios(c: Change) -> Result:
@@ -224,7 +226,7 @@ def check_eval_scenarios(c: Change) -> Result:
         p.startswith(AGENTS)
         and p.endswith(".py")
         and not p.rsplit("/", 1)[-1].startswith("_")
-        and any(_AGENT_CLASS_RE.search(line) for line in c.added_lines.get(p, []))
+        and _AGENT_CLASS_RE.search("\n".join(c.added_lines.get(p, []))) is not None
         for p in c.added
     )
     prompt_change = DOMAIN_PROMPTS in c.changed
