@@ -112,6 +112,55 @@ def test_scanned_pdf_upload_is_indexed_and_previewed(
     assert "rent 12,000 per month" in preview.json()["content"]
 
 
+@pytest.mark.parametrize("name", ["budget.xlsx", "budget.xlsm"])
+def test_an_excel_upload_is_indexed_and_previewed(client: TestClient, name: str) -> None:
+    """(#316) Excel workbooks were refused as an unsupported type even though
+    the loader reads them."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Budget"
+    ws.append(["Line", "Amount"])
+    ws.append(["Marketing", 45000])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    files = {"file": (name, buf, "application/octet-stream")}
+
+    resp = client.post("/documents", files=files, data={"domain": "finance"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["chunks_indexed"] >= 1
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert any(m["filename"] == name for m in store.rows.values())
+
+    preview = client.get(f"/documents/{name}")
+    assert preview.status_code == 200, preview.text
+    assert "Marketing\t45000" in preview.json()["content"]
+
+
+def test_a_csv_upload_is_indexed(client: TestClient) -> None:
+    files = {"file": ("pipeline.csv", io.BytesIO(b"deal,value\nAcme,120000\n"), "text/csv")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["chunks_indexed"] >= 1
+
+
+def test_an_unsupported_type_lists_the_allowed_ones_in_order(client: TestClient) -> None:
+    files = {"file": ("old.xls", io.BytesIO(b"\xd0\xcf\x11\xe0"), "application/vnd.ms-excel")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "Unsupported file type: .xls. "
+        "Allowed: .csv, .doc, .docx, .md, .pdf, .txt, .xlsm, .xlsx"
+    )
+
+
 def test_get_document_missing_returns_404(client: TestClient) -> None:
     resp = client.get("/documents/does_not_exist.md")
     assert resp.status_code == 404

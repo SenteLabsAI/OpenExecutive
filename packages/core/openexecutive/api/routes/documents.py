@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".md", ".txt"}
+# Every type ``knowledge.loader.extract_text_from_file`` reads (legacy binary
+# .xls is left out: openpyxl reads only .xlsx/.xlsm).
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv", ".md", ".txt"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 # The upload is copied to its staging file this many bytes at a time, so the
 # process never holds a whole (up to 50 MB) document in memory.
@@ -97,7 +99,7 @@ async def upload_document(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {ext}. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+            detail=f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
     # Reject an unknown domain rather than indexing under it. Specialist
@@ -162,7 +164,7 @@ async def upload_document(
             from openexecutive.alerts.pipeline import schedule_evaluation
 
             excerpt = ""
-            if ext in {".md", ".txt"}:
+            if ext in {".md", ".txt", ".csv"}:
                 head = await asyncio.to_thread(_read_head, tmp_path, _ALERT_EXCERPT_BYTES)
                 excerpt = head.decode("utf-8", errors="replace")
             else:

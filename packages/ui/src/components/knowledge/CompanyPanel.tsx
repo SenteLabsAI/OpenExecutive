@@ -42,7 +42,7 @@ interface Viewing {
   content: string;
 }
 
-const ACCEPT = ".pdf,.docx,.doc,.md,.txt";
+const ACCEPT = ".pdf,.docx,.doc,.xlsx,.xlsm,.csv,.md,.txt";
 const POLL_MS = 3000;
 
 const PROSE_CLASS =
@@ -273,7 +273,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
               ? "No documents yet. Drop files here to add your first ones."
               : "Drop files here to add them"}
             <span className="block text-xs text-fg-subtle mt-1">
-              PDF, Word, Markdown or text, up to 50 MB each
+              PDF, Word, Excel, CSV, Markdown or text, up to 50 MB each
             </span>
           </p>
         )}
