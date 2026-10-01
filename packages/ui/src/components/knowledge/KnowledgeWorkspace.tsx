@@ -53,9 +53,11 @@ export default function KnowledgeWorkspace() {
   const [failureFiles, setFailureFiles] = useState<BuiltinFileMeta[]>([]);
   // `/knowledge?view=review` (and the old `/review` route, which redirects
   // here) opens straight onto the review queue.
+  // Everything else opens on the company documents.
   const [selection, setSelection] = useState<Selection>(() =>
-    searchParams.get("view") === "review" ? { kind: "review" } : null
+    searchParams.get("view") === "review" ? { kind: "review" } : { kind: "company" }
   );
+  const [companyCount, setCompanyCount] = useState<number | null>(null);
   const [reviewCount, setReviewCount] = useState(0);
   const [fileReview, setFileReview] = useState<ReviewItem | null>(null);
   // Bumped on every review-status request; only the latest may write, so a
@@ -183,7 +185,7 @@ export default function KnowledgeWorkspace() {
       selection.fileKind === "builtin" ? deleteBuiltinFile : deleteFailureFile;
     try {
       await deleter(selection.domain, selection.filename);
-      setSelection(null);
+      setSelection({ kind: "company" });
       await loadIndex();
     } catch {
       setError("Failed to delete file");
@@ -212,19 +214,15 @@ export default function KnowledgeWorkspace() {
   return (
     <div className="flex h-full">
       <aside className="w-64 flex-shrink-0 border-r border-line bg-surface/40 px-4 py-5 overflow-y-auto">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter files…"
-          className="w-full mb-4 rounded-lg border border-line bg-surface-elevated px-2.5 py-1.5 text-xs text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-        />
         <SourceTree
           domains={DOMAINS}
           builtinFiles={builtinFiles}
           failureFiles={failureFiles}
           selection={selection}
           filter={filter}
+          onFilterChange={setFilter}
           reviewCount={reviewCount}
+          companyCount={companyCount}
           onSelect={setSelection}
         />
       </aside>
@@ -234,10 +232,6 @@ export default function KnowledgeWorkspace() {
           <div className="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
             {error}
           </div>
-        )}
-
-        {selection === null && (
-          <EmptyState />
         )}
 
         {selection?.kind === "file" && selectedContent && (
@@ -270,55 +264,17 @@ export default function KnowledgeWorkspace() {
             onSave={(domain, filename, content) =>
               handleCreate(selection.fileKind, domain, filename, content)
             }
-            onCancel={() => setSelection(null)}
+            onCancel={() => setSelection({ kind: "company" })}
           />
         )}
 
         {selection?.kind === "review" && <ReviewQueue />}
-        {selection?.kind === "company" && <CompanyPanel domains={DOMAINS} />}
+        {selection?.kind === "company" && <CompanyPanel onCountChange={setCompanyCount} />}
         {selection?.kind === "reference" && <ReferencePanel />}
         {selection?.kind === "query" && (
           <QueryPanel domains={DOMAINS} onOpenFile={openFile} />
         )}
       </main>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="max-w-xl">
-      <h1 className="text-lg font-semibold text-fg mb-2">Knowledge base</h1>
-      <p className="text-sm text-fg-muted">
-        Select a file in the tree to view or edit it. The Built-in tree holds the
-        Executive&apos;s default playbooks (positive guidance) and failure case studies
-        (negative learnings) — both are retrieved at chat time.
-      </p>
-      <ul className="text-sm text-fg-muted mt-4 space-y-1.5 list-disc list-inside">
-        <li>
-          <span className="text-fg">Playbooks</span> — domain frameworks and
-          how-tos used as positive examples.
-        </li>
-        <li>
-          <span className="text-rose-300">Failures</span> — case studies of what went
-          wrong, surfaced when the question matches one strongly.
-        </li>
-        <li>
-          <span className="text-fg">Company</span> — your uploaded documents.
-        </li>
-        <li>
-          <span className="text-fg">Reference Library</span> — open-licensed
-          textbooks and handbooks.
-        </li>
-        <li>
-          <span className="text-fg">Review queue</span> — approve, reject, or
-          correct knowledge before the Executive relies on it.
-        </li>
-        <li>
-          <span className="text-indigo-300">Query mode</span> — see exactly what the
-          Executive would retrieve for a question.
-        </li>
-      </ul>
     </div>
   );
 }

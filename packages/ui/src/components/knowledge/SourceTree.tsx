@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { BuiltinFileMeta } from "@/lib/api";
 import Icon, { type IconName } from "@/components/Icon";
 
@@ -21,10 +21,16 @@ interface SourceTreeProps {
   failureFiles: BuiltinFileMeta[];
   selection: Selection;
   filter: string;
+  onFilterChange: (value: string) => void;
   /** Pending + needs-revision items, shown on the Review queue entry. */
   reviewCount: number;
+  /** Listed company documents; null until the panel has loaded them. */
+  companyCount: number | null;
   onSelect: (sel: Selection) => void;
 }
+
+/** Views that live under "Advanced"; landing on one opens the group. */
+const ADVANCED_KINDS = new Set(["file", "new", "reference", "query", "review"]);
 
 export default function SourceTree({
   domains,
@@ -32,9 +38,14 @@ export default function SourceTree({
   failureFiles,
   selection,
   filter,
+  onFilterChange,
   reviewCount,
+  companyCount,
   onSelect,
 }: SourceTreeProps) {
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => selection !== null && ADVANCED_KINDS.has(selection.kind)
+  );
   const [collapsedBuiltin, setCollapsedBuiltin] = useState(true);
   const [collapsedDomains, setCollapsedDomains] = useState<Set<string>>(new Set());
 
@@ -63,105 +74,146 @@ export default function SourceTree({
     );
   }
 
-  return (
-    <nav className="text-sm space-y-3">
-      <RootButton
-        active={selection?.kind === "review"}
-        onClick={() => onSelect({ kind: "review" })}
-        icon="check-circle"
-        badge={reviewCount}
-      >
-        Review queue
-      </RootButton>
-      <Section
-        label="Built-in"
-        icon="grid"
-        collapsed={collapsedBuiltin}
-        onToggle={() => setCollapsedBuiltin((v) => !v)}
-      >
-        {domains.map((domain) => {
-          const playbooks = (builtinByDomain[domain] ?? []).filter((f) =>
-            matches(f.filename)
-          );
-          const failures = (failuresByDomain[domain] ?? []).filter((f) =>
-            matches(f.filename)
-          );
-          if (normalizedFilter && playbooks.length === 0 && failures.length === 0) {
-            return null;
-          }
-          const isCollapsed = collapsedDomains.has(domain) && !normalizedFilter;
-          return (
-            <div key={domain}>
-              <button
-                onClick={() => toggleDomain(domain)}
-                className="w-full flex items-center gap-1.5 px-1 text-[11px] font-semibold text-fg-muted uppercase tracking-widest hover:text-fg transition-colors"
-              >
-                <span className="text-fg-subtle w-3 inline-block">
-                  {isCollapsed ? "▸" : "▾"}
-                </span>
-                {domain}
-              </button>
-              {!isCollapsed && (
-                <div className="ml-3 mt-1 space-y-2">
-                  <FileGroup
-                    label="Playbooks"
-                    files={playbooks}
-                    accent="indigo"
-                    onClickFile={(f) =>
-                      onSelect({
-                        kind: "file",
-                        fileKind: "builtin",
-                        domain,
-                        filename: f.filename,
-                      })
-                    }
-                    onAdd={() => onSelect({ kind: "new", fileKind: "builtin" })}
-                    isActive={(f) => isActiveFile("builtin", domain, f.filename)}
-                  />
-                  <FileGroup
-                    label="Failures"
-                    files={failures}
-                    accent="rose"
-                    onClickFile={(f) =>
-                      onSelect({
-                        kind: "file",
-                        fileKind: "failures",
-                        domain,
-                        filename: f.filename,
-                      })
-                    }
-                    onAdd={() => onSelect({ kind: "new", fileKind: "failures" })}
-                    isActive={(f) => isActiveFile("failures", domain, f.filename)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </Section>
+  // Follow navigation into an advanced view (e.g. `?view=review`).
+  const selectedKind = selection?.kind;
+  useEffect(() => {
+    if (selectedKind && ADVANCED_KINDS.has(selectedKind)) setAdvancedOpen(true);
+  }, [selectedKind]);
 
-      <RootButton
-        active={selection?.kind === "company"}
+  return (
+    <nav className="text-sm space-y-4">
+      <button
         onClick={() => onSelect({ kind: "company" })}
-        icon="building"
+        className={`w-full flex items-center gap-2 text-left px-2.5 py-2 rounded-lg text-sm font-semibold transition-colors ${
+          selection?.kind === "company"
+            ? "bg-surface-input text-fg"
+            : "text-fg hover:bg-surface-overlay"
+        }`}
       >
-        Company
-      </RootButton>
-      <RootButton
-        active={selection?.kind === "reference"}
-        onClick={() => onSelect({ kind: "reference" })}
-        icon="book"
-      >
-        Reference Library
-      </RootButton>
-      <RootButton
-        active={selection?.kind === "query"}
-        onClick={() => onSelect({ kind: "query" })}
-        accent="indigo"
-        icon="doc-search"
-      >
-        Query mode
-      </RootButton>
+        <Icon name="building" size="w-4 h-4" />
+        Company documents
+        {companyCount !== null && (
+          <span className="ml-auto text-xs font-normal text-fg-muted">{companyCount}</span>
+        )}
+      </button>
+
+      <div className="border-t border-line pt-3">
+        <button
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className="w-full flex items-center gap-1.5 px-1 text-[11px] font-semibold text-fg-muted uppercase tracking-widest hover:text-fg transition-colors"
+        >
+          <span className="text-fg-subtle w-3 inline-block">{advancedOpen ? "▾" : "▸"}</span>
+          Advanced
+          {!advancedOpen && reviewCount > 0 && (
+            <span className="ml-auto text-[10px] font-semibold normal-case tracking-normal px-1.5 rounded-full bg-amber-950/60 text-amber-400 border border-amber-900/60">
+              {reviewCount} to review
+            </span>
+          )}
+        </button>
+        {!advancedOpen ? (
+          <p className="px-1 mt-1.5 text-[11px] text-fg-subtle leading-snug">
+            Built-in playbooks, reference library, retrieval testing and review.
+          </p>
+        ) : (
+          <div className="mt-3 space-y-3">
+            <RootButton
+              active={selection?.kind === "review"}
+              onClick={() => onSelect({ kind: "review" })}
+              icon="check-circle"
+              badge={reviewCount}
+            >
+              Review queue
+            </RootButton>
+            <Section
+              label="Built-in playbooks"
+              icon="grid"
+              collapsed={collapsedBuiltin}
+              onToggle={() => setCollapsedBuiltin((v) => !v)}
+            >
+              <input
+                value={filter}
+                onChange={(e) => onFilterChange(e.target.value)}
+                placeholder="Filter files…"
+                className="w-full rounded-lg border border-line bg-surface-elevated px-2.5 py-1.5 text-xs text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+              />
+              {domains.map((domain) => {
+                const playbooks = (builtinByDomain[domain] ?? []).filter((f) =>
+                  matches(f.filename)
+                );
+                const failures = (failuresByDomain[domain] ?? []).filter((f) =>
+                  matches(f.filename)
+                );
+                if (normalizedFilter && playbooks.length === 0 && failures.length === 0) {
+                  return null;
+                }
+                const isCollapsed = collapsedDomains.has(domain) && !normalizedFilter;
+                return (
+                  <div key={domain}>
+                    <button
+                      onClick={() => toggleDomain(domain)}
+                      className="w-full flex items-center gap-1.5 px-1 text-[11px] font-semibold text-fg-muted uppercase tracking-widest hover:text-fg transition-colors"
+                    >
+                      <span className="text-fg-subtle w-3 inline-block">
+                        {isCollapsed ? "▸" : "▾"}
+                      </span>
+                      {domain}
+                    </button>
+                    {!isCollapsed && (
+                      <div className="ml-3 mt-1 space-y-2">
+                        <FileGroup
+                          label="Playbooks"
+                          files={playbooks}
+                          accent="indigo"
+                          onClickFile={(f) =>
+                            onSelect({
+                              kind: "file",
+                              fileKind: "builtin",
+                              domain,
+                              filename: f.filename,
+                            })
+                          }
+                          onAdd={() => onSelect({ kind: "new", fileKind: "builtin" })}
+                          isActive={(f) => isActiveFile("builtin", domain, f.filename)}
+                        />
+                        <FileGroup
+                          label="Failures"
+                          files={failures}
+                          accent="rose"
+                          onClickFile={(f) =>
+                            onSelect({
+                              kind: "file",
+                              fileKind: "failures",
+                              domain,
+                              filename: f.filename,
+                            })
+                          }
+                          onAdd={() => onSelect({ kind: "new", fileKind: "failures" })}
+                          isActive={(f) => isActiveFile("failures", domain, f.filename)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </Section>
+            <RootButton
+              active={selection?.kind === "reference"}
+              onClick={() => onSelect({ kind: "reference" })}
+              icon="book"
+            >
+              Reference Library
+            </RootButton>
+            <RootButton
+              active={selection?.kind === "query"}
+              onClick={() => onSelect({ kind: "query" })}
+              accent="indigo"
+              icon="doc-search"
+            >
+              Query mode
+            </RootButton>
+          </div>
+        )}
+      </div>
     </nav>
   );
 }
