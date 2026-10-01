@@ -9,6 +9,32 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.4.5](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.4...v0.4.5) (2026-10-01)
+
+
+### Added
+
+* **agents:** add additional instructions to Agent Council agents ([#308](https://github.com/SenteLabsAI/OpenExecutive/issues/308)) ([4bc9567](https://github.com/SenteLabsAI/OpenExecutive/commit/4bc9567cd1391456b0d03e2bb636bcf9de07c65b))
+* **agents:** add Fast, Balanced and Thorough quality presets to the Agent Council ([#309](https://github.com/SenteLabsAI/OpenExecutive/issues/309)) ([58ba2ec](https://github.com/SenteLabsAI/OpenExecutive/commit/58ba2ec105b9cdfd842487b952fc1210669dba9e))
+* **agents:** offer Direct, Supportive and Analytical voices in setup and Settings ([#310](https://github.com/SenteLabsAI/OpenExecutive/issues/310)) ([c99d9d1](https://github.com/SenteLabsAI/OpenExecutive/commit/c99d9d1edcc23870ff2c20f108e73e425128fb2e))
+* **agents:** open the Agent Council in a simple view ([#311](https://github.com/SenteLabsAI/OpenExecutive/issues/311)) ([4e45588](https://github.com/SenteLabsAI/OpenExecutive/commit/4e45588f4a70507ab3fb8412511d99a669cc1be7))
+* **delegation:** draft replies to your inbox and send them on your tap ([#287](https://github.com/SenteLabsAI/OpenExecutive/issues/287)) ([0980b75](https://github.com/SenteLabsAI/OpenExecutive/commit/0980b75774d7b43bd31acccf38deb686703b51d7))
+* **delegation:** let team members use Act as me, with their mail private to them ([#320](https://github.com/SenteLabsAI/OpenExecutive/issues/320)) ([4b370b0](https://github.com/SenteLabsAI/OpenExecutive/commit/4b370b0b8e6939c247d5a3541de86617408f7462))
+* **knowledge:** put company documents first and list Drive and Notion files ([#306](https://github.com/SenteLabsAI/OpenExecutive/issues/306)) ([7f1acd8](https://github.com/SenteLabsAI/OpenExecutive/commit/7f1acd8dfe0e528d0f79e16551ee1fc34eee3a5c))
+
+
+### Fixed
+
+* **knowledge:** accept Excel and CSV uploads on the documents page ([#318](https://github.com/SenteLabsAI/OpenExecutive/issues/318)) ([6ae0e6b](https://github.com/SenteLabsAI/OpenExecutive/commit/6ae0e6b8bbca56ef6a3f60e490483598910cf4a4)), closes [#316](https://github.com/SenteLabsAI/OpenExecutive/issues/316)
+* **knowledge:** start one sync per double click and report partial sync failures ([#307](https://github.com/SenteLabsAI/OpenExecutive/issues/307)) ([649cdd8](https://github.com/SenteLabsAI/OpenExecutive/commit/649cdd8a85960c76c054712a2773bc8ce64fc50e))
+* **slack:** show senders when a thread message goes unanswered ([#319](https://github.com/SenteLabsAI/OpenExecutive/issues/319)) ([6293b6f](https://github.com/SenteLabsAI/OpenExecutive/commit/6293b6f5ed420a43574af67c1c9508182d77c4fe))
+* **ui:** pass uploads up to the api's limit through the middleware ([#303](https://github.com/SenteLabsAI/OpenExecutive/issues/303)) ([0977d06](https://github.com/SenteLabsAI/OpenExecutive/commit/0977d06be19494fde2958c5a24bde647cd3c2fd5))
+
+
+### Changed
+
+* **knowledge:** parse uploaded documents in a short-lived child process ([#305](https://github.com/SenteLabsAI/OpenExecutive/issues/305)) ([cd8b3ec](https://github.com/SenteLabsAI/OpenExecutive/commit/cd8b3ec7209c95bcafbf83693c0e3154a4d892e4))
+
 ## [0.4.4](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.3...v0.4.4) (2026-09-30)
 
 
