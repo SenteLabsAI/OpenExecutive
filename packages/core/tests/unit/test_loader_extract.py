@@ -97,6 +97,24 @@ def test_blank_rows_count_toward_the_xlsx_row_cap(
     assert "past the cap" not in text
 
 
+def test_empty_sheets_count_toward_the_xlsx_row_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openpyxl import Workbook
+
+    from openexecutive.knowledge import loader
+
+    monkeypatch.setattr(loader, "_XLSX_MAX_ROWS", 5)
+    wb = Workbook()
+    for i in range(10):
+        wb.create_sheet(f"Empty{i}")
+    wb.create_sheet("Last")["A1"] = "past the cap"
+    path = tmp_path / "sheets.xlsx"
+    wb.save(str(path))
+
+    assert "past the cap" not in extract_text_from_xlsx(path)
+
+
 def test_a_non_utf8_csv_is_read_not_raised(tmp_path: Path) -> None:
     path = tmp_path / "excel-export.csv"
     path.write_bytes("client,fee\nCafé Noir,1200\n".encode("cp1252"))

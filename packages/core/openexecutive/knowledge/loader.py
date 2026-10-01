@@ -121,8 +121,8 @@ def extract_text_from_xlsx(path: Path, max_chars: int = 200_000) -> str:
     formulae); legacy binary ``.xls`` is not supported by openpyxl.
 
     ``read_only`` streams rows and ``max_chars`` bounds the accumulated text.
-    At most ``_XLSX_MAX_ROWS`` rows, blank or not, are read across the
-    workbook, and ``_XLSX_MAX_COLS`` columns of each, so a sheet that only
+    At most ``_XLSX_MAX_ROWS`` rows, blank or not (each sheet counts as
+    one more), are read across the workbook, and ``_XLSX_MAX_COLS`` columns of each, so a sheet that only
     claims a huge size can't keep the parser busy. Shared strings and styles
     are still read whole by openpyxl before any row."""
     from openpyxl import load_workbook
@@ -133,6 +133,11 @@ def extract_text_from_xlsx(path: Path, max_chars: int = 200_000) -> str:
         total = 0
         rows_left = _XLSX_MAX_ROWS
         for ws in wb.worksheets:
+            # Each sheet costs a row too, so thousands of empty sheets can't
+            # get past the budget.
+            rows_left -= 1
+            if rows_left < 0:
+                return "\n".join(parts)
             heading_written = False
             for row in ws.iter_rows(max_col=_XLSX_MAX_COLS, values_only=True):
                 rows_left -= 1
