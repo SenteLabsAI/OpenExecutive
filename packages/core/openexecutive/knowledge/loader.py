@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openexecutive.knowledge.isolated import run_isolated
 from openexecutive.knowledge.store import ChromaDBStore
 
 if TYPE_CHECKING:
@@ -61,6 +62,12 @@ ATTACHMENT_DOMAIN = "attachment"
 # upload that merely happens to be named with the prefix. UPLOAD_DOMAINS
 # never accepts this value, so nothing uploaded through the API carries it.
 _LEGACY_ATTACHMENT_DOMAIN = "company_docs"
+
+# Formats whose parsers build the whole document in memory. They are parsed
+# in a child process (``knowledge.isolated``) so that memory goes back to the
+# OS afterwards, and killed past this many seconds.
+_ISOLATED_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm"})
+_PARSE_TIMEOUT_S = 300.0
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> list[str]:
@@ -138,7 +145,22 @@ def extract_text_from_xlsx(path: Path, max_chars: int = 200_000) -> str:
         wb.close()
 
 
-def extract_text_from_file(path: Path) -> str:
+def extract_text_from_file(path: Path, *, timeout: float = _PARSE_TIMEOUT_S) -> str:
+    """The text of a document on disk; ``""`` for an unsupported type.
+
+    PDF, Word and Excel files are parsed in a child process. A parser error
+    raises ``isolated.IsolatedError`` (a ``RuntimeError``) naming the
+    original exception, and a parse that dies or runs past ``timeout``
+    seconds raises ``isolated.WorkerStopped``. A caller that stops waiting
+    sooner should pass its own limit, so the child is killed then rather
+    than left running. Blocking — run it in a thread from async code."""
+    if path.suffix.lower() in _ISOLATED_SUFFIXES:
+        return run_isolated(_parse_file, path, timeout=timeout)
+    return _parse_file(path)
+
+
+def _parse_file(path: Path) -> str:
+    """``extract_text_from_file`` in this process."""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         return extract_text_from_pdf(path)
@@ -155,7 +177,8 @@ async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadRes
     """Read a document for the Executive, converting a scanned PDF.
 
     A PDF goes through ``knowledge.pdf_reader`` (text layer, else Claude or
-    local OCR); anything else through ``extract_text_from_file`` in a thread.
+    local OCR), which reads it from ``path`` in a child process; anything
+    else through ``extract_text_from_file`` in a thread.
     The result's ``note`` says why a file came back empty or partial.
     ``inbound`` is ``read_pdf_text``'s: a file that arrived on its own
     through a channel, metered by the inbound page budget.
@@ -165,20 +188,27 @@ async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadRes
     from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
 
     if path.suffix.lower() == ".pdf":
-        data = await asyncio.to_thread(path.read_bytes)
-        return await read_pdf_text(data, filename=path.name, inbound=inbound)
+        return await read_pdf_text(path, filename=path.name, inbound=inbound)
     text = await asyncio.to_thread(extract_text_from_file, path)
     return PdfReadResult(text, "text_layer" if text.strip() else "none", 0)
 
 
-async def extract_text_from_file_async(path: Path) -> str:
+async def extract_text_from_file_async(path: Path, *, busy_raises: bool = False) -> str:
     """``extract_text_from_file``, except a PDF with no text layer (a scan)
     is converted by ``knowledge.pdf_reader`` instead of coming back empty.
 
     An unreadable PDF returns ``""`` rather than raising, as an image-only
-    one did from the sync extractor.
+    one did from the sync extractor. So does one that was never tried
+    because every parser was busy, unless ``busy_raises``: then it raises
+    ``isolated.ParserBusy``, for a caller that can ask the person to retry
+    rather than keep an empty result.
     """
-    return (await read_document_text(path)).text
+    result = await read_document_text(path)
+    if busy_raises and result.busy:
+        from openexecutive.knowledge.isolated import ParserBusy
+
+        raise ParserBusy(f"{path.name}: {result.note}")
+    return result.text
 
 
 def _make_chunk_id(source: str, chunk_index: int) -> str:
@@ -219,6 +249,7 @@ async def ingest_file(
     *,
     source_name: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    busy_raises: bool = False,
 ) -> int:
     """Index a file on disk into a knowledge collection.
 
@@ -240,8 +271,11 @@ async def ingest_file(
     ``ingest_text_sync``. It is how a collection gets a ``type`` tag it can
     later be deleted by: Chroma's ``where`` matches exact values only, so a
     tag is the difference between a one-call delete and a full metadata scan.
+
+    ``busy_raises`` is ``extract_text_from_file_async``'s: an upload sets it
+    so a PDF met by busy parsers is a retry, not an empty "indexed" result.
     """
-    text = await extract_text_from_file_async(path)
+    text = await extract_text_from_file_async(path, busy_raises=busy_raises)
     if not text.strip():
         return 0
 

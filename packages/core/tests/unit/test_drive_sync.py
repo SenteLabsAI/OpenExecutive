@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -479,12 +480,48 @@ async def test_an_archive_bomb_is_recorded_unreadable_not_parsed(
     drive = _drive()
     drive.content[DOCX] = _docx_bytes("x" * 5000)
     parsed: list[Path] = []
-    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p: parsed.append(p) or "")
+    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p, **_: parsed.append(p) or "")
     store = FakeStore()
     stats = await _sync(drive, store)
     assert DOCX not in store.file_ids() and stats["failed"] == 0
     assert _state(tmp_path)["files"][DOCX]["filename"] == ""
     assert not [p for p in parsed if p.suffix == ".docx"]
+
+
+@pytest.mark.asyncio
+async def test_the_parser_child_gets_the_syncs_own_time_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parse runs in a child process; given the sync's limit, the child
+    is killed when the sync gives up instead of running to the loader's."""
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        drive_sync, "extract_text_from_file", lambda p, **kw: seen.append(kw) or ""
+    )
+    await _sync(_drive(), FakeStore())
+    assert seen
+    assert all(kw == {"timeout": drive_sync._EXTRACT_TIMEOUT_S} for kw in seen)
+
+
+@pytest.mark.asyncio
+async def test_busy_parsers_are_a_retry_not_an_unreadable_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding: a file never tried because every parser was busy must
+    not be recorded unreadable (which drops its chunks until it changes)."""
+    from openexecutive.knowledge.isolated import ParserBusy
+
+    def busy(path: Path, **_: Any) -> str:
+        raise ParserBusy("_parse_file found no free parser slot")
+
+    monkeypatch.setattr(drive_sync, "extract_text_from_file", busy)
+    drive, store = _drive(), FakeStore()
+
+    stats = await _sync(drive, store)
+
+    assert stats["failed"] >= 1
+    assert DOCX not in store.file_ids()
+    assert DOCX not in _state(tmp_path)["files"], "a busy parser must not mark the file read"
 
 
 @pytest.mark.asyncio
@@ -495,7 +532,7 @@ async def test_a_hung_extraction_is_given_up_and_not_retried(
 
     release = threading.Event()
     monkeypatch.setattr(drive_sync, "_EXTRACT_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p: release.wait(5) and "")
+    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p, **_: release.wait(5) and "")
     drive, store = _drive(), FakeStore()
     try:
         await _sync(drive, store)
@@ -539,3 +576,93 @@ def test_look_alike_separators_are_stripped_from_names() -> None:
 
     label = _drive_label({"name": "a ∙ file id X ［y］", "drive_file_id": DOC})
     assert label.count("·") == 2 and "［" not in label and "(" not in label
+
+
+@pytest.mark.asyncio
+async def test_each_file_records_when_it_was_synced_and_lists_for_the_knowledge_page(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    await _sync(_drive(), FakeStore(), now=now)
+    state = _state(tmp_path)
+    assert state["files"][DOC]["synced_at"] == now.isoformat()
+
+    listing = drive_sync.list_synced_files()
+    assert listing["last_run"] == now.isoformat() and listing["last_error"] is None
+    by_id = {f["id"]: f for f in listing["files"]}
+    assert by_id[DOC]["name"] == "Q3 Finance Plan"
+    assert by_id[DOC]["url"] == f"https://docs.google.com/d/{DOC}"
+    assert by_id[DOC]["synced_at"] == now.isoformat() and by_id[DOC]["indexed"]
+
+    doc = drive_sync.read_synced_file(DOC)
+    assert doc is not None and "Revenue grows 12%" in doc["content"]
+    assert "drive_file_id" not in doc["content"]
+
+
+def test_listing_falls_back_to_last_run_and_drops_unsafe_links(tmp_path: Path) -> None:
+    (tmp_path / "drive_sync_state.json").write_text(
+        json.dumps(
+            {
+                "last_run": "2026-09-01T00:00:00+00:00",
+                "files": {
+                    DOC: {"name": "Old", "filename": "", "url": "javascript:alert(1)"},
+                    "../etc": {"name": "bad"},
+                },
+            }
+        )
+    )
+    files = drive_sync.list_synced_files()["files"]
+    assert [f["id"] for f in files] == [DOC]
+    assert files[0]["synced_at"] == "2026-09-01T00:00:00+00:00"
+    assert files[0]["url"] is None and files[0]["indexed"] is False
+    # No readable text on record, and ids that are not on record, read as nothing.
+    assert drive_sync.read_synced_file(DOC) is None
+    assert drive_sync.read_synced_file("../etc") is None
+
+
+def test_a_state_filename_outside_the_drive_dir_is_never_read(tmp_path: Path) -> None:
+    (tmp_path / "secret.md").write_text("nope")
+    (tmp_path / "drive_sync_state.json").write_text(
+        json.dumps({"files": {DOC: {"name": "x", "filename": "../secret.md"}}})
+    )
+    assert drive_sync.read_synced_file(DOC) is None
+
+
+@pytest.mark.asyncio
+async def test_a_second_tick_while_one_runs_is_skipped_as_busy() -> None:
+    async with drive_sync._RUN_LOCK:
+        assert drive_sync.is_syncing()
+        assert await _sync(_drive(), FakeStore()) == {"busy": 1}
+    assert not drive_sync.is_syncing()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sign_in_is_recorded_and_cleared_by_the_next_good_tick(
+    tmp_path: Path,
+) -> None:
+    # No client passed, and the service-account file does not exist.
+    await drive_sync.run_drive_sync(store=FakeStore())  # type: ignore[arg-type]
+    assert "sign in" in (drive_sync.list_synced_files()["last_error"] or "")
+    await _sync(_drive(), FakeStore())
+    assert drive_sync.list_synced_files()["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_fails_to_index_is_reported_and_cleared_once_it_syncs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_ingest = drive_sync._ingest_file_sync
+
+    def broken_ingest(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("chroma down")
+
+    monkeypatch.setattr(drive_sync, "_ingest_file_sync", broken_ingest)
+    stats = await _sync(_drive(), FakeStore())
+    assert stats["failed"] >= 1
+    error = drive_sync.list_synced_files()["last_error"] or ""
+    assert f"{stats['failed']} file" in error and "could not be synced" in error
+
+    monkeypatch.setattr(drive_sync, "_ingest_file_sync", real_ingest)
+    stats = await _sync(_drive(), FakeStore())
+    assert stats["failed"] == 0
+    assert drive_sync.list_synced_files()["last_error"] is None

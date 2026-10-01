@@ -31,6 +31,7 @@ def build_system_blocks(
     include_contacts: bool = False,
     delegation: bool = False,
     mcp_servers: Sequence[str] = (),
+    persona_instructions: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build system prompt blocks with correct cache_control ordering.
 
@@ -54,6 +55,11 @@ def build_system_blocks(
     turn's ``effective_principal_role``; None reads the workspace's). It is
     set once per install, so it is as stable as the rest of block 1. Team
     mode ignores it.
+
+    persona_instructions are the admin's additional instructions for the
+    Executive, appended after the (built-in or overridden) persona and voice.
+    Admin-set like persona_override, so block 0 misses once on save and stays
+    warm; blank or None leaves block 0 byte-identical.
 
     voice_persona_body is substituted into the {VOICE_PERSONA} placeholder in
     the assembled base prompt. If the placeholder is absent (user removed it),
@@ -128,6 +134,10 @@ def build_system_blocks(
             base_persona = base_persona + "\n\n" + voice_persona_body
     else:
         base_persona = base_persona.replace(_VOICE_PERSONA_PLACEHOLDER, "")
+
+    from openexecutive.agents.overrides import append_instructions
+
+    base_persona = append_instructions(base_persona, persona_instructions)
 
     persona = (
         base_persona

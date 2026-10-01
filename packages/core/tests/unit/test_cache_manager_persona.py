@@ -165,3 +165,23 @@ def test_persona_follow_up_loop_is_bounded() -> None:
     """
     assert "A correction is not a deflection." in EXECUTIVE_PERSONA_PROMPT
     assert 'An explicit "drop it" ends it.' in EXECUTIVE_PERSONA_PROMPT
+
+
+def test_persona_instructions_appended_inside_block_zero() -> None:
+    plain = build_system_blocks()[0]["text"]
+    with_instr = build_system_blocks(persona_instructions="Sign off as Ada.")[0]["text"]
+    assert "<additional_instructions>\nSign off as Ada.\n</additional_instructions>" in with_instr
+    # The identity addendum still comes after the admin's text, so the
+    # instructions can't push it out of the persona.
+    assert with_instr.index("Sign off as Ada.") < with_instr.index("## Your Identity")
+    assert plain != with_instr
+
+
+def test_blank_persona_instructions_keep_block_zero_byte_identical() -> None:
+    plain = build_system_blocks()[0]["text"]
+    assert build_system_blocks(persona_instructions=None)[0]["text"] == plain
+    assert build_system_blocks(persona_instructions="  ")[0]["text"] == plain
+    # Stable across calls with the same instructions, so the cache stays warm.
+    a = build_system_blocks(persona_instructions="X")[0]["text"]
+    b = build_system_blocks(persona_instructions="X")[0]["text"]
+    assert a == b

@@ -451,6 +451,43 @@ providers:
     openexecutive.agents.fixture_generator, default model settings.default_model).
     They are registered in api/routes/agents.py::_agent_registry() and resolve
     their model via BaseAgent.effective_model() at call time.
+  additional_instructions: |
+    Every Council agent (the Executive included) has an optional
+    ``instructions`` override stored in the additive
+    ``agent_overrides.instructions`` column (idempotent _add_column_if_missing
+    migration, versioned in agent_override_history, restored by rollback).
+    agents.overrides.append_instructions appends it after the agent's prompt
+    in an <additional_instructions> block; blank or None returns the prompt
+    unchanged so an agent without instructions keeps its cache prefix.
+    BaseAgent.base_system_prompt() is the built-in prompt or its full
+    replacement (the ``prompt`` override) and is what AgentDetail.prompt
+    shows; effective_system_prompt() is base + instructions and is what every
+    call sends. The Executive gets the same text via
+    build_system_blocks(persona_instructions=...), after the voice persona and
+    before the identity addendum, inside block 0. It is admin-set static
+    config, so block 0 re-warms once on save. Unlike a replaced prompt,
+    instructions keep the agent on the built-in prompt, so prompt upgrades
+    still reach it. PATCH /agents/{id} and /test accept ``instructions``
+    (max 4,000 chars; blank clears it).
+  quality_presets: |
+    The Council's Quality choice (agents/presets.py) sets every agent's model
+    and deep-reasoning flag at once. Fast: a small model (claude-haiku-4-5)
+    for every agent, deep reasoning off. Balanced: each agent's built-in
+    defaults. Thorough: the largest allowed model (claude-opus-5-5, then
+    claude-opus-5) for the Executive and the domain specialists, deep
+    reasoning on where model_supports_deep_reasoning allows; triage and the
+    Council-only helpers keep their defaults. Presets change quality only and
+    never cap spend. Models resolve at request time against
+    providers.allowed_models_for; a preset none of whose models the install
+    allows is reported unavailable (POST returns 409) instead of picking
+    something else. There is no preset table: POST /agents/presets/{id}
+    writes ordinary agent_overrides rows (model and use_deep_reasoning only,
+    leaving prompt, role, voice and instructions alone), one history row per
+    agent that changes, clearing a field whose target equals the default and
+    deleting a row left empty. GET /agents/presets works out the active
+    preset from the overrides: ``active`` when every agent matches,
+    otherwise null ("Custom") with ``base`` (the preset most agents match,
+    Balanced on a tie) and ``custom_agents`` (the agents that differ).
   per_specialist_research_focus: |
     Each consult-routable specialist (cso, cfo, cmo, coo, chro, cpo, gc) has a
     Council-editable ``research_focus`` override — the per-domain scope tail
@@ -651,7 +688,7 @@ routing:
     side-effecting tool so a chip surfaces in the live stream
     ("Approved proposal #N" / "Dismissed proposal #N"). The button-driven
     Approve / Dismiss path on the briefing page still acks via the HTTP
-    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — additive only, so an address dropped from the roster stays scheduleable for the life of the in-memory session. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave origin_channel empty while legitimately recording linkage (the email poller, which records it too, tags its turns origin_channel="email"). scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set.
+    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — additive only, so an address dropped from the roster stays scheduleable for the life of the in-memory session. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave origin_channel empty while legitimately recording linkage (the email poller, which records it too, tags its turns origin_channel="email"). scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set. FIND_ALERTS widens the set in one place only: `find_alerts(query, limit)` (schedule_tools) searches headline and body of alerts of any status in SQL (`alerts.store.search_alerts`: every word must match, LIKE-escaped, newest first) so the principal can clear an item that has left the live board — observed: asked to retire three duplicates they had already opened, the Executive named the right ids and was refused because the rows were `read`. It answers at all only when `render_and_trust` set Session.principal_board_shown this turn (the verified principal, and on a channel only in their DM — attach_briefing_context's gate) and the session is neither unattended nor email-started. Two gates that looked sufficient were not: "widen if trusted_alert_ids is not None" (every Session starts with an EMPTY set, which is how Google Chat, other people's DMs, email and unattended turns refuse every ack, so any of them could find-then-ack anything), and `is_principal_on_verified_surface` alone (it also passes the principal's turn in a shared Slack/Discord thread, where others read the reply — the board is company-wide — and can write into the thread the model reasons over). It trusts only ids its own query returned, only open rows (`unread`, `read`; closed rows come back can_ack false), never `roster_request` cards, at most 25 rows per call and 25 ids per TURN across calls (Session.found_alert_ids, reset by render_and_trust and by the chat route with the trusted set), and refuses a query with no word of 3+ characters — a per-call cap alone bounds nothing when a steered model can call once per letter. What it widens is the attack surface already admitted above: the query is the model's choice and the model reads attacker-controlled alert bodies, so an argued-into search can put up to 25 open, off-board alerts in reach per turn; the tool description forbids searching for text taken from an alert or inbound message, which is a prompt rule, not a control.
     route — the tool exists for the chat-driven path that the model
     self-detects from natural-language approval. The same feedback loop as
     the HTTP ack applies: a `dismissed` on a watch-sourced alert lowers
@@ -1193,6 +1230,25 @@ routing:
     carrying the matched term.
 
 knowledge:
+  embedding_function: |
+    Every ChromaDBStore collection is opened with one shared embedding
+    function (knowledge.store._embedding_function): all-MiniLM-L6-v2 ONNX,
+    the same model and vectors as Chroma's DefaultEmbeddingFunction.
+
+    Why not Chroma's default: it builds a new ONNXMiniLM_L6_V2 per call, so
+    every query reloads the model (~240 ms), and its session keeps ONNX
+    Runtime's CPU memory arena, which retains the peak of a 32-text batch
+    padded to 256 tokens. A 300-chunk upload peaked near 760 MB. The shared
+    session is built once, runs with enable_cpu_mem_arena=False and embeds 4
+    texts per run: ~300 MB peak, ~30 ms per query, ~90 MB more at idle
+    because the model stays loaded.
+
+    Compatibility invariants: collections persist the function they were
+    created with ({"name": "default", "config": {}} on every existing
+    install), and Chroma raises on a differently named function, so the
+    shared one answers name() == "default" with an empty config. It must NOT
+    be a DefaultEmbeddingFunction instance: Collection._embed ignores those
+    and embeds with a fresh default rebuilt from the collection config.
   distance_gates: |
     Two gates. KNOWLEDGE_DISTANCE_THRESHOLD (default 0.55) is the shared one,
     applied to COMPANY, NOTION_WIKI and RECENT_RESEARCH.
@@ -1375,6 +1431,24 @@ knowledge:
         (DELETE /documents/{filename}) individual docs. Synced Notion pages
         do NOT land here — see NOTION_WIKI.
 
+        The knowledge page shows ONE Company documents list: these uploads
+        plus synced Drive files and Notion pages (GET /documents/drive,
+        GET /documents/notion, each read from that sync's state file, with a
+        text view at /documents/{drive|notion}/{id} whose path comes from the
+        state record, never the caller). Synced rows are read-only — removing
+        the file from the folder / integration is what drops it. Each
+        connected source shows last_run, last_error and a Sync now button
+        (POST /documents/sources/{id}/sync: 202, or 409 not connected /
+        already running, 429 within 60 s of the last run). The route keeps
+        its started task per source (`_SYNC_TASKS`) and re-checks it right
+        before create_task, so two simultaneous clicks start one tick.
+        last_error is also set by a tick that succeeded but had files/pages
+        fail (stats["failed"] > 0, "N files could not be synced"); the next
+        clean tick clears it. Both syncs hold a
+        per-process run lock (`_RUN_LOCK`), so a manual tick and the heartbeat
+        never overlap; the loser returns {"busy": 1}. Uploads from the page
+        no longer pick a domain and go in as `general`.
+
         IDENTITY IS THE FILENAME. ingest_file takes an explicit `source_name`
         that becomes the filename/source metadata AND the chunk-id namespace
         (_make_chunk_id is an MD5 of it). The upload endpoint stages the body
@@ -1537,7 +1611,7 @@ knowledge:
     nothing back.
   general_catch_all: |
     `general` is the domain an upload gets when nobody classified it: the
-    default on POST /documents, the default option in the UI's picker, and
+    default on POST /documents (the knowledge page no longer offers a picker), and
     what reconcile_company_docs assigns to a recovered document. It maps to no
     specialist in DOMAIN_ALIASES, so retriever._with_general widens each
     specialist's COMPANY filter to include it — otherwise an unclassified
@@ -1560,6 +1634,104 @@ knowledge:
     attachments in front of the Executive under "From your company documents",
     and it is why isolation belongs in the collection, never in a domain
     value.
+  parse_isolation: |
+    Document parsing runs in a short-lived child process
+    (knowledge.isolated.run_isolated -> `python -m
+    openexecutive.knowledge.isolated`), not in the API process: pdf_reader's
+    text-layer pass (_text_layer) and local OCR (_ocr_pdf), and the PDF /
+    .docx / .doc / .xlsx / .xlsm branches of loader.extract_text_from_file.
+    Why: pypdf's object graph, pdfium bitmaps and the OCR model are hundreds
+    of MB of small allocations, and CPython keeps the arenas, so an
+    in-process parse left its peak in uvicorn for good. Measured on a 34 MB,
+    131-page text-layer PDF through POST /documents: 272 -> 440 MB peak, 378
+    MB after (before); 274 -> 324 MB peak, 318 MB after, all of the rest
+    from embedding (after). A 30-page scan through OCR: 787 MB peak, 446
+    after (before); 297 / 290 (after) — the OCR child itself peaks ~600 MB
+    for the length of the OCR, then exits.
+    Protocol: (module, qualname, args) pickled to the child's stdin (the
+    child trusts its parent); the answer is JSON on stdout, so the API never
+    unpickles anything a parser of a hostile file could have shaped. The
+    child's environment is reduced to PATH, HOME, PYTHONPATH/PYTHONHOME,
+    VIRTUAL_ENV, LD_LIBRARY_PATH, locale and temp-dir variables: no API
+    keys. That is hygiene, not a sandbox: the child runs as the same user
+    and could read /proc/<ppid>/environ, .env or credential files.
+    Bounded output (security review): the child's stdout and stderr go to
+    temp files, never into the API's memory. pypdf logs text taken from the
+    file (e.g. a font's /Encoding name, once per font per page), so a 9 KB
+    crafted PDF logged ~6 MB and a 2000-page one grew a captured stderr by
+    ~85 MB/s until OOM. The child therefore logs nothing
+    (logging.disable, warnings ignored), fd 1 carries only the answer
+    (library output is dup2'd to stderr), only the last 2000 chars of stderr
+    are read back on a failure, and the answer (UTF-8 JSON,
+    ensure_ascii=False, so non-ASCII text is not inflated 6x) is capped at
+    _MAX_ANSWER_BYTES (32 MB): the child swaps a larger one for an
+    AnswerTooLarge error and the parent refuses a larger file unread, both
+    as WorkerStopped. read_pdf_text's note for WorkerStopped: "the PDF could
+    not be read: it was too large or took too long". The answer is encoded
+    with surrogatepass both ways: pypdf decodes some ToUnicode maps with
+    surrogatepass, and strict UTF-8 would lose a whole file over one lone
+    surrogate. RLIMIT_FSIZE (2x the answer cap) bounds what native code can
+    write to the stderr file.
+    A Path source is read more than once (hash, parse, maybe model), so a
+    result is cached only if the file's sha256 is unchanged after the read:
+    an upload rewriting the same name mid-read must not store its text
+    under the old file's hash.
+    Contract kept: read_pdf_text never raises (an exception the caller names
+    in `reraise` — PdfTooLarge, OcrUnavailable — is rebuilt as itself; a
+    child that dies or passes its timeout raises WorkerStopped, which
+    read_pdf_text turns into method "none" with a note); a Word/Excel parse
+    error still raises, as IsolatedError naming the original type.
+    Timeouts: 300 s for the text layer and file extractors, OCR's 240 s
+    budget + 120 s. extract_text_from_file takes a `timeout`: drive_sync
+    passes its own _EXTRACT_TIMEOUT_S (120 s), so the child is killed when
+    the sync's wait_for gives up rather than running on. The page ceiling
+    travels as an argument because the child never sees this process's
+    module state.
+    Concurrency (review): at most _MAX_CHILDREN (2) parser children run at
+    once. A caller waits at most _MAX_SLOT_WAIT_S (30 s) for a slot, and the
+    wait counts against its own timeout, so the call never outlasts the
+    limit its caller set (Drive sync's 120 s still kills the child when its
+    wait_for gives up). No slot in time -> ParserBusy (a WorkerStopped):
+    "never tried", not "unreadable". Without the short wait, two slow files
+    held every other parse, and its executor thread, for 300 s. OCR passes
+    its own two-slot gate (`slots=_ocr_slots`), so a long OCR never holds a
+    slot a quick text-layer parse needs, and waits longer for it
+    (`max_wait=_OCR_MAX_SLOT_WAIT_S`, one OCR budget, 240 s; its timeout
+    covers wait + run).
+    ParserBusy handling: read_pdf_text returns PdfReadResult(busy=True),
+    method "none" (or the thin text layer) with a "server was busy" note,
+    never cached. A busy OCR attempt refunds its own inbound page
+    reservation (by identity, not any of the same size), but only when no
+    request could reach the model: a failed transcription can still have
+    billed its other slices, and refunding those would let a sender run up
+    model spend past the hourly budget.
+    extract_text_from_file_async / ingest_file take `busy_raises`: POST
+    /documents, the preview and intake uploads set it, so a busy PDF raises
+    ParserBusy like a busy Word/Excel parse and they answer 503 with
+    Retry-After, storing and indexing nothing (a re-upload keeps the old
+    chunks and file). Other callers (fixture loader, client slots, boot
+    reconcile) keep the empty result. drive_sync counts ParserBusy as failed
+    for this tick and fetches the file again on the next, instead of
+    recording it unreadable (which would drop its chunks until it changed).
+    Spawn failure (review): only FileNotFoundError / PermissionError (no
+    usable interpreter) falls back to parsing in-process, logged once, and
+    that parse runs outside the slot gate (it cannot be timed out, so a hung
+    one must not hold a slot). Any other OSError (ENOMEM, EAGAIN) is
+    WorkerStopped: memory pressure is exactly when an in-process parse would
+    hurt most.
+    POST /documents, GET /documents/{filename} and intake uploads turn any
+    other IsolatedError from a Word/Excel parse into a 422 ("Could not read
+    <name>: ..."), not a 500. Only IsolatedError.kind (the exception's type)
+    and the repr of the filename are logged: the parser's message can quote
+    the file, and a name could carry CR/LF. Tests that monkeypatch parser internals set isolated.enabled =
+    False; tests/unit/test_isolated.py runs the real child.
+    read_document_text passes read_pdf_text the Path, so the API process
+    hashes the file in 1 MB pieces and only loads it whole when pages go to
+    the model (step 2 of pdf_reading).
+    POST /documents streams the upload to its staging file 1 MB at a time
+    and returns 413 once it passes MAX_UPLOAD_BYTES (50 MB), instead of
+    reading the whole body into memory; the stored copy is copied from the
+    staging file.
   pdf_reading: |
     Scanned / image-only PDFs (no text layer) are read, not returned empty.
     knowledge.pdf_reader.read_pdf_text tries, in order, and never raises:
@@ -1612,7 +1784,7 @@ knowledge:
     entry points; ingest_file (uploads, reconcile_company_docs), the
     /documents/{filename} preview, intake uploads, integrations.attachments,
     the email poller, oe__read_file and read_document all use them. The sync
-    extract_text_from_file is unchanged for its other callers.
+    extract_text_from_file serves its other callers (see parse_isolation).
 
     Where files reach the Executive:
     - web chat / Discord / Telegram / Slack / Google Chat —
@@ -6543,6 +6715,8 @@ integrations:
     servers as tools available to the Executive (Gmail, Calendar, Drive, …).
     The MCP is configured via company/mcp_servers.json (workspace-mcp at
     --tool-tier complete to expose the full Google Workspace tool surface).
+    docker/workspace-mcp-launch.sh also reads WORKSPACE_MCP_TOOLS (default
+    all, or comma-separated service names passed as --tools).
 
     Telling the model what is connected (F004, F009): configured_server_names()
     used to feed only the setup checks and the boot log, while the identity

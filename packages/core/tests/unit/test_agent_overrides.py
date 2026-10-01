@@ -272,3 +272,107 @@ def test_analyze_explicit_override_beats_db(tmp_db: Path, monkeypatch: pytest.Mo
     kw = create_mock.await_args.kwargs
     assert kw["model"] == "claude-sonnet-4-6"
     assert kw["system"][0]["text"] == "EXPLICIT_PROMPT"
+
+
+# ---------------------------------------------------------------------------
+# Additional instructions
+# ---------------------------------------------------------------------------
+
+
+def test_append_instructions_blank_leaves_prompt_unchanged() -> None:
+    assert ov_mod.append_instructions("P", None) == "P"
+    assert ov_mod.append_instructions("P", "") == "P"
+    assert ov_mod.append_instructions("P", "  \n ") == "P"
+
+
+def test_append_instructions_wraps_text_after_prompt() -> None:
+    out = ov_mod.append_instructions("P", "  Use EUR.\n")
+    assert out == "P\n\n<additional_instructions>\nUse EUR.\n</additional_instructions>"
+
+
+def test_instructions_persist_history_and_rollback(tmp_db: Path) -> None:
+    ov_mod.set_override(
+        "cso", instructions="first", instructions_set=True, db_path=tmp_db
+    )
+    ov_mod.set_override(
+        "cso", instructions="second", instructions_set=True, db_path=tmp_db
+    )
+    current = ov_mod.get_override("cso", db_path=tmp_db)
+    assert current is not None and current.instructions == "second"
+    # A partial update leaves instructions alone.
+    ov_mod.set_override("cso", role="R", role_set=True, db_path=tmp_db)
+    current = ov_mod.get_override("cso", db_path=tmp_db)
+    assert current is not None and current.instructions == "second"
+
+    history = ov_mod.list_history("cso", db_path=tmp_db)
+    first = next(h for h in history if h.instructions == "first")
+    restored = ov_mod.rollback_to(first.id, db_path=tmp_db)
+    assert restored is not None and restored.instructions == "first"
+
+
+def test_instructions_column_added_to_existing_db(tmp_db: Path) -> None:
+    from openexecutive.memory.episodic import _get_conn
+
+    with _get_conn(tmp_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE agent_overrides (
+                agent_id TEXT PRIMARY KEY, prompt TEXT, model TEXT,
+                use_deep_reasoning INTEGER, role TEXT, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE agent_override_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL,
+                prompt TEXT, model TEXT, use_deep_reasoning INTEGER, role TEXT,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO agent_overrides (agent_id, prompt, updated_at)
+                VALUES ('cfo', 'OLD', '2026-01-01');
+            """
+        )
+    result = ov_mod.get_override("cfo", db_path=tmp_db)
+    assert result is not None
+    assert result.prompt == "OLD"
+    assert result.instructions is None
+
+
+def test_analyze_appends_instructions_to_builtin_prompt(
+    tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    create_mock = _patch_settings_and_anthropic(monkeypatch)
+    ov_mod.set_override(
+        "dummy_override_test",
+        instructions="Use EUR.",
+        instructions_set=True,
+        db_path=tmp_db,
+    )
+    import asyncio
+
+    asyncio.run(_Dummy().analyze(query="hi"))
+    text = create_mock.await_args.kwargs["system"][0]["text"]
+    assert text.startswith("DEFAULT_PROMPT\n\n<additional_instructions>")
+    assert "Use EUR." in text
+    # The editor's view of the prompt never includes the instructions.
+    assert _Dummy().base_system_prompt() == "DEFAULT_PROMPT"
+
+
+def test_analyze_appends_instructions_to_replaced_prompt(
+    tmp_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    create_mock = _patch_settings_and_anthropic(monkeypatch)
+    ov_mod.set_override(
+        "dummy_override_test",
+        prompt="OVERRIDE_PROMPT",
+        instructions="Use EUR.",
+        prompt_set=True,
+        instructions_set=True,
+        db_path=tmp_db,
+    )
+    import asyncio
+
+    asyncio.run(_Dummy().analyze(query="hi"))
+    text = create_mock.await_args.kwargs["system"][0]["text"]
+    assert text == ov_mod.append_instructions("OVERRIDE_PROMPT", "Use EUR.")

@@ -57,6 +57,22 @@ def test_gateway_freezes_dependency_resolution_with_a_cutoff() -> None:
     assert args[-3:] == ("--from", mcp_gateway._EXTENSIBLE_MCP_GIT, mcp_gateway._EXTENSIBLE_MCP_CMD)
 
 
+# fastembed 0.8.1's PyPI upload time. Any earlier cutoff resolves 0.8.0, which
+# pads to a fixed 128 tokens but truncates at 256, so embedding the Google
+# Workspace tool descriptions raises and the gateway never starts.
+_FASTEMBED_0_8_1_PUBLISHED = "2026-09-22T20:01:22Z"
+
+
+def test_cutoff_admits_the_fastembed_padding_fix() -> None:
+    args = mcp_gateway._EXTENSIBLE_MCP_LAUNCH_ARGS
+    cutoff = args[args.index("--exclude-newer") + 1]
+    # Same fixed-width UTC format (checked above), so string order is time order.
+    assert cutoff > _FASTEMBED_0_8_1_PUBLISHED, (
+        f"cutoff {cutoff} resolves fastembed 0.8.0, whose batch padding breaks the gateway's "
+        "tool index; keep it after fastembed 0.8.1's release"
+    )
+
+
 def test_dockerfile_prewarm_matches_the_gateway_launch() -> None:
     prewarms = _dockerfile_prewarm_args()
     assert prewarms, "docker/Dockerfile no longer pre-warms extensible-mcp with uvx"

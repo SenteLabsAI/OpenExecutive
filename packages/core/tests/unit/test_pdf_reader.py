@@ -3,6 +3,10 @@
 The model is stubbed (no network): `_model_provider` is patched to a fake
 with `messages_create`. OCR runs for real in one test (skipped when RapidOCR
 is not installed) and is stubbed elsewhere so the rest stay fast.
+
+The parsers run in-process here (``isolated.enabled = False``) so the
+monkeypatches below reach them; ``test_isolated.py`` covers the same reads
+through the real child process.
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from typing import Any
 import pytest
 from pypdf import PdfReader, PdfWriter
 
-from openexecutive.knowledge import pdf_reader
+from openexecutive.knowledge import isolated, pdf_reader
 from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
 
 
@@ -22,6 +26,11 @@ def _provider_reading_on(monkeypatch):
     """Provider reading is opt-in (off by default); most tests here exercise
     that path, so they turn it on. The default is pinned by its own test."""
     monkeypatch.setenv("PDF_PROVIDER_READING", "true")
+
+
+@pytest.fixture(autouse=True)
+def _parse_in_process(monkeypatch):
+    monkeypatch.setattr(isolated, "enabled", False)
 
 
 @pytest.fixture(autouse=True)
@@ -329,6 +338,35 @@ async def test_the_same_pdf_is_converted_once(monkeypatch):
     assert len(provider.calls) == 1
 
 
+async def test_a_file_read_by_path_is_cached(tmp_path):
+    path = tmp_path / "plan.pdf"
+    path.write_bytes(_text_pdf("Hire two engineers in the third quarter"))
+
+    await read_pdf_text(path, filename="plan.pdf")
+
+    assert len(pdf_reader._cache) == 1
+
+
+async def test_a_file_replaced_while_it_is_read_is_not_cached(tmp_path, monkeypatch):
+    """The cache key is the hash of the file as first read; if the file is
+    rewritten before the parse (an upload under the same name), the text is
+    the new file's and must not be stored under the old file's hash."""
+    path = tmp_path / "plan.pdf"
+    path.write_bytes(_text_pdf("Hire two engineers in the third quarter"))
+    original = pdf_reader._text_layer
+
+    def replaced_mid_read(source: Any, max_pages: int | None = None) -> tuple[str, int]:
+        path.write_bytes(_text_pdf("Freeze hiring until the next board meeting"))
+        return original(source, max_pages)
+
+    monkeypatch.setattr(pdf_reader, "_text_layer", replaced_mid_read)
+
+    result = await read_pdf_text(path, filename="plan.pdf")
+
+    assert "Freeze hiring" in result.text
+    assert len(pdf_reader._cache) == 0
+
+
 async def test_an_unreadable_result_is_not_cached(monkeypatch):
     """A failure (no key yet, OCR off) must not stick once it is fixed."""
     monkeypatch.setenv("PDF_OCR_ENABLED", "false")
@@ -408,6 +446,59 @@ async def test_inbound_files_get_the_smaller_page_cap(monkeypatch):
     assert ocr == [4, 10]
     assert inbound.note == "only the first 4 of 10 pages were read"
     assert asked.note == ""
+
+
+async def test_a_scan_met_by_busy_ocr_says_so_and_refunds_its_pages(monkeypatch):
+    """Review finding: a scan that never got an OCR slot was reported as
+    unreadable and still used up the hourly inbound page budget."""
+    monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "3")
+    _use_provider(monkeypatch, None)
+
+    def busy(source: Any, max_pages: int) -> tuple[str, int]:
+        raise pdf_reader.ParserBusy("_ocr_pdf found no free parser slot")
+
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", busy)
+    first = await read_pdf_text(_blank_pdf(3), inbound=True)
+
+    assert first.busy and first.method == "none"
+    assert "busy reading other documents" in first.note
+
+    ocr = _stub_ocr(monkeypatch)
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", pdf_reader._ocr_pdf)
+    second = await read_pdf_text(_blank_pdf(3), inbound=True)
+
+    assert second.method == "ocr", "the busy attempt must not have spent the budget"
+    assert ocr == [3]
+
+
+async def test_pages_the_model_may_have_billed_are_not_refunded(monkeypatch):
+    """Review finding: a transcription that fails can still have paid for
+    its other slices; refunding when OCR is then busy would let a sender
+    run up model spend past the hourly budget."""
+    monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "3")
+    _use_provider(monkeypatch, _FakeProvider(error=RuntimeError("slice failed")))
+
+    def busy(source: Any, max_pages: int) -> tuple[str, int]:
+        raise pdf_reader.ParserBusy("_ocr_pdf found no free parser slot")
+
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", busy)
+
+    first = await read_pdf_text(_blank_pdf(3), inbound=True)
+    second = await read_pdf_text(_blank_pdf(2), inbound=True)
+
+    assert first.busy
+    assert second.method == "none" and "hourly budget" in second.note
+
+
+def test_a_refund_returns_its_own_reservation_not_one_of_the_same_size():
+    first_pages, first = pdf_reader._take_inbound_pages(2, 10)
+    second_pages, second = pdf_reader._take_inbound_pages(2, 10)
+    assert first is not None and second is not None
+
+    pdf_reader._refund_inbound_pages(first)
+
+    assert pdf_reader._inbound_spent == [second]
+    assert pdf_reader._inbound_spent[0] is second
 
 
 async def test_inbound_conversions_share_an_hourly_page_budget(monkeypatch):

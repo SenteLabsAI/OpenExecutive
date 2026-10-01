@@ -462,7 +462,16 @@ export async function uploadDocument(
     method: "POST",
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload document");
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const data = await res.json();
+      if (typeof data?.detail === "string") detail = data.detail;
+    } catch {
+      // not JSON
+    }
+    throw new Error(detail || `Failed to upload ${file.name}`);
+  }
   return res.json();
 }
 
@@ -470,6 +479,9 @@ export interface CompanyDoc {
   filename: string;
   size_bytes: number;
   modified_at: number;
+  source?: "upload";
+  /** The domain the upload was indexed under ("general" when untagged). */
+  domain?: string | null;
 }
 
 export async function listDocuments(): Promise<CompanyDoc[]> {
@@ -495,6 +507,79 @@ export async function getDocument(filename: string): Promise<CompanyDocContent> 
   const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error("Failed to fetch document content");
   return res.json();
+}
+
+// --- Connected sources (Google Drive, Notion) --------------------------------
+
+export type SyncedSourceId = "drive" | "notion";
+
+export interface SyncedDoc {
+  id: string;
+  name: string;
+  url: string | null;
+  modified_at: string | null;
+  synced_at: string | null;
+  indexed: boolean;
+}
+
+export interface SyncedDocList {
+  enabled: boolean;
+  last_run: string | null;
+  last_error: string | null;
+  files: SyncedDoc[];
+}
+
+export interface SyncedDocContent {
+  id: string;
+  name: string;
+  url: string | null;
+  content: string;
+}
+
+export interface SyncSourceStatus {
+  id: SyncedSourceId;
+  label: string;
+  enabled: boolean;
+  syncing: boolean;
+  last_run: string | null;
+  last_error: string | null;
+  interval_minutes: number;
+  file_count: number;
+}
+
+export async function listSyncSources(): Promise<SyncSourceStatus[]> {
+  const res = await fetch(`${API_BASE}/documents/sources`);
+  if (!res.ok) throw new Error("Failed to load connected sources");
+  const data = await res.json();
+  return data.sources;
+}
+
+export async function listSyncedDocuments(source: SyncedSourceId): Promise<SyncedDocList> {
+  const res = await fetch(`${API_BASE}/documents/${source}`);
+  if (!res.ok) throw new Error("Failed to list synced documents");
+  return res.json();
+}
+
+export async function getSyncedDocument(
+  source: SyncedSourceId,
+  id: string
+): Promise<SyncedDocContent> {
+  const res = await fetch(`${API_BASE}/documents/${source}/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error("Failed to fetch document content");
+  return res.json();
+}
+
+/** Start one sync now. Resolves to an error message the page can show, or null. */
+export async function syncSourceNow(source: SyncedSourceId): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/documents/sources/${source}/sync`, { method: "POST" });
+  if (res.ok) return null;
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === "string") return data.detail;
+  } catch {
+    // fall through
+  }
+  return "Could not start a sync";
 }
 
 export interface BuiltinFileMeta {
@@ -2571,6 +2656,7 @@ export interface AgentDetail {
   voice_persona_slug: string | null;
   research_focus: string | null;
   research_focus_default: string | null;
+  instructions: string | null;
 }
 
 export interface AgentHistoryEntry {
@@ -2582,6 +2668,7 @@ export interface AgentHistoryEntry {
   role: string | null;
   voice_persona_slug: string | null;
   research_focus: string | null;
+  instructions: string | null;
   created_at: string;
 }
 
@@ -2592,6 +2679,7 @@ export interface AgentPatch {
   role?: string | null;
   voice_persona_slug?: string | null;
   research_focus?: string | null;
+  instructions?: string | null;
 }
 
 // ---- Voice Personas --------------------------------------------------------
@@ -2723,7 +2811,13 @@ export async function rollbackAgent(
 
 export async function testAgent(
   agentId: string,
-  body: { query: string; prompt?: string | null; model?: string | null; use_deep_reasoning?: boolean | null }
+  body: {
+    query: string;
+    prompt?: string | null;
+    instructions?: string | null;
+    model?: string | null;
+    use_deep_reasoning?: boolean | null;
+  }
 ): Promise<{ response: string }> {
   const res = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/test`, {
     method: "POST",
@@ -2733,6 +2827,44 @@ export async function testAgent(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { detail?: string }).detail ?? "Test call failed");
+  }
+  return res.json();
+}
+
+// Quality presets (Fast / Balanced / Thorough). Mirrors QualityPresets in
+// api/routes/agents.py. A preset is applied as ordinary per-agent
+// overrides, so `active` is null ("Custom") once any agent is changed on
+// its own; `custom_agents` lists the agents that differ from `base`.
+export type QualityPresetId = "fast" | "balanced" | "thorough";
+
+export interface QualityPreset {
+  id: QualityPresetId;
+  label: string;
+  description: string;
+  available: boolean;
+  model: string | null;
+}
+
+export interface QualityPresets {
+  presets: QualityPreset[];
+  active: QualityPresetId | null;
+  base: QualityPresetId;
+  custom_agents: string[];
+}
+
+export async function listQualityPresets(): Promise<QualityPresets> {
+  const res = await fetch(`${API_BASE}/agents/presets`);
+  if (!res.ok) throw new Error("Failed to load quality presets");
+  return res.json();
+}
+
+export async function applyQualityPreset(id: QualityPresetId): Promise<QualityPresets> {
+  const res = await fetch(`${API_BASE}/agents/presets/${encodeURIComponent(id)}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Failed to apply preset");
   }
   return res.json();
 }

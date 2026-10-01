@@ -27,8 +27,8 @@ RUN pip install uv
 # if this step succeeded: `|| true` keeps the build green if GitHub is briefly
 # unreachable, and such an image fetches the commit — and needs network — on
 # its first gateway start. `uv` itself (installed above) is not pinned.
-RUN uvx --exclude-newer 2026-09-22T00:00:00Z \
-        --from git+https://github.com/SenteLabsAI/extensible-mcp@ac2001a09646a8044210042e12e62974f4c9687c extensible-mcp --help \
+RUN uvx --exclude-newer 2026-09-23T00:00:00Z \
+        --from git+https://github.com/SenteLabsAI/extensible-mcp@6862ebd29c95a1e40b929226637d38b5a5659c80 extensible-mcp --help \
     || true
 
 COPY packages/core/pyproject.toml packages/core/uv.lock ./
@@ -137,6 +137,9 @@ ENV TRANSFORMERS_OFFLINE=1
 # same values (and the per-install GWORKSPACE_AUTH_MODE / Google secrets).
 ENV WORKSPACE_MCP_CREDENTIALS_DIR=/data/google_credentials
 ENV WORKSPACE_MCP_TOOL_TIER=complete
+# The Google services workspace-mcp loads: "all", or comma-separated names
+# (passed as --tools by docker/workspace-mcp-launch.sh).
+ENV WORKSPACE_MCP_TOOLS=all
 # Act as me: each person's own-Gmail credential (scripts/connect-own-gmail.py),
 # on the volume too, and deliberately NOT inside the workspace-mcp dir above.
 ENV DELEGATION_GOOGLE_CREDENTIALS_DIR=/data/delegation_google

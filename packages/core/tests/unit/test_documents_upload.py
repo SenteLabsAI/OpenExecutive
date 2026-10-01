@@ -207,3 +207,183 @@ def test_every_known_domain_is_accepted(client: TestClient, domain: str) -> None
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["domain"] == domain
+
+
+# ── Streaming the upload to disk ──────────────────────────────────────────
+
+
+@pytest.fixture
+def staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Stage uploads in a directory of their own, so a test can see that no
+    partial copy is left behind."""
+    import tempfile
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(staging))
+    return staging
+
+
+def test_an_upload_over_the_limit_is_refused_with_413(
+    client: TestClient, tmp_path: Path, staging: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Small limit and copy size, so the refusal comes several pieces in.
+    monkeypatch.setattr(documents, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(documents, "_COPY_CHUNK_BYTES", 16)
+    files = {"file": ("big.md", io.BytesIO(b"x" * 101), "text/markdown")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == "File too large (max 50MB)"
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert store.rows == {}
+    assert not (tmp_path / "company" / "docs" / "big.md").exists()
+    assert list(staging.iterdir()) == [], "the partial copy must be removed"
+
+
+def test_an_upload_at_the_limit_is_stored_byte_for_byte(
+    client: TestClient, tmp_path: Path, staging: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(documents, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(documents, "_COPY_CHUNK_BYTES", 16)
+    body = b"# Plan\n" + b"Grow revenue. " * 6 + b"x" * 9
+    assert len(body) == 100
+    files = {"file": ("plan.md", io.BytesIO(body), "text/markdown")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 200, resp.text
+    assert (tmp_path / "company" / "docs" / "plan.md").read_bytes() == body
+    assert list(staging.iterdir()) == [], "the staging copy must be removed"
+
+
+def test_the_alert_excerpt_is_the_head_of_the_upload(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[Any] = []
+    monkeypatch.setattr(
+        "openexecutive.alerts.pipeline.schedule_evaluation", events.append
+    )
+    body = b"# Notes\n" + b"a" * 9000
+    files = {"file": ("notes.md", io.BytesIO(body), "text/markdown")}
+
+    assert client.post("/documents", files=files).status_code == 200
+
+    (event,) = events
+    assert event.body == body[:8000].decode()
+
+
+# ── A Word / Excel file its parser could not read ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        ("stopped", "it is too large or took too long to read"),
+        ("failed", "the file may be damaged, or not the type its name says"),
+    ],
+)
+def test_an_unreadable_upload_is_a_422_not_a_500(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str, reason: str
+) -> None:
+    """The parser runs in a child process; one that dies, times out or
+    raises must reach the client as a readable 422, with nothing kept."""
+    from openexecutive.knowledge import isolated, loader
+
+    def unreadable(path: Path, **_: Any) -> str:
+        if error == "stopped":
+            raise isolated.WorkerStopped("_parse_file timed out after 300s")
+        raise isolated.IsolatedError("PackageNotFoundError: Package not found at '/tmp/x'")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", unreadable)
+    files = {"file": ("plan.docx", io.BytesIO(b"PK not really"), "application/octet-stream")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == f"Could not read plan.docx: {reason}."
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert store.rows == {}
+    assert not (tmp_path / "company" / "docs" / "plan.docx").exists()
+
+
+def test_an_unreadable_document_preview_is_a_422(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge import isolated, loader
+
+    docs = tmp_path / "company" / "docs"
+    docs.mkdir(parents=True)
+    (docs / "budget.xlsx").write_bytes(b"PK not really")
+
+    def stopped(path: Path, **_: Any) -> str:
+        raise isolated.WorkerStopped("_parse_file stopped with exit code -9")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", stopped)
+
+    resp = client.get("/documents/budget.xlsx")
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "Could not read budget.xlsx: it is too large or took too long to read."
+    )
+
+
+def test_an_upload_met_by_busy_parsers_is_a_503_to_retry(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge import isolated, loader
+
+    def busy(path: Path, **_: Any) -> str:
+        raise isolated.ParserBusy("_parse_file found no free parser slot")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", busy)
+    files = {"file": ("plan.docx", io.BytesIO(b"PK not really"), "application/octet-stream")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 503
+    assert resp.headers["retry-after"] == "30"
+    assert not (tmp_path / "company" / "docs" / "plan.docx").exists()
+
+
+async def test_an_unreadable_intake_upload_is_a_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import HTTPException
+
+    from openexecutive.api.intake_uploads import _extract_intake_upload
+    from openexecutive.knowledge import isolated, loader
+
+    def failed(path: Path, **_: Any) -> str:
+        raise isolated.IsolatedError("BadZipFile: File is not a zip file", kind="BadZipFile")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", failed)
+
+    with pytest.raises(HTTPException) as info:
+        await _extract_intake_upload("notes.docx", b"PK not really")
+
+    assert info.value.status_code == 422
+    assert info.value.detail == (
+        "Could not read notes.docx: the file may be damaged, or not the type its name says."
+    )
+
+
+def test_a_pdf_met_by_busy_parsers_is_a_503_not_an_empty_index(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding: read_pdf_text never raises, so a busy PDF came back
+    empty and was stored and reported "indexed" with 0 chunks."""
+    from openexecutive.knowledge import pdf_reader
+
+    async def busy(data: Any, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
+        return pdf_reader.PdfReadResult("", "none", 0, "the PDF was not read: busy", busy=True)
+
+    monkeypatch.setattr(pdf_reader, "read_pdf_text", busy)
+    files = {"file": ("lease.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 503
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert store.rows == {}
+    assert not (tmp_path / "company" / "docs" / "lease.pdf").exists()

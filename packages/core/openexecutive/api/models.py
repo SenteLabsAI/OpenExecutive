@@ -131,6 +131,15 @@ class CompanyDocContent(BaseModel):
     content: str
 
 
+class SyncedDocContent(BaseModel):
+    """One Google Drive file or Notion page as the knowledge base stored it."""
+
+    id: str
+    name: str
+    url: str | None = None
+    content: str
+
+
 class HealthResponse(BaseModel):
     status: str
     builtin_knowledge_chunks: int
@@ -138,7 +147,7 @@ class HealthResponse(BaseModel):
     company_name: str | None = None
     builtin_skills: int = 0
     company_skills: int = 0
-    version: str = "0.4.3"  # x-release-please-version
+    version: str = "0.4.4"  # x-release-please-version
 
 
 class SkillWorkflowRef(BaseModel):

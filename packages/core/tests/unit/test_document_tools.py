@@ -26,14 +26,17 @@ def dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
 
 
 @pytest.fixture()
-def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+def fake_pdf(monkeypatch: pytest.MonkeyPatch) -> list[bytes | Path]:
     """Stub the converter: every PDF reads as scanned pages converted to
-    'PAGE TEXT (<n> bytes)'. Returns the bytes it was handed."""
-    seen: list[bytes] = []
+    'PAGE TEXT (<n> bytes)'. Returns what it was handed: a whole file comes
+    as its path (the reader's child process opens it), a page range as the
+    sliced bytes."""
+    seen: list[bytes | Path] = []
 
-    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes | Path, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         seen.append(data)
-        return pdf_reader.PdfReadResult(f"PAGE TEXT ({len(data)} bytes)", "ocr", 1)
+        size = len(data) if isinstance(data, bytes) else data.stat().st_size
+        return pdf_reader.PdfReadResult(f"PAGE TEXT ({size} bytes)", "ocr", 1)
 
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
     return seen
@@ -50,7 +53,7 @@ async def test_reads_a_downloaded_scanned_pdf(dirs, fake_pdf) -> None:
     out = await handle_read_document({"path": str(downloads / "appraisal.pdf")})
 
     assert out == "[appraisal.pdf, converted from scanned pages]\nPAGE TEXT (9 bytes)"
-    assert fake_pdf == [b"%PDF-scan"]
+    assert fake_pdf == [downloads / "appraisal.pdf"]
 
 
 async def test_reads_a_company_document_by_name(dirs) -> None:

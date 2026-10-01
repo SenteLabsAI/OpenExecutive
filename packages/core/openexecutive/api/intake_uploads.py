@@ -68,8 +68,15 @@ async def _extract_intake_upload(filename: str, content: bytes) -> tuple[str, st
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(content)
         tmp_path = Path(tmp.name)
+    from openexecutive.api.routes.documents import unreadable_document_error
+    from openexecutive.knowledge.isolated import IsolatedError
+
     try:
-        text = await extract_text_from_file_async(tmp_path)
+        text = await extract_text_from_file_async(tmp_path, busy_raises=True)
+    except IsolatedError as exc:
+        # A Word/Excel parse that failed, died, timed out or found every
+        # parser busy: a readable 422 / 503, not a bare 500.
+        raise unreadable_document_error(safe, exc) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
     return safe, text.strip()

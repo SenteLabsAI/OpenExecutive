@@ -55,7 +55,20 @@ class Session:
     # invented. It does not stop the model being argued into acking the wrong
     # LIVE card; see `format_open_alerts_for_prompt` for the limits of this
     # control. Empty means the turn was shown no board and can ack nothing.
+    # `find_alerts` is the one thing that adds to it after that, and only on a
+    # turn with `principal_board_shown` — so an open row off the board (read,
+    # snoozed, past TTL but not yet swept) can be cleared there too.
     trusted_alert_ids: set[int] = field(default_factory=set)
+    # Whether `render_and_trust` showed THIS turn the principal's own board:
+    # the principal on a verified surface, and on a channel only in their DM
+    # (`channel_context.attach_briefing_context`). `find_alerts` answers and
+    # widens nothing without it — "principal on a verified surface" alone
+    # also passes the principal's turn in a shared Slack or Discord thread.
+    principal_board_shown: bool = False
+    # Ids `find_alerts` added to `trusted_alert_ids` this turn, capped across
+    # calls (`schedule_tools._FIND_ALERTS_MAX_PER_TURN`). Reset per turn with
+    # the trusted set.
+    found_alert_ids: set[int] = field(default_factory=set)
     # Pending roster requests ("who is this new sender?") the server showed
     # this turn in its <roster_requests> block — the principal's own verified
     # turn only (`briefing.context.render_and_trust`). `resolve_roster_request`

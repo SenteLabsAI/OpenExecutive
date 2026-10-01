@@ -849,6 +849,7 @@ class Executive:
         # cached block is fine — cache misses once on change, then hits normally.
         # Wrap in try/except so an override-store outage doesn't block chat.
         persona_override: str | None = None
+        persona_instructions: str | None = None
         voice_persona_body: str | None = None
         effective_model = self._settings.default_model
         try:
@@ -864,6 +865,8 @@ class Executive:
             # (an empty persona sent to the API would produce garbled output).
             if _ov is not None and _ov.prompt:
                 persona_override = _ov.prompt
+            if _ov is not None:
+                persona_instructions = _ov.instructions
             if _ov is not None and _ov.model:
                 effective_model = _ov.model
             voice_persona_body = _get_voice_body(_ov.voice_persona_slug if _ov else None)
@@ -893,6 +896,7 @@ class Executive:
             include_contacts=_contacts_in_prompt(session),
             delegation=block0_delegation_on(session),
             mcp_servers=gateway_server_names(self._mcp_gateway),
+            persona_instructions=persona_instructions,
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
         # specialist_consult, tool_invocation, cache_event, peer_memory)
@@ -1161,6 +1165,7 @@ class Executive:
         session.caller_person_id = person_id
 
         persona_override: str | None = None
+        persona_instructions: str | None = None
         voice_persona_body: str | None = None
         effective_model = self._settings.default_model
         try:
@@ -1174,6 +1179,8 @@ class Executive:
             _ov = _get_override(EXECUTIVE_AGENT_ID)
             if _ov is not None and _ov.prompt:
                 persona_override = _ov.prompt
+            if _ov is not None:
+                persona_instructions = _ov.instructions
             if _ov is not None and _ov.model:
                 effective_model = _ov.model
             voice_persona_body = _get_voice_body(_ov.voice_persona_slug if _ov else None)
@@ -1193,6 +1200,7 @@ class Executive:
             include_contacts=_contacts_in_prompt(session),
             delegation=block0_delegation_on(session),
             mcp_servers=gateway_server_names(self._mcp_gateway),
+            persona_instructions=persona_instructions,
         )
         # turn_id covers both the draft and (later) the revision pass so a
         # committee-reviewed turn renders as one flow chart, not two.

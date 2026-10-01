@@ -4,18 +4,29 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openexecutive.agents.overrides import (
     EXECUTIVE_AGENT_ID as EXECUTIVE_ID,
 )
 from openexecutive.agents.overrides import (
     AgentHistoryEntry,
+    append_instructions,
     clear_override,
     get_override,
     list_history,
     rollback_to,
     set_override,
+)
+from openexecutive.agents.presets import (
+    PRESET_IDS,
+    PRESETS,
+    AgentState,
+    PresetId,
+    preset_available,
+    preset_model,
+    preset_status,
+    writes_for,
 )
 from openexecutive.audit.usage import log_model_usage
 
@@ -74,6 +85,15 @@ class AgentDetail(BaseModel):
     # utility knobs); the UI shows the editor only when a default exists.
     research_focus: str | None = None
     research_focus_default: str | None = None
+    # Additional instructions appended after ``prompt`` (which stays the
+    # built-in prompt or its replacement, never the two joined).
+    instructions: str | None = None
+
+
+# Additional instructions ride in every call to the agent (and in the
+# Executive's cached block 0), so they stay short. A whole new prompt goes
+# in ``prompt`` instead.
+INSTRUCTIONS_MAX_CHARS = 4000
 
 
 class AgentPatch(BaseModel):
@@ -83,11 +103,13 @@ class AgentPatch(BaseModel):
     role: str | None = None
     voice_persona_slug: str | None = None
     research_focus: str | None = None
+    instructions: str | None = Field(None, max_length=INSTRUCTIONS_MAX_CHARS)
 
 
 class AgentTestRequest(BaseModel):
     query: str
     prompt: str | None = None
+    instructions: str | None = Field(None, max_length=INSTRUCTIONS_MAX_CHARS)
     model: str | None = None
     use_deep_reasoning: bool | None = None
 
@@ -265,6 +287,8 @@ def _build_executive_detail() -> AgentDetail:
             overridden.append("role")
         if ov.voice_persona_slug is not None:
             overridden.append("voice_persona_slug")
+        if ov.instructions is not None:
+            overridden.append("instructions")
     role_default = _ExecutiveDefaults.role
     model_default = _ExecutiveDefaults.model()
     prompt_default = _ExecutiveDefaults.prompt()
@@ -287,6 +311,7 @@ def _build_executive_detail() -> AgentDetail:
         overridden_fields=overridden,
         updated_at=ov.updated_at if ov else None,
         voice_persona_slug=ov.voice_persona_slug if ov else None,
+        instructions=ov.instructions if ov else None,
     )
 
 
@@ -326,6 +351,8 @@ def _build_detail(name: str) -> AgentDetail:
             overridden.append("role")
         if ov.research_focus is not None:
             overridden.append("research_focus")
+        if ov.instructions is not None:
+            overridden.append("instructions")
     # null (not "") for agents with no research scope, so the UI can decide
     # whether to render the research-focus editor at all.
     rf_default = default_research_focus(name) or None
@@ -340,7 +367,7 @@ def _build_detail(name: str) -> AgentDetail:
         model_default=agent.model,
         deep_reasoning=agent.effective_use_deep_reasoning(),
         deep_reasoning_default=agent.use_deep_reasoning,
-        prompt=agent.effective_system_prompt(),
+        prompt=agent.base_system_prompt(),
         prompt_default=agent.get_system_prompt(),
         domains=_domains_for(name),
         has_override=ov is not None,
@@ -348,6 +375,7 @@ def _build_detail(name: str) -> AgentDetail:
         updated_at=ov.updated_at if ov else None,
         research_focus=rf_effective,
         research_focus_default=rf_default,
+        instructions=ov.instructions if ov else None,
     )
 
 
@@ -367,6 +395,135 @@ def list_model_options(agent_id: str | None = None) -> list[ModelOption]:
 
 def _is_known_agent(agent_id: str) -> bool:
     return agent_id == EXECUTIVE_ID or agent_id in _agent_registry()
+
+
+class QualityPreset(BaseModel):
+    id: PresetId
+    label: str
+    description: str
+    # False when this install allows none of the preset's models.
+    available: bool
+    # The model the preset moves agents to on this install; null for
+    # Balanced (each agent keeps its own default) or when unavailable.
+    model: str | None = None
+
+
+class QualityPresets(BaseModel):
+    presets: list[QualityPreset]
+    # The preset every agent matches, or null when the council is "Custom".
+    active: PresetId | None
+    # The preset most agents match, and the agents that differ from it.
+    base: PresetId
+    custom_agents: list[str]
+
+
+# Agents whose calls never send thinking fields, so a preset leaves their
+# deep-reasoning flag alone.
+_NO_DEEP_REASONING = frozenset({EXECUTIVE_ID, "utility_fast"})
+
+
+def _agent_states() -> list[AgentState]:
+    states: list[AgentState] = []
+    for name, agent in _agent_registry().items():
+        ov = get_override(name)
+        if name == EXECUTIVE_ID:
+            model_default = _ExecutiveDefaults.model()
+            deep_default = _ExecutiveDefaults.use_deep_reasoning
+        else:
+            model_default = agent.model
+            deep_default = agent.use_deep_reasoning
+        states.append(
+            AgentState(
+                agent_id=name,
+                model_default=model_default,
+                deep_default=deep_default,
+                model_override=ov.model if ov is not None else None,
+                deep_override=ov.use_deep_reasoning if ov is not None else None,
+                uses_deep_reasoning=name not in _NO_DEEP_REASONING,
+            )
+        )
+    return states
+
+
+def _specialist_ids() -> set[str]:
+    from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
+
+    return set(SPECIALIST_REGISTRY)
+
+
+def _quality_presets() -> QualityPresets:
+    allowed = _allowed()
+    status_ = preset_status(
+        _agent_states(), specialist_ids=_specialist_ids(), allowed=allowed
+    )
+    return QualityPresets(
+        presets=[
+            QualityPreset(
+                id=pid,
+                label=PRESETS[pid].label,
+                description=PRESETS[pid].description,
+                available=preset_available(pid, allowed),
+                model=preset_model(pid, allowed),
+            )
+            for pid in PRESET_IDS
+        ],
+        active=status_.active,
+        base=status_.base,
+        custom_agents=status_.custom_agents,
+    )
+
+
+@router.get("/agents/presets", response_model=QualityPresets)
+def list_presets() -> QualityPresets:
+    """Fast, Balanced and Thorough, resolved against this install's model
+    allowlist, plus which one the council is on."""
+    return _quality_presets()
+
+
+@router.post("/agents/presets/{preset_id}", response_model=QualityPresets)
+def apply_preset(preset_id: str) -> QualityPresets:
+    """Move every agent onto a preset by writing ordinary overrides.
+
+    Only the model and deep-reasoning fields change; prompts, roles, voice
+    and instructions stay as they are. Each agent that changes gets one
+    history row, so a single agent can be rolled back on its own. An
+    override left with nothing in it is removed, so Balanced returns an
+    untouched agent to its plain defaults.
+    """
+    if preset_id not in PRESETS:
+        raise HTTPException(status_code=404, detail="Unknown preset")
+    pid: PresetId = PRESETS[preset_id].id
+    allowed = _allowed()
+    if not preset_available(pid, allowed):
+        raise HTTPException(
+            status_code=409,
+            detail=f"The {PRESETS[pid].label} preset needs a model this install doesn't offer",
+        )
+    for write in writes_for(
+        pid, _agent_states(), specialist_ids=_specialist_ids(), allowed=allowed
+    ):
+        ov = get_override(write.agent_id)
+        keeps_other_fields = ov is not None and any(
+            v is not None
+            for v in (
+                ov.prompt,
+                ov.role,
+                ov.voice_persona_slug,
+                ov.research_focus,
+                ov.instructions,
+            )
+        )
+        if write.model is None and write.deep is None and not keeps_other_fields:
+            clear_override(write.agent_id)
+            continue
+        set_override(
+            write.agent_id,
+            model=write.model,
+            use_deep_reasoning=write.deep,
+            model_set=True,
+            deep_set=True,
+        )
+    return _quality_presets()
 
 
 @router.get("/agents", response_model=list[AgentMeta])
@@ -417,12 +574,19 @@ def patch_agent(agent_id: str, patch: AgentPatch) -> AgentDetail:
         role=patch.role,
         voice_persona_slug=patch.voice_persona_slug,
         research_focus=patch.research_focus,
+        # Blank text clears the field rather than storing an empty block.
+        instructions=(
+            patch.instructions
+            if patch.instructions is not None and patch.instructions.strip()
+            else None
+        ),
         prompt_set="prompt" in raw,
         model_set="model" in raw,
         deep_set="use_deep_reasoning" in raw,
         role_set="role" in raw,
         voice_persona_slug_set="voice_persona_slug" in raw,
         research_focus_set="research_focus" in raw,
+        instructions_set="instructions" in raw,
     )
     return (
         _build_executive_detail()
@@ -487,6 +651,12 @@ async def _test_executive(req: AgentTestRequest) -> str:
             else _ExecutiveDefaults.prompt()
         )
     )
+    prompt = append_instructions(
+        prompt,
+        req.instructions
+        if req.instructions is not None
+        else (ov.instructions if ov is not None else None),
+    )
     model = (
         req.model
         if req.model is not None
@@ -539,10 +709,19 @@ async def test_agent(agent_id: str, req: AgentTestRequest) -> AgentTestResponse:
     # Triage has its own non-`analyze` entry point; call analyze with the
     # draft anyway so the UI test box still works for it — it'll return a
     # plain text completion using the triage prompt.
+    # The draft prompt and instructions win; whatever the draft leaves out
+    # comes from the saved config, joined the way a real call joins them.
+    ov = get_override(agent_id)
+    system_prompt = append_instructions(
+        req.prompt if req.prompt is not None else agent.base_system_prompt(),
+        req.instructions
+        if req.instructions is not None
+        else (ov.instructions if ov is not None else None),
+    )
     try:
         response = await agent.analyze(
             query=req.query,
-            system_prompt_override=req.prompt,
+            system_prompt_override=system_prompt,
             model_override=req.model,
             deep_reasoning_override=req.use_deep_reasoning,
             # Sandbox runs must not read as production specialist spend in

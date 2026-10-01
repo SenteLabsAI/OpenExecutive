@@ -75,12 +75,14 @@ async def test_async_extractor_converts_a_scanned_pdf(tmp_path: Path, monkeypatc
         read_document_text,
     )
 
-    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
-        assert data == b"%PDF-scan" and filename == "scan.pdf"
+    path = tmp_path / "scan.pdf"
+
+    async def fake_read(data: Path, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
+        # The path, not the bytes: the reader's child process opens the file.
+        assert data == path and filename == "scan.pdf"
         return pdf_reader.PdfReadResult("Minutes: approve the budget.", "ocr", 1)
 
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
-    path = tmp_path / "scan.pdf"
     path.write_bytes(b"%PDF-scan")
 
     assert await extract_text_from_file_async(path) == "Minutes: approve the budget."

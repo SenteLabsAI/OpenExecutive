@@ -235,6 +235,47 @@ def list_alerts(
     return [_row_to_alert(r) for r in rows]
 
 
+def _like_escape(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_alerts(
+    query: str,
+    limit: int = 10,
+    db_path: Path | None = None,
+    exclude_source: str | None = None,
+) -> list[Alert]:
+    """Alerts of any status whose headline or body contains every word of
+    ``query`` (case-insensitive, any order), newest first.
+
+    The match runs in SQL so an old row is as findable as a new one; the
+    words are LIKE-escaped, so ``%`` and ``_`` in a query match literally.
+    An empty query returns nothing rather than the whole store.
+    """
+    words = query.split()
+    if not words or not _resolve_db_path(db_path).exists():
+        return []
+    clauses: list[str] = []
+    params: list[object] = []
+    for word in words:
+        pattern = f"%{_like_escape(word.lower())}%"
+        clauses.append(
+            "(LOWER(headline) LIKE ? ESCAPE '\\' OR LOWER(body) LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern, pattern])
+    if exclude_source:
+        clauses.append("source != ?")
+        params.append(exclude_source)
+    params.append(limit)
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM alerts WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [_row_to_alert(r) for r in rows]
+
+
 def recent_alerts(
     limit: int = 20,
     db_path: Path | None = None,

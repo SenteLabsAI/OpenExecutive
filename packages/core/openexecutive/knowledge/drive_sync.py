@@ -42,6 +42,7 @@ from openexecutive.knowledge.drive_client import (
     sanitize_drive_id,
     service_account_token_provider,
 )
+from openexecutive.knowledge.isolated import ParserBusy
 from openexecutive.knowledge.loader import extract_text_from_file, ingest_text_sync
 from openexecutive.knowledge.notion_sync import infer_domain
 from openexecutive.knowledge.store import ChromaDBStore
@@ -256,7 +257,9 @@ def _extract(data: bytes, suffix: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / f"file{suffix}"
         path.write_bytes(data)
-        return extract_text_from_file(path)
+        # The same limit as the wait_for below, so the parser's child process
+        # is killed when the sync stops waiting for it.
+        return extract_text_from_file(path, timeout=_EXTRACT_TIMEOUT_S)
 
 
 async def _file_text(client: DriveClient, item: DriveItem) -> str:
@@ -274,6 +277,10 @@ async def _file_text(client: DriveClient, item: DriveItem) -> str:
             asyncio.to_thread(_extract, data, suffix), timeout=_EXTRACT_TIMEOUT_S
         )
     except _Unreadable:
+        raise
+    except ParserBusy:
+        # Never tried: a failure for this tick, fetched again on the next,
+        # not a file recorded unreadable until it changes.
         raise
     except TimeoutError as exc:
         raise _Unreadable(f"text extraction took over {_EXTRACT_TIMEOUT_S:.0f}s") from exc
@@ -469,12 +476,58 @@ async def _apply_tick(
                 "name": name,
                 "filename": slugify(name, item.id) if chunks else "",
                 "url": item.link,
+                "synced_at": synced_at,
             }
             stats["updated"] += 1
             logger.info("drive_sync: indexed %s (%d chunks)", item.id, chunks)
 
     state["last_run"] = now.isoformat()
+    # A tick that skipped some files still succeeded, but the knowledge page
+    # should say so rather than show a clean sync.
+    if stats["failed"]:
+        state["last_error"] = _partial_failure_message(stats["failed"])
+    else:
+        state.pop("last_error", None)
     save_state(state)
+
+
+def _partial_failure_message(failed: int) -> str:
+    return (
+        f"{failed} file{'' if failed == 1 else 's'} could not be synced. "
+        "Check the server logs."
+    )
+
+
+# One tick at a time per process: the scheduler heartbeat and a "Sync now"
+# from the knowledge page share this, so a manual run can never interleave
+# with a scheduled one. A caller that finds it held skips (``busy`` in the
+# stats) rather than queueing behind a slow network phase.
+_RUN_LOCK = asyncio.Lock()
+
+
+# When the last tick in this process ended, failed or not. ``last_run`` is
+# stamped only on success and with the tick's start time, so a manual-sync
+# cooldown keyed on it alone lets a failing or slow source be re-run
+# back-to-back.
+_last_finished_at: datetime | None = None
+
+
+def is_syncing() -> bool:
+    return _RUN_LOCK.locked()
+
+
+def last_finished_at() -> datetime | None:
+    return _last_finished_at
+
+
+def _record_error(message: str) -> None:
+    """Keep a short, user-facing reason the last tick failed (never a trace)."""
+    try:
+        state = load_state()
+        state["last_error"] = message
+        save_state(state)
+    except Exception:
+        logger.exception("drive_sync: could not record the last error")
 
 
 async def run_drive_sync(
@@ -484,7 +537,31 @@ async def run_drive_sync(
     now: datetime | None = None,
     reconcile_only: bool = False,
 ) -> dict[str, int]:
-    """One sync tick. Returns counts: seen / updated / skipped / failed / purged / capped."""
+    """One sync tick. Returns counts: seen / updated / skipped / failed / purged / capped
+    (plus ``busy`` when another tick is already running in this process)."""
+    if _RUN_LOCK.locked():
+        logger.info("drive_sync: a tick is already running — skipping")
+        return {"busy": 1}
+    global _last_finished_at
+    async with _RUN_LOCK:
+        try:
+            return await _run_drive_sync_locked(
+                store=store, client=client, now=now, reconcile_only=reconcile_only
+            )
+        except Exception:
+            _record_error("The last sync failed unexpectedly. Check the server logs.")
+            raise
+        finally:
+            _last_finished_at = datetime.now(UTC)
+
+
+async def _run_drive_sync_locked(
+    *,
+    store: ChromaDBStore | None,
+    client: DriveClient | None,
+    now: datetime | None,
+    reconcile_only: bool,
+) -> dict[str, int]:
     settings = get_settings()
     stats = {"seen": 0, "updated": 0, "skipped": 0, "failed": 0, "purged": 0, "capped": 0}
     if not settings.drive_sync_enabled:
@@ -508,6 +585,7 @@ async def run_drive_sync(
             token = service_account_token_provider(str(settings.drive_sync_service_account_file))
         except Exception:
             logger.exception("drive_sync: cannot load DRIVE_SYNC_SERVICE_ACCOUNT_FILE")
+            _record_error("Could not sign in to Google Drive. Check the Drive credentials.")
             stats["failed"] += 1
             return stats
         http = httpx.AsyncClient(timeout=60.0)
@@ -554,6 +632,75 @@ def purge_all_synced(store: ChromaDBStore, state: dict[str, Any] | None = None) 
     current["files"] = {}
     save_state(current)
     return purged
+
+
+def list_synced_files() -> dict[str, Any]:
+    """What the knowledge page shows for Drive: one row per file on record.
+
+    Read from the sync state (not Chroma), so it costs one small JSON read.
+    ``indexed`` is false for a file with no readable text. Entries written
+    before ``synced_at`` was recorded per file fall back to the tick time.
+    """
+    state = load_state()
+    last_run = state.get("last_run") if isinstance(state.get("last_run"), str) else None
+    files: list[dict[str, Any]] = []
+    for fid, rec in state["files"].items():
+        safe = sanitize_drive_id(str(fid))
+        if not safe or not isinstance(rec, dict):
+            continue
+        filename = rec.get("filename") if isinstance(rec.get("filename"), str) else ""
+        files.append(
+            {
+                "id": safe,
+                "name": str(rec.get("name") or filename or safe),
+                "url": _https_or_none(rec.get("url")),
+                "modified_at": rec.get("modified") if isinstance(rec.get("modified"), str) else None,
+                "synced_at": rec.get("synced_at")
+                if isinstance(rec.get("synced_at"), str)
+                else last_run,
+                "indexed": bool(filename),
+            }
+        )
+    files.sort(key=lambda f: f["name"].lower())
+    error = state.get("last_error")
+    return {
+        "last_run": last_run,
+        "last_error": error if isinstance(error, str) else None,
+        "files": files,
+    }
+
+
+def read_synced_file(file_id: str) -> dict[str, Any] | None:
+    """The stored text of one synced file, or None when it is unknown or empty.
+
+    The path comes from the state record for a sanitized id, never from the
+    caller, and must be a ``drive-*.md`` name directly under ``docs/drive/``.
+    """
+    safe = sanitize_drive_id(file_id)
+    if not safe or safe != file_id:
+        return None
+    rec = load_state()["files"].get(safe)
+    if not isinstance(rec, dict):
+        return None
+    filename = Path(str(rec.get("filename") or "")).name
+    if not (filename.startswith("drive-") and filename.endswith(".md")):
+        return None
+    path = _docs_dir() / filename
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    text = _FILE_ID_COMMENT.sub("", text, count=1).lstrip()
+    return {
+        "id": safe,
+        "name": str(rec.get("name") or filename),
+        "url": _https_or_none(rec.get("url")),
+        "content": text,
+    }
+
+
+def _https_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.startswith("https://") else None
 
 
 # ---------------------------------------------------------------------------
