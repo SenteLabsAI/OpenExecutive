@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
+import VoicePicker from "@/components/executive/VoicePicker";
 import Icon from "@/components/Icon";
 import ActAsMeCard from "@/components/settings/ActAsMeCard";
 import SettingsNav from "@/components/settings/SettingsNav";
@@ -58,9 +59,15 @@ export default function SettingsPage() {
             <SettingsSection
               id="executive"
               title="Executive"
-              description="Whether the Executive is doing its own work — briefs, nudges, monitoring, inbox, workflow timers — or holding it."
+              description="Whether the Executive is doing its own work — briefs, nudges, monitoring, inbox, workflow timers — or holding it, and the voice it answers in."
             >
               <ExecutiveRunSwitch variant="card" />
+              <div className="mt-6">
+                <h3 className="text-[10px] font-semibold uppercase tracking-widest text-fg-subtle mb-2">
+                  Voice
+                </h3>
+                <VoicePicker variant="card" />
+              </div>
             </SettingsSection>
 
             <SettingsSection

@@ -30,6 +30,10 @@ settings' role fields) to play a principal with that role. It goes on the
 session (``Session.principal_role``) the same way, never into the
 install-wide settings row, which concurrent scenarios would share.
 
+A chat scenario may set ``voice_persona`` (a voice slug such as
+``supportive``) to answer in that voice. It goes on
+``Session.voice_persona_slug``, never the Executive's install-wide override.
+
 A chat scenario may set a ``delegation`` block (Act as me: the asker, their
 threads) to run with ``ghostwrite_email`` offered against an in-memory
 mailbox (``scenarios.scenario_delegation``); the drafts it saves go to the
@@ -56,6 +60,7 @@ from openexecutive.evals.scenarios import (
     scenario_delegation,
     scenario_inbox,
     scenario_principal_role,
+    scenario_voice_persona,
 )
 from openexecutive.workflows.gate import ensure_workflow_event
 
@@ -511,6 +516,7 @@ def _make_chat_runner(
                         company_profile=profile,
                         workspace_mode=scenario_workspace_mode(scenario),
                         principal_role=scenario_principal_role(scenario),
+                        voice_persona_slug=scenario_voice_persona(scenario),
                         delegation_override=delegation,
                     )
                     query = scenario["query"]

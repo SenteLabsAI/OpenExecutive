@@ -488,6 +488,22 @@ providers:
     preset from the overrides: ``active`` when every agent matches,
     otherwise null ("Custom") with ``base`` (the preset most agents match,
     Balanced on a tie) and ``custom_agents`` (the agents that differ).
+  executive_voices: |
+    The Executive's voice persona (personas/builtin/*.md, shadowed by
+    voice_personas rows) is substituted into block 0 at {VOICE_PERSONA}.
+    Three general voices are offered by the shared VoicePicker in setup
+    (/onboard, after the workspace choice and solo role step) and Settings ->
+    Executive, saving voice_persona_slug through PATCH /agents/executive:
+    Direct (slug ``default``, stored as no override), Supportive and
+    Analytical. Frontmatter ``description`` / ``sample`` feed the picker;
+    ``legacy: true`` marks the named-executive voices, hidden from the picker
+    but still loadable (PersonaMeta.is_legacy), so existing picks keep
+    working. Voice files hold disposition only; length rules live in
+    prompts/executive_persona.py, enforced by test_voice_picker. Eval
+    scenarios may set ``voice_persona`` (validated by
+    evals.scenarios.scenario_voice_persona), carried on
+    Session.voice_persona_slug, which wins over the install override for
+    that session only, like workspace_mode and principal_role.
   per_specialist_research_focus: |
     Each consult-routable specialist (cso, cfo, cmo, coo, chro, cpo, gc) has a
     Council-editable ``research_focus`` override — the per-domain scope tail
