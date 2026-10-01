@@ -4,8 +4,10 @@ alone."""
 from __future__ import annotations
 
 import base64
-import importlib.util
 import json
+import os
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -18,19 +20,12 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from openexecutive.api import caller as api_caller
+from openexecutive.api import caller_signing
 from openexecutive.api.caller import AssertionRefused, Caller, JtiLedger
 from openexecutive.api.routes import executive as executive_route
 from openexecutive.memory import episodic
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
-
-_REPO = Path(__file__).resolve().parents[4]
-_spec = importlib.util.spec_from_file_location(
-    "mint_caller_assertion", _REPO / "scripts" / "mint-caller-assertion.py"
-)
-assert _spec is not None and _spec.loader is not None
-mint_script = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(mint_script)
 
 VECTORS = json.loads((Path(__file__).parent / "caller_assertion_vectors.json").read_text())
 SIGNING_KEY = VECTORS["test_signing_key"]
@@ -39,7 +34,7 @@ OWNER = "olivia@co.example"
 
 
 def _mint(kind: str = "user", email: str = OWNER, method: str = "GET", target: str = "/x", **kw: Any) -> str:
-    return str(mint_script.mint(SIGNING_KEY, kind=kind, email=email, method=method, target=target, **kw))
+    return str(caller_signing.mint_assertion(SIGNING_KEY, kind=kind, email=email, method=method, target=target, **kw))
 
 
 def _b64(data: bytes) -> str:
@@ -48,14 +43,14 @@ def _b64(data: bytes) -> str:
 
 def _signed(claims: dict[str, Any], version: str = "v1") -> str:
     """A token over arbitrary claims, signed with the vectors' key."""
-    _kid, key = mint_script.load_private_key(SIGNING_KEY)
+    _kid, key = caller_signing.load_private_key(SIGNING_KEY)
     signing_input = f"{version}.{_b64(json.dumps(claims).encode())}"
     return f"{signing_input}.{_b64(key.sign(signing_input.encode()))}"
 
 
 def _signed_raw(payload: bytes) -> str:
     """A token over raw payload bytes, signed with the vectors' key."""
-    _kid, key = mint_script.load_private_key(SIGNING_KEY)
+    _kid, key = caller_signing.load_private_key(SIGNING_KEY)
     signing_input = f"v1.{_b64(payload)}"
     return f"{signing_input}.{_b64(key.sign(signing_input.encode()))}"
 
@@ -95,9 +90,9 @@ def test_the_shared_vectors_sign_and_verify(case: dict[str, Any]) -> None:
 
 
 def test_the_constants_match_the_script() -> None:
-    assert mint_script.AUDIENCE == api_caller.AUDIENCE
-    assert mint_script.VERSION == api_caller.ASSERTION_VERSION
-    assert mint_script.LIFETIME_S <= api_caller.MAX_LIFETIME_S
+    assert caller_signing.AUDIENCE == api_caller.AUDIENCE
+    assert caller_signing.VERSION == api_caller.ASSERTION_VERSION
+    assert caller_signing.LIFETIME_S <= api_caller.MAX_LIFETIME_S
 
 
 def test_it_holds_for_one_request_once() -> None:
@@ -216,7 +211,7 @@ def test_several_keys_while_rotating() -> None:
     keys = api_caller.parse_public_keys(f"{VECTORS['public_keys']}, {fresh_public}")
     assert set(keys) == {"rfc8032-test1", "k2"}
     for setting in (SIGNING_KEY, fresh_private):
-        token = mint_script.mint(setting, kind="operator", email="", method="GET", target="/x")
+        token = caller_signing.mint_assertion(setting, kind="operator", email="", method="GET", target="/x")
         who = api_caller.verify_assertion(
             token, keys=keys, method="GET", target="/x", now=int(time.time()), ledger=JtiLedger()
         )
@@ -224,12 +219,7 @@ def test_several_keys_while_rotating() -> None:
 
 
 def _new_pair(kid: str) -> tuple[str, str]:
-    spec = importlib.util.spec_from_file_location("make_caller_keys", _REPO / "scripts" / "make-caller-keys.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    private, public = module.make_pair(kid)
-    return str(private), str(public)
+    return caller_signing.make_key_pair(kid)
 
 
 @pytest.mark.parametrize(
@@ -425,3 +415,33 @@ async def test_mcp_asks_as_no_one_once_callers_are_signed(monkeypatch: pytest.Mo
         assert chat.await_args.kwargs["person_id"] is None
         await mcp_server.ask_executive("hi")
         assert chat.await_args.kwargs["person_id"] is None
+
+
+def test_make_key_pair_names_a_random_key_and_refuses_a_bad_id() -> None:
+    private, public = caller_signing.make_key_pair()
+    kid = private.partition(":")[0]
+    assert public.startswith(f"{kid}:")
+    assert set(api_caller.parse_public_keys(public)) == {kid}
+    with pytest.raises(ValueError, match="key id"):
+        caller_signing.make_key_pair("bad kid!")
+
+
+def test_the_scripts_make_a_pair_the_api_accepts_and_sign_with_it() -> None:
+    """The two scripts run on their own (no package installed) and agree with
+    the API."""
+    scripts = Path(__file__).resolve().parents[4] / "scripts"
+    made = subprocess.run(
+        [sys.executable, str(scripts / "make-caller-keys.py"), "--kid", "k9"],
+        capture_output=True, text=True, check=True, cwd="/",
+    ).stdout
+    settings = dict(line.split("=", 1) for line in made.splitlines() if not line.startswith("#"))
+    keys = api_caller.parse_public_keys(settings["CALLER_ASSERTION_PUBLIC_KEYS"])
+    env = {**os.environ, "CALLER_ASSERTION_PRIVATE_KEY": settings["CALLER_ASSERTION_PRIVATE_KEY"]}
+    token = subprocess.run(
+        [sys.executable, str(scripts / "mint-caller-assertion.py"), "GET", "/today"],
+        capture_output=True, text=True, check=True, cwd="/", env=env,
+    ).stdout.strip()
+    who = api_caller.verify_assertion(
+        token, keys=keys, method="GET", target="/today", now=int(time.time()), ledger=JtiLedger()
+    )
+    assert who == Caller("operator")

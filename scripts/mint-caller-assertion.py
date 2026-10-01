@@ -20,77 +20,13 @@ seconds, once. Never print or store the private key.
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import os
-import re
-import secrets
+import pathlib
 import sys
-import time
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "packages" / "core"))
 
-# Kept in step with openexecutive/api/caller.py and
-# packages/ui/src/lib/callerAssertion.ts (the tests compare all three).
-VERSION = "v1"
-AUDIENCE = "openexecutive-api"
-LIFETIME_S = 30
-_KID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
-_SEED_RE = re.compile(r"[A-Za-z0-9_-]{43}=?")
-
-
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def load_private_key(setting: str) -> tuple[str, Ed25519PrivateKey]:
-    """``kid:seed`` (CALLER_ASSERTION_PRIVATE_KEY) → the key id and key."""
-    kid, sep, seed = (part.strip() for part in setting.strip().partition(":"))
-    if not sep or not _KID_RE.fullmatch(kid) or not _SEED_RE.fullmatch(seed):
-        raise ValueError(
-            "CALLER_ASSERTION_PRIVATE_KEY is <key id>:<private key>, as "
-            "scripts/make-caller-keys.py prints it"
-        )
-    raw = base64.urlsafe_b64decode(seed.rstrip("=") + "=")
-    return kid, Ed25519PrivateKey.from_private_bytes(raw)
-
-
-def mint(
-    setting: str,
-    *,
-    kind: str,
-    email: str,
-    method: str,
-    target: str,
-    now_ms: int | None = None,
-    jti: str | None = None,
-) -> str:
-    """One ``x-caller-assertion`` value. ``target`` is the path with its query,
-    exactly as the request will send it."""
-    if kind not in ("user", "operator"):
-        raise ValueError("kind is user or operator")
-    sub = email.strip().lower() if kind == "user" else ""
-    if kind == "user" and "@" not in sub:
-        raise ValueError("a user is named by their email")
-    if kind == "operator" and email.strip():
-        raise ValueError("the operator names no one")
-    kid, key = load_private_key(setting)
-    iat = (int(time.time() * 1000) if now_ms is None else now_ms) // 1000
-    claims = {
-        "aud": AUDIENCE,
-        "exp": iat + LIFETIME_S,
-        "iat": iat,
-        "jti": jti or secrets.token_urlsafe(18),
-        "kid": kid,
-        "kind": kind,
-        "m": method.upper(),
-        "p": target,
-        "sub": sub,
-    }
-    # Sorted keys and no spaces: byte for byte what the web app signs.
-    body = json.dumps(claims, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    signing_input = f"{VERSION}.{_b64url(body.encode('utf-8'))}"
-    return f"{signing_input}.{_b64url(key.sign(signing_input.encode('ascii')))}"
+from openexecutive.api.caller_signing import mint_assertion  # noqa: E402
 
 
 def main() -> int:
@@ -108,7 +44,7 @@ def main() -> int:
         return 2
     try:
         print(
-            mint(
+            mint_assertion(
                 setting,
                 kind="user" if args.email else "operator",
                 email=args.email,
