@@ -38,6 +38,8 @@ def company(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # loop that waits on it.
     monkeypatch.setattr(drive_sync, "_RUN_LOCK", asyncio.Lock())
     monkeypatch.setattr(notion_sync, "_RUN_LOCK", asyncio.Lock())
+    monkeypatch.setattr(drive_sync, "_last_finished_at", None)
+    monkeypatch.setattr(notion_sync, "_last_finished_at", None)
     root = tmp_path / "company"
     (root / "docs" / "drive").mkdir(parents=True)
     (root / "docs" / "notion").mkdir(parents=True)
@@ -188,3 +190,12 @@ def test_sync_now_failure_stays_in_the_background(
 
     monkeypatch.setattr(drive_sync, "run_drive_sync", boom)
     assert client.post("/documents/sources/drive/sync").status_code == 202
+
+
+def test_a_failed_tick_still_starts_the_cooldown(client: TestClient, company: Path) -> None:
+    # A failing source never stamps last_run; the cooldown must still hold,
+    # or it could be re-run back-to-back. The service-account file is missing.
+    _seed_drive(company, last_run="2026-01-01T00:00:00+00:00")
+    asyncio.run(drive_sync.run_drive_sync(store=FakeStore()))  # type: ignore[arg-type]
+    assert drive_sync.last_finished_at() is not None
+    assert client.post("/documents/sources/drive/sync").status_code == 429

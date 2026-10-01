@@ -273,12 +273,20 @@ async def sync_source(source: SourceId) -> dict:
         raise HTTPException(status_code=409, detail=f"{_SOURCE_LABELS[source]} is not connected")
     if module.is_syncing():
         raise HTTPException(status_code=409, detail="A sync is already running")
+    # The cooldown runs from the latest of the last successful tick's start
+    # and the end of the last tick in this process (failed ones included).
     last_run = (await asyncio.to_thread(_list_source, source))["last_run"]
+    marks: list[datetime] = []
     if last_run:
         try:
-            elapsed = (datetime.now(UTC) - datetime.fromisoformat(last_run)).total_seconds()
+            parsed = datetime.fromisoformat(last_run)
+            marks.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
         except (TypeError, ValueError):
-            elapsed = SYNC_COOLDOWN_S
+            pass
+    if (finished := module.last_finished_at()) is not None:
+        marks.append(finished)
+    if marks:
+        elapsed = (datetime.now(UTC) - max(marks)).total_seconds()
         if 0 <= elapsed < SYNC_COOLDOWN_S:
             raise HTTPException(
                 status_code=429,

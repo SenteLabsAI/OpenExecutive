@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   deleteDocument,
@@ -531,9 +531,23 @@ function Viewer({ doc, onClose }: { doc: Viewing; onClose: () => void }) {
           </div>
         </div>
         <div className={`flex-1 overflow-y-auto px-6 py-5 ${PROSE_CLASS}`}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={SAFE_MARKDOWN}>
+            {doc.content}
+          </ReactMarkdown>
         </div>
       </div>
     </div>
   );
 }
+
+// Synced Drive / Notion text is written by anyone who can edit the shared
+// folder or page, so the viewer never fetches its images (a remote image is a
+// read beacon) and opens its links in a new tab, away from the app.
+const SAFE_MARKDOWN: Components = {
+  img: ({ alt }) => <span className="text-fg-subtle">[image{alt ? `: ${alt}` : ""}]</span>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow">
+      {children}
+    </a>
+  ),
+};

@@ -486,8 +486,19 @@ async def _apply_tick(
 _RUN_LOCK = asyncio.Lock()
 
 
+# When the last tick in this process ended, failed or not. ``last_run`` is
+# stamped only on success and with the tick's start time, so a manual-sync
+# cooldown keyed on it alone lets a failing or slow source be re-run
+# back-to-back.
+_last_finished_at: datetime | None = None
+
+
 def is_syncing() -> bool:
     return _RUN_LOCK.locked()
+
+
+def last_finished_at() -> datetime | None:
+    return _last_finished_at
 
 
 def _record_error(message: str) -> None:
@@ -512,6 +523,7 @@ async def run_drive_sync(
     if _RUN_LOCK.locked():
         logger.info("drive_sync: a tick is already running — skipping")
         return {"busy": 1}
+    global _last_finished_at
     async with _RUN_LOCK:
         try:
             return await _run_drive_sync_locked(
@@ -520,6 +532,8 @@ async def run_drive_sync(
         except Exception:
             _record_error("The last sync failed unexpectedly. Check the server logs.")
             raise
+        finally:
+            _last_finished_at = datetime.now(UTC)
 
 
 async def _run_drive_sync_locked(
