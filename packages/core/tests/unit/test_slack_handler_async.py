@@ -56,6 +56,7 @@ def slack_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # create_slack_app() assigns the module global; restore it so these tests
     # cannot leak a resolved id into any other Slack test.
     monkeypatch.setattr(slack_bot, "_bot_user_id", None)
+    monkeypatch.setattr(slack_bot, "_bot_id_last_attempt", None)
 
 
 def _person() -> MagicMock:
@@ -1046,3 +1047,138 @@ async def test_a_held_slack_message_is_replayed_once_they_are_on_the_roster() ->
     # The answer goes back to the DM it came from.
     assert posted.await_args.kwargs["channel"] == "D9"
     assert posted.await_args.kwargs["text"] == "the reply"
+
+
+# --- drops the sender can see (#315) ------------------------------------------
+
+THREAD_EVENT = {
+    "text": "and the budget?",
+    "user": "U123",
+    "channel": "C1",
+    "ts": "1700000500.0",
+    "thread_ts": "1700000000.0",
+}
+THREAD_SESSION = "slack:thread:C1:1700000000.0"
+GROUP_THREAD = {
+    "messages": [
+        {"user": "U123", "text": "<@UBOT> run the brief"},
+        {"user": "UBOT", "text": "here it is"},
+        {"user": "U456", "text": "nice, thanks"},
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_a_gate_skip_is_marked_with_a_reaction() -> None:
+    """The skip stays quiet in the thread, but the sender can see the bot read
+    the message, so a misjudged one isn't mistaken for one that never arrived."""
+    from openexecutive.integrations.response_gate import GateDecision
+
+    skip = AsyncMock(return_value=GateDecision(allow=False, reason="sidebar", raw="NO|sidebar"))
+    async with _listeners() as listeners:
+        with _Harness() as h, patch(
+            "openexecutive.integrations.response_gate.should_respond", new=skip
+        ):
+            h.client.conversations_replies = AsyncMock(return_value=GROUP_THREAD)
+            h.client.reactions_add = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            h.say.assert_not_awaited()
+            assert h.client.reactions_add.await_args.kwargs == {
+                "channel": "C1", "timestamp": "1700000500.0", "name": "eyes",
+            }
+            assert {"outcome": "skipped_gate"}.items() <= h.audit_details()[-1].items()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_skip_reaction_changes_nothing_else() -> None:
+    """Without the reactions:write scope the reaction fails; the skip is still
+    audited and nothing escapes into Bolt."""
+    from openexecutive.integrations.response_gate import GateDecision
+
+    skip = AsyncMock(return_value=GateDecision(allow=False, reason="sidebar", raw="NO|sidebar"))
+    async with _listeners() as listeners:
+        with _Harness() as h, patch(
+            "openexecutive.integrations.response_gate.should_respond", new=skip
+        ):
+            h.client.conversations_replies = AsyncMock(return_value=GROUP_THREAD)
+            h.client.reactions_add = AsyncMock(side_effect=RuntimeError("missing_scope"))
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.say.assert_not_awaited()
+            assert h.audit_details()[-1]["outcome"] == "skipped_gate"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_the_bot_is_in_tells_the_sender() -> None:
+    """Slack times out on the thread, but the bot has answered there before
+    (its stored history says so): the sender is told privately and the drop
+    is audited, instead of the message vanishing."""
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.store.messages[THREAD_SESSION] = [{"role": "assistant", "content": "here it is"}]
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            h.say.assert_not_awaited()
+            kwargs = h.client.chat_postEphemeral.await_args.kwargs
+            assert (kwargs["channel"], kwargs["user"], kwargs["thread_ts"]) == (
+                "C1", "U123", "1700000000.0",
+            )
+            assert "@-mention me" in kwargs["text"]
+            assert h.audit_details()[-1]["outcome"] == "dropped_thread_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_the_bot_never_joined_stays_silent() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.client.chat_postEphemeral.assert_not_awaited()
+            assert h.audit_details() == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_tells_no_one_off_the_roster() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.person = None
+            h.store.messages[THREAD_SESSION] = [{"role": "assistant", "content": "here it is"}]
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.client.chat_postEphemeral.assert_not_awaited()
+            assert h.audit_details()[-1]["outcome"] == "rejected_unknown_sender"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_startup_identity_lookup_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """auth_test failing at boot used to turn thread follow-ups off until a
+    restart. A later channel message retries it, at most once a minute."""
+    clock = [1000.0]
+    monkeypatch.setattr(slack_bot.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "slack_sdk.web.async_client.AsyncWebClient.auth_test",
+        AsyncMock(side_effect=RuntimeError("slack down")),
+    )
+    async with _listeners() as listeners:
+        assert slack_bot.bot_user_id() is None
+        client = MagicMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+        unrelated = {"text": "lunch?", "user": "U9", "channel": "C1", "ts": "1.0"}
+
+        clock[0] += 30  # inside the retry interval: no call
+        await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
+        client.auth_test.assert_not_awaited()
+        assert slack_bot.bot_user_id() is None
+
+        clock[0] += 31
+        await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
+        client.auth_test.assert_awaited_once()
+        assert slack_bot.bot_user_id() == "UBOT"
+
+        clock[0] += 120  # resolved: never asked again
+        await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
+        client.auth_test.assert_awaited_once()

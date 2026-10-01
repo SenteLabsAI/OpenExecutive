@@ -146,6 +146,9 @@ class Snapshot:
     discord_bot: Any = None
     discord_bot_task: asyncio.Task[None] | None = None
     slack_handler: Any = None
+    # Whether the Slack listener knows its own user id (auth_test). Without
+    # it the bot answers mentions and DMs but not follow-ups in its threads.
+    slack_bot_id_resolved: bool = True
     mcp_gateway: Any = None
     # The daily brief: its latest run, whether email can carry it, when each
     # brief next goes out, and the zone the user chose for those times (None:
@@ -512,6 +515,15 @@ async def check_slack(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             f"The tokens work for {workspace}, but Slack isn't delivering messages to the app yet.",
             "If this lasts more than a minute, check SLACK_APP_TOKEN and that Socket Mode is on in "
             "your Slack app's settings.",
+        )
+    if not snap.slack_bot_id_resolved:
+        return _result(
+            "slack",
+            "warn",
+            f"Listening in {workspace}, but it won't answer follow-ups in its threads unless they "
+            "@-mention it: it couldn't look up its own Slack identity.",
+            "It tries again about once a minute while messages arrive. If this doesn't clear, check the "
+            "API log for \"auth_test() failed\".",
         )
     return _channel_ready(
         snap,
@@ -1074,6 +1086,7 @@ def _latest_inbound() -> dict[str, AuditEvent | None]:
 def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) -> Snapshot:
     """Read everything the checks need. Blocking (SQLite): run it off the loop."""
     from openexecutive.briefing.brief_state import last_delivery_outcome
+    from openexecutive.integrations.slack_bot import bot_user_id
     from openexecutive.memory.workspace_settings import get_user_timezone, get_workspace
     from openexecutive.people.store import find_principal_person, list_people
     from openexecutive.scheduler.runner import email_ready, next_brief_runs
@@ -1093,6 +1106,7 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
         discord_bot=getattr(app_state, "discord_bot", None),
         discord_bot_task=getattr(app_state, "discord_bot_task", None),
         slack_handler=getattr(app_state, "slack_handler", None),
+        slack_bot_id_resolved=bot_user_id() is not None,
         mcp_gateway=getattr(app_state, "mcp_gateway", None),
         brief_delivery=last_delivery_outcome(),
         brief_email_ready=email_ready(),

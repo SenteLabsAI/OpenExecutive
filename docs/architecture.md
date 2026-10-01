@@ -506,6 +506,8 @@ Required env vars: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
 
 Files a rostered sender shares (PDFs, Word, spreadsheets, text, images) are read into the turn — scanned PDFs converted to text — which needs the bot's **`files:read`** scope. Without it the message still gets a reply, but its files come back unreadable.
 
+A thread follow-up the response gate decides wasn't meant for the bot gets an :eyes: reaction, which needs the **`reactions:write`** scope. Without it the skip is still recorded in the audit log, just with no reaction.
+
 ### Email Poller
 `integrations/email_poller.py`
 

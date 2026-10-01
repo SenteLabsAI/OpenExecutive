@@ -4379,7 +4379,7 @@ audit:
     - tool_invocation — generic skill/MCP/alert/schedule tool calls; full payload includes `active_prompt_blocks`
     - scheduled_action — proactive nudge fired by the scheduler
     - alert — alert created by the triage pipeline
-    - integration_inbound — Slack / Discord / email / Telegram / Google Chat message received. The chat adapters put the first 160 characters of the message in the summary; the email poller keeps the summary to sender and subject and stores the text in the full payload (`message` — the sender's new text, cut at 20,000 escaped JSON chars, the measure the 64 KB cap uses; `attachments` — filenames, 8,000 escaped chars; `body` — the whole body with its quoted chain, only on a row private to the principal, since the chain quotes other people's mail and a public row is every signed-in user's) with `details.preview` (120 chars of the new text) and `details.body_len`, so /audit shows the request next to the reply's `chat_turn` row. `details.outcome` distinguishes the non-reply paths — `rejected_unknown_sender` (not on the People roster), `skipped_gate` (response gate said no), and `handler_error` (the turn raised; the user got the generic apology). The error row carries the same `session_id` as the inbound row, so /audit can join a failed turn to the message that caused it.
+    - integration_inbound — Slack / Discord / email / Telegram / Google Chat message received. The chat adapters put the first 160 characters of the message in the summary; the email poller keeps the summary to sender and subject and stores the text in the full payload (`message` — the sender's new text, cut at 20,000 escaped JSON chars, the measure the 64 KB cap uses; `attachments` — filenames, 8,000 escaped chars; `body` — the whole body with its quoted chain, only on a row private to the principal, since the chain quotes other people's mail and a public row is every signed-in user's) with `details.preview` (120 chars of the new text) and `details.body_len`, so /audit shows the request next to the reply's `chat_turn` row. `details.outcome` distinguishes the non-reply paths — `rejected_unknown_sender` (not on the People roster), `skipped_gate` (response gate said no), `dropped_thread_unreadable` (Slack wouldn't return a thread the bot is in, so a continuation went unanswered; the sender was told), and `handler_error` (the turn raised; the user got the generic apology). The error row carries the same `session_id` as the inbound row, so /audit can join a failed turn to the message that caused it.
     - knowledge_retrieval — one row per `knowledge.retriever.retrieve()` call; details carry chunk counts + domains, full payload carries each chunk's source, distance, and text preview so the session view shows "which RAG chunks influenced this response"
     - cache_event — one row per model call, from every call site (`audit.usage.log_model_usage`): Executive iterations and the committee revision pass (`actor` executive / committee_revision), `BaseAgent.analyze` callers — chat-turn consults via `route_parallel` (`actor` specialist), workflow steps and other direct `route_to_specialist` callers (specialist_workflow), the MCP `consult_specialist` tool (specialist_mcp), and both Council test boxes (agent_test) — `BaseAgent.analyze_with_tools` callers (specialist_research, query_watch, signal_enrichment), the research synthesis and watchlist passes (research_synthesis / research_watchlist), triage, and the chat memory extractor (memory_extractor). Captures `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `cost_usd`, `web_search_requests` (from `usage.server_tool_use`), `stop_reason`, and — inside a research run — the run's `run_id`, so prompt-cache hits are visible per turn, plus `cost_usd` — the actual USD OpenRouter charged for the call (read from `usage.cost`; null on the Anthropic-direct path or for rows logged before cost capture shipped). This is the token-usage + cost source of truth aggregated by both `/audit/sessions/{id}` (per session) and `/audit/usage` (cross-session).
     - memory_snapshot — one row at Executive turn entry; captures the system-block layout, conversation history length, episodic context (full text in `full_json`), and a company-profile hash so the session view can render "what the agent saw" before any API call
@@ -6387,9 +6387,19 @@ integrations:
     (c) thread continuations: any non-mention message in a thread the
     bot has previously replied in is treated as a continuation and run
     through the shared ``response_gate`` (see `response_gate:` below).
-    The bot's own user_id is resolved once at startup via
-    ``auth_test()`` so it can detect its own past replies and avoid
-    double-firing with ``app_mention``. Roster-gated per
+    The bot's own user_id is resolved via ``auth_test()`` so it can
+    detect its own past replies and avoid double-firing with
+    ``app_mention``: at startup, and — if that failed — again from the
+    channel ``message`` listener at most once a minute
+    (``_resolve_bot_user_id``; a failure at boot used to disable thread
+    continuations until a restart, #315). Setup status shows a listening
+    Slack amber while it is unresolved (``bot_user_id()``). The thread is
+    read with ``conversations_replies`` under a 5 s ``wait_for``; when
+    that fails on a continuation, the thread's stored history
+    (``slack:thread:{channel}:{thread_ts}``) decides whether the bot is
+    in it — with history, a rostered sender gets an ephemeral "couldn't
+    read this thread, @-mention me" and the drop is audited
+    ``outcome=dropped_thread_unreadable``; without, it stays silent. Roster-gated per
     `channel_access`. An unknown sender's DM or @mention (not a thread
     continuation) goes to ``_hold_unknown_sender``: a contact gets nothing;
     otherwise name and profile email come from ``users_info`` (5 s
@@ -6507,7 +6517,10 @@ integrations:
     ``GateDecision(allow, reason, raw)``; on NO the channel handler
     emits an ``integration_inbound`` audit row with
     ``details.outcome="skipped_gate"`` and ``details.skip_reason=...``
-    so silent skips are investigable from /audit. Fail-open on any
+    so silent skips are investigable from /audit. Slack also adds an
+    ``eyes`` reaction to the skipped message (``_react_skipped``,
+    best-effort: needs the ``reactions:write`` scope), so a sender the
+    gate misjudged can see it was read and @-mention the bot. Fail-open on any
     exception or timeout — a flaky Haiku call must never silence the
     bot. Single-human threads (only one distinct human across history
     plus current speaker) bypass the gate at the call site, since every

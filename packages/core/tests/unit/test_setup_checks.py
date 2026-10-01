@@ -392,6 +392,19 @@ async def test_slack_states_after_the_token_works() -> None:
     assert not_listening.state == "warn"
 
 
+async def test_slack_listening_without_its_own_identity_warns() -> None:
+    snap = make_snap(
+        slack_settings(),
+        slack_handler=listening_handler(),
+        slack_bot_id_resolved=False,
+        people=[Person(id=1, full_name="Ada", slack_user_id="U1")],
+    )
+    async with Recorder(slack_ok).client() as c:
+        check = await check_slack(snap, c)
+    assert check.state == "warn"
+    assert "won't answer follow-ups in its threads" in check.summary
+
+
 async def test_slack_nobody_on_the_team_list_can_reach_it() -> None:
     snap = make_snap(slack_settings(), slack_handler=listening_handler(), people=[Person(id=1, full_name="Ada")])
     async with Recorder(slack_ok).client() as c:

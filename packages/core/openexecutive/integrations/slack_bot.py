@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import time
 from typing import Any
 
 from openexecutive.audit.redaction import ERROR_DETAIL_LEN
@@ -17,10 +18,17 @@ logger = logging.getLogger(__name__)
 #     tracking session state).
 #  2. Suppress double-firing on the generic `message` event when the
 #     message is actually an @-mention (which `app_mention` handles).
-# Stays None if auth_test fails at startup — handler falls back to the
-# legacy mention/DM-only behavior so the bot still responds, just
-# without thread auto-continuation.
+# Stays None while auth_test fails — the handler falls back to the
+# mention/DM-only behavior so the bot still responds, just without thread
+# auto-continuation — and `_resolve_bot_user_id` tries again on later
+# channel messages, so a failure at boot doesn't last until a restart.
 _bot_user_id: str | None = None
+
+# At most one auth_test retry per interval while the id is unresolved: the
+# retry runs on the generic `message` listener, which sees every message in
+# every channel the bot is in.
+_BOT_ID_RETRY_INTERVAL_S = 60.0
+_bot_id_last_attempt: float | None = None
 
 # Preserves the concurrency ceiling the sync adapter had. That ceiling was
 # Bolt's own listener_executor — ThreadPoolExecutor(max_workers=5)
@@ -37,6 +45,69 @@ _MAX_CONCURRENT_HANDLERS = 5
 # the per-session lock in discord_bot.py. Unbounded growth matches both of
 # those; a conversation's lock is a few dozen bytes.
 _session_locks: dict[str, asyncio.Lock] = {}
+
+
+def bot_user_id() -> str | None:
+    """The bot's own Slack user id, or None while it is unresolved."""
+    return _bot_user_id
+
+
+async def _resolve_bot_user_id(client: Any) -> str | None:
+    """Resolve and cache the bot's user id with ``auth_test``.
+
+    Returns the cached id when there is one. While there isn't, tries at most
+    once per ``_BOT_ID_RETRY_INTERVAL_S``, so a Slack outage at boot costs
+    thread auto-continuation for a minute rather than until a restart.
+    """
+    global _bot_user_id, _bot_id_last_attempt
+    if _bot_user_id:
+        return _bot_user_id
+    now = time.monotonic()
+    if (
+        _bot_id_last_attempt is not None
+        and now - _bot_id_last_attempt < _BOT_ID_RETRY_INTERVAL_S
+    ):
+        return None
+    _bot_id_last_attempt = now
+    try:
+        auth = await asyncio.wait_for(client.auth_test(), timeout=5)
+        _bot_user_id = str(auth.get("user_id") or "") or None
+    except Exception:
+        logger.warning(
+            "Slack: auth_test() failed — thread auto-continuation is off until "
+            "it succeeds",
+            exc_info=True,
+        )
+        return None
+    if _bot_user_id:
+        logger.info("Slack bot_user_id resolved to %s", _bot_user_id)
+    return _bot_user_id
+
+
+# The reaction a thread message gets when the response gate passes it over.
+_SKIPPED_REACTION = "eyes"
+
+
+async def _react_skipped(client: Any, event: dict) -> None:
+    """React to a message the response gate skipped. Never raises."""
+    ts = event.get("ts")
+    if client is None or not ts:
+        return
+    try:
+        await asyncio.wait_for(
+            client.reactions_add(
+                channel=event.get("channel", ""),
+                timestamp=str(ts),
+                name=_SKIPPED_REACTION,
+            ),
+            timeout=5,
+        )
+    except Exception:
+        # Most often missing_scope: the app was installed without
+        # reactions:write. The skip is still audited.
+        logger.info(
+            "Slack: couldn't react to a skipped message (ts=%s)", ts, exc_info=True
+        )
 
 
 def _session_lock(session_id: str) -> asyncio.Lock:
@@ -400,21 +471,14 @@ async def create_slack_app():
 
     app = AsyncApp(token=settings.slack_bot_token)
 
-    # Resolve and cache the bot's own user_id once at startup. Failure
-    # here disables thread auto-continuation but does NOT prevent the
-    # rest of the bot from running — the mention and DM paths don't
-    # depend on this value.
-    global _bot_user_id
-    try:
-        auth = await app.client.auth_test()
-        _bot_user_id = str(auth.get("user_id") or "") or None
-        logger.info("Slack bot_user_id resolved to %s", _bot_user_id)
-    except Exception:
-        logger.exception(
-            "Slack: auth_test() failed at startup — "
-            "thread auto-continuation disabled"
-        )
-        _bot_user_id = None
+    # Resolve and cache the bot's own user_id at startup. Failure here
+    # disables thread auto-continuation until a later retry succeeds (see
+    # handle_message) but does NOT prevent the rest of the bot from running
+    # — the mention and DM paths don't depend on this value.
+    global _bot_user_id, _bot_id_last_attempt
+    _bot_user_id = None
+    _bot_id_last_attempt = None
+    await _resolve_bot_user_id(app.client)
 
     # The async client ensure_future()s every inbound envelope with no cap,
     # so without this a burst of Slack traffic fans out into unbounded
@@ -493,6 +557,9 @@ async def create_slack_app():
         # Standalone messages and DMs are 1:1 — skip the API call.
         can_fetch_replies = client is not None and is_threaded_reply
         thread_replies: list[dict] | None = None
+        # Set when this is a continuation in a thread the bot has answered in
+        # before, but Slack wouldn't hand back the thread — see below.
+        thread_unreadable = False
         if can_fetch_replies:
             try:
                 # 5s bound: this call sits on the user-facing TTFB path (it
@@ -500,12 +567,14 @@ async def create_slack_app():
                 # `timeout=` kwarg — AsyncWebClient has no such parameter, so
                 # that value was silently forwarded as a query string and the
                 # real ceiling stayed the client default of 30s. A timeout is
-                # caught below and degrades to thread_replies=None — which
-                # for mode="thread_continuation" trips the bot-presence guard
-                # and drops the message. That is the intended trade: a slow
-                # Slack API should cost one missed continuation, not a stalled
-                # event loop. Mentions and DMs are unaffected (they do not
-                # depend on thread_replies to decide whether to reply).
+                # caught below and degrades to thread_replies=None. For
+                # mode="thread_continuation" that means the message is not
+                # answered — a slow Slack API should cost one missed
+                # continuation, not a stalled event loop — but the sender is
+                # told when the bot has answered in this thread before (the
+                # bot-presence guard below). Mentions and DMs are unaffected
+                # (they do not depend on thread_replies to decide whether to
+                # reply).
                 replies_resp = await asyncio.wait_for(
                     client.conversations_replies(
                         channel=event.get("channel", ""),
@@ -529,11 +598,23 @@ async def create_slack_app():
         # audit, never trigger alerts, never run the gate. This is what
         # keeps the new behavior from spamming /audit with every random
         # thread message in every channel the bot is in.
-        if mode == "thread_continuation" and (
-            thread_replies is None
-            or not _replies_contain_bot_message(thread_replies, _bot_user_id)
-        ):
-            return
+        if mode == "thread_continuation":
+            if thread_replies is None:
+                # Slack didn't hand back the thread, so the replies can't say
+                # whether the bot is in it. The thread's stored history can:
+                # every turn the bot answers here is persisted under this
+                # session id (`_persist_turn`). With history, the sender is
+                # told after the roster gate below; without, a thread the bot
+                # never joined stays silent as before.
+                from openexecutive.memory.session_store import load_messages
+
+                if not can_fetch_replies or not await asyncio.to_thread(
+                    load_messages, session_id
+                ):
+                    return
+                thread_unreadable = True
+            elif not _replies_contain_bot_message(thread_replies, _bot_user_id):
+                return
 
         # Audit writes go off-loop too: log_event opens SQLite with a 5s
         # busy timeout, and the scheduler, resumer and email poller all write
@@ -585,6 +666,45 @@ async def create_slack_app():
             # bot was not addressed there.
             if mode in ("dm", "mention") and slack_user_id:
                 await _hold_unknown_sender(event, say, client, mode, slack_user_id, cleaned)
+            return
+
+        if thread_unreadable:
+            await asyncio.to_thread(
+                audit_log,
+                "integration_inbound",
+                "Dropped: couldn't read the Slack thread to continue it",
+                actor="slack",
+                session_id=session_id,
+                details={
+                    "channel": "slack",
+                    "slack_user": slack_user_id,
+                    "ts": event.get("ts"),
+                    "thread_ts": thread_ts,
+                    "outcome": "dropped_thread_unreadable",
+                },
+            )
+            # Only the sender sees it, the same way a gate skip stays out of
+            # the channel. Best-effort: Slack just failed us once already.
+            try:
+                await asyncio.wait_for(
+                    client.chat_postEphemeral(
+                        channel=event.get("channel", ""),
+                        user=slack_user_id,
+                        thread_ts=thread_ts,
+                        text=(
+                            "I couldn't read this thread just now, so I didn't "
+                            "answer. @-mention me to try again."
+                        ),
+                    ),
+                    timeout=5,
+                )
+            except Exception:
+                logger.warning(
+                    "Slack: couldn't tell the sender a continuation was dropped "
+                    "in session %s",
+                    session_id,
+                    exc_info=True,
+                )
             return
 
         # WaitForHuman inbound resolver — check BEFORE alert triage.
@@ -672,6 +792,11 @@ async def create_slack_app():
                             "skip_reason": decision.reason,
                         },
                     )
+                    # A quiet sign the message was read and passed over, so a
+                    # sender the gate misjudged knows to @-mention the bot
+                    # instead of wondering whether it arrived. Best-effort:
+                    # it needs the reactions:write scope.
+                    await _react_skipped(client, event)
                     return
 
         # Fork the inbound message into the alerts triage pipeline. Runs in a
@@ -954,9 +1079,14 @@ async def create_slack_app():
                 await _handle_message(event, say, client=client, mode="dm")
             return
 
+        # A failed auth_test at startup left the id unset; try again
+        # (rate-limited) so thread auto-continuation comes back on its own.
+        if _bot_user_id is None:
+            await _resolve_bot_user_id(client)
+
         # If the bot is @-mentioned, `app_mention` will handle it. Skip
-        # here to avoid double-firing. When _bot_user_id failed to resolve
-        # at startup this filter is a no-op, but the bot-presence guard
+        # here to avoid double-firing. When _bot_user_id is still
+        # unresolved this filter is a no-op, but the bot-presence guard
         # inside _handle_message (see "Bot-presence guard for
         # thread_continuation mode") still catches the second invocation
         # because the bot has not yet engaged in any thread.
