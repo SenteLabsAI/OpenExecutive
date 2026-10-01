@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from openexecutive.knowledge.loader import (
     extract_text_from_file,
     extract_text_from_xlsx,
@@ -51,6 +53,55 @@ def test_extract_text_from_xlsx_respects_char_cap(tmp_path: Path) -> None:
 
     capped = extract_text_from_xlsx(path, max_chars=200)
     assert len(capped) < 1000  # stopped well before flattening all 100 rows
+
+
+def test_a_sheet_that_only_claims_a_huge_size_is_read_quickly(tmp_path: Path) -> None:
+    """(#316) Two cells at A1 and XFD1048576 make a ~5 KB file that openpyxl
+    walks as a billion empty cells. The row and column caps stop it."""
+    import time
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "kept"
+    ws["XFD1048576"] = "out of range"
+    path = tmp_path / "sparse.xlsx"
+    wb.save(str(path))
+    assert path.stat().st_size < 20_000
+
+    start = time.monotonic()
+    text = extract_text_from_xlsx(path)
+    assert time.monotonic() - start < 20
+    assert "kept" in text
+    assert "out of range" not in text
+
+
+def test_blank_rows_count_toward_the_xlsx_row_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openpyxl import Workbook
+
+    from openexecutive.knowledge import loader
+
+    monkeypatch.setattr(loader, "_XLSX_MAX_ROWS", 10)
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "first"
+    ws["A50"] = "past the cap"
+    path = tmp_path / "gaps.xlsx"
+    wb.save(str(path))
+
+    text = extract_text_from_xlsx(path)
+    assert "first" in text
+    assert "past the cap" not in text
+
+
+def test_a_non_utf8_csv_is_read_not_raised(tmp_path: Path) -> None:
+    path = tmp_path / "excel-export.csv"
+    path.write_bytes("client,fee\nCafé Noir,1200\n".encode("cp1252"))
+    text = extract_text_from_file(path)
+    assert "Noir,1200" in text
 
 
 def test_extract_text_from_csv(tmp_path: Path) -> None:

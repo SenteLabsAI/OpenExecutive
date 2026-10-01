@@ -1667,6 +1667,11 @@ knowledge:
     openexecutive.knowledge.isolated`), not in the API process: pdf_reader's
     text-layer pass (_text_layer) and local OCR (_ocr_pdf), and the PDF /
     .docx / .doc / .xlsx / .xlsm branches of loader.extract_text_from_file.
+    An .xlsx / .xlsm is read for at most _XLSX_MAX_ROWS (200,000) rows,
+    blank ones included, and _XLSX_MAX_COLS (1,024) columns: openpyxl's
+    read-only reader yields a filler row for every row a sheet's <dimension>
+    claims, so a ~5 KB workbook claiming A1:XFD1048576 otherwise pins a
+    parser slot for the whole timeout (#316).
     Why: pypdf's object graph, pdfium bitmaps and the OCR model are hundreds
     of MB of small allocations, and CPython keeps the arenas, so an
     in-process parse left its peak in uvicorn for good. Measured on a 34 MB,

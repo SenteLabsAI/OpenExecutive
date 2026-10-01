@@ -69,6 +69,13 @@ _LEGACY_ATTACHMENT_DOMAIN = "company_docs"
 _ISOLATED_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm"})
 _PARSE_TIMEOUT_S = 300.0
 
+# openpyxl's read-only reader takes a sheet's size from its ``<dimension>``
+# element and yields a filler row for every row the file leaves out, so a
+# few-KB workbook claiming A1:XFD1048576 means a billion empty cells to walk.
+# Rows (blank ones included) and columns read per workbook are capped.
+_XLSX_MAX_ROWS = 200_000
+_XLSX_MAX_COLS = 1_024
+
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> list[str]:
     words = text.split()
@@ -113,18 +120,24 @@ def extract_text_from_xlsx(path: Path, max_chars: int = 200_000) -> str:
     stored cell values (``data_only=True`` returns cached formula results, not
     formulae); legacy binary ``.xls`` is not supported by openpyxl.
 
-    ``read_only`` streams rows and ``max_chars`` bounds the accumulated text, so
-    a decompression-bombed workbook (a small archive that inflates to millions
-    of cells) can't exhaust memory."""
+    ``read_only`` streams rows and ``max_chars`` bounds the accumulated text.
+    At most ``_XLSX_MAX_ROWS`` rows, blank or not, are read across the
+    workbook, and ``_XLSX_MAX_COLS`` columns of each, so a sheet that only
+    claims a huge size can't keep the parser busy. Shared strings and styles
+    are still read whole by openpyxl before any row."""
     from openpyxl import load_workbook
 
     wb = load_workbook(filename=str(path), read_only=True, data_only=True)
     try:
         parts: list[str] = []
         total = 0
+        rows_left = _XLSX_MAX_ROWS
         for ws in wb.worksheets:
             heading_written = False
-            for row in ws.iter_rows(values_only=True):
+            for row in ws.iter_rows(max_col=_XLSX_MAX_COLS, values_only=True):
+                rows_left -= 1
+                if rows_left < 0:
+                    return "\n".join(parts)
                 cells = [str(c) for c in row if c is not None]
                 if not cells:
                     continue
@@ -169,7 +182,9 @@ def _parse_file(path: Path) -> str:
     elif suffix in (".xlsx", ".xlsm"):
         return extract_text_from_xlsx(path)
     elif suffix in (".md", ".txt", ".rst", ".csv"):
-        return path.read_text(encoding="utf-8")
+        # Lenient: a CSV saved by Excel is often cp1252, and a strict decode
+        # error would surface as a 500 rather than a readable document.
+        return path.read_text(encoding="utf-8", errors="replace")
     return ""
 
 
