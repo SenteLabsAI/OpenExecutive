@@ -13,7 +13,6 @@ import {
   QualityPresets,
   applyQualityPreset,
   createPersona,
-  getCouncilView,
   deletePersona,
   getAgentDetail,
   getPersona,
@@ -98,6 +97,9 @@ function personaOption(p: PersonaMeta) {
   );
 }
 
+// Remembers, per browser, that the owner prefers the full editor.
+const ADVANCED_KEY = "oe.council.advanced";
+
 function detailToDraft(d: AgentDetail): DraftState {
   return {
     role: d.role,
@@ -137,13 +139,13 @@ export default function CouncilPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const [presets, setPresets] = useState<QualityPresets | null>(null);
-  // Simple view (COUNCIL_SIMPLE_VIEW): Quality, voice and the core agents
-  // with their additional instructions. "Show all agents" lists the
-  // internal ones too; "Advanced" opens today's full page.
-  const [simpleView, setSimpleView] = useState(false);
+  // The Council opens in its simple view: Quality, voice and the core
+  // agents with their additional instructions. "Show all agents" lists the
+  // internal ones too; "Advanced" opens the full editor, and this browser
+  // remembers that choice.
   const [showAll, setShowAll] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const simple = simpleView && !advanced;
+  const simple = !advanced;
   const [applyingPreset, setApplyingPreset] = useState<QualityPresetId | null>(null);
 
   const [saving, setSaving] = useState(false);
@@ -198,16 +200,33 @@ export default function CouncilPage() {
   }, [refreshAgents]);
 
   useEffect(() => {
-    getCouncilView()
-      .then((v) => setSimpleView(v.simple_view))
-      .catch(() => {});
+    try {
+      if (window.localStorage.getItem(ADVANCED_KEY) === "1") setAdvanced(true);
+    } catch {
+      // Storage can be blocked; the page then opens in the simple view.
+    }
   }, []);
 
   const toggleAdvanced = () => {
-    setAdvanced((a) => !a);
-    // The simple view's voice card saves on its own; reload so the full
-    // editor shows what is stored.
-    if (selected) loadDetail(selected);
+    const next = !advanced;
+    setAdvanced(next);
+    try {
+      window.localStorage.setItem(ADVANCED_KEY, next ? "1" : "0");
+    } catch {
+      // Not remembered; the toggle still works for this visit.
+    }
+    if (!selected) return;
+    // The simple view's voice card saves on its own, so pick up the stored
+    // voice. Unsaved edits stay in the draft; only a clean draft is reloaded.
+    const keepDraft = dirty;
+    getAgentDetail(selected)
+      .then((d) => {
+        setDetail(d);
+        setDraft((prev) =>
+          keepDraft && prev ? { ...prev, voice_persona_slug: d.voice_persona_slug ?? null } : detailToDraft(d),
+        );
+      })
+      .catch(() => {});
   };
 
   const listedAgents = simple && !showAll ? agents.filter((a) => a.visibility === "core") : agents;
@@ -461,14 +480,12 @@ export default function CouncilPage() {
           <div>
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-2xl font-bold text-fg">Agent Council</h1>
-              {simpleView && (
-                <button
-                  onClick={toggleAdvanced}
-                  className="mt-1 text-xs text-fg-muted hover:text-fg underline underline-offset-2"
-                >
-                  {advanced ? "Back to simple view" : "Advanced"}
-                </button>
-              )}
+              <button
+                onClick={toggleAdvanced}
+                className="mt-1 text-xs text-fg-muted hover:text-fg underline underline-offset-2"
+              >
+                {advanced ? "Back to simple view" : "Advanced"}
+              </button>
             </div>
             <p className="mt-2 text-sm text-fg-muted">
               {simple

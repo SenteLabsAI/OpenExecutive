@@ -403,19 +403,6 @@ def _is_known_agent(agent_id: str) -> bool:
     return agent_id == EXECUTIVE_ID or agent_id in _agent_registry()
 
 
-class CouncilView(BaseModel):
-    # Open the Council in its simple view (COUNCIL_SIMPLE_VIEW).
-    simple_view: bool
-
-
-@router.get("/agents/view", response_model=CouncilView)
-def council_view() -> CouncilView:
-    """How the Agent Council page opens on this install."""
-    from openexecutive.config import get_settings
-
-    return CouncilView(simple_view=get_settings().council_simple_view)
-
-
 class QualityPreset(BaseModel):
     id: PresetId
     label: str

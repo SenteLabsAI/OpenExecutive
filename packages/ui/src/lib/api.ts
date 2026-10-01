@@ -2641,17 +2641,6 @@ export async function deletePersona(slug: string): Promise<void> {
   }
 }
 
-// How the Agent Council opens on this install (COUNCIL_SIMPLE_VIEW).
-export interface CouncilView {
-  simple_view: boolean;
-}
-
-export async function getCouncilView(): Promise<CouncilView> {
-  const res = await fetch(`${API_BASE}/agents/view`);
-  if (!res.ok) throw new Error("Failed to load the council view");
-  return res.json();
-}
-
 export async function listAgents(): Promise<AgentMeta[]> {
   const res = await fetch(`${API_BASE}/agents`);
   if (!res.ok) throw new Error("Failed to list agents");

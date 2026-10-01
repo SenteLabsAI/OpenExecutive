@@ -207,10 +207,3 @@ def test_every_council_agent_has_a_visibility(client: TestClient) -> None:
     assert {"quality_judge", "utility_fast", "research"} <= {
         n for n, v in agents.items() if v == "internal"
     }
-
-
-def test_council_view_follows_the_setting(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("COUNCIL_SIMPLE_VIEW", raising=False)
-    assert client.get("/agents/view").json() == {"simple_view": False}
-    monkeypatch.setenv("COUNCIL_SIMPLE_VIEW", "true")
-    assert client.get("/agents/view").json() == {"simple_view": True}

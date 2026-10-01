@@ -489,11 +489,12 @@ providers:
     BaseAgent.visibility is "core" (the Executive proxy and every domain
     specialist declares it) or "internal" (the default: triage and the
     Council-only helpers). AgentMeta carries it, and agents.presets uses it
-    to decide which agents Thorough moves up. COUNCIL_SIMPLE_VIEW (default
-    false), read by GET /agents/view, opens the Council in a simple view:
+    to decide which agents Thorough moves up. The Council opens in a simple
+    view for everyone:
     the Quality presets, the shared VoicePicker, and only core agents with
     their additional instructions and a model badge. "Show all agents" lists
-    internal agents too; "Advanced" opens the full editor. A test fails if a
+    internal agents too; "Advanced" opens the full editor, and the browser
+    remembers that choice. There is no setting for it. A test fails if a
     registered specialist other than triage is not core.
   executive_voices: |
     The Executive's voice persona (personas/builtin/*.md, shadowed by
