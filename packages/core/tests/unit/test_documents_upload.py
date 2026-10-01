@@ -207,3 +207,68 @@ def test_every_known_domain_is_accepted(client: TestClient, domain: str) -> None
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["domain"] == domain
+
+
+# ── Streaming the upload to disk ──────────────────────────────────────────
+
+
+@pytest.fixture
+def staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Stage uploads in a directory of their own, so a test can see that no
+    partial copy is left behind."""
+    import tempfile
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(staging))
+    return staging
+
+
+def test_an_upload_over_the_limit_is_refused_with_413(
+    client: TestClient, tmp_path: Path, staging: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Small limit and copy size, so the refusal comes several pieces in.
+    monkeypatch.setattr(documents, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(documents, "_COPY_CHUNK_BYTES", 16)
+    files = {"file": ("big.md", io.BytesIO(b"x" * 101), "text/markdown")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == "File too large (max 50MB)"
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert store.rows == {}
+    assert not (tmp_path / "company" / "docs" / "big.md").exists()
+    assert list(staging.iterdir()) == [], "the partial copy must be removed"
+
+
+def test_an_upload_at_the_limit_is_stored_byte_for_byte(
+    client: TestClient, tmp_path: Path, staging: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(documents, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(documents, "_COPY_CHUNK_BYTES", 16)
+    body = b"# Plan\n" + b"Grow revenue. " * 6 + b"x" * 9
+    assert len(body) == 100
+    files = {"file": ("plan.md", io.BytesIO(body), "text/markdown")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 200, resp.text
+    assert (tmp_path / "company" / "docs" / "plan.md").read_bytes() == body
+    assert list(staging.iterdir()) == [], "the staging copy must be removed"
+
+
+def test_the_alert_excerpt_is_the_head_of_the_upload(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[Any] = []
+    monkeypatch.setattr(
+        "openexecutive.alerts.pipeline.schedule_evaluation", events.append
+    )
+    body = b"# Notes\n" + b"a" * 9000
+    files = {"file": ("notes.md", io.BytesIO(body), "text/markdown")}
+
+    assert client.post("/documents", files=files).status_code == 200
+
+    (event,) = events
+    assert event.body == body[:8000].decode()

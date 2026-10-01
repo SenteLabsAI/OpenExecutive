@@ -26,6 +26,12 @@ could not read the file. ``read_pdf_text`` tries three readers in order:
 Callers get a ``PdfReadResult`` and never an exception: an unreadable PDF
 comes back as ``method="none"`` with a ``note`` saying why, which callers
 show to the model in place of the old bare "could not extract any text".
+
+Steps 1 and 3 parse the file in a short-lived child process
+(``knowledge.isolated``), so the memory a large PDF takes to parse goes back
+to the OS when it is done instead of staying with the API process. A caller
+holding the file on disk passes its ``Path``: the child reads it, and this
+process only loads the bytes if they have to go to the model (step 2).
 """
 from __future__ import annotations
 
@@ -39,7 +45,10 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
+
+from openexecutive.knowledge.isolated import WorkerStopped, run_isolated
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +72,15 @@ _OCR_RENDER_SCALE = 2.0
 # says, so a crafted 20000pt-square page would otherwise render to a
 # multi-gigabyte bitmap; a bigger page is rendered at a lower scale instead.
 _OCR_MAX_PAGE_PIXELS = 25_000_000
-# OCR is CPU-bound and runs in the default thread pool: at most this many
-# documents at once, each stopping (with what it has) after the time budget.
+# OCR is CPU-bound and runs in a child process: at most this many documents
+# at once, each stopping (with what it has) after the time budget.
 _OCR_CONCURRENCY = 2
 _OCR_TIME_BUDGET_S = 240.0
+# Wall-clock limits on the child processes, past which they are killed. OCR
+# gets its time budget plus room to start Python and load the model; the text
+# layer gets enough for a legitimate _MAX_PDF_PAGES-page file on one slow CPU.
+_TEXT_LAYER_TIMEOUT_S = 300.0
+_OCR_PROCESS_SLACK_S = 120.0
 # Pages converted (model or OCR) for files that arrive on their own through
 # a channel — as opposed to one the Executive or the signed-in user asks to
 # read — are metered per rolling hour, so no sender can run up unbounded model
@@ -133,16 +147,19 @@ class PdfTooLarge(ValueError):
         self.pages = pages
 
 
-def _text_layer(data: bytes) -> tuple[str, int]:
+def _text_layer(source: bytes | Path, max_pages: int | None = None) -> tuple[str, int]:
     """(joined page text, page count) from the PDF's own text layer.
 
-    Raises ``PdfTooLarge`` past ``_MAX_PDF_PAGES``, before any page's text is
-    extracted."""
+    Raises ``PdfTooLarge`` past ``max_pages`` (default ``_MAX_PDF_PAGES``),
+    before any page's text is extracted. ``read_pdf_text`` runs this in a
+    child process, which is why the ceiling is an argument: the child does
+    not see this process's module state."""
     from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(data))
+    limit = _MAX_PDF_PAGES if max_pages is None else max_pages
+    reader = PdfReader(io.BytesIO(source) if isinstance(source, bytes) else str(source))
     count = len(reader.pages)
-    if count > _MAX_PDF_PAGES:
+    if count > limit:
         raise PdfTooLarge(count)
     pages = []
     for page in reader.pages:
@@ -367,37 +384,50 @@ def _render_scale(width_pt: float, height_pt: float) -> float:
     return math.sqrt(_OCR_MAX_PAGE_PIXELS / area)
 
 
-def _ocr_pdf(data: bytes, max_pages: int) -> tuple[str, int]:
+def _ocr_pdf(source: bytes | Path, max_pages: int) -> tuple[str, int]:
     """OCR up to ``max_pages`` pages: ``(text, pages read)``. Stops early at
-    the time budget. Blocking — run in a thread."""
+    the time budget. Blocking, and loads the OCR model: ``read_pdf_text`` runs
+    it through ``_ocr_isolated``."""
     import pypdfium2 as pdfium
 
     engine = _get_ocr_engine()
-    with _ocr_slots:
-        deadline = time.monotonic() + _OCR_TIME_BUDGET_S
-        doc = pdfium.PdfDocument(data)
-        try:
-            parts: list[str] = []
-            read = 0
-            for i in range(min(len(doc), max_pages)):
-                if time.monotonic() > deadline:
-                    break
-                page = doc[i]
-                try:
-                    width, height = page.get_size()
-                    image = page.render(scale=_render_scale(width, height)).to_pil()
-                finally:
-                    page.close()
-                text = _ocr_page_text(engine, image).strip()
-                read += 1
-                if text:
-                    parts.append(f"--- page {i + 1} ---\n{text}")
-            return "\n\n".join(parts), read
-        finally:
-            doc.close()
+    deadline = time.monotonic() + _OCR_TIME_BUDGET_S
+    doc = pdfium.PdfDocument(source if isinstance(source, bytes) else str(source))
+    try:
+        parts: list[str] = []
+        read = 0
+        for i in range(min(len(doc), max_pages)):
+            if time.monotonic() > deadline:
+                break
+            page = doc[i]
+            try:
+                width, height = page.get_size()
+                image = page.render(scale=_render_scale(width, height)).to_pil()
+            finally:
+                page.close()
+            text = _ocr_page_text(engine, image).strip()
+            read += 1
+            if text:
+                parts.append(f"--- page {i + 1} ---\n{text}")
+        return "\n\n".join(parts), read
+    finally:
+        doc.close()
 
 
 _ocr_slots = threading.BoundedSemaphore(_OCR_CONCURRENCY)
+
+
+def _ocr_isolated(source: bytes | Path, max_pages: int) -> tuple[str, int]:
+    """``_ocr_pdf`` in a child process, at most ``_OCR_CONCURRENCY`` at once.
+    The model and the rendered pages leave with the child. Blocking — run in
+    a thread."""
+    with _ocr_slots:
+        text, read = run_isolated(
+            _ocr_pdf, source, max_pages,
+            timeout=_OCR_TIME_BUDGET_S + _OCR_PROCESS_SLACK_S,
+            reraise=(OcrUnavailable,),
+        )
+        return text, read
 
 
 # ── Inbound page budget ──────────────────────────────────────────────────────
@@ -427,10 +457,25 @@ def reset_inbound_budget() -> None:
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
+def _digest(source: bytes | Path) -> str:
+    """sha256 of the PDF, read from disk in pieces when given a path."""
+    if isinstance(source, bytes):
+        return hashlib.sha256(source).hexdigest()
+    digest = hashlib.sha256()
+    with source.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 async def read_pdf_text(
-    data: bytes, *, filename: str = "", inbound: bool = False
+    data: bytes | Path, *, filename: str = "", inbound: bool = False
 ) -> PdfReadResult:
     """Return the text of a PDF, converting scanned pages when needed.
+
+    ``data`` is the PDF's bytes, or the ``Path`` of a PDF on disk: with a
+    path, the parsers read the file themselves and this process never holds
+    it whole unless the pages go to the model.
 
     ``inbound`` marks a file that arrived on its own through a channel (a
     chat, Slack, Google Chat or email attachment) rather than one the
@@ -440,18 +485,31 @@ async def read_pdf_text(
     """
     from openexecutive.config import get_settings
 
-    key = f"{hashlib.sha256(data).hexdigest()}:{'inbound' if inbound else 'asked'}"
+    label = filename or "PDF"
+    try:
+        digest = await asyncio.to_thread(_digest, data)
+    except OSError as exc:
+        logger.warning("pdf_reader: could not read %s (%s)", label, type(exc).__name__)
+        return PdfReadResult("", "none", 0, "the file could not be read")
+    key = f"{digest}:{'inbound' if inbound else 'asked'}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
 
-    label = filename or "PDF"
     try:
-        text, pages = await asyncio.to_thread(_text_layer, data)
+        text, pages = await asyncio.to_thread(
+            run_isolated, _text_layer, data, _MAX_PDF_PAGES,
+            timeout=_TEXT_LAYER_TIMEOUT_S, reraise=(PdfTooLarge,),
+        )
     except PdfTooLarge as exc:
         return PdfReadResult(
             "", "none", exc.pages,
             f"the PDF has {exc.pages} pages — more than the {_MAX_PDF_PAGES} this reads",
+        )
+    except WorkerStopped as exc:
+        logger.warning("pdf_reader: could not read %s (%s)", label, exc)
+        return PdfReadResult(
+            "", "none", 0, "the PDF could not be read: reading it ran out of memory or time"
         )
     except Exception as exc:
         logger.warning("pdf_reader: could not open %s (%s)", label, type(exc).__name__)
@@ -476,8 +534,11 @@ async def read_pdf_text(
             )
         limit = granted
 
-    use_model = limit and settings.pdf_provider_reading
-    transcribed = await _read_with_model(data, limit) if use_model else None
+    transcribed = None
+    if limit and settings.pdf_provider_reading:
+        pdf = data if isinstance(data, bytes) else await asyncio.to_thread(data.read_bytes)
+        transcribed = await _read_with_model(pdf, limit)
+        del pdf
     if transcribed:
         transcript, cut_off = transcribed
         note = "; ".join(
@@ -493,7 +554,7 @@ async def read_pdf_text(
     if not settings.pdf_ocr_enabled:
         return _fallback(text, pages, "it looks scanned and local OCR is turned off")
     try:
-        ocr, read = await asyncio.to_thread(_ocr_pdf, data, limit)
+        ocr, read = await asyncio.to_thread(_ocr_isolated, data, limit)
     except OcrUnavailable:
         return _fallback(text, pages, "it looks scanned and OCR is not installed on this server")
     except Exception as exc:

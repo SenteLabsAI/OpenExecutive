@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openexecutive.knowledge.isolated import run_isolated
 from openexecutive.knowledge.store import ChromaDBStore
 
 if TYPE_CHECKING:
@@ -61,6 +62,12 @@ ATTACHMENT_DOMAIN = "attachment"
 # upload that merely happens to be named with the prefix. UPLOAD_DOMAINS
 # never accepts this value, so nothing uploaded through the API carries it.
 _LEGACY_ATTACHMENT_DOMAIN = "company_docs"
+
+# Formats whose parsers build the whole document in memory. They are parsed
+# in a child process (``knowledge.isolated``) so that memory goes back to the
+# OS afterwards, and killed past this many seconds.
+_ISOLATED_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm"})
+_PARSE_TIMEOUT_S = 300.0
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> list[str]:
@@ -139,6 +146,20 @@ def extract_text_from_xlsx(path: Path, max_chars: int = 200_000) -> str:
 
 
 def extract_text_from_file(path: Path) -> str:
+    """The text of a document on disk; ``""`` for an unsupported type.
+
+    PDF, Word and Excel files are parsed in a child process. A parser error
+    raises ``isolated.IsolatedError`` (a ``RuntimeError``) naming the
+    original exception, and a parse that dies or runs past
+    ``_PARSE_TIMEOUT_S`` raises ``isolated.WorkerStopped``. Blocking — run
+    it in a thread from async code."""
+    if path.suffix.lower() in _ISOLATED_SUFFIXES:
+        return run_isolated(_parse_file, path, timeout=_PARSE_TIMEOUT_S)
+    return _parse_file(path)
+
+
+def _parse_file(path: Path) -> str:
+    """``extract_text_from_file`` in this process."""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         return extract_text_from_pdf(path)
@@ -155,7 +176,8 @@ async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadRes
     """Read a document for the Executive, converting a scanned PDF.
 
     A PDF goes through ``knowledge.pdf_reader`` (text layer, else Claude or
-    local OCR); anything else through ``extract_text_from_file`` in a thread.
+    local OCR), which reads it from ``path`` in a child process; anything
+    else through ``extract_text_from_file`` in a thread.
     The result's ``note`` says why a file came back empty or partial.
     ``inbound`` is ``read_pdf_text``'s: a file that arrived on its own
     through a channel, metered by the inbound page budget.
@@ -165,8 +187,7 @@ async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadRes
     from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
 
     if path.suffix.lower() == ".pdf":
-        data = await asyncio.to_thread(path.read_bytes)
-        return await read_pdf_text(data, filename=path.name, inbound=inbound)
+        return await read_pdf_text(path, filename=path.name, inbound=inbound)
     text = await asyncio.to_thread(extract_text_from_file, path)
     return PdfReadResult(text, "text_layer" if text.strip() else "none", 0)
 

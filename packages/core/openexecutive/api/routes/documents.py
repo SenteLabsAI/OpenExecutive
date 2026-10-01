@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -10,6 +12,37 @@ from openexecutive.api.models import CompanyDocContent, DocumentUploadResponse
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".md", ".txt"}
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+# The upload is copied to its staging file this many bytes at a time, so the
+# process never holds a whole (up to 50 MB) document in memory.
+_COPY_CHUNK_BYTES = 1024 * 1024
+_ALERT_EXCERPT_BYTES = 8000
+
+
+async def _stage_upload(file: UploadFile, suffix: str) -> Path:
+    """Copy the upload to a temp file in pieces and return its path.
+
+    Raises 413 as soon as it passes ``MAX_UPLOAD_BYTES``, removing the
+    partial copy."""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        try:
+            size = 0
+            while chunk := await file.read(_COPY_CHUNK_BYTES):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File too large (max 50MB)")
+                tmp.write(chunk)
+        except BaseException:
+            tmp.close()
+            tmp_path.unlink(missing_ok=True)
+            raise
+    return tmp_path
+
+
+def _read_head(path: Path, size: int) -> bytes:
+    with path.open("rb") as f:
+        return f.read(size)
 
 
 @router.post("/documents", response_model=DocumentUploadResponse)
@@ -49,13 +82,7 @@ async def upload_document(
             detail=f"Unknown domain: {domain}. Allowed: {', '.join(sorted(UPLOAD_DOMAINS))}",
         )
 
-    content = await file.read()
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 50MB)")
-
-    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = Path(tmp.name)
+    tmp_path = await _stage_upload(file, ext)
 
     try:
         from openexecutive.config import get_settings
@@ -87,7 +114,7 @@ async def upload_document(
         company_docs_dir = settings.company_profile_path.parent / "docs"
         company_docs_dir.mkdir(parents=True, exist_ok=True)
         dest = company_docs_dir / safe_filename
-        dest.write_bytes(content)
+        await asyncio.to_thread(shutil.copyfile, tmp_path, dest)
 
         # Fire the proactive-alerts pipeline. Body is a best-effort excerpt
         # for triage context; PDFs/docx won't decode cleanly and that's fine —
@@ -98,7 +125,8 @@ async def upload_document(
 
             excerpt = ""
             if ext in {".md", ".txt"}:
-                excerpt = content[:8000].decode("utf-8", errors="replace")
+                head = await asyncio.to_thread(_read_head, tmp_path, _ALERT_EXCERPT_BYTES)
+                excerpt = head.decode("utf-8", errors="replace")
             else:
                 excerpt = f"Newly ingested {ext} document: {safe_filename} (domain: {domain})"
 

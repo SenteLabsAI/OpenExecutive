@@ -3,6 +3,10 @@
 The model is stubbed (no network): `_model_provider` is patched to a fake
 with `messages_create`. OCR runs for real in one test (skipped when RapidOCR
 is not installed) and is stubbed elsewhere so the rest stay fast.
+
+The parsers run in-process here (``isolated.enabled = False``) so the
+monkeypatches below reach them; ``test_isolated.py`` covers the same reads
+through the real child process.
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from typing import Any
 import pytest
 from pypdf import PdfReader, PdfWriter
 
-from openexecutive.knowledge import pdf_reader
+from openexecutive.knowledge import isolated, pdf_reader
 from openexecutive.knowledge.pdf_reader import PdfReadResult, read_pdf_text
 
 
@@ -22,6 +26,11 @@ def _provider_reading_on(monkeypatch):
     """Provider reading is opt-in (off by default); most tests here exercise
     that path, so they turn it on. The default is pinned by its own test."""
     monkeypatch.setenv("PDF_PROVIDER_READING", "true")
+
+
+@pytest.fixture(autouse=True)
+def _parse_in_process(monkeypatch):
+    monkeypatch.setattr(isolated, "enabled", False)
 
 
 @pytest.fixture(autouse=True)

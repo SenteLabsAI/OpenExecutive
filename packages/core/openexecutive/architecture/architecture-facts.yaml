@@ -1576,6 +1576,46 @@ knowledge:
     attachments in front of the Executive under "From your company documents",
     and it is why isolation belongs in the collection, never in a domain
     value.
+  parse_isolation: |
+    Document parsing runs in a short-lived child process
+    (knowledge.isolated.run_isolated -> `python -m
+    openexecutive.knowledge.isolated`), not in the API process: pdf_reader's
+    text-layer pass (_text_layer) and local OCR (_ocr_pdf), and the PDF /
+    .docx / .doc / .xlsx / .xlsm branches of loader.extract_text_from_file.
+    Why: pypdf's object graph, pdfium bitmaps and the OCR model are hundreds
+    of MB of small allocations, and CPython keeps the arenas, so an
+    in-process parse left its peak in uvicorn for good. Measured on a 34 MB,
+    131-page text-layer PDF through POST /documents: 272 -> 440 MB peak, 378
+    MB after (before); 274 -> 324 MB peak, 318 MB after, all of the rest
+    from embedding (after). A 30-page scan through OCR: 787 MB peak, 446
+    after (before); 297 / 290 (after) — the OCR child itself peaks ~600 MB
+    for the length of the OCR, then exits.
+    Protocol: (module, qualname, args) pickled to the child's stdin (the
+    child trusts its parent); the answer is JSON on stdout, so the API never
+    unpickles anything a parser of a hostile file could have shaped. The
+    child's environment is reduced to PATH, HOME, PYTHONPATH/PYTHONHOME,
+    VIRTUAL_ENV, LD_LIBRARY_PATH, locale and temp-dir variables: no API
+    keys. In the child, fd 1 carries only the answer (library output goes
+    to stderr) and only errors are logged.
+    Contract kept: read_pdf_text never raises (an exception the caller names
+    in `reraise` — PdfTooLarge, OcrUnavailable — is rebuilt as itself; a
+    child that dies or passes its timeout raises WorkerStopped, which
+    read_pdf_text turns into method "none" with a note); a Word/Excel parse
+    error still raises, as IsolatedError naming the original type.
+    Timeouts: 300 s for the text layer and file extractors, OCR's 240 s
+    budget + 120 s. The page ceiling travels as an argument because the
+    child never sees this process's module state. OCR's two-at-a-time
+    semaphore is held in the API process around the child. Where no child
+    can be started (OSError on spawn), the parse runs in-process, logged
+    once. Tests that monkeypatch parser internals set isolated.enabled =
+    False; tests/unit/test_isolated.py runs the real child.
+    read_document_text passes read_pdf_text the Path, so the API process
+    hashes the file in 1 MB pieces and only loads it whole when pages go to
+    the model (step 2 of pdf_reading).
+    POST /documents streams the upload to its staging file 1 MB at a time
+    and returns 413 once it passes MAX_UPLOAD_BYTES (50 MB), instead of
+    reading the whole body into memory; the stored copy is copied from the
+    staging file.
   pdf_reading: |
     Scanned / image-only PDFs (no text layer) are read, not returned empty.
     knowledge.pdf_reader.read_pdf_text tries, in order, and never raises:
@@ -1628,7 +1668,7 @@ knowledge:
     entry points; ingest_file (uploads, reconcile_company_docs), the
     /documents/{filename} preview, intake uploads, integrations.attachments,
     the email poller, oe__read_file and read_document all use them. The sync
-    extract_text_from_file is unchanged for its other callers.
+    extract_text_from_file serves its other callers (see parse_isolation).
 
     Where files reach the Executive:
     - web chat / Discord / Telegram / Slack / Google Chat —
