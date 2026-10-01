@@ -32,6 +32,9 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "ask_about_person",
     "consult_specialist",
     "draft_workflow",
+    # A read of the briefing board. What it makes ackable stays out of
+    # reach: ack_alert is withheld below.
+    "find_alerts",
     "get_artifact",
     "ghostwrite_email",
     "list_artifacts",
