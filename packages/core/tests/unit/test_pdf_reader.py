@@ -448,6 +448,29 @@ async def test_inbound_files_get_the_smaller_page_cap(monkeypatch):
     assert asked.note == ""
 
 
+async def test_a_scan_met_by_busy_ocr_says_so_and_refunds_its_pages(monkeypatch):
+    """Review finding: a scan that never got an OCR slot was reported as
+    unreadable and still used up the hourly inbound page budget."""
+    monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "3")
+    _use_provider(monkeypatch, None)
+
+    def busy(source: Any, max_pages: int) -> tuple[str, int]:
+        raise pdf_reader.ParserBusy("_ocr_pdf found no free parser slot")
+
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", busy)
+    first = await read_pdf_text(_blank_pdf(3), inbound=True)
+
+    assert first.busy and first.method == "none"
+    assert "busy reading other documents" in first.note
+
+    ocr = _stub_ocr(monkeypatch)
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", pdf_reader._ocr_pdf)
+    second = await read_pdf_text(_blank_pdf(3), inbound=True)
+
+    assert second.method == "ocr", "the busy attempt must not have spent the budget"
+    assert ocr == [3]
+
+
 async def test_inbound_conversions_share_an_hourly_page_budget(monkeypatch):
     monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "5")
     _use_provider(monkeypatch, None)

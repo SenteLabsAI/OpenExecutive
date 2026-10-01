@@ -72,7 +72,7 @@ async def _extract_intake_upload(filename: str, content: bytes) -> tuple[str, st
     from openexecutive.knowledge.isolated import IsolatedError
 
     try:
-        text = await extract_text_from_file_async(tmp_path)
+        text = await extract_text_from_file_async(tmp_path, busy_raises=True)
     except IsolatedError as exc:
         # A Word/Excel parse that failed, died, timed out or found every
         # parser busy: a readable 422 / 503, not a bare 500.

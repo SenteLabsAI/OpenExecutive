@@ -141,10 +141,12 @@ async def upload_document(
                 domain=domain,
                 collection=ChromaDBStore.COMPANY_COLLECTION,
                 source_name=safe_filename,
+                busy_raises=True,
             )
         except IsolatedError as exc:
-            # A Word/Excel parse that failed, died or ran out of time (a PDF
-            # never raises: it comes back empty, with a note).
+            # A Word/Excel parse that failed, died or ran out of time, or any
+            # file every parser was too busy to try (a PDF otherwise never
+            # raises: it comes back empty, with a note).
             raise unreadable_document_error(safe_filename, exc) from exc
 
         company_docs_dir = settings.company_profile_path.parent / "docs"
@@ -420,7 +422,7 @@ async def get_document(
     # and retrieved by the Executive. Works uniformly across PDF/DOCX/MD/TXT; a
     # scanned PDF shows its converted text (knowledge/pdf_reader.py).
     try:
-        content = await extract_text_from_file_async(path)
+        content = await extract_text_from_file_async(path, busy_raises=True)
     except IsolatedError as exc:
         raise unreadable_document_error(safe, exc) from exc
     if not content.strip():

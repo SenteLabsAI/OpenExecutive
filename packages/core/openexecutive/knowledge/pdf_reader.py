@@ -44,7 +44,7 @@ import math
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -81,11 +81,18 @@ _OCR_TIME_BUDGET_S = 240.0
 # layer gets enough for a legitimate _MAX_PDF_PAGES-page file on one slow CPU.
 _TEXT_LAYER_TIMEOUT_S = 300.0
 _OCR_PROCESS_SLACK_S = 120.0
+# OCR runs last minutes, so a scan waits up to one run's budget for one of
+# the _OCR_CONCURRENCY slots before it is reported busy; its limit covers
+# that wait as well as its own run.
+_OCR_MAX_SLOT_WAIT_S = _OCR_TIME_BUDGET_S
 # Pages converted (model or OCR) for files that arrive on their own through
 # a channel — as opposed to one the Executive or the signed-in user asks to
 # read — are metered per rolling hour, so no sender can run up unbounded model
 # spend or CPU by sending scans. See PDF_INBOUND_MAX_PAGES / _PAGES_PER_HOUR.
 _INBOUND_WINDOW_S = 3600.0
+
+_BUSY_REASON = "the server was busy reading other documents, try again shortly"
+_BUSY_NOTE = f"the PDF was not read: {_BUSY_REASON}"
 
 _TRANSCRIBE_PROMPT = (
     "Transcribe every page of this PDF into Markdown, verbatim. Keep the "
@@ -104,6 +111,10 @@ class PdfReadResult:
     method: Method
     pages: int
     note: str = ""
+    # Every parser was busy, so the file was never (fully) tried: not a
+    # verdict on the file. Never cached; callers that can ask the person to
+    # retry (uploads) do, instead of storing an empty result.
+    busy: bool = False
 
     @property
     def converted(self) -> bool:
@@ -423,9 +434,10 @@ def _ocr_isolated(source: bytes | Path, max_pages: int) -> tuple[str, int]:
     a thread."""
     text, read = run_isolated(
         _ocr_pdf, source, max_pages,
-        timeout=_OCR_TIME_BUDGET_S + _OCR_PROCESS_SLACK_S,
+        timeout=_OCR_MAX_SLOT_WAIT_S + _OCR_TIME_BUDGET_S + _OCR_PROCESS_SLACK_S,
         reraise=(OcrUnavailable,),
         slots=_ocr_slots,
+        max_wait=_OCR_MAX_SLOT_WAIT_S,
     )
     return text, read
 
@@ -447,6 +459,15 @@ def _take_inbound_pages(wanted: int, per_hour: int) -> int:
         if granted:
             _inbound_spent.append((now, granted))
         return granted
+
+
+def _refund_inbound_pages(granted: int) -> None:
+    """Give back a reservation whose pages were never converted."""
+    with _inbound_lock:
+        for i in range(len(_inbound_spent) - 1, -1, -1):
+            if _inbound_spent[i][1] == granted:
+                del _inbound_spent[i]
+                return
 
 
 def reset_inbound_budget() -> None:
@@ -504,7 +525,7 @@ async def read_pdf_text(
     try:
         digest = await asyncio.to_thread(_digest, data)
     except OSError as exc:
-        logger.warning("pdf_reader: could not read %s (%s)", label, type(exc).__name__)
+        logger.warning("pdf_reader: could not read %r (%s)", label, type(exc).__name__)
         return PdfReadResult("", "none", 0, "the file could not be read")
     key = f"{digest}:{'inbound' if inbound else 'asked'}"
     cached = _cache_get(key)
@@ -524,17 +545,14 @@ async def read_pdf_text(
     except ParserBusy:
         # Never tried, and not cached, so the next read tries again.
         logger.warning("pdf_reader: no free parser slot for %r", label)
-        return PdfReadResult(
-            "", "none", 0,
-            "the PDF was not read: the server was busy reading other documents, try again shortly",
-        )
+        return PdfReadResult("", "none", 0, _BUSY_NOTE, busy=True)
     except WorkerStopped as exc:
-        logger.warning("pdf_reader: could not read %s (%s)", label, exc)
+        logger.warning("pdf_reader: could not read %r (%s)", label, exc)
         return PdfReadResult(
             "", "none", 0, "the PDF could not be read: it was too large or took too long"
         )
     except Exception as exc:
-        logger.warning("pdf_reader: could not open %s (%s)", label, type(exc).__name__)
+        logger.warning("pdf_reader: could not open %r (%s)", label, type(exc).__name__)
         return PdfReadResult(
             "", "none", 0, "the file could not be opened as a PDF (it may be damaged or password-protected)"
         )
@@ -546,6 +564,7 @@ async def read_pdf_text(
 
     settings = get_settings()
     limit = min(pages, settings.pdf_vision_max_pages)
+    reserved = 0
     if inbound:
         limit = min(limit, settings.pdf_inbound_max_pages)
         granted = _take_inbound_pages(limit, settings.pdf_inbound_pages_per_hour)
@@ -554,7 +573,7 @@ async def read_pdf_text(
                 text, pages,
                 "it looks scanned and the hourly budget for converting sent files is used up",
             )
-        limit = granted
+        limit = reserved = granted
 
     transcribed = None
     if limit and settings.pdf_provider_reading:
@@ -579,8 +598,14 @@ async def read_pdf_text(
         ocr, read = await asyncio.to_thread(_ocr_isolated, data, limit)
     except OcrUnavailable:
         return _fallback(text, pages, "it looks scanned and OCR is not installed on this server")
+    except ParserBusy:
+        # Never tried: give the pages back to the hourly budget.
+        if reserved:
+            _refund_inbound_pages(reserved)
+        logger.warning("pdf_reader: no free OCR slot for %r", label)
+        return replace(_fallback(text, pages, _BUSY_REASON), busy=True)
     except Exception as exc:
-        logger.warning("pdf_reader: OCR failed for %s (%s)", label, type(exc).__name__)
+        logger.warning("pdf_reader: OCR failed for %r (%s)", label, type(exc).__name__)
         return _fallback(text, pages, "it looks scanned and OCR could not read it")
     if not ocr.strip():
         return _fallback(text, pages, "it looks scanned and no text could be read from its pages")

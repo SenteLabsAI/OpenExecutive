@@ -1650,12 +1650,20 @@ knowledge:
     "never tried", not "unreadable". Without the short wait, two slow files
     held every other parse, and its executor thread, for 300 s. OCR passes
     its own two-slot gate (`slots=_ocr_slots`), so a long OCR never holds a
-    slot a quick text-layer parse needs.
-    ParserBusy handling: POST /documents, the preview and intake uploads
-    answer 503 with Retry-After; read_pdf_text returns method "none" with a
-    "server was busy" note, not cached; drive_sync counts the file as failed
-    for this tick and fetches it again on the next, instead of recording it
-    unreadable (which would drop its chunks until it changed).
+    slot a quick text-layer parse needs, and waits longer for it
+    (`max_wait=_OCR_MAX_SLOT_WAIT_S`, one OCR budget, 240 s; its timeout
+    covers wait + run).
+    ParserBusy handling: read_pdf_text returns PdfReadResult(busy=True),
+    method "none" (or the thin text layer) with a "server was busy" note,
+    never cached; a busy OCR attempt refunds its inbound page reservation.
+    extract_text_from_file_async / ingest_file take `busy_raises`: POST
+    /documents, the preview and intake uploads set it, so a busy PDF raises
+    ParserBusy like a busy Word/Excel parse and they answer 503 with
+    Retry-After, storing and indexing nothing (a re-upload keeps the old
+    chunks and file). Other callers (fixture loader, client slots, boot
+    reconcile) keep the empty result. drive_sync counts ParserBusy as failed
+    for this tick and fetches the file again on the next, instead of
+    recording it unreadable (which would drop its chunks until it changed).
     Spawn failure (review): only FileNotFoundError / PermissionError (no
     usable interpreter) falls back to parsing in-process, logged once, and
     that parse runs outside the slot gate (it cannot be timed out, so a hung

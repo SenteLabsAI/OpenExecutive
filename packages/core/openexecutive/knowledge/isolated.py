@@ -130,18 +130,22 @@ def run_isolated(
     timeout: float,
     reraise: tuple[type[BaseException], ...] = (),
     slots: threading.Semaphore | None = None,
+    max_wait: float | None = None,
 ) -> T:
     """Return ``func(*args)``, computed in a child process. Blocking — run it
     in a thread from async code.
 
     ``slots`` is the gate to wait on for a turn (default: the shared
     ``_MAX_CHILDREN`` one); OCR passes its own so a long OCR run never holds
-    up the quick text-layer parses."""
+    up the quick text-layer parses. ``max_wait`` caps the wait for a slot
+    (default ``_MAX_SLOT_WAIT_S``); OCR, whose runs last minutes, waits
+    longer and sets ``timeout`` to cover the wait and the run."""
     if not enabled:
         return func(*args)
     gate = _child_slots if slots is None else slots
     started = time.monotonic()
-    if not gate.acquire(timeout=min(timeout, _MAX_SLOT_WAIT_S)):
+    wait = _MAX_SLOT_WAIT_S if max_wait is None else max_wait
+    if not gate.acquire(timeout=min(timeout, wait)):
         raise ParserBusy(f"{func.__qualname__} found no free parser slot")
     try:
         remaining = timeout - (time.monotonic() - started)

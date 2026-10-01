@@ -366,3 +366,24 @@ async def test_an_unreadable_intake_upload_is_a_422(monkeypatch: pytest.MonkeyPa
     assert info.value.detail == (
         "Could not read notes.docx: the file may be damaged, or not the type its name says."
     )
+
+
+def test_a_pdf_met_by_busy_parsers_is_a_503_not_an_empty_index(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding: read_pdf_text never raises, so a busy PDF came back
+    empty and was stored and reported "indexed" with 0 chunks."""
+    from openexecutive.knowledge import pdf_reader
+
+    async def busy(data: Any, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
+        return pdf_reader.PdfReadResult("", "none", 0, "the PDF was not read: busy", busy=True)
+
+    monkeypatch.setattr(pdf_reader, "read_pdf_text", busy)
+    files = {"file": ("lease.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 503
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert store.rows == {}
+    assert not (tmp_path / "company" / "docs" / "lease.pdf").exists()

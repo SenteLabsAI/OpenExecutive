@@ -193,14 +193,22 @@ async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadRes
     return PdfReadResult(text, "text_layer" if text.strip() else "none", 0)
 
 
-async def extract_text_from_file_async(path: Path) -> str:
+async def extract_text_from_file_async(path: Path, *, busy_raises: bool = False) -> str:
     """``extract_text_from_file``, except a PDF with no text layer (a scan)
     is converted by ``knowledge.pdf_reader`` instead of coming back empty.
 
     An unreadable PDF returns ``""`` rather than raising, as an image-only
-    one did from the sync extractor.
+    one did from the sync extractor. So does one that was never tried
+    because every parser was busy, unless ``busy_raises``: then it raises
+    ``isolated.ParserBusy``, for a caller that can ask the person to retry
+    rather than keep an empty result.
     """
-    return (await read_document_text(path)).text
+    result = await read_document_text(path)
+    if busy_raises and result.busy:
+        from openexecutive.knowledge.isolated import ParserBusy
+
+        raise ParserBusy(f"{path.name}: {result.note}")
+    return result.text
 
 
 def _make_chunk_id(source: str, chunk_index: int) -> str:
@@ -241,6 +249,7 @@ async def ingest_file(
     *,
     source_name: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    busy_raises: bool = False,
 ) -> int:
     """Index a file on disk into a knowledge collection.
 
@@ -262,8 +271,11 @@ async def ingest_file(
     ``ingest_text_sync``. It is how a collection gets a ``type`` tag it can
     later be deleted by: Chroma's ``where`` matches exact values only, so a
     tag is the difference between a one-call delete and a full metadata scan.
+
+    ``busy_raises`` is ``extract_text_from_file_async``'s: an upload sets it
+    so a PDF met by busy parsers is a retry, not an empty "indexed" result.
     """
-    text = await extract_text_from_file_async(path)
+    text = await extract_text_from_file_async(path, busy_raises=busy_raises)
     if not text.strip():
         return 0
 

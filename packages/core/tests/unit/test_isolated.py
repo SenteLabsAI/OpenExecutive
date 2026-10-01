@@ -378,6 +378,6 @@ async def test_a_pdf_met_by_busy_parsers_says_so_and_is_not_cached(monkeypatch) 
         slots.release()
     read = await pdf_reader.read_pdf_text(data, filename="plan.pdf")
 
-    assert busy.method == "none"
+    assert busy.method == "none" and busy.busy
     assert "busy reading other documents" in busy.note
     assert read.method == "text_layer"
