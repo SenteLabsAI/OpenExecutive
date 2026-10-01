@@ -6,6 +6,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
+from openexecutive.agents.base import AgentVisibility
 from openexecutive.agents.overrides import (
     EXECUTIVE_AGENT_ID as EXECUTIVE_ID,
 )
@@ -63,6 +64,9 @@ class AgentMeta(BaseModel):
     deep_reasoning: bool
     domains: list[str]
     has_override: bool = False
+    # "core" (the Executive and the domain specialists) or "internal"
+    # (triage and the helper agents); the Council's simple view lists core.
+    visibility: AgentVisibility = "internal"
 
 
 class AgentDetail(BaseModel):
@@ -270,6 +274,7 @@ def _build_executive_meta() -> AgentMeta:
         deep_reasoning=deep,
         domains=[],
         has_override=ov is not None,
+        visibility="core",
     )
 
 
@@ -331,6 +336,7 @@ def _build_meta(name: str) -> AgentMeta:
         deep_reasoning=agent.effective_use_deep_reasoning(),
         domains=_domains_for(name),
         has_override=ov is not None,
+        visibility=agent.visibility,
     )
 
 
@@ -397,6 +403,19 @@ def _is_known_agent(agent_id: str) -> bool:
     return agent_id == EXECUTIVE_ID or agent_id in _agent_registry()
 
 
+class CouncilView(BaseModel):
+    # Open the Council in its simple view (COUNCIL_SIMPLE_VIEW).
+    simple_view: bool
+
+
+@router.get("/agents/view", response_model=CouncilView)
+def council_view() -> CouncilView:
+    """How the Agent Council page opens on this install."""
+    from openexecutive.config import get_settings
+
+    return CouncilView(simple_view=get_settings().council_simple_view)
+
+
 class QualityPreset(BaseModel):
     id: PresetId
     label: str
@@ -440,22 +459,15 @@ def _agent_states() -> list[AgentState]:
                 model_override=ov.model if ov is not None else None,
                 deep_override=ov.use_deep_reasoning if ov is not None else None,
                 uses_deep_reasoning=name not in _NO_DEEP_REASONING,
+                core=agent.visibility == "core",
             )
         )
     return states
 
 
-def _specialist_ids() -> set[str]:
-    from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
-
-    return set(SPECIALIST_REGISTRY)
-
-
 def _quality_presets() -> QualityPresets:
     allowed = _allowed()
-    status_ = preset_status(
-        _agent_states(), specialist_ids=_specialist_ids(), allowed=allowed
-    )
+    status_ = preset_status(_agent_states(), allowed=allowed)
     return QualityPresets(
         presets=[
             QualityPreset(
@@ -499,9 +511,7 @@ def apply_preset(preset_id: str) -> QualityPresets:
             status_code=409,
             detail=f"The {PRESETS[pid].label} preset needs a model this install doesn't offer",
         )
-    for write in writes_for(
-        pid, _agent_states(), specialist_ids=_specialist_ids(), allowed=allowed
-    ):
+    for write in writes_for(pid, _agent_states(), allowed=allowed):
         ov = get_override(write.agent_id)
         keeps_other_fields = ov is not None and any(
             v is not None

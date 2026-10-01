@@ -16,6 +16,7 @@ from openexecutive.agents.base import BaseAgent
 class ExecutiveProxy(BaseAgent):
     name = "executive"
     domain = "orchestration"
+    visibility = "core"
     model = "claude-sonnet-5"  # matches DEFAULT_MODEL default
     use_deep_reasoning = False
 

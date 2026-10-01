@@ -485,6 +485,16 @@ providers:
     preset from the overrides: ``active`` when every agent matches,
     otherwise null ("Custom") with ``base`` (the preset most agents match,
     Balanced on a tie) and ``custom_agents`` (the agents that differ).
+  council_simple_view: |
+    BaseAgent.visibility is "core" (the Executive proxy and every domain
+    specialist declares it) or "internal" (the default: triage and the
+    Council-only helpers). AgentMeta carries it, and agents.presets uses it
+    to decide which agents Thorough moves up. COUNCIL_SIMPLE_VIEW (default
+    false), read by GET /agents/view, opens the Council in a simple view:
+    the Quality presets, the shared VoicePicker, and only core agents with
+    their additional instructions and a model badge. "Show all agents" lists
+    internal agents too; "Advanced" opens the full editor. A test fails if a
+    registered specialist other than triage is not core.
   executive_voices: |
     The Executive's voice persona (personas/builtin/*.md, shadowed by
     voice_personas rows) is substituted into block 0 at {VOICE_PERSONA}.

@@ -71,6 +71,7 @@ RAG context goes in the **user turn**, not the system prompt.
    class YourAgent(BaseAgent):
        name = "your_agent"
        domain = "your_domain"
+       visibility = "core"  # listed in the Agent Council's simple view
        model = "claude-sonnet-5"
        
        def get_system_prompt(self) -> str:

@@ -2508,6 +2508,9 @@ export interface AgentMeta {
   deep_reasoning: boolean;
   domains: string[];
   has_override: boolean;
+  // "core": the Executive and the domain specialists (listed in the simple
+  // view). "internal": triage and the helper agents.
+  visibility: "core" | "internal";
 }
 
 export interface AgentDetail {
@@ -2636,6 +2639,17 @@ export async function deletePersona(slug: string): Promise<void> {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { detail?: string }).detail ?? "Failed to delete persona");
   }
+}
+
+// How the Agent Council opens on this install (COUNCIL_SIMPLE_VIEW).
+export interface CouncilView {
+  simple_view: boolean;
+}
+
+export async function getCouncilView(): Promise<CouncilView> {
+  const res = await fetch(`${API_BASE}/agents/view`);
+  if (!res.ok) throw new Error("Failed to load the council view");
+  return res.json();
 }
 
 export async function listAgents(): Promise<AgentMeta[]> {

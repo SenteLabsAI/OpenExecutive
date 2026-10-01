@@ -23,13 +23,12 @@ from openexecutive.agents.presets import (  # noqa: E402
 from openexecutive.api.routes import agents as agents_route  # noqa: E402
 
 FULL = ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]
-SPECIALISTS = {"cfo", "triage"}
 
 
 def _agents() -> list[AgentState]:
     return [
-        AgentState("executive", "claude-sonnet-5", False, None, None, uses_deep_reasoning=False),
-        AgentState("cfo", "claude-opus-5", True, None, None),
+        AgentState("executive", "claude-sonnet-5", False, None, None, uses_deep_reasoning=False, core=True),
+        AgentState("cfo", "claude-opus-5", True, None, None, core=True),
         AgentState("triage", "claude-sonnet-5", False, None, None),
         AgentState("utility_fast", "claude-haiku-4-5", False, None, None, uses_deep_reasoning=False),
     ]
@@ -58,27 +57,27 @@ def test_local_only_install_offers_only_balanced() -> None:
     assert not preset_available("fast", local)
     assert not preset_available("thorough", local)
     with pytest.raises(ValueError):
-        target_for("fast", _agents()[1], core=True, allowed=local)
+        target_for("fast", _agents()[1], allowed=local)
 
 
 def test_thorough_moves_core_agents_only() -> None:
     agents = {a.agent_id: a for a in _agents()}
-    cfo = target_for("thorough", agents["cfo"], core=True, allowed=FULL)
+    cfo = target_for("thorough", agents["cfo"], allowed=FULL)
     assert (cfo.model, cfo.deep) == ("claude-opus-5-5", True)
     # The Executive never sends thinking fields, so its flag stays put.
-    exe = target_for("thorough", agents["executive"], core=True, allowed=FULL)
+    exe = target_for("thorough", agents["executive"], allowed=FULL)
     assert (exe.model, exe.deep) == ("claude-opus-5-5", False)
-    tri = target_for("thorough", agents["triage"], core=False, allowed=FULL)
+    tri = target_for("thorough", agents["triage"], allowed=FULL)
     assert (tri.model, tri.deep) == ("claude-sonnet-5", False)
 
 
 def test_fast_turns_deep_reasoning_off() -> None:
-    cfo = target_for("fast", _agents()[1], core=True, allowed=FULL)
+    cfo = target_for("fast", _agents()[1], allowed=FULL)
     assert (cfo.model, cfo.deep) == ("claude-haiku-4-5", False)
 
 
 def test_writes_store_only_what_differs_from_defaults() -> None:
-    writes = {w.agent_id: w for w in writes_for("fast", _agents(), specialist_ids=SPECIALISTS, allowed=FULL)}
+    writes = {w.agent_id: w for w in writes_for("fast", _agents(), allowed=FULL)}
     # utility_fast already runs Haiku: nothing to write.
     assert "utility_fast" not in writes
     assert (writes["cfo"].model, writes["cfo"].deep) == ("claude-haiku-4-5", False)
@@ -87,18 +86,18 @@ def test_writes_store_only_what_differs_from_defaults() -> None:
 
 
 def test_balanced_on_fresh_install_writes_nothing() -> None:
-    assert writes_for("balanced", _agents(), specialist_ids=SPECIALISTS, allowed=FULL) == []
+    assert writes_for("balanced", _agents(), allowed=FULL) == []
 
 
 def test_status_is_balanced_on_fresh_install() -> None:
-    st = preset_status(_agents(), specialist_ids=SPECIALISTS, allowed=FULL)
+    st = preset_status(_agents(), allowed=FULL)
     assert (st.active, st.base, st.custom_agents) == ("balanced", "balanced", [])
 
 
 def test_status_reports_custom_agents() -> None:
     agents = _agents()
-    agents[1] = AgentState("cfo", "claude-opus-5", True, "claude-sonnet-5", None)
-    st = preset_status(agents, specialist_ids=SPECIALISTS, allowed=FULL)
+    agents[1] = AgentState("cfo", "claude-opus-5", True, "claude-sonnet-5", None, core=True)
+    st = preset_status(agents, allowed=FULL)
     assert st.active is None
     assert st.base == "balanced"
     assert st.custom_agents == ["cfo"]
@@ -190,3 +189,28 @@ def test_unavailable_preset_409(client: TestClient, monkeypatch: pytest.MonkeyPa
     avail = {p["id"]: p["available"] for p in body["presets"]}
     assert avail == {"fast": False, "balanced": True, "thorough": False}
     assert client.post("/agents/presets/fast").status_code == 409
+
+
+# --- visibility ------------------------------------------------------------
+
+
+def test_every_council_agent_has_a_visibility(client: TestClient) -> None:
+    """Core = the Executive and the domain specialists; triage and the
+    helpers are internal. A new specialist must declare visibility = "core"
+    or this fails."""
+    from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
+
+    agents = {a["name"]: a["visibility"] for a in client.get("/agents").json()}
+    core = {n for n, v in agents.items() if v == "core"}
+    assert core == {"executive"} | (set(SPECIALIST_REGISTRY) - {"triage"})
+    assert agents["triage"] == "internal"
+    assert {"quality_judge", "utility_fast", "research"} <= {
+        n for n, v in agents.items() if v == "internal"
+    }
+
+
+def test_council_view_follows_the_setting(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COUNCIL_SIMPLE_VIEW", raising=False)
+    assert client.get("/agents/view").json() == {"simple_view": False}
+    monkeypatch.setenv("COUNCIL_SIMPLE_VIEW", "true")
+    assert client.get("/agents/view").json() == {"simple_view": True}

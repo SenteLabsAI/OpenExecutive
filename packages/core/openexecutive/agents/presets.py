@@ -21,7 +21,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from openexecutive.agents.overrides import EXECUTIVE_AGENT_ID
 from openexecutive.providers import model_supports_deep_reasoning
 
 PresetId = Literal["fast", "balanced", "thorough"]
@@ -29,10 +28,6 @@ PresetId = Literal["fast", "balanced", "thorough"]
 PRESET_IDS: tuple[PresetId, ...] = ("fast", "balanced", "thorough")
 # Order ``preset_status`` tries presets in; Balanced first so it wins ties.
 _STATUS_ORDER: tuple[PresetId, ...] = ("balanced", "fast", "thorough")
-
-# Specialists in SPECIALIST_REGISTRY that answer no user question directly.
-# Every other registered specialist, plus the Executive, is a "core" agent.
-_INTERNAL_SPECIALISTS = frozenset({"triage"})
 
 # Preferred models, best first. The first one the install allows wins.
 _FAST_MODELS: tuple[str, ...] = ("claude-haiku-4-5",)
@@ -81,6 +76,9 @@ class AgentState:
     deep_default: bool
     model_override: str | None
     deep_override: bool | None
+    # The Executive or a domain specialist (BaseAgent.visibility == "core").
+    # Thorough moves core agents up and leaves the rest on their defaults.
+    core: bool = False
     # Whether the agent's own calls honour the deep-reasoning flag. The
     # Executive's turn never sends thinking fields, so a preset leaves its
     # flag alone.
@@ -113,13 +111,6 @@ class AgentWrite:
     deep: bool | None
 
 
-def is_core_agent(agent_id: str, specialist_ids: set[str]) -> bool:
-    """The Executive and the domain specialists a user would recognise."""
-    if agent_id == EXECUTIVE_AGENT_ID:
-        return True
-    return agent_id in specialist_ids and agent_id not in _INTERNAL_SPECIALISTS
-
-
 def _first_allowed(preferred: tuple[str, ...], allowed: list[str]) -> str | None:
     allowed_set = set(allowed)
     return next((m for m in preferred if m in allowed_set), None)
@@ -139,9 +130,7 @@ def preset_available(preset_id: PresetId, allowed: list[str]) -> bool:
     return preset_id == "balanced" or preset_model(preset_id, allowed) is not None
 
 
-def target_for(
-    preset_id: PresetId, agent: AgentState, *, core: bool, allowed: list[str]
-) -> AgentTarget:
+def target_for(preset_id: PresetId, agent: AgentState, *, allowed: list[str]) -> AgentTarget:
     """What ``agent`` should run on under ``preset_id``.
 
     Raises ``ValueError`` when the preset is unavailable on this install.
@@ -156,7 +145,7 @@ def target_for(
         deep = False if agent.uses_deep_reasoning else agent.deep_default
         return AgentTarget(model=model, deep=deep)
     # Thorough: core agents move up; background helpers keep their defaults.
-    if not core:
+    if not agent.core:
         return default
     deep = (
         model_supports_deep_reasoning(model)
@@ -171,11 +160,7 @@ def matches(agent: AgentState, target: AgentTarget) -> bool:
 
 
 def writes_for(
-    preset_id: PresetId,
-    agents: list[AgentState],
-    *,
-    specialist_ids: set[str],
-    allowed: list[str],
+    preset_id: PresetId, agents: list[AgentState], *, allowed: list[str]
 ) -> list[AgentWrite]:
     """Override writes that bring every agent onto ``preset_id``.
 
@@ -186,12 +171,7 @@ def writes_for(
     """
     out: list[AgentWrite] = []
     for agent in agents:
-        target = target_for(
-            preset_id,
-            agent,
-            core=is_core_agent(agent.agent_id, specialist_ids),
-            allowed=allowed,
-        )
+        target = target_for(preset_id, agent, allowed=allowed)
         if matches(agent, target):
             continue
         out.append(
@@ -218,9 +198,7 @@ class PresetStatus:
     custom_agents: list[str]
 
 
-def preset_status(
-    agents: list[AgentState], *, specialist_ids: set[str], allowed: list[str]
-) -> PresetStatus:
+def preset_status(agents: list[AgentState], *, allowed: list[str]) -> PresetStatus:
     best: tuple[int, PresetId, list[str]] | None = None
     for preset_id in _STATUS_ORDER:
         if not preset_available(preset_id, allowed):
@@ -228,15 +206,7 @@ def preset_status(
         diverging = [
             a.agent_id
             for a in agents
-            if not matches(
-                a,
-                target_for(
-                    preset_id,
-                    a,
-                    core=is_core_agent(a.agent_id, specialist_ids),
-                    allowed=allowed,
-                ),
-            )
+            if not matches(a, target_for(preset_id, a, allowed=allowed))
         ]
         if best is None or len(diverging) < best[0]:
             best = (len(diverging), preset_id, diverging)

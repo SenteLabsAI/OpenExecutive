@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
@@ -13,11 +13,18 @@ _SPECIALIST_TIMEOUT = 180.0
 logger = logging.getLogger(__name__)
 
 
+AgentVisibility = Literal["core", "internal"]
+
+
 class BaseAgent(ABC):
     name: str
     domain: str
     model: str
     use_deep_reasoning: bool = False
+    # "core": an agent a user would recognise (the Executive and the domain
+    # specialists), listed in the Agent Council's simple view. "internal":
+    # triage and the helper agents, shown only under "Show all agents".
+    visibility: AgentVisibility = "internal"
 
     @abstractmethod
     def get_system_prompt(self) -> str: ...

@@ -5,6 +5,7 @@ from openexecutive.config import get_settings
 class BoardCommsAgent(BaseAgent):
     name = "board_comms"
     domain = "board"
+    visibility = "core"
     use_deep_reasoning = True
 
     @property

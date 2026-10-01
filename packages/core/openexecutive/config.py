@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # off) instead of Opus is the dominant cost lever for the workflow.
     # Set RESEARCH_MODEL=claude-opus-5 to restore the prior behavior.
     research_model: str = Field("claude-sonnet-5", alias="RESEARCH_MODEL")
+    # Open the Agent Council in its simple view: the Quality choice, the
+    # voice, and only the core agents with their additional instructions.
+    # "Show all agents" and "Advanced" bring back the full page.
+    council_simple_view: bool = Field(False, alias="COUNCIL_SIMPLE_VIEW")
 
     vector_store_path: Path = Field(_ROOT / "chroma_db", alias="VECTOR_STORE_PATH")
     company_profile_path: Path = Field(
