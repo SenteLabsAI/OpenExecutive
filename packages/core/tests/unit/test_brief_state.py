@@ -136,6 +136,23 @@ def test_handled_since_reads_review_audit_events(tmp_path: Path, monkeypatch: py
     assert brief_state.handled_since(datetime.now(UTC) + timedelta(hours=1)) == []
 
 
+def test_handled_since_keeps_private_rows_for_the_principals_own_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.audit import logger as audit_logger
+
+    al = audit_logger.AuditLogger(db_path=tmp_path / "audit.db")
+    al.initialize_db()
+    monkeypatch.setattr(audit_logger, "get_audit_logger", lambda: al)
+    al.log("alert_review_routed", "Routed 'Acme renewal' to Dana", actor="executive")
+    al.log("alert_review_closed", "Resolved 'Note from a contact'", actor="executive", private=True)
+
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert [h["kind"] for h in brief_state.handled_since(since)] == ["routed"]
+    both = brief_state.handled_since(since, include_private=True)
+    assert sorted(h["kind"] for h in both) == ["closed", "routed"]
+
+
 def test_fingerprint_moves_with_pending_watch_suggestions() -> None:
     since = datetime.now(UTC) - timedelta(hours=12)
     base = dict(today_data={"proposals": [], "departments": [], "people": []}, activity=[], handled=[], since=since)

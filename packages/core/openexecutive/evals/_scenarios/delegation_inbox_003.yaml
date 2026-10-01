@@ -1,0 +1,25 @@
+id: delegation_inbox_003
+domain: delegation
+type: inbox
+description: "Inbox watcher: a cold sales pitch needs no personal reply, so nothing is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: stranger
+  expect: no_draft
+  thread:
+    id: t-pitch
+    subject: 3x your agency's leads in 30 days
+    messages:
+      - from: "Jordan Reyes <jordan@growthlabs.example>"
+        text: |
+          Hi Olivia,
+
+          I help design studios like Fernway triple their inbound leads with
+          our done-for-you outreach program. We've worked with 40+ agencies.
+
+          Worth a quick 15-minute call next week?
+
+          Jordan
+          Growth Labs

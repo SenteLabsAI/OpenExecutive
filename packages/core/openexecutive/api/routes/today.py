@@ -329,13 +329,15 @@ def _handled_item(h: dict[str, Any], now: datetime) -> HandledItem:
     )
 
 
-def _handled_overnight(now: datetime) -> list[HandledItem]:
-    """What the alert review completed since the last delivered morning brief."""
+def _handled_overnight(now: datetime, *, include_private: bool = False) -> list[HandledItem]:
+    """What the alert review completed since the last delivered morning brief.
+    Rows private to the principal only for the principal's own view."""
     try:
         from openexecutive.briefing import brief_state
 
         since = brief_state.since_for("principal_brief_morning", now=now)
-        return [_handled_item(h, now) for h in brief_state.handled_since(since, limit=20)]
+        handled = brief_state.handled_since(since, limit=20, include_private=include_private)
+        return [_handled_item(h, now) for h in handled]
     except Exception:
         logger.debug("today: handled_overnight unavailable", exc_info=True)
         return []
@@ -861,7 +863,7 @@ def _build_today(
         departments=dept_items,
         people=person_items,
         proposals=proposal_items,
-        handled_overnight=_handled_overnight(now),
+        handled_overnight=_handled_overnight(now, include_private=include_private),
     )
 
     # In-flight commitments (pending follow-ups / nudges) + people we're
@@ -1002,6 +1004,7 @@ _DECISION_STATUS_LABEL = {
     "reversed": "Reversed",
     "executed": "Executed",
     "failed": "Failed",
+    "closed_externally": "Closed",
 }
 
 

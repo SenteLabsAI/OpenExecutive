@@ -53,6 +53,7 @@ import {
   type HandledRow,
 } from "@/lib/handled";
 import InfoTip from "./InfoTip";
+import RepliesWaiting from "./RepliesWaiting";
 import RosterRequestCard from "./RosterRequestCard";
 import { hostOf } from "@/lib/url";
 import { SectionHeading } from "./memories/shared";
@@ -495,6 +496,7 @@ const SECTION_IDS = {
   dueSoon: "sec-due-soon",
   topThree: "sec-top-three",
   weeklyReview: "sec-weekly-review",
+  repliesWaiting: "sec-replies-waiting",
 } as const;
 
 // Smooth-scroll to the first rendered (visible) section in `ids`, popping open
@@ -2395,6 +2397,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
               <div className="grid gap-8 xl:grid-cols-[1.05fr_0.95fr]">
                 {/* LEFT — action queue */}
                 <div className="min-w-0 space-y-8">
+                  {/* Replies the Executive drafted in the owner's own Gmail
+                      (Act as me). Hidden for everyone else and when none wait. */}
+                  <RepliesWaiting id={SECTION_IDS.repliesWaiting} />
+
                   {/* Needs you — decisions routed to the caller. Primary
                       section: visually dominant so the eye lands here first.
                       Buckets (mineProposals / otherProposals / monitoring)

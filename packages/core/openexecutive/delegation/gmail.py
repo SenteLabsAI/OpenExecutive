@@ -4,7 +4,8 @@ The Executive's own mailbox is reached through the MCP gateway, where the
 model can call any Gmail tool by name. A mailbox someone lent the Executive
 must never be reachable that way, so this client talks to the Gmail REST API
 itself and is never registered with the gateway: only typed handlers
-(``orchestrator.delegation_tools``, the voice learner) call it.
+(``orchestrator.delegation_tools``, the voice learner, the inbox watcher and
+the reply cards) call it.
 
 **Credential.** One file per person in ``DELEGATION_GOOGLE_CREDENTIALS_DIR``,
 named from a hash of the address and written by
@@ -14,8 +15,12 @@ named from a hash of the address and written by
 address, which would hand the model this mailbox. Scopes: ``gmail.readonly``
 and ``gmail.compose``.
 
-**Drafts only.** There is deliberately no send method in Phase 1 (a unit test
-fails if one appears). ``gmail.compose`` could send; nothing here does.
+**One way to send.** It reads mail and saves or deletes drafts. The only
+send is ``send_draft``: an existing draft, by its id, exactly as it is in
+Gmail (the request body is the id and nothing else). Only
+``delegation.reply_send`` calls it, after the person tapped Send on that
+draft's card; unit tests pin the public methods, the one send endpoint and
+that call site.
 
 **Always checked.** ``gmail_status`` asks Google whose mailbox the token opens
 and compares it with the person's People email on every use — a roster email
@@ -34,7 +39,8 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from email.message import EmailMessage
+from datetime import UTC, datetime
+from email.message import EmailMessage, Message
 from email.utils import formataddr, getaddresses
 from pathlib import Path
 from typing import Any, Literal
@@ -68,6 +74,16 @@ GmailStatus = Literal[
 ]
 
 # What each status tells the person, in the tool result and on Settings.
+# A status that blocks using the mailbox → the 409 code a caller gets.
+BLOCKING_CODES: dict[str, str] = {
+    "not_configured": "gmail_not_connected",
+    "needs_reconnect": "gmail_needs_reconnect",
+    "mismatch": "gmail_mismatch",
+    "no_email": "no_email",
+    "shared_mailbox": "shared_mailbox",
+    "error": "gmail_error",
+}
+
 STATUS_MESSAGES: dict[str, str] = {
     "connected": "Connected.",
     "not_configured": (
@@ -91,7 +107,7 @@ STATUS_MESSAGES: dict[str, str] = {
 }
 
 # Gmail ids are short hex strings; anything else never reaches a URL path.
-_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TOKEN_URI_RE = re.compile(r"^https://oauth2\.googleapis\.com/")
 _MAX_HEADER = 900
 _TOKEN_SLACK_SECONDS = 60
@@ -102,11 +118,27 @@ _TOKENS: dict[str, tuple[str, float]] = {}
 
 
 class GmailError(Exception):
-    """A Gmail call failed (network, 5xx, an unexpected response)."""
+    """A Gmail call failed (network, 5xx, an unexpected response).
+    ``maybe_done`` is True when the request may have reached Google and been
+    carried out anyway (a timeout after sending, a 5xx, an unreadable
+    success): for a send, not knowing is not the same as not sent."""
+
+    def __init__(self, message: str = "", *, maybe_done: bool = False) -> None:
+        super().__init__(message)
+        self.maybe_done = maybe_done
 
 
 class GmailNotConfigured(GmailError):
     """No credential for this address."""
+
+
+class GmailRateLimited(GmailError):
+    """Gmail asked us to slow down (429, or a quota 403): back off, don't
+    reconnect."""
+
+
+class GmailNotFound(GmailError):
+    """No such message, thread or draft (404). For a draft: sent or deleted."""
 
 
 class GmailAuthError(GmailError):
@@ -140,6 +172,18 @@ class MailMessage:
     mailing_list: bool = False
     auto_generated: bool = False
     ghostwritten: bool = False
+    bcc: list[str] = field(default_factory=list)
+    # When Gmail received it (internalDate, ISO in UTC), not the Date header
+    # the sender wrote; "" when unknown.
+    received_at: str = ""
+    # Bulk or auto-reply mail (by its headers), a delivery report (a
+    # bounce), a calendar invite: nobody wrote it for this reader.
+    bulk: bool = False
+    delivery_report: bool = False
+    calendar_invite: bool = False
+    # Gmail's own Authentication-Results found From's domain authenticated
+    # (dmarc=pass): who it says it is from is who it is from.
+    sender_authenticated: bool = False
 
 
 @dataclass
@@ -166,6 +210,9 @@ class DraftSpec:
     in_reply_to: str | None = None
     references: str | None = None
     from_name: str = ""
+    # One of the person's own send-as addresses to write from (the one the
+    # mail being answered went to); None is their primary address.
+    from_addr: str | None = None
 
 
 @dataclass
@@ -173,6 +220,23 @@ class CreatedDraft:
     draft_id: str
     message_id: str
     thread_id: str
+
+
+@dataclass
+class SentMessage:
+    """What ``send_draft`` sent: the new message's id and its thread."""
+
+    id: str
+    thread_id: str
+
+
+@dataclass
+class DraftInfo:
+    """A draft as Gmail holds it now: its id and its current message (which
+    gets a new id each time the draft is edited)."""
+
+    draft_id: str
+    message: MailMessage
 
 
 # --------------------------------------------------------------------------- #
@@ -361,15 +425,59 @@ def _hide_tokens(text: str) -> str:
     return hide_roster_tokens(text)
 
 
+_REPORT_SENDERS = ("mailer-daemon", "postmaster")
+_BULK_PRECEDENCE = frozenset({"bulk", "junk", "list", "auto_reply"})
+# Set by out-of-office and other auto-responders.
+_AUTOREPLY_HEADERS = ("x-autoreply", "x-autorespond", "x-autoresponder")
+_CALENDAR_TYPES = frozenset({"text/calendar", "application/ics"})
+
+
+def _header_message(payload: dict[str, Any]) -> Message:
+    """The payload's headers, in order and with repeats, as an ``email``
+    Message — what the DMARC and out-of-office checks read."""
+    msg = Message()
+    for h in payload.get("headers") or []:
+        if isinstance(h, dict) and isinstance(h.get("name"), str):
+            value = str(h.get("value") or "").replace("\r", " ").replace("\n", " ")
+            try:
+                msg[h["name"]] = value
+            except (ValueError, TypeError):
+                continue
+    return msg
+
+
+def _part_types(payload: dict[str, Any]) -> set[str]:
+    types: set[str] = set()
+    stack = [payload]
+    while stack:
+        part = stack.pop()
+        types.add(str(part.get("mimeType") or "").lower())
+        stack.extend(p for p in part.get("parts") or [] if isinstance(p, dict))
+    return types
+
+
+def _received_at(raw: dict[str, Any]) -> str:
+    try:
+        ms = int(str(raw.get("internalDate") or ""))
+    except ValueError:
+        return ""
+    return datetime.fromtimestamp(ms / 1000, UTC).isoformat()
+
+
 def parse_message(raw: dict[str, Any]) -> MailMessage:
     """A Gmail API ``format=full`` message as a ``MailMessage``, with any
     one-time answer token hidden (``_hide_tokens``)."""
+    from openexecutive.integrations.fact_confirmation import headers_authenticated
+
     raw_payload = raw.get("payload")
     payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
     headers = _headers(payload)
+    header_msg = _header_message(payload)
     sender = getaddresses([headers.get("from", "")])
     from_name, from_addr = sender[0] if sender else ("", "")
     auto = headers.get("auto-submitted", "no").strip().lower() not in ("", "no")
+    types = _part_types(payload)
+    local_part = normalize_email(from_addr).partition("@")[0]
     return MailMessage(
         id=str(raw.get("id") or ""),
         thread_id=str(raw.get("threadId") or ""),
@@ -387,6 +495,13 @@ def parse_message(raw: dict[str, Any]) -> MailMessage:
         mailing_list=bool(headers.get("list-unsubscribe") or headers.get("list-id")),
         auto_generated=auto or "calendar-notification" in headers.get("sender", "").lower(),
         ghostwritten=bool(headers.get(GHOSTWRITTEN_HEADER.lower())),
+        bcc=_addresses(headers.get("bcc", "")),
+        received_at=_received_at(raw),
+        bulk=headers.get("precedence", "").strip().lower() in _BULK_PRECEDENCE
+        or any(name in headers for name in _AUTOREPLY_HEADERS),
+        delivery_report="multipart/report" in types or local_part in _REPORT_SENDERS,
+        calendar_invite=bool(types & _CALENDAR_TYPES),
+        sender_authenticated=headers_authenticated(header_msg, normalize_email(from_addr)),
     )
 
 
@@ -426,6 +541,7 @@ def build_raw(sender: str, spec: DraftSpec) -> str:
     """The draft as a base64url RFC 2822 message (Gmail's ``raw``)."""
     msg = EmailMessage()
     name = clean_header(spec.from_name)
+    sender = clean_header(spec.from_addr) if spec.from_addr else sender
     msg["From"] = formataddr((name, sender)) if name else sender
     msg["To"] = ", ".join(clean_header(a) for a in spec.to)
     if spec.cc:
@@ -444,15 +560,15 @@ def gmail_link(email: str, *, thread_id: str | None = None, message_id: str | No
     """A link that opens the draft in Gmail, built from a fixed prefix: the
     thread for a reply, the draft itself for a new email."""
     base = f"https://mail.google.com/mail/u/?authuser={quote(normalize_email(email))}"
-    if thread_id and _ID_RE.match(thread_id):
+    if thread_id and _ID_RE.fullmatch(thread_id):
         return f"{base}#all/{thread_id}"
-    if message_id and _ID_RE.match(message_id):
+    if message_id and _ID_RE.fullmatch(message_id):
         return f"{base}#drafts?compose={message_id}"
     return f"{base}#drafts"
 
 
 def valid_id(value: object) -> bool:
-    return isinstance(value, str) and bool(_ID_RE.match(value))
+    return isinstance(value, str) and bool(_ID_RE.fullmatch(value))
 
 
 # --------------------------------------------------------------------------- #
@@ -566,19 +682,30 @@ class DelegateGmail:
                 json=json_body,
                 headers={"Authorization": f"Bearer {token}"},
             )
-        except httpx.HTTPError as exc:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Never reached Google: nothing was done.
             raise GmailError(f"gmail {method} failed: {type(exc).__name__}") from exc
+        except httpx.HTTPError as exc:
+            raise GmailError(f"gmail {method} failed: {type(exc).__name__}", maybe_done=True) from exc
         if resp.status_code == 401:
             _TOKENS.pop(_token_key(self._cred()), None)
             raise GmailAuthError("unauthorized")
         if resp.status_code == 403 and not _rate_limited(resp):
             raise GmailAuthError("forbidden")
+        if resp.status_code in (403, 429):
+            raise GmailRateLimited(f"gmail {method} returned {resp.status_code}")
+        if resp.status_code == 404:
+            raise GmailNotFound(f"gmail {method} returned 404")
+        if resp.status_code >= 500:
+            raise GmailError(f"gmail {method} returned {resp.status_code}", maybe_done=True)
         if resp.status_code >= 400:
             raise GmailError(f"gmail {method} returned {resp.status_code}")
+        if not resp.content:
+            return {}  # a DELETE answers 204 with no body
         try:
             data = resp.json()
         except ValueError as exc:
-            raise GmailError("gmail returned a non-JSON response") from exc
+            raise GmailError("gmail returned a non-JSON response", maybe_done=True) from exc
         return data if isinstance(data, dict) else {}
 
     async def profile_email(self) -> str:
@@ -661,6 +788,69 @@ class DelegateGmail:
             None,
         )
         return html_to_text(str((primary or {}).get("signature") or ""))
+
+    async def list_message_ids(self, query: str, *, max_results: int = 25) -> list[tuple[str, str]]:
+        """``(message id, thread id)`` for mail matching a Gmail search,
+        newest first (at most ``max_results``, capped at 100)."""
+        async with self._client() as client:
+            data = await self._get(
+                client, "/messages", {"q": query[:500], "maxResults": max(1, min(max_results, 100))}
+            )
+        return [
+            (str(m["id"]), str(m.get("threadId") or ""))
+            for m in data.get("messages") or []
+            if isinstance(m, dict) and valid_id(m.get("id"))
+        ]
+
+    async def get_message(self, message_id: str) -> MailMessage:
+        if not valid_id(message_id):
+            raise GmailError("invalid message id")
+        async with self._client() as client:
+            data = await self._get(client, f"/messages/{message_id}", {"format": "full"})
+        return parse_message(data)
+
+    async def send_as_addresses(self) -> list[str]:
+        """Every address the person can send as (their primary and aliases)."""
+        async with self._client() as client:
+            data = await self._get(client, "/settings/sendAs")
+        entries = [e for e in data.get("sendAs") or [] if isinstance(e, dict)]
+        return [a for a in (normalize_email(str(e.get("sendAsEmail") or "")) for e in entries) if a]
+
+    async def get_draft(self, draft_id: str) -> DraftInfo | None:
+        """The draft as it is now, or None when it is gone (sent or deleted)."""
+        if not valid_id(draft_id):
+            raise GmailError("invalid draft id")
+        async with self._client() as client:
+            try:
+                data = await self._get(client, f"/drafts/{draft_id}", {"format": "full"})
+            except GmailNotFound:
+                return None
+        raw_message = data.get("message")
+        message = parse_message(raw_message if isinstance(raw_message, dict) else {})
+        return DraftInfo(draft_id=str(data.get("id") or draft_id), message=message)
+
+    async def delete_draft(self, draft_id: str) -> bool:
+        """Delete a draft (never a sent message). False when it was already gone."""
+        if not valid_id(draft_id):
+            raise GmailError("invalid draft id")
+        async with self._client() as client:
+            try:
+                await self._request(client, "DELETE", f"/drafts/{draft_id}")
+            except GmailNotFound:
+                return False
+        return True
+
+    async def send_draft(self, draft_id: str) -> SentMessage:
+        """Send the draft ``draft_id`` exactly as it is in Gmail now: the
+        request body is its id and nothing else, so nothing here can change
+        what goes, or to whom. Gmail deletes a draft it sends. Only
+        ``delegation.reply_send`` calls this (a unit test holds it to that).
+        A ``GmailError`` whose ``maybe_done`` is set may have sent it."""
+        if not valid_id(draft_id):
+            raise GmailError("invalid draft id")
+        async with self._client() as client:
+            data = await self._request(client, "POST", "/drafts/send", json_body={"id": draft_id})
+        return SentMessage(id=str(data.get("id") or ""), thread_id=str(data.get("threadId") or ""))
 
     async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
         """Save ``spec`` as a draft in the person's Gmail. Nothing is sent."""

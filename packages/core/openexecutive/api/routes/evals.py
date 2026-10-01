@@ -53,7 +53,7 @@ from openexecutive.evals.scenarios import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_KINDS = frozenset({"chat", "workflow", "triage", "mcp"})
+_KINDS = frozenset({"chat", "workflow", "triage", "mcp", "inbox"})
 
 # Maps run_id → cancel event for every currently-streaming eval run. The
 # /cancel endpoint sets the event; the runner watches it and cancels every

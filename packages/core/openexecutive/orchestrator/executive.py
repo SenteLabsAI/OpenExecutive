@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -20,6 +21,10 @@ from openexecutive.audit.redaction import (
 )
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
+from openexecutive.delegation.lockdown import (
+    mail_touched_withheld_error,
+    mail_touched_withholds,
+)
 from openexecutive.delegation.settings import (
     block0_delegation_on,
     pin_turn_delegation,
@@ -174,6 +179,19 @@ def _contacts_in_prompt(session: Any) -> bool:
     except Exception:
         logger.exception("contacts_in_prompt: check failed — contacts left out")
         return False
+
+
+# A tool name as the process log may show it (see _loggable_tool).
+_LOGGABLE_TOOL_RE = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def _loggable_tool(label: str) -> str:
+    """``label`` for the process log. A call_tool's inner name is the model's
+    own text: on a turn private to the principal, or one that read their
+    mail, it can carry that mail, and the log is not private to anyone. So
+    anything not shaped like a tool name is logged as unlisted (the private
+    audit row keeps it)."""
+    return label if _LOGGABLE_TOOL_RE.fullmatch(label) else "call_tool:<unlisted>"
 
 
 def _trunc(value: Any, limit: int = 200) -> str:
@@ -1824,6 +1842,23 @@ class Executive:
             if withheld_mcp_uses:
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
                 withheld_uses = [*withheld_uses, *withheld_mcp_uses]
+            # Act as me: once the turn has read the principal's own mail (in
+            # an earlier round, or with a ghostwrite_email in this one — a
+            # round's tools run together), nothing that reaches anyone else
+            # runs for the rest of the turn (delegation.lockdown). The offered
+            # list stays as it is, so the cached prefix never changes mid-turn.
+            mail_touched_uses: list[dict[str, Any]] = []
+            if pinned_delegation is not None and (
+                pinned_delegation.touched_mail
+                or any(tu["name"] in DELEGATION_TOOL_NAMES for tu in tool_uses)
+            ):
+                mail_touched_uses = [
+                    tu for tu in [*skill_tool_uses, *mcp_tool_uses]
+                    if mail_touched_withholds(tu["name"], tu["input"])
+                ]
+                if mail_touched_uses:
+                    skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
+                    mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
 
             specialist_calls = [
                 {
@@ -1907,6 +1942,35 @@ class Executive:
 
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
+            for tu in mail_touched_uses:
+                # Fail closed, with a trace private to the principal (the
+                # turn's rows already are). A call_tool is named by the tool
+                # it asked for.
+                kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                label = tu["name"]
+                if label == "call_tool" and isinstance(tu["input"], dict):
+                    named = tu["input"].get("name")
+                    label = named[:200] if isinstance(named, str) and named else label
+                logger.warning(
+                    "%s:%s refused — the turn read the principal's own mail",
+                    kind, _loggable_tool(label),
+                )
+                audit_log(
+                    "tool_invocation",
+                    f"{kind}:{label} refused: the turn read the principal's own mail",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    actor="executive",
+                    details={
+                        "tool": label,
+                        "kind": kind,
+                        "iteration": iteration,
+                        "ok": False,
+                        "refused": "mail_touched",
+                    },
+                    private=True,
+                )
+                results_by_id[tu["id"]] = mail_touched_withheld_error(label)
             for tu in withheld_uses:
                 if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to
@@ -1918,7 +1982,8 @@ class Executive:
                         named = tu["input"].get("name")
                         label = named[:200] if isinstance(named, str) and named else label
                     logger.warning(
-                        "%s:%s refused — the turn is private to the principal", kind, label
+                        "%s:%s refused — the turn is private to the principal",
+                        kind, _loggable_tool(label),
                     )
                     audit_log(
                         "tool_invocation",

@@ -21,13 +21,12 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from openexecutive.api import caller as api_caller
 from openexecutive.scheduler import pause as pause_store
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_MAX_ACTOR_LEN = 200
 
 
 class ExecutiveStatus(BaseModel):
@@ -43,11 +42,6 @@ class ExecutiveStatus(BaseModel):
 
 class PauseBody(BaseModel):
     reason: str | None = Field(default=None, max_length=200)
-
-
-def _caller(request: Request) -> str:
-    email = (request.headers.get("x-caller-email") or "").strip()
-    return email[:_MAX_ACTOR_LEN] or "api"
 
 
 def _may_resume(request: Request) -> bool:
@@ -77,7 +71,7 @@ def pause_executive(request: Request, body: PauseBody | None = None) -> Executiv
     start time and reason."""
     reason = ((body.reason if body else None) or "").strip() or None
     was_paused = pause_store.get_pause_state().paused
-    actor = _caller(request)
+    actor = api_caller.actor(request)
     pause_store.pause(actor, reason)
     if not was_paused:
         from openexecutive.audit import log_event as audit_log
@@ -99,7 +93,7 @@ def resume_executive(request: Request) -> ExecutiveStatus:
     if not _may_resume(request):
         raise HTTPException(status_code=403, detail="Only the principal can resume the Executive")
     prior = pause_store.get_pause_state()
-    actor = _caller(request)
+    actor = api_caller.actor(request)
     held = pause_store.count_held_actions()
     pause_store.resume(actor)
     if prior.paused:

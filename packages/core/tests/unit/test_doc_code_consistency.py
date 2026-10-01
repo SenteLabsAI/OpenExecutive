@@ -160,19 +160,19 @@ def _delegation_facts() -> dict[str, Any]:
 
 
 def test_act_as_me_send_claim_and_code_agree() -> None:
-    """Act as me drafts and never sends. The page says so; the Gmail client
-    must have no send path. Whoever adds sending (a later phase) updates
-    architecture-facts.yaml (delegation.gmail_client) and this test together."""
+    """Act as me sends only an existing draft, by its id, on the person's
+    tap. The page says so; the Gmail client's one send endpoint is
+    drafts.send, never messages.send (which sends any text it is given).
+    Whoever changes what it can send updates architecture-facts.yaml
+    (delegation.gmail_client) and this test together."""
     import re
 
     from openexecutive.delegation import gmail
 
-    doc_says_no_send = "NO send method" in _delegation_facts()["gmail_client"]
-    code_can_send = re.search(
-        r"/(messages|drafts)/send\b", Path(gmail.__file__).read_text()
-    ) is not None
-    assert doc_says_no_send != code_can_send, (
-        "Whether Act as me can send disagrees between delegation/gmail.py and "
+    doc_says_draft_only = "ONE send method, send_draft" in _delegation_facts()["gmail_client"]
+    endpoints = re.findall(r"/(?:messages|drafts)/send\b", Path(gmail.__file__).read_text())
+    assert doc_says_draft_only and endpoints == ["/drafts/send"], (
+        "What Act as me can send disagrees between delegation/gmail.py and "
         "architecture-facts.yaml (delegation.gmail_client). Update both."
     )
 

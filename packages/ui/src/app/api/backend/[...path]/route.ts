@@ -1,5 +1,11 @@
 import { NextRequest } from "next/server";
 import { LOCAL_LOGIN, auth } from "@/auth";
+import {
+  CALLER_ASSERTION_HEADER,
+  mintCallerAssertion,
+  parseCallerSigningKey,
+  type CallerSigner,
+} from "@/lib/callerAssertion";
 import { isCrossSiteWrite } from "@/lib/crossSite";
 import { localLoginSessionAllowed } from "@/lib/localLogin";
 
@@ -16,6 +22,19 @@ export const dynamic = "force-dynamic";
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
+
+// Signed callers (lib/callerAssertion.ts, docs/auth.md): with
+// CALLER_ASSERTION_PRIVATE_KEY set, every request also carries a signed
+// statement of who is calling, which the API checks. A key that can't be read
+// refuses every request rather than let one go out unsigned.
+let CALLER_SIGNER: CallerSigner | null = null;
+let CALLER_SIGNER_BROKEN = false;
+try {
+  CALLER_SIGNER = parseCallerSigningKey(process.env.CALLER_ASSERTION_PRIVATE_KEY);
+} catch (err) {
+  CALLER_SIGNER_BROKEN = true;
+  console.error(`[proxy] ${err instanceof Error ? err.message : "CALLER_ASSERTION_PRIVATE_KEY can't be used"}`);
+}
 
 async function proxy(req: NextRequest, params: { path: string[] }): Promise<Response> {
   // Another page on this site (any localhost port counts) must not be able to
@@ -41,6 +60,12 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   if (!allowed) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (CALLER_SIGNER_BROKEN) {
+    return new Response(JSON.stringify({ error: "caller signing is misconfigured" }), {
+      status: 500,
       headers: { "content-type": "application/json" },
     });
   }
@@ -87,6 +112,21 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   // above).
   if (callerEmail && !session?.localLogin) {
     headers.set("x-caller-email", callerEmail);
+  }
+
+  // Sign it: a local-login session is the operator (the owner at this
+  // computer, naming no one), anyone else the email above. Bound to this
+  // method and to the path and query exactly as fetch sends them.
+  if (CALLER_SIGNER) {
+    headers.set(
+      CALLER_ASSERTION_HEADER,
+      mintCallerAssertion(CALLER_SIGNER, {
+        kind: session?.localLogin ? "operator" : "user",
+        email: session?.localLogin ? "" : (callerEmail ?? ""),
+        method: req.method,
+        target: `${url.pathname}${url.search}`,
+      }),
+    );
   }
 
   const init: RequestInit = {

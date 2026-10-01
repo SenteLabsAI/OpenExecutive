@@ -283,8 +283,11 @@ async def ask_executive(message: str, caller_email: str = "") -> str:
     Args:
         message: Your question for the Executive.
         caller_email: Optional — resolve the caller to a known person for
-            person-scoped memory; defaults to the company principal.
+            person-scoped memory; defaults to the company principal. Ignored
+            when the API checks signed callers: an MCP client then holds only
+            the shared secret, which vouches for no one, so it asks as no one.
     """
+    from openexecutive.api.caller import signing_on
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.session import Session
@@ -294,6 +297,8 @@ async def ask_executive(message: str, caller_email: str = "") -> str:
     )
 
     def _resolve_person() -> int | None:
+        if signing_on():
+            return None
         # Degrade to None on a DB error rather than surfacing it to the client,
         # matching the chat route's caller resolution (api/routes/chat.py).
         try:

@@ -173,6 +173,11 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
     ``done`` activity row is written, so a suppressed attempt never counts itself
     toward the rate cap.
     """
+    from openexecutive.delegation.lockdown import mail_touched_refusal
+
+    # Act as me: a turn that read the principal's own mail sends nothing.
+    if (refused := mail_touched_refusal(tool)) is not None:
+        return refused
     from openexecutive.orchestrator.outbound_guard import check_outbound_allowed
 
     reason = check_outbound_allowed(channel, channel_ref, text)
@@ -666,6 +671,11 @@ def _is_principal_recipient(
 
 
 async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import mail_touched_refusal
+
+    if (refused := mail_touched_refusal('schedule_followup')) is not None:
+        return refused
+
     from openexecutive.config import get_settings
     from openexecutive.memory.episodic import (
         count_pending_for_channel_ref,
@@ -1968,6 +1978,11 @@ async def handle_suggest_workflow(tool_input: dict[str, Any]) -> str:
     link to the pre-populated form. Reuses `insert_scheduled_action` —
     no new schema, no scheduler-runner change.
     """
+    from openexecutive.delegation.lockdown import mail_touched_refusal
+
+    if (refused := mail_touched_refusal('suggest_workflow')) is not None:
+        return refused
+
     from openexecutive.config import get_settings
     from openexecutive.memory.episodic import (
         count_pending_for_channel_ref,

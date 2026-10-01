@@ -126,6 +126,21 @@ def _maybe_refresh_narrative(now: datetime) -> bool:
         return False
 
 
+def _maybe_scan_inbox(now: datetime) -> bool:
+    """Act as me's inbox watcher (delegation/inbox.py): start the scans that
+    are due, throttled per person by DELEGATION_INBOX_POLL_MINUTES. A hook
+    here rather than a scheduled_actions row, which /scheduled would show to
+    everyone. Its own task, one at a time, so a slow scan never holds the
+    tick. Never raises."""
+    try:
+        from openexecutive.delegation.inbox import maybe_scan
+
+        return maybe_scan(now)
+    except Exception:
+        logger.exception("scheduler: inbox scan failed to start")
+        return False
+
+
 def _maybe_sweep_alerts(now: datetime) -> int:
     """Run the expiry sweep if the interval has elapsed. Returns rows expired.
 
@@ -275,6 +290,7 @@ async def run_scheduler(
                 await asyncio.sleep(poll_interval_seconds)
                 continue
             _maybe_refresh_narrative(now)
+            _maybe_scan_inbox(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))

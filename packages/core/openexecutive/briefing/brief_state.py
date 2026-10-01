@@ -300,7 +300,9 @@ def rewritten_lines(
     ]
 
 
-def handled_since(since: datetime, limit: int = 20) -> list[dict[str, Any]]:
+def handled_since(
+    since: datetime, limit: int = 20, *, include_private: bool = False
+) -> list[dict[str, Any]]:
     """Completed autonomous moves recorded in the audit log since ``since``.
 
     Each item: ``{"kind": event_type sans prefix, "event_type": str,
@@ -309,6 +311,10 @@ def handled_since(since: datetime, limit: int = 20) -> list[dict[str, Any]]:
     ``details`` is the audit row's structured payload (headline, target
     person, evidence ref, new status …) for callers that render more than
     one line. Empty when the audit store is unavailable.
+
+    Rows private to the principal (one that names their contact, say) are
+    left out unless ``include_private``: only the principal's own ``/today``
+    asks for them. The briefs don't, as a written brief can be read by others.
     """
     try:
         from openexecutive.audit.logger import get_audit_logger
@@ -316,7 +322,12 @@ def handled_since(since: datetime, limit: int = 20) -> list[dict[str, Any]]:
         logger_ = get_audit_logger()
         out: list[dict[str, Any]] = []
         for event_type, kind in HANDLED_EVENT_KINDS.items():
-            for ev in logger_.query(event_type=event_type, since=since.isoformat(), limit=limit):
+            for ev in logger_.query(
+                event_type=event_type,
+                since=since.isoformat(),
+                limit=limit,
+                include_private=include_private,
+            ):
                 details = ev.details if isinstance(ev.details, dict) else {}
                 out.append({
                     "kind": kind,

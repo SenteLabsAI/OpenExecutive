@@ -319,6 +319,11 @@ def _principal_only_refusal(name: str, workflow: Any) -> str | None:
 
 
 async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import mail_touched_refusal
+
+    if (refused := mail_touched_refusal('run_workflow')) is not None:
+        return refused
+
     from openexecutive.config import get_settings
     from openexecutive.knowledge.store import ChromaDBStore
     from openexecutive.workflows import get_workflow

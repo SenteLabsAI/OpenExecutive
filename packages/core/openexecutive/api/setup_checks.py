@@ -313,7 +313,23 @@ def check_exec_email(snap: Snapshot) -> SetupCheck:
 
 def check_api_protection(snap: Snapshot) -> SetupCheck:
     if os.environ.get("BACKEND_SHARED_SECRET", "").strip():
-        return _result("api_secret", "ok", "Only the web app can use the API: BACKEND_SHARED_SECRET is set.")
+        from openexecutive.api.caller import signing_on
+
+        if signing_on():
+            return _result(
+                "api_secret",
+                "ok",
+                "Only the web app can use the API, and it signs who is signed in.",
+            )
+        return _result(
+            "api_secret",
+            "warn",
+            "Only the web app can use the API, but it takes the web app's word for who is "
+            "signed in: anyone holding BACKEND_SHARED_SECRET can act as anyone, the owner "
+            "included. Until that's fixed, a reply drafted in your inbox can't be sent from here.",
+            "Run scripts/make-caller-keys.py once, set CALLER_ASSERTION_PRIVATE_KEY on the web "
+            "app and CALLER_ASSERTION_PUBLIC_KEYS on the API, then restart both (docs/auth.md).",
+        )
     if snap.local_login:
         return _result(
             "api_secret",
@@ -325,7 +341,8 @@ def check_api_protection(snap: Snapshot) -> SetupCheck:
         "warn",
         "The API has no shared secret, so anything that can reach it can use it.",
         "Fine on your own computer. On a server, set BACKEND_SHARED_SECRET to the same random value for both "
-        "apps (openssl rand -hex 32), then restart them.",
+        "apps (openssl rand -hex 32), then restart them. Sending drafted replies from the web app also "
+        "needs signed sign-ins (docs/auth.md).",
     )
 
 
@@ -800,10 +817,16 @@ def check_gmail(snap: Snapshot) -> SetupCheck:
     return _channel_ready(snap, "gmail", summary, actor="email", roster=None)
 
 
+# The inbox watcher's states worth a look (the rest are routine).
+_INBOX_WARN = frozenset({"error", "rate_limited", "backlog_full"})
+
+
 async def check_your_gmail(snap: Snapshot) -> SetupCheck:
     """The owner's own Gmail, for Act as me (optional). Only a connected
     credential reaches Google: a missing one is reported without a call."""
     from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
+    from openexecutive.delegation.inbox import STATUS_MESSAGES as INBOX_STATUS_MESSAGES
+    from openexecutive.delegation.inbox import get_watch
     from openexecutive.delegation.settings import is_enabled
 
     owner = snap.principal
@@ -830,6 +853,17 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
             if on
             else "Turn Act as me on in Settings to let the Executive draft replies as you."
         )
+        watch = await asyncio.to_thread(get_watch, owner.id) if on and owner.id is not None else None
+        if watch is not None and watch.enabled:
+            if watch.status in _INBOX_WARN:
+                return _result(
+                    "your_gmail",
+                    "warn",
+                    f"Connected to {owner.email}. Draft replies to my inbox: "
+                    + INBOX_STATUS_MESSAGES[watch.status],
+                    link="/settings",
+                )
+            summary += " Draft replies to my inbox is on."
         return _result("your_gmail", "ok", summary, link="/settings")
     if status == "not_configured":
         return _result(

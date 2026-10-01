@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from openexecutive import mcp_server
+from openexecutive.api import caller as api_caller
 from openexecutive.api.routes import (
     agents,
     alerts,
@@ -848,6 +849,21 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Signed callers (api/caller.py). With CALLER_ASSERTION_PUBLIC_KEYS set, who
+    # is calling comes from an assertion the UI proxy signs, never from the
+    # x-caller-email header alone. Added before the shared-secret gate so it
+    # runs after it. Keys that can't be read stop the boot: carrying on would
+    # trust the header again, i.e. fail open.
+    try:
+        caller_keys = api_caller.public_keys_from_env()
+    except api_caller.CallerKeysError as exc:
+        raise RuntimeError(f"CALLER_ASSERTION_PUBLIC_KEYS can't be used: {exc}") from exc
+    if caller_keys:
+        app.middleware("http")(api_caller.caller_gate(caller_keys))
+        logging.getLogger("openexecutive").info(
+            "Signed callers on (%d key%s)", len(caller_keys), "" if len(caller_keys) == 1 else "s"
+        )
 
     # Shared-secret gate. If BACKEND_SHARED_SECRET is set, every non-exempt
     # request must include a matching x-api-key header. If unset, the gate is

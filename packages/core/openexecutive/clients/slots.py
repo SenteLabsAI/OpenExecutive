@@ -48,6 +48,7 @@ from openexecutive.cli.fixture_loader import (
 from openexecutive.cli.fixture_loader import (
     PER_CLIENT_CACHE_TABLES as _PER_CLIENT_CACHE_TABLES,
 )
+from openexecutive.delegation.schema import TABLES as DELEGATION_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +137,7 @@ _BLANK_WIPE_TABLES = (
     # — per company like the roster it is keyed on, so a blank client starts
     # with it off and no profile. (Each person's own-Gmail credential is a
     # file, not a table, and is re-checked against the roster on every use.)
-    "delegation_settings",
-    "delegation_voice",
-    "delegation_voice_history",
+    *DELEGATION_TABLES,
     # Legacy talent / staff-onboarding tables. Both features are gone and
     # nothing writes these any more, but the rows may still exist on upgraded
     # installs and they carry candidate PII (names, employers, screening

@@ -290,10 +290,19 @@ def test_owner() -> None:
 
 def test_api_protection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BACKEND_SHARED_SECRET", "s3cret-value")
+    monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
+    # The secret alone keeps strangers out, but whoever holds it can say
+    # they are anyone.
+    unsigned = check_api_protection(make_snap())
+    assert unsigned.state == "warn" and "CALLER_ASSERTION_PUBLIC_KEYS" in (unsigned.fix or "")
+    assert_no_secret(unsigned, "s3cret-value")
+
+    monkeypatch.setenv("CALLER_ASSERTION_PUBLIC_KEYS", "k1:" + "A" * 43)
     protected = check_api_protection(make_snap())
     assert protected.state == "ok"
     assert_no_secret(protected, "s3cret-value")
 
+    monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS")
     monkeypatch.delenv("BACKEND_SHARED_SECRET")
     assert check_api_protection(make_snap(local_login=True)).state == "ok"
     assert check_api_protection(make_snap()).state == "warn"

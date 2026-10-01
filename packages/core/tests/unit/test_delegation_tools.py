@@ -14,6 +14,8 @@ import pytest
 
 from openexecutive.audit import logger as audit_logger
 from openexecutive.audit.logger import AuditLogger, log_event
+from openexecutive.delegation import caps
+from openexecutive.delegation import drafts as ddrafts
 from openexecutive.delegation import ghostwriter as gw
 from openexecutive.delegation import settings as dsettings
 from openexecutive.delegation.gmail import (
@@ -65,12 +67,12 @@ def fresh_turn_state() -> Iterator[None]:
     """No pin or draft count carries over from another test (both live at
     module level: the turn's context variable and the per-person counters)."""
     token = dsettings._TURN.set(None)
-    dt._SAVED_TODAY.clear()
-    dt._IN_FLIGHT.clear()
+    caps._SAVED_TODAY.clear()
+    caps._IN_FLIGHT.clear()
     yield
     dsettings._TURN.reset(token)
-    dt._SAVED_TODAY.clear()
-    dt._IN_FLIGHT.clear()
+    caps._SAVED_TODAY.clear()
+    caps._IN_FLIGHT.clear()
 
 
 @pytest.fixture
@@ -175,26 +177,26 @@ def test_the_per_turn_and_daily_caps(roster: SimpleNamespace, monkeypatch: pytes
     session = _session(FakeMailbox())
     session.turn_delegation.drafts = dt.DRAFTS_PER_TURN
     assert "drafts this turn" in _run(session, {"intent": "x", "thread_id": "t1"})["error"]
-    monkeypatch.setattr(dt, "_drafts_today", lambda _pid: 10_000)
+    monkeypatch.setattr(caps, "drafts_today", lambda _pid: 10_000)
     assert "limit" in _run(_session(FakeMailbox()), {"intent": "x", "thread_id": "t1"})["error"]
 
 
 def test_the_daily_cap_fails_closed(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(*_a: Any, **_kw: Any) -> Any:
-        raise RuntimeError("audit db locked")
+        raise RuntimeError("db locked")
 
-    monkeypatch.setattr(audit_logger.get_audit_logger(), "query", broken)
-    assert dt._drafts_today(roster.principal) is None
+    monkeypatch.setattr(ddrafts, "count_since", broken)
+    assert caps.drafts_today(roster.principal) is None
     session = _session(FakeMailbox())
     assert "draft limit" in _run(session, {"intent": "x", "thread_id": "t1"})["error"]
     assert session.turn_delegation.touched_mail is False
 
 
-def test_the_daily_cap_setting_stays_countable() -> None:
+def test_the_daily_cap_setting_stays_bounded() -> None:
     from openexecutive.config import Settings
 
     bounds = [m for m in Settings.model_fields["delegation_max_drafts_per_day"].metadata if hasattr(m, "le")]
-    assert [b.le for b in bounds] == [dt.DAILY_COUNT_ROWS]
+    assert [b.le for b in bounds] == [1000]
 
 
 def test_a_mailbox_that_is_not_theirs_is_refused_and_the_turn_is_marked(roster: SimpleNamespace) -> None:
@@ -297,11 +299,13 @@ def test_the_draft_is_audited_privately_without_its_text(
     assert "SECRET-TERMS" not in json.dumps(row.details) and "Oct 5" not in row.summary
 
 
-def test_the_daily_count_reads_the_audit_rows(roster: SimpleNamespace, composer: list[str]) -> None:
+def test_the_daily_count_reads_the_drafts_table(roster: SimpleNamespace, composer: list[str]) -> None:
     for _ in range(2):
         _run(_session(FakeMailbox()), {"intent": "Yes.", "thread_id": "t1"})
-    assert dt._drafts_today(roster.principal) == 2
-    assert dt._drafts_today(roster.teammate) == 0
+    caps._SAVED_TODAY.clear()  # the table alone, not this process's floor
+    assert caps.drafts_today(roster.principal) == 2
+    assert caps.drafts_today(roster.teammate) == 0
+    assert ddrafts.chat_thread_ids(roster.principal) == {"t1"}
 
 
 def test_the_tool_is_redacted_everywhere() -> None:
@@ -475,7 +479,7 @@ def test_a_failed_draft_gives_its_slot_back(roster: SimpleNamespace, composer: l
     session = _session(Broken())
     assert "Couldn't write the draft" in _run(session, {"intent": "Yes.", "thread_id": "t1"})["error"]
     assert session.turn_delegation.drafts == 0
-    assert dt._IN_FLIGHT == {} and dt._SAVED_TODAY == {}
+    assert caps._IN_FLIGHT == {} and caps._SAVED_TODAY == {}
 
 
 # --------------------------------------------------------------------------- #

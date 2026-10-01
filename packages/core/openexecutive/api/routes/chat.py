@@ -14,6 +14,7 @@ from typing import Any, Literal, NamedTuple
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from openexecutive.api import caller as api_caller
 from openexecutive.api.models import ChatRequest, PageContext, StopChatRequest
 from openexecutive.audit import log_event as audit_log
 from openexecutive.audit import principal_turn_rows
@@ -180,14 +181,12 @@ def _stop_owner_key(request: Request, caller_person_id: int | None) -> str:
     header from the verified session, so the email cannot be spoofed.
 
     The sentinel is only reached when there is no header at all — CLI and
-    direct curl against a local API, where there is no identity to separate.
+    direct curl against a local API, where there is no identity to separate
+    (``api.caller.identity_key``).
     """
     if caller_person_id is not None:
         return f"person:{caller_person_id}"
-    email = (request.headers.get("x-caller-email") or "").strip().lower()
-    if email:
-        return f"email:{email}"
-    return "local"
+    return api_caller.identity_key(request)
 
 
 def _sweep_stale_stops() -> None:
@@ -397,10 +396,10 @@ def _caller_keys(request: Request, caller_person_id: int | None) -> frozenset[st
     keys: set[str] = set()
     if caller_person_id is not None:
         keys.add(f"person:{caller_person_id}")
-    email = (request.headers.get("x-caller-email") or "").strip().lower()
+    email = api_caller.caller_email(request)
     if email:
         keys.add(f"email:{email}")
-    return frozenset(keys or {"local"})
+    return frozenset(keys or {api_caller.identity_key(request)})
 
 
 def _is_session_starter(
@@ -604,16 +603,20 @@ def _resolve_caller_person_id(request: Request) -> int | None:
         must not be silently fused with the principal's data).
       - header absent → fall back to the principal (CLI / direct curl,
         plus channel paths without the header).
+      - a verified service call (``api.caller``) names no one and is never
+        the principal → None.
     """
-    caller_email = (request.headers.get("x-caller-email") or "").strip().lower()
+    who = api_caller.caller(request)
     try:
         from openexecutive.people.store import (
             find_person_by_email,
             find_principal_person,
         )
-        if caller_email:
-            caller = find_person_by_email(caller_email)
-            return caller.id if caller is not None else None
+        if who.email:
+            person = find_person_by_email(who.email)
+            return person.id if person is not None else None
+        if not who.defaults_to_principal:
+            return None
         principal = find_principal_person()
         return principal.id if principal is not None else None
     except (OSError, sqlite3.Error) as exc:
@@ -627,13 +630,15 @@ def _caller_is_principal_or_unclaimed(request: Request) -> bool:
     settings): the caller resolves to the principal — a request with no
     ``x-caller-email`` does, see ``_resolve_caller_person_id`` — or no
     principal is on the roster yet, so a first-run install is never locked
-    out. Fails closed: if the roster cannot be read, the answer is no.
+    out. That never covers a service (signed callers on, no assertion): it
+    names no one, so it can't set up an install it doesn't own. Fails closed:
+    if the roster cannot be read, the answer is no.
     """
     from openexecutive.people import store as people_store
 
     try:
         if people_store.find_principal_person() is None:
-            return True
+            return api_caller.caller(request).kind != "service"
         return people_store.is_principal_or_self(_resolve_caller_person_id(request), None)
     except Exception:
         logger.exception("principal check failed — refusing the principal-only change")
@@ -769,7 +774,7 @@ async def _run_chat_turn(
     # Per turn, like the caller: whether this request carried a sign-in (the UI
     # proxy stamps x-caller-email from it). A header-less request resolves to
     # the principal but is no sign-in, so it never gets Act as me.
-    session.web_caller_signed_in = bool((request.headers.get("x-caller-email") or "").strip())
+    session.web_caller_signed_in = api_caller.signed_in(request)
     is_first_turn = len(session.conversation_history) == 0
 
     logger.info(

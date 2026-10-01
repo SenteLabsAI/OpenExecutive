@@ -64,6 +64,9 @@ services:
       - AUTH_URL=${AUTH_URL:-}
       - ALLOWED_EMAILS=${ALLOWED_EMAILS:-}
       - BACKEND_SHARED_SECRET=${BACKEND_SHARED_SECRET:-}
+      # Signed callers (docs/auth.md): the UI's signing key. The API reads
+      # CALLER_ASSERTION_PUBLIC_KEYS from the env_file above.
+      - CALLER_ASSERTION_PRIVATE_KEY=${CALLER_ASSERTION_PRIVATE_KEY:-}
       # Local login (no sign-in) is `make dev` only: this port is published
       # on every interface. Set explicitly EMPTY because Next.js never lets a
       # dotenv file override a variable that is already set, so this also

@@ -276,7 +276,9 @@ briefing and activity, people roster, department state, and episodic memory for
 decisions, initiatives and advice) and four tools, of which `consult_specialist`
 is the primary one: domain analysis from any of the ten specialists, each
 grounded in your company's knowledge base. The full inventory is on the **MCP
-Server** section of the `/architecture` page.
+Server** section of the `/architecture` page. With
+[signed callers](docs/auth.md#signed-callers) on, an MCP client holds only the
+shared secret, so it is never the owner: `ask_executive` asks as no one.
 
 This is the inverse of the `MCP_ENABLED` and `MCP_SERVERS_CONFIG_PATH` settings
 under [Configuration](#configuration), which configure the MCP *gateway*: Open

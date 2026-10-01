@@ -59,6 +59,11 @@ RUN_EXECUTIVE_RESEARCH_TOOL: dict[str, Any] = {
 async def handle_run_executive_research(
     tool_input: dict[str, Any],
 ) -> str:
+    from openexecutive.delegation.lockdown import mail_touched_refusal
+
+    if (refused := mail_touched_refusal('run_executive_research')) is not None:
+        return refused
+
     note = str(tool_input.get("note", "")).strip()
 
     from openexecutive.config import get_settings

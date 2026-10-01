@@ -503,6 +503,48 @@ def test_cancel_nonexistent_returns_error() -> None:
     assert "error" in json.loads(raw)
 
 
+def _instance(decision_class: str, payload: dict[str, Any]) -> int:
+    from openexecutive.memory.decision_ledger import create_decision_instance
+
+    return create_decision_instance(
+        decision_class=decision_class, department="", originating_session_id=None,
+        proposed_payload=payload, idempotency_key=None, gate_mode="propose",
+        approver_person_id=None, confidence=0.9,
+    )
+
+
+def test_cancel_touches_only_meeting_bookings() -> None:
+    """Another class (a reply drafted in the owner's own Gmail) reads exactly
+    like a missing id: the tool can't close it, nor tell that it exists."""
+    from openexecutive.memory.decision_ledger import get_decision_instance, mark_reversed
+
+    iid = _instance("delegation_reply", {"private": True, "draft_id": "d1"})
+    gw = _fake_gateway()
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=gw):
+        raw = asyncio.run(handle_cancel_calendar_event({"decision_instance_id": iid}))
+    assert json.loads(raw) == {"error": f"decision_instance {iid} not found"}
+    assert get_decision_instance(iid).status == "proposed"  # type: ignore[union-attr]
+    gw.call_tool.assert_not_awaited()
+    # And the ledger itself refuses a reversal of the wrong class.
+    assert mark_reversed(iid, reason="x", decision_class="meeting_scheduling") is False
+    assert get_decision_instance(iid).status == "proposed"  # type: ignore[union-attr]
+
+
+def test_a_private_booking_is_the_owners_to_cancel() -> None:
+    from openexecutive.memory.decision_ledger import get_decision_instance
+    from openexecutive.orchestrator.people_tools import grant_contact_egress
+
+    iid = _instance("meeting_scheduling", {"private": True, "title": "Sync"})
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=_fake_gateway()):
+        # Not the owner's own verified turn: it doesn't exist.
+        raw = asyncio.run(handle_cancel_calendar_event({"decision_instance_id": iid}))
+        assert json.loads(raw) == {"error": f"decision_instance {iid} not found"}
+        assert get_decision_instance(iid).status == "proposed"  # type: ignore[union-attr]
+        with grant_contact_egress():
+            raw = asyncio.run(handle_cancel_calendar_event({"decision_instance_id": iid}))
+    assert json.loads(raw)["status"] == "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # Google Meet links
 # ---------------------------------------------------------------------------

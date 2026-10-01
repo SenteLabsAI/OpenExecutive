@@ -11,6 +11,7 @@ that person's own Gmail:
 - ``voice``       "How I write": a style profile learned from their sent mail
 - ``ghostwriter`` the tool-less call that writes a draft in that voice
 
-Phase 1 only drafts: nothing here can send, and only the principal may turn it
-on (``settings.can_delegate``). See ``architecture/prebuilt/delegation.json``.
+Chat only drafts. The one send is ``reply_send``: an existing draft, by id,
+when the person taps Send on its card. Only the principal may turn it on
+(``settings.can_delegate``). See ``architecture/prebuilt/delegation.json``.
 """

@@ -1522,7 +1522,9 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
 
 // ----------------------------------------------------------------------------
 // Act as me — the Executive drafts email AS you, in your own Gmail Drafts,
-// when you ask it to. It never sends. Only the owner can have it for now.
+// when you ask it to or (with Draft replies to my inbox on) for mail that
+// needs you. It sends only a reply card's draft, when you tap Send. Only the
+// owner can have it for now.
 // ----------------------------------------------------------------------------
 export type DelegationGmailStatus =
   | "connected"
@@ -1542,6 +1544,51 @@ export interface DelegationSettings {
     // How to connect your own Gmail (the token is minted locally).
     connect_command: string;
   };
+  // Absent on a backend that predates the inbox watcher.
+  inbox?: InboxWatch;
+}
+
+// "Draft replies to my inbox": the Executive watches your own inbox and, for
+// mail that needs you, saves a first reply in your Gmail Drafts; each waits
+// on a card on Today (GET /delegation/replies).
+export interface InboxWatch {
+  enabled: boolean;
+  // off, waiting, ok, checking, daily_limit, backlog_full, act_as_me_off,
+  // client_slot, rate_limited, error, or why your Gmail can't be read.
+  status: string;
+  // The status in plain words, from the backend.
+  message: string;
+  watch_since: string | null;
+  last_poll_at: string | null;
+  checking: boolean;
+}
+
+// One reply the inbox watcher drafted: a `delegation_reply` decision, yours
+// alone. Send approves it (POST /decisions/{id}/approve); Dismiss rejects it
+// (POST /decisions/{id}/reject). `status` is "executing" while a send Gmail
+// didn't confirm is being checked.
+export interface ReplyCard {
+  decision_id: number;
+  status: string;
+  created_at: string;
+  thread_id: string;
+  from_name: string;
+  from_email: string;
+  // team, contact, correspondent (you've written to them) or stranger.
+  relation: string;
+  sender_verified: boolean;
+  subject: string;
+  received_at: string;
+  // Their new words, quoted replies stripped.
+  they_wrote: string;
+  draft_to: string[];
+  draft_subject: string;
+  draft_body: string;
+  // What the draft leaves for you to decide.
+  open_questions: string[];
+  flags: string[];
+  // Opens the thread in your Gmail, where the draft is.
+  gmail_link: string;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.
@@ -1600,6 +1647,88 @@ export async function setDelegationEnabled(enabled: boolean): Promise<Delegation
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Act as me.");
   return res.json();
+}
+
+export async function setInboxWatch(enabled: boolean): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/inbox`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to my inbox.");
+  return res.json();
+}
+
+// Starts a check of your inbox; GET /delegation says when it is done.
+export async function checkInboxNow(): Promise<InboxWatch> {
+  const res = await fetch(`${API_BASE}/delegation/inbox/check`, { method: "POST" });
+  if (!res.ok) throw await delegationError(res, "Couldn't check your inbox.");
+  return res.json();
+}
+
+// null when this viewer has none to see (403) or the backend predates them (404).
+export async function getReplyCards(signal?: AbortSignal): Promise<ReplyCard[] | null> {
+  const res = await fetch(`${API_BASE}/delegation/replies`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load the replies waiting for you.");
+  const body = (await res.json()) as { cards: ReplyCard[] };
+  return body.cards;
+}
+
+// Why a Send didn't go: the backend's code (draft_gone, you_replied,
+// already_handled, send_unconfirmed, caller_signing_required, …) and what to
+// tell you.
+export class ReplySendError extends Error {
+  code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export type SendReplyResult =
+  | { status: "sent" }
+  // Something changed since the card was made: send again with what you
+  // were shown to go ahead.
+  | { status: "confirm"; message: string; reasons: string[]; recipients: string[] };
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+// Send the reply's draft from your Gmail, exactly as it is there (POST
+// /decisions/{id}/approve). `confirm` is your second yes: the recipients you
+// were shown, and that a newer message in the thread is fine.
+export async function sendReplyCard(
+  id: number,
+  confirm?: { recipients: string[]; thread_moved_on?: boolean },
+): Promise<SendReplyResult> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits: confirm ?? null }),
+  });
+  if (res.ok) return { status: "sent" };
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
+  const message = typeof detail.message === "string" ? detail.message : "Couldn't send that reply.";
+  const code = typeof detail.code === "string" ? detail.code : res.status === 404 ? "draft_gone" : "error";
+  if (res.status === 409 && code === "confirm") {
+    return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
+  }
+  throw new ReplySendError(message, code);
+}
+
+// Dismiss a reply card. Its draft is deleted from your Gmail unless you
+// edited it there.
+export async function dismissReplyCard(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "" }),
+  });
+  if (res.status === 404 || res.status === 409) return; // already gone or handled
+  if (!res.ok) throw await delegationError(res, "Couldn't dismiss that reply.");
 }
 
 export async function getVoiceProfile(signal?: AbortSignal): Promise<VoiceProfile> {

@@ -1393,9 +1393,14 @@ def count_activity_by_day(
         ("initiatives",
          "SELECT substr(created_at, 1, 10) AS day FROM initiatives"
          " WHERE substr(created_at, 1, 10) >= ?"),
+        # Private rows are left out, as the feed leaves them out: a decision
+        # or alert private to the principal (today._payload_is_private,
+        # alerts.models.PRIVATE_ALERT_TAG) is not everyone's heartbeat.
         ("decision_instances",
          "SELECT substr(resolved_at, 1, 10) AS day FROM decision_instances"
-         " WHERE resolved_at IS NOT NULL AND substr(resolved_at, 1, 10) >= ?"),
+         " WHERE resolved_at IS NOT NULL AND substr(resolved_at, 1, 10) >= ?"
+         " AND (CASE WHEN json_valid(proposed_payload_json)"
+         " THEN json_extract(proposed_payload_json, '$.private') END) IS NOT 1"),
         # source != 'decision_scheduling' mirrors `_build_activity`'s exclusion
         # (decision_ledger.DECISION_ALERT_SOURCE) so the heatmap matches the
         # feed: a resolved gated booking is counted once (decision_instances
@@ -1403,6 +1408,7 @@ def count_activity_by_day(
         ("alerts",
          "SELECT substr(created_at, 1, 10) AS day FROM alerts"
          " WHERE source != 'decision_scheduling'"
+         " AND lower(coalesce(topic_tags, '')) NOT LIKE '%\"private:principal\"%'"
          " AND substr(created_at, 1, 10) >= ?"),
     ]
     with _get_conn(resolved) as conn:

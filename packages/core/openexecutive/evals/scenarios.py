@@ -12,6 +12,7 @@ the API. ID collisions between the two are blocked at insert time.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,8 @@ def scenario_kind(s: dict[str, Any]) -> str:
         return "triage"
     if s.get("type") == "workflow":
         return "workflow"
+    if s.get("type") == "inbox":
+        return "inbox"
     if s.get("requires_mcp"):
         return "mcp"
     return "chat"
@@ -165,9 +168,6 @@ def scenario_delegation(scenario: dict[str, Any]) -> Any:
                  reply_to: "...", cc: ["..."]}
 
     Raises ValueError on a malformed block, so a typo fails the scenario."""
-    from email.utils import getaddresses
-
-    from openexecutive.delegation.gmail import MailMessage, MailThread, valid_id
     from openexecutive.delegation.settings import DelegationOverride
     from openexecutive.evals.mailbox import ScenarioMailbox
     from openexecutive.people.models import Person
@@ -186,36 +186,99 @@ def scenario_delegation(scenario: dict[str, Any]) -> Any:
     )
     if not isinstance(threads_raw, list):
         raise ValueError("delegation.threads must be a list")
-    threads: list[MailThread] = []
-    for t in threads_raw:
-        if not isinstance(t, dict) or not valid_id(t.get("id")) or not isinstance(t.get("messages"), list):
-            raise ValueError("each delegation thread needs an id and a messages list")
-        messages = []
-        for i, m in enumerate(t["messages"], 1):
-            if not isinstance(m, dict) or not m.get("from") or not isinstance(m.get("text"), str):
-                raise ValueError("each delegation message needs from and text")
-            sender = getaddresses([str(m["from"])])
-            name, addr = sender[0] if sender else ("", "")
-            messages.append(MailMessage(
-                id=f"{t['id']}-{i}",
-                thread_id=str(t["id"]),
-                from_addr=addr.strip().lower(),
-                from_name=name.strip(),
-                to=[email],
-                cc=[str(c).strip().lower() for c in m.get("cc") or []],
-                reply_to=str(m.get("reply_to") or "").strip().lower(),
-                subject=str(t.get("subject") or ""),
-                date=str(m.get("date") or ""),
-                message_id_header=f"<{t['id']}-{i}@eval.example>",
-                labels=["SENT"] if addr.strip().lower() == email else ["INBOX"],
-                text=m["text"],
-            ))
-        threads.append(MailThread(id=str(t["id"]), messages=messages))
+    threads = [_scenario_thread(t, email, "delegation") for t in threads_raw]
     return DelegationOverride(
         enabled=raw.get("enabled", True) is not False,
         gmail=ScenarioMailbox(email, threads),
         person=Person(id=0, full_name=str(person_raw["full_name"]), email=email, is_principal=True),
     )
+
+
+def _scenario_thread(t: Any, email: str, block: str) -> Any:
+    """One thread of a ``delegation`` or ``inbox`` block as a ``MailThread``:
+    ``{id, subject, messages: [{from, text, date?, cc?, reply_to?, verified?}]}``.
+    A message from ``email`` is the person's own (SENT)."""
+    from email.utils import getaddresses
+
+    from openexecutive.delegation.gmail import MailMessage, MailThread, valid_id
+
+    if not isinstance(t, dict) or not valid_id(t.get("id")) or not isinstance(t.get("messages"), list):
+        raise ValueError(f"each {block} thread needs an id and a messages list")
+    messages = []
+    for i, m in enumerate(t["messages"], 1):
+        if not isinstance(m, dict) or not m.get("from") or not isinstance(m.get("text"), str):
+            raise ValueError(f"each {block} message needs from and text")
+        sender = getaddresses([str(m["from"])])
+        name, addr = sender[0] if sender else ("", "")
+        mine = addr.strip().lower() == email
+        messages.append(MailMessage(
+            id=f"{t['id']}-{i}",
+            thread_id=str(t["id"]),
+            from_addr=addr.strip().lower(),
+            from_name=name.strip(),
+            to=[str(a).strip().lower() for a in m.get("to") or [email]],
+            cc=[str(c).strip().lower() for c in m.get("cc") or []],
+            reply_to=str(m.get("reply_to") or "").strip().lower(),
+            subject=str(t.get("subject") or ""),
+            date=str(m.get("date") or ""),
+            message_id_header=f"<{t['id']}-{i}@eval.example>",
+            labels=["SENT"] if mine else ["INBOX"],
+            text=m["text"],
+            sender_authenticated=m.get("verified", True) is not False,
+        ))
+    return MailThread(id=str(t["id"]), messages=messages)
+
+
+def scenario_inbox(scenario: dict[str, Any]) -> Any:
+    """The scenario's ``inbox`` block (the inbox watcher, ``type: inbox``) as
+    an ``InboxCase``, or None when it has none. The message the watcher
+    answers is the thread's newest one from someone else.
+
+    Shape::
+
+        inbox:
+          person: {full_name: Olivia Owner, email: olivia@fernway.example}
+          relation: contact          # team | contact | correspondent | stranger
+          expect: draft              # draft | no_draft
+          thread: {id: t1, subject: ..., messages: [...]}   # as in delegation
+
+    Raises ValueError on a malformed block, so a typo fails the scenario."""
+    from openexecutive.delegation.inbox_classifier import THRESHOLDS
+    from openexecutive.people.models import Person
+
+    raw = scenario.get("inbox")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("inbox must be a mapping")
+    person_raw = raw.get("person")
+    if not isinstance(person_raw, dict) or not person_raw.get("full_name") or "@" not in str(person_raw.get("email") or ""):
+        raise ValueError("inbox.person needs full_name and email")
+    if raw.get("relation") not in THRESHOLDS:
+        raise ValueError(f"inbox.relation must be one of {sorted(THRESHOLDS)}")
+    if raw.get("expect") not in ("draft", "no_draft"):
+        raise ValueError("inbox.expect must be draft or no_draft")
+    email = str(person_raw["email"]).strip().lower()
+    thread = _scenario_thread(raw.get("thread"), email, "inbox")
+    inbound = [m for m in thread.messages if m.from_addr != email]
+    if not inbound:
+        raise ValueError("inbox.thread needs a message from someone else")
+    return InboxCase(
+        person=Person(id=0, full_name=str(person_raw["full_name"]), email=email, is_principal=True),
+        relation=str(raw["relation"]),
+        expect_draft=raw["expect"] == "draft",
+        thread=thread,
+        message=inbound[-1],
+    )
+
+
+@dataclass
+class InboxCase:
+    person: Any
+    relation: str
+    expect_draft: bool
+    thread: Any
+    message: Any
 
 
 def builtin_scenario_ids() -> set[str]:
@@ -254,12 +317,19 @@ def validate_scenario_yaml(raw: str) -> dict[str, Any]:
             scenario_delegation(s)
         except ValueError as e:
             raise ValueError(f"`delegation`: {e}") from e
+    if s.get("inbox") is not None:
+        try:
+            scenario_inbox(s)
+        except ValueError as e:
+            raise ValueError(f"`inbox`: {e}") from e
 
     k = scenario_kind(s)
     if k == "chat" and not s.get("query"):
         raise ValueError("chat scenarios require a `query` field")
     if k == "workflow" and not s.get("workflow"):
         raise ValueError("workflow scenarios require a `workflow` field")
+    if k == "inbox" and s.get("inbox") is None:
+        raise ValueError("inbox scenarios require an `inbox` block")
     if k == "triage" and not s.get("event"):
         raise ValueError("triage scenarios require an `event` field")
 

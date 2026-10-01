@@ -1617,6 +1617,33 @@ def test_proposals_carry_lifecycle_fields_and_demote_likely_stale(
     assert s["score"] < f["score"]
 
 
+def test_handled_overnight_shows_private_rows_only_to_the_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.audit import logger as audit_logger
+    from openexecutive.briefing import brief_state
+
+    db = tmp_path / "today.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db)
+    people_store.upsert_person(full_name="Tia Teammate", email="t@co.com", db_path=db)
+    al = audit_logger.AuditLogger(db_path=tmp_path / "audit.db")
+    al.initialize_db()
+    monkeypatch.setattr(audit_logger, "get_audit_logger", lambda: al)
+    monkeypatch.setattr(brief_state, "since_for", lambda kind, now=None: datetime.now(UTC) - timedelta(hours=1))
+    al.log("alert_review_closed", "Resolved 'Shared thing'", actor="executive",
+           details={"headline": "Shared thing", "new_status": "resolved"})
+    al.log("alert_review_closed", "Resolved 'Note from a contact'", actor="executive",
+           details={"headline": "Note from a contact", "new_status": "resolved"}, private=True)
+
+    def headlines(email: str) -> set[str]:
+        res = _make_client().get("/today", headers={"x-caller-email": email})
+        return {r["headline"] for r in res.json()["handled_overnight"]}
+
+    assert headlines("p@co.com") == {"Shared thing", "Note from a contact"}
+    assert headlines("t@co.com") == {"Shared thing"}
+
+
 def test_handled_overnight_rows_are_structured_and_track_current_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
