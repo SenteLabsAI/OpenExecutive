@@ -421,13 +421,13 @@ def _ocr_isolated(source: bytes | Path, max_pages: int) -> tuple[str, int]:
     """``_ocr_pdf`` in a child process, at most ``_OCR_CONCURRENCY`` at once.
     The model and the rendered pages leave with the child. Blocking — run in
     a thread."""
-    with _ocr_slots:
-        text, read = run_isolated(
-            _ocr_pdf, source, max_pages,
-            timeout=_OCR_TIME_BUDGET_S + _OCR_PROCESS_SLACK_S,
-            reraise=(OcrUnavailable,),
-        )
-        return text, read
+    text, read = run_isolated(
+        _ocr_pdf, source, max_pages,
+        timeout=_OCR_TIME_BUDGET_S + _OCR_PROCESS_SLACK_S,
+        reraise=(OcrUnavailable,),
+        slots=_ocr_slots,
+    )
+    return text, read
 
 
 # ── Inbound page budget ──────────────────────────────────────────────────────

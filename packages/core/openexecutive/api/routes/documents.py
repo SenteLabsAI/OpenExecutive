@@ -49,6 +49,19 @@ async def _stage_upload(file: UploadFile, suffix: str) -> Path:
     return tmp_path
 
 
+def _unreadable(name: str, exc: Exception) -> HTTPException:
+    """422 for a document its parser could not read, in words a person can
+    act on. The parser's own message stays in the log: it can quote the file."""
+    from openexecutive.knowledge.isolated import WorkerStopped
+
+    logger.warning("documents: could not read %s (%s)", name, exc)
+    if isinstance(exc, WorkerStopped):
+        reason = "it is too large or took too long to read"
+    else:
+        reason = "the file may be damaged, or not the type its name says"
+    return HTTPException(status_code=422, detail=f"Could not read {name}: {reason}.")
+
+
 def _read_head(path: Path, size: int) -> bytes:
     with path.open("rb") as f:
         return f.read(size)
@@ -95,6 +108,7 @@ async def upload_document(
 
     try:
         from openexecutive.config import get_settings
+        from openexecutive.knowledge.isolated import IsolatedError
         from openexecutive.knowledge.loader import ingest_file
         from openexecutive.knowledge.store import ChromaDBStore
 
@@ -112,13 +126,18 @@ async def upload_document(
         # fresh chunk ids (so the id-keyed upsert never collides and the
         # collection grows without bound) and stores a `filename` that the
         # DELETE endpoint below can never match.
-        chunks_indexed = await ingest_file(
-            path=tmp_path,
-            store=store,
-            domain=domain,
-            collection=ChromaDBStore.COMPANY_COLLECTION,
-            source_name=safe_filename,
-        )
+        try:
+            chunks_indexed = await ingest_file(
+                path=tmp_path,
+                store=store,
+                domain=domain,
+                collection=ChromaDBStore.COMPANY_COLLECTION,
+                source_name=safe_filename,
+            )
+        except IsolatedError as exc:
+            # A Word/Excel parse that failed, died or ran out of time (a PDF
+            # never raises: it comes back empty, with a note).
+            raise _unreadable(safe_filename, exc) from exc
 
         company_docs_dir = settings.company_profile_path.parent / "docs"
         company_docs_dir.mkdir(parents=True, exist_ok=True)
@@ -380,6 +399,7 @@ async def get_document(
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     from openexecutive.config import get_settings
+    from openexecutive.knowledge.isolated import IsolatedError
     from openexecutive.knowledge.loader import extract_text_from_file_async
 
     settings = get_settings()
@@ -391,7 +411,10 @@ async def get_document(
     # Show the extracted text — exactly what gets chunked into the vector store
     # and retrieved by the Executive. Works uniformly across PDF/DOCX/MD/TXT; a
     # scanned PDF shows its converted text (knowledge/pdf_reader.py).
-    content = await extract_text_from_file_async(path)
+    try:
+        content = await extract_text_from_file_async(path)
+    except IsolatedError as exc:
+        raise _unreadable(safe, exc) from exc
     if not content.strip():
         content = "_No text could be read from this document._"
     return CompanyDocContent(filename=safe, content=content)

@@ -1639,11 +1639,20 @@ knowledge:
     Timeouts: 300 s for the text layer and file extractors, OCR's 240 s
     budget + 120 s. extract_text_from_file takes a `timeout`: drive_sync
     passes its own _EXTRACT_TIMEOUT_S (120 s), so the child is killed when
-    the sync's wait_for gives up rather than running on. The page ceiling travels as an argument because the
-    child never sees this process's module state. OCR's two-at-a-time
-    semaphore is held in the API process around the child. Where no child
-    can be started (OSError on spawn), the parse runs in-process, logged
-    once. Tests that monkeypatch parser internals set isolated.enabled =
+    the sync's wait_for gives up rather than running on. The page ceiling
+    travels as an argument because the child never sees this process's
+    module state.
+    Concurrency (review): at most _MAX_CHILDREN (2) parser children run at
+    once; a caller waits for a slot up to its own timeout, then gets
+    WorkerStopped. OCR passes its own two-slot gate (`slots=_ocr_slots`), so
+    a long OCR never holds a slot a quick text-layer parse needs.
+    Spawn failure (review): only FileNotFoundError / PermissionError (no
+    usable interpreter) falls back to parsing in-process, logged once; any
+    other OSError (ENOMEM, EAGAIN) is WorkerStopped, since memory pressure is
+    exactly when an in-process parse would hurt most.
+    POST /documents and GET /documents/{filename} turn an IsolatedError from
+    a Word/Excel parse into a 422 ("Could not read <name>: ..."), not a 500;
+    the parser's own message stays in the log (it can quote the file). Tests that monkeypatch parser internals set isolated.enabled =
     False; tests/unit/test_isolated.py runs the real child.
     read_document_text passes read_pdf_text the Path, so the API process
     hashes the file in 1 MB pieces and only loads it whole when pages go to

@@ -25,8 +25,13 @@ An exception raised by ``func`` is raised again here when its class is one
 the caller names in ``reraise``, and as ``IsolatedError`` otherwise. A child
 that dies without answering (OOM kill, crash) or runs past ``timeout``
 raises ``WorkerStopped``, and so does an answer too large to take back.
-When no child can be started at all, ``func`` runs in this process instead,
-as it did before isolation.
+At most ``_MAX_CHILDREN`` children parse at once (OCR brings its own, smaller
+gate); a call that cannot get a slot within ``timeout`` raises
+``WorkerStopped`` too. Only when there is no usable interpreter at all
+(``FileNotFoundError`` / ``PermissionError``) does ``func`` run in this
+process instead, as it did before isolation. Any other failure to start a
+child (``ENOMEM``, ``EAGAIN``) is ``WorkerStopped``: that is the moment an
+in-process parse would hurt most.
 """
 from __future__ import annotations
 
@@ -38,6 +43,7 @@ import pickle
 import subprocess
 import sys
 import tempfile
+import threading
 import warnings
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -64,6 +70,10 @@ _MAX_STDERR_LOGGED = 2000
 # text layer is a few MB; past this, the parse is refused rather than loaded.
 _MAX_ANSWER_BYTES = 32 * 1024 * 1024
 _TOO_LARGE = "AnswerTooLarge"
+# Parser children running at once, each its own interpreter (~20 MB) plus
+# its parse. Callers past this wait for a slot, up to their own timeout.
+_MAX_CHILDREN = 2
+_child_slots = threading.BoundedSemaphore(_MAX_CHILDREN)
 
 _warned_spawn_failure = False
 
@@ -100,13 +110,33 @@ def run_isolated(
     *args: Any,
     timeout: float,
     reraise: tuple[type[BaseException], ...] = (),
+    slots: threading.Semaphore | None = None,
 ) -> T:
     """Return ``func(*args)``, computed in a child process. Blocking — run it
-    in a thread from async code."""
-    global _warned_spawn_failure
+    in a thread from async code.
 
+    ``slots`` is the gate to wait on for a turn (default: the shared
+    ``_MAX_CHILDREN`` one); OCR passes its own so a long OCR run never holds
+    up the quick text-layer parses."""
     if not enabled:
         return func(*args)
+    gate = _child_slots if slots is None else slots
+    if not gate.acquire(timeout=timeout):
+        raise WorkerStopped(f"{func.__qualname__} found no free parser slot in {timeout:.0f}s")
+    try:
+        return _run_child(func, args, timeout, reraise)
+    finally:
+        gate.release()
+
+
+def _run_child(
+    func: Callable[..., T],
+    args: tuple[Any, ...],
+    timeout: float,
+    reraise: tuple[type[BaseException], ...],
+) -> T:
+    global _warned_spawn_failure
+
     request = pickle.dumps((func.__module__, func.__qualname__, args), pickle.HIGHEST_PROTOCOL)
     name = func.__qualname__
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -122,7 +152,9 @@ def run_isolated(
             )
         except subprocess.TimeoutExpired as exc:
             raise WorkerStopped(f"{name} timed out after {timeout:.0f}s") from exc
-        except OSError as exc:
+        except (FileNotFoundError, PermissionError) as exc:
+            # No usable interpreter: isolation is unavailable here, not
+            # failing, so parse the way this did before it existed.
             if not _warned_spawn_failure:
                 _warned_spawn_failure = True
                 logger.warning(
@@ -130,6 +162,10 @@ def run_isolated(
                     type(exc).__name__,
                 )
             return func(*args)
+        except OSError as exc:
+            # Out of memory or processes: parsing in this process now would
+            # be the worst place for it.
+            raise WorkerStopped(f"{name} could not start a parser process ({exc})") from exc
         del request
 
         size = out.seek(0, os.SEEK_END)

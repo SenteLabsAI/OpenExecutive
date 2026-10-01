@@ -272,3 +272,59 @@ def test_the_alert_excerpt_is_the_head_of_the_upload(
 
     (event,) = events
     assert event.body == body[:8000].decode()
+
+
+# ── A Word / Excel file its parser could not read ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        ("stopped", "it is too large or took too long to read"),
+        ("failed", "the file may be damaged, or not the type its name says"),
+    ],
+)
+def test_an_unreadable_upload_is_a_422_not_a_500(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str, reason: str
+) -> None:
+    """The parser runs in a child process; one that dies, times out or
+    raises must reach the client as a readable 422, with nothing kept."""
+    from openexecutive.knowledge import isolated, loader
+
+    def unreadable(path: Path, **_: Any) -> str:
+        if error == "stopped":
+            raise isolated.WorkerStopped("_parse_file timed out after 300s")
+        raise isolated.IsolatedError("PackageNotFoundError: Package not found at '/tmp/x'")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", unreadable)
+    files = {"file": ("plan.docx", io.BytesIO(b"PK not really"), "application/octet-stream")}
+
+    resp = client.post("/documents", files=files)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == f"Could not read plan.docx: {reason}."
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    assert store.rows == {}
+    assert not (tmp_path / "company" / "docs" / "plan.docx").exists()
+
+
+def test_an_unreadable_document_preview_is_a_422(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge import isolated, loader
+
+    docs = tmp_path / "company" / "docs"
+    docs.mkdir(parents=True)
+    (docs / "budget.xlsx").write_bytes(b"PK not really")
+
+    def stopped(path: Path, **_: Any) -> str:
+        raise isolated.WorkerStopped("_parse_file stopped with exit code -9")
+
+    monkeypatch.setattr(loader, "extract_text_from_file", stopped)
+
+    resp = client.get("/documents/budget.xlsx")
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "Could not read budget.xlsx: it is too large or took too long to read."
+    )

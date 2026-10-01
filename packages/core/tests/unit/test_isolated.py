@@ -159,6 +159,53 @@ def test_a_pdf_that_floods_the_parser_log_costs_this_process_nothing() -> None:
     assert peak < 2 * 1024 * 1024
 
 
+def test_out_of_memory_at_spawn_is_reported_not_parsed_in_process(monkeypatch) -> None:
+    """Review finding: falling back in-process on ENOMEM / EAGAIN would put
+    the parse in the API exactly when memory is shortest."""
+    import errno
+
+    def no_memory(*_a: object, **_k: object) -> None:
+        raise OSError(errno.ENOMEM, "Cannot allocate memory")
+
+    monkeypatch.setattr(isolated.subprocess, "run", no_memory)
+
+    with pytest.raises(WorkerStopped, match="could not start a parser process"):
+        run_isolated(math.sqrt, 9.0, timeout=60)
+
+
+def test_children_wait_for_a_free_slot(monkeypatch) -> None:
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(isolated, "_child_slots", slots)
+
+    # A slot is given back after each call, so calls in turn all run.
+    assert run_isolated(math.sqrt, 4.0, timeout=60) == 2.0
+    assert run_isolated(math.sqrt, 9.0, timeout=60) == 3.0
+
+    slots.acquire()
+    try:
+        with pytest.raises(WorkerStopped, match="no free parser slot"):
+            run_isolated(math.sqrt, 16.0, timeout=0.2)
+    finally:
+        slots.release()
+
+
+def test_a_caller_with_its_own_gate_does_not_wait_on_the_shared_one(monkeypatch) -> None:
+    """OCR brings its own gate, so a long OCR run never holds a slot the
+    quick text-layer parses need, and they never hold one OCR needs."""
+    import threading
+
+    shared = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(isolated, "_child_slots", shared)
+    shared.acquire()
+    try:
+        own = threading.BoundedSemaphore(1)
+        assert run_isolated(math.sqrt, 25.0, timeout=60, slots=own) == 5.0
+    finally:
+        shared.release()
+
+
 def test_without_a_child_process_it_parses_in_process(monkeypatch) -> None:
     monkeypatch.setattr(isolated.sys, "executable", "/nonexistent/python")
 
