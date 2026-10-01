@@ -284,9 +284,9 @@ async def test_read_file_converts_a_scanned_pdf(
     pages are now read (knowledge.pdf_reader, stubbed here)."""
     from openexecutive.knowledge import pdf_reader
 
-    seen: list[bytes] = []
+    seen: list[bytes | Path] = []
 
-    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
+    async def fake_read(data: bytes | Path, *, filename: str = "", inbound: bool = False) -> pdf_reader.PdfReadResult:
         seen.append(data)
         return pdf_reader.PdfReadResult("Invoice total 123.45", "ocr", 1)
 
@@ -294,7 +294,8 @@ async def test_read_file_converts_a_scanned_pdf(
     (download_dir / "scan.pdf").write_bytes(b"%PDF-scan")
 
     assert await tc._read_file({"path": str(download_dir / "scan.pdf")}) == "Invoice total 123.45"
-    assert seen == [b"%PDF-scan"]
+    # The path, not the bytes: the reader's child process opens the file.
+    assert seen == [download_dir / "scan.pdf"]
 
 
 @pytest.mark.asyncio
