@@ -1154,6 +1154,22 @@ async def test_an_unreadable_thread_tells_no_one_off_the_roster() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_thread_stays_silent_while_the_bot_id_is_unknown() -> None:
+    """With no bot id the mention filter is off, so an @-mention in the thread
+    is also on its way to app_mention; telling the sender to @-mention would
+    contradict the answer they are about to get."""
+    async with _listeners() as listeners:
+        with _Harness() as h, patch.object(slack_bot, "_bot_user_id", None):
+            h.store.messages[THREAD_SESSION] = [{"role": "assistant", "content": "here it is"}]
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](
+                event=dict(THREAD_EVENT, text="<@UBOT> and the budget?"), say=h.say, client=h.client
+            )
+            h.client.chat_postEphemeral.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_startup_identity_lookup_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     """auth_test failing at boot used to turn thread follow-ups off until a
     restart. A later channel message retries it, at most once a minute."""

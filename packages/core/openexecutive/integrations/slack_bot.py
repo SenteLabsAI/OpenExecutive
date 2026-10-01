@@ -608,8 +608,14 @@ async def create_slack_app():
                 # never joined stays silent as before.
                 from openexecutive.memory.session_store import load_messages
 
-                if not can_fetch_replies or not await asyncio.to_thread(
-                    load_messages, session_id
+                # Not while the bot's own id is unresolved: then the mention
+                # filter in handle_message is off too, so an @-mention here is
+                # also being answered by app_mention, and continuations are
+                # off anyway until _resolve_bot_user_id succeeds.
+                if (
+                    not can_fetch_replies
+                    or not _bot_user_id
+                    or not await asyncio.to_thread(load_messages, session_id)
                 ):
                     return
                 thread_unreadable = True
@@ -683,8 +689,8 @@ async def create_slack_app():
                     "outcome": "dropped_thread_unreadable",
                 },
             )
-            # Only the sender sees it, the same way a gate skip stays out of
-            # the channel. Best-effort: Slack just failed us once already.
+            # Only the sender sees it. Best-effort: Slack just failed us once
+            # already.
             try:
                 await asyncio.wait_for(
                     client.chat_postEphemeral(
