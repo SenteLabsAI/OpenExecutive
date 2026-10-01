@@ -905,6 +905,10 @@ class Settings(BaseSettings):
         20, alias="DELEGATION_INBOX_MAX_DRAFTS_PER_DAY", ge=1, le=1000
     )
     delegation_classifier_model: str | None = Field(None, alias="DELEGATION_CLASSIFIER_MODEL")
+    # Whether the owner may let team members use Act as me for themselves
+    # (Settings → Act as me → "Let team members use it", off until they turn
+    # it on). Off: the owner alone, as before (delegation.settings).
+    delegation_team_members: bool = Field(False, alias="DELEGATION_TEAM_MEMBERS")
 
     # External-condition monitoring — heartbeat that polls source adapters
     # (vendor_status in PR-A; RSS + stock in PR-B) and emits external_signals

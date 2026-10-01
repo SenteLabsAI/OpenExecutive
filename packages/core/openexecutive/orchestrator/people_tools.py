@@ -401,6 +401,38 @@ PRIVATE_TURN_REFUSAL = (
 )
 
 
+def audit_row_owner(private_to_person: int | None = None) -> int | None:
+    """The team member an audit row written now belongs to alone, or None.
+
+    The one given, else the person whose own mailbox the work is in: the
+    ``rows_for_person`` scope (the inbox watcher, a reply's Send, their Act as
+    me settings), or the speaker on a turn that read their mail. None when
+    that person is the principal: their rows stay private to the principal,
+    as before. Fails closed: a principal lookup that fails keeps the owner."""
+    from openexecutive.audit.context import rows_owner
+
+    owner = private_to_person if private_to_person is not None else rows_owner()
+    if owner is None:
+        from openexecutive.delegation.settings import turn_delegation
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        pinned = turn_delegation(current_session.get())
+        if pinned is not None and pinned.touched_mail:
+            owner = pinned.person_id
+    if owner is None:
+        return None
+    try:
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+    except Exception:
+        logger.warning("people_tools: principal lookup for an audit row failed — row kept to its owner", exc_info=True)
+        return int(owner)
+    if principal is not None and principal.id == owner:
+        return None
+    return int(owner)
+
+
 def audit_row_private_to_principal(*payloads: Any) -> bool:
     """Whether an audit row written now is the principal's alone to read
     (``api.routes.audit`` leaves it out for anyone else). ``payloads`` are the
@@ -425,8 +457,8 @@ def audit_row_private_to_principal(*payloads: Any) -> bool:
     from openexecutive.delegation.settings import turn_touched_delegate_mail
 
     # A turn that read or drafted in the speaker's own mailbox (Act as me):
-    # every row after that is theirs alone. Phase 1 lets only the principal
-    # turn it on, so "private to the principal" is the right visibility.
+    # every row after that is private, and a team member's is theirs alone
+    # (``audit_row_owner``).
     if turn_is_private_to_principal() or rows_private() or turn_touched_delegate_mail():
         return True
     if not (contacts_reachable_now() or rows_on_principal_turn()):

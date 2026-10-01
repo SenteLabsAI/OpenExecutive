@@ -21,7 +21,9 @@ not in the prompt:
 - **Drafts only.** It saves a draft in the person's Gmail and sends nothing.
 - **Private.** Before its first read of the mailbox it marks the turn
   (``TurnDelegation.touched_mail``): every audit row the turn writes from then
-  on is private to the principal, and the turn teaches no memory — no
+  on is private (a team member's is theirs alone, not even the principal's),
+  and the conversation is theirs alone from then on; the turn teaches no
+  memory — no
   episodic, open-loop, working-style or peer-memory pass runs on it.
 """
 from __future__ import annotations
@@ -182,7 +184,30 @@ def _audit(person_id: int, summary: str, details: dict[str, Any]) -> None:
         actor="executive",
         details={"person_id": person_id, **details},
         private=True,
+        private_to_person=person_id,
     )
+
+
+def _keep_conversation_private(writer: _Writer) -> bool:
+    """Mark the conversation its owner's alone (``mark_mail_private``) before
+    the mailbox is read. False when that couldn't be stored. An eval's fake
+    mailbox (``DelegationOverride``) has no conversation to mark."""
+    from openexecutive.delegation.settings import DelegationOverride
+    from openexecutive.memory.session_store import mark_mail_private
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if isinstance(getattr(session, "delegation_override", None), DelegationOverride):
+        return True
+    session_id = writer.pinned.session_id or getattr(session, "session_id", None)
+    if not session_id:
+        return False
+    try:
+        mark_mail_private(str(session_id), writer.person.id)
+    except Exception:
+        logger.exception("ghostwrite_email: couldn't mark the conversation private")
+        return False
+    return True
 
 
 @dataclass
@@ -410,8 +435,11 @@ async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
     saved = False
     try:
         # From here on the turn has touched their mailbox: every audit row it
-        # writes is private, and it teaches no memory.
+        # writes is private, it teaches no memory, and the conversation is
+        # theirs alone (the principal included) before anything is read.
         writer.pinned.touched_mail = True
+        if not _keep_conversation_private(writer):
+            return _error("I couldn't keep this conversation private, so I didn't open your mailbox. Try again.")
         status = await gmail_status(writer.email, gmail=writer.mailbox)
         if status != "connected":
             return _error(STATUS_MESSAGES[status], status=status)

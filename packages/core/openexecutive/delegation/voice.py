@@ -504,7 +504,7 @@ def drafted_thread_ids(person_id: int) -> set[str]:
     try:
         from openexecutive.audit.logger import get_audit_logger
 
-        rows = get_audit_logger().query(event_type="delegation_drafted", limit=1000)
+        rows = get_audit_logger().query(event_type="delegation_drafted", limit=1000, owned_by=person_id)
     except Exception:
         logger.warning("delegation.voice: drafted-thread audit lookup failed", exc_info=True)
         return out
@@ -602,7 +602,16 @@ def _client_slot_active() -> bool:
 def _audit(summary: str, details: dict[str, Any]) -> None:
     from openexecutive.audit import log_event
 
-    log_event("delegation_voice_changed", summary, actor="delegation", details=details, private=True)
+    log_event(
+        "delegation_voice_changed", summary, actor="delegation", details=details, private=True,
+        private_to_person=_owner(details),
+    )
+
+def _owner(details: dict[str, Any]) -> int | None:
+    """The person a row about their own mailbox belongs to (``person_id``)."""
+    person_id = details.get("person_id")
+    return person_id if isinstance(person_id, int) and not isinstance(person_id, bool) else None
+
 
 
 async def learn_from_sent_mail(

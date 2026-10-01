@@ -123,6 +123,12 @@ def set_turn(
 # that stays with the bound session. Unattended work started inside (a resumed
 # workflow run, a scheduled action) clears both with `unscoped_audit_rows`.
 _rows_private: ContextVar[bool] = ContextVar("audit_rows_private", default=False)
+# Whose rows these are, for work done in one person's own mailbox (Act as me:
+# the inbox watcher, a reply's Send, their settings). Every row written
+# inside ``rows_for_person`` is private, and the logger marks it theirs
+# alone (``private_to_person``) when they are not the principal, so not even
+# the principal reads it.
+_rows_owner: ContextVar[int | None] = ContextVar("audit_rows_owner", default=None)
 _rows_on_principal_turn: ContextVar[bool] = ContextVar(
     "audit_rows_on_principal_turn", default=False
 )
@@ -131,6 +137,11 @@ _rows_on_principal_turn: ContextVar[bool] = ContextVar(
 def rows_private() -> bool:
     """Whether every audit row written now is private to the principal."""
     return _rows_private.get()
+
+
+def rows_owner() -> int | None:
+    """The person every audit row written now belongs to, or None."""
+    return _rows_owner.get()
 
 
 def rows_on_principal_turn() -> bool:
@@ -152,6 +163,24 @@ def private_rows(active: bool = True) -> Iterator[None]:
 
 
 @contextlib.contextmanager
+def rows_for_person(person_id: int | None) -> Iterator[None]:
+    """Keep every audit row written inside the block private, and the
+    person's own (``rows_owner``), for work in ``person_id``'s own mailbox.
+    None only makes the rows private. An inner block never changes an outer
+    one's owner. Save/restore, as in ``set_turn``."""
+    prior_private = _rows_private.get()
+    prior_owner = _rows_owner.get()
+    _rows_private.set(True)
+    if prior_owner is None:
+        _rows_owner.set(person_id)
+    try:
+        yield
+    finally:
+        _rows_private.set(prior_private)
+        _rows_owner.set(prior_owner)
+
+
+@contextlib.contextmanager
 def principal_turn_rows(active: bool = True) -> Iterator[None]:
     """Treat audit rows written inside the block as on the principal's own
     verified turn when ``active``: one that names a contact is private. An
@@ -166,7 +195,7 @@ def principal_turn_rows(active: bool = True) -> Iterator[None]:
 
 @contextlib.contextmanager
 def unscoped_audit_rows() -> Iterator[None]:
-    """Clear both scopes above for the block, and put them back after.
+    """Clear the scopes above for the block, and put them back after.
 
     For unattended work started from inside a scoped stretch — a workflow
     run a chat reply resumes, a scheduled action: it copies the caller's
@@ -176,10 +205,13 @@ def unscoped_audit_rows() -> Iterator[None]:
     Save/restore, as in ``set_turn``."""
     prior_private = _rows_private.get()
     prior_principal = _rows_on_principal_turn.get()
+    prior_owner = _rows_owner.get()
     _rows_private.set(False)
     _rows_on_principal_turn.set(False)
+    _rows_owner.set(None)
     try:
         yield
     finally:
         _rows_private.set(prior_private)
         _rows_on_principal_turn.set(prior_principal)
+        _rows_owner.set(prior_owner)

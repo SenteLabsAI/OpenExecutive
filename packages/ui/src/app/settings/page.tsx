@@ -20,7 +20,8 @@ import { useActiveSection } from "@/lib/useActiveSection";
 // (ADVANCED_ITEMS), grouped by what you'd use them for.
 export default function SettingsPage() {
   const mainRef = useRef<HTMLElement>(null);
-  // Act as me decides for itself whether it is on the page (owner only).
+  // Act as me decides for itself whether it is on the page (the owner, and
+  // team members once the owner lets them).
   const [actAsMe, setActAsMe] = useState(false);
   const sections = useMemo(
     () => SETTINGS_SECTIONS.filter((s) => s.id !== "act-as-me" || actAsMe),
@@ -78,7 +79,7 @@ export default function SettingsPage() {
               <WorkspaceCard />
             </SettingsSection>
 
-            {/* Renders nothing for anyone who can't have Act as me (only the owner can). */}
+            {/* Renders nothing for anyone who can't have Act as me. */}
             <ActAsMeCard onVisible={setActAsMe} />
 
             <SettingsSection

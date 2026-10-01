@@ -16,6 +16,11 @@ Design notes:
   written before a turn binds its session), plus any row a caller marks
   `private=True`. The read API (`api.routes.audit`) leaves those rows out
   for anyone else.
+- A row can also belong to one team member alone (`private_to_person`):
+  what their own mailbox touched under Act as me (`audit.rows_for_person`, or
+  a turn that read their mail). It is private and, unlike the principal's,
+  left out of every read here unless the caller asks for that person's rows
+  (``owned_by``) — the principal included. Only the usage totals count it.
 """
 from __future__ import annotations
 
@@ -112,6 +117,8 @@ class AuditEvent:
     department: str | None = None
     # Readable by the principal alone (see the module docstring).
     private: bool = False
+    # The team member this row belongs to alone, or None.
+    private_to_person: int | None = None
 
 
 @contextmanager
@@ -165,6 +172,10 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
         private = bool(row["private_to_principal"])
     except (IndexError, KeyError):
         private = False
+    try:
+        owner = row["private_to_person"]
+    except (IndexError, KeyError):
+        owner = None
     return AuditEvent(
         id=int(row["id"]),
         ts=str(row["ts"]),
@@ -175,8 +186,35 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
         summary=str(row["summary"]),
         details=details,
         department=department,
-        private=private,
+        private=private or owner is not None,
+        private_to_person=int(owner) if owner is not None else None,
     )
+
+
+def _owner_clause(owned_by: int | None, params: list[Any]) -> str:
+    """Leave out every team member's own rows but ``owned_by``'s."""
+    if owned_by is None:
+        return "private_to_person IS NULL"
+    params.append(int(owned_by))
+    return "(private_to_person IS NULL OR private_to_person = ?)"
+
+
+def _row_owner(private_to_person: int | None) -> int | None:
+    """The team member a row written now belongs to alone — see
+    ``people_tools.audit_row_owner``. Fails closed: a check that cannot run
+    keeps an owner it was given or found rather than show the row to the
+    principal."""
+    try:
+        from openexecutive.orchestrator.people_tools import audit_row_owner
+
+        return audit_row_owner(private_to_person)
+    except Exception:
+        logger.warning("audit.owner_check_failed — row kept to its owner", exc_info=True)
+        if private_to_person is not None:
+            return private_to_person
+        from openexecutive.audit.context import rows_owner
+
+        return rows_owner()
 
 
 def _private_to_principal(
@@ -278,6 +316,12 @@ class AuditLogger:
                     "ALTER TABLE audit_log ADD COLUMN private_to_principal "
                     "INTEGER NOT NULL DEFAULT 0",
                 ),
+                # The team member the row belongs to alone (see the module
+                # docstring); NULL for every other row.
+                (
+                    "private_to_person",
+                    "ALTER TABLE audit_log ADD COLUMN private_to_person INTEGER",
+                ),
             ):
                 if column in cols:
                     continue
@@ -299,6 +343,7 @@ class AuditLogger:
         full: dict[str, Any] | None = None,
         department: str | None = None,
         private: bool = False,
+        private_to_person: int | None = None,
     ) -> int | None:
         """Insert one audit row. Returns row id, or None on failure.
 
@@ -312,9 +357,17 @@ class AuditLogger:
         `private=True` marks the row the principal's alone. Without it the
         row is still private when the turn writing it is (see
         `_private_to_principal`) — a caller can add privacy, never remove it.
+
+        `private_to_person` names the team member the row belongs to alone;
+        without it the row is still theirs when it is written for their own
+        mailbox (see `_row_owner`). It is ignored for the principal, whose
+        private rows stay as above.
         """
         try:
-            is_private = bool(private) or _private_to_principal(summary, details, full)
+            owner = _row_owner(private_to_person)
+            is_private = (
+                bool(private) or owner is not None or _private_to_principal(summary, details, full)
+            )
             safe_summary = _truncate(str(summary), _SUMMARY_MAX_LEN)
             details_json: str | None = None
             if details:
@@ -354,8 +407,8 @@ class AuditLogger:
                     """
                     INSERT INTO audit_log
                         (ts, event_type, session_id, turn_id, actor, summary, details_json,
-                         full_json, department, private_to_principal)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         full_json, department, private_to_principal, private_to_person)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ts_value,
@@ -368,6 +421,7 @@ class AuditLogger:
                         full_json,
                         department,
                         1 if is_private else 0,
+                        owner,
                     ),
                 )
                 row_id = int(cur.lastrowid or 0)
@@ -384,8 +438,8 @@ class AuditLogger:
             with _get_conn(self._db_path) as conn:
                 row = conn.execute(
                     "SELECT id, ts, event_type, session_id, turn_id, actor, summary, "
-                    "details_json, full_json, department, private_to_principal "
-                    "FROM audit_log WHERE id = ?",
+                    "details_json, full_json, department, private_to_principal, "
+                    "private_to_person FROM audit_log WHERE id = ?",
                     (event_id,),
                 ).fetchone()
         except Exception:
@@ -416,15 +470,18 @@ class AuditLogger:
         offset: int = 0,
         department: str | None = None,
         include_private: bool = True,
+        owned_by: int | None = None,
     ) -> list[AuditEvent]:
         """Rows matching every filter given, newest first. ``include_private``
         False leaves out the rows private to the principal — filtered in SQL,
-        so a page is still full and ``count`` agrees with it."""
+        so a page is still full and ``count`` agrees with it. A team member's
+        own rows are left out unless ``owned_by`` is them."""
         limit = max(1, min(limit, 1000))
         offset = max(0, offset)
 
         clauses: list[str] = []
         params: list[Any] = []
+        clauses.append(_owner_clause(owned_by, params))
         if not include_private:
             clauses.append("private_to_principal = 0")
         if event_type:
@@ -455,7 +512,7 @@ class AuditLogger:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
             "SELECT id, ts, event_type, session_id, turn_id, actor, summary, details_json, "
-            f"department, private_to_principal FROM audit_log {where} "
+            f"department, private_to_principal, private_to_person FROM audit_log {where} "
             "ORDER BY id DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
@@ -476,9 +533,11 @@ class AuditLogger:
         since: str | None = None,
         until: str | None = None,
         include_private: bool = True,
+        owned_by: int | None = None,
     ) -> int:
         clauses: list[str] = []
         params: list[Any] = []
+        clauses.append(_owner_clause(owned_by, params))
         if not include_private:
             clauses.append("private_to_principal = 0")
         if event_type:
@@ -611,6 +670,7 @@ def log_event(
     full: dict[str, Any] | None = None,
     department: str | None = None,
     private: bool = False,
+    private_to_person: int | None = None,
 ) -> None:
     """Fire-and-forget convenience wrapper around the default logger.
 
@@ -639,6 +699,7 @@ def log_event(
             full=full,
             department=department,
             private=private,
+            private_to_person=private_to_person,
         )
     except Exception:
         logger.warning("audit.log_event_failed event_type=%s", event_type, exc_info=True)

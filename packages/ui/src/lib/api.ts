@@ -1523,8 +1523,8 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
 // ----------------------------------------------------------------------------
 // Act as me — the Executive drafts email AS you, in your own Gmail Drafts,
 // when you ask it to or (with Draft replies to my inbox on) for mail that
-// needs you. It sends only a reply card's draft, when you tap Send. Only the
-// owner can have it for now.
+// needs you. It sends only a reply card's draft, when you tap Send. The owner
+// can have it, and team members too once the owner lets them.
 // ----------------------------------------------------------------------------
 export type DelegationGmailStatus =
   | "connected"
@@ -1546,6 +1546,25 @@ export interface DelegationSettings {
   };
   // Absent on a backend that predates the inbox watcher.
   inbox?: InboxWatch;
+  // The owner's "Let team members use Act as me", while the install allows
+  // it; null (or absent) for everyone else.
+  team?: DelegationTeam | null;
+}
+
+// Each team member's use, as the owner sees it: counts only, never what they
+// wrote or to whom.
+export interface DelegationTeamMember {
+  person_id: number;
+  name: string;
+  enabled: boolean;
+  inbox: boolean;
+  drafts_30d: number;
+  sent_30d: number;
+}
+
+export interface DelegationTeam {
+  enabled: boolean;
+  members: DelegationTeamMember[];
 }
 
 // "Draft replies to my inbox": the Executive watches your own inbox and, for
@@ -1646,6 +1665,16 @@ export async function setDelegationEnabled(enabled: boolean): Promise<Delegation
     body: JSON.stringify({ enabled }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Act as me.");
+  return res.json();
+}
+
+export async function setDelegationTeam(enabled: boolean): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/team`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change Act as me for your team.");
   return res.json();
 }
 

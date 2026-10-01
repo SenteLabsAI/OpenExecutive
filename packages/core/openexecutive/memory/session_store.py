@@ -230,3 +230,43 @@ def get_session_owner(session_id: str, db_path: Path = DB_PATH) -> tuple[bool, i
         return False, None
     owner = row["caller_person_id"]
     return True, (int(owner) if owner is not None else None)
+
+
+def mark_mail_private(
+    session_id: str, owner_person_id: int | None = None, db_path: Path = DB_PATH
+) -> None:
+    """Make ``session_id`` its owner's alone from now on: a turn in it read or
+    drafted in the speaker's own mailbox (Act as me), and its replies quote
+    other people's mail. The principal no longer reads it either
+    (``api.routes.chat._session_access``). Never undone.
+
+    A channel adapter writes its session row only after the turn, so a
+    missing row is created here, owned by ``owner_person_id`` (the speaker);
+    the adapter's ``create_session`` then leaves it as it is."""
+    now = datetime.now(UTC).isoformat()
+    with _get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, title, created_at, updated_at, caller_person_id, mail_private) "
+            "VALUES (?, ?, ?, ?, ?, 1) "
+            "ON CONFLICT(session_id) DO UPDATE SET mail_private = 1",
+            (session_id, session_id, now, now, owner_person_id),
+        )
+
+
+def session_mail_private(session_id: str, db_path: Path = DB_PATH) -> bool:
+    """Whether ``session_id`` is its owner's alone (``mark_mail_private``)."""
+    if not db_path.exists():
+        return False
+    import sqlite3
+
+    try:
+        with _get_conn(db_path) as conn:
+            row = conn.execute(
+                "SELECT mail_private FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        # A DB from before the column (or before the table) never marked one.
+        if "no such column" in str(exc) or "no such table" in str(exc):
+            return False
+        raise
+    return bool(row is not None and row["mail_private"])

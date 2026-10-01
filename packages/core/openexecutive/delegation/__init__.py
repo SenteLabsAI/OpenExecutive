@@ -12,6 +12,6 @@ that person's own Gmail:
 - ``ghostwriter`` the tool-less call that writes a draft in that voice
 
 Chat only drafts. The one send is ``reply_send``: an existing draft, by id,
-when the person taps Send on its card. Only the principal may turn it on
-(``settings.can_delegate``). See ``architecture/prebuilt/delegation.json``.
+when the person taps Send on its card. The principal may turn it on, and
+team members once the owner lets them (``settings.can_delegate``). See ``architecture/prebuilt/delegation.json``.
 """

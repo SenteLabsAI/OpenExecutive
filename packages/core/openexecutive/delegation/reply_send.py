@@ -4,7 +4,7 @@ The one path in Act as me that sends anything, and all it can send is the
 exact Gmail draft on a ``delegation_reply`` card, by its id
 (``DelegateGmail.send_draft`` posts ``{"id": ...}`` to ``drafts.send``),
 after the person approved that card (``POST /decisions/{id}/approve``, a
-principal-only class). Only that route calls ``send_approved_reply`` (a unit
+class only the card's own person sees or resolves). Only that route calls ``send_approved_reply`` (a unit
 test walks the code), so no model, chat turn, workflow, scheduled job or MCP
 call can reach it. Sending is the person's own act: it works while the
 Executive is paused.
@@ -38,7 +38,8 @@ tab is refused, not sent unchecked), and records it (``finish_execution``:
 shows nothing was sent hands the card back. One that leaves it unclear (a
 timeout, a 5xx) leaves it ``executing`` for the reconciler
 (``inbox._settle_unconfirmed_send``), which asks Gmail what happened. Nothing
-is ever retried on its own. Every row it writes is private to the principal.
+is ever retried on its own. Every row it writes is private, and the card's
+person's own (``rows_for_person``).
 """
 from __future__ import annotations
 
@@ -104,9 +105,10 @@ async def send_approved_reply(
 ) -> str:
     """Send the draft on ``instance``, a ``delegation_reply`` card the caller
     approved. Returns the sent message's id; raises ``SendRefused``."""
-    from openexecutive.audit import private_rows
+    from openexecutive.audit import rows_for_person
 
-    with private_rows(True):
+    owner = getattr(instance, "approver_person_id", None)
+    with rows_for_person(owner if isinstance(owner, int) else None):
         return await _send(
             instance, caller=caller, resolver=resolver, confirm=confirm or {},
             gmail=gmail, now=now or datetime.now(UTC),

@@ -13,9 +13,11 @@ import {
   refreshVoiceSignature,
   resetVoiceProfile,
   setDelegationEnabled,
+  setDelegationTeam,
   setInboxWatch,
   updateVoiceProfile,
   type DelegationSettings,
+  type DelegationTeam,
   type InboxWatch,
   type VoiceProfile,
 } from "@/lib/api";
@@ -24,8 +26,9 @@ import { formatAgo } from "@/lib/setupStatus";
 // Settings → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
 // for mail that needs you, which it sends only when you tap Send on Today.
-// Backed by GET/PUT /delegation, /delegation/inbox and /delegation/voice. Hidden for anyone who can't have it yet
-// (only the owner can) and on a backend without it — so, unlike the other
+// Backed by GET/PUT /delegation, /delegation/inbox and /delegation/voice. Hidden for anyone who can't have it
+// (the owner can, and team members once the owner lets them: PUT
+// /delegation/team) and on a backend without it — so, unlike the other
 // sections, this one renders its own heading and tells the page (via
 // `onVisible`) whether it is on the page at all.
 
@@ -223,8 +226,72 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
         )}
 
         <VoiceSection connected={connected} />
+
+        {settings.team && <TeamSection team={settings.team} onSettings={setSettings} />}
       </div>
     </SettingsSection>
+  );
+}
+
+// The owner's "Let team members use Act as me" (PUT /delegation/team), shown
+// only to the owner and only where the install allows it. Each member
+// connects their own Gmail and turns it on for themselves; the owner sees
+// counts only, never their mail, drafts or reply cards.
+function TeamSection({
+  team,
+  onSettings,
+}: {
+  team: DelegationTeam;
+  onSettings: (next: DelegationSettings) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSettings(await setDelegationTeam(!team.enabled));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the setting.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="py-4 first:pt-0 last:pb-0">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-fg" id="act-as-me-team-label">
+            Let team members use it
+          </div>
+          <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
+            {team.enabled
+              ? "On: each team member can connect their own Gmail and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
+              : "Off: only you can use Act as me."}
+          </p>
+        </div>
+        <Switch
+          checked={team.enabled}
+          onChange={() => void toggle()}
+          disabled={busy}
+          labelledBy="act-as-me-team-label"
+        />
+      </div>
+      {team.enabled && team.members.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {team.members.map((m) => (
+            <li key={m.person_id} className="text-xs text-fg-muted">
+              <span className="text-fg">{m.name}</span>
+              {`: ${m.drafts_30d} ${m.drafts_30d === 1 ? "draft" : "drafts"}, ${m.sent_30d} sent in the last 30 days`}
+              {m.inbox ? ". Drafts replies to their inbox." : "."}
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+    </div>
   );
 }
 

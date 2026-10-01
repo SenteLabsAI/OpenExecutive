@@ -832,10 +832,10 @@ def test_one_bad_message_never_holds_up_the_rest(
 
     relation_of = inbox.relation_of
 
-    async def broken_for_ben(address: str, gmail: Any) -> str:
+    async def broken_for_ben(address: str, gmail: Any, **kwargs: Any) -> str:
         if address.startswith("ben@"):
             raise ValueError("unexpected")
-        return await relation_of(address, gmail)
+        return await relation_of(address, gmail, **kwargs)
 
     monkeypatch.setattr(mailbox, "get_thread", gone_or_real)
     monkeypatch.setattr(inbox, "relation_of", broken_for_ben)

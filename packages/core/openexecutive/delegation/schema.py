@@ -14,6 +14,7 @@ VOICE_HISTORY_TABLE = "delegation_voice_history"
 DRAFTS_TABLE = "delegation_drafts"
 INBOX_WATCH_TABLE = "delegation_inbox_watch"
 INBOX_MESSAGES_TABLE = "delegation_inbox_messages"
+TEAM_TABLE = "delegation_team"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -22,9 +23,17 @@ TABLES: tuple[str, ...] = (
     DRAFTS_TABLE,
     INBOX_WATCH_TABLE,
     INBOX_MESSAGES_TABLE,
+    TEAM_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
+    # The owner's "Let team members use Act as me": one row, absent means off.
+    f"CREATE TABLE IF NOT EXISTS {TEAM_TABLE} ("
+    "  id INTEGER PRIMARY KEY CHECK (id = 1),"
+    "  enabled INTEGER NOT NULL DEFAULT 0,"
+    "  updated_at TEXT,"
+    "  updated_by TEXT"
+    ")",
     # One row per person who has ever set it. Absent means off.
     f"CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} ("
     "  person_id INTEGER PRIMARY KEY,"

@@ -83,7 +83,7 @@ system:
       claude-opus-5 within the same turn.
   invariants:
     - The internal sub-agent architecture is NEVER exposed to the end user — there is one voice (the Executive).
-    - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only. The single exception is Act as me (delegation) — with the person's own switch on and on their own verified turn in a conversation private to them, `ghostwrite_email` writes an email in their voice as a DRAFT in their own Gmail, never sent from chat (only that exact draft, when they tap Send on its reply card), never from the Executive's own account or bots, and never for anyone who has not turned it on (only the principal can, for now). The identity addendum itself is unchanged; the constant DELEGATION_ADDENDUM after it names the exception.
+    - The Executive never signs messages under the name of company personnel or impersonates them. An identity addendum in system block 0 instructs the model to use its own exec name/email only. The single exception is Act as me (delegation) — with the person's own switch on and on their own verified turn in a conversation private to them, `ghostwrite_email` writes an email in their voice as a DRAFT in their own Gmail, never sent from chat (only that exact draft, when they tap Send on its reply card), never from the Executive's own account or bots, and never for anyone who has not turned it on (the principal, and team members once the owner lets them). The identity addendum itself is unchanged; the constant DELEGATION_ADDENDUM after it names the exception.
     - Voice follows the account. Text written as a person leaves only from that person's own Gmail (always as a draft first, sent only when they send it in Gmail or tap Send on its card); the Executive's own mailbox and bots always sign as the Executive.
     - The model cannot reach a delegated mailbox. delegation.gmail.DelegateGmail talks to the Gmail REST API directly and is never registered with the MCP gateway, so only typed handlers (ghostwrite_email, the voice learner) call it, and its credential never lives in WORKSPACE_MCP_CREDENTIALS_DIR. Every google_workspace__* call through the gateway acts as the Executive's own account (mcp_gateway._check_acting_account refuses any other user_google_email).
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
@@ -7861,20 +7861,24 @@ delegation:
     it writes an email in their voice and saves it as a DRAFT in their own
     Gmail for them to review and send. The only thing it ever sends is one of
     those inbox drafts, exactly as it is in Gmail, when the person taps Send
-    on its card (delegation.send); chat never sends. Only the principal may
-    turn it on. Off by default; off changes nothing —
+    on its card (delegation.send); chat never sends. The principal may turn
+    it on, and each team member once the owner lets them. Off by default; off changes nothing —
     prompts, tool lists and prompt caches are byte-identical to an install
     without it.
   who: |
     delegation.settings.can_delegate(person) is the single rule: a
-    non-archived team member flagged is_principal. The rails a teammate's
-    mailbox needs do not exist yet — audit rows private to THAT person (a row
-    is either visible to every signed-in user or private to the principal),
-    guards on the /agents and /personas write routes (any teammate can edit
-    the Executive's prompt today), and per-seat Gmail credentials — so
-    everything is keyed by person_id and the teammate phase widens that one
-    function. A person turns it on for themselves (PUT /delegation); nobody
-    turns it on for anyone else. delegation_settings holds one row per
+    non-archived team member (never a contact) who is the principal, or any
+    other one once team_members_enabled(): the install allows it
+    (DELEGATION_TEAM_MEMBERS, default off — it offers the owner the switch)
+    AND the owner turned on "Let team members use it" (PUT /delegation/team,
+    principal only; one row in delegation_team, absent = off). Off again
+    takes it away from every team member from their next message; their
+    inbox watchers stop at the next check (act_as_me_off), and their own
+    switches, drafts and cards are kept. The ghostwriter's prompt is a
+    constant outside the Council, so the /agents and /personas edit routes
+    (no principal check) can't change how anyone's draft is written. A
+    person turns it on for themselves (PUT /delegation); nobody turns it on
+    for anyone else. delegation_settings holds one row per
     person; missing, unreadable or 0 is off (is_enabled never raises).
   turn_pin: |
     pin_turn_delegation(session, speaker_text) runs at the start of every
@@ -7883,8 +7887,11 @@ delegation:
     Session.turn_delegation — enabled, offered, touched_mail, drafts,
     speaker_text, person_id — read fresh every turn, so switching it off
     applies from the next message. offered requires ALL of: can_delegate and
-    enabled for the speaker; is_principal_on_verified_surface(session) (web
-    chat, own Slack or Discord, verified Telegram); on the web,
+    enabled for the speaker; the speaker verified on this surface —
+    is_principal_on_verified_surface(session) for the principal,
+    teammate_on_verified_surface(session) naming that same person for a team
+    member (web chat signed in, own Slack or Discord, verified Telegram;
+    never an email turn); on the web,
     Session.web_caller_signed_in (the request carried x-caller-email) or
     local login (utils.deployment.is_local_login, the same function api.main
     uses) — a request with no caller header is not a sign-in and never gets
@@ -8049,8 +8056,22 @@ delegation:
     so the tool rows carry no input or result text. The four delegation_*
     events are always private and metadata-only (see audit.event_types).
     The inbox watcher is private the same way: every row a scan or a card
-    action writes is private to the principal, and it starts no chat turn,
+    action writes is private (rows_for_person), and it starts no chat turn,
     alert, scheduled action or workflow run and teaches no memory.
+    For a team member, private means THEIRS ALONE, the principal included:
+    audit rows carry private_to_person (people_tools.audit_row_owner — the
+    id passed, the rows_for_person scope, or the speaker of a touched turn;
+    never the principal's own id, so the principal's rows are unchanged) and
+    every audit read leaves them out unless it asks for that person
+    (owned_by); GET /audit/logs/{id} is a 404 for them to everyone; only
+    usage_summary counts them. Their reply cards are approver_only. Before
+    the first mailbox read ghostwrite_email marks the session mail_private
+    (session_store.mark_mail_private, creating a channel adapter's row early
+    with its owner; it refuses to read if that fails), after which only the
+    session's owner may open it (chat._session_access) and working-style
+    learning skips it. The inbox classifier weighs a team member's sender by
+    the team and their own sent mail, never the principal's contacts. The
+    owner sees counts only: drafts and sends in 30 days, inbox on or off.
   lockdown: |
     Once a turn has read the principal's own mail — from the round that
     calls ghostwrite_email, since a round's tools run together — nothing that
@@ -8188,7 +8209,8 @@ delegation:
     becomes an open question for the person.
   reply_cards: |
     A drafted reply waits on a card: a delegation_reply decision
-    (DecisionClassSpec principal_only, no alert — alerts feed chat turns,
+    (DecisionClassSpec approver_only — its person's alone, a team member's
+    hidden from the principal too — no alert: alerts feed chat turns,
     which would put other people's mail into memory; its payload also
     carries private: true). The payload holds ids (message, thread, draft
     and the draft's message id), the sender's name and address, relation,

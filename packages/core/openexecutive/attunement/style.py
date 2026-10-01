@@ -458,6 +458,9 @@ def _collect_evidence(person_id: int, *, db_path: Path | None) -> list[_Evidence
             "  SELECT MIN(r.id) FROM chat_messages r WHERE r.session_id = u.session_id "
             "    AND r.id > u.id AND r.role = 'assistant') "
             "WHERE u.role = 'user' AND u.sender_person_id = ? "
+            # A conversation that read their own mail (Act as me) teaches
+            # nothing: its replies quote other people's mail.
+            "  AND u.session_id NOT IN (SELECT session_id FROM sessions WHERE mail_private = 1) "
             "ORDER BY u.id DESC LIMIT ?",
             (person_id, _EVIDENCE_TURNS),
         ).fetchall()

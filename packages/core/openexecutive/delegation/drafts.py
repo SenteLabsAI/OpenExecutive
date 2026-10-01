@@ -127,3 +127,19 @@ def sent_message_ids(person_id: int, *, db_path: Path | None = None) -> set[str]
     finally:
         conn.close()
     return {str(r[0]) for r in rows}
+
+
+def usage_since(person_id: int, since: datetime, *, db_path: Path | None = None) -> tuple[int, int]:
+    """``(drafts saved, of those sent)`` for ``person_id`` since ``since``:
+    counts only, never what they said or to whom (the owner's view of a team
+    member's use). Raises on a read error."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*), COUNT(sent_message_id) FROM {DRAFTS_TABLE} "  # noqa: S608 — constant table name
+            "WHERE person_id = ? AND created_at >= ?",
+            (person_id, since.isoformat()),
+        ).fetchone()
+    finally:
+        conn.close()
+    return int(row[0] or 0), int(row[1] or 0)

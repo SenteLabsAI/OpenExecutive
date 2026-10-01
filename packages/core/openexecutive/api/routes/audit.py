@@ -11,7 +11,9 @@ re-deriving causality from event types client-side.
 Rows private to the principal (``AuditEvent.private`` — see
 ``audit.logger``) are read by the principal alone: every read route leaves
 them out for anyone else, in SQL, so totals and pages stay honest, and a
-private row's id answers 404 exactly like a missing one.
+private row's id answers 404 exactly like a missing one. A team member's own
+rows (``AuditEvent.private_to_person``, Act as me) are left out for everyone,
+the principal included.
 """
 from __future__ import annotations
 
@@ -235,8 +237,13 @@ def create_audit_log(body: AuditLogRequest, request: Request) -> dict[str, int |
 def get_audit_log(event_id: int, request: Request) -> AuditEventDetailOut:
     audit = _resolve_logger(request)
     event = audit.get(event_id)
-    # A private row reads exactly like a missing one to anyone else.
-    if event is None or (event.private and not _sees_private_rows(request)):
+    # A private row reads exactly like a missing one to anyone else, and a
+    # team member's own row (Act as me) to everyone, the principal included.
+    if (
+        event is None
+        or event.private_to_person is not None
+        or (event.private and not _sees_private_rows(request))
+    ):
         raise HTTPException(status_code=404, detail="audit event not found")
     return AuditEventDetailOut(
         id=event.id,

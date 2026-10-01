@@ -2,9 +2,9 @@
 
 Every route is about the CALLER'S OWN delegation — a person turns it on and
 edits their writing profile for themselves; nobody does it for anyone else —
-and only for a caller ``delegation.settings.can_delegate`` allows (Phase 1:
-the principal). Anyone else gets 403 ``not_available_yet``, so the Settings
-card hides itself.
+and only for a caller ``delegation.settings.can_delegate`` allows (the
+principal, and team members once the owner lets them). Anyone else gets 403
+``not_available_yet``, so the Settings card hides itself.
 
 A request with no ``x-caller-email`` is not a sign-in: it would resolve to the
 principal (the CLI / curl rule in ``chat._resolve_caller_person_id``), but a
@@ -37,6 +37,15 @@ Routes:
                                     stays locked; nothing else changes)
   PUT    /delegation/voice        — edit fields, lock / unlock
   DELETE /delegation/voice        — forget it (history kept)
+  PUT    /delegation/team         — {enabled}: the owner's "Let team members
+                                    use Act as me" (principal only; 409
+                                    ``not_available`` unless the install
+                                    allows it, ``DELEGATION_TEAM_MEMBERS``)
+
+``GET /delegation`` gives the principal ``team`` while the install allows it:
+the switch and, for each team member who has it on, counts only — drafts
+saved and sent in the last 30 days, never what they said or to whom. A team
+member's own mail, cards and rows are theirs alone.
 
 Every change writes a private audit row.
 """
@@ -59,7 +68,16 @@ from openexecutive.delegation.gmail import (
     gmail_for,
     gmail_status,
 )
-from openexecutive.delegation.settings import can_delegate, is_enabled, local_login, set_enabled
+from openexecutive.delegation.settings import (
+    can_delegate,
+    enabled_person_ids,
+    is_enabled,
+    local_login,
+    set_enabled,
+    set_team_members,
+    team_members_available,
+    team_members_switch,
+)
 from openexecutive.delegation.voice import (
     StoredVoice,
     VoiceError,
@@ -96,10 +114,35 @@ class InboxOut(BaseModel):
     checking: bool = False
 
 
+class TeamMemberUse(BaseModel):
+    """One team member's use of Act as me, as the owner sees it: counts only."""
+
+    person_id: int
+    name: str
+    enabled: bool
+    inbox: bool
+    drafts_30d: int
+    sent_30d: int
+
+
+class TeamOut(BaseModel):
+    enabled: bool
+    members: list[TeamMemberUse]
+
+
 class DelegationOut(BaseModel):
     enabled: bool
     gmail: GmailConnection
     inbox: InboxOut
+    # The principal's "Let team members use Act as me", while the install
+    # allows it; None for anyone else.
+    team: TeamOut | None = None
+
+
+class TeamUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
 
 
 class InboxUpdate(BaseModel):
@@ -200,13 +243,16 @@ def _caller(request: Request) -> Person:
         logger.exception("delegation: caller lookup failed")
         raise _refuse(503, "roster_unavailable", "Couldn't read the People list.") from exc
     if person is None or not can_delegate(person):
-        raise _refuse(403, "not_available_yet", "Act as me is only for the account owner for now.")
+        raise _refuse(403, "not_available_yet", _NOT_AVAILABLE)
     return person
+
+
+_NOT_AVAILABLE = "Act as me isn't available to you here. The account owner can let team members use it."
 
 
 def _person_id(person: Person) -> int:
     if person.id is None:  # can_delegate already requires one
-        raise _refuse(403, "not_available_yet", "Act as me is only for the account owner for now.")
+        raise _refuse(403, "not_available_yet", _NOT_AVAILABLE)
     return person.id
 
 
@@ -234,6 +280,37 @@ def _inbox_out(person_id: int) -> InboxOut:
     )
 
 
+def _team_out(person: Person) -> TeamOut | None:
+    """The owner's switch and each team member's counts, for the principal
+    while the install allows it; None otherwise."""
+    from datetime import UTC, datetime, timedelta
+
+    from openexecutive.delegation import drafts, inbox
+    from openexecutive.people.store import get_person
+
+    if not person.is_principal or not team_members_available():
+        return None
+    since = datetime.now(UTC) - timedelta(days=30)
+    members: list[TeamMemberUse] = []
+    for person_id in enabled_person_ids():
+        if person_id == person.id:
+            continue
+        try:
+            member = get_person(person_id)
+            if member is None or member.archived or member.kind != "team":
+                continue
+            drafted, sent = drafts.usage_since(person_id, since)
+            watching = inbox.get_watch(person_id).enabled
+        except Exception:
+            logger.warning("delegation: couldn't read a team member's use", exc_info=True)
+            continue
+        members.append(TeamMemberUse(
+            person_id=person_id, name=member.full_name or member.email or f"Person {person_id}",
+            enabled=True, inbox=watching, drafts_30d=drafted, sent_30d=sent,
+        ))
+    return TeamOut(enabled=team_members_switch(), members=members)
+
+
 async def _state(person: Person) -> DelegationOut:
     status = await gmail_status(person.email)
     return DelegationOut(
@@ -245,13 +322,18 @@ async def _state(person: Person) -> DelegationOut:
             connect_command=_connect_command(person.email),
         ),
         inbox=_inbox_out(_person_id(person)),
+        team=_team_out(person),
     )
 
 
 def _audit(event_type: str, summary: str, details: dict[str, Any]) -> None:
     from openexecutive.audit import log_event
 
-    log_event(event_type, summary, actor="user", details=details, private=True)
+    person_id = details.get("person_id")
+    log_event(
+        event_type, summary, actor="user", details=details, private=True,
+        private_to_person=person_id if isinstance(person_id, int) else None,
+    )
 
 
 def _voice_out(stored: StoredVoice) -> VoiceOut:
@@ -302,6 +384,28 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
             "delegation_settings_changed",
             f"Act as me turned {'on' if body.enabled else 'off'} by person {person_id}",
             {"person_id": person_id, "enabled": body.enabled},
+        )
+    return await _state(person)
+
+
+@router.put("/delegation/team", response_model=DelegationOut)
+async def update_delegation_team(request: Request, body: TeamUpdate) -> DelegationOut:
+    """The owner's "Let team members use Act as me". Off takes it away from
+    every team member from their next message (``can_delegate``), and their
+    inbox watchers stop at their next check; their own switches, drafts and
+    cards are kept for if it is turned on again."""
+    person = _caller(request)
+    person_id = _person_id(person)
+    if not person.is_principal:
+        raise _refuse(403, "principal_only", "Only the account owner can change this.")
+    if not team_members_available():
+        raise _refuse(409, "not_available", "Act as me for team members isn't available on this install.")
+    if team_members_switch() != body.enabled:
+        set_team_members(body.enabled, updated_by=f"person:{person_id}")
+        _audit(
+            "delegation_settings_changed",
+            f"Act as me for team members turned {'on' if body.enabled else 'off'} by person {person_id}",
+            {"person_id": person_id, "team_members": body.enabled},
         )
     return await _state(person)
 

@@ -4,11 +4,16 @@ One row per person in ``delegation_settings``: a person turns it on for
 themselves (``PUT /delegation``), and nobody turns it on for anyone else.
 Absent, unreadable or off all mean off.
 
-**Who may have it.** ``can_delegate`` is the single rule. Phase 1 answers yes
-for the principal only: the safety rails a teammate's mailbox would need
-(audit rows private to *that* person, guarded persona edits, per-seat
-credentials) do not exist yet. Everything else here is keyed by person, so
-widening that one function is what the teammate phase changes.
+**Who may have it.** ``can_delegate`` is the single rule: the principal, and
+a team member (not a contact, not archived) once the owner has let team
+members use it (``team_members_enabled``: the ``DELEGATION_TEAM_MEMBERS``
+install setting makes the owner's switch available, and the owner's switch in
+``delegation_team`` turns it on). Each still turns it on for themselves.
+Everything else here is keyed by person. What a teammate's mailbox touches is
+private to *that* person, not to the principal: audit rows carry
+``private_to_person`` (``audit.rows_for_person``), a reply card is its
+approver's alone (``DecisionClassSpec.approver_only``), and a conversation
+that read their mail is theirs alone (``session_store.mark_mail_private``).
 
 **Per turn.** ``pin_turn_delegation`` runs at the start of every chat turn
 (``Executive.stream_chat`` and the committee path), next to the workspace-mode
@@ -20,8 +25,9 @@ well as on the session, so two turns running at once on one session (a second
 browser tab) each read their own. It is offered only when all of these hold:
 
 - the speaker may have it (``can_delegate``) and turned it on;
-- the speaker is the principal on a surface that verified it is them
-  (``people_tools.is_principal_on_verified_surface``), and a web turn also
+- the speaker is on a surface that verified it is them
+  (``people_tools.is_principal_on_verified_surface`` for the principal,
+  ``teammate_on_verified_surface`` for a team member), and a web turn also
   carried a signed-in caller (``x-caller-email``) or runs under local login.
   A request with no caller header is not a sign-in and never gets it. Whoever
   holds ``BACKEND_SHARED_SECRET`` is trusted as the UI proxy that stamps that
@@ -39,8 +45,8 @@ does not flip when a token lapses.
 
 **The system prompt.** ``block0_delegation_on`` is the install-level flag the
 cached persona block keys its constant ``DELEGATION_ADDENDUM`` on — whether
-anyone here has it on (Phase 1: the principal) — so it changes only when the
-setting does, never per turn or per speaker.
+anyone here may have it and has it on — so it changes only when a setting
+does, never per turn or per speaker.
 """
 from __future__ import annotations
 
@@ -53,7 +59,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from openexecutive.delegation.schema import SETTINGS_TABLE, ensure_schema
+from openexecutive.delegation.schema import SETTINGS_TABLE, TEAM_TABLE, ensure_schema
 from openexecutive.utils.deployment import is_local_login as local_login
 
 if TYPE_CHECKING:
@@ -104,15 +110,99 @@ _TURN: contextvars.ContextVar[TurnDelegation | None] = contextvars.ContextVar(
 
 
 def can_delegate(person: Person | None) -> bool:
-    """Whether ``person`` may turn Act as me on for themselves. Phase 1: the
-    principal (a non-archived team member flagged ``is_principal``) only."""
-    return bool(
+    """Whether ``person`` may turn Act as me on for themselves: a non-archived
+    team member who is the principal, or any other one once the owner has let
+    team members use it (``team_members_enabled``). Never a contact."""
+    if not (
         person is not None
         and person.id is not None
-        and person.is_principal
         and not person.archived
         and person.kind == "team"
-    )
+    ):
+        return False
+    return bool(person.is_principal) or team_members_enabled()
+
+
+def team_members_available() -> bool:
+    """Whether this install lets the owner turn it on for team members
+    (``DELEGATION_TEAM_MEMBERS``). Never raises."""
+    try:
+        from openexecutive.config import get_settings
+
+        return bool(get_settings().delegation_team_members)
+    except Exception:
+        logger.warning("delegation: couldn't read the team-members setting — treating it as off", exc_info=True)
+        return False
+
+
+def team_members_switch(*, db_path: Path | None = None) -> bool:
+    """The owner's "Let team members use Act as me", as stored. Never raises:
+    a missing file, table or row, or any read error, is off (logged)."""
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(path))
+        try:
+            row = conn.execute(f"SELECT enabled FROM {TEAM_TABLE} WHERE id = 1").fetchone()  # noqa: S608 — constant table name
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            logger.warning("delegation: could not read the team switch (%s) — treating it as off", exc)
+        return False
+    except Exception:
+        logger.warning("delegation: could not read the team switch — treating it as off", exc_info=True)
+        return False
+    return bool(row is not None and row[0])
+
+
+def team_members_enabled(*, db_path: Path | None = None) -> bool:
+    """Whether team members may have it: the install allows it and the owner
+    turned it on. Never raises."""
+    return team_members_available() and team_members_switch(db_path=db_path)
+
+
+def set_team_members(enabled: bool, *, updated_by: str, db_path: Path | None = None) -> None:
+    """Store the owner's switch. Callers authorize first (the route)."""
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(str(_resolve_db_path(db_path)))
+    try:
+        ensure_schema(conn)
+        conn.execute(
+            f"INSERT INTO {TEAM_TABLE} (id, enabled, updated_at, updated_by) "  # noqa: S608 — constant table name
+            "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+            "enabled = excluded.enabled, updated_at = excluded.updated_at, "
+            "updated_by = excluded.updated_by",
+            (1 if enabled else 0, now, updated_by),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def enabled_person_ids(*, db_path: Path | None = None) -> list[int]:
+    """Everyone whose own switch is on, whether or not they may still have
+    it. Never raises: an unreadable table is nobody (logged)."""
+    path = _resolve_db_path(db_path)
+    if not path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(path))
+        try:
+            rows = conn.execute(
+                f"SELECT person_id FROM {SETTINGS_TABLE} WHERE enabled = 1 ORDER BY person_id"  # noqa: S608 — constant table name
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            logger.warning("delegation: could not read who has it on (%s)", exc)
+        return []
+    except Exception:
+        logger.warning("delegation: could not read who has it on", exc_info=True)
+        return []
+    return [int(r[0]) for r in rows]
 
 
 def _resolve_db_path(db_path: Path | None) -> Path:
@@ -181,10 +271,20 @@ def _principal() -> Person | None:
 
 
 def enabled_for_install() -> bool:
-    """Whether anyone on this install has it on (Phase 1: the principal).
-    Never raises."""
+    """Whether anyone on this install may have it and has it on. Never
+    raises."""
     principal = _principal()
-    return can_delegate(principal) and is_enabled(principal.id if principal else None)
+    if can_delegate(principal) and is_enabled(principal.id if principal else None):
+        return True
+    if not team_members_enabled():
+        return False
+    try:
+        from openexecutive.people.store import get_person
+
+        return any(can_delegate(get_person(pid)) for pid in enabled_person_ids())
+    except Exception:
+        logger.warning("delegation: team lookup failed — treating it as off", exc_info=True)
+        return False
 
 
 def block0_delegation_on(session: Any) -> bool:
@@ -236,10 +336,18 @@ def speaker_surface_ok(session: Any, person: Person | None) -> bool:
     if not can_delegate(person):
         return False
     try:
-        from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+        from openexecutive.orchestrator.people_tools import (
+            is_principal_on_verified_surface,
+            teammate_on_verified_surface,
+        )
 
-        if not is_principal_on_verified_surface(session):
-            return False
+        if person is not None and person.is_principal:
+            if not is_principal_on_verified_surface(session):
+                return False
+        else:
+            teammate = teammate_on_verified_surface(session)
+            if teammate is None or person is None or teammate.id != person.id:
+                return False
     except Exception:
         logger.warning("delegation: surface check failed — not offering it", exc_info=True)
         return False

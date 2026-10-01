@@ -171,21 +171,49 @@ def _approver_is_principal(request: Request) -> bool:
 
 
 def _is_private(instance: DecisionInstance) -> bool:
-    """The principal's alone to see and act on: a class that is
-    (``DecisionClassSpec.principal_only``), or a payload marked ``private``
-    (a booking with one of the principal's contacts, per ``calendar_tools``)."""
+    """Not everyone's to see: a class that is the principal's alone
+    (``DecisionClassSpec.principal_only``) or its approver's alone
+    (``approver_only``, decided before this is asked), or a payload marked
+    ``private`` (a booking with one of the principal's contacts, per
+    ``calendar_tools``)."""
     spec = DECISION_CLASSES.get(instance.decision_class)
-    if spec is not None and spec.principal_only:
+    if spec is not None and (spec.principal_only or spec.approver_only):
         return True
     payload = _parse_payload(instance)
     return payload.get("private") is True
 
 
+def _approver_only(instance: DecisionInstance) -> bool:
+    spec = DECISION_CLASSES.get(instance.decision_class)
+    return spec is not None and spec.approver_only
+
+
+def _caller_is_approver(instance: DecisionInstance, request: Request) -> bool:
+    """Whether the caller is the person ``instance`` went to for approval.
+    Fails closed."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    try:
+        caller = _resolve_caller_person_id(request)
+    except Exception:
+        logger.exception("decisions: caller lookup failed — treating them as someone else")
+        return False
+    return caller is not None and caller == instance.approver_person_id
+
+
 def _visible_instance(instance_id: int, request: Request) -> DecisionInstance:
     """The instance, or 404 — also for a private one when the caller is not
-    the principal, so its existence (and the contact on it) is not revealed."""
+    the principal, and for one only its approver may see when the caller is
+    anyone else (the principal included), so its existence (and the contact
+    or mail on it) is not revealed."""
     instance = get_decision_instance(instance_id)
-    if instance is None or (_is_private(instance) and not _approver_is_principal(request)):
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Decision instance not found")
+    if _approver_only(instance):
+        if not _caller_is_approver(instance, request):
+            raise HTTPException(status_code=404, detail="Decision instance not found")
+        return instance
+    if _is_private(instance) and not _approver_is_principal(request):
         raise HTTPException(status_code=404, detail="Decision instance not found")
     return instance
 
@@ -203,7 +231,10 @@ def _resolver(instance: DecisionInstance, request: Request) -> int | None:
     from openexecutive.api.routes.chat import _resolve_caller_person_id
 
     caller = _resolve_caller_person_id(request)
-    if _approver_is_principal(request):
+    if _approver_only(instance):
+        if caller is not None and caller == instance.approver_person_id:
+            return caller
+    elif _approver_is_principal(request):
         return caller
     if caller is not None and caller == instance.approver_person_id and not _is_private(instance):
         return caller
@@ -250,6 +281,9 @@ class DecisionClassSpec:
     after_reject: Callable[[DecisionInstance], Awaitable[None]] | None = None
     # Undoes what an approval did; None when it can't be undone (409).
     cancel: Callable[[DecisionInstance], Awaitable[None]] | None = None
+    # Only the person an instance went to for approval (``approver_person_id``)
+    # may see or resolve it — not the principal either, unless it is theirs.
+    approver_only: bool = False
 
 
 def _spec_for(instance: DecisionInstance) -> DecisionClassSpec:
@@ -275,6 +309,15 @@ def get_decisions(
 ) -> list[DecisionInstance]:
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=400, detail="limit must be 1–500")
+    spec = DECISION_CLASSES.get(decision_class)
+    if spec is not None and spec.approver_only:
+        from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+        caller = _resolve_caller_person_id(request)
+        if caller is None:
+            return []
+        instances = list_instances(decision_class, status=status, limit=500)
+        return [i for i in instances if i.approver_person_id == caller][:limit]
     if _approver_is_principal(request):
         return list_instances(decision_class, status=status, limit=limit)
     spec = DECISION_CLASSES.get(decision_class)
@@ -404,7 +447,7 @@ _MEETING_BOOKING = DecisionClassSpec(
 async def _send_reply(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
-    """Send the reply's exact Gmail draft, on the principal's tap
+    """Send the reply's exact Gmail draft, on its person's tap
     (``delegation.reply_send``, which checks everything again first)."""
     from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
 
@@ -427,11 +470,13 @@ async def _dismiss_reply(instance: DecisionInstance) -> None:
     await dismiss(instance)
 
 
-# A reply the inbox watcher drafted as the principal (delegation.inbox): the
-# principal's alone, whatever its payload says, and never an alert.
+# A reply the inbox watcher drafted as someone (delegation.inbox): theirs
+# alone, whatever its payload says (a team member's is hidden from the
+# principal too), and never an alert.
 _DELEGATED_REPLY = DecisionClassSpec(
     name="delegation_reply",
-    principal_only=True,
+    principal_only=False,
+    approver_only=True,
     alert_source=None,
     approve=_send_reply,
     after_reject=_dismiss_reply,

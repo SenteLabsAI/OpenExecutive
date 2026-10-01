@@ -13,7 +13,8 @@ not a ``scheduled_actions`` row (those are on ``/scheduled`` for everyone and
 anyone may cancel them): every ``DELEGATION_INBOX_POLL_MINUTES`` per person,
 one scan at a time, after the pause, company-profile and rotation gates, and
 never while a client slot is active. "Check now" runs the same scan. Every
-row a scan writes is private to the principal (``private_rows``), and the
+row a scan writes is private, and the person's own (``rows_for_person``:
+not even the principal reads a team member's), and the
 process log carries counts and codes, never an address or text.
 
 **What it drafts for.** The newest message per thread in the inbox since
@@ -62,8 +63,8 @@ scan.
 minutes; a rate limit or other error backs off from 5 minutes up to 2 hours.
 Neither turns the switch off.
 
-**Cards.** A card is a ``delegation_reply`` decision, private to the
-principal: never an alert, since alerts feed chat turns and would put other
+**Cards.** A card is a ``delegation_reply`` decision, its person's alone
+(not even the principal sees a team member's): never an alert, since alerts feed chat turns and would put other
 people's mail into memory. ``reconcile`` closes a card that Gmail settled: the
 draft sent or deleted there, the person replied, or 7 days passed (the draft
 stays in Gmail). It flags a card whose thread moved on.
@@ -575,10 +576,10 @@ def skip_reason(
     return None
 
 
-def _roster_relation(address: str) -> str | None:
+def _roster_relation(address: str, *, include_contacts: bool = True) -> str | None:
     from openexecutive.people.store import list_people
 
-    for person in list_people(include_contacts=True):
+    for person in list_people(include_contacts=include_contacts):
         if address in {a.lower() for a in [person.email, *person.email_aliases] if a}:
             return "team" if person.kind == "team" else "contact"
     return None
@@ -592,11 +593,14 @@ def handling_relation(relation: str, message: Any) -> str:
     return relation if getattr(message, "sender_authenticated", False) is True else "stranger"
 
 
-async def relation_of(address: str, gmail: Any) -> str:
+async def relation_of(address: str, gmail: Any, *, contacts: bool = True) -> str:
     """Who the sender is to the person: on their team, one of their
-    contacts, someone they have written to before, or a stranger."""
+    contacts, someone they have written to before, or a stranger. The
+    contacts are the principal's own, so ``contacts`` is False for anyone
+    else: a team member's mail is weighed by the team and their own sent
+    mail, never by the principal's contacts."""
     try:
-        found = _roster_relation(address)
+        found = _roster_relation(address, include_contacts=contacts)
     except Exception:
         logger.warning("delegation.inbox: roster lookup failed — treating the sender as unknown", exc_info=True)
         found = None
@@ -764,9 +768,9 @@ def _card_payload(
     from openexecutive.integrations.email_poller import sender_new_text
 
     return {
-        # A card is the principal's alone (DecisionClassSpec.principal_only
-        # hides the class; this keeps every reader that checks the payload
-        # in step).
+        # A card is its person's alone (DecisionClassSpec.approver_only
+        # hides the class from everyone else; this keeps every reader that
+        # checks the payload in step).
         "private": True,
         "person_id": person.id,
         "message_id": message.id,
@@ -821,7 +825,11 @@ def _client_slot_active() -> bool:
 def _audit(event_type: str, summary: str, details: dict[str, Any]) -> None:
     from openexecutive.audit import log_event
 
-    log_event(event_type, summary, actor="executive", details=details, private=True)
+    person_id = details.get("person_id")
+    log_event(
+        event_type, summary, actor="executive", details=details, private=True,
+        private_to_person=person_id if isinstance(person_id, int) else None,
+    )
 
 
 async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = None) -> ScanResult:
@@ -829,7 +837,7 @@ async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = 
     records how it went. With the switch off it only follows through a send
     the person started that Gmail never confirmed, and does nothing at all
     when there is none."""
-    from openexecutive.audit import private_rows
+    from openexecutive.audit import rows_for_person
     from openexecutive.delegation.gmail import (
         GmailAuthError,
         GmailError,
@@ -862,7 +870,7 @@ async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = 
     client = gmail if gmail is not None else gmail_for(email)
     _SCANNING.add(person.id)
     try:
-        with private_rows(True):
+        with rows_for_person(person.id):
             status = await gmail_status(email, gmail=client)
             if status != "connected":
                 # A sign-in problem is looked at again in half an hour; not
@@ -1022,7 +1030,7 @@ async def _consider(
         if _claim(person.id, message, relation="", outcome=SKIPPED, reason=reason, now=now):
             result.skipped += 1
         return False
-    known_as = await relation_of(message.from_addr, client)
+    known_as = await relation_of(message.from_addr, client, contacts=bool(person.is_principal))
     relation = handling_relation(known_as, message)
     limit = _cap_reason(person.id, message, relation, now)
     if limit is not None:
