@@ -2560,6 +2560,11 @@ export interface PersonaMeta {
   display_name: string;
   is_builtin: boolean;
   is_customized: boolean;
+  // Hidden from the voice picker but still loadable (named built-in voices).
+  is_legacy: boolean;
+  // Picker copy from a built-in voice's frontmatter ("" for custom voices).
+  description: string;
+  sample: string;
 }
 
 export interface Persona {
@@ -2569,6 +2574,9 @@ export interface Persona {
   is_builtin: boolean;
   is_customized: boolean;
   source_notes: string;
+  is_legacy: boolean;
+  description: string;
+  sample: string;
 }
 
 export async function listPersonas(): Promise<PersonaMeta[]> {

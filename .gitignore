@@ -76,6 +76,9 @@ evals/results/
 # Anvil
 ~/.claude/anvil/
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 packages/ui/tsconfig.tsbuildinfo
 
 # Private deployment substrate. These describe one specific hosting setup and

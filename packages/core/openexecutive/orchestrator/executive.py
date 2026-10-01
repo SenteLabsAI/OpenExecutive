@@ -851,7 +851,10 @@ class Executive:
                 persona_instructions = _ov.instructions
             if _ov is not None and _ov.model:
                 effective_model = _ov.model
-            voice_persona_body = _get_voice_body(_ov.voice_persona_slug if _ov else None)
+            voice_persona_body = _get_voice_body(
+                session.voice_persona_slug
+                or (_ov.voice_persona_slug if _ov else None)
+            )
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
         # Solo / team, resolved once per turn and pinned on the session, so the
@@ -1165,7 +1168,10 @@ class Executive:
                 persona_instructions = _ov.instructions
             if _ov is not None and _ov.model:
                 effective_model = _ov.model
-            voice_persona_body = _get_voice_body(_ov.voice_persona_slug if _ov else None)
+            voice_persona_body = _get_voice_body(
+                session.voice_persona_slug
+                or (_ov.voice_persona_slug if _ov else None)
+            )
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
 

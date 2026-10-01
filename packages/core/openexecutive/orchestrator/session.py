@@ -85,6 +85,10 @@ class Session:
     # of the principal it plays without writing the install-wide row. Read
     # it through `memory.workspace_settings.effective_principal_role`.
     principal_role: PrincipalRole | None = None
+    # Per-session voice persona slug (None = the Executive override's voice,
+    # else Direct), so an eval scenario can play a voice without writing the
+    # install-wide override that concurrent scenarios share.
+    voice_persona_slug: str | None = None
     # The mode resolved for the turn in progress, pinned at its start by
     # `workspace_settings.pin_turn_workspace_mode` (Executive.stream_chat and
     # the committee path) so the tool handlers use the same mode as the

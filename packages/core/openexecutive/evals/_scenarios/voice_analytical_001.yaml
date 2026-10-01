@@ -1,0 +1,27 @@
+id: voice_analytical_001
+domain: voice
+voice_persona: analytical
+description: "Analytical voice: a founder asks whether to raise prices or spend more on acquisition. The Executive leads with the numbers that decide it, lays out the two options with their trade-offs and assumptions, and still lands on one recommendation."
+# Runs in the Analytical voice via the `voice_persona` key
+# (Session.voice_persona_slug), never the install-wide Executive override.
+company_context:
+  name: Fernway Software
+  industry: Vertical SaaS for Veterinary Clinics
+  stage: Series A
+  headcount: 42
+  arr: 4800000
+  monthly_burn: 380000
+  runway_months: 19
+query: "We have about $400k to put toward growth this year. Should we raise prices 15% on new customers or spend it on paid acquisition? Our CAC is around $3,200, average contract is $9,000 a year, and gross margin is 78%."
+expected_topics:
+  - payback_or_ltv_to_cac_from_the_given_figures
+  - price_increase_option_with_its_trade_off
+  - paid_acquisition_option_with_its_trade_off
+  - stated_assumptions
+  - single_recommendation
+quality_criteria:
+  uses_the_figures_given: true
+  compares_both_options_on_cost_gain_and_risk: true
+  states_the_assumptions_behind_the_conclusion: true
+  ends_with_one_recommendation: true
+  not_generic: true

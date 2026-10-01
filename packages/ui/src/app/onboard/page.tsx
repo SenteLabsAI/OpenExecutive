@@ -7,6 +7,7 @@ import OnboardConversation, {
   type Bubble,
 } from "@/components/onboard/OnboardConversation";
 import OnboardDraftReview from "@/components/onboard/OnboardDraftReview";
+import VoicePicker from "@/components/executive/VoicePicker";
 import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { updateWorkspace, type OnboardTurn, type WorkspaceMode } from "@/lib/api";
@@ -22,6 +23,8 @@ import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/p
 // your role is — owner, an executive inside an organisation, independent —
 // saved with the workspace settings too (skippable; editable in Settings),
 // so setup asks the right questions and the Executive advises for that role.
+// Either way it then asks how the Executive should sound: Direct, Supportive
+// or Analytical (skippable; changeable in Settings).
 // A re-run — a company profile already exists — skips both: they are changed
 // in Settings, and the flow below follows whatever they currently are.
 //
@@ -184,6 +187,8 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
   const [error, setError] = useState<string | null>(null);
   // "Just me" was saved: ask the role before moving on.
   const [askRole, setAskRole] = useState(false);
+  // The mode (and role) are saved: ask for the voice, then move on.
+  const [askVoice, setAskVoice] = useState<WorkspaceMode | null>(null);
 
   async function choose(mode: WorkspaceMode) {
     if (saving) return;
@@ -205,14 +210,24 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
         setSaving(null);
         return;
       }
-      onChosen(mode);
+      setAskVoice(mode);
+      setSaving(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save your choice.");
       setSaving(null);
     }
   }
 
-  if (askRole) return <RoleStep onDone={() => onChosen("solo")} />;
+  if (askVoice) return <VoiceStep onDone={() => onChosen(askVoice)} />;
+  if (askRole)
+    return (
+      <RoleStep
+        onDone={() => {
+          setAskRole(false);
+          setAskVoice("solo");
+        }}
+      />
+    );
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-16 w-full">
@@ -323,6 +338,23 @@ function RoleStep({ onDone }: { onDone: () => void }) {
         >
           Skip for now
         </button>
+      </div>
+    </div>
+  );
+}
+
+// How should the Executive sound? Saved on the Executive (PATCH
+// /agents/executive); skipping keeps Direct. Settings → Executive changes it.
+function VoiceStep({ onDone }: { onDone: () => void }) {
+  return (
+    <div className="max-w-3xl mx-auto px-6 py-16 w-full">
+      <h1 className="text-xl font-semibold text-fg">How should your Executive sound?</h1>
+      <p className="text-sm text-fg-muted mt-1">
+        The advice is the same; this sets the tone it comes in. You can change it later in
+        Settings.
+      </p>
+      <div className="mt-8">
+        <VoicePicker variant="step" onDone={onDone} />
       </div>
     </div>
   );

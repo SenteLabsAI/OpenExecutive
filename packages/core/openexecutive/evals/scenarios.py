@@ -134,6 +134,20 @@ def scenario_principal_role(scenario: dict[str, Any]) -> PrincipalRole | None:
     return role
 
 
+def scenario_voice_persona(scenario: dict[str, Any]) -> str | None:
+    """The scenario's ``voice_persona`` slug, or None to use the install's
+    voice. An unknown slug raises ValueError, so a typo fails the scenario
+    instead of silently running in the default voice."""
+    from openexecutive.personas.loader import persona_exists
+
+    slug = scenario.get("voice_persona")
+    if slug is None:
+        return None
+    if not isinstance(slug, str) or not persona_exists(slug):
+        raise ValueError(f"voice_persona {slug!r} is not a known voice")
+    return slug
+
+
 def scenario_delegation(scenario: dict[str, Any]) -> Any:
     """The scenario's ``delegation`` block (Act as me) as a
     ``delegation.settings.DelegationOverride`` over a fresh in-memory mailbox
@@ -233,6 +247,8 @@ def validate_scenario_yaml(raw: str) -> dict[str, Any]:
             scenario_principal_role(s)
         except ValueError as e:
             raise ValueError(f"`principal_role`: {e}") from e
+    if s.get("voice_persona") is not None:
+        scenario_voice_persona(s)
     if s.get("delegation") is not None:
         try:
             scenario_delegation(s)

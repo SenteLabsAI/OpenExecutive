@@ -85,6 +85,17 @@ const ROUTE_TEXT: Record<ModelOption["route"], string> = {
   local: "local backend",
 };
 
+function personaOption(p: PersonaMeta) {
+  return (
+    <option key={p.slug} value={p.slug}>
+      {p.display_name}
+      {p.is_builtin && !p.is_customized ? " · built-in" : ""}
+      {p.is_customized ? " · customized" : ""}
+      {!p.is_builtin ? " · custom" : ""}
+    </option>
+  );
+}
+
 function detailToDraft(d: AgentDetail): DraftState {
   return {
     role: d.role,
@@ -759,14 +770,12 @@ export default function CouncilPage() {
                       onChange={(e) => setDraft({ ...draft, voice_persona_slug: e.target.value === "default" ? null : e.target.value })}
                       className="w-full px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none text-sm"
                     >
-                      {personas.map((p) => (
-                        <option key={p.slug} value={p.slug}>
-                          {p.display_name}
-                          {p.is_builtin && !p.is_customized ? " · built-in" : ""}
-                          {p.is_customized ? " · customized" : ""}
-                          {!p.is_builtin ? " · custom" : ""}
-                        </option>
-                      ))}
+                      {personas.filter((p) => !p.is_legacy).map(personaOption)}
+                      {personas.some((p) => p.is_legacy) && (
+                        <optgroup label="Legacy voices">
+                          {personas.filter((p) => p.is_legacy).map(personaOption)}
+                        </optgroup>
+                      )}
                     </select>
                     <p className="text-[10px] text-fg-subtle mt-1">
                       Selection saves with the main Save button above.
