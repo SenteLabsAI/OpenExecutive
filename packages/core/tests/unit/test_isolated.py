@@ -75,6 +75,12 @@ def test_non_ascii_text_comes_back_intact() -> None:
     assert run_isolated(echo, text, timeout=60) == text
 
 
+def test_lone_surrogates_come_back_as_they_did_in_process() -> None:
+    """pypdf decodes some character maps with surrogatepass, so extracted
+    text can hold a lone surrogate; strict UTF-8 would lose the whole file."""
+    assert run_isolated(echo, "page\ud800text", timeout=60) == "page\ud800text"
+
+
 def test_an_answer_past_the_limit_is_refused(monkeypatch) -> None:
     monkeypatch.setattr(isolated, "_MAX_ANSWER_BYTES", 100)
 
@@ -82,9 +88,13 @@ def test_an_answer_past_the_limit_is_refused(monkeypatch) -> None:
         run_isolated(echo, "x" * 200, timeout=60)
 
 
-def test_a_flood_on_stderr_is_never_held_in_memory(caplog) -> None:
+def test_a_flood_on_stderr_is_never_held_in_memory(monkeypatch) -> None:
     """Review finding: stderr used to be captured whole. A child that writes
     40 MB to it must cost this process the logged tail, not 40 MB."""
+    from unittest.mock import MagicMock
+
+    log = MagicMock()
+    monkeypatch.setattr(isolated, "logger", log)
     tracemalloc.start()
     try:
         with pytest.raises(WorkerStopped, match="exit code 5"):
@@ -94,8 +104,9 @@ def test_a_flood_on_stderr_is_never_held_in_memory(caplog) -> None:
         tracemalloc.stop()
 
     assert peak < 2 * 1024 * 1024
-    (record,) = [r for r in caplog.records if "no answer" in r.getMessage()]
-    assert record.getMessage().endswith("x" * isolated._MAX_STDERR_LOGGED)
+    (call,) = log.warning.call_args_list
+    tail = call.args[-1]
+    assert tail == "x" * isolated._MAX_STDERR_LOGGED
 
 
 def _log_flood_pdf(pages: int = 5, fonts: int = 300, name_len: int = 4000) -> bytes:

@@ -137,7 +137,7 @@ def run_isolated(
             raise WorkerStopped(f"{name} answered with {size} bytes, past the limit")
         out.seek(0)
         try:
-            reply = json.loads(out.read())
+            reply = json.loads(out.read().decode("utf-8", "surrogatepass"))
         except ValueError:
             reply = None
         if not isinstance(reply, dict) or "ok" not in reply:
@@ -172,6 +172,15 @@ def _main() -> int:
     sys.stdout = sys.stderr
     logging.disable(logging.CRITICAL)
     warnings.simplefilter("ignore")
+    # Native code can still write to stderr, which is a file on disk: no file
+    # this process writes may pass twice the answer cap (SIGXFSZ ends it).
+    try:
+        import resource
+
+        limit = 2 * _MAX_ANSWER_BYTES
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+    except (ImportError, ValueError, OSError):
+        pass
 
     module, qualname, args = pickle.loads(sys.stdin.buffer.read())
     func: Any = importlib.import_module(module)
@@ -191,7 +200,9 @@ def _main() -> int:
                 "attrs": attrs,
             },
         }
-    out = json.dumps(reply, ensure_ascii=False).encode()
+    # pypdf decodes some fonts' character maps with surrogatepass, so the
+    # text can hold lone surrogates; they cross as-is, as they did in-process.
+    out = json.dumps(reply, ensure_ascii=False).encode("utf-8", "surrogatepass")
     if len(out) > _MAX_ANSWER_BYTES:
         out = json.dumps({
             "ok": False,

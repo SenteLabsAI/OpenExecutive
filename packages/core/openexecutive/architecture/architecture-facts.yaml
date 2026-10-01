@@ -1609,7 +1609,11 @@ knowledge:
     _MAX_ANSWER_BYTES (32 MB): the child swaps a larger one for an
     AnswerTooLarge error and the parent refuses a larger file unread, both
     as WorkerStopped. read_pdf_text's note for WorkerStopped: "the PDF could
-    not be read: it was too large or took too long".
+    not be read: it was too large or took too long". The answer is encoded
+    with surrogatepass both ways: pypdf decodes some ToUnicode maps with
+    surrogatepass, and strict UTF-8 would lose a whole file over one lone
+    surrogate. RLIMIT_FSIZE (2x the answer cap) bounds what native code can
+    write to the stderr file.
     A Path source is read more than once (hash, parse, maybe model), so a
     result is cached only if the file's sha256 is unchanged after the read:
     an upload rewriting the same name mid-read must not store its text
