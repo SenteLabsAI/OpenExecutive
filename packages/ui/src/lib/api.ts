@@ -2702,6 +2702,44 @@ export async function testAgent(
   return res.json();
 }
 
+// Quality presets (Fast / Balanced / Thorough). Mirrors QualityPresets in
+// api/routes/agents.py. A preset is applied as ordinary per-agent
+// overrides, so `active` is null ("Custom") once any agent is changed on
+// its own; `custom_agents` lists the agents that differ from `base`.
+export type QualityPresetId = "fast" | "balanced" | "thorough";
+
+export interface QualityPreset {
+  id: QualityPresetId;
+  label: string;
+  description: string;
+  available: boolean;
+  model: string | null;
+}
+
+export interface QualityPresets {
+  presets: QualityPreset[];
+  active: QualityPresetId | null;
+  base: QualityPresetId;
+  custom_agents: string[];
+}
+
+export async function listQualityPresets(): Promise<QualityPresets> {
+  const res = await fetch(`${API_BASE}/agents/presets`);
+  if (!res.ok) throw new Error("Failed to load quality presets");
+  return res.json();
+}
+
+export async function applyQualityPreset(id: QualityPresetId): Promise<QualityPresets> {
+  const res = await fetch(`${API_BASE}/agents/presets/${encodeURIComponent(id)}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Failed to apply preset");
+  }
+  return res.json();
+}
+
 // One allowlisted model, grouped for the Council's Provider → Model picker.
 // Mirrors ModelOption in api/routes/agents.py. `route` says which backend
 // actually serves the id (it mirrors providers.registry.get_provider).

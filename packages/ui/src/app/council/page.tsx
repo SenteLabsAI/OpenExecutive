@@ -9,6 +9,9 @@ import {
   Persona,
   ModelOption,
   PersonaMeta,
+  QualityPresetId,
+  QualityPresets,
+  applyQualityPreset,
   createPersona,
   deletePersona,
   getAgentDetail,
@@ -17,6 +20,7 @@ import {
   listAgentModelOptions,
   listAgents,
   listPersonas,
+  listQualityPresets,
   patchAgent,
   resetAgent,
   resetPersona,
@@ -119,6 +123,9 @@ export default function CouncilPage() {
   const [history, setHistory] = useState<AgentHistoryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  const [presets, setPresets] = useState<QualityPresets | null>(null);
+  const [applyingPreset, setApplyingPreset] = useState<QualityPresetId | null>(null);
+
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +147,8 @@ export default function CouncilPage() {
   const [newPersonaBody, setNewPersonaBody] = useState("");
 
   const refreshAgents = useCallback(async () => {
+    // Any agent change can move the council on or off a preset.
+    listQualityPresets().then(setPresets).catch(() => {});
     try {
       const list = await listAgents();
       setAgents(list);
@@ -282,6 +291,32 @@ export default function CouncilPage() {
     }
   };
 
+  const handleApplyPreset = async (id: QualityPresetId) => {
+    const preset = presets?.presets.find((p) => p.id === id);
+    if (!preset) return;
+    if (
+      !window.confirm(
+        `Switch every agent to ${preset.label}? This changes each agent's model and deep reasoning; ` +
+          "prompts and instructions stay as they are, and earlier settings move to history."
+      )
+    )
+      return;
+    setApplyingPreset(id);
+    setError(null);
+    try {
+      setPresets(await applyQualityPreset(id));
+      await refreshAgents();
+      if (selected) await loadDetail(selected);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to apply preset");
+    } finally {
+      setApplyingPreset(null);
+    }
+  };
+
+  const customAgents = new Set(presets?.custom_agents ?? []);
+  const basePresetLabel = presets?.presets.find((p) => p.id === presets.base)?.label;
+
   const handleReset = async () => {
     if (!selected) return;
     if (!window.confirm("Reset this agent to defaults? Current override will move to history.")) return;
@@ -364,6 +399,14 @@ export default function CouncilPage() {
                   </span>
                   <span className="block truncate text-fg-muted">{a.role}</span>
                 </span>
+                {customAgents.has(a.name) && (
+                  <span
+                    className="mt-0.5 text-[9px] uppercase tracking-widest px-1 rounded bg-surface-overlay text-fg-subtle"
+                    title={`Differs from the ${basePresetLabel ?? ""} preset`}
+                  >
+                    Custom
+                  </span>
+                )}
               </button>
             ))}
           </nav>
@@ -384,6 +427,56 @@ export default function CouncilPage() {
             <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
               {error}
             </div>
+          )}
+
+          {presets && (
+            <section className="rounded-xl border border-line bg-surface px-6 py-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-fg">Quality</h2>
+                {presets.active === null && (
+                  <span
+                    className="text-[10px] uppercase tracking-widest px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    title={`${presets.custom_agents.length} agent(s) differ from ${basePresetLabel ?? "the preset"}`}
+                  >
+                    Custom
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {presets.presets.map((p) => {
+                  const current = presets.active === p.id;
+                  const base = presets.active === null && presets.base === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => handleApplyPreset(p.id)}
+                      disabled={!p.available || current || applyingPreset !== null}
+                      aria-pressed={current}
+                      title={p.available ? undefined : "This install offers none of this preset's models"}
+                      className={`text-left rounded-lg border px-3 py-2 transition-colors disabled:cursor-not-allowed ${
+                        current
+                          ? "border-indigo-500/40 bg-indigo-500/10"
+                          : base
+                            ? "border-indigo-500/20 border-dashed"
+                            : "border-line hover:border-line-strong"
+                      } ${p.available ? "" : "opacity-40"}`}
+                    >
+                      <span className="block text-sm font-medium text-fg">
+                        {applyingPreset === p.id ? "Applying…" : p.label}
+                      </span>
+                      <span className="block text-xs text-fg-muted mt-0.5">{p.description}</span>
+                      {p.model && (
+                        <span className="block text-[10px] text-fg-subtle mt-1 font-mono">{p.model}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-fg-subtle">
+                A preset sets every agent&apos;s model and deep reasoning at once. Changing one agent
+                below marks it Custom; each agent keeps its own history.
+              </p>
+            </section>
           )}
 
           {detail && draft ? (

@@ -466,6 +466,25 @@ providers:
     instructions keep the agent on the built-in prompt, so prompt upgrades
     still reach it. PATCH /agents/{id} and /test accept ``instructions``
     (max 4,000 chars; blank clears it).
+  quality_presets: |
+    The Council's Quality choice (agents/presets.py) sets every agent's model
+    and deep-reasoning flag at once. Fast: a small model (claude-haiku-4-5)
+    for every agent, deep reasoning off. Balanced: each agent's built-in
+    defaults. Thorough: the largest allowed model (claude-opus-5-5, then
+    claude-opus-5) for the Executive and the domain specialists, deep
+    reasoning on where model_supports_deep_reasoning allows; triage and the
+    Council-only helpers keep their defaults. Presets change quality only and
+    never cap spend. Models resolve at request time against
+    providers.allowed_models_for; a preset none of whose models the install
+    allows is reported unavailable (POST returns 409) instead of picking
+    something else. There is no preset table: POST /agents/presets/{id}
+    writes ordinary agent_overrides rows (model and use_deep_reasoning only,
+    leaving prompt, role, voice and instructions alone), one history row per
+    agent that changes, clearing a field whose target equals the default and
+    deleting a row left empty. GET /agents/presets works out the active
+    preset from the overrides: ``active`` when every agent matches,
+    otherwise null ("Custom") with ``base`` (the preset most agents match,
+    Balanced on a tie) and ``custom_agents`` (the agents that differ).
   per_specialist_research_focus: |
     Each consult-routable specialist (cso, cfo, cmo, coo, chro, cpo, gc) has a
     Council-editable ``research_focus`` override — the per-domain scope tail

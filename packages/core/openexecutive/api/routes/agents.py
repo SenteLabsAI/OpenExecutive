@@ -18,6 +18,16 @@ from openexecutive.agents.overrides import (
     rollback_to,
     set_override,
 )
+from openexecutive.agents.presets import (
+    PRESET_IDS,
+    PRESETS,
+    AgentState,
+    PresetId,
+    preset_available,
+    preset_model,
+    preset_status,
+    writes_for,
+)
 from openexecutive.audit.usage import log_model_usage
 
 logger = logging.getLogger(__name__)
@@ -385,6 +395,135 @@ def list_model_options(agent_id: str | None = None) -> list[ModelOption]:
 
 def _is_known_agent(agent_id: str) -> bool:
     return agent_id == EXECUTIVE_ID or agent_id in _agent_registry()
+
+
+class QualityPreset(BaseModel):
+    id: PresetId
+    label: str
+    description: str
+    # False when this install allows none of the preset's models.
+    available: bool
+    # The model the preset moves agents to on this install; null for
+    # Balanced (each agent keeps its own default) or when unavailable.
+    model: str | None = None
+
+
+class QualityPresets(BaseModel):
+    presets: list[QualityPreset]
+    # The preset every agent matches, or null when the council is "Custom".
+    active: PresetId | None
+    # The preset most agents match, and the agents that differ from it.
+    base: PresetId
+    custom_agents: list[str]
+
+
+# Agents whose calls never send thinking fields, so a preset leaves their
+# deep-reasoning flag alone.
+_NO_DEEP_REASONING = frozenset({EXECUTIVE_ID, "utility_fast"})
+
+
+def _agent_states() -> list[AgentState]:
+    states: list[AgentState] = []
+    for name, agent in _agent_registry().items():
+        ov = get_override(name)
+        if name == EXECUTIVE_ID:
+            model_default = _ExecutiveDefaults.model()
+            deep_default = _ExecutiveDefaults.use_deep_reasoning
+        else:
+            model_default = agent.model
+            deep_default = agent.use_deep_reasoning
+        states.append(
+            AgentState(
+                agent_id=name,
+                model_default=model_default,
+                deep_default=deep_default,
+                model_override=ov.model if ov is not None else None,
+                deep_override=ov.use_deep_reasoning if ov is not None else None,
+                uses_deep_reasoning=name not in _NO_DEEP_REASONING,
+            )
+        )
+    return states
+
+
+def _specialist_ids() -> set[str]:
+    from openexecutive.orchestrator.router import SPECIALIST_REGISTRY
+
+    return set(SPECIALIST_REGISTRY)
+
+
+def _quality_presets() -> QualityPresets:
+    allowed = _allowed()
+    status_ = preset_status(
+        _agent_states(), specialist_ids=_specialist_ids(), allowed=allowed
+    )
+    return QualityPresets(
+        presets=[
+            QualityPreset(
+                id=pid,
+                label=PRESETS[pid].label,
+                description=PRESETS[pid].description,
+                available=preset_available(pid, allowed),
+                model=preset_model(pid, allowed),
+            )
+            for pid in PRESET_IDS
+        ],
+        active=status_.active,
+        base=status_.base,
+        custom_agents=status_.custom_agents,
+    )
+
+
+@router.get("/agents/presets", response_model=QualityPresets)
+def list_presets() -> QualityPresets:
+    """Fast, Balanced and Thorough, resolved against this install's model
+    allowlist, plus which one the council is on."""
+    return _quality_presets()
+
+
+@router.post("/agents/presets/{preset_id}", response_model=QualityPresets)
+def apply_preset(preset_id: str) -> QualityPresets:
+    """Move every agent onto a preset by writing ordinary overrides.
+
+    Only the model and deep-reasoning fields change; prompts, roles, voice
+    and instructions stay as they are. Each agent that changes gets one
+    history row, so a single agent can be rolled back on its own. An
+    override left with nothing in it is removed, so Balanced returns an
+    untouched agent to its plain defaults.
+    """
+    if preset_id not in PRESETS:
+        raise HTTPException(status_code=404, detail="Unknown preset")
+    pid: PresetId = PRESETS[preset_id].id
+    allowed = _allowed()
+    if not preset_available(pid, allowed):
+        raise HTTPException(
+            status_code=409,
+            detail=f"The {PRESETS[pid].label} preset needs a model this install doesn't offer",
+        )
+    for write in writes_for(
+        pid, _agent_states(), specialist_ids=_specialist_ids(), allowed=allowed
+    ):
+        ov = get_override(write.agent_id)
+        keeps_other_fields = ov is not None and any(
+            v is not None
+            for v in (
+                ov.prompt,
+                ov.role,
+                ov.voice_persona_slug,
+                ov.research_focus,
+                ov.instructions,
+            )
+        )
+        if write.model is None and write.deep is None and not keeps_other_fields:
+            clear_override(write.agent_id)
+            continue
+        set_override(
+            write.agent_id,
+            model=write.model,
+            use_deep_reasoning=write.deep,
+            model_set=True,
+            deep_set=True,
+        )
+    return _quality_presets()
 
 
 @router.get("/agents", response_model=list[AgentMeta])

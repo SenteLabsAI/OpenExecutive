@@ -122,11 +122,24 @@ def test_no_stubs_ignores_docs_and_exempt_files() -> None:
 # --- eval-scenarios ----------------------------------------------------------
 
 
+_SALES_AGENT = {PKG + "agents/sales.py": ["class SalesAgent(BaseAgent):", '    name = "sales"']}
+
+
 def test_eval_scenarios_required_for_new_agent() -> None:
     added = {PKG + "agents/sales.py"}
-    assert _level(pr_checks.check_eval_scenarios, added=added) == "FAIL"
+    lines = _SALES_AGENT
+    assert _level(pr_checks.check_eval_scenarios, added=added, added_lines=lines) == "FAIL"
     changed = {PKG + "evals/_scenarios/sales_001.yaml"}
-    assert _level(pr_checks.check_eval_scenarios, changed=changed, added=added) == "PASS"
+    assert (
+        _level(pr_checks.check_eval_scenarios, changed=changed, added=added, added_lines=lines)
+        == "PASS"
+    )
+
+
+def test_eval_scenarios_not_required_for_new_helper_module() -> None:
+    added = {PKG + "agents/presets.py"}
+    lines = {PKG + "agents/presets.py": ["class PresetSpec:", "def target_for(agent: BaseAgent):"]}
+    assert _level(pr_checks.check_eval_scenarios, added=added, added_lines=lines) == "PASS"
 
 
 def test_eval_scenarios_required_for_domain_prompt_change() -> None:
@@ -297,7 +310,7 @@ def test_collect_and_main_against_a_real_repo(
     slack.write_text("x = 1\ny = 2  # TODO\n")  # uncommitted edit
     new = repo / PKG / "agents" / "sales.py"
     new.parent.mkdir(parents=True)
-    new.write_text("z = 3\n")  # untracked file
+    new.write_text("class SalesAgent(BaseAgent):\n    z = 3\n")  # untracked file
     monkeypatch.chdir(repo)
     monkeypatch.delenv("PR_BODY", raising=False)
 

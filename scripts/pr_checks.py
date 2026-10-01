@@ -213,9 +213,18 @@ def check_no_stubs(c: Change) -> Result:
     return Result("no-stubs", "PASS", "no stub markers added")
 
 
+_AGENT_CLASS_RE = re.compile(r"^class\s+\w+\s*\([^)]*\bBaseAgent\b")
+
+
 def check_eval_scenarios(c: Change) -> Result:
+    # A new public module under agents/ counts as a new agent only when it
+    # subclasses BaseAgent; a helper module beside the agents (overrides,
+    # presets) needs no eval scenario.
     new_agent = any(
-        p.startswith(AGENTS) and p.endswith(".py") and not p.rsplit("/", 1)[-1].startswith("_")
+        p.startswith(AGENTS)
+        and p.endswith(".py")
+        and not p.rsplit("/", 1)[-1].startswith("_")
+        and any(_AGENT_CLASS_RE.search(line) for line in c.added_lines.get(p, []))
         for p in c.added
     )
     prompt_change = DOMAIN_PROMPTS in c.changed
