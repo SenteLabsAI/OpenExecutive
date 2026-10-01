@@ -190,8 +190,10 @@ def _audit(person_id: int, summary: str, details: dict[str, Any]) -> None:
 
 def _keep_conversation_private(writer: _Writer) -> bool:
     """Mark the conversation its owner's alone (``mark_mail_private``) before
-    the mailbox is read. False when that couldn't be stored. An eval's fake
-    mailbox (``DelegationOverride``) has no conversation to mark."""
+    the mailbox is read. False when that couldn't be stored, or when the
+    conversation is someone else's: their mail and this person's would share
+    it. An eval's fake mailbox (``DelegationOverride``) has no conversation to
+    mark."""
     from openexecutive.delegation.settings import DelegationOverride
     from openexecutive.memory.session_store import mark_mail_private
     from openexecutive.orchestrator.schedule_tools import current_session
@@ -203,9 +205,12 @@ def _keep_conversation_private(writer: _Writer) -> bool:
     if not session_id:
         return False
     try:
-        mark_mail_private(str(session_id), writer.person.id)
+        owner = mark_mail_private(str(session_id), writer.person.id)
     except Exception:
         logger.exception("ghostwrite_email: couldn't mark the conversation private")
+        return False
+    if owner is not None and owner != writer.person.id:
+        logger.warning("ghostwrite_email: the conversation belongs to someone else — mailbox left unread")
         return False
     return True
 

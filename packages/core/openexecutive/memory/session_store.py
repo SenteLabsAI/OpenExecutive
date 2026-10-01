@@ -234,23 +234,30 @@ def get_session_owner(session_id: str, db_path: Path = DB_PATH) -> tuple[bool, i
 
 def mark_mail_private(
     session_id: str, owner_person_id: int | None = None, db_path: Path = DB_PATH
-) -> None:
+) -> int | None:
     """Make ``session_id`` its owner's alone from now on: a turn in it read or
     drafted in the speaker's own mailbox (Act as me), and its replies quote
     other people's mail. The principal no longer reads it either
-    (``api.routes.chat._session_access``). Never undone.
+    (``api.routes.chat._session_access``). Never undone. Returns the
+    conversation's owner as stored.
 
     A channel adapter writes its session row only after the turn, so a
     missing row is created here, owned by ``owner_person_id`` (the speaker);
-    the adapter's ``create_session`` then leaves it as it is."""
+    the adapter's ``create_session`` then leaves it as it is. A row without an
+    owner gets this one; an owner already stored is never replaced."""
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path) as conn:
         conn.execute(
             "INSERT INTO sessions (session_id, title, created_at, updated_at, caller_person_id, mail_private) "
             "VALUES (?, ?, ?, ?, ?, 1) "
-            "ON CONFLICT(session_id) DO UPDATE SET mail_private = 1",
+            "ON CONFLICT(session_id) DO UPDATE SET mail_private = 1, "
+            "caller_person_id = COALESCE(caller_person_id, excluded.caller_person_id)",
             (session_id, session_id, now, now, owner_person_id),
         )
+        row = conn.execute(
+            "SELECT caller_person_id FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return int(row["caller_person_id"]) if row is not None and row["caller_person_id"] is not None else None
 
 
 def session_mail_private(session_id: str, db_path: Path = DB_PATH) -> bool:

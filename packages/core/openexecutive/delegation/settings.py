@@ -392,9 +392,35 @@ def pin_turn_delegation(session: Any, speaker_text: str) -> TurnDelegation:
         person_id=person.id if person is not None else None,
         session_id=getattr(session, "session_id", None),
     )
+    if not isinstance(override, DelegationOverride):
+        _carry_kept_private(pinned)
     session.turn_delegation = pinned
     _TURN.set(pinned)
     return pinned
+
+
+def _carry_kept_private(pinned: TurnDelegation) -> None:
+    """A conversation that once read someone's mail (``mark_mail_private``)
+    stays theirs on every later turn: the turn starts as if it had touched the
+    mail, so its rows are private to them, it teaches no memory and the
+    lockdown holds, however it is answered. Nobody else drafts in it. Fails
+    closed: a flag that can't be read counts as set."""
+    if not pinned.session_id:
+        return
+    from openexecutive.memory import session_store
+
+    try:
+        kept = session_store.session_mail_private(pinned.session_id)
+        owner = session_store.get_session_owner(pinned.session_id)[1] if kept else None
+    except Exception:
+        logger.warning("delegation: couldn't read whether the conversation is private — treating it as private", exc_info=True)
+        kept, owner = True, None
+    if not kept:
+        return
+    pinned.touched_mail = True
+    if owner is not None and owner != pinned.person_id:
+        pinned.enabled = pinned.offered = False
+        pinned.person_id = owner
 
 
 def turn_delegation(session: Any) -> TurnDelegation | None:

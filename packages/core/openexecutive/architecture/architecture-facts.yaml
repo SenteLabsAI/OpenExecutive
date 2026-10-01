@@ -8067,9 +8067,14 @@ delegation:
     usage_summary counts them. Their reply cards are approver_only. Before
     the first mailbox read ghostwrite_email marks the session mail_private
     (session_store.mark_mail_private, creating a channel adapter's row early
-    with its owner; it refuses to read if that fails), after which only the
+    with its owner, binding one to an ownerless row and refusing to read if
+    that fails or the conversation is someone else's), after which only the
     session's owner may open it (chat._session_access) and working-style
-    learning skips it. The inbox classifier weighs a team member's sender by
+    learning skips it. Every later turn in it starts touched
+    (settings.pin_turn_delegation reads the flag, failing closed): its rows,
+    the web chat's inbound row included, are the owner's, no memory pass
+    runs and the lockdown holds, even when the answer comes from history
+    alone; anyone else speaking there is not offered Act as me. The inbox classifier weighs a team member's sender by
     the team and their own sent mail, never the principal's contacts. The
     owner sees counts only: drafts and sends in 30 days, inbox on or off.
   lockdown: |

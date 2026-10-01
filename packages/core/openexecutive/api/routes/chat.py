@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from openexecutive.api import caller as api_caller
 from openexecutive.api.models import ChatRequest, PageContext, StopChatRequest
 from openexecutive.audit import log_event as audit_log
-from openexecutive.audit import principal_turn_rows
+from openexecutive.audit import principal_turn_rows, rows_for_person
 from openexecutive.integrations.attachments import build_attachment_output
 from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
@@ -803,7 +803,13 @@ async def _run_chat_turn(
         turn_id, session.session_id, is_first_turn, len(message),
         len(attachment_blocks or []),
     )
-    with principal_turn_rows(principal_turn):
+    # A conversation that once read the caller's own mail stays theirs: so
+    # does what they say in it (the turn itself is pinned the same way).
+    kept_private = _mail_private(session.session_id)
+    with (
+        principal_turn_rows(principal_turn),
+        rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext(),
+    ):
         audit_log(
             "chat_turn",
             f"User: {message[:200]}",

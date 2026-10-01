@@ -275,6 +275,74 @@ def test_marking_creates_a_channel_conversation_with_its_owner(roster: SimpleNam
     assert session_store.get_session_owner("slack:dm:U_BEN", db_path=db) == (True, roster.teammate)
 
 
+@pytest.fixture
+def stores_on(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from functools import partial
+
+    # session_store binds its DB path at import.
+    for name in ("get_session_owner", "session_mail_private", "mark_mail_private"):
+        monkeypatch.setattr(session_store, name, partial(getattr(session_store, name), db_path=db))
+
+
+def test_a_later_turn_in_their_conversation_stays_theirs(
+    roster: SimpleNamespace, available: None, stores_on: None, db: Path
+) -> None:
+    set_team_members(True, updated_by="test")
+    set_enabled(roster.teammate, True, updated_by="test")
+    session = _web(roster.teammate)
+    session.session_id = "s-ben"
+    session_store.create_session("s-ben", "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
+    assert pin_turn_delegation(session, "what did she ask?").touched_mail is False
+    session_store.mark_mail_private("s-ben", roster.teammate)
+    # Answered from history, with no mailbox call: still private and theirs.
+    pinned = pin_turn_delegation(session, "what did she ask?")
+    assert pinned.touched_mail is True and pinned.person_id == roster.teammate and pinned.offered is True
+
+
+def test_nobody_else_drafts_in_a_conversation_that_is_someone_elses(
+    roster: SimpleNamespace, available: None, stores_on: None
+) -> None:
+    set_enabled(roster.principal, True, updated_by="test")
+    session = _web(roster.principal)
+    session.session_id = "s-ben"
+    session_store.mark_mail_private("s-ben", roster.teammate)
+    pinned = pin_turn_delegation(session, "draft something")
+    assert pinned.touched_mail is True and pinned.offered is False and pinned.person_id == roster.teammate
+
+
+def test_a_private_flag_that_cant_be_read_counts_as_set(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_a: Any, **_k: Any) -> bool:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(session_store, "session_mail_private", broken)
+    session = _web(roster.principal)
+    session.session_id = "s-1"
+    assert pin_turn_delegation(session, "hi").touched_mail is True
+
+
+def test_marking_keeps_an_owner_and_binds_a_missing_one(roster: SimpleNamespace, db: Path) -> None:
+    session_store.create_session("s-ben", "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
+    assert session_store.mark_mail_private("s-ben", roster.principal, db_path=db) == roster.teammate
+    session_store.create_session("s-open", "Chat", "2026-10-01T00:00:00+00:00", None, db_path=db)
+    assert session_store.mark_mail_private("s-open", roster.principal, db_path=db) == roster.principal
+    assert session_store.get_session_owner("s-open", db_path=db) == (True, roster.principal)
+
+
+def test_the_mailbox_stays_shut_in_someone_elses_conversation(
+    roster: SimpleNamespace, stores_on: None, db: Path
+) -> None:
+    from openexecutive.orchestrator import delegation_tools
+
+    session_store.create_session("s-ben", "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
+    pinned = TurnDelegation(enabled=True, offered=True, person_id=roster.principal, session_id="s-ben")
+    writer: Any = SimpleNamespace(pinned=pinned, person=_get(roster.principal))
+    assert delegation_tools._keep_conversation_private(writer) is False
+    pinned.session_id = "s-olivia"
+    assert delegation_tools._keep_conversation_private(writer) is True
+
+
 # --------------------------------------------------------------------------- #
 # The routes
 # --------------------------------------------------------------------------- #
