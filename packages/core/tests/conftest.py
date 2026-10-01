@@ -38,6 +38,8 @@ os.environ.pop("KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD", None)
 # `.env` is neither, and a test that does `monkeypatch.delenv("HONCHO_ENABLED")`
 # to assert the default would have the deployment's value quietly reappear
 # underneath it. Everything Settings genuinely requires is set above.
+from openexecutive.config import Settings  # noqa: E402
+
 Settings.model_config["env_file"] = None
 
 
