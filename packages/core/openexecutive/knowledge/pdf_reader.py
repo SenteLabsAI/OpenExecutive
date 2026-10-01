@@ -448,24 +448,28 @@ _inbound_spent: list[tuple[float, int]] = []
 _inbound_lock = threading.Lock()
 
 
-def _take_inbound_pages(wanted: int, per_hour: int) -> int:
-    """Reserve up to ``wanted`` pages from the rolling hourly budget and
-    return how many were granted (0 when it is spent)."""
+def _take_inbound_pages(wanted: int, per_hour: int) -> tuple[int, tuple[float, int] | None]:
+    """Reserve up to ``wanted`` pages from the rolling hourly budget: ``(pages
+    granted, the reservation)``, ``(0, None)`` when the budget is spent."""
     now = time.monotonic()
     with _inbound_lock:
-        _inbound_spent[:] = [(t, n) for t, n in _inbound_spent if now - t < _INBOUND_WINDOW_S]
+        # Keep the entries themselves: a refund finds its own by identity.
+        _inbound_spent[:] = [e for e in _inbound_spent if now - e[0] < _INBOUND_WINDOW_S]
         left = per_hour - sum(n for _t, n in _inbound_spent)
         granted = max(0, min(wanted, left))
-        if granted:
-            _inbound_spent.append((now, granted))
-        return granted
+        if not granted:
+            return 0, None
+        reservation = (now, granted)
+        _inbound_spent.append(reservation)
+        return granted, reservation
 
 
-def _refund_inbound_pages(granted: int) -> None:
-    """Give back a reservation whose pages were never converted."""
+def _refund_inbound_pages(reservation: tuple[float, int]) -> None:
+    """Give back this reservation (not another of the same size): its pages
+    were never converted."""
     with _inbound_lock:
-        for i in range(len(_inbound_spent) - 1, -1, -1):
-            if _inbound_spent[i][1] == granted:
+        for i, entry in enumerate(_inbound_spent):
+            if entry is reservation:
                 del _inbound_spent[i]
                 return
 
@@ -564,19 +568,25 @@ async def read_pdf_text(
 
     settings = get_settings()
     limit = min(pages, settings.pdf_vision_max_pages)
-    reserved = 0
+    reservation: tuple[float, int] | None = None
     if inbound:
         limit = min(limit, settings.pdf_inbound_max_pages)
-        granted = _take_inbound_pages(limit, settings.pdf_inbound_pages_per_hour)
+        granted, reservation = _take_inbound_pages(limit, settings.pdf_inbound_pages_per_hour)
         if limit and not granted:
             return _fallback(
                 text, pages,
                 "it looks scanned and the hourly budget for converting sent files is used up",
             )
-        limit = reserved = granted
+        limit = granted
 
     transcribed = None
-    if limit and settings.pdf_provider_reading:
+    # Once a request can reach the model, pages may have been billed (a
+    # failed transcription can still have paid for its other slices), so
+    # the reservation is never refunded after that.
+    model_tried = bool(
+        limit and settings.pdf_provider_reading and _model_provider(_pdf_model()) is not None
+    )
+    if model_tried:
         pdf = data if isinstance(data, bytes) else await asyncio.to_thread(data.read_bytes)
         transcribed = await _read_with_model(pdf, limit)
         del pdf
@@ -599,9 +609,10 @@ async def read_pdf_text(
     except OcrUnavailable:
         return _fallback(text, pages, "it looks scanned and OCR is not installed on this server")
     except ParserBusy:
-        # Never tried: give the pages back to the hourly budget.
-        if reserved:
-            _refund_inbound_pages(reserved)
+        # OCR never ran: give the pages back to the hourly budget, unless
+        # the model step already ran and may have billed some of them.
+        if reservation is not None and not model_tried:
+            _refund_inbound_pages(reservation)
         logger.warning("pdf_reader: no free OCR slot for %r", label)
         return replace(_fallback(text, pages, _BUSY_REASON), busy=True)
     except Exception as exc:

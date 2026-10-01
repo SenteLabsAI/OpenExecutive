@@ -471,6 +471,36 @@ async def test_a_scan_met_by_busy_ocr_says_so_and_refunds_its_pages(monkeypatch)
     assert ocr == [3]
 
 
+async def test_pages_the_model_may_have_billed_are_not_refunded(monkeypatch):
+    """Review finding: a transcription that fails can still have paid for
+    its other slices; refunding when OCR is then busy would let a sender
+    run up model spend past the hourly budget."""
+    monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "3")
+    _use_provider(monkeypatch, _FakeProvider(error=RuntimeError("slice failed")))
+
+    def busy(source: Any, max_pages: int) -> tuple[str, int]:
+        raise pdf_reader.ParserBusy("_ocr_pdf found no free parser slot")
+
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", busy)
+
+    first = await read_pdf_text(_blank_pdf(3), inbound=True)
+    second = await read_pdf_text(_blank_pdf(2), inbound=True)
+
+    assert first.busy
+    assert second.method == "none" and "hourly budget" in second.note
+
+
+def test_a_refund_returns_its_own_reservation_not_one_of_the_same_size():
+    first_pages, first = pdf_reader._take_inbound_pages(2, 10)
+    second_pages, second = pdf_reader._take_inbound_pages(2, 10)
+    assert first is not None and second is not None
+
+    pdf_reader._refund_inbound_pages(first)
+
+    assert pdf_reader._inbound_spent == [second]
+    assert pdf_reader._inbound_spent[0] is second
+
+
 async def test_inbound_conversions_share_an_hourly_page_budget(monkeypatch):
     monkeypatch.setenv("PDF_INBOUND_PAGES_PER_HOUR", "5")
     _use_provider(monkeypatch, None)

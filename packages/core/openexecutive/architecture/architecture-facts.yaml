@@ -1655,7 +1655,11 @@ knowledge:
     covers wait + run).
     ParserBusy handling: read_pdf_text returns PdfReadResult(busy=True),
     method "none" (or the thin text layer) with a "server was busy" note,
-    never cached; a busy OCR attempt refunds its inbound page reservation.
+    never cached. A busy OCR attempt refunds its own inbound page
+    reservation (by identity, not any of the same size), but only when no
+    request could reach the model: a failed transcription can still have
+    billed its other slices, and refunding those would let a sender run up
+    model spend past the hourly budget.
     extract_text_from_file_async / ingest_file take `busy_raises`: POST
     /documents, the preview and intake uploads set it, so a busy PDF raises
     ParserBusy like a busy Word/Excel parse and they answer 503 with
