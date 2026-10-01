@@ -1624,7 +1624,9 @@ knowledge:
     read_pdf_text turns into method "none" with a note); a Word/Excel parse
     error still raises, as IsolatedError naming the original type.
     Timeouts: 300 s for the text layer and file extractors, OCR's 240 s
-    budget + 120 s. The page ceiling travels as an argument because the
+    budget + 120 s. extract_text_from_file takes a `timeout`: drive_sync
+    passes its own _EXTRACT_TIMEOUT_S (120 s), so the child is killed when
+    the sync's wait_for gives up rather than running on. The page ceiling travels as an argument because the
     child never sees this process's module state. OCR's two-at-a-time
     semaphore is held in the API process around the child. Where no child
     can be started (OSError on spawn), the parse runs in-process, logged

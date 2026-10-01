@@ -256,7 +256,9 @@ def _extract(data: bytes, suffix: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / f"file{suffix}"
         path.write_bytes(data)
-        return extract_text_from_file(path)
+        # The same limit as the wait_for below, so the parser's child process
+        # is killed when the sync stops waiting for it.
+        return extract_text_from_file(path, timeout=_EXTRACT_TIMEOUT_S)
 
 
 async def _file_text(client: DriveClient, item: DriveItem) -> str:

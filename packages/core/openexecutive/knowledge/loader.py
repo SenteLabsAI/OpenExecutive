@@ -145,16 +145,17 @@ def extract_text_from_xlsx(path: Path, max_chars: int = 200_000) -> str:
         wb.close()
 
 
-def extract_text_from_file(path: Path) -> str:
+def extract_text_from_file(path: Path, *, timeout: float = _PARSE_TIMEOUT_S) -> str:
     """The text of a document on disk; ``""`` for an unsupported type.
 
     PDF, Word and Excel files are parsed in a child process. A parser error
     raises ``isolated.IsolatedError`` (a ``RuntimeError``) naming the
-    original exception, and a parse that dies or runs past
-    ``_PARSE_TIMEOUT_S`` raises ``isolated.WorkerStopped``. Blocking — run
-    it in a thread from async code."""
+    original exception, and a parse that dies or runs past ``timeout``
+    seconds raises ``isolated.WorkerStopped``. A caller that stops waiting
+    sooner should pass its own limit, so the child is killed then rather
+    than left running. Blocking — run it in a thread from async code."""
     if path.suffix.lower() in _ISOLATED_SUFFIXES:
-        return run_isolated(_parse_file, path, timeout=_PARSE_TIMEOUT_S)
+        return run_isolated(_parse_file, path, timeout=timeout)
     return _parse_file(path)
 
 

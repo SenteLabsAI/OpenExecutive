@@ -479,12 +479,27 @@ async def test_an_archive_bomb_is_recorded_unreadable_not_parsed(
     drive = _drive()
     drive.content[DOCX] = _docx_bytes("x" * 5000)
     parsed: list[Path] = []
-    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p: parsed.append(p) or "")
+    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p, **_: parsed.append(p) or "")
     store = FakeStore()
     stats = await _sync(drive, store)
     assert DOCX not in store.file_ids() and stats["failed"] == 0
     assert _state(tmp_path)["files"][DOCX]["filename"] == ""
     assert not [p for p in parsed if p.suffix == ".docx"]
+
+
+@pytest.mark.asyncio
+async def test_the_parser_child_gets_the_syncs_own_time_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parse runs in a child process; given the sync's limit, the child
+    is killed when the sync gives up instead of running to the loader's."""
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        drive_sync, "extract_text_from_file", lambda p, **kw: seen.append(kw) or ""
+    )
+    await _sync(_drive(), FakeStore())
+    assert seen
+    assert all(kw == {"timeout": drive_sync._EXTRACT_TIMEOUT_S} for kw in seen)
 
 
 @pytest.mark.asyncio
@@ -495,7 +510,7 @@ async def test_a_hung_extraction_is_given_up_and_not_retried(
 
     release = threading.Event()
     monkeypatch.setattr(drive_sync, "_EXTRACT_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p: release.wait(5) and "")
+    monkeypatch.setattr(drive_sync, "extract_text_from_file", lambda p, **_: release.wait(5) and "")
     drive, store = _drive(), FakeStore()
     try:
         await _sync(drive, store)

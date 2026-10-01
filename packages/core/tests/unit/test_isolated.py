@@ -225,6 +225,9 @@ async def test_a_missing_file_is_reported_not_raised(tmp_path: Path) -> None:
 async def test_a_scan_is_ocrd_in_the_child(tmp_path: Path, monkeypatch) -> None:
     pytest.importorskip("rapidocr_onnxruntime")
     pytest.importorskip("pypdfium2")
+    # test_pdf_reader.py loads the engine in-process on purpose; start clean
+    # so the check below sees only what this read did.
+    monkeypatch.setattr(pdf_reader, "_ocr_engine", None)
     monkeypatch.setenv("PDF_PROVIDER_READING", "false")
     monkeypatch.setenv("PDF_OCR_ENABLED", "true")
     path = tmp_path / "scan.pdf"
