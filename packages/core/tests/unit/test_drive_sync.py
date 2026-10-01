@@ -645,3 +645,24 @@ async def test_a_failed_sign_in_is_recorded_and_cleared_by_the_next_good_tick(
     assert "sign in" in (drive_sync.list_synced_files()["last_error"] or "")
     await _sync(_drive(), FakeStore())
     assert drive_sync.list_synced_files()["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_fails_to_index_is_reported_and_cleared_once_it_syncs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_ingest = drive_sync._ingest_file_sync
+
+    def broken_ingest(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("chroma down")
+
+    monkeypatch.setattr(drive_sync, "_ingest_file_sync", broken_ingest)
+    stats = await _sync(_drive(), FakeStore())
+    assert stats["failed"] >= 1
+    error = drive_sync.list_synced_files()["last_error"] or ""
+    assert f"{stats['failed']} file" in error and "could not be synced" in error
+
+    monkeypatch.setattr(drive_sync, "_ingest_file_sync", real_ingest)
+    stats = await _sync(_drive(), FakeStore())
+    assert stats["failed"] == 0
+    assert drive_sync.list_synced_files()["last_error"] is None
