@@ -8071,11 +8071,14 @@ delegation:
     that fails or the conversation is someone else's), after which only the
     session's owner may open it (chat._session_access) and working-style
     learning skips it. Every later turn in it starts touched
-    (settings.pin_turn_delegation reads the flag, failing closed): its rows,
-    the web chat's inbound row included, are the owner's, no memory pass
+    (settings.pin_turn_delegation reads the flag, failing closed): the
+    turn's rows are the owner's, and so are the web chat's rows before it
+    (the inbound chat_turn and the knowledge_retrieval row); no memory pass
     runs and the lockdown holds, even when the answer comes from history
-    alone; anyone else speaking there is not offered Act as me. The inbox classifier weighs a team member's sender by
-    the team and their own sent mail, never the principal's contacts. The
+    alone; anyone else speaking there is not offered Act as me. A channel
+    adapter's own pre-turn rows (integration_inbound, and the retrieval
+    Discord and Telegram run first) are written as before. The inbox
+    classifier weighs a team member's sender by the team and their own sent mail, never the principal's contacts. The
     owner sees counts only: drafts and sends in 30 days, inbox on or off.
   lockdown: |
     Once a turn has read the principal's own mail — from the round that
@@ -8100,7 +8103,9 @@ delegation:
     through; the broadcast, calendar, workflow, research and follow-up
     handlers; MCPGateway.call_tool and load_mcp_server). The server-side
     web_search stays, as on a turn private to the principal. The lockdown is
-    per turn: the principal's next message starts afresh. The process log
+    per turn: the principal's next message starts afresh, except in a
+    conversation that has read their mail (mail_private), where every turn
+    starts touched. The process log
     names a refused call_tool's inner tool only when it is shaped like a
     tool name (executive._loggable_tool, [a-z0-9_]{1,64}), else
     "call_tool:<unlisted>": that name is the model's own text, which mail

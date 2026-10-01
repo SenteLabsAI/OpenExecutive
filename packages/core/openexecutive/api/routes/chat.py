@@ -944,7 +944,10 @@ async def _run_chat_turn(
     # all raise, and the entry would otherwise be stranded until the registry
     # cap evicted it.
     try:
-        with principal_turn_rows(principal_turn):
+        with (
+            principal_turn_rows(principal_turn),
+            rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext(),
+        ):
             (
                 retrieved_context, episodic_context, peer_memory_context, briefing_context,
             ) = await asyncio.gather(

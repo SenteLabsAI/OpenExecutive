@@ -19,7 +19,9 @@ because a round's tools run concurrently. The send paths check again
 (``mail_touched_refusal``) so nothing that reaches them in such a turn runs.
 The server-side ``web_search`` stays, as on a turn private to the owner: it
 cannot be refused at dispatch without a cache miss. The lockdown lasts for
-the turn; the owner's next message starts afresh.
+the turn; the owner's next message starts afresh, except in a conversation
+that has read their mail (``sessions.mail_private``), where every turn
+starts touched (``settings.pin_turn_delegation``).
 """
 from __future__ import annotations
 

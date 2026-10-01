@@ -339,6 +339,8 @@ def test_the_mailbox_stays_shut_in_someone_elses_conversation(
     pinned = TurnDelegation(enabled=True, offered=True, person_id=roster.principal, session_id="s-ben")
     writer: Any = SimpleNamespace(pinned=pinned, person=_get(roster.principal))
     assert delegation_tools._keep_conversation_private(writer) is False
+    # ...and leaves it as it was: not theirs to lock.
+    assert session_store.session_mail_private("s-ben") is False
     pinned.session_id = "s-olivia"
     assert delegation_tools._keep_conversation_private(writer) is True
 
