@@ -248,6 +248,8 @@ function OpenLoopsSection({
   const [loops, setLoops] = useState<OpenLoop[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState<number | null>(null);
+  // Sampled once at mount: a render must not call Date.now() (react-hooks/purity).
+  const [mountedAt] = useState(() => Date.now());
   const [task, setTask] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [assigning, setAssigning] = useState(false);
@@ -301,7 +303,7 @@ function OpenLoopsSection({
   }
 
   if (!canList && !canAssign) return null;
-  const now = Date.now();
+  const now = mountedAt;
   return (
     <section className="mb-6">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-1">

@@ -107,7 +107,7 @@ export default function MermaidDiagram({ definition, id }: Props) {
           setError(msg.split('\n')[0]);
           setSvg(null);
           // Keep the console error for devs; users see the inline fallback.
-          // eslint-disable-next-line no-console
+           
           console.error('Mermaid render failed:', e);
         }
       }

@@ -110,6 +110,11 @@ jobs:
       - name: Type check
         run: cd packages/ui && npx tsc --noEmit
 
+      # `next lint` no longer exists in Next 16; this is the package-wide
+      # eslint run (packages/ui/eslint.config.mjs) that replaced it.
+      - name: Lint
+        run: cd packages/ui && npm run lint
+
       # node:test suites added in #100. Runs on the same Node 22 the job
       # already uses (--experimental-strip-types needs 22.6+).
       - name: Run UI unit tests

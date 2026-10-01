@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import CommitteePhaseIndicator from "./CommitteePhaseIndicator";
 import type { CommitteePhase } from "@/lib/api";
 import type { TurnStatus } from "@/lib/turnStatus";
@@ -10,8 +10,12 @@ import type { TurnStatus } from "@/lib/turnStatus";
 // same handler that sets the turn loading, so the first render of the turn
 // already reads fresh times, and `markEvent` for every streamed item.
 export function useTurnClock(isLoading: boolean) {
-  const startedAt = useRef(0);
-  const lastEventAt = useRef(0);
+  // State, not refs: the derived ms values are computed during render, and a
+  // ref read in render is what react-hooks/refs forbids. `markEvent` fires in
+  // the same stream loop that already appends chunk text to state, so React
+  // batches the two updates and this costs no extra render per event.
+  const [startedAt, setStartedAt] = useState(0);
+  const [lastEventAt, setLastEventAt] = useState(0);
   const [now, setNow] = useState(0);
 
   useEffect(() => {
@@ -21,16 +25,16 @@ export function useTurnClock(isLoading: boolean) {
   }, [isLoading]);
 
   return {
-    msSinceTurnStart: now - startedAt.current,
-    msSinceLastEvent: now - lastEventAt.current,
+    msSinceTurnStart: now - startedAt,
+    msSinceLastEvent: now - lastEventAt,
     start: () => {
       const t = Date.now();
-      startedAt.current = t;
-      lastEventAt.current = t;
+      setStartedAt(t);
+      setLastEventAt(t);
       setNow(t);
     },
     markEvent: () => {
-      lastEventAt.current = Date.now();
+      setLastEventAt(Date.now());
     },
   };
 }
