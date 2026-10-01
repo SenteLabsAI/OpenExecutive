@@ -257,7 +257,7 @@ SECTIONS: list[SectionSpec] = [
     SectionSpec(
         id="delegation",
         title="Act as Me (Delegation)",
-        sub="The one place the Executive writes as a person instead of itself: drafts in the principal's own Gmail, in their voice, offered only on their own verified turn and never sent.",
+        sub="The one place the Executive writes as a person instead of itself: drafts in the principal's own Gmail, in their voice, offered only on their own verified turn, and sent only when they tap Send on a reply card.",
         kb_query="act as me delegation ghostwrite draft own gmail voice profile how I write principal verified turn",
         wants_mermaid=True,
         diagram_kind="flowchart",
