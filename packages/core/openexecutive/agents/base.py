@@ -22,14 +22,24 @@ class BaseAgent(ABC):
     @abstractmethod
     def get_system_prompt(self) -> str: ...
 
-    def effective_system_prompt(self) -> str:
-        """System prompt with runtime override applied, if any."""
+    def base_system_prompt(self) -> str:
+        """The built-in prompt, or the Council's replacement for it."""
         from openexecutive.agents.overrides import get_override
 
         ov = get_override(self.name)
         if ov is not None and ov.prompt is not None:
             return ov.prompt
         return self.get_system_prompt()
+
+    def effective_system_prompt(self) -> str:
+        """System prompt as sent: the base prompt plus any additional
+        instructions saved in the Council."""
+        from openexecutive.agents.overrides import append_instructions, get_override
+
+        ov = get_override(self.name)
+        return append_instructions(
+            self.base_system_prompt(), ov.instructions if ov is not None else None
+        )
 
     def effective_model(self) -> str:
         from openexecutive.agents.overrides import get_override

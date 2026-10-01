@@ -32,7 +32,11 @@ interface DraftState {
   prompt: string;
   voice_persona_slug: string | null;
   research_focus: string | null;
+  instructions: string;
 }
+
+// Mirrors INSTRUCTIONS_MAX_CHARS in api/routes/agents.py.
+const INSTRUCTIONS_MAX_CHARS = 4000;
 
 // Haiku is the one Claude family that rejects adaptive thinking (HTTP 400),
 // so the deep-reasoning toggle is disabled for it whether the slug is the
@@ -89,6 +93,7 @@ function detailToDraft(d: AgentDetail): DraftState {
     prompt: d.prompt,
     voice_persona_slug: d.voice_persona_slug ?? null,
     research_focus: d.research_focus ?? null,
+    instructions: d.instructions ?? "",
   };
 }
 
@@ -100,7 +105,8 @@ function draftIsDirty(d: AgentDetail | null, draft: DraftState | null): boolean 
     d.deep_reasoning !== draft.deep_reasoning ||
     d.prompt !== draft.prompt ||
     (d.voice_persona_slug ?? null) !== draft.voice_persona_slug ||
-    (d.research_focus ?? null) !== draft.research_focus
+    (d.research_focus ?? null) !== draft.research_focus ||
+    (d.instructions ?? "") !== draft.instructions
   );
 }
 
@@ -261,6 +267,10 @@ export default function CouncilPage() {
             ? null
             : draft.research_focus;
       }
+      if (draft.instructions !== (detail.instructions ?? "")) {
+        // Blank clears the field; the backend stores null for "".
+        patch.instructions = draft.instructions.trim() ? draft.instructions : null;
+      }
       const updated = await patchAgent(selected, patch);
       setDetail(updated);
       setDraft(detailToDraft(updated));
@@ -312,6 +322,7 @@ export default function CouncilPage() {
       const result = await testAgent(selected, {
         query: testQuery,
         prompt: draft.prompt,
+        instructions: draft.instructions,
         model: draft.model,
         use_deep_reasoning: draft.deep_reasoning && modelSupportsDeepReasoning(draft.model),
       });
@@ -523,6 +534,30 @@ export default function CouncilPage() {
                     research focus is edited under each specialist below.
                   </p>
                 ) : (
+                  <>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-fg-muted uppercase tracking-widest text-[10px] font-semibold">
+                        Additional instructions
+                      </span>
+                      <span className="text-[10px] text-fg-subtle">
+                        {draft.instructions.length} / {INSTRUCTIONS_MAX_CHARS} chars
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-fg-subtle mb-1 leading-relaxed">
+                      Added after the system prompt below on every call. Use this to
+                      steer the agent while it keeps receiving updates to its built-in
+                      prompt.
+                    </p>
+                    <textarea
+                      value={draft.instructions}
+                      onChange={(e) => setDraft({ ...draft, instructions: e.target.value })}
+                      maxLength={INSTRUCTIONS_MAX_CHARS}
+                      rows={5}
+                      placeholder="e.g. Always quote figures in EUR. Keep answers under 200 words."
+                      className="w-full text-xs px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none resize-y leading-relaxed"
+                    />
+                  </div>
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-fg-muted uppercase tracking-widest text-[10px] font-semibold">
@@ -539,14 +574,22 @@ export default function CouncilPage() {
                       className="w-full font-mono text-xs px-3 py-2 rounded-lg bg-surface border border-line text-fg focus:border-indigo-500/40 focus:outline-none resize-y leading-relaxed"
                     />
                     {draft.prompt !== detail.prompt_default && (
-                      <button
-                        onClick={() => setDraft({ ...draft, prompt: detail.prompt_default })}
-                        className="mt-2 text-[10px] text-fg-muted hover:text-fg underline"
-                      >
-                        Restore default prompt in editor
-                      </button>
+                      <>
+                        <p className="mt-2 text-[10px] text-amber-400 leading-relaxed">
+                          An edited prompt replaces the built-in one, so future updates to
+                          it won&apos;t reach this agent. Additional instructions above
+                          don&apos;t have that cost.
+                        </p>
+                        <button
+                          onClick={() => setDraft({ ...draft, prompt: detail.prompt_default })}
+                          className="mt-1 text-[10px] text-fg-muted hover:text-fg underline"
+                        >
+                          Restore default prompt in editor
+                        </button>
+                      </>
                     )}
                   </div>
+                  </>
                 )}
 
                 {/* Research focus — specialists only (those with a default scope) */}
@@ -856,6 +899,7 @@ export default function CouncilPage() {
                               h.use_deep_reasoning !== null &&
                                 `deep=${h.use_deep_reasoning ? "on" : "off"}`,
                               h.role && `role=${h.role}`,
+                              h.instructions && `instructions=${h.instructions.slice(0, 60)}…`,
                               h.prompt && `prompt=${h.prompt.slice(0, 60)}…`,
                             ]
                               .filter(Boolean)

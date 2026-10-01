@@ -2527,6 +2527,7 @@ export interface AgentDetail {
   voice_persona_slug: string | null;
   research_focus: string | null;
   research_focus_default: string | null;
+  instructions: string | null;
 }
 
 export interface AgentHistoryEntry {
@@ -2538,6 +2539,7 @@ export interface AgentHistoryEntry {
   role: string | null;
   voice_persona_slug: string | null;
   research_focus: string | null;
+  instructions: string | null;
   created_at: string;
 }
 
@@ -2548,6 +2550,7 @@ export interface AgentPatch {
   role?: string | null;
   voice_persona_slug?: string | null;
   research_focus?: string | null;
+  instructions?: string | null;
 }
 
 // ---- Voice Personas --------------------------------------------------------
@@ -2679,7 +2682,13 @@ export async function rollbackAgent(
 
 export async function testAgent(
   agentId: string,
-  body: { query: string; prompt?: string | null; model?: string | null; use_deep_reasoning?: boolean | null }
+  body: {
+    query: string;
+    prompt?: string | null;
+    instructions?: string | null;
+    model?: string | null;
+    use_deep_reasoning?: boolean | null;
+  }
 ): Promise<{ response: string }> {
   const res = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/test`, {
     method: "POST",

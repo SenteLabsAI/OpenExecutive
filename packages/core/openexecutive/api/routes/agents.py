@@ -4,13 +4,14 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openexecutive.agents.overrides import (
     EXECUTIVE_AGENT_ID as EXECUTIVE_ID,
 )
 from openexecutive.agents.overrides import (
     AgentHistoryEntry,
+    append_instructions,
     clear_override,
     get_override,
     list_history,
@@ -74,6 +75,15 @@ class AgentDetail(BaseModel):
     # utility knobs); the UI shows the editor only when a default exists.
     research_focus: str | None = None
     research_focus_default: str | None = None
+    # Additional instructions appended after ``prompt`` (which stays the
+    # built-in prompt or its replacement, never the two joined).
+    instructions: str | None = None
+
+
+# Additional instructions ride in every call to the agent (and in the
+# Executive's cached block 0), so they stay short. A whole new prompt goes
+# in ``prompt`` instead.
+INSTRUCTIONS_MAX_CHARS = 4000
 
 
 class AgentPatch(BaseModel):
@@ -83,11 +93,13 @@ class AgentPatch(BaseModel):
     role: str | None = None
     voice_persona_slug: str | None = None
     research_focus: str | None = None
+    instructions: str | None = Field(None, max_length=INSTRUCTIONS_MAX_CHARS)
 
 
 class AgentTestRequest(BaseModel):
     query: str
     prompt: str | None = None
+    instructions: str | None = Field(None, max_length=INSTRUCTIONS_MAX_CHARS)
     model: str | None = None
     use_deep_reasoning: bool | None = None
 
@@ -265,6 +277,8 @@ def _build_executive_detail() -> AgentDetail:
             overridden.append("role")
         if ov.voice_persona_slug is not None:
             overridden.append("voice_persona_slug")
+        if ov.instructions is not None:
+            overridden.append("instructions")
     role_default = _ExecutiveDefaults.role
     model_default = _ExecutiveDefaults.model()
     prompt_default = _ExecutiveDefaults.prompt()
@@ -287,6 +301,7 @@ def _build_executive_detail() -> AgentDetail:
         overridden_fields=overridden,
         updated_at=ov.updated_at if ov else None,
         voice_persona_slug=ov.voice_persona_slug if ov else None,
+        instructions=ov.instructions if ov else None,
     )
 
 
@@ -326,6 +341,8 @@ def _build_detail(name: str) -> AgentDetail:
             overridden.append("role")
         if ov.research_focus is not None:
             overridden.append("research_focus")
+        if ov.instructions is not None:
+            overridden.append("instructions")
     # null (not "") for agents with no research scope, so the UI can decide
     # whether to render the research-focus editor at all.
     rf_default = default_research_focus(name) or None
@@ -340,7 +357,7 @@ def _build_detail(name: str) -> AgentDetail:
         model_default=agent.model,
         deep_reasoning=agent.effective_use_deep_reasoning(),
         deep_reasoning_default=agent.use_deep_reasoning,
-        prompt=agent.effective_system_prompt(),
+        prompt=agent.base_system_prompt(),
         prompt_default=agent.get_system_prompt(),
         domains=_domains_for(name),
         has_override=ov is not None,
@@ -348,6 +365,7 @@ def _build_detail(name: str) -> AgentDetail:
         updated_at=ov.updated_at if ov else None,
         research_focus=rf_effective,
         research_focus_default=rf_default,
+        instructions=ov.instructions if ov else None,
     )
 
 
@@ -417,12 +435,19 @@ def patch_agent(agent_id: str, patch: AgentPatch) -> AgentDetail:
         role=patch.role,
         voice_persona_slug=patch.voice_persona_slug,
         research_focus=patch.research_focus,
+        # Blank text clears the field rather than storing an empty block.
+        instructions=(
+            patch.instructions
+            if patch.instructions is not None and patch.instructions.strip()
+            else None
+        ),
         prompt_set="prompt" in raw,
         model_set="model" in raw,
         deep_set="use_deep_reasoning" in raw,
         role_set="role" in raw,
         voice_persona_slug_set="voice_persona_slug" in raw,
         research_focus_set="research_focus" in raw,
+        instructions_set="instructions" in raw,
     )
     return (
         _build_executive_detail()
@@ -487,6 +512,12 @@ async def _test_executive(req: AgentTestRequest) -> str:
             else _ExecutiveDefaults.prompt()
         )
     )
+    prompt = append_instructions(
+        prompt,
+        req.instructions
+        if req.instructions is not None
+        else (ov.instructions if ov is not None else None),
+    )
     model = (
         req.model
         if req.model is not None
@@ -539,10 +570,19 @@ async def test_agent(agent_id: str, req: AgentTestRequest) -> AgentTestResponse:
     # Triage has its own non-`analyze` entry point; call analyze with the
     # draft anyway so the UI test box still works for it — it'll return a
     # plain text completion using the triage prompt.
+    # The draft prompt and instructions win; whatever the draft leaves out
+    # comes from the saved config, joined the way a real call joins them.
+    ov = get_override(agent_id)
+    system_prompt = append_instructions(
+        req.prompt if req.prompt is not None else agent.base_system_prompt(),
+        req.instructions
+        if req.instructions is not None
+        else (ov.instructions if ov is not None else None),
+    )
     try:
         response = await agent.analyze(
             query=req.query,
-            system_prompt_override=req.prompt,
+            system_prompt_override=system_prompt,
             model_override=req.model,
             deep_reasoning_override=req.use_deep_reasoning,
             # Sandbox runs must not read as production specialist spend in

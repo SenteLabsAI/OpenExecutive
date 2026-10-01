@@ -448,6 +448,24 @@ providers:
     openexecutive.agents.fixture_generator, default model settings.default_model).
     They are registered in api/routes/agents.py::_agent_registry() and resolve
     their model via BaseAgent.effective_model() at call time.
+  additional_instructions: |
+    Every Council agent (the Executive included) has an optional
+    ``instructions`` override stored in the additive
+    ``agent_overrides.instructions`` column (idempotent _add_column_if_missing
+    migration, versioned in agent_override_history, restored by rollback).
+    agents.overrides.append_instructions appends it after the agent's prompt
+    in an <additional_instructions> block; blank or None returns the prompt
+    unchanged so an agent without instructions keeps its cache prefix.
+    BaseAgent.base_system_prompt() is the built-in prompt or its full
+    replacement (the ``prompt`` override) and is what AgentDetail.prompt
+    shows; effective_system_prompt() is base + instructions and is what every
+    call sends. The Executive gets the same text via
+    build_system_blocks(persona_instructions=...), after the voice persona and
+    before the identity addendum, inside block 0. It is admin-set static
+    config, so block 0 re-warms once on save. Unlike a replaced prompt,
+    instructions keep the agent on the built-in prompt, so prompt upgrades
+    still reach it. PATCH /agents/{id} and /test accept ``instructions``
+    (max 4,000 chars; blank clears it).
   per_specialist_research_focus: |
     Each consult-routable specialist (cso, cfo, cmo, coo, chro, cpo, gc) has a
     Council-editable ``research_focus`` override — the per-domain scope tail
