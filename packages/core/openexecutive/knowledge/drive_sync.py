@@ -475,8 +475,20 @@ async def _apply_tick(
             logger.info("drive_sync: indexed %s (%d chunks)", item.id, chunks)
 
     state["last_run"] = now.isoformat()
-    state.pop("last_error", None)
+    # A tick that skipped some files still succeeded, but the knowledge page
+    # should say so rather than show a clean sync.
+    if stats["failed"]:
+        state["last_error"] = _partial_failure_message(stats["failed"])
+    else:
+        state.pop("last_error", None)
     save_state(state)
+
+
+def _partial_failure_message(failed: int) -> str:
+    return (
+        f"{failed} file{'' if failed == 1 else 's'} could not be synced. "
+        "Check the server logs."
+    )
 
 
 # One tick at a time per process: the scheduler heartbeat and a "Sync now"

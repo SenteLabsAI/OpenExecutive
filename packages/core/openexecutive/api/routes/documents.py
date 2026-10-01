@@ -200,9 +200,10 @@ _SOURCE_LABELS: dict[str, str] = {"drive": "Google Drive", "notion": "Notion"}
 # A manual sync this soon after the last tick is refused: the sync is
 # incremental, so a second run finds nothing new and only spends API quota.
 SYNC_COOLDOWN_S = 60
-# Strong references to running manual syncs (the event loop holds tasks only
-# weakly, so an unreferenced one can be collected mid-run).
-_SYNC_TASKS: set[asyncio.Task[Any]] = set()
+# The running manual sync per source. It doubles as the strong reference the
+# event loop doesn't keep, and it marks a sync as started before its task has
+# taken the module's run lock, so two "Sync now" requests can't both start one.
+_SYNC_TASKS: dict[str, asyncio.Task[Any]] = {}
 
 
 def _source_module(source: str) -> Any:
@@ -271,7 +272,7 @@ async def sync_source(source: SourceId) -> dict:
     module = _source_module(source)
     if not _source_enabled(source):
         raise HTTPException(status_code=409, detail=f"{_SOURCE_LABELS[source]} is not connected")
-    if module.is_syncing():
+    if module.is_syncing() or source in _SYNC_TASKS:
         raise HTTPException(status_code=409, detail="A sync is already running")
     # The cooldown runs from the latest of the last successful tick's start
     # and the end of the last tick in this process (failed ones included).
@@ -293,10 +294,15 @@ async def sync_source(source: SourceId) -> dict:
                 detail="Synced less than a minute ago. Try again shortly.",
                 headers={"Retry-After": str(int(SYNC_COOLDOWN_S - elapsed) + 1)},
             )
+    # Check again after the await above: another request may have started a
+    # sync meanwhile. Nothing awaits between this check and registering the
+    # task, so the two can't interleave.
+    if module.is_syncing() or source in _SYNC_TASKS:
+        raise HTTPException(status_code=409, detail="A sync is already running")
     runner = module.run_drive_sync if source == "drive" else module.run_notion_sync
     task = asyncio.create_task(_run_manual_sync(source, runner))
-    _SYNC_TASKS.add(task)
-    task.add_done_callback(_SYNC_TASKS.discard)
+    _SYNC_TASKS[source] = task
+    task.add_done_callback(lambda _t: _SYNC_TASKS.pop(source, None))
     return {"source": source, "status": "started"}
 
 

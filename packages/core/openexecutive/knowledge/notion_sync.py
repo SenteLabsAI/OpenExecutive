@@ -829,8 +829,20 @@ async def _apply_tick(
                     state["watermark"] = candidate
 
     state["last_run"] = (now or datetime.now(UTC)).isoformat()
-    state.pop("last_error", None)
+    # A tick that skipped some pages still succeeded, but the knowledge page
+    # should say so rather than show a clean sync.
+    if stats["failed"]:
+        state["last_error"] = _partial_failure_message(stats["failed"])
+    else:
+        state.pop("last_error", None)
     save_state(state)
+
+
+def _partial_failure_message(failed: int) -> str:
+    return (
+        f"{failed} page{'' if failed == 1 else 's'} could not be synced. "
+        "Check the server logs."
+    )
 
 
 # One tick at a time per process — see the matching lock in drive_sync.

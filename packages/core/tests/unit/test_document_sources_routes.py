@@ -199,3 +199,35 @@ def test_a_failed_tick_still_starts_the_cooldown(client: TestClient, company: Pa
     asyncio.run(drive_sync.run_drive_sync(store=FakeStore()))  # type: ignore[arg-type]
     assert drive_sync.last_finished_at() is not None
     assert client.post("/documents/sources/drive/sync").status_code == 429
+
+
+def test_two_sync_now_requests_at_once_start_only_one(
+    client: TestClient, company: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The first request's task has not taken the sync lock yet when the
+    # second arrives, so is_syncing() alone would let both through.
+    release = asyncio.Event()
+
+    async def slow_run() -> dict[str, int]:
+        await release.wait()
+        return {"updated": 0}
+
+    async def both_at_once() -> tuple[int, int]:
+        import httpx
+
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
+            first, second = await asyncio.gather(
+                http.post("/documents/sources/drive/sync"),
+                http.post("/documents/sources/drive/sync"),
+            )
+            assert "drive" in documents._SYNC_TASKS
+            release.set()
+            await documents._SYNC_TASKS["drive"]
+            await asyncio.sleep(0)
+        return first.status_code, second.status_code
+
+    monkeypatch.setattr(drive_sync, "run_drive_sync", slow_run)
+    monkeypatch.setattr(documents, "_SYNC_TASKS", {})
+    assert sorted(asyncio.run(both_at_once())) == [202, 409]
+    assert documents._SYNC_TASKS == {}

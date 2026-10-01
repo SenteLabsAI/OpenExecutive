@@ -858,3 +858,29 @@ async def test_a_second_notion_tick_while_one_runs_is_skipped_as_busy() -> None:
     async with notion_sync._RUN_LOCK:
         assert notion_sync.is_syncing()
         assert await run_notion_sync() == {"busy": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_fails_is_reported_on_the_knowledge_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stats, _, state_file = await _run_sync(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        pages=[
+            _page(PAGE_A, "2026-06-02T12:00:00.000Z", "Newest"),
+            _page(PAGE_B, "2026-06-02T11:00:00.000Z", "Older"),
+        ],
+        children_error_for={PAGE_A},
+    )
+    assert stats["failed"] == 1 and stats["updated"] == 1
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved["last_error"] == "1 page could not be synced. Check the server logs."
+
+    _, _, state_file = await _run_sync(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        pages=[_page(PAGE_A, "2026-06-02T12:00:00.000Z", "Newest")],
+        state=saved,
+    )
+    assert "last_error" not in json.loads(state_file.read_text(encoding="utf-8"))
