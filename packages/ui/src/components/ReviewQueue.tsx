@@ -92,7 +92,6 @@ function ItemSlideOver({
     setExternalChunks([]);
     setExternalChunkLimit(10);
     setLoadingChunks(false);
-   
   }, [itemId_stable]);
 
   useEffect(() => {

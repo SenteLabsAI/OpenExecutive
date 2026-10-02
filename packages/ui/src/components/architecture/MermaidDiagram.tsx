@@ -107,7 +107,6 @@ export default function MermaidDiagram({ definition, id }: Props) {
           setError(msg.split('\n')[0]);
           setSvg(null);
           // Keep the console error for devs; users see the inline fallback.
-           
           console.error('Mermaid render failed:', e);
         }
       }

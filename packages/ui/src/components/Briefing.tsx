@@ -1979,7 +1979,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
     } catch (e) {
       // Revert the optimistic removal on failure so the user can retry.
       setActedAlertIds(prev);
-       
       console.error("Approve failed", e);
     }
   }, [actedAlertIds, onContinue, refreshToday]);
@@ -2013,7 +2012,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       await ackAlert(proposal.alert_id, "dismissed");
     } catch (e) {
       setActedAlertIds(prev);
-       
       console.error("Dismiss failed", e);
     }
   }, [actedAlertIds, refreshToday]);
@@ -2032,7 +2030,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       refreshToday();
     } catch (e) {
       setActedAlertIds(prev);
-       
       console.error("Bulk dismiss failed", e);
     }
   }, [actedAlertIds, refreshToday]);
@@ -2046,7 +2043,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       await reviewAlerts();
       refreshToday();
     } catch (e) {
-       
       console.error("Alert review failed", e);
     } finally {
       setRecheckBusy(false);
@@ -2066,7 +2062,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
         setUndoneRows((prev) => new Set(prev).add(rowKey));
         return;
       }
-       
       console.error("Reopen failed", e);
     }
   }, [refreshToday]);
@@ -2091,7 +2086,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       }
     } catch (e) {
       setActedAlertIds(prev);
-       
       console.error("Approve-with-edits failed", e);
     }
   }, [actedAlertIds, onContinue]);

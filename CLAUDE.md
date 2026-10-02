@@ -176,9 +176,10 @@ See `.env.example`. Required: `ANTHROPIC_API_KEY`, `EXEC_EMAIL_ADDRESS` (no defa
 > run, so lock freshness is gated by the `uv lock --check` step in `ci.yml`.
 > `uv export -o FILE` still echoes the full export to stdout unless `-q`.
 
-> **UI lint:** `packages/ui` has no ESLint config — `npm run lint` opens an
-> interactive setup prompt. `npm run build` (`next build`) is the UI's
-> lint/type gate. CI's UI job also runs `npx tsc --noEmit` and `npm test`,
+> **UI lint:** `npm run lint` is `eslint .` over the whole package
+> (`packages/ui/eslint.config.mjs`) and CI runs it. ESLint stays on 9 (the
+> Next config's plugins cap there), and `typescript` is aliased to the TS 6 API
+> for typescript-eslint while `tsc` is still 7. CI's UI job also runs `npx tsc --noEmit` and `npm test`,
 > and some of those `scripts/*.test.mjs` parity tests parse Python source
 > (`api/main.py`'s `_LOOPBACK_HOST_RE` / `_OWN_PAGE_FETCH_SITES`,
 > `utils/deployment.py`'s `FALSEY_ENV`) — moving or renaming one of those
