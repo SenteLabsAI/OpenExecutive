@@ -7,7 +7,7 @@
 
 Open Executive is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also act as a busy leader's digital twin: with **Act as me** switched on, it drafts email in their own voice, from their own Gmail, for them to review and send—so leaders can truly scale their impact through AI without giving up the final say.
 
-It meets people where they already work, with integrations for Slack, Discord, Telegram, Google Chat, email, Google Workspace, Microsoft 365 (Outlook mail and calendar), Notion, Confluence and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
+It meets people where they already work, with integrations for Slack, Discord, Telegram, Google Chat, email, Google Workspace, Microsoft 365 (Outlook mail and calendar, OneDrive), Notion, Confluence and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
 
 A managed cloud offering is coming (https://openexecutive.ai), where you can get access without deploying anything yourself.
 
@@ -188,11 +188,13 @@ setup guide:
 | **Email and calendar (Microsoft 365)** | The same with Outlook mail and calendar | [Microsoft 365 credentials](docs/deployment.md#microsoft-365-credentials) |
 | **Act as me** | Drafts replies in the owner's own Gmail for them to send | [Your own Gmail](docs/deployment.md#your-own-gmail-act-as-me-optional) |
 | **Google Drive folders** | Syncs shared folders into the knowledge base (read-only) | [docs/drive_sync_setup.md](docs/drive_sync_setup.md) |
+| **OneDrive folders** | Syncs chosen OneDrive or SharePoint folders into the knowledge base, as the Executive's Microsoft 365 sign-in | [docs/onedrive_sync_setup.md](docs/onedrive_sync_setup.md) |
+| **OneDrive in chat** | Search, read, upload, move, copy and share OneDrive files (no delete, no anonymous links) | Set `MS365_MCP_ONEDRIVE=true` and sign in again ([docs/onedrive_sync_setup.md](docs/onedrive_sync_setup.md)) |
 | **Confluence** | Syncs chosen spaces into the knowledge base (read-only, Cloud or Server/Data Center) | [docs/confluence_sync_setup.md](docs/confluence_sync_setup.md) |
 | **Notion** | Syncs the pages shared with an internal integration into the knowledge base | Set `NOTION_SYNC_ENABLED=true` and `NOTION_API_KEY` (see [.env.example](.env.example)) |
 | **MCP clients** | Lets any MCP client talk to the Executive | [Connect as an MCP Server](#connect-as-an-mcp-server) |
 
-Synced Drive, Confluence and Notion content is kept apart from your uploaded
+Synced Drive, OneDrive, Confluence and Notion content is kept apart from your uploaded
 documents and labelled as unreviewed, so it ranks below them.
 
 ## Run the Discord Bot
@@ -404,6 +406,8 @@ the app refuses to start.
 | `DRIVE_SYNC_ENABLED` | No | `false` | Sync shared Google Drive folders into the knowledge base |
 | `DRIVE_SYNC_SERVICE_ACCOUNT_FILE` | No | — | Service account key with `drive.readonly` |
 | `DRIVE_SYNC_FOLDER_IDS` | No | — | Comma-separated Drive folder IDs to sync |
+| `ONEDRIVE_SYNC_ENABLED` | No | `false` | Sync OneDrive or SharePoint folders into the knowledge base, as the Microsoft 365 sign-in |
+| `ONEDRIVE_SYNC_FOLDERS` | No | — | Comma-separated `<drive id>/<item id>` entries (`openexecutive onedrive-folder <sharing link>` prints one) |
 | `CONFLUENCE_SYNC_ENABLED` | No | `false` | Sync Confluence spaces into the knowledge base |
 | `CONFLUENCE_URL` | No | — | Confluence base URL (Cloud or Server/Data Center) |
 | `CONFLUENCE_USERNAME` / `CONFLUENCE_API_TOKEN` | No | — | Confluence Cloud sign-in (email + API token) |
