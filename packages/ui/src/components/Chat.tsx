@@ -620,7 +620,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               {fileError}
             </p>
           )}
-          <div className="relative flex items-end gap-2 sm:gap-3 bg-surface-overlay/50 border border-line-strong rounded-2xl px-3 sm:px-4 py-3 focus-within:border-fg-muted transition-colors">
+          <div className="relative flex items-end gap-1.5 sm:gap-3 bg-surface-overlay/50 border border-line-strong rounded-2xl px-2 sm:px-4 py-2 sm:py-3 focus-within:border-fg-muted transition-colors">
             <input
               ref={fileInputRef}
               type="file"
@@ -691,15 +691,19 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               disabled={isLoading}
               title="Committee review: slower, higher-quality response — adversarial review pass before sending"
               aria-pressed={committeeEnabled}
+              aria-label="Committee review"
               className={
-                "flex-shrink-0 min-h-touch px-3 rounded-xl text-xs font-medium transition-all duration-150 border cursor-pointer " +
+                "flex-shrink-0 min-h-touch min-w-touch sm:px-3 flex items-center justify-center rounded-xl text-xs font-medium transition-all duration-150 border cursor-pointer " +
                 (committeeEnabled
                   ? "bg-indigo-500/15 border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/20"
                   : "bg-surface-overlay border-line-strong text-fg-muted hover:text-fg hover:border-line-strong") +
                 " disabled:opacity-30 disabled:cursor-not-allowed"
               }
             >
-              Committee
+              {/* An icon on phones, where the word would take most of the
+                  row the message box needs. */}
+              <Icon name="users" size="w-4 h-4" className="sm:hidden" />
+              <span className="hidden sm:inline">Committee</span>
             </button>
             {isLoading ? (
               <button

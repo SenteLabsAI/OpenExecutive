@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import DynamicSection from '@/components/architecture/DynamicSection';
+import PageSideNav from '@/components/shell/PageSideNav';
 
 // The section nav is hardcoded so the sidebar renders instantly without
 // waiting for the backend. IDs must match the GUIDE_SECTIONS registry in
@@ -72,8 +73,13 @@ export default function GuidePage() {
   const totalCount = SECTIONS.length;
 
   return (
-    <div className="flex flex-1 min-h-0 bg-surface text-fg overflow-hidden">
-      <aside className="w-52 flex-shrink-0 border-r border-line flex flex-col bg-surface-elevated">
+    <div className="flex flex-col md:flex-row flex-1 min-h-0 bg-surface text-fg overflow-hidden">
+      <PageSideNav
+        label="Section"
+        current={SECTIONS.find((s) => s.id === activeSection)?.label}
+        closeKey={activeSection}
+        className="md:w-52 bg-surface-elevated"
+      >
         <div className="px-3 py-4">
           <p className="px-2 text-[10px] font-semibold uppercase tracking-widest text-fg-subtle mb-2">
             User Guide
@@ -90,7 +96,7 @@ export default function GuidePage() {
                     e.preventDefault();
                     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                   }}
-                  className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors ${
+                  className={`flex items-center gap-2 px-2 py-2.5 md:py-1.5 rounded-lg text-sm md:text-xs transition-colors ${
                     activeSection === id
                       ? 'bg-indigo-500/10 text-indigo-400'
                       : 'text-fg-muted hover:text-fg hover:bg-surface-overlay/60'
@@ -117,10 +123,10 @@ export default function GuidePage() {
             built, see the Architecture reference.
           </p>
         </div>
-      </aside>
+      </PageSideNav>
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-8 py-10 space-y-20">
+      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+        <div className="max-w-4xl mx-auto px-4 py-6 sm:px-8 sm:py-10 space-y-12 sm:space-y-20">
           <div>
             <h1 className="text-2xl font-bold text-fg">Open Executive — User Guide</h1>
             <p className="mt-2 text-sm text-fg-muted">

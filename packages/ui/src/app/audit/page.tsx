@@ -445,7 +445,7 @@ function AuditPageInner() {
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-6 py-6">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4">
             <input
               type="search"
@@ -663,7 +663,7 @@ function AuditPageInner() {
                               onClick={() => setExpandedId(isOpen ? null : evt.id)}
                               className="w-full flex items-center gap-3 px-3 py-1.5 hover:bg-surface-elevated/60 text-left"
                             >
-                              <span className="font-mono text-[10px] text-fg-muted whitespace-nowrap w-[7ch]">
+                              <span className="font-mono text-[10px] text-fg-muted whitespace-nowrap flex-shrink-0 min-w-[11ch]">
                                 {formatTimeOnly(evt.ts)}
                               </span>
                               <span

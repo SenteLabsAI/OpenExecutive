@@ -629,7 +629,7 @@ export default function PeoplePage() {
       )}
       {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-6 py-6">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
           <div className="flex items-baseline justify-between mb-4">
             <div>
               <h1 className="text-xl font-semibold text-fg">People</h1>

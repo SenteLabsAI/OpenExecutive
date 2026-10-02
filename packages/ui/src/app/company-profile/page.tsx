@@ -127,7 +127,7 @@ export default function CompanyProfilePage() {
   return (
     <div className="flex flex-col h-full bg-surface">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-10">
+        <div className="max-w-3xl mx-auto px-4 py-6 sm:px-6 sm:py-10">
 
           {loading && (
             <div className="flex items-center justify-center h-40">
@@ -136,9 +136,9 @@ export default function CompanyProfilePage() {
           )}
 
           {notFound && (
-            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl px-5 py-4 flex items-center justify-between">
+            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <p className="text-sm text-fg">{copy.missing}</p>
-              <Link href="/onboard" className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
+              <Link href="/onboard" className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
                 Complete setup →
               </Link>
             </div>

@@ -29,6 +29,7 @@ import {
   testAgent,
 } from "@/lib/api";
 import VoicePicker from "@/components/executive/VoicePicker";
+import PageSideNav from "@/components/shell/PageSideNav";
 
 interface DraftState {
   role: string;
@@ -424,8 +425,13 @@ export default function CouncilPage() {
   };
 
   return (
-    <div className="flex flex-1 min-h-0 bg-surface text-fg overflow-hidden">
-      <aside className="w-64 flex-shrink-0 border-r border-line flex flex-col bg-surface-elevated">
+    <div className="flex flex-col md:flex-row flex-1 min-h-0 bg-surface text-fg overflow-hidden">
+      <PageSideNav
+        label="Agent"
+        current={listedAgents.find((a) => a.name === selected)?.role}
+        closeKey={selected ?? ""}
+        className="md:w-64 bg-surface-elevated"
+      >
         <div className="px-3 py-4 overflow-y-auto">
           <p className="px-2 text-[10px] font-semibold uppercase tracking-widest text-fg-subtle mb-2">
             Agent Council
@@ -435,7 +441,7 @@ export default function CouncilPage() {
               <button
                 key={a.name}
                 onClick={() => setSelected(a.name)}
-                className={`w-full text-left flex items-start gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors ${
+                className={`w-full text-left flex items-start gap-2 px-2 py-2 md:py-1.5 rounded-lg text-sm md:text-xs transition-colors ${
                   selected === a.name
                     ? "bg-indigo-500/10 text-indigo-300"
                     : "text-fg-muted hover:text-fg hover:bg-surface-overlay/60"
@@ -473,10 +479,10 @@ export default function CouncilPage() {
             </button>
           )}
         </div>
-      </aside>
+      </PageSideNav>
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-8 py-10 space-y-6">
+      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+        <div className="max-w-4xl mx-auto px-4 py-6 sm:px-8 sm:py-10 space-y-6">
           <div>
             <div className="flex items-start justify-between gap-4">
               <h1 className="text-2xl font-bold text-fg">Agent Council</h1>

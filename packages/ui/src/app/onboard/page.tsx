@@ -108,7 +108,7 @@ function OnboardFlow() {
 
   if (turn?.phase === "draft") {
     return (
-      <div className="max-w-3xl mx-auto px-6 py-10 w-full">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 w-full">
         <OnboardDraftReview
           turn={turn}
           onBackToConversation={() => {
@@ -124,7 +124,7 @@ function OnboardFlow() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-16 w-full">
+    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
       <div className="mb-8">
         <h1 className="text-xl font-semibold text-fg">Set up your Executive</h1>
         <p className="text-sm text-fg-muted mt-1">
@@ -230,7 +230,7 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
     );
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-16 w-full">
+    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
       <h1 className="text-xl font-semibold text-fg">Who is Open Executive for?</h1>
       <p className="text-sm text-fg-muted mt-1">
         Your answer decides what setup asks and what you see afterwards. You can change it
@@ -301,7 +301,7 @@ function RoleStep({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-16 w-full">
+    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
       <h1 className="text-xl font-semibold text-fg">What&apos;s your role?</h1>
       <p className="text-sm text-fg-muted mt-1">
         So setup asks the right questions and the advice fits your job — a case to put to your
@@ -347,7 +347,7 @@ function RoleStep({ onDone }: { onDone: () => void }) {
 // /agents/executive); skipping keeps Direct. Settings → Executive changes it.
 function VoiceStep({ onDone }: { onDone: () => void }) {
   return (
-    <div className="max-w-3xl mx-auto px-6 py-16 w-full">
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 w-full">
       <h1 className="text-xl font-semibold text-fg">How should your Executive sound?</h1>
       <p className="text-sm text-fg-muted mt-1">
         The advice is the same; this sets the tone it comes in. You can change it later in

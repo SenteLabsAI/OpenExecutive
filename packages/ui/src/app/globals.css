@@ -107,3 +107,29 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Phones. Many labels, badges and timestamps are sized 9 to 11px for dense
+ * desktop panels; on a phone screen that is too small to read, so the floor
+ * is 12px there. Form fields go to 16px, the size below which iOS Safari
+ * zooms the page in whenever one is tapped. Markdown tables scroll sideways
+ * inside their own box instead of pushing the page wider than the screen.
+ * Unlayered on purpose, so these win over Tailwind's utility layer. */
+@media (max-width: 767px) {
+  .text-\[9px\],
+  .text-\[10px\],
+  .text-\[11px\] {
+    font-size: 12px;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  .prose table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}

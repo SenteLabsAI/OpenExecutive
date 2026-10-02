@@ -336,7 +336,7 @@ export default function ArtifactsPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-5xl mx-auto">
           <div className="mb-6">
             <h1 className="text-2xl font-semibold text-fg mb-1">

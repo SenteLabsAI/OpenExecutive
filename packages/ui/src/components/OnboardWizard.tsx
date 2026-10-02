@@ -107,7 +107,7 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
   const isOptionalStep = status.optional ?? status.current_step >= 6;
 
   return (
-    <div className="flex flex-col h-full max-w-2xl mx-auto px-6 py-10">
+    <div className="flex flex-col h-full max-w-2xl mx-auto px-4 sm:px-6 py-10">
       {/* Progress */}
       <div className="mb-10">
         <div className="flex justify-between text-xs text-fg-muted mb-2.5 font-medium">

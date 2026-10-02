@@ -217,7 +217,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
 
   return (
     <div className="space-y-5 max-w-3xl">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
         <div>
           <h1 className="text-lg font-semibold text-fg">Company documents</h1>
           <p className="text-sm text-fg-muted mt-1">
@@ -225,7 +225,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
             company.
           </p>
         </div>
-        <label className="flex-shrink-0 cursor-pointer inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium transition-colors">
+        <label className="self-start flex-shrink-0 cursor-pointer inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium transition-colors">
           <Icon name="plus" size="w-4 h-4" />
           Add documents
           <input

@@ -109,7 +109,7 @@ export default function ArtifactDetailPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-4xl mx-auto space-y-6">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">

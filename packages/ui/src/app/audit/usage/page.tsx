@@ -118,7 +118,7 @@ export default function TokenUsagePage() {
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-6 py-6">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
           <div className="flex items-center justify-between gap-4">
             <h1 className="text-xl font-semibold text-fg">Token usage</h1>
             <Link

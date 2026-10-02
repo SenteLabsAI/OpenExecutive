@@ -157,7 +157,7 @@ export default function WorkflowWizard() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-6">
         <div className="max-w-3xl mx-auto space-y-4">
           {!started && (
             <div className="space-y-3">

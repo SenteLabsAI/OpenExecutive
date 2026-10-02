@@ -229,7 +229,7 @@ export default function DepartmentDetailPage() {
   return (
     <div className="flex flex-col h-full bg-surface">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-6">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6">
           {loading && <p className="text-fg-muted text-sm">Loading…</p>}
           {error && (
             <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">

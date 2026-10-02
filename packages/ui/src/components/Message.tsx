@@ -130,8 +130,9 @@ export default function Message({
 
   return (
     <div className="flex gap-3 sm:gap-4 mb-8">
-      {/* Avatar */}
-      <div className="flex-shrink-0 mt-1">
+      {/* Avatar. Hidden on phones, where its column would take an eighth of
+          the width the answer needs. */}
+      <div className="hidden sm:block flex-shrink-0 mt-1">
         <BrandMark size="md" />
       </div>
 
@@ -140,7 +141,7 @@ export default function Message({
         <div className="text-xs text-fg-muted mb-2 font-medium tracking-wide uppercase">Executive</div>
         <div className="prose prose-invert prose-sm max-w-none
           prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:bg-surface-overlay prose-code:before:content-none prose-code:after:content-none
-          prose-pre:bg-surface-overlay prose-pre:border
+          prose-pre:bg-surface-overlay prose-pre:text-fg prose-pre:border
           prose-a:text-accent prose-a:no-underline hover:prose-a:underline">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}

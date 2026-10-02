@@ -239,7 +239,7 @@ export function MobileBottomNav({
   return (
     <nav
       aria-label="Primary"
-      className={`${hideClass} h-16 border-t border-line bg-surface-elevated flex items-stretch flex-shrink-0`}
+      className={`${hideClass} h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] border-t border-line bg-surface-elevated flex items-stretch flex-shrink-0`}
     >
       {buildMobilePrimary(mode).map((item) => {
         const active = isNavActive(item.href, pathname);

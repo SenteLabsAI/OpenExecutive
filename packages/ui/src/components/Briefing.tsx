@@ -2213,7 +2213,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   return (
     <div className="flex flex-col h-full bg-surface">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-6 py-6">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
           <div className="flex items-baseline gap-3 mb-3">
             <h1 className="text-xl font-semibold text-fg">
               {showHeader

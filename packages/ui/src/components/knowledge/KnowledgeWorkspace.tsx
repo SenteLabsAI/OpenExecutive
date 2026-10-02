@@ -22,12 +22,33 @@ import {
   type ReviewStatus,
 } from "@/lib/api";
 import ReviewQueue from "@/components/ReviewQueue";
+import PageSideNav from "@/components/shell/PageSideNav";
 import CompanyPanel from "./CompanyPanel";
 import FileEditor from "./FileEditor";
 import NewFileForm from "./NewFileForm";
 import QueryPanel from "./QueryPanel";
 import ReferencePanel from "./ReferencePanel";
 import SourceTree, { type FileKind, type Selection } from "./SourceTree";
+
+// What the phone bar above the source tree names as open.
+function selectionLabel(selection: Selection): string | undefined {
+  switch (selection?.kind) {
+    case "file":
+      return selection.filename;
+    case "new":
+      return "New file";
+    case "company":
+      return "Company documents";
+    case "reference":
+      return "Reference library";
+    case "query":
+      return "Query mode";
+    case "review":
+      return "Review queue";
+    default:
+      return undefined;
+  }
+}
 
 const DOMAINS = [
   "board",
@@ -212,8 +233,13 @@ export default function KnowledgeWorkspace() {
   );
 
   return (
-    <div className="flex h-full">
-      <aside className="w-64 flex-shrink-0 border-r border-line bg-surface/40 px-4 py-5 overflow-y-auto">
+    <div className="flex flex-col md:flex-row h-full">
+      <PageSideNav
+        label="Showing"
+        current={selectionLabel(selection)}
+        closeKey={JSON.stringify(selection)}
+        className="md:w-64 bg-surface-elevated md:bg-surface/40 px-4 py-5"
+      >
         <SourceTree
           domains={DOMAINS}
           builtinFiles={builtinFiles}
@@ -225,9 +251,9 @@ export default function KnowledgeWorkspace() {
           companyCount={companyCount}
           onSelect={setSelection}
         />
-      </aside>
+      </PageSideNav>
 
-      <main className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
+      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-5 sm:px-8 sm:py-6">
         {error && (
           <div className="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
             {error}

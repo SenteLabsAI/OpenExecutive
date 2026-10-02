@@ -481,7 +481,7 @@ export default function DemoPage() {
         {/* Snapshot CTA when no fixture is active */}
         {!loading && !status.active_fixture && !error && fixtures.length > 0 && (
           <div className="mb-5 rounded-xl border border-line bg-surface-elevated px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-xs text-fg-muted flex-1 min-w-0">
+            <p className="text-xs text-fg-muted flex-1 basis-56">
               {status.has_snapshot ? (
                 <>Snapshot of your company exists. Loading a fixture will replace state; unload restores from the snapshot.</>
               ) : (

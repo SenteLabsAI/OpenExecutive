@@ -900,7 +900,7 @@ function StatusSegment({
 export default function JobsPage() {
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-6">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-6">
         <div className="max-w-6xl mx-auto">
           <div className="mb-4 flex items-start justify-between gap-4">
             <div className="min-w-0">

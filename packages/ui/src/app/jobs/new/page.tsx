@@ -945,7 +945,7 @@ function AdvancedBuilderPage() {
   const editing = !!searchParams.get("edit");
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-3xl mx-auto">
           <div className="mb-6">
             <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">

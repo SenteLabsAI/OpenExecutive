@@ -231,7 +231,7 @@ export default function JobDetailPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-3xl mx-auto space-y-8">
           <div>
             <h1 className="text-2xl font-semibold text-fg mb-1">

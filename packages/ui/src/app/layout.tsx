@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import AuthProvider from "@/components/AuthProvider";
 import { ExecutiveStatusProvider } from "@/components/executive/ExecutiveStatusContext";
 import { SessionsProvider } from "@/components/sessions/SessionsContext";
@@ -9,6 +9,15 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Open Executive",
   description: "Your AI-powered virtual executive team",
+};
+
+// `viewport-fit=cover` lets the page reach under the iPhone notch and home
+// indicator; the mobile bottom bar pads itself by the safe-area inset so its
+// buttons stay clear of the indicator.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

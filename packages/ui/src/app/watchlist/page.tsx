@@ -658,8 +658,8 @@ export default function WatchlistPage() {
         />
       )}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-6 py-6">
-          <div className="flex items-baseline justify-between mb-6">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
+          <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-3 mb-6">
             <div>
               <h1 className="text-xl font-semibold text-fg">Watch list</h1>
               <p className="text-sm text-fg-muted mt-0.5">
@@ -669,7 +669,7 @@ export default function WatchlistPage() {
             </div>
             <button
               onClick={() => setShowAdd(true)}
-              className="flex-shrink-0 px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
+              className="self-start flex-shrink-0 px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
             >
               + Add monitor
             </button>
