@@ -31,7 +31,10 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-SourceKind = Literal["company", "knowledge", "notion", "drive", "onedrive", "research", "document", "web"]
+SourceKind = Literal[
+    "company", "knowledge", "notion", "drive", "onedrive", "confluence", "research", "document",
+    "web",
+]
 
 # Enough to show what an answer drew on without burying it. Web pages get
 # their own ceiling so a few searches can't crowd out the company's documents.

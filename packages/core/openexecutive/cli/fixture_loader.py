@@ -502,6 +502,11 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
     from openexecutive.knowledge import onedrive_sync
 
     onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    # And synced Confluence pages.
+    store.delete_confluence_docs()
+    from openexecutive.knowledge import confluence_sync
+
+    confluence_sync.reset_local_state(profile_path=settings.company_profile_path)
 
     docs_indexed = 0
     for dest_doc in sorted(company_docs_dir.glob("*.md")):
@@ -773,6 +778,11 @@ async def reset_all_state(
         from openexecutive.knowledge import onedrive_sync
 
         onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
+        # And synced Confluence pages.
+        store.delete_confluence_docs()
+        from openexecutive.knowledge import confluence_sync
+
+        confluence_sync.reset_local_state(profile_path=settings.company_profile_path)
 
         # 2b. Company-authored skills — delete the filesystem directory and
         # the company-source rows from the shared `skills` ChromaDB

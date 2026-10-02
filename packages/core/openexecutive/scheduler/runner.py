@@ -895,6 +895,35 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
+    # Confluence space sync — same shape as the Drive sync above: pages in
+    # the configured spaces go into the isolated CONFLUENCE collection.
+    # ------------------------------------------------------------------
+    if action.kind == "confluence_sync_scan":
+        from openexecutive.knowledge.confluence_sync import (
+            enqueue_next_confluence_sync_scan,
+            run_confluence_sync,
+        )
+        try:
+            stats = await run_confluence_sync(now=now)
+            logger.info("scheduler: confluence_sync_scan %s", stats)
+        except Exception:
+            logger.exception("scheduler: confluence_sync_scan (action %d) crashed", action.id)
+        try:
+            mark_action_done(action.id)
+        except Exception:
+            logger.exception(
+                "scheduler: confluence_sync_scan (action %d) — mark_done failed", action.id
+            )
+        try:
+            enqueue_next_confluence_sync_scan(after=datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "scheduler: failed to chain next confluence_sync_scan "
+                "heartbeat — sync will stall until next bootstrap"
+            )
+        return
+
+    # ------------------------------------------------------------------
     # Proactive nudge — re-check reachability at dispatch time before
     # falling through to the ad-hoc dispatch path. The person may have
     # gone on leave between schedule and fire; if so, defer rather than

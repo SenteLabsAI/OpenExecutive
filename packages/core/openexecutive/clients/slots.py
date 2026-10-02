@@ -737,6 +737,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     from openexecutive.knowledge import onedrive_sync
 
     onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    # And synced Confluence pages.
+    store.delete_confluence_docs()
+    from openexecutive.knowledge import confluence_sync
+
+    confluence_sync.reset_local_state(profile_path=settings.company_profile_path)
 
     company_docs_dir: Path = settings.company_profile_path.parent / "docs"
     docs_indexed = 0

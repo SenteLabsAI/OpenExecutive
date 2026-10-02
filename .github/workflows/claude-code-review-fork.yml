@@ -109,14 +109,23 @@ jobs:
 
       # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs bubblewrap, and Claude Code
       # refuses to start without it rather than run unscrubbed. The runner
-      # image does not ship it. The sandbox run fails here, with a clear
-      # error, if the runner blocks the user namespaces bubblewrap needs.
+      # image does not ship it, and Ubuntu 24.04's AppArmor blocks
+      # unprivileged user namespaces ("setting up uid map: Permission
+      # denied"), so the bwrap binary gets a profile allowing them, rather
+      # than the sysctl that lifts the block for every binary. Anything
+      # that can run bwrap can use that, but this job never runs the fork's
+      # code (rule 2). The sandbox run fails here, with a clear error, if
+      # bubblewrap still can't start.
       - name: Install bubblewrap
         if: steps.auth.outputs.ready == 'true'
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q bubblewrap
-          bwrap --ro-bind / / true
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+            'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' \
+            | sudo tee /etc/apparmor.d/bwrap > /dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true
 
       - name: Review the PR
         if: steps.auth.outputs.ready == 'true'

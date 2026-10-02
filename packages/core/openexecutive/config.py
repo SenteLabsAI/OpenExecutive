@@ -1085,6 +1085,60 @@ class Settings(BaseSettings):
             dict.fromkeys(p.strip() for p in self.drive_sync_folder_ids.split(",") if p.strip())
         )
 
+    # Confluence space → isolated collection sync. OFF by default. When on, a
+    # scheduler heartbeat re-indexes the pages in CONFLUENCE_SYNC_SPACE_KEYS
+    # into the CONFLUENCE Chroma collection (not COMPANY — a wiki is
+    # multi-writer and unreviewed). Cloud and Server/DC both work. The URL,
+    # credential and SSL names match mcp-atlassian's, so one .env serves both.
+    # The token acts as the user who made it; pages with read restrictions
+    # are skipped unless CONFLUENCE_SYNC_SKIP_RESTRICTED=false. See
+    # docs/confluence_sync_setup.md.
+    confluence_sync_enabled: bool = Field(False, alias="CONFLUENCE_SYNC_ENABLED")
+    confluence_url: str | None = Field(None, alias="CONFLUENCE_URL")
+    confluence_personal_token: str | None = Field(None, alias="CONFLUENCE_PERSONAL_TOKEN")
+    confluence_username: str | None = Field(None, alias="CONFLUENCE_USERNAME")
+    confluence_api_token: str | None = Field(None, alias="CONFLUENCE_API_TOKEN")
+    confluence_ssl_verify: str = Field("true", alias="CONFLUENCE_SSL_VERIFY")
+    confluence_sync_space_keys: str = Field("", alias="CONFLUENCE_SYNC_SPACE_KEYS")
+    confluence_sync_skip_restricted: bool = Field(True, alias="CONFLUENCE_SYNC_SKIP_RESTRICTED")
+    confluence_sync_allow_http: bool = Field(False, alias="CONFLUENCE_SYNC_ALLOW_HTTP")
+    # Refuse a CONFLUENCE_URL whose host resolves to a loopback, private,
+    # link-local or other non-public address, checked on every request. For
+    # an install where whoever sets the URL must not reach the network the
+    # app runs in. Off by default: a Server/DC wiki on the LAN is common.
+    confluence_sync_public_hosts_only: bool = Field(
+        False, alias="CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY"
+    )
+    confluence_sync_interval_minutes: int = Field(60, alias="CONFLUENCE_SYNC_INTERVAL_MINUTES")
+    confluence_max_pages_per_scan: int = Field(40, alias="CONFLUENCE_MAX_PAGES_PER_SCAN")
+
+    @property
+    def confluence_sync_space_key_list(self) -> list[str]:
+        """``CONFLUENCE_SYNC_SPACE_KEYS`` split on commas, blanks dropped, order kept."""
+        return list(
+            dict.fromkeys(
+                p.strip() for p in self.confluence_sync_space_keys.split(",") if p.strip()
+            )
+        )
+
+    @model_validator(mode="after")
+    def _validate_confluence_sync(self) -> "Settings":
+        if not self.confluence_sync_enabled:
+            return self
+        from openexecutive.knowledge.confluence_client import config_problem
+
+        problem = config_problem(
+            url=self.confluence_url,
+            personal_token=self.confluence_personal_token,
+            username=self.confluence_username,
+            api_token=self.confluence_api_token,
+            space_keys=self.confluence_sync_space_key_list,
+            allow_http=self.confluence_sync_allow_http,
+        )
+        if problem:
+            raise ValueError(f"CONFLUENCE_SYNC_ENABLED=true: {problem}")
+        return self
+
     @model_validator(mode="after")
     def _validate_drive_sync(self) -> "Settings":
         if not self.drive_sync_enabled:

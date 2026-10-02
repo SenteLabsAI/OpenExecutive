@@ -497,6 +497,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from openexecutive.knowledge.onedrive_sync import bootstrap_onedrive_sync_scan
 
         bootstrap_onedrive_sync_scan()
+    if settings.confluence_sync_enabled:
+        from openexecutive.knowledge.confluence_sync import bootstrap_confluence_sync_scan
+
+        bootstrap_confluence_sync_scan()
 
     audit_logger = AuditLogger()
     app.state.audit = audit_logger

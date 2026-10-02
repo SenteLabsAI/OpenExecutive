@@ -1667,6 +1667,104 @@ knowledge:
         `onedrive` (GET /documents/onedrive, /documents/onedrive/{key}, Sync
         now via /documents/sources/onedrive/sync). Manual: `openexecutive
         sync-onedrive` / `purge-onedrive`.
+    - name: CONFLUENCE
+      what: |
+        Pages synced from Confluence spaces (ChromaDB collection
+        `confluence_wiki`, metadata `confluence_page_id` / `type=confluence` /
+        `title` / `space` / `url` / `synced_at`), by knowledge.confluence_sync.
+        SEPARATE from COMPANY for NOTION_WIKI's reason: a wiki is multi-writer
+        and unreviewed. Optional (`CONFLUENCE_SYNC_ENABLED`, off by default;
+        setup in docs/confluence_sync_setup.md). Cloud and Server/Data Center
+        alike: knowledge.confluence_client calls the v1 REST API
+        (`<CONFLUENCE_URL>/rest/api`, served by both) directly with httpx,
+        Bearer for a personal access token (Server/DC) or Basic with
+        username + API token (Cloud). It is deliberately NOT a Confluence MCP
+        server behind the gateway (e.g. mcp-atlassian, which stays the live,
+        in-chat path): the sync runs from the scheduler with no turn and needs
+        version and restriction JSON. The URL, credential and SSL env names
+        match mcp-atlassian's so one set serves both. Redirects are never
+        followed (the token stays on the configured site), responses stream
+        and stop at 20 MB, 429 / 5xx retry with backoff honouring a
+        Retry-After of up to 60 s, and paging takes only the `cursor` (Cloud)
+        or `start` (DC) parameter out of `_links.next`, re-issued against the
+        client's own endpoint. Page ids are checked against [0-9]{1,20} and space
+        keys against [A-Za-z0-9_]{1,255} or ~[A-Za-z0-9._@-]{1,255} before use.
+        CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY (default false) is for an install
+        where whoever sets CONFLUENCE_URL must not reach the backend's own
+        network: each request resolves the host, refuses it when any address
+        is not global (loopback, RFC 1918, link-local, CGNAT, ULA, and the
+        IPv4 inside IPv4-mapped, NAT64, 6to4 and Teredo forms), with a 10 s
+        resolver timeout, and connects to the checked address with the Host
+        header and TLS server name kept as the site's name, so a re-pointed
+        name cannot slip between check and connect. Those requests skip any
+        HTTP(S)_PROXY (a tunnel would verify the certificate against the bare
+        address). confluence_client.config_problem is the Settings check as a
+        pure function, for a caller that writes these settings for someone
+        else and must not write a set the app would refuse to start with.
+
+        ACL: a Confluence token is a user's, so the sync sees what that user
+        sees, and anything it syncs is retrievable by everyone who talks to
+        the Executive. Two controls narrow it: `CONFLUENCE_SYNC_SPACE_KEYS`
+        is required (no "everything the token sees" mode), and
+        `CONFLUENCE_SYNC_SKIP_RESTRICTED` (default true) leaves out every page
+        with a read restriction of its own or on any ancestor page. The
+        listing expands `restrictions.read.restrictions.{user,group}` and
+        `ancestors` for every page, so restrictions are re-checked each tick
+        at no extra request cost; a page whose restrictions are missing from
+        the response, or whose ancestor its fully listed space did not
+        return, counts as restricted (fail closed). When the space listed
+        only in part (the 5,000-page cap, a lost next link, a failure), a
+        missing ancestor may just be past the cut, so the page is held back:
+        not synced that tick, and not purged, or it would flap in and out
+        of the index every tick. A page that becomes restricted drops out of
+        the visible set and is purged by reconcile.
+
+        Each tick (`confluence_sync_scan`) lists every page in the spaces
+        (CQL `space = "KEY" and type = page`, expand version + ancestors +
+        restrictions; 5000 pages per tick across spaces). A page is dirty when
+        its `version.number` differs from its record in
+        <company_profile_dir>/confluence_sync_state.json, so there is no
+        timestamp watermark and no CQL timezone handling. Dirty pages are
+        fetched newest first (`/content/{id}?expand=body.storage,version`),
+        capped at CONFLUENCE_MAX_PAGES_PER_SCAN. knowledge.confluence_storage
+        turns storage-format XHTML into Markdown with stdlib html.parser:
+        headings, lists, tables, links, task lists, code / noformat macros as
+        fenced blocks, callout macros (info / note / warning / tip) with a
+        bold label, other macros' rich-text bodies kept, parameters and
+        non-code plain-text bodies dropped (so toc / children / Jira / include
+        leave nothing). Markdown is written under
+        <company_profile_dir>/docs/confluence/ (confluence-<id>-<slug>.md,
+        with a confluence_page_id comment) and ingested with ingest_text_sync.
+
+        Pages the listing returned as restricted (positively, or fail-closed)
+        are purged on every tick, complete listing or not. Reconcile purges
+        pages on record but no longer visible: in full when every space
+        listed completely, else per space for the spaces that did (a space
+        listing 0 pages while it has pages on record is left alone), so one
+        broken space never freezes purges elsewhere. Orphan files and pages
+        of spaces dropped from the config wait for a full reconcile. A full
+        reconcile is also skipped when the spaces listed 0 pages while pages
+        are on record; pages listed but all restricted ARE purged. Page
+        bodies are fetched with a 5 MB cap (listings 20 MB), JSON is parsed
+        and storage converted off the event loop (conversion capped at 1M
+        characters and 60 s; a timeout records the page unreadable until its
+        version changes), since the scheduler shares the API process. A listing
+        failure stores a user-facing `last_error` (401/403: credentials;
+        404: space not found). Same two-phase locking as drive_sync (network
+        unlocked, writes under _FIXTURE_OP_LOCK, tick discarded if the active
+        client changed) and the same per-process _RUN_LOCK.
+
+        At retrieval the retriever queries this collection with n=3 and
+        appends it after the Drive and OneDrive blocks, under "Synced Confluence wiki
+        (unreviewed, multi-writer …)", each chunk labelled `[confluence ·
+        page id … · space … · synced … · "<title>"]` (title defused like
+        Drive names) and every line prefixed by _format_untrusted_wiki. The
+        header says to open a page live only by the id after "page id", and
+        only when a Confluence tool is connected. Recorded as `confluence`
+        answer sources with the page link. connected_systems adds a constant
+        line when the sync is on. Client-slot rebuild and fixture load/reset
+        clear the collection and state. Manual: `openexecutive
+        sync-confluence` / `purge-confluence`.
     - name: FAILURES
       what: Recorded failure cases used to teach specialists what to avoid.
     - name: RECENT_RESEARCH
@@ -3946,6 +4044,7 @@ scheduler:
     - "external_monitor_scan — heartbeat owned by the external-condition monitoring layer. Default every 5 min via EXTERNAL_MONITOR_SCAN_INTERVAL_MINUTES. The runner calls `monitoring.pipeline.run_external_monitor_scan()` which walks enabled watchlist rows whose `last_polled_at` is stale enough, fires the matching adapter (vendor_status, rss, stock, the billed standing-query `query` adapter, the `edgar` SEC-filings adapter, and the stateful `page_watch` change-detector), enriches promotable signals with capture-time relevance, writes `external_signals` rows, and promotes qualifying signals into the alerts pipeline. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`external_monitor`). Chains the next tick via `enqueue_next_external_monitor_scan` after firing — same idempotent / crash-resilient pattern as `nudge_scan`."
     - "watchlist_research_scan — periodic cron for the executive_research workflow (default every 360 min via WATCHLIST_RESEARCH_INTERVAL_MINUTES). The handler short-circuits when the company profile / initiatives / watchlist haven't changed since the last successful run, so quiet days cost zero tokens — except that a staleness floor (WATCHLIST_RESEARCH_MAX_STALENESS_HOURS, default 168 — weekly; a daily forced run re-derived the same findings from unchanged state and re-filed them as fresh alerts every morning) forces a run once that long has elapsed since the last successful run, so a static internal state can't keep the council blind to external change indefinitely. Does NOT write its own Alert — the workflow's Executive synthesis step routes findings directly via DMs / send_department_message / create_alert / add_watchlist_entry, so a separate cron Alert would duplicate the briefing. After routing, a DEDICATED watchlist-analysis pass (its own budget, separate from the routing budget) PROPOSES ongoing monitors via `propose_watch`; deterministic policy (`monitoring.research.watch_policy`, see external_monitoring) adds a proposal on its own only when it is grounded in company data and corroborated, files the rest as dry-run suggestions the principal approves on /watchlist, and refuses declined targets; the run's markdown artifact is also persisted into the separate `recent_research` knowledge collection (keep-latest) so future runs + chat can recall it. The cron's only side-effects on success are the audit row (`watchlist_research_periodic_ran`) and whatever routing tools the synthesis fired. The scheduled-action kind keeps the legacy `watchlist_research_scan` name (matched by the env var WATCHLIST_RESEARCH_INTERVAL_MINUTES + the three audit event_types) even though the workflow itself is registered as `executive_research` — naming is mixed intentionally to avoid a migration on already-pending heartbeat rows. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`watchlist_research`)."
     - "notion_sync_scan — optional heartbeat (NOTION_SYNC_ENABLED, default off) that incrementally re-indexes Notion pages shared with an internal integration into the isolated `notion_wiki` collection (NOT COMPANY — synced pages are multi-writer and unreviewed). Interval NOTION_SYNC_INTERVAL_MINUTES (default 60). Caps ingest per tick via NOTION_MAX_PAGES_PER_SCAN; overflow is retried and the watermark does not advance past failed or uningested pages. Each tick reconciles: un-shared/deleted pages have files + chunks purged. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`notion_sync`). Chains the next tick via enqueue_next_notion_sync_scan. See knowledge.collections NOTION_WIKI."
+    - "confluence_sync_scan — optional heartbeat (CONFLUENCE_SYNC_ENABLED, default off) that lists the pages in CONFLUENCE_SYNC_SPACE_KEYS and re-indexes those whose version changed into the isolated `confluence_wiki` collection, leaving out pages with read restrictions (own or inherited) unless CONFLUENCE_SYNC_SKIP_RESTRICTED=false. Interval CONFLUENCE_SYNC_INTERVAL_MINUTES (default 60), at most CONFLUENCE_MAX_PAGES_PER_SCAN fetches per tick. Each tick reconciles unless a listing failed or was cut short. Bypasses outbound dispatch (channel=`__internal__`, channel_ref=`confluence_sync`). Chains the next tick via enqueue_next_confluence_sync_scan. See knowledge.collections CONFLUENCE."
   channel_routing: |
     The delivery channel is stored ON the scheduled_actions row itself
     (the `channel` and `channel_ref` columns). The runner dispatches
