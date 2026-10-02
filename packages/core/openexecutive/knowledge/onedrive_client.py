@@ -127,14 +127,19 @@ class OneDriveItem:
         return item_key(self.drive_id, self.id)
 
 
-def _item(raw: Any, parent_drive: str) -> OneDriveItem | None:
+def _item(raw: Any, parent_drive: str, *, follow_shortcut: bool = True) -> OneDriveItem | None:
     """A Graph driveItem as an item, or None when it can't be addressed. A
-    shortcut to something in another drive (``remoteItem``) is followed to
-    where it lives. A OneNote notebook (``package``) is neither a file nor a
-    folder the sync can read, so it is dropped."""
+    shortcut to something elsewhere (``remoteItem``) is followed to where it
+    lives only when ``follow_shortcut``: a folder listing passes False, so a
+    shortcut an editor drops into a synced folder can't pull a folder the
+    sign-in can read, but nobody listed, into the knowledge base. A OneNote
+    notebook (``package``) is neither a file nor a folder the sync can read,
+    so it is dropped."""
     if not isinstance(raw, dict) or raw.get("package") is not None:
         return None
     remote = raw.get("remoteItem")
+    if remote is not None and not follow_shortcut:
+        return None
     source = remote if isinstance(remote, dict) else raw
     parent = source.get("parentReference")
     drive_id = sanitize_id(parent.get("driveId")) if isinstance(parent, dict) else None
@@ -241,7 +246,7 @@ class OneDriveClient:
             params = None  # the next link carries its own query
             values = data.get("value") if isinstance(data, dict) else None
             for raw in values if isinstance(values, list) else []:
-                item = _item(raw, d)
+                item = _item(raw, d, follow_shortcut=False)
                 if item is not None:
                     items.append(item)
                 if len(items) >= max_items:

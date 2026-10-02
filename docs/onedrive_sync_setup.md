@@ -59,7 +59,9 @@ there). There is no delete tool.
 
 For each folder to sync, share it with the Executive's Microsoft account
 (view access is enough), or use a folder in that account's own OneDrive.
-Subfolders are included, up to four levels deep.
+Subfolders are included, up to four levels deep. Shortcuts inside a folder
+("Add shortcut to My files") are not followed: only the folders you list
+and their own subfolders are read, even though the account can open more.
 
 A folder is named by its drive id and item id. To get them, copy the
 folder's sharing link and run:

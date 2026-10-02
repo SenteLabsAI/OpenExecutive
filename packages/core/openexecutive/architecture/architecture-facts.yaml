@@ -1633,8 +1633,11 @@ knowledge:
         via the launcher's --access-token helper (see the Microsoft 365
         hosting note); the folder list is the scope. Ids are checked against
         [A-Za-z0-9!_-]{1,256}; a paging nextLink is followed only to
-        https://graph.microsoft.com; a `remoteItem` shortcut is followed to
-        the drive it lives in; OneNote packages are skipped. `/content`
+        https://graph.microsoft.com; a `remoteItem` shortcut inside a
+        listed folder is NOT followed (Files.Read.All reaches far more than
+        the list, and a multi-writer folder's editor could otherwise pull an
+        unlisted folder into the knowledge base); OneNote packages are
+        skipped. `/content`
         answers 302 to a pre-authenticated URL on another host, which is
         fetched WITHOUT the bearer token, streamed and cut at 20 MB; its
         errors never carry that URL (a personal drive puts the credential in

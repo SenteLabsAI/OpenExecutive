@@ -33,6 +33,7 @@ TXT = "01TEXTFILE"
 PPTX = "01DECKFILE"
 IMG = "01IMAGEFILE"
 REMOTE = "D4648F06C91D9D3D!54927"
+PLAN = "01PLANFILE"
 COLLECTION = ChromaDBStore.ONEDRIVE_COLLECTION
 DOWNLOAD_HOST = "public.dm.files.1drv.com"
 
@@ -105,6 +106,8 @@ class FakeGraph:
             ],
             SUB: [
                 _file(TXT, "notes.txt"),
+                _file(PLAN, "Plan.md", mime="text/markdown"),
+                # A shortcut to a folder or file elsewhere: never followed.
                 {
                     "id": "local-shortcut", "name": "Shared plan.md",
                     "remoteItem": {
@@ -120,7 +123,8 @@ class FakeGraph:
             DOCX: _docx_bytes("Revenue grows 12% in Q3."),
             PPTX: b"%PDF-deck",
             TXT: b"Vendor terms: net 30.",
-            REMOTE: b"Hiring plan: two engineers.",
+            PLAN: b"Hiring plan: two engineers.",
+            REMOTE: b"Board minutes: confidential.",
         }
         self.page_size = 100
         self.fail_list: set[str] = set()
@@ -292,12 +296,16 @@ async def test_first_sync_indexes_supported_files_into_the_onedrive_collection(t
     stats = await _sync(graph, store)
     assert stats["seen"] == 5 and stats["updated"] == 4 and stats["skipped"] == 1  # the image
     assert store.synced_keys() == {
-        item_key(DRIVE, DOCX), item_key(DRIVE, PPTX), item_key(DRIVE, TXT), item_key(OTHER_DRIVE, REMOTE),
+        item_key(DRIVE, DOCX), item_key(DRIVE, PPTX), item_key(DRIVE, TXT), item_key(DRIVE, PLAN),
     }
     assert ChromaDBStore.COMPANY_COLLECTION not in store.collections
     texts = " ".join(r["text"] for r in store.collections[COLLECTION])
     for expected in ("Revenue grows 12%", "expand to Europe", "net 30", "two engineers"):
         assert expected in texts
+    # The shortcut in Contracts points outside the listed folders, so its
+    # target is never read.
+    assert "Board minutes" not in texts
+    assert not any(REMOTE in str(r.url) for r in graph.requests)
     meta = next(
         r["metadata"] for r in store.collections[COLLECTION]
         if r["metadata"]["onedrive_key"] == item_key(DRIVE, DOCX)
