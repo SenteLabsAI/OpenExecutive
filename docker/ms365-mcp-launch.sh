@@ -26,7 +26,7 @@ for var in MS365_MCP_CLIENT_ID MS365_MCP_TENANT_ID MS365_MCP_CLIENT_SECRET \
            MS365_MCP_EXPECTED_USERNAME MS365_MCP_ORG_MODE MS365_MCP_OAUTH_TOKEN \
            MS365_MCP_CREDENTIALS_DIR MS365_MCP_TOKEN_CACHE_PATH \
            MS365_MCP_SELECTED_ACCOUNT_PATH MS365_MCP_USE_KEYTAR MS365_MCP_PRESET \
-           MS365_MCP_ENABLED_TOOLS; do
+           MS365_MCP_ENABLED_TOOLS MS365_MCP_ONEDRIVE; do
     eval "val=\${$var:-}"
     case "$val" in
         \$*) unset "$var" ;;
@@ -77,30 +77,43 @@ fi
 # permission sharing, whole-calendar delete — and an upstream bump can add
 # more. The list below is exactly the Outlook mail + calendar tools the
 # gateway gates or that carry no recipient; the scopes requested at --login
-# follow from it (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite). The
+# follow from it (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite). The
 # server's account tools (login, logout, verify-login, list-accounts,
 # select-account, remove-account) are always registered regardless of the
 # filter; the gateway refuses login / logout / select-account /
 # remove-account itself (orchestrator/mcp_gateway.py).
 #
-# OneDrive: the same surface the Executive has on Google Drive — search, list,
-# read (download-bytes, pinned by the gateway to mail attachments and drive
-# file content), upload / edit, create folders, move, rename, copy, and share.
-# The two sharing tools are gated like Drive sharing: every invitee must be on
-# the People roster, and a link must be scoped to specific people; writes are
-# kept to the Executive's own drives and search to plain words
-# (orchestrator/mcp_gateway.py). Delete is left out. The tool scopes alone
-# are Files.ReadWrite (the account's own drive, where every write lands);
-# --extra-scopes below adds Files.Read.All so files and folders shared WITH
-# the Executive can be read too, which is also what the OneDrive folder sync
-# (knowledge/onedrive_sync.py) reads with. Files.ReadWrite.All is not asked
-# for: nothing writes outside the Executive's own drives.
+# OneDrive (opt-in, MS365_MCP_ONEDRIVE=true): the same surface the Executive
+# has on Google Drive — search, list, read (download-bytes, pinned by the
+# gateway to mail attachments and drive file content), upload / edit, create
+# folders, move, rename, copy, and share. The two sharing tools are gated like
+# Drive sharing: every invitee must be on the People roster, and a link must
+# be scoped to specific people; writes are kept to the Executive's own drives
+# and search to plain words (orchestrator/mcp_gateway.py). Delete is left out.
+# The tool scopes are Files.ReadWrite (the account's own drive, where every
+# write lands); --extra-scopes adds Files.Read.All so files and folders shared
+# WITH the Executive can be read too, which is also what the OneDrive folder
+# sync (knowledge/onedrive_sync.py) reads with. Files.ReadWrite.All is not
+# asked for: nothing writes outside the Executive's own drives.
+#
+# It is opt-in because the server asks for every scope of its tool list on
+# each token refresh: turning it on for a sign-in that never granted the file
+# permissions would fail every Microsoft 365 tool, mail and calendar
+# included, until `--login` is run again.
+ONEDRIVE_TOOLS='list-drives|get-drive-root-item|list-folder-files|get-drive-item|search-onedrive-files|upload-file-content|create-onedrive-folder|move-rename-onedrive-item|copy-drive-item|share-drive-item|create-drive-item-share-link|list-drive-item-permissions'
 EXTRA_SCOPES='Files.Read.All'
+case "$(printf '%s' "${MS365_MCP_ONEDRIVE:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) ONEDRIVE_ON=1 ;;
+    *) ONEDRIVE_ON= ;;
+esac
 #
 # Override with MS365_MCP_ENABLED_TOOLS (a regex) or MS365_MCP_PRESET (an
 # upstream preset name) only if you also extend the gate in
 # orchestrator/mcp_gateway.py — re-verify with --list-permissions.
-DEFAULT_ENABLED_TOOLS='^(list-mail-folders|list-mail-folder-messages|list-mail-messages|get-mail-message|list-mail-attachments|download-bytes|send-mail|reply-mail-message|reply-all-mail-message|forward-mail-message|create-draft-email|create-reply-draft|create-reply-all-draft|create-forward-draft|update-mail-message|send-draft-message|move-mail-message|list-calendars|list-calendar-events|get-calendar-event|create-calendar-event|update-calendar-event|delete-calendar-event|cancel-calendar-event|accept-calendar-event|decline-calendar-event|tentatively-accept-calendar-event|get-calendar-view|list-drives|get-drive-root-item|list-folder-files|get-drive-item|search-onedrive-files|upload-file-content|create-onedrive-folder|move-rename-onedrive-item|copy-drive-item|share-drive-item|create-drive-item-share-link|list-drive-item-permissions)$'
+DEFAULT_ENABLED_TOOLS='^(list-mail-folders|list-mail-folder-messages|list-mail-messages|get-mail-message|list-mail-attachments|download-bytes|send-mail|reply-mail-message|reply-all-mail-message|forward-mail-message|create-draft-email|create-reply-draft|create-reply-all-draft|create-forward-draft|update-mail-message|send-draft-message|move-mail-message|list-calendars|list-calendar-events|get-calendar-event|create-calendar-event|update-calendar-event|delete-calendar-event|cancel-calendar-event|accept-calendar-event|decline-calendar-event|tentatively-accept-calendar-event|get-calendar-view)$'
+if [ -n "$ONEDRIVE_ON" ]; then
+    DEFAULT_ENABLED_TOOLS="${DEFAULT_ENABLED_TOOLS%)\$}|${ONEDRIVE_TOOLS})\$"
+fi
 #
 # The script's own arguments stay at the END of the command line so the
 # seeding path works with the exact environment the gateway will use:
@@ -109,8 +122,10 @@ DEFAULT_ENABLED_TOOLS='^(list-mail-folders|list-mail-folder-messages|list-mail-m
 #   ms365-mcp-launch.sh --list-permissions
 # With no extra args this execs the stdio server, as the gateway expects.
 
-# The OneDrive .All scopes (see EXTRA_SCOPES above), asked for at --login.
-set -- --extra-scopes "$EXTRA_SCOPES" "$@"
+# OneDrive's read-shared scope (see EXTRA_SCOPES above), asked for at --login.
+if [ -n "$ONEDRIVE_ON" ]; then
+    set -- --extra-scopes "$EXTRA_SCOPES" "$@"
+fi
 
 # Pin the account the cached token may belong to. The env var is honoured
 # natively too; the flag makes the pin visible in `ps` and survives an

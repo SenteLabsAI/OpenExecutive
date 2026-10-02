@@ -375,6 +375,7 @@ the app refuses to start.
 | `MS365_MCP_TENANT_ID` | No | `common` | Entra tenant ID for the Microsoft 365 MCP sign-in |
 | `MS365_MCP_CLIENT_SECRET` | No | — | Entra client secret (only for a confidential app registration) |
 | `MS365_MCP_EXPECTED_USERNAME` | No | — | Pin the Microsoft 365 sign-in to this mailbox UPN |
+| `MS365_MCP_ONEDRIVE` | No | `false` | Add the OneDrive tools (and the file permissions they need) to the Microsoft 365 sign-in; run `--login` again after turning it on |
 | `EMAIL_PROVIDER` | No | `google` | Backend for the inbound mailbox poller + alert email: `google` or `microsoft` |
 | `CALENDAR_PROVIDER` | No | `google` | Backend for the typed calendar booking tools: `google` or `microsoft` |
 | `OPENROUTER_ENABLED` | No | `false` | Route Claude calls through OpenRouter and unlock non-Anthropic models per-agent in the Council UI |

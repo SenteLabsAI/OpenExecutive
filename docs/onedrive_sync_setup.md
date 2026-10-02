@@ -26,7 +26,11 @@ The Executive's Microsoft sign-in needs the delegated Graph permissions
 **Files.Read.All** (what the sync reads with: files shared with the account
 as well as its own) and **Files.ReadWrite** (what the OneDrive tools in chat
 write to the account's own OneDrive with). The launcher asks for both at
-sign-in.
+sign-in once `MS365_MCP_ONEDRIVE=true` is set. It is off by default because
+the Microsoft 365 server asks for every permission of its tools on each
+token refresh: turning it on for a sign-in that never granted file access
+fails every Microsoft 365 tool, mail and calendar included, until you sign
+in again (step 2).
 
 1. In the Entra admin center, open the app registration
    (`MS365_MCP_CLIENT_ID`) → **API permissions → Add a permission →
@@ -35,7 +39,8 @@ sign-in.
    admin to. Don't add **Files.ReadWrite.All**; if an earlier setup granted
    it, remove it there and revoke its consent, since a sign-in keeps every
    permission it was ever granted.
-2. Sign in again so the saved grant includes it:
+2. Set `MS365_MCP_ONEDRIVE=true` in `.env`, restart, and sign in again so
+   the saved grant includes the file permissions:
 
    ```bash
    docker compose exec api /usr/local/bin/ms365-mcp-launch.sh --login

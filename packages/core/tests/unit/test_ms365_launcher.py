@@ -87,7 +87,10 @@ _EXPECTED_ALLOWED = {
     "create-calendar-event", "update-calendar-event", "delete-calendar-event",
     "cancel-calendar-event", "accept-calendar-event", "decline-calendar-event",
     "tentatively-accept-calendar-event", "get-calendar-view",
-    # OneDrive: the Drive-equivalent surface, sharing gated in the gateway.
+}
+# OneDrive: the Drive-equivalent surface, sharing gated in the gateway; added
+# only with MS365_MCP_ONEDRIVE on.
+_ONEDRIVE_ALLOWED = {
     "list-drives", "get-drive-root-item", "list-folder-files", "get-drive-item",
     "search-onedrive-files", "upload-file-content", "create-onedrive-folder",
     "move-rename-onedrive-item", "copy-drive-item", "share-drive-item",
@@ -104,20 +107,35 @@ _MUST_BE_EXCLUDED = {
 }
 
 
-def test_default_argv_is_an_explicit_anchored_allow_list(tmp_path: Path) -> None:
-    proc = _run(tmp_path, {"MS365_MCP_CLIENT_ID": "client-1"})
+@pytest.mark.parametrize(("onedrive", "expected"), [
+    (None, _EXPECTED_ALLOWED),
+    ("false", _EXPECTED_ALLOWED),
+    ("$MS365_MCP_ONEDRIVE", _EXPECTED_ALLOWED),
+    ("true", _EXPECTED_ALLOWED | _ONEDRIVE_ALLOWED),
+    ("ON", _EXPECTED_ALLOWED | _ONEDRIVE_ALLOWED),
+])
+def test_default_argv_is_an_explicit_anchored_allow_list(
+    tmp_path: Path, onedrive: str | None, expected: set[str],
+) -> None:
+    env = {"MS365_MCP_CLIENT_ID": "client-1"}
+    if onedrive is not None:
+        env["MS365_MCP_ONEDRIVE"] = onedrive
+    proc = _run(tmp_path, env)
     assert proc.returncode == 0, proc.stderr
     argv = _argv(proc)
     assert argv[0] == "--enabled-tools"
     pattern = argv[1]
     assert pattern.startswith("^(") and pattern.endswith(")$")
     regex = re.compile(pattern)
-    assert set(pattern[2:-2].split("|")) == _EXPECTED_ALLOWED
-    for name in _EXPECTED_ALLOWED:
+    assert set(pattern[2:-2].split("|")) == expected
+    for name in expected:
         assert regex.match(name), name
-    for name in _MUST_BE_EXCLUDED:
+    for name in _MUST_BE_EXCLUDED | (_ONEDRIVE_ALLOWED - expected):
         assert not regex.match(name), name
     assert "--preset" not in argv
+    # The file scope comes only with the file tools: asking for it on a
+    # sign-in that never granted it would fail every token refresh.
+    assert ("--extra-scopes" in argv) == bool(_ONEDRIVE_ALLOWED & expected)
 
 
 def test_seeding_flags_pass_through_after_the_allow_list(tmp_path: Path) -> None:
@@ -149,7 +167,6 @@ def test_expected_username_becomes_a_flag(tmp_path: Path) -> None:
     assert argv[0] == "--enabled-tools"
     assert argv[2:] == [
         "--expected-username", "exec@contoso.com",
-        "--extra-scopes", "Files.Read.All",
         "--verify-login",
     ]
     assert "MS365_MCP_EXPECTED_USERNAME=exec@contoso.com" in proc.stdout
@@ -182,8 +199,8 @@ def test_launcher_is_executable_in_git() -> None:
     assert LAUNCHER.stat().st_mode & stat.S_IXUSR
 
 
-def test_extra_scopes_add_the_all_file_scopes(tmp_path: Path) -> None:
-    proc = _run(tmp_path, {"MS365_MCP_CLIENT_ID": "client-1"}, "--login")
+def test_onedrive_adds_the_read_shared_file_scope(tmp_path: Path) -> None:
+    proc = _run(tmp_path, {"MS365_MCP_CLIENT_ID": "client-1", "MS365_MCP_ONEDRIVE": "true"}, "--login")
     argv = _argv(proc)
     i = argv.index("--extra-scopes")
     assert argv[i + 1].split() == ["Files.Read.All"]

@@ -7023,7 +7023,11 @@ integrations:
     gate is keyed to the literal server name `microsoft_365`;
     registry.log_provider_status warns at startup about a look-alike server
     under another name (which would expose the same tools ungated).
-    OneDrive tools: the allow-list also admits the Google Drive-equivalent
+    OneDrive tools (opt-in, MS365_MCP_ONEDRIVE=true; off by default because
+    the server requests every scope of its tool list on each silent token
+    refresh, so adding file scopes to a sign-in that never consented to them
+    breaks mail and calendar too until --login is rerun): the allow-list
+    then also admits the Google Drive-equivalent
     OneDrive surface — list-drives, get-drive-root-item, list-folder-files,
     get-drive-item, search-onedrive-files, upload-file-content,
     create-onedrive-folder, move-rename-onedrive-item, copy-drive-item,

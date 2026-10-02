@@ -331,7 +331,7 @@ Auth is the MSAL **device-code** flow against your own Entra app registration
 (the server's built-in public client id is refused). Register the app (Entra
 admin center → App registrations → New; *Allow public client flows: Yes*;
 delegated Graph permissions `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
-`Files.ReadWrite` and `Files.Read.All` (OneDrive, below),
+`Files.ReadWrite` and `Files.Read.All` (only with `MS365_MCP_ONEDRIVE=true`, below),
 plus `User.Read` and `offline_access` for the sign-in, with admin consent —
 `ms365-mcp-launch.sh --list-permissions` prints exactly what the configured
 tool list requests), then set:
@@ -382,7 +382,9 @@ only `EXEC_EMAIL_ADDRESS` (the Outlook twin of the Gmail acting-account pin),
 and `move-mail-message` into Deleted Items, Junk Email or Recoverable Items
 is refused, so the model cannot trash mail through a move. OneDrive gets the
 surface Google Drive has (search, list, upload and edit, folders, move,
-rename, copy, share; no delete). `download-bytes` is pinned to mail
+rename, copy, share; no delete), but only with `MS365_MCP_ONEDRIVE=true`
+and a fresh `--login`: the server asks for its tools' permissions on every
+token refresh, so the file tools are off until the sign-in grants them. `download-bytes` is pinned to mail
 attachments and OneDrive file content, and a OneDrive file comes back as its
 text rather than base64. `share-drive-item` invitees must be on the roster
 and named by email, and `create-drive-item-share-link` must be scoped to
