@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { nextSideNavOpen, type SideNavEvent } from "@/lib/sideNav";
 
 // A page's own side menu (the section list on the Guide, the agent list on
 // the Agent Council, the source tree in the Knowledge base). From `md` up it
@@ -34,21 +35,21 @@ export default function PageSideNav({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const send = (event: SideNavEvent) => setOpen((o) => nextSideNavOpen(o, event));
   // Close when the selection changes, adjusted during render rather than in
   // an effect so the menu never paints open over the new selection.
   const [seenKey, setSeenKey] = useState(closeKey);
   if (closeKey !== seenKey) {
     setSeenKey(closeKey);
-    setOpen(false);
+    setOpen((o) => nextSideNavOpen(o, { type: "selection-changed" }));
   }
   const panelId = useId();
 
   // Escape closes the open phone menu, as tapping the page behind it does.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
+    const onKey = (e: KeyboardEvent) =>
+      setOpen((o) => nextSideNavOpen(o, { type: "key", key: e.key }));
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
@@ -57,7 +58,7 @@ export default function PageSideNav({
     <div className="relative flex-shrink-0 md:contents">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => send({ type: "toggle" })}
         aria-expanded={open}
         aria-controls={panelId}
         className="md:hidden w-full min-h-touch flex items-center gap-2 px-4 py-2 border-b border-line bg-surface-elevated text-left text-sm cursor-pointer"
@@ -73,15 +74,15 @@ export default function PageSideNav({
       {open && (
         <div
           className="md:hidden fixed inset-0 z-10"
-          onClick={() => setOpen(false)}
+          onClick={() => send({ type: "outside" })}
           aria-hidden="true"
         />
       )}
       <aside
         id={panelId}
-        onClick={(e) => {
-          if ((e.target as Element).closest("[data-closes-nav]")) setOpen(false);
-        }}
+        onClick={(e) =>
+          send({ type: "menu-click", closesNav: !!(e.target as Element).closest("[data-closes-nav]") })
+        }
         className={`${
           open ? "flex" : "hidden"
         } md:flex flex-col flex-shrink-0 overflow-y-auto border-line absolute md:static inset-x-0 top-full z-20 max-h-[70vh] md:max-h-none border-b md:border-b-0 md:border-r shadow-lg md:shadow-none ${className}`}
