@@ -1642,9 +1642,13 @@ knowledge:
         listing expands `restrictions.read.restrictions.{user,group}` and
         `ancestors` for every page, so restrictions are re-checked each tick
         at no extra request cost; a page whose restrictions are missing from
-        the response, or whose ancestor was not listed, counts as restricted
-        (fail closed). A page that becomes restricted drops out of the
-        visible set and is purged by reconcile.
+        the response, or whose ancestor its fully listed space did not
+        return, counts as restricted (fail closed). When the space listed
+        only in part (the 5,000-page cap, a lost next link, a failure), a
+        missing ancestor may just be past the cut, so the page is held back:
+        not synced that tick, and not purged, or it would flap in and out
+        of the index every tick. A page that becomes restricted drops out of
+        the visible set and is purged by reconcile.
 
         Each tick (`confluence_sync_scan`) lists every page in the spaces
         (CQL `space = "KEY" and type = page`, expand version + ancestors +

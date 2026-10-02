@@ -542,6 +542,25 @@ def test_config_problem_is_the_settings_check() -> None:
     assert confluence_client.site_url_problem("https://[bad") is not None
 
 
+@pytest.mark.asyncio
+async def test_a_parent_past_a_cut_short_listing_does_not_purge_its_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wiki = FakeConfluence(
+        spaces={"ENG": [
+            _page("201", "Recent child", ancestors=("200",), when="2026-09-05T00:00:00.000Z"),
+            _page("200", "Old parent", when="2026-01-01T00:00:00.000Z"),
+        ]},
+        bodies={"200": "<p>Parent.</p>", "201": "<p>Child.</p>"},
+    )
+    store = FakeStore()
+    assert (await _sync(wiki, store))["updated"] == 2
+    monkeypatch.setattr(confluence_sync, "_MAX_VISIBLE_PAGES", 1)
+    stats = await _sync(wiki, store)
+    assert stats["purged"] == 0 and stats["restricted"] == 0
+    assert set(_state(tmp_path)["pages"]) == {"200", "201"}
+
+
 def test_ids_keys_and_links_are_validated_before_use() -> None:
     assert sanitize_page_id("12345") == "12345"
     for bad in ("../1", "1 2", "abc", "", "1" * 21):

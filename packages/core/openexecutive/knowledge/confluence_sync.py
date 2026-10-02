@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,21 +152,34 @@ async def _sleep() -> None:
     await asyncio.sleep(_REQUEST_PAUSE_S)
 
 
-def _restricted_ids(pages: dict[str, ConfluencePage]) -> set[str]:
-    """Pages to leave out: a read restriction on the page or on any parent
-    page, or no way to tell (restrictions missing from the listing, or a
-    parent page that was not listed)."""
-    out: set[str] = set()
+def _restricted_ids(
+    pages: dict[str, ConfluencePage], complete_spaces: Collection[str]
+) -> tuple[set[str], set[str]]:
+    """Pages to leave out, as ``(restricted, undecided)``.
+
+    Restricted: a read restriction on the page or on any parent page, or no
+    way to tell (restrictions missing from the listing, or a parent page its
+    fully listed space did not return). These are purged.
+
+    Undecided: a parent page is missing from a space whose listing was cut
+    short or failed, so it may simply be past the cut. These are not synced
+    this tick, but not purged either, or a page under an old parent would
+    flap in and out of the knowledge base on every tick."""
+    restricted: set[str] = set()
+    undecided: set[str] = set()
     for page in pages.values():
         if page.restricted is not False:
-            out.add(page.id)
+            restricted.add(page.id)
             continue
         for ancestor_id in page.ancestors:
             ancestor = pages.get(ancestor_id)
-            if ancestor is None or ancestor.restricted is not False:
-                out.add(page.id)
+            if ancestor is None and page.space not in complete_spaces:
+                undecided.add(page.id)
                 break
-    return out
+            if ancestor is None or ancestor.restricted is not False:
+                restricted.add(page.id)
+                break
+    return restricted, undecided
 
 
 # ---------------------------------------------------------------------------
@@ -262,13 +276,16 @@ async def _fetch_tick(
     fetch = _TickFetch()
     pages = await _list_spaces(client, settings, fetch)
     stats["seen"] = fetch.listed = len(pages)
-    restricted = _restricted_ids(pages) if settings.confluence_sync_skip_restricted else set()
+    restricted: set[str] = set()
+    undecided: set[str] = set()
+    if settings.confluence_sync_skip_restricted:
+        restricted, undecided = _restricted_ids(pages, fetch.complete_spaces)
     stats["restricted"] = len(restricted)
     fetch.restricted_ids = restricted
 
     dirty: list[ConfluencePage] = []
     for page in pages.values():
-        if page.id in restricted:
+        if page.id in restricted or page.id in undecided:
             continue
         fetch.visible_ids.add(page.id)
         if _is_current(_record(state, page.id), page):
