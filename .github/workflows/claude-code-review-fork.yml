@@ -107,6 +107,17 @@ jobs:
             exit 1
           fi
 
+      # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs bubblewrap, and Claude Code
+      # refuses to start without it rather than run unscrubbed. The runner
+      # image does not ship it. The sandbox run fails here, with a clear
+      # error, if the runner blocks the user namespaces bubblewrap needs.
+      - name: Install bubblewrap
+        if: steps.auth.outputs.ready == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          bwrap --ro-bind / / true
+
       - name: Review the PR
         if: steps.auth.outputs.ready == 'true'
         uses: anthropics/claude-code-action@v1
