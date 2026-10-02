@@ -6213,7 +6213,9 @@ auth:
   ui_provider: |
     NextAuth.js with Google OAuth and/or one generic OpenID Connect
     provider (SSO: Keycloak, Okta, Entra ID, ...; packages/ui/src/lib/oidc.ts,
-    on when AUTH_OIDC_ISSUER / _ID / _SECRET are all set, provider id `oidc`,
+    on when AUTH_OIDC_ISSUER / _ID / _SECRET are all set and the issuer is
+    https (http only for loopback: Auth.js trusts the token-endpoint ID token
+    on TLS alone, without its signature), provider id `oidc`,
     endpoints from the issuer's discovery document), JWT session strategy
     (24h maxAge). Both feed the same email-keyed gate: an SSO sign-in adds no
     admission logic. Its email must be verified - the standard

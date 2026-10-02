@@ -18,6 +18,7 @@ const GOOGLE = {
   oidcIssuer: undefined,
   oidcClientId: undefined,
   oidcClientSecret: undefined,
+  oidcIssuerAllowed: true,
   oidcTrustUnverifiedEmail: false,
   allowedEmails: parseAllowedEmails("ada@acme.io, bo@acme.io"),
   authUrl: "https://exec.acme.io",
@@ -71,6 +72,12 @@ test("half-configured SSO sign-in is red", () => {
   }
   // Even with Google working, a half-filled SSO block is named.
   assert.equal(signInCheck({ ...GOOGLE, oidcClientId: "open-executive" }).state, "error");
+});
+
+test("an SSO issuer that isn't https is red", () => {
+  const check = signInCheck({ ...SSO_ONLY, oidcIssuer: "http://keycloak:8080/realms/acme", oidcIssuerAllowed: false });
+  assert.equal(check.state, "error");
+  assert.match(check.summary, /must be an https address/);
 });
 
 test("half-configured Google next to working SSO is still red", () => {

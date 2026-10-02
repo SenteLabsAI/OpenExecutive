@@ -2,6 +2,7 @@ import { LOCAL_LOGIN, OIDC } from "@/auth";
 import SetupStatusView from "@/components/settings/SetupStatusView";
 import { parseAllowedEmails } from "@/lib/allowlist";
 import { FALSEY_ENV } from "@/lib/localLogin";
+import { issuerAllowed } from "@/lib/oidc";
 import { signInCheck } from "@/lib/setupStatus";
 
 // Read this server's settings on every request. Prerendered, the page would
@@ -16,6 +17,7 @@ export default function SetupStatusPage() {
     oidcIssuer: process.env.AUTH_OIDC_ISSUER,
     oidcClientId: process.env.AUTH_OIDC_ID,
     oidcClientSecret: process.env.AUTH_OIDC_SECRET,
+    oidcIssuerAllowed: issuerAllowed(process.env.AUTH_OIDC_ISSUER?.trim() ?? ""),
     oidcTrustUnverifiedEmail: OIDC?.trustUnverifiedEmail === true,
     allowedEmails: parseAllowedEmails(process.env.ALLOWED_EMAILS),
     authUrl: process.env.AUTH_URL,

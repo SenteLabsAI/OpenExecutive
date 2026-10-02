@@ -45,14 +45,36 @@ export interface OidcConfig {
   trustUnverifiedEmail: boolean;
 }
 
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * May sign-in trust this issuer address? Only over https, except on this
+ * machine (a provider run locally for testing). Auth.js reads the provider's
+ * settings and takes the ID token straight from its token endpoint without
+ * checking the token's signature — the TLS connection is what proves it came
+ * from the provider. Over plain http, anyone who can answer on the network
+ * path could hand back a token naming any email as verified.
+ */
+export function issuerAllowed(issuer: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(issuer);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname.toLowerCase());
+}
+
 /** The provider settings, or null unless issuer, client id and secret are
- *  all set. A half-filled block offers no SSO button (Setup status says what
- *  is missing) rather than a button that fails at the provider. */
+ *  all set and the issuer is one `issuerAllowed` accepts. A half-filled or
+ *  refused block offers no SSO button (Setup status says why) rather than a
+ *  button that fails at the provider. */
 export function oidcConfig(env: OidcEnv): OidcConfig | null {
   const issuer = env.issuer?.trim() ?? "";
   const clientId = env.clientId?.trim() ?? "";
   const clientSecret = env.clientSecret?.trim() ?? "";
-  if (!issuer || !clientId || !clientSecret) return null;
+  if (!issuer || !clientId || !clientSecret || !issuerAllowed(issuer)) return null;
   return {
     issuer,
     clientId,
@@ -60,15 +82,6 @@ export function oidcConfig(env: OidcEnv): OidcConfig | null {
     name: env.name?.trim() || OIDC_DEFAULT_NAME,
     trustUnverifiedEmail: env.trustUnverifiedEmail?.trim().toLowerCase() === "true",
   };
-}
-
-/** Where the provider publishes its settings. Built here rather than by
- *  Auth.js, which appends to the issuer as written and so asks for
- *  `…//.well-known/…` when the issuer ends in a slash (Auth0's does). The
- *  issuer itself is kept exactly as written: it must equal the `iss` the
- *  provider puts in its tokens. */
-export function discoveryUrl(issuer: string): string {
-  return `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
 }
 
 /** Microsoft Entra ID's issuers. */

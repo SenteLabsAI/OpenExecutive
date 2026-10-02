@@ -159,8 +159,12 @@ sign-in. One provider per install.
 
    `AUTH_OIDC_ISSUER` is the provider's issuer, exactly as its tokens state
    it; the app reads everything else from
-   `<issuer>/.well-known/openid-configuration`. All three of issuer, id and
-   secret are needed; Settings → Setup status says which is missing.
+   `<issuer>/.well-known/openid-configuration`. It must be an `https://`
+   address: the ID token is trusted because it arrives over TLS from the
+   provider, so over plain http anyone on the network path could forge one.
+   `http://localhost` is accepted for testing on your own computer. All
+   three of issuer, id and secret are needed; Settings → Setup status says
+   which is missing.
 3. Restart the UI.
 
 **The email must be verified.** Access is granted by email address, so an
@@ -404,7 +408,7 @@ If `AUTH_GOOGLE_SECRET` is leaked, regenerate in Google Cloud Console (Clients �
 | **Open** says it only works on this computer | You opened the app by a network address. Use `http://localhost:3000` in a browser on the machine running `make dev` |
 | SSO sign-in fails with `Configuration` | `AUTH_OIDC_ISSUER` isn't the provider's exact issuer (the UI log shows the discovery error; open `<issuer>/.well-known/openid-configuration` and compare its `issuer`), or the client id / secret is wrong. For Entra ID, use the tenant issuer, not `common` |
 | SSO login comes back with `redirect_uri` errors at the provider | The client's redirect URI must be exactly `<origin>/api/auth/callback/oidc` |
-| No SSO button | One of `AUTH_OIDC_ISSUER`, `AUTH_OIDC_ID`, `AUTH_OIDC_SECRET` is blank. Settings → Setup status names it |
+| No SSO button | One of `AUTH_OIDC_ISSUER`, `AUTH_OIDC_ID`, `AUTH_OIDC_SECRET` is blank, or the issuer isn't `https://` (only `http://localhost` is allowed). Settings → Setup status names it |
 | Sign-in page shows Google, but you wanted local login | `AUTH_GOOGLE_ID` or `AUTH_OIDC_ISSUER` is set (in the root `.env` or `packages/ui/.env.local`), or the app was started some way other than `make dev` |
 
 ### Useful commands

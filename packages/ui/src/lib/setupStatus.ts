@@ -33,6 +33,8 @@ export interface SignInEnv {
   oidcIssuer: string | undefined;
   oidcClientId: string | undefined;
   oidcClientSecret: string | undefined;
+  /** lib/oidc.ts issuerAllowed(AUTH_OIDC_ISSUER): https, or this machine. */
+  oidcIssuerAllowed: boolean;
   /** AUTH_OIDC_TRUST_UNVERIFIED_EMAIL, read as lib/oidc.ts reads it. */
   oidcTrustUnverifiedEmail: boolean;
   /** ALLOWED_EMAILS, parsed the way sign-in parses it. */
@@ -78,6 +80,13 @@ export function signInCheck(env: SignInEnv): SetupCheck {
       "error",
       "SSO sign-in isn't fully set up: it needs AUTH_OIDC_ISSUER, AUTH_OIDC_ID and AUTH_OIDC_SECRET.",
       "Set all three from the client you registered at your sign-in provider (docs/auth.md), then restart the app.",
+    );
+  }
+  if (oidc && !env.oidcIssuerAllowed) {
+    return check(
+      "error",
+      "SSO sign-in is off: AUTH_OIDC_ISSUER must be an https address.",
+      "Use your provider's https issuer address (plain http is accepted only on this computer, for testing), then restart the app.",
     );
   }
   // With nothing set up at all, Google is what the sign-in page offers.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OIDC_DEFAULT_NAME, discoveryUrl, emailVerified, oidcConfig } from "../src/lib/oidc.ts";
+import { OIDC_DEFAULT_NAME, emailVerified, issuerAllowed, oidcConfig } from "../src/lib/oidc.ts";
 
 const KEYCLOAK = {
   issuer: "https://sso.acme.io/realms/acme",
@@ -45,14 +45,30 @@ test("only an explicit true trusts unverified emails", () => {
   }
 });
 
-// --- discoveryUrl ----------------------------------------------------------
+// --- issuerAllowed ---------------------------------------------------------
 
-test("discovery never doubles the slash", () => {
-  assert.equal(
-    discoveryUrl("https://sso.acme.io/realms/acme"),
-    "https://sso.acme.io/realms/acme/.well-known/openid-configuration",
-  );
-  assert.equal(discoveryUrl("https://acme.auth0.com/"), "https://acme.auth0.com/.well-known/openid-configuration");
+test("the issuer must be https, except on this machine", () => {
+  assert.equal(issuerAllowed("https://sso.acme.io/realms/acme"), true);
+  assert.equal(issuerAllowed("https://acme.auth0.com/"), true);
+  for (const local of ["http://localhost:8080/realms/acme", "http://127.0.0.1:8080/r", "http://[::1]:8080/r"]) {
+    assert.equal(issuerAllowed(local), true, local);
+  }
+  // Over plain http on a network, whoever answers could mint any verified email.
+  for (const refused of [
+    "http://keycloak:8080/realms/acme",
+    "http://sso.acme.io/realms/acme",
+    "http://localhost.acme.io/realms/acme",
+    "ftp://sso.acme.io",
+    "sso.acme.io/realms/acme",
+    "not a url",
+  ]) {
+    assert.equal(issuerAllowed(refused), false, refused);
+  }
+});
+
+test("a plain-http issuer on the network offers no SSO", () => {
+  assert.equal(oidcConfig({ ...KEYCLOAK, issuer: "http://keycloak:8080/realms/acme" }), null);
+  assert.equal(oidcConfig({ ...KEYCLOAK, issuer: "http://localhost:8080/realms/acme" })?.issuer, "http://localhost:8080/realms/acme");
 });
 
 // --- emailVerified ---------------------------------------------------------

@@ -16,7 +16,7 @@ import {
   localLoginEnabled,
   localLoginSessionAllowed,
 } from "@/lib/localLogin";
-import { OIDC_PROVIDER_ID, discoveryUrl, emailVerified, oidcConfig } from "@/lib/oidc";
+import { OIDC_PROVIDER_ID, emailVerified, oidcConfig } from "@/lib/oidc";
 
 // Operator-controlled allowlist, read once at startup (docs/auth.md promises a
 // restart is what makes an edit live). ALWAYS honored: the backend People
@@ -28,7 +28,7 @@ const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
 
 // SSO sign-in through any OpenID Connect provider (see lib/oidc.ts), when
-// AUTH_OIDC_ISSUER / _ID / _SECRET are all set.
+// AUTH_OIDC_ISSUER / _ID / _SECRET are all set and the issuer is https.
 export const OIDC = oidcConfig({
   issuer: process.env.AUTH_OIDC_ISSUER,
   clientId: process.env.AUTH_OIDC_ID,
@@ -75,7 +75,6 @@ const sso = OIDC && {
   name: OIDC.name,
   type: "oidc" as const,
   issuer: OIDC.issuer,
-  wellKnown: discoveryUrl(OIDC.issuer),
   clientId: OIDC.clientId,
   clientSecret: OIDC.clientSecret,
   checks: ["pkce", "state"] as ("pkce" | "state")[],
