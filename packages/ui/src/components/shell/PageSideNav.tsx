@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import Icon from "@/components/Icon";
 
@@ -41,6 +41,17 @@ export default function PageSideNav({
     setSeenKey(closeKey);
     setOpen(false);
   }
+  const panelId = useId();
+
+  // Escape closes the open phone menu, as tapping the page behind it does.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
 
   return (
     <div className="relative flex-shrink-0 md:contents">
@@ -48,6 +59,7 @@ export default function PageSideNav({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-controls={panelId}
         className="md:hidden w-full min-h-touch flex items-center gap-2 px-4 py-2 border-b border-line bg-surface-elevated text-left text-sm cursor-pointer"
       >
         <span className="text-fg-subtle flex-shrink-0">{label}</span>
@@ -58,7 +70,15 @@ export default function PageSideNav({
           className={`ml-auto flex-shrink-0 text-fg-muted transition-transform ${open ? "rotate-90" : ""}`}
         />
       </button>
+      {open && (
+        <div
+          className="md:hidden fixed inset-0 z-10"
+          onClick={() => setOpen(false)}
+          aria-hidden="true"
+        />
+      )}
       <aside
+        id={panelId}
         onClick={(e) => {
           if ((e.target as Element).closest("[data-closes-nav]")) setOpen(false);
         }}
