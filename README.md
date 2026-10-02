@@ -7,7 +7,7 @@
 
 Open Executive is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also act as a busy leader's digital twin: with **Act as me** switched on, it drafts email in their own voice, from their own Gmail, for them to review and send—so leaders can truly scale their impact through AI without giving up the final say.
 
-It meets people where they already work, with integrations for Slack, Discord, Telegram, email, Google Workspace, Microsoft 365 (Outlook mail and calendar), Notion and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
+It meets people where they already work, with integrations for Slack, Discord, Telegram, Google Chat, email, Google Workspace, Microsoft 365 (Outlook mail and calendar), Notion, Confluence and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
 
 A managed cloud offering is coming (https://openexecutive.ai), where you can get access without deploying anything yourself.
 
@@ -86,7 +86,7 @@ openexecutive/
 │   │       ├── onboarding/       # Wizard state machine + profile builder
 │   │       ├── prompts/          # Persona + domain prompts + cache manager
 │   │       ├── api/              # FastAPI app + routes
-│   │       ├── integrations/     # Slack, Email, Telegram, Google Chat, Discord
+│   │       ├── integrations/     # Slack, Email (Gmail or Outlook), Telegram, Google Chat, Discord
 │   │       ├── scheduler/        # Background job runner (single-instance)
 │   │       ├── alerts/           # Proactive alert system
 │   │       ├── audit/            # Audit logging
@@ -173,6 +173,28 @@ run in every shell too: Windows PowerShell 5.1, the version that ships with
 Windows, has no `&&` operator and rejects the chained form with `The token
 '&&' is not a valid statement separator in this version.`
 
+## Set Up Integrations
+
+Every integration is optional and off until you configure it. Each one has a
+setup guide:
+
+| Integration | What it does | Setup |
+|---|---|---|
+| **Slack** | Answers mentions and DMs | Set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` (socket mode) |
+| **Discord** | Answers DMs, mentions and slash commands | [Run the Discord Bot](#run-the-discord-bot) |
+| **Telegram** | Answers messages to your bot | [docs/telegram_setup.md](docs/telegram_setup.md) |
+| **Google Chat** | Answers mentions in a space | [docs/google_chat_setup.md](docs/google_chat_setup.md) |
+| **Email and calendar (Google Workspace)** | Reads and sends the Executive's Gmail, books on its calendar | [Google Workspace credentials](docs/deployment.md#google-workspace-credentials) |
+| **Email and calendar (Microsoft 365)** | The same with Outlook mail and calendar | [Microsoft 365 credentials](docs/deployment.md#microsoft-365-credentials) |
+| **Act as me** | Drafts replies in the owner's own Gmail for them to send | [Your own Gmail](docs/deployment.md#your-own-gmail-act-as-me-optional) |
+| **Google Drive folders** | Syncs shared folders into the knowledge base (read-only) | [docs/drive_sync_setup.md](docs/drive_sync_setup.md) |
+| **Confluence** | Syncs chosen spaces into the knowledge base (read-only, Cloud or Server/Data Center) | [docs/confluence_sync_setup.md](docs/confluence_sync_setup.md) |
+| **Notion** | Syncs the pages shared with an internal integration into the knowledge base | Set `NOTION_SYNC_ENABLED=true` and `NOTION_API_KEY` (see [.env.example](.env.example)) |
+| **MCP clients** | Lets any MCP client talk to the Executive | [Connect as an MCP Server](#connect-as-an-mcp-server) |
+
+Synced Drive, Confluence and Notion content is kept apart from your uploaded
+documents and labelled as unreviewed, so it ranks below them.
+
 ## Run the Discord Bot
 
 1. Create a Discord application at https://discord.com/developers/applications
@@ -225,7 +247,7 @@ The built-in knowledge base is **trusted by default** — the Executive can use 
 |-----------|-----------|
 | **Web UI** | `http://localhost:3000` |
 | **Slack** | Mention `@OpenExecutive` or DM the app |
-| **Email** | CC or email the configured address (Gmail poller via the Google Workspace MCP) |
+| **Email** | CC or email the configured address (Gmail via the Google Workspace MCP, or Outlook via the Microsoft 365 MCP) |
 | **Telegram** | Message the configured bot |
 | **Google Chat** | Mention the app in a space |
 | **Discord** | DM the bot, `@mention` it in a channel, or use `/ask` / `/today` slash commands |
@@ -377,6 +399,17 @@ the app refuses to start.
 | `MS365_MCP_EXPECTED_USERNAME` | No | — | Pin the Microsoft 365 sign-in to this mailbox UPN |
 | `EMAIL_PROVIDER` | No | `google` | Backend for the inbound mailbox poller + alert email: `google` or `microsoft` |
 | `CALENDAR_PROVIDER` | No | `google` | Backend for the typed calendar booking tools: `google` or `microsoft` |
+| `DELEGATION_GOOGLE_CREDENTIALS_DIR` | No | — | Where the owner's own Gmail credential for Act as me lives (see [docs/deployment.md](docs/deployment.md#your-own-gmail-act-as-me-optional)) |
+| `DRIVE_SYNC_ENABLED` | No | `false` | Sync shared Google Drive folders into the knowledge base |
+| `DRIVE_SYNC_SERVICE_ACCOUNT_FILE` | No | — | Service account key with `drive.readonly` |
+| `DRIVE_SYNC_FOLDER_IDS` | No | — | Comma-separated Drive folder IDs to sync |
+| `CONFLUENCE_SYNC_ENABLED` | No | `false` | Sync Confluence spaces into the knowledge base |
+| `CONFLUENCE_URL` | No | — | Confluence base URL (Cloud or Server/Data Center) |
+| `CONFLUENCE_USERNAME` / `CONFLUENCE_API_TOKEN` | No | — | Confluence Cloud sign-in (email + API token) |
+| `CONFLUENCE_PERSONAL_TOKEN` | No | — | Confluence Server/Data Center personal access token |
+| `CONFLUENCE_SYNC_SPACE_KEYS` | No | — | Comma-separated space keys to sync |
+| `NOTION_SYNC_ENABLED` | No | `false` | Sync the Notion pages shared with your integration into the knowledge base |
+| `NOTION_API_KEY` | No | — | Notion internal integration token |
 | `OPENROUTER_ENABLED` | No | `false` | Route Claude calls through OpenRouter and unlock non-Anthropic models per-agent in the Council UI |
 | `OPENROUTER_API_KEY` | No | — | Required when `OPENROUTER_ENABLED=true` |
 | `OPENROUTER_CATALOG_ENABLED` | No | `true` | Fetch OpenRouter's live `/models` catalog at startup to populate the Council dropdown; falls back to a built-in list on failure |
