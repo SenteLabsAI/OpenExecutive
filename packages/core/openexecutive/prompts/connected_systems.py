@@ -151,6 +151,15 @@ def render_connected_systems(
     elif not any("notion" in s.lower() for s in others):
         # A Notion MCP server, when configured, is listed with the others.
         lines.append("- **Notion:** not connected.")
+    if settings.confluence_sync_enabled:
+        # Settings-derived and constant per deployment, so block 0 stays
+        # cacheable. Without the sync, a Confluence MCP server (if any) is
+        # listed with the others.
+        lines.append(
+            "- **Confluence: synced into your knowledge base.** You read the synced "
+            "spaces through retrieval, not live; to open a page live or change it "
+            "you need a Confluence tool server listed above."
+        )
     # Constant either way, so switching Act as me changes block 0 only by
     # DELEGATION_ADDENDUM itself.
     lines.append(

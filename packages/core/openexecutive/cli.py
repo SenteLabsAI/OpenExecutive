@@ -304,6 +304,80 @@ async def _purge_drive(file_id: str | None, stale: bool, purge_all: bool) -> Non
     console.print(f"[green]Drive stale purge:[/green] {stats}")
 
 
+@cli.command("sync-confluence")
+def sync_confluence() -> None:
+    """Run one Confluence space → isolated collection sync tick."""
+    asyncio.run(_sync_confluence())
+
+
+async def _sync_confluence() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.confluence_sync import run_confluence_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.confluence_sync_enabled:
+        console.print(
+            "[yellow]CONFLUENCE_SYNC_ENABLED is false. "
+            "See docs/confluence_sync_setup.md.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_confluence_sync(store=store)
+    console.print(f"[green]Confluence sync:[/green] {stats}")
+
+
+@cli.command("purge-confluence")
+@click.option("--page-id", default=None, help="Purge one synced page by Confluence page id.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge pages no longer in the synced spaces, or now restricted (needs the sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced page.")
+def purge_confluence(page_id: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced Confluence pages and Chroma chunks."""
+    asyncio.run(_purge_confluence(page_id, stale, purge_all))
+
+
+async def _purge_confluence(page_id: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.confluence_sync import (
+        load_state,
+        purge_all_synced,
+        purge_page,
+        run_confluence_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    if sum(bool(x) for x in (page_id, stale, purge_all)) != 1:
+        console.print("[red]Specify exactly one of --page-id, --stale, or --all.[/red]")
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if page_id:
+        state = load_state()
+        if purge_page(page_id, store, state):
+            save_state(state)
+            console.print(f"[green]Purged Confluence page[/green] {page_id}")
+        else:
+            console.print(f"[red]Could not purge[/red] {page_id}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced Confluence page(s).[/green]")
+        return
+    if not settings.confluence_sync_enabled:
+        console.print(
+            "[yellow]CONFLUENCE_SYNC_ENABLED is false. "
+            "See docs/confluence_sync_setup.md.[/yellow]"
+        )
+        return
+    stats = await run_confluence_sync(store=store, reconcile_only=True)
+    console.print(f"[green]Confluence stale purge:[/green] {stats}")
+
+
 @cli.command("consolidate-initiatives")
 @click.option(
     "--apply",

@@ -122,8 +122,12 @@ class ChromaDBStore(KnowledgeStore):
     # multi-writer and unreviewed. Retrieved under its own labelled,
     # lower-ranked section.
     DRIVE_COLLECTION = "drive_docs"
+    # Synced Confluence spaces (knowledge.confluence_sync). SEPARATE from
+    # COMPANY for the same reason as NOTION and DRIVE: a wiki is multi-writer
+    # and unreviewed, so the retriever labels it and ranks it lower.
+    CONFLUENCE_COLLECTION = "confluence_wiki"
     # Files attached in an integration channel. Same isolation reasoning as
-    # the two above, taken one step further: this collection is NEVER
+    # the synced collections above, taken one step further: this collection is NEVER
     # queried — not by ``retriever.retrieve``, not by anything else.
     #
     # An attachment's content is chosen by whoever sent the message. It
@@ -349,6 +353,10 @@ class ChromaDBStore(KnowledgeStore):
     def delete_drive_docs(self) -> None:
         """Drop every synced Google Drive chunk."""
         self.delete_documents(collection=self.DRIVE_COLLECTION, where={"type": "drive"})
+
+    def delete_confluence_docs(self) -> None:
+        """Drop every synced Confluence chunk."""
+        self.delete_documents(collection=self.CONFLUENCE_COLLECTION, where={"type": "confluence"})
 
     def delete_attachment_docs(self) -> None:
         """Drop every inbound attachment chunk, plus any pre-isolation

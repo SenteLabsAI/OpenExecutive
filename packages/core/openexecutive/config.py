@@ -1058,6 +1058,71 @@ class Settings(BaseSettings):
             dict.fromkeys(p.strip() for p in self.drive_sync_folder_ids.split(",") if p.strip())
         )
 
+    # Confluence space → isolated collection sync. OFF by default. When on, a
+    # scheduler heartbeat re-indexes the pages in CONFLUENCE_SYNC_SPACE_KEYS
+    # into the CONFLUENCE Chroma collection (not COMPANY — a wiki is
+    # multi-writer and unreviewed). Cloud and Server/DC both work. The URL,
+    # credential and SSL names match mcp-atlassian's, so one .env serves both.
+    # The token acts as the user who made it; pages with read restrictions
+    # are skipped unless CONFLUENCE_SYNC_SKIP_RESTRICTED=false. See
+    # docs/confluence_sync_setup.md.
+    confluence_sync_enabled: bool = Field(False, alias="CONFLUENCE_SYNC_ENABLED")
+    confluence_url: str | None = Field(None, alias="CONFLUENCE_URL")
+    confluence_personal_token: str | None = Field(None, alias="CONFLUENCE_PERSONAL_TOKEN")
+    confluence_username: str | None = Field(None, alias="CONFLUENCE_USERNAME")
+    confluence_api_token: str | None = Field(None, alias="CONFLUENCE_API_TOKEN")
+    confluence_ssl_verify: str = Field("true", alias="CONFLUENCE_SSL_VERIFY")
+    confluence_sync_space_keys: str = Field("", alias="CONFLUENCE_SYNC_SPACE_KEYS")
+    confluence_sync_skip_restricted: bool = Field(True, alias="CONFLUENCE_SYNC_SKIP_RESTRICTED")
+    confluence_sync_allow_http: bool = Field(False, alias="CONFLUENCE_SYNC_ALLOW_HTTP")
+    confluence_sync_interval_minutes: int = Field(60, alias="CONFLUENCE_SYNC_INTERVAL_MINUTES")
+    confluence_max_pages_per_scan: int = Field(40, alias="CONFLUENCE_MAX_PAGES_PER_SCAN")
+
+    @property
+    def confluence_sync_space_key_list(self) -> list[str]:
+        """``CONFLUENCE_SYNC_SPACE_KEYS`` split on commas, blanks dropped, order kept."""
+        return list(
+            dict.fromkeys(
+                p.strip() for p in self.confluence_sync_space_keys.split(",") if p.strip()
+            )
+        )
+
+    @model_validator(mode="after")
+    def _validate_confluence_sync(self) -> "Settings":
+        if not self.confluence_sync_enabled:
+            return self
+        from urllib.parse import urlsplit
+
+        from openexecutive.knowledge.confluence_client import sanitize_space_key
+
+        url = (self.confluence_url or "").strip()
+        parts = urlsplit(url)
+        allowed = ("https", "http") if self.confluence_sync_allow_http else ("https",)
+        if parts.scheme not in allowed or not parts.hostname:
+            raise ValueError(
+                "CONFLUENCE_SYNC_ENABLED=true requires CONFLUENCE_URL as an https:// URL "
+                "(set CONFLUENCE_SYNC_ALLOW_HTTP=true to allow http:// on a private network)"
+            )
+        if parts.username or parts.password or parts.query or parts.fragment:
+            raise ValueError(
+                "CONFLUENCE_URL must be the site's base URL, with no credentials, "
+                "query or fragment"
+            )
+        has_basic = bool(self.confluence_username and self.confluence_api_token)
+        if not self.confluence_personal_token and not has_basic:
+            # Both set is fine: the personal access token wins.
+            raise ValueError(
+                "CONFLUENCE_SYNC_ENABLED=true requires CONFLUENCE_PERSONAL_TOKEN "
+                "(Server/Data Center), or CONFLUENCE_USERNAME and CONFLUENCE_API_TOKEN (Cloud)"
+            )
+        keys = self.confluence_sync_space_key_list
+        if not keys:
+            raise ValueError("CONFLUENCE_SYNC_ENABLED=true requires CONFLUENCE_SYNC_SPACE_KEYS")
+        bad = [k for k in keys if not sanitize_space_key(k)]
+        if bad:
+            raise ValueError(f"CONFLUENCE_SYNC_SPACE_KEYS has invalid space keys: {bad}")
+        return self
+
     @model_validator(mode="after")
     def _validate_drive_sync(self) -> "Settings":
         if not self.drive_sync_enabled:
