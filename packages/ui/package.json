@@ -22,7 +22,7 @@
     "@tailwindcss/typography": "^0.5.20",
     "@xyflow/react": "^12.12.0",
     "mermaid": "^12.0.0",
-    "next": "^16.3.6",
+    "next": "^16.3.7",
     "next-auth": "^5.0.0-beta.32",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -38,7 +38,7 @@
     "@typescript/native": "npm:typescript@^7.0.2",
     "autoprefixer": "^10.6.1",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.3.6",
+    "eslint-config-next": "^16.3.7",
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
