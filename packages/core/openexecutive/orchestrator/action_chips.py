@@ -222,14 +222,16 @@ def summarize_action(
             return None
         to = (parsed or {}).get("to")
         first = str(to[0]) if isinstance(to, list) and to else ""
+        from openexecutive.delegation.gmail import MAILBOX_LINK_PREFIXES
+
         payload["summary"] = (
-            f"Drafted an email as you to {first} — in your Gmail Drafts"
-            if first else "Drafted an email as you — in your Gmail Drafts"
+            f"Drafted an email as you to {first} — in your Drafts"
+            if first else "Drafted an email as you — in your Drafts"
         )
         payload["target"] = first or None
         link = (parsed or {}).get("gmail_link")
-        # Built server-side from a fixed prefix (delegation.gmail.gmail_link).
-        if isinstance(link, str) and link.startswith("https://mail.google.com/"):
+        # Built server-side from a fixed prefix (delegation.gmail.mailbox_link).
+        if isinstance(link, str) and link.startswith(MAILBOX_LINK_PREFIXES):
             payload["link"] = link
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")

@@ -33,7 +33,7 @@ import { formatAgo } from "@/lib/setupStatus";
 // `onVisible`) whether it is on the page at all.
 
 const INTRO =
-  "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own Gmail for you to review and send. Nothing goes out as you unless you send it, from Gmail or with Send on a reply waiting on Today. Everything else it writes stays in its own name.";
+  "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own mailbox (Gmail or Outlook) for you to review and send. Nothing goes out as you unless you send it, from your mailbox or with Send on a reply waiting on Today. Everything else it writes stays in its own name.";
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -133,6 +133,8 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
   }
 
   const connected = settings.gmail.status === "connected";
+  const outlook = settings.gmail.provider === "microsoft";
+  const mailbox = outlook ? "Outlook" : "Gmail";
   const on = settings.enabled;
 
   const toggle = async () => {
@@ -157,22 +159,33 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
   return (
     <SettingsSection id="act-as-me" title="Act as me" description={INTRO}>
       <div className="max-w-md divide-y divide-line">
-        {/* Your Gmail */}
+        {/* Your mailbox */}
         <div className="py-4 first:pt-0 last:pb-0">
-          <div className="text-xs font-medium text-fg">Your Gmail</div>
+          <div className="text-xs font-medium text-fg">{connected ? `Your ${mailbox}` : "Your mailbox"}</div>
           <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
             {connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
           </p>
           {!connected && settings.gmail.status === "not_configured" && (
             <div className="mt-2">
               <p className="text-xs text-fg-muted leading-relaxed">
-                On a computer with a browser, with the Executive&apos;s Google OAuth client exported, run
-                this and sign in as yourself, then put the file it writes where the API reads it
-                (see the Act as me section of .env.example):
+                For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth client
+                exported, run this and sign in as yourself, then put the file it writes where the API
+                reads it (see the Act as me section of .env.example):
               </p>
               <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-fg">
                 {settings.gmail.connect_command}
               </pre>
+              {settings.gmail.outlook_connect_command && (
+                <>
+                  <p className="mt-2 text-xs text-fg-muted leading-relaxed">
+                    For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this instead
+                    and sign in as yourself with the code it prints:
+                  </p>
+                  <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-fg">
+                    {settings.gmail.outlook_connect_command}
+                  </pre>
+                </>
+              )}
             </div>
           )}
           {!connected && (
@@ -196,10 +209,10 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
               </div>
               <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
                 {on
-                  ? "On: ask it in chat — “reply to Dana as me: yes to the 5th” — and the draft waits in your Gmail Drafts."
+                  ? `On: ask it in chat — “reply to Dana as me: yes to the 5th” — and the draft waits in your ${mailbox} Drafts.`
                   : connected
                     ? "Off: the Executive only ever writes as itself."
-                    : "Connect your Gmail first."}
+                    : "Connect your mailbox first."}
               </p>
             </div>
             <Switch
@@ -225,7 +238,7 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
           />
         )}
 
-        <VoiceSection connected={connected} />
+        <VoiceSection connected={connected} outlook={outlook} />
 
         {settings.team && <TeamSection team={settings.team} onSettings={setSettings} />}
       </div>
@@ -268,7 +281,7 @@ function TeamSection({
           </div>
           <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
             {team.enabled
-              ? "On: each team member can connect their own Gmail and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
+              ? "On: each team member can connect their own Gmail or Outlook and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
               : "Off: only you can use Act as me."}
           </p>
         </div>
@@ -346,7 +359,7 @@ function InboxSection({
           </div>
           <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
             {on
-              ? "When mail comes in that needs you, it writes a first reply in your Gmail Drafts and puts it on Today, where you send it, edit it in Gmail or dismiss it. Nothing is sent until you tap Send."
+              ? "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
               : actAsMeOn
                 ? "Off: it only drafts when you ask it to in chat."
                 : "Turn on Write drafts as me first."}
@@ -383,7 +396,7 @@ function InboxSection({
 // "How I write": learned from your sent mail, editable, lockable. The
 // summary line and the Learn button are always in view; the fields sit
 // behind "Edit how I write", and stay open while an edit is unsaved.
-function VoiceSection({ connected }: { connected: boolean }) {
+function VoiceSection({ connected, outlook = false }: { connected: boolean; outlook?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [profile, setProfile] = useState<VoiceProfile | null>(null);
   const [greetings, setGreetings] = useState<Record<string, string>>({});
@@ -593,20 +606,24 @@ function VoiceSection({ connected }: { connected: boolean }) {
             {profile.signature ? (
               <>
                 <p className="mt-0.5 leading-relaxed">
-                  Added to the end of every draft, from your Gmail settings.
+                  {outlook
+                    ? "Added to the end of every draft. Outlook doesn't share your signature with apps, so it can't be refreshed from there."
+                    : "Added to the end of every draft, from your Gmail settings."}
                 </p>
                 <div className="mt-1 whitespace-pre-wrap break-words border-l-2 border-line pl-2 leading-relaxed text-fg">
                   {profile.signature}
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3">
-                  <button
-                    type="button"
-                    disabled={busy || !connected}
-                    onClick={takeGmailSignature}
-                    className={linkButton}
-                  >
-                    Refresh from Gmail
-                  </button>
+                  {!outlook && (
+                    <button
+                      type="button"
+                      disabled={busy || !connected}
+                      onClick={takeGmailSignature}
+                      className={linkButton}
+                    >
+                      Refresh from Gmail
+                    </button>
+                  )}
                   <button
                     type="button"
                     disabled={busy}
@@ -619,15 +636,21 @@ function VoiceSection({ connected }: { connected: boolean }) {
               </>
             ) : (
               <>
-                <p className="mt-0.5 leading-relaxed">No signature is added to drafts.</p>
-                <button
-                  type="button"
-                  disabled={busy || !connected}
-                  onClick={takeGmailSignature}
-                  className={`mt-1 ${linkButton}`}
-                >
-                  Add my Gmail signature
-                </button>
+                <p className="mt-0.5 leading-relaxed">
+                  {outlook
+                    ? "No signature is added to drafts: Outlook doesn't share your signature with apps, so drafts end with your sign-off."
+                    : "No signature is added to drafts."}
+                </p>
+                {!outlook && (
+                  <button
+                    type="button"
+                    disabled={busy || !connected}
+                    onClick={takeGmailSignature}
+                    className={`mt-1 ${linkButton}`}
+                  >
+                    Add my Gmail signature
+                  </button>
+                )}
               </>
             )}
           </div>

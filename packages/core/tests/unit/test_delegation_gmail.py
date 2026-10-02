@@ -334,9 +334,12 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
     assert public == {
         "profile_email", "search_threads", "get_thread", "list_sent", "send_as_signature", "create_draft",
         # The inbox watcher: reads, and deleting a draft it wrote.
-        "list_message_ids", "get_message", "send_as_addresses", "get_draft", "delete_draft",
+        "list_message_ids", "inbox_message_ids", "has_written_to", "get_message", "send_as_addresses",
+        "get_draft", "delete_draft",
         # Send on the person's tap (delegation.reply_send).
         "send_draft",
+        # Checks an id's shape (Gmail's and Outlook's differ); no call.
+        "valid_id",
     }
     # Gmail's send endpoints (/settings/sendAs is a read, and allowed): the
     # draft one, once, and never messages.send, which sends any text.
@@ -499,6 +502,25 @@ def test_it_lists_message_ids_newest_first() -> None:
     assert ids == [("m2", "t2"), ("m1", "t1")]  # a malformed id is dropped
     listed = next(r for r in google.requests if r.url.path.endswith("/messages"))
     assert listed.url.params["q"] == "in:inbox after:1" and listed.url.params["maxResults"] == "100"
+
+
+def test_the_inbox_and_sent_lookups_use_gmail_search() -> None:
+    from datetime import UTC, datetime
+
+    google = FakeInboxGoogle()
+    client = google.client()
+    asyncio.run(client.inbox_message_ids(after=datetime.fromtimestamp(1_700_000_000, UTC), max_results=7))
+    listed = [r for r in google.requests if r.url.path.endswith("/messages")][-1]
+    assert listed.url.params["q"] == (
+        "in:inbox -in:chats -from:me -category:promotions -category:social "
+        "-category:updates -category:forums after:1700000000"
+    )
+    assert asyncio.run(client.has_written_to("Dana@NorthPeak.example")) is True
+    listed = [r for r in google.requests if r.url.path.endswith("/messages")][-1]
+    assert listed.url.params["q"] == "in:sent to:dana@northpeak.example"
+    before = len(google.requests)
+    assert asyncio.run(client.has_written_to("x OR in:anywhere")) is False
+    assert len(google.requests) == before
 
 
 def test_a_draft_is_read_and_deleted_and_gone_is_not_an_error() -> None:

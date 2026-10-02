@@ -299,7 +299,7 @@ def test_the_setup_check(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatc
     assert _check(owner, "shared_mailbox", monkeypatch)[0] == "off"
     assert _check(owner, "needs_reconnect", monkeypatch)[0] == "warn"
     set_enabled(roster.principal, True, updated_by="test")
-    assert _check(owner, "connected", monkeypatch)[1].endswith("in your own Gmail.")
+    assert _check(owner, "connected", monkeypatch)[1].endswith("in your own mailbox.")
     assert _check(owner, "not_configured", monkeypatch)[0] == "warn"
     assert _check(owner, "needs_reconnect", monkeypatch)[0] == "error"
     assert _check(owner, "shared_mailbox", monkeypatch)[0] == "error"

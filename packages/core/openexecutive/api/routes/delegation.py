@@ -65,6 +65,7 @@ from openexecutive.delegation.gmail import (
     STATUS_MESSAGES,
     GmailAuthError,
     GmailError,
+    credential_provider,
     gmail_for,
     gmail_status,
 )
@@ -100,9 +101,12 @@ class GmailConnection(BaseModel):
     status: str
     message: str
     email: str | None = None
-    # The command that connects this caller's own Gmail (upstream has no
-    # OAuth callback: the token is minted locally, like the Executive's own).
+    # The commands that connect this caller's own Gmail or Outlook (there is
+    # no OAuth callback: the token is minted locally, like the Executive's own).
     connect_command: str
+    outlook_connect_command: str = ""
+    # Which mailbox the saved sign-in opens: "google" or "microsoft".
+    provider: str = "google"
 
 
 class InboxOut(BaseModel):
@@ -264,6 +268,11 @@ def _connect_command(email: str | None) -> str:
     )
 
 
+def _outlook_connect_command(email: str | None) -> str:
+    target = email or "you@example.com"
+    return f"uv run python scripts/connect-own-outlook.py --email {target}"
+
+
 def _inbox_out(person_id: int) -> InboxOut:
     from openexecutive.delegation import inbox
 
@@ -320,6 +329,8 @@ async def _state(person: Person) -> DelegationOut:
             message=STATUS_MESSAGES[status],
             email=person.email,
             connect_command=_connect_command(person.email),
+            outlook_connect_command=_outlook_connect_command(person.email),
+            provider=credential_provider(person.email or ""),
         ),
         inbox=_inbox_out(_person_id(person)),
         team=_team_out(person),
@@ -511,9 +522,16 @@ async def learn_delegation_voice(request: Request) -> VoiceOut:
 @router.post("/delegation/voice/signature", response_model=VoiceOut)
 async def refresh_delegation_signature(request: Request) -> VoiceOut:
     """Read the signature from the caller's Gmail settings again and keep
-    everything else, lock included: a relearn would replace their edits."""
+    everything else, lock included: a relearn would replace their edits.
+    Outlook has no signature an app can read, so it is refused there rather
+    than clearing the one they have."""
     person = _caller(request)
     person_id = _person_id(person)
+    if credential_provider(person.email or "") == "microsoft":
+        raise _refuse(
+            409, "signature_unavailable",
+            "Outlook doesn't let apps read your signature, so drafts end with your sign-off.",
+        )
     status = await gmail_status(person.email)
     if status != "connected":
         raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])

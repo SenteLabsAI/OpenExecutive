@@ -22,6 +22,12 @@ Gmail (the request body is the id and nothing else). Only
 draft's card; unit tests pin the public methods, the one send endpoint and
 that call site.
 
+**Outlook too.** A person may connect an Outlook mailbox instead
+(``scripts/connect-own-outlook.py``, which writes ``"provider": "microsoft"``
+into the same file). ``gmail_for`` then hands back
+``delegation.outlook.DelegateOutlook``, which keeps this client's methods,
+return types and errors, so every caller works with either mailbox.
+
 **Always checked.** ``gmail_status`` asks Google whose mailbox the token opens
 and compares it with the person's People email on every use — a roster email
 can change, and a client slot swaps the roster — and refuses the Executive's
@@ -58,6 +64,7 @@ SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPE_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 SCOPES: tuple[str, ...] = (SCOPE_READONLY, SCOPE_COMPOSE)
 CREDENTIAL_VERSION = 1
+PROVIDER = "google"
 
 # Marks a draft this package wrote. Best-effort only: Gmail may rebuild a
 # draft when it is sent from its own UI.
@@ -87,15 +94,16 @@ BLOCKING_CODES: dict[str, str] = {
 STATUS_MESSAGES: dict[str, str] = {
     "connected": "Connected.",
     "not_configured": (
-        "Your Gmail isn't connected. Run scripts/connect-own-gmail.py as yourself "
-        "(Settings → Act as me shows how)."
+        "Your mailbox isn't connected. Run scripts/connect-own-gmail.py (Gmail) or "
+        "scripts/connect-own-outlook.py (Outlook) as yourself (Settings → Act as me "
+        "shows how)."
     ),
     "needs_reconnect": (
-        "Google no longer accepts the saved sign-in for your Gmail. Connect it again "
-        "with scripts/connect-own-gmail.py."
+        "Your mailbox no longer accepts the saved sign-in. Connect it again with "
+        "scripts/connect-own-gmail.py or scripts/connect-own-outlook.py."
     ),
     "mismatch": (
-        "The connected Gmail isn't the address on your People entry. Connect that "
+        "The connected mailbox isn't the address on your People entry. Connect that "
         "account, or correct your email on the People page."
     ),
     "no_email": "Your People entry has no email address. Add it on the People page first.",
@@ -103,11 +111,12 @@ STATUS_MESSAGES: dict[str, str] = {
         "Your address is the Executive's own mailbox, so it can't write as you from "
         "it. Give the Executive a Google account of its own first."
     ),
-    "error": "Couldn't reach your Gmail just now. Try again in a moment.",
+    "error": "Couldn't reach your mailbox just now. Try again in a moment.",
 }
 
 # Gmail ids are short hex strings; anything else never reaches a URL path.
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 _TOKEN_URI_RE = re.compile(r"^https://oauth2\.googleapis\.com/")
 _MAX_HEADER = 900
 _TOKEN_SLACK_SECONDS = 60
@@ -264,6 +273,19 @@ def credential_path(email: str, *, directory: Path | None = None) -> Path:
     return (directory or credentials_dir()) / f"{email_key(email)}.json"
 
 
+def credential_provider(email: str, *, directory: Path | None = None) -> str:
+    """Which mailbox ``email``'s credential file opens: ``"google"`` (also
+    for a file with no provider, or none at all) or ``"microsoft"``."""
+    address = normalize_email(email)
+    if not address:
+        return PROVIDER
+    try:
+        data = json.loads(credential_path(address, directory=directory).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return PROVIDER
+    return "microsoft" if isinstance(data, dict) and data.get("provider") == "microsoft" else PROVIDER
+
+
 def load_credential(email: str, *, directory: Path | None = None) -> GmailCredential | None:
     """The stored credential for ``email``, or None when there is none or it
     is unreadable (logged). A file naming another address is ignored."""
@@ -278,7 +300,9 @@ def load_credential(email: str, *, directory: Path | None = None) -> GmailCreden
     except (OSError, ValueError):
         logger.warning("delegation.gmail: unreadable credential file %s", path.name)
         return None
-    if not isinstance(data, dict) or normalize_email(str(data.get("email") or "")) != address:
+    if not isinstance(data, dict) or data.get("provider", PROVIDER) != PROVIDER:
+        return None
+    if normalize_email(str(data.get("email") or "")) != address:
         logger.warning("delegation.gmail: credential file %s is for another address", path.name)
         return None
     user = data.get("authorized_user")
@@ -571,6 +595,35 @@ def valid_id(value: object) -> bool:
     return isinstance(value, str) and bool(_ID_RE.fullmatch(value))
 
 
+# Every link ``mailbox_link`` builds starts with one of these; the chat chip
+# and the reply cards (packages/ui/src/lib/replyCards.ts) link nowhere else.
+MAILBOX_LINK_PREFIXES: tuple[str, ...] = (
+    "https://mail.google.com/",
+    "https://outlook.office.com/mail/",
+    "https://outlook.live.com/mail/",
+)
+
+
+def mailbox_link(
+    email: str,
+    *,
+    thread_id: str | None = None,
+    message_id: str | None = None,
+    draft_id: str | None = None,
+) -> str:
+    """A link that opens a draft in the person's own mailbox, whichever it
+    is. Gmail opens the thread for a reply (``thread_id``), else the draft by
+    its message id; Outlook opens the draft itself (``draft_id``, else
+    ``message_id``), as Outlook on the web has no link to a conversation."""
+    if credential_provider(email) != "microsoft":
+        return gmail_link(email, thread_id=thread_id, message_id=message_id)
+    from openexecutive.delegation.outlook import load_credential as load_outlook
+    from openexecutive.delegation.outlook import outlook_link
+
+    cred = load_outlook(email)
+    return outlook_link(personal=bool(cred and cred.personal), message_id=draft_id or message_id)
+
+
 # --------------------------------------------------------------------------- #
 # Client
 # --------------------------------------------------------------------------- #
@@ -597,6 +650,9 @@ def _token_key(cred: GmailCredential) -> str:
 
 class DelegateGmail:
     """One person's mailbox. ``transport`` is for tests (httpx MockTransport)."""
+
+    provider = PROVIDER
+    valid_id = staticmethod(valid_id)
 
     def __init__(
         self,
@@ -802,6 +858,22 @@ class DelegateGmail:
             if isinstance(m, dict) and valid_id(m.get("id"))
         ]
 
+    async def inbox_message_ids(self, *, after: datetime, max_results: int = 25) -> list[tuple[str, str]]:
+        """``(message id, thread id)`` for mail that reached the Primary inbox
+        since ``after``, newest first, leaving out the person's own."""
+        query = (
+            "in:inbox -in:chats -from:me -category:promotions -category:social "
+            f"-category:updates -category:forums after:{int(after.timestamp())}"
+        )
+        return await self.list_message_ids(query, max_results=max_results)
+
+    async def has_written_to(self, address: str) -> bool:
+        """Whether the person's sent mail holds mail to ``address``."""
+        target = normalize_email(address)
+        if not _EMAIL_RE.fullmatch(target):
+            return False
+        return bool(await self.list_message_ids(f"in:sent to:{target}", max_results=1))
+
     async def get_message(self, message_id: str) -> MailMessage:
         if not valid_id(message_id):
             raise GmailError("invalid message id")
@@ -870,14 +942,20 @@ class DelegateGmail:
         )
 
 
-def gmail_for(email: str) -> DelegateGmail:
-    """The client for ``email``'s own mailbox."""
+def gmail_for(email: str) -> Any:
+    """The client for ``email``'s own mailbox: ``DelegateGmail``, or
+    ``outlook.DelegateOutlook`` when their credential file is a Microsoft one.
+    Both have the same methods, return types and errors."""
+    if credential_provider(email) == "microsoft":
+        from openexecutive.delegation.outlook import DelegateOutlook
+
+        return DelegateOutlook(email)
     return DelegateGmail(email)
 
 
 async def gmail_status(person_email: str | None, *, gmail: Any = None) -> GmailStatus:
     """Whether ``person_email``'s own mailbox can be used right now. Asks
-    Google which mailbox the credential opens. Never raises."""
+    the mail service which mailbox the credential opens. Never raises."""
     from openexecutive.config import get_settings
 
     address = normalize_email(person_email)

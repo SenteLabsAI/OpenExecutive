@@ -8422,6 +8422,55 @@ delegation:
     character reference past Unicode's range becomes U+FFFD before
     html.unescape (which raises past 4,300 digits). A unit test times
     crafted input.
+    Callers never name Gmail's query syntax: they use inbox_message_ids
+    (the Primary inbox since a time, not from the person) and
+    has_written_to (any sent mail to an address), so either client fits.
+  outlook_client: |
+    delegation.outlook.DelegateOutlook — the Outlook twin: direct Microsoft
+    Graph REST (httpx), never registered with the MCP gateway and never the
+    Microsoft 365 MCP server the Executive's own Outlook uses. Same public
+    methods, return types and errors as DelegateGmail (a unit test compares
+    the method sets), so every caller is unchanged; gmail.gmail_for picks it
+    when the person's credential file says "provider": "microsoft"
+    (gmail.credential_provider). One file per person either way: a person
+    has one mailbox for Act as me, and each loader ignores the other kind.
+    Why one file: everything that stores or checks a person's sign-in
+    already names one path per person.
+    scripts/connect-own-outlook.py mints it: device-code sign-in on the
+    Executive's own Entra app (MS365_MCP_CLIENT_ID, MS365_MCP_TENANT_ID,
+    default common), delegated User.Read, Mail.ReadWrite, Mail.Send and
+    offline_access, /me checked against --email, and "account": personal
+    when the id token's tid is the consumer tenant (refreshed at
+    consumers). The tenant is validated against a fixed pattern before it
+    is put in the token URL. Microsoft rotates the refresh token on use: the
+    new one is written back atomically (0600), keeping every other key, and
+    only when the file still holds the old one (a reconnect meanwhile wins).
+    Graph differences, all absorbed in the client: Prefer
+    IdType="ImmutableId" and text bodies on every call (a sent draft keeps
+    its id); a thread is conversationId; a draft's message id is
+    "<id>.<changeKey>" (draft_version), because callers detect an edit by a
+    changed message id and Outlook keeps a draft's id when it is edited;
+    labels are mapped — DRAFT, SENT only for mail in their Sent Items folder
+    (parentFolderId, so a From set to their address by someone else never
+    counts), INBOX, and CATEGORY_UPDATES for Focused Inbox "other"; a draft
+    with no From reads as from the mailbox; the ghostwritten mark is a
+    named extended property; sender_authenticated only from the topmost
+    Authentication-Results (Exchange writes it above anything the sender
+    added) holding exactly one dmarc verdict, a pass for From's domain
+    (exchange_authenticated). Replies use createReply on the message they
+    answer (by internetMessageId, else the newest), then PATCH the text and
+    recipients; a failed PATCH deletes the half-made draft. delete_draft
+    refuses anything that isn't a draft. send_draft is POST
+    /messages/{id}/send with an empty body, called only by reply_send.
+    search_threads turns a Gmail-style find into KQL: words, from:, to:,
+    cc:, subject: and newer_than: kept, other operators dropped, quotes
+    removed. Graph has no signature API: send_as_signature is "", the voice
+    learner keeps the stored signature, and POST
+    /delegation/voice/signature is a 409 signature_unavailable. Links:
+    gmail.mailbox_link opens the draft itself in Outlook on the web
+    (outlook.office.com/mail, or outlook.live.com/mail/0 for a personal
+    account); MAILBOX_LINK_PREFIXES is what the chat chip and the reply
+    cards (ui lib/replyCards.ts, a test compares them) will link to.
   privacy: |
     From the moment ghostwrite_email sets touched_mail,
     people_tools.audit_row_private_to_principal answers True, so every row
@@ -8721,7 +8770,9 @@ delegation:
     judge_inbox (delegation_inbox_001-007; 007 checks the watcher's draft
     never claims anything was sent).
   config: |
-    DELEGATION_GOOGLE_CREDENTIALS_DIR, DELEGATION_COMPOSER_MODEL,
+    DELEGATION_GOOGLE_CREDENTIALS_DIR (Gmail and Outlook files alike;
+    connect-own-outlook.py reads MS365_MCP_CLIENT_ID / _TENANT_ID / _CLIENT_SECRET
+    only when it runs), DELEGATION_COMPOSER_MODEL,
     DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50),
     DELEGATION_INBOX_POLL_MINUTES (default 5),
     DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20, within the shared

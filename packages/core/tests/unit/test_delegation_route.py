@@ -80,6 +80,8 @@ def test_only_the_owner_sees_it(client: TestClient, ids: dict[str, int]) -> None
     assert body["enabled"] is False
     assert body["gmail"]["status"] == "not_configured"
     assert "--email olivia@co.example" in body["gmail"]["connect_command"]
+    assert "connect-own-outlook.py --email olivia@co.example" in body["gmail"]["outlook_connect_command"]
+    assert body["gmail"]["provider"] == "google"
 
 
 def test_a_request_without_a_sign_in_is_refused(
@@ -269,6 +271,21 @@ def test_an_edit_made_while_gmail_is_read_is_kept(
     monkeypatch.setattr(mailbox, "send_as_signature", slow_signature)
     body = client.post("/delegation/voice/signature", headers=OWNER).json()
     assert (body["signature"], body["habits"], body["locked"]) == ("Olivia Owner", ["Writes in plain words"], True)
+
+
+def test_an_outlook_signature_is_never_overwritten(
+    client: TestClient, ids: dict[str, int], gmail: dict[str, str], mailbox: _Mailbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outlook has no signature an app can read: the route refuses rather
+    than clearing the one they have, and Settings says which mailbox it is."""
+    save_voice(ids["principal"], VoiceProfile(signature="Olivia Owner"), locked=False, updated_by="person")
+    gmail["status"] = "connected"
+    monkeypatch.setattr(route, "credential_provider", lambda email: "microsoft")
+    resp = client.post("/delegation/voice/signature", headers=OWNER)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "signature_unavailable"
+    assert mailbox.asked == 0
+    assert get_voice(ids["principal"]).profile.signature == "Olivia Owner"
+    assert client.get("/delegation", headers=OWNER).json()["gmail"]["provider"] == "microsoft"
 
 
 @pytest.mark.parametrize(("status", "code"), [

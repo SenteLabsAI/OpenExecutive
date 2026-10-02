@@ -8,6 +8,7 @@ import AnswerSourcesFooter from "@/components/AnswerSourcesFooter";
 import BrandMark from "@/components/BrandMark";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
+import { isMailboxLink } from "@/lib/replyCards";
 
 interface MessageProps {
   role: "user" | "assistant";
@@ -84,9 +85,9 @@ function ActionChip({ action }: { action: ActionTaken }) {
     </span>
   );
   if (action.link) {
-    // A draft in your own Gmail (Act as me) opens in a new tab; every other
+    // A draft in your own mailbox (Act as me) opens in a new tab; every other
     // chip links inside the app.
-    if (action.link.startsWith("https://mail.google.com/")) {
+    if (isMailboxLink(action.link)) {
       return (
         <a
           href={action.link}

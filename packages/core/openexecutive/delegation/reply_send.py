@@ -1,8 +1,9 @@
 """Send a reply the inbox watcher drafted, when the person taps Send.
 
 The one path in Act as me that sends anything, and all it can send is the
-exact Gmail draft on a ``delegation_reply`` card, by its id
-(``DelegateGmail.send_draft`` posts ``{"id": ...}`` to ``drafts.send``),
+exact draft on a ``delegation_reply`` card, by its id
+(``DelegateGmail.send_draft`` posts ``{"id": ...}`` to ``drafts.send``;
+``DelegateOutlook.send_draft`` posts nothing to that draft's ``send``),
 after the person approved that card (``POST /decisions/{id}/approve``, a
 class only the card's own person sees or resolves). Only that route calls ``send_approved_reply`` (a unit
 test walks the code), so no model, chat turn, workflow, scheduled job or MCP
@@ -90,7 +91,7 @@ def _check_caller(caller: Any, email: str) -> None:
         409,
         "caller_signing_required",
         "Sending from here needs signed sign-ins, so that nobody else can send as you. "
-        "Until they're set up (Settings → Setup status → API protection), send it from Gmail.",
+        "Until they're set up (Settings → Setup status → API protection), send it from your mailbox.",
     )
 
 
@@ -175,10 +176,10 @@ async def _send(
     if not is_enabled(person.id) or not get_watch(person.id).enabled:
         raise SendRefused(
             409, "inbox_off",
-            "Turn on Act as me and Draft replies to my inbox to send from here, or send it from Gmail.",
+            "Turn on Act as me and Draft replies to my inbox to send from here, or send it from your mailbox.",
         )
     if _client_slot_active():
-        raise SendRefused(409, "client_slot", "Sending from here is paused while a client is active. Send it from Gmail.")
+        raise SendRefused(409, "client_slot", "Sending from here is paused while a client is active. Send it from your mailbox.")
     client = gmail if gmail is not None else gmail_for(email)
     status = await gmail_status(email, gmail=client)
     if status != "connected":
@@ -186,7 +187,7 @@ async def _send(
 
     message_id = str(payload.get("message_id") or "")
     thread_id = str(payload.get("thread_id") or "")
-    unreadable = "Couldn't read the draft in your Gmail. Try again in a moment."
+    unreadable = "Couldn't read the draft in your mailbox. Try again in a moment."
     try:
         draft = await client.get_draft(str(payload.get("draft_id") or ""))
         own = {email, *await client.send_as_addresses()}
@@ -194,16 +195,16 @@ async def _send(
         raise SendRefused(502, "gmail_error", unreadable) from exc
     if draft is None:
         _close_card(person.id, instance.id, message_id, "draft_gone", CLOSED)
-        raise SendRefused(409, "draft_gone", "That draft isn't in your Gmail any more: it was sent or deleted there.")
+        raise SendRefused(409, "draft_gone", "That draft isn't in your mailbox any more: it was sent or deleted there.")
     try:
         thread = await client.get_thread(thread_id)
     except GmailNotFound:
         _close_card(person.id, instance.id, message_id, "thread_gone", CLOSED)
-        raise SendRefused(409, "draft_gone", "That conversation isn't in your Gmail any more.") from None
+        raise SendRefused(409, "draft_gone", "That conversation isn't in your mailbox any more.") from None
     except GmailError as exc:
         raise SendRefused(502, "gmail_error", unreadable) from exc
     if draft.message.thread_id != thread_id:
-        raise SendRefused(409, "draft_moved", "That draft isn't in the same conversation any more. Send it from Gmail.")
+        raise SendRefused(409, "draft_moved", "That draft isn't in the same conversation any more. Send it from your mailbox.")
     later = later_messages(thread, payload, now=now)
     if any("SENT" in m.labels and m.from_addr in own for m in later):
         _close_card(person.id, instance.id, message_id, "you_replied", CLOSED)
@@ -212,17 +213,17 @@ async def _send(
     recipients = sorted({*draft.message.to, *draft.message.cc, *draft.message.bcc})
     exec_address = normalize_email(get_settings().exec_email_address)
     if not recipients:
-        raise SendRefused(409, "no_recipients", "The draft isn't addressed to anyone. Add someone in Gmail.")
+        raise SendRefused(409, "no_recipients", "The draft isn't addressed to anyone. Add someone in your mailbox.")
     if len(recipients) > MAX_RECIPIENTS:
         raise SendRefused(
-            409, "too_many_recipients", f"The draft goes to more than {MAX_RECIPIENTS} people. Send it from Gmail.",
+            409, "too_many_recipients", f"The draft goes to more than {MAX_RECIPIENTS} people. Send it from your mailbox.",
         )
     if exec_address and exec_address in recipients:
         raise SendRefused(
-            409, "executive_recipient", "The draft is addressed to the Executive's own mailbox. Change it in Gmail.",
+            409, "executive_recipient", "The draft is addressed to the Executive's own mailbox. Change it in your mailbox.",
         )
     if draft.message.from_addr not in own:
-        raise SendRefused(409, "not_from_you", "The draft isn't from one of your own addresses. Check it in Gmail.")
+        raise SendRefused(409, "not_from_you", "The draft isn't from one of your own addresses. Check it in your mailbox.")
 
     reasons: list[str] = []
     if recipients != _addresses(payload.get("draft_to")) and _addresses(confirm.get("recipients")) != recipients:
@@ -259,12 +260,12 @@ async def _send(
             release_claim(instance.id)
             SENDING.discard(instance.id)
             _close_card(person.id, instance.id, message_id, "draft_gone", CLOSED)
-            raise SendRefused(409, "draft_gone", "That draft isn't in your Gmail any more: it was sent or deleted there.")
+            raise SendRefused(409, "draft_gone", "That draft isn't in your mailbox any more: it was sent or deleted there.")
         if current.message.id != draft.message.id:
             release_claim(instance.id)
             raise SendRefused(
                 409, "draft_changed",
-                "The draft changed in Gmail just now, so nothing was sent. Look it over and tap Send again.",
+                "The draft changed in your mailbox just now, so nothing was sent. Look it over and tap Send again.",
             )
         try:
             sent = await client.send_draft(draft.draft_id)
@@ -274,21 +275,21 @@ async def _send(
                 logger.warning("delegation.reply_send: Gmail didn't confirm a send (%s)", type(exc).__name__)
                 raise SendRefused(
                     502, "send_unconfirmed",
-                    "Gmail didn't confirm it was sent. Check your Sent folder in Gmail; this card updates on its own.",
+                    "Your mailbox didn't confirm it was sent. Check your Sent folder; this card updates on its own.",
                 ) from exc
             release_claim(instance.id)
             if isinstance(exc, GmailNotFound):
                 SENDING.discard(instance.id)
                 _close_card(person.id, instance.id, message_id, "draft_gone", CLOSED)
                 raise SendRefused(
-                    409, "draft_gone", "That draft isn't in your Gmail any more: it was sent or deleted there.",
+                    409, "draft_gone", "That draft isn't in your mailbox any more: it was sent or deleted there.",
                 ) from exc
             if isinstance(exc, GmailAuthError):
                 raise SendRefused(409, "gmail_needs_reconnect", STATUS_MESSAGES["needs_reconnect"]) from exc
             if isinstance(exc, GmailRateLimited):
-                raise SendRefused(429, "rate_limited", "Gmail asked to slow down. Nothing was sent; try again in a minute.") from exc
+                raise SendRefused(429, "rate_limited", "Your mail service asked to slow down. Nothing was sent; try again in a minute.") from exc
             raise SendRefused(
-                502, "gmail_error", "Gmail refused to send it. Nothing was sent; try again, or send it from Gmail.",
+                502, "gmail_error", "Your mailbox refused to send it. Nothing was sent; try again, or send it from your mailbox.",
             ) from exc
         # It went: whatever happens to the bookkeeping, say so. A card left
         # executing is settled by the reconciler from the sent message.

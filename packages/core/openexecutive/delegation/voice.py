@@ -661,11 +661,15 @@ async def _learn(
             "not_enough_mail",
             f"There isn't enough of your own sent mail to learn from yet (found {len(samples)}).",
         )
-    try:
-        signature = await gmail.send_as_signature()
-    except Exception:
-        logger.warning("delegation.voice: signature lookup failed", exc_info=True)
-        signature = ""
+    if getattr(gmail, "provider", "google") == "microsoft":
+        # Outlook gives apps no way to read a signature: keep the one they set here.
+        signature = stored.profile.signature
+    else:
+        try:
+            signature = await gmail.send_as_signature()
+        except Exception:
+            logger.warning("delegation.voice: signature lookup failed", exc_info=True)
+            signature = ""
 
     from openexecutive.attunement.style import _roster_names
 

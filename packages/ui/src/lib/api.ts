@@ -1536,7 +1536,7 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
 }
 
 // ----------------------------------------------------------------------------
-// Act as me — the Executive drafts email AS you, in your own Gmail Drafts,
+// Act as me — the Executive drafts email AS you, in your own Drafts (Gmail or Outlook),
 // when you ask it to or (with Draft replies to my inbox on) for mail that
 // needs you. It sends only a reply card's draft, when you tap Send. The owner
 // can have it, and team members too once the owner lets them.
@@ -1556,8 +1556,12 @@ export interface DelegationSettings {
     status: DelegationGmailStatus;
     message: string;
     email: string | null;
-    // How to connect your own Gmail (the token is minted locally).
+    // How to connect your own Gmail or Outlook (the token is minted locally).
     connect_command: string;
+    // Absent on a backend that predates Outlook.
+    outlook_connect_command?: string;
+    // Which mailbox the saved sign-in opens.
+    provider?: "google" | "microsoft";
   };
   // Absent on a backend that predates the inbox watcher.
   inbox?: InboxWatch;
@@ -1621,7 +1625,7 @@ export interface ReplyCard {
   // What the draft leaves for you to decide.
   open_questions: string[];
   flags: string[];
-  // Opens the thread in your Gmail, where the draft is.
+  // Opens the draft in your own mailbox (the thread, in Gmail).
   gmail_link: string;
 }
 

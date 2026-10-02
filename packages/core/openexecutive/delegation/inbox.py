@@ -182,11 +182,11 @@ STATUS_MESSAGES: dict[str, str] = {
     "backlog_full": "On, but 25 replies are already waiting for you. Send or dismiss some first.",
     "act_as_me_off": "Paused: Act as me is off.",
     "client_slot": "Paused while a client is active.",
-    "rate_limited": "Gmail asked it to slow down. It tries again shortly.",
-    "error": "Couldn't reach your Gmail. It tries again shortly.",
-    "not_configured": "Paused: your Gmail isn't connected.",
-    "needs_reconnect": "Paused: connect your Gmail again.",
-    "mismatch": "Paused: the connected Gmail isn't the address on your People entry.",
+    "rate_limited": "Your mail service asked it to slow down. It tries again shortly.",
+    "error": "Couldn't reach your mailbox. It tries again shortly.",
+    "not_configured": "Paused: your mailbox isn't connected.",
+    "needs_reconnect": "Paused: connect your mailbox again.",
+    "mismatch": "Paused: the connected mailbox isn't the address on your People entry.",
     "no_email": "Paused: your People entry has no email address.",
     "shared_mailbox": "Paused: your address is the Executive's own mailbox.",
 }
@@ -608,8 +608,7 @@ async def relation_of(address: str, gmail: Any, *, contacts: bool = True) -> str
         return found
     if not _EMAIL_RE.fullmatch(address):
         return "stranger"
-    written_to = await gmail.list_message_ids(f"in:sent to:{address}", max_results=1)
-    return "correspondent" if written_to else "stranger"
+    return "correspondent" if await gmail.has_written_to(address) else "stranger"
 
 
 def _cap_reason(person_id: int, message: Any, relation: str, now: datetime, db_path: Path | None = None) -> str | None:
@@ -955,11 +954,7 @@ async def _scan(person: Any, client: Any, watch: InboxWatch, now: datetime) -> S
         return result
     carded = {str(card_payload(c).get("thread_id") or "") for c in cards}
     since = _parse(watch.watch_since) or now
-    query = (
-        "in:inbox -in:chats -from:me -category:promotions -category:social "
-        f"-category:updates -category:forums after:{int(since.timestamp())}"
-    )
-    listed = await client.list_message_ids(query, max_results=SCAN_LIST)
+    listed = await client.inbox_message_ids(after=since, max_results=SCAN_LIST)
     # The newest message of each thread that still needs a look, newest
     # first. Settled threads are passed over before the cap, so a burst of
     # mail, or a pause (a limit, a full backlog, a back-off), never hides

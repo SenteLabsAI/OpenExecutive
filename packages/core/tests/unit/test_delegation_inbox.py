@@ -75,12 +75,16 @@ class FakeInbox:
         self.calls.append("send_as")
         return [self.email, *self.aliases]
 
-    async def list_message_ids(self, query: str, *, max_results: int = 25) -> list[tuple[str, str]]:
-        self.calls.append(f"list:{query}")
+    async def has_written_to(self, address: str) -> bool:
+        self.calls.append(f"written_to:{address}")
         if self.list_error is not None:
             raise self.list_error
-        if query.startswith("in:sent to:"):
-            return [("s1", "st1")] if query.split("to:", 1)[1] in self.written_to else []
+        return address in self.written_to
+
+    async def inbox_message_ids(self, *, after: datetime, max_results: int = 25) -> list[tuple[str, str]]:
+        self.calls.append("list:inbox")
+        if self.list_error is not None:
+            raise self.list_error
         # Like "-from:me": the primary address only, not the send-as ones.
         inbound = [
             m for t in self.threads.values() for m in t.messages

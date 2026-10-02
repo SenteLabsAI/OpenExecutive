@@ -15,6 +15,7 @@ import { formatRelativeTime } from "@/lib/relativeTime";
 import {
   relationLabel,
   replyFlagLines,
+  mailboxName,
   safeGmailLink,
   sendLeftNothing,
   sendQuestion,
@@ -73,9 +74,9 @@ export default function RepliesWaiting({ id }: { id?: string }) {
         <SectionHeading title="Replies waiting" count={cards.length} icon="mail" />
         <InfoTip align="left">
           Mail that needs you, with a first reply the Executive wrote in your voice. Each
-          draft is in your Gmail Drafts, and nothing is sent until you tap Send: it sends that
-          draft exactly as it is in Gmail, so edit it there first if you want to change it.
-          Dismiss deletes the draft, unless you&apos;ve edited it in Gmail. Only you see these.
+          draft is in your own Drafts, and nothing is sent until you tap Send: it sends that
+          draft exactly as it is in your mailbox, so edit it there first if you want to change it.
+          Dismiss deletes the draft, unless you&apos;ve edited it there. Only you see these.
         </InfoTip>
       </div>
       {notice && <p className="mb-2 text-xs text-emerald-300">{notice}</p>}
@@ -114,6 +115,7 @@ function ReplyCardRow({
   const warnings = replyFlagLines(card.flags);
   const received = formatRelativeTime(card.received_at);
   const gmailLink = safeGmailLink(card.gmail_link);
+  const mailbox = mailboxName(card.gmail_link);
   const who = card.from_name.trim() || card.from_email;
 
   const dismiss = async () => {
@@ -212,13 +214,13 @@ function ReplyCardRow({
 
       {unconfirmed ? (
         <p className="mt-2.5 text-xs text-fg-muted">
-          Gmail hasn&apos;t confirmed this was sent. Check your Sent folder in Gmail; this card
+          {mailbox} hasn&apos;t confirmed this was sent. Check your Sent folder in {mailbox}; this card
           updates on its own within a few minutes.
         </p>
       ) : step.kind === "ask" || step.kind === "confirm" ? (
         <div className="mt-2.5 rounded-md border border-indigo-500/30 bg-indigo-500/5 px-2.5 py-2">
           {step.kind === "confirm" && <p className="text-xs text-amber-300">{step.message}</p>}
-          <p className="text-xs text-fg">{sendQuestion(step.recipients)}</p>
+          <p className="text-xs text-fg">{sendQuestion(step.recipients, mailbox)}</p>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -259,7 +261,7 @@ function ReplyCardRow({
               rel="noopener noreferrer"
               className="text-xs text-indigo-400 hover:text-indigo-300"
             >
-              Edit in Gmail ↗
+              Edit in {mailbox} ↗
             </a>
           )}
           <button

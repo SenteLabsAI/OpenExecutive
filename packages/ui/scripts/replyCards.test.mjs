@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isMailboxLink,
+  mailboxName,
   relationLabel,
   replyFlagLines,
   safeGmailLink,
@@ -37,6 +39,21 @@ test("safeGmailLink keeps only a link into Gmail", () => {
   assert.equal(safeGmailLink("https://mail.google.com.evil.example/x"), "");
   assert.equal(safeGmailLink("javascript:alert(1)"), "");
   assert.equal(safeGmailLink(""), "");
+});
+
+test("Outlook on the web links are kept too, and name the mailbox", () => {
+  for (const link of [
+    "https://outlook.office.com/mail/deeplink/read/AAk%2Fd1",
+    "https://outlook.live.com/mail/0/deeplink/read/AAk1",
+  ]) {
+    assert.equal(safeGmailLink(link), link);
+    assert.equal(mailboxName(link), "Outlook");
+  }
+  assert.equal(safeGmailLink("https://outlook.office.com.evil.example/mail/x"), "");
+  assert.equal(safeGmailLink("https://outlook.office.com/owa/x"), "");
+  assert.equal(isMailboxLink("https://outlook.live.com/mail/0/drafts"), true);
+  assert.equal(mailboxName("https://mail.google.com/mail/u/#drafts"), "Gmail");
+  assert.match(sendQuestion(["d@x.example"], "Outlook"), /from your Outlook,/);
 });
 
 test("sendQuestion names who the reply goes to", () => {

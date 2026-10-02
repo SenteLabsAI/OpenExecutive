@@ -237,12 +237,12 @@ share with People on the roster.
 Every Google Workspace call acts as the Executive's own account: the gateway
 refuses a call whose `user_google_email` names any other address.
 
-### Your own Gmail (Act as me, optional)
+### Your own Gmail or Outlook (Act as me, optional)
 
 Act as me lets the Executive draft replies **as the owner**, in the owner's
-own Gmail Drafts, when they ask it to, and (with **Draft replies to my
+own Drafts (Gmail or Outlook), when they ask it to, and (with **Draft replies to my
 inbox** on) for mail that needs them. Nothing goes out unless the owner sends
-it: from Gmail, or with **Send** on a reply card on Today, which needs signed
+it: from their mailbox, or with **Send** on a reply card on Today, which needs signed
 sign-ins on a server (see `docs/auth.md`). It uses a separate
 credential for the owner's mailbox, read by the API directly and never handed
 to workspace-mcp, so it must not live in the credentials directory above.
@@ -254,13 +254,26 @@ docker compose exec api mkdir -p /data/delegation_google
 docker compose cp delegation-credentials/<file>.json api:/data/delegation_google/
 ```
 
+For an Outlook mailbox (work, school or personal), run
+`scripts/connect-own-outlook.py` instead, with the Microsoft 365 app from
+`.env.example` exported (`MS365_MCP_CLIENT_ID`, and `MS365_MCP_TENANT_ID` if
+it is single-tenant). It prints a code to enter at Microsoft's sign-in page,
+from any browser, and writes the same kind of file, which goes in the same
+directory. The app needs public client flows on and the delegated Graph
+permissions `User.Read`, `Mail.ReadWrite` and `Mail.Send`. A person has one
+mailbox for Act as me: connecting the other kind replaces the file.
+
+```bash
+MS365_MCP_CLIENT_ID=<app id> uv run python scripts/connect-own-outlook.py --email you@example.com
+```
+
 No restart is needed. The address must be the owner's email on the People
 page, and it must not be the Executive's own `EXEC_EMAIL_ADDRESS`. Then turn
 it on in Settings → Act as me; the setup status page shows the connection.
 
 **Team members (optional).** Set `DELEGATION_TEAM_MEMBERS=true` and the owner
 gets **Let team members use it** in Settings → Act as me. Once they turn it
-on, each team member connects their own Gmail the same way (the script with
+on, each team member connects their own Gmail or Outlook the same way (the script with
 their own address, one file each in the same directory) and turns it on for
 themselves. A team member's mail, drafts, reply cards and audit rows are
 theirs alone: the owner sees only who uses it and how much.

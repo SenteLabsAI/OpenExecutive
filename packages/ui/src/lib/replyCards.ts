@@ -48,16 +48,34 @@ export function senderLine(card: { from_name: string; from_email: string }): str
   return name ? `${name} <${card.from_email}>` : card.from_email;
 }
 
-/** The card's Gmail link, only when it really opens Gmail: the backend
- * builds it from a fixed prefix, and the page never links anywhere else. */
+// Where a draft in someone's own mailbox opens: Gmail, or Outlook on the web
+// (work or school, and personal). Must match delegation.gmail's link builders.
+export const MAILBOX_LINK_PREFIXES = [
+  "https://mail.google.com/",
+  "https://outlook.office.com/mail/",
+  "https://outlook.live.com/mail/",
+] as const;
+
+/** Whether ``link`` opens the person's own mailbox (Gmail or Outlook). */
+export function isMailboxLink(link: string): boolean {
+  return MAILBOX_LINK_PREFIXES.some((prefix) => link.startsWith(prefix));
+}
+
+/** The card's mailbox link, only when it really opens their mailbox: the
+ * backend builds it from a fixed prefix, and the page never links anywhere else. */
 export function safeGmailLink(link: string): string {
-  return link.startsWith("https://mail.google.com/") ? link : "";
+  return isMailboxLink(link) ? link : "";
+}
+
+/** Which mailbox a card's link opens, to name it on the card. */
+export function mailboxName(link: string): string {
+  return link.startsWith("https://outlook.") ? "Outlook" : "Gmail";
 }
 
 /** The first Send's question: who it goes to, from where. */
-export function sendQuestion(recipients: readonly string[]): string {
+export function sendQuestion(recipients: readonly string[], mailbox = "Gmail"): string {
   const to = recipients.length ? recipients.join(", ") : "the sender";
-  return `Send this reply to ${to} from your Gmail, exactly as the draft is there?`;
+  return `Send this reply to ${to} from your ${mailbox}, exactly as the draft is there?`;
 }
 
 // Send refusals after which the card is gone for good: its draft was sent or

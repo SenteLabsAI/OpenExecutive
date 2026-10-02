@@ -257,6 +257,24 @@ def test_learning_reads_only_their_own_words(monkeypatch: pytest.MonkeyPatch) ->
     assert "drafted by the tool" not in turn and "ghost" not in turn and "Accepted:" not in turn
 
 
+def test_learning_from_outlook_keeps_the_signature_they_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outlook has no signature to read, so a relearn keeps theirs."""
+    person = _principal()
+    assert person.id is not None
+    monkeypatch.setattr(dvoice, "_client_slot_active", lambda: False)
+    save_voice(person.id, VoiceProfile(signature="Olivia Owner\nFernway"), locked=False, updated_by="person")
+    _model_returns(monkeypatch, {"sign_off": "Best,\nOlivia", "habits": ["Keeps emails short"]})
+
+    class Outlook(FakeMailbox):
+        provider = "microsoft"
+
+        async def send_as_signature(self) -> str:
+            raise AssertionError("never asked")
+
+    stored = asyncio.run(learn_from_sent_mail(person, Outlook([_sent(i, _WORDS) for i in range(6)])))
+    assert stored.profile.signature == "Olivia Owner\nFernway"
+
+
 def test_no_exemplars_while_a_client_slot_is_active(monkeypatch: pytest.MonkeyPatch) -> None:
     person = _principal()
     monkeypatch.setattr(dvoice, "_client_slot_active", lambda: True)

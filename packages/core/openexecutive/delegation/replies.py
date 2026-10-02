@@ -44,7 +44,7 @@ def _strings(value: Any) -> list[str]:
 
 def cards(person: Any) -> list[ReplyCard]:
     """``person``'s open reply cards, newest first."""
-    from openexecutive.delegation.gmail import gmail_link
+    from openexecutive.delegation.gmail import mailbox_link
     from openexecutive.delegation.inbox import card_payload, ledger_flags, open_cards
 
     open_ = open_cards(person.id)
@@ -54,6 +54,7 @@ def cards(person: Any) -> list[ReplyCard]:
     out: list[ReplyCard] = []
     for card, payload in payloads:
         thread_id = str(payload.get("thread_id") or "")
+        draft_id = str(payload.get("draft_id") or "")
         flags = list(dict.fromkeys([
             *_strings(payload.get("flags")), *added.get(str(payload.get("message_id") or ""), []),
         ]))
@@ -62,7 +63,7 @@ def cards(person: Any) -> list[ReplyCard]:
             status=card.status,
             created_at=card.created_at,
             thread_id=thread_id,
-            draft_id=str(payload.get("draft_id") or ""),
+            draft_id=draft_id,
             from_name=str(payload.get("from_name") or ""),
             from_email=str(payload.get("from_email") or ""),
             relation=str(payload.get("relation") or ""),
@@ -75,7 +76,7 @@ def cards(person: Any) -> list[ReplyCard]:
             draft_body=str(payload.get("draft_body") or ""),
             open_questions=_strings(payload.get("open_questions")),
             flags=flags,
-            gmail_link=gmail_link(email, thread_id=thread_id) if email and thread_id else "",
+            gmail_link=mailbox_link(email, thread_id=thread_id, draft_id=draft_id) if email and thread_id else "",
         ))
     return out
 

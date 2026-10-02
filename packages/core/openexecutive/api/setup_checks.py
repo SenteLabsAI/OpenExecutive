@@ -101,7 +101,7 @@ LABELS: dict[str, str] = {
     "exec_email": "The Executive's email address",
     "api_secret": "API protection",
     "gmail": "Email (Gmail)",
-    "your_gmail": "Your own Gmail (Act as me)",
+    "your_gmail": "Your own mailbox (Act as me)",
     "slack": "Slack",
     "discord": "Discord",
     "telegram": "Telegram",
@@ -834,8 +834,9 @@ _INBOX_WARN = frozenset({"error", "rate_limited", "backlog_full"})
 
 
 async def check_your_gmail(snap: Snapshot) -> SetupCheck:
-    """The owner's own Gmail, for Act as me (optional). Only a connected
-    credential reaches Google: a missing one is reported without a call."""
+    """The owner's own mailbox (Gmail or Outlook), for Act as me (optional).
+    Only a saved credential reaches the mail service: a missing one is
+    reported without a call."""
     from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
     from openexecutive.delegation.inbox import STATUS_MESSAGES as INBOX_STATUS_MESSAGES
     from openexecutive.delegation.inbox import get_watch
@@ -855,13 +856,13 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
         return _result(
             "your_gmail",
             "warn",
-            f"Google didn't answer within {PROBE_TIMEOUT_S:.0f} seconds.",
+            f"Your mail service didn't answer within {PROBE_TIMEOUT_S:.0f} seconds.",
             "Click Check again in a moment.",
             link="/settings",
         )
     if status == "connected":
         summary = f"Connected to {owner.email}. " + (
-            "Act as me is on: the Executive can draft replies as you, in your own Gmail."
+            "Act as me is on: the Executive can draft replies as you, in your own mailbox."
             if on
             else "Turn Act as me on in Settings to let the Executive draft replies as you."
         )
@@ -881,9 +882,10 @@ async def check_your_gmail(snap: Snapshot) -> SetupCheck:
         return _result(
             "your_gmail",
             "warn" if on else "off",
-            "Not set up (optional): the Executive can't draft emails as you in your own Gmail.",
-            "Signed in as yourself, run scripts/connect-own-gmail.py (see .env.example → "
-            "Act as me), then put the file it writes in DELEGATION_GOOGLE_CREDENTIALS_DIR.",
+            "Not set up (optional): the Executive can't draft emails as you in your own mailbox.",
+            "Signed in as yourself, run scripts/connect-own-gmail.py for Gmail or "
+            "scripts/connect-own-outlook.py for Outlook (see .env.example → Act as me), then "
+            "put the file it writes in DELEGATION_GOOGLE_CREDENTIALS_DIR.",
             link="/settings",
         )
     if status == "shared_mailbox" and not on:
