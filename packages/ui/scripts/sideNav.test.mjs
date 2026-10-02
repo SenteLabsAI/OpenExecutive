@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { nextSideNavOpen } from "../src/lib/sideNav.ts";
 
@@ -27,12 +27,26 @@ test("other keys leave the menu as it is", () => {
   assert.equal(nextSideNavOpen(false, { type: "key", key: "Escape" }), false);
 });
 
-// Every page that hands its items to PageSideNav marks them, or re-tapping
-// the current item would leave the menu covering the page.
-for (const page of ["app/guide/page.tsx", "app/architecture/page.tsx", "app/council/page.tsx"]) {
-  test(`${page} marks its menu items data-closes-nav`, () => {
-    const src = readFileSync(new URL(`../src/${page}`, import.meta.url), "utf8");
-    assert.match(src, /<PageSideNav/);
-    assert.match(src, /data-closes-nav/);
+// Every PageSideNav user marks its menu items, or re-tapping the current item
+// would leave the menu covering the page. Found by scanning src/, so a new
+// user is checked without editing this list; the menu items live in the file
+// itself or in the one component it hands them to.
+const MENU_ITEMS_IN = { "components/knowledge/KnowledgeWorkspace.tsx": "components/knowledge/SourceTree.tsx" };
+
+function sourceFiles(dir) {
+  return readdirSync(new URL(`../src/${dir}`, import.meta.url), { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? sourceFiles(`${dir}${e.name}/`) : /\.tsx$/.test(e.name) ? [`${dir}${e.name}`] : []
+  );
+}
+const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+const users = sourceFiles("").filter((f) => f !== "components/shell/PageSideNav.tsx" && /<PageSideNav/.test(read(f)));
+
+test("PageSideNav users are found", () => {
+  assert.ok(users.length >= 4, `found ${users.join(", ")}`);
+});
+
+for (const user of users) {
+  test(`${user} marks its menu items data-closes-nav`, () => {
+    assert.match(read(MENU_ITEMS_IN[user] ?? user), /data-closes-nav/);
   });
 }

@@ -83,6 +83,7 @@ export default function SourceTree({
   return (
     <nav className="text-sm space-y-4">
       <button
+        data-closes-nav
         onClick={() => onSelect({ kind: "company" })}
         className={`w-full flex items-center gap-2 text-left px-2.5 py-2 rounded-lg text-sm font-semibold transition-colors ${
           selection?.kind === "company"
@@ -276,6 +277,7 @@ function FileGroup({
           {label}
         </span>
         <button
+          data-closes-nav
           onClick={onAdd}
           className="text-[10px] text-fg-subtle hover:text-fg transition-colors px-1"
           title={`Add ${label.toLowerCase()} file`}
@@ -292,6 +294,7 @@ function FileGroup({
             return (
               <button
                 key={f.filename}
+                data-closes-nav
                 onClick={() => onClickFile(f)}
                 className={`w-full text-left px-2 py-0.5 rounded text-xs transition-colors truncate ${
                   active
@@ -329,6 +332,7 @@ function RootButton({
   const activeClass = accent === "indigo" ? "bg-indigo-500/15 text-indigo-200" : "bg-surface-input text-fg";
   return (
     <button
+      data-closes-nav
       onClick={onClick}
       className={`w-full flex items-center gap-2 text-left px-2 py-1.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors ${
         active ? activeClass : "text-fg hover:text-white hover:bg-surface-overlay"
