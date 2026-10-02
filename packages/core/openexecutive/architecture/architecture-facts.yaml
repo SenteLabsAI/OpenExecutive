@@ -8457,7 +8457,12 @@ delegation:
     named extended property; sender_authenticated only from the topmost
     Authentication-Results (Exchange writes it above anything the sender
     added) holding exactly one dmarc verdict, a pass for From's domain
-    (exchange_authenticated). Replies use createReply on the message they
+    plus exactly one compauth= clause, which only Exchange Online
+    Protection writes (exchange_authenticated) — so mail that reached the
+    mailbox without EOP's stamp is never verified by a header its sender
+    wrote. delete_draft sends If-Match with the draft's etag: with
+    immutable ids a draft sent between the read and the DELETE keeps its
+    id, and Graph then answers 412 and the sent message is left alone. Replies use createReply on the message they
     answer (by internetMessageId, else the newest), then PATCH the text and
     recipients; a failed PATCH deletes the half-made draft. delete_draft
     refuses anything that isn't a draft. send_draft is POST
@@ -8771,8 +8776,8 @@ delegation:
     never claims anything was sent).
   config: |
     DELEGATION_GOOGLE_CREDENTIALS_DIR (Gmail and Outlook files alike;
-    connect-own-outlook.py reads MS365_MCP_CLIENT_ID / _TENANT_ID / _CLIENT_SECRET
-    only when it runs), DELEGATION_COMPOSER_MODEL,
+    connect-own-outlook.py reads MS365_MCP_CLIENT_ID / _TENANT_ID only when
+    it runs; no client secret is ever written into a person's file), DELEGATION_COMPOSER_MODEL,
     DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50),
     DELEGATION_INBOX_POLL_MINUTES (default 5),
     DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20, within the shared

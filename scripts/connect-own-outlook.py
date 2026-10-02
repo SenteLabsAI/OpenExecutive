@@ -37,6 +37,7 @@ import os
 import pathlib
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -64,12 +65,10 @@ def email_key(email: str) -> str:
 
 
 def credential_payload(
-    email: str, refresh_token: str, client_id: str, tenant: str, *, personal: bool, client_secret: str = ""
+    email: str, refresh_token: str, client_id: str, tenant: str, *, personal: bool
 ) -> dict[str, Any]:
     """The file's content — the format delegation.outlook.load_credential reads."""
     microsoft: dict[str, str] = {"refresh_token": refresh_token, "client_id": client_id, "tenant": tenant}
-    if client_secret:
-        microsoft["client_secret"] = client_secret
     return {
         "version": CREDENTIAL_VERSION,
         "provider": "microsoft",
@@ -85,8 +84,7 @@ def write_credential(directory: pathlib.Path, email: str, payload: dict[str, Any
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     path = directory / f"{email_key(email)}.json"
-    tmp = path.with_suffix(".json.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     os.replace(tmp, path)
@@ -142,7 +140,7 @@ def _profile_email(access_token: str) -> str:
     return str(me.get("userPrincipalName") or "").strip().lower()
 
 
-def _sign_in(tenant: str, client_id: str, client_secret: str) -> dict[str, Any]:
+def _sign_in(tenant: str, client_id: str) -> dict[str, Any]:
     status, code = _post(f"{LOGIN_BASE}/{tenant}/oauth2/v2.0/devicecode", {"client_id": client_id, "scope": SCOPE})
     if status != 200 or "device_code" not in code:
         sys.exit(f"error: Microsoft refused the sign-in request: {code.get('error_description') or code.get('error') or status}")
@@ -150,8 +148,6 @@ def _sign_in(tenant: str, client_id: str, client_secret: str) -> dict[str, Any]:
     interval = int(code.get("interval") or 5)
     deadline = time.monotonic() + int(code.get("expires_in") or 900)
     form = {"grant_type": DEVICE_GRANT, "client_id": client_id, "device_code": str(code["device_code"])}
-    if client_secret:
-        form["client_secret"] = client_secret
     while time.monotonic() < deadline:
         time.sleep(interval)
         status, token = _post(f"{LOGIN_BASE}/{tenant}/oauth2/v2.0/token", form)
@@ -181,10 +177,9 @@ def main() -> int:
     tenant = (os.environ.get("MS365_MCP_TENANT_ID") or "common").strip().lower()
     if not TENANT_RE.fullmatch(tenant):
         sys.exit("error: MS365_MCP_TENANT_ID must be a tenant id, common, organizations or consumers")
-    client_secret = os.environ.get("MS365_MCP_CLIENT_SECRET", "").strip()
 
     print(f"Sign in as {email} and allow read, draft and send access to your mail.")
-    token = _sign_in(tenant, client_id, client_secret)
+    token = _sign_in(tenant, client_id)
     refresh_token = str(token.get("refresh_token") or "")
     if not refresh_token:
         sys.exit("error: Microsoft returned no refresh token — check the app allows offline_access.")
@@ -201,7 +196,7 @@ def main() -> int:
     )
     path = write_credential(
         directory, email,
-        credential_payload(email, refresh_token, client_id, stored_tenant, personal=personal, client_secret=client_secret),
+        credential_payload(email, refresh_token, client_id, stored_tenant, personal=personal),
     )
     print(f"Saved {path}")
     print("Copy it into the API's DELEGATION_GOOGLE_CREDENTIALS_DIR (Docker: /data/delegation_google/),")

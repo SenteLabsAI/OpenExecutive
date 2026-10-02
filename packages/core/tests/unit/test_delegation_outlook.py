@@ -84,6 +84,10 @@ def test_the_script_writes_what_the_client_reads(tmp_path: Path) -> None:
     assert load_credential(EMAIL, directory=tmp_path / "creds") == OutlookCredential(
         email=EMAIL, refresh_token="r1", client_id="cid", tenant="11111111-2222-3333-4444-555555555555",
     )
+    # No secret is ever written into a person's file, and the token stays out of a repr.
+    assert "client_secret" not in path.read_text()
+    assert "r1" not in repr(load_credential(EMAIL, directory=tmp_path / "creds"))
+    assert [p.name for p in path.parent.iterdir()] == [path.name]  # no temp file left
     # The script asks for exactly the scopes the client checks.
     assert list(script.GRAPH_SCOPES) == list(ol.GRAPH_SCOPES)
     assert script.CONSUMER_TENANT_ID == ol.CONSUMER_TENANT_ID
@@ -243,6 +247,9 @@ class FakeGraph:
             found["changeKey"] = found["changeKey"] + "x"
             return httpx.Response(200, json=found)
         if request.method == "DELETE":
+            wanted = request.headers.get("If-Match")
+            if wanted is not None and wanted != f'W/"{found["changeKey"]}"':
+                return httpx.Response(412)
             del self.messages[mid]
             return httpx.Response(204)
         if request.method == "POST" and action == "/send":
@@ -282,6 +289,7 @@ def test_the_token_refresh_asks_for_mail_scopes_and_saves_the_rotated_token(tmp_
     assert saved["microsoft"]["refresh_token"] == "r2"
     assert saved["extra"] == {"kept": True} and saved["provider"] == "microsoft"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]
     # Every Graph call asks for immutable ids and text bodies.
     assert all('IdType="ImmutableId"' in r.headers["Prefer"] for r in graph.graph_calls())
 
@@ -486,6 +494,10 @@ def test_exchange_authenticated_reads_only_its_own_verdict() -> None:
     assert exchange_authenticated(_headers(doubled), "dana@northpeak.example") is False
     assert exchange_authenticated(_headers("mx.google.com; " + EXCHANGE_PASS), "dana@northpeak.example") is False
     assert exchange_authenticated(_headers(EXCHANGE_PASS), "other@northpeak.example") is False
+    # A header the sender wrote that EOP never stamped has no compauth verdict.
+    unstamped = "spf=pass smtp.mailfrom=northpeak.example; dmarc=pass action=none header.from=northpeak.example"
+    assert exchange_authenticated(_headers(unstamped), "dana@northpeak.example") is False
+    assert exchange_authenticated(_headers(EXCHANGE_PASS + ";compauth=pass reason=100"), "dana@northpeak.example") is False
 
 
 def test_a_parsed_message_carries_the_verdict() -> None:
@@ -572,6 +584,24 @@ def test_delete_draft_never_deletes_a_sent_message() -> None:
     assert asyncio.run(client.delete_draft("m1")) is False and "m1" in graph.messages
     assert asyncio.run(client.delete_draft("d1")) is True and "d1" not in graph.messages
     assert asyncio.run(client.delete_draft("d1")) is False
+
+
+def test_a_draft_sent_while_it_is_being_deleted_is_left_alone() -> None:
+    """Immutable ids: a draft sent between the read and the DELETE keeps its
+    id, so the DELETE carries the draft's etag and Graph refuses it."""
+    graph = FakeGraph()
+    graph.messages["d1"] = _msg("d1", isDraft=True)
+    real = graph.handle
+
+    def send_in_between(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            graph.messages["d1"].update(isDraft=False, changeKey="sent", parentFolderId=SENT_FOLDER)
+        return real(request)
+
+    client = DelegateOutlook(EMAIL, credential=OutlookCredential(EMAIL, "r1", "cid", "common"),
+                             transport=httpx.MockTransport(send_in_between))
+    assert asyncio.run(client.delete_draft("d1")) is False
+    assert "d1" in graph.messages
 
 
 def test_send_draft_sends_the_draft_by_its_id_and_nothing_else() -> None:

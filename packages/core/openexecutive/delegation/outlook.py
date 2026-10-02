@@ -12,7 +12,7 @@ person's credential file).
 in ``DELEGATION_GOOGLE_CREDENTIALS_DIR``), so a person has one mailbox for Act
 as me: ``{"version": 1, "provider": "microsoft", "email": ..., "account":
 "work" | "personal", "microsoft": {refresh_token, client_id, tenant}}``
-(``client_secret`` too for a confidential client). ``scripts/connect-own-outlook.py``
+(no client secret: the sign-in is a public client's). ``scripts/connect-own-outlook.py``
 writes it. Delegated scopes: ``User.Read``, ``Mail.ReadWrite`` and
 ``Mail.Send``, plus ``offline_access``. Microsoft rotates the refresh token on
 use; the new one is written back into the same file, keeping every other key.
@@ -46,8 +46,9 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from email.utils import parseaddr
@@ -119,10 +120,9 @@ _TOKENS: dict[str, tuple[str, float]] = {}
 @dataclass(frozen=True)
 class OutlookCredential:
     email: str
-    refresh_token: str
-    client_id: str
-    tenant: str
-    client_secret: str = ""
+    refresh_token: str = field(repr=False)
+    client_id: str = ""
+    tenant: str = "common"
     personal: bool = False
 
 
@@ -174,13 +174,11 @@ def load_credential(email: str, *, directory: Path | None = None) -> OutlookCred
     if not _TENANT_RE.fullmatch(tenant):
         logger.warning("delegation.outlook: credential file %s names an unexpected tenant", path.name)
         return None
-    secret = ms.get("client_secret")
     return OutlookCredential(
         email=address,
         refresh_token=str(values["refresh_token"]),
         client_id=str(values["client_id"]),
         tenant=tenant,
-        client_secret=secret if isinstance(secret, str) else "",
         personal=data.get("account") == "personal" or tenant in ("consumers", CONSUMER_TENANT_ID),
     )
 
@@ -197,11 +195,16 @@ def _store_rotated(email: str, old: str, new: str, directory: Path | None) -> No
         if not isinstance(ms, dict) or ms.get("refresh_token") != old:
             return
         ms["refresh_token"] = new
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, path)
+        # A fresh, unpredictable name created exclusively (0600), so nothing
+        # planted in the directory can redirect where the token is written.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     except (OSError, ValueError, TypeError):
         logger.warning("delegation.outlook: couldn't save the rotated sign-in for %s", path.name, exc_info=True)
 
@@ -257,7 +260,10 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     ``spf=…; dkim=…; dmarc=pass action=none header.from=example.com;
     compauth=pass …``, above every header the sender wrote, so only the
     topmost one counts, it must read that way, and it must hold one DMARC
-    verdict: a pass for From's own domain."""
+    verdict: a pass for From's own domain. It must also carry Exchange
+    Online Protection's own ``compauth=`` verdict, so a header the sender
+    wrote that reached the mailbox some way EOP never stamped (an on-premises
+    connector, an internal relay) doesn't count."""
     from openexecutive.integrations.fact_confirmation import _strip_quotes_and_comments
 
     address = normalize_email(from_addr)
@@ -273,8 +279,9 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     newest = _strip_quotes_and_comments(" ".join(str(results[0]).split()).lower())
     if newest is None or not newest.startswith("spf="):
         return False
-    verdicts = [c.strip() for c in newest.split(";") if c.strip().startswith("dmarc=")]
-    if len(verdicts) != 1:
+    clauses = [c.strip() for c in newest.split(";")]
+    verdicts = [c for c in clauses if c.startswith("dmarc=")]
+    if len(verdicts) != 1 or sum(c.startswith("compauth=") for c in clauses) != 1:
         return False
     verdict = _DMARC_PASS.fullmatch(verdicts[0])
     return verdict is not None and verdict.group(1) == address.rsplit("@", 1)[1]
@@ -442,8 +449,6 @@ class DelegateOutlook:
             "client_id": cred.client_id,
             "scope": REQUEST_SCOPE,
         }
-        if cred.client_secret:
-            form["client_secret"] = cred.client_secret
         try:
             resp = await client.post(f"{LOGIN_BASE}/{cred.tenant}/oauth2/v2.0/token", data=form)
         except httpx.HTTPError as exc:
@@ -483,9 +488,12 @@ class DelegateOutlook:
         *,
         params: Any = None,
         json_body: dict[str, Any] | None = None,
+        if_match: str = "",
     ) -> dict[str, Any]:
         token = await self._access_token(client)
         headers = {"Authorization": f"Bearer {token}", "Prefer": _PREFER}
+        if if_match:
+            headers["If-Match"] = if_match
         try:
             if json_body is None and method == "POST":
                 resp = await client.request(method, f"{GRAPH_ME}{path}", params=params, content=b"", headers=headers)
@@ -503,8 +511,10 @@ class DelegateOutlook:
             raise GmailAuthError("forbidden")
         if resp.status_code == 429:
             raise GmailRateLimited(f"graph {method} returned 429")
-        if resp.status_code == 404:
-            raise GmailNotFound(f"graph {method} returned 404")
+        if resp.status_code in (404, 412):
+            # 412: it changed since it was read (If-Match), so it is not the
+            # item the caller meant any more.
+            raise GmailNotFound(f"graph {method} returned {resp.status_code}")
         if resp.status_code >= 500:
             raise GmailError(f"graph {method} returned {resp.status_code}", maybe_done=True)
         if resp.status_code >= 400:
@@ -703,19 +713,23 @@ class DelegateOutlook:
 
     async def delete_draft(self, draft_id: str) -> bool:
         """Delete a draft — never a sent message: anything that isn't a draft
-        is left alone. False when it was already gone."""
+        is left alone, and so is a draft that changed after it was read (it
+        may have just been sent, keeping its id). False when it was already
+        gone or was left alone."""
         if not valid_id(draft_id):
             raise GmailError("invalid draft id")
         path = f"/messages/{quote(draft_id, safe='')}"
         async with self._client() as client:
             try:
-                data = await self._get(client, path, {"$select": "id,isDraft"})
+                data = await self._get(client, path, {"$select": "id,isDraft,changeKey"})
             except GmailNotFound:
                 return False
-            if data.get("isDraft") is not True:
+            change_key = str(data.get("changeKey") or "")
+            etag = str(data.get("@odata.etag") or (f'W/"{change_key}"' if change_key else ""))
+            if data.get("isDraft") is not True or not etag:
                 return False
             try:
-                await self._request(client, "DELETE", path)
+                await self._request(client, "DELETE", path, if_match=etag)
             except GmailNotFound:
                 return False
         return True
