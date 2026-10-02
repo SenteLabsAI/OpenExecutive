@@ -124,25 +124,3 @@ jobs:
         run: cd packages/ui && npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
-
-  # TEMPORARY: proves the fork review's bubblewrap step on a real runner.
-  # Removed before merge.
-  bwrap-probe:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install bubblewrap (same commands as claude-code-review-fork.yml)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q bubblewrap
-          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
-            'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' \
-            | sudo tee /etc/apparmor.d/bwrap > /dev/null
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true
-          echo "bwrap sandbox OK"
-          # The block still applies to everything else.
-          if unshare --user --map-root-user true 2>/dev/null; then
-            echo "::warning::unshare (not bwrap) also got a user namespace"
-          else
-            echo "other processes still blocked, as intended"
-          fi

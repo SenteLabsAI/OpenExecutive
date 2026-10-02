@@ -111,10 +111,11 @@ jobs:
       # refuses to start without it rather than run unscrubbed. The runner
       # image does not ship it, and Ubuntu 24.04's AppArmor blocks
       # unprivileged user namespaces ("setting up uid map: Permission
-      # denied"), so bwrap alone gets a profile allowing them. Nothing else
-      # on the runner does: the sysctl that lifts the block for every
-      # process is deliberately not used. The sandbox run fails here, with
-      # a clear error, if bubblewrap still can't start.
+      # denied"), so the bwrap binary gets a profile allowing them, rather
+      # than the sysctl that lifts the block for every binary. Anything
+      # that can run bwrap can use that, but this job never runs the fork's
+      # code (rule 2). The sandbox run fails here, with a clear error, if
+      # bubblewrap still can't start.
       - name: Install bubblewrap
         if: steps.auth.outputs.ready == 'true'
         run: |
