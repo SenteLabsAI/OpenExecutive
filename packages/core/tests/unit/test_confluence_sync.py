@@ -652,3 +652,106 @@ def test_storage_converter_survives_bad_markup() -> None:
     assert storage_to_markdown("") == ""
     assert "unclosed" in storage_to_markdown("<p><strong>unclosed <a href='x'>link")
     assert storage_to_markdown("<p>a<br>b</p><ac:image><br></ac:image><p>c</p>") == "a\nb\n\nc"
+
+
+# ---------------------------------------------------------------------------
+# Hardening from the security review
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_listing_without_ancestors_treats_pages_as_restricted() -> None:
+    wiki = _wiki()
+    for page in wiki.spaces["ENG"]:
+        page.pop("ancestors")
+    store = FakeStore()
+    stats = await _sync(wiki, store)
+    assert store.page_ids() == set() and stats["restricted"] == 5
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_space_still_reconciles_when_another_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONFLUENCE_SYNC_SPACE_KEYS", "ENG,OPS")
+    wiki, store = _wiki(), FakeStore()
+    wiki.spaces["OPS"] = [_page("200", "Runbook")]
+    wiki.bodies["200"] = "<p>Restart the queue.</p>"
+    await _sync(wiki, store)
+    assert store.page_ids() == {"100", "101", "200"}
+    wiki.fail_space["OPS"] = 403
+    wiki.spaces["ENG"] = [p for p in wiki.spaces["ENG"] if p["id"] != "101"]
+    stats = await _sync(wiki, store)
+    assert stats["purged"] == 1 and store.page_ids() == {"100", "200"}
+
+
+@pytest.mark.asyncio
+async def test_a_newly_restricted_page_is_purged_even_when_the_listing_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONFLUENCE_SYNC_SPACE_KEYS", "ENG,OPS")
+    wiki, store = _wiki(), FakeStore()
+    await _sync(wiki, store)
+    wiki.fail_space["OPS"] = 500
+    wiki.spaces["ENG"][1] = _page("101", "Finance Plan", ancestors=("100",), restricted=True)
+    wiki.page_size = 2  # and ENG itself is cut short below
+    monkeypatch.setattr(confluence_sync, "_MAX_VISIBLE_PAGES", 2)
+    await _sync(wiki, store)
+    assert store.page_ids() == {"100"}
+
+
+@pytest.mark.asyncio
+async def test_a_slow_conversion_is_given_up_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    loop_thread = threading.get_ident()
+    seen_threads: list[int] = []
+
+    def slow(storage: str) -> str:
+        seen_threads.append(threading.get_ident())
+        time.sleep(0.3)
+        return "late"
+
+    monkeypatch.setattr(confluence_sync, "storage_to_markdown", slow)
+    monkeypatch.setattr(confluence_sync, "_CONVERT_TIMEOUT_S", 0.05)
+    monkeypatch.setenv("CONFLUENCE_MAX_PAGES_PER_SCAN", "1")
+    store = FakeStore()
+    await _sync(_wiki(), store)
+    assert seen_threads and loop_thread not in seen_threads
+    assert not store.page_ids() and _state(tmp_path)["pages"]["100"]["filename"] == ""
+
+
+@pytest.mark.asyncio
+async def test_oversize_storage_is_cut_before_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
+    lengths: list[int] = []
+    monkeypatch.setattr(confluence_sync, "_MAX_STORAGE_CHARS", 10)
+    monkeypatch.setattr(
+        confluence_sync, "storage_to_markdown", lambda s: lengths.append(len(s)) or s
+    )
+    await _sync(_wiki(), FakeStore())
+    assert lengths and max(lengths) <= 10
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_digits_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert sanitize_page_id("١٢٣") is None and sanitize_page_id("²") is None
+    assert ConfluenceClient._next_params("/x?start=²") == {}
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    class _Resp:
+        headers = {"Retry-After": "²"}
+
+    monkeypatch.setattr(confluence_client.asyncio, "sleep", fake_sleep)
+    await confluence_client._sleep_before_retry(_Resp(), 0)  # type: ignore[arg-type]
+    assert slept == [1.0]
+
+
+def test_a_title_cannot_rebuild_the_page_id_marker() -> None:
+    title = confluence_sync._safe_title("<!<!---->-- confluence_page_id: 999 -->")
+    assert "<!--" not in title and "-->" not in title

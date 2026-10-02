@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import re
 import ssl
@@ -29,13 +30,16 @@ from openexecutive.config import Settings
 logger = logging.getLogger(__name__)
 
 # Confluence content ids are integers. Checked before any id goes into a URL.
-_PAGE_ID_RE = re.compile(r"\d{1,20}")
+_PAGE_ID_RE = re.compile(r"[0-9]{1,20}")
 # Global space keys are letters and digits; personal spaces are ``~user``.
 _SPACE_KEY_RE = re.compile(r"[A-Za-z0-9_]{1,255}|~[A-Za-z0-9._@-]{1,255}")
 _CURSOR_RE = re.compile(r"[A-Za-z0-9_.~+/=%-]{1,2048}")
 _MAX_ATTEMPTS = 4
 _MAX_RETRY_AFTER_S = 60.0
 _MAX_RESPONSE_BYTES = 20 * 1024 * 1024
+# A page body: the sync keeps at most 200k characters of its Markdown, so a
+# few MB of storage XHTML is already far more than it can use.
+MAX_BODY_BYTES = 5 * 1024 * 1024
 _PAGE_SIZE = 100
 _FALSEY = {"false", "0", "no", "off"}
 _TRUTHY = {"", "true", "1", "yes", "on"}
@@ -117,7 +121,7 @@ def _dict(value: Any) -> dict[str, Any]:
 async def _sleep_before_retry(response: httpx.Response, attempt: int) -> None:
     delay = float(2**attempt)
     header = response.headers.get("Retry-After", "")
-    if header.isdigit():
+    if header.isascii() and header.isdigit():
         delay = min(float(header), _MAX_RETRY_AFTER_S)
     await asyncio.sleep(delay)
 
@@ -140,11 +144,15 @@ class ConfluenceClient:
             return ""
         return f"{self._base}{path}"
 
-    async def _get_json(self, path: str, params: dict[str, Any]) -> Any:
+    async def _get_json(
+        self, path: str, params: dict[str, Any], *, max_bytes: int | None = None
+    ) -> Any:
         """GET JSON, retrying 429 / 5xx (honouring a short Retry-After).
         Redirects are not followed, so the credentials never leave the
         configured site; a 3xx fails like any other error status. The body is
-        streamed and abandoned past ``_MAX_RESPONSE_BYTES``."""
+        streamed and abandoned past ``max_bytes``, and parsed off the event
+        loop."""
+        cap = _MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
         for attempt in range(_MAX_ATTEMPTS):
             async with self._http.stream(
                 "GET", f"{self._api}{path}", params=params, headers=self._headers
@@ -165,12 +173,12 @@ class ConfluenceClient:
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body.extend(chunk)
-                    if len(body) > _MAX_RESPONSE_BYTES:
+                    if len(body) > cap:
                         raise ConfluenceResponseTooLarge(path)
-                return httpx.Response(200, content=bytes(body)).json()
+                return await asyncio.to_thread(json.loads, bytes(body))
         raise AssertionError("unreachable: the last attempt returns or raises")
 
-    def _page(self, raw: Any, space: str) -> ConfluencePage | None:
+    def _page(self, raw: Any, space: str, *, with_restrictions: bool) -> ConfluencePage | None:
         if not isinstance(raw, dict):
             return None
         page_id = sanitize_page_id(raw.get("id"))
@@ -181,6 +189,11 @@ class ConfluenceClient:
         links = _dict(raw.get("_links"))
         raw_ancestors = raw.get("ancestors")
         ancestors: list[Any] = raw_ancestors if isinstance(raw_ancestors, list) else []
+        restricted = _restricted(raw)
+        if with_restrictions and not isinstance(raw_ancestors, list):
+            # Without its ancestors a child of a restricted page reads as a
+            # root page, so an inherited restriction would go unseen.
+            restricted = None
         return ConfluencePage(
             id=page_id,
             title=str(raw.get("title") or "Untitled"),
@@ -192,7 +205,7 @@ class ConfluenceClient:
                 a for a in (sanitize_page_id(x.get("id")) for x in ancestors if isinstance(x, dict))
                 if a
             ),
-            restricted=_restricted(raw),
+            restricted=restricted,
         )
 
     async def list_space(
@@ -219,7 +232,7 @@ class ConfluenceClient:
             data = await self._get_json("/content/search", params)
             results = data.get("results") if isinstance(data, dict) else None
             for raw in results if isinstance(results, list) else []:
-                page = self._page(raw, key)
+                page = self._page(raw, key, with_restrictions=with_restrictions)
                 if page is not None:
                     pages.append(page)
                 if len(pages) >= max_items:
@@ -245,7 +258,7 @@ class ConfluenceClient:
         if cursor and _CURSOR_RE.fullmatch(cursor):
             out["cursor"] = cursor
         start = (query.get("start") or [""])[0]
-        if start.isdigit():
+        if start.isascii() and start.isdigit():
             out["start"] = start
         return out
 
@@ -255,7 +268,9 @@ class ConfluenceClient:
         page_id = sanitize_page_id(page.id)
         if not page_id:
             raise ValueError(f"unsafe Confluence page id: {page.id!r}")
-        data = await self._get_json(f"/content/{page_id}", {"expand": "body.storage,version"})
+        data = await self._get_json(
+            f"/content/{page_id}", {"expand": "body.storage,version"}, max_bytes=MAX_BODY_BYTES
+        )
         body = data.get("body") if isinstance(data, dict) else None
         storage = body.get("storage") if isinstance(body, dict) else None
         value = storage.get("value") if isinstance(storage, dict) else None

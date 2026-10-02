@@ -539,7 +539,7 @@ def _confluence_label(meta: dict[str, Any]) -> str:
     title = _label_name(meta.get("title") or meta.get("filename"))
     parts = ["confluence"]
     page_id = str(meta.get("confluence_page_id") or "")
-    if re.fullmatch(r"\d{1,20}", page_id):
+    if re.fullmatch(r"[0-9]{1,20}", page_id):
         parts.append(f"page id {page_id}")
     space = str(meta.get("space") or "")
     if re.fullmatch(r"[A-Za-z0-9_]{1,255}|~[A-Za-z0-9._@-]{1,255}", space):

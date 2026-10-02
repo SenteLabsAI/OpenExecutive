@@ -1603,7 +1603,7 @@ knowledge:
         and stop at 20 MB, 429 / 5xx retry with backoff honouring a
         Retry-After of up to 60 s, and paging takes only the `cursor` (Cloud)
         or `start` (DC) parameter out of `_links.next`, re-issued against the
-        client's own endpoint. Page ids are checked against \d{1,20} and space
+        client's own endpoint. Page ids are checked against [0-9]{1,20} and space
         keys against [A-Za-z0-9_]{1,255} or ~[A-Za-z0-9._@-]{1,255} before use.
 
         ACL: a Confluence token is a user's, so the sync sees what that user
@@ -1636,10 +1636,19 @@ knowledge:
         <company_profile_dir>/docs/confluence/ (confluence-<id>-<slug>.md,
         with a confluence_page_id comment) and ingested with ingest_text_sync.
 
-        Reconcile purges pages on record but no longer visible. It is skipped
-        (with a counted, logged reason) when any space failed to list or a
-        listing was truncated, and when the spaces listed 0 pages while pages
-        are on record; pages listed but all restricted ARE purged. A listing
+        Pages the listing returned as restricted (positively, or fail-closed)
+        are purged on every tick, complete listing or not. Reconcile purges
+        pages on record but no longer visible: in full when every space
+        listed completely, else per space for the spaces that did (a space
+        listing 0 pages while it has pages on record is left alone), so one
+        broken space never freezes purges elsewhere. Orphan files and pages
+        of spaces dropped from the config wait for a full reconcile. A full
+        reconcile is also skipped when the spaces listed 0 pages while pages
+        are on record; pages listed but all restricted ARE purged. Page
+        bodies are fetched with a 5 MB cap (listings 20 MB), JSON is parsed
+        and storage converted off the event loop (conversion capped at 1M
+        characters and 60 s; a timeout records the page unreadable until its
+        version changes), since the scheduler shares the API process. A listing
         failure stores a user-facing `last_error` (401/403: credentials;
         404: space not found). Same two-phase locking as drive_sync (network
         unlocked, writes under _FIXTURE_OP_LOCK, tick discarded if the active

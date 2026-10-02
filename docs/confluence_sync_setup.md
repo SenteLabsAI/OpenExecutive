@@ -120,5 +120,7 @@ on the next runs.
 - `purge-confluence --all` removes everything synced.
 
 If a space cannot be listed (a wrong key, an expired token, the server
-down), nothing is purged that run, so a passing outage never empties the
-knowledge base. The reason is logged.
+down), pages are not purged from that space that run, so a passing outage
+never empties the knowledge base; the other spaces are still checked as
+usual. A page found to be restricted is always removed straight away. The
+reason a space failed is logged.

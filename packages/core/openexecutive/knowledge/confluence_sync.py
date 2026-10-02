@@ -61,9 +61,15 @@ HEARTBEAT_INTENT = "Confluence space sync — incremental page ingest into isola
 _MAX_PAGE_CHARS = 200_000
 _MAX_VISIBLE_PAGES = 5000  # pages listed per tick, all spaces together
 _REQUEST_PAUSE_S = 0.2
+# Storage XHTML handed to the converter. Well past what 200k characters of
+# Markdown need, and short enough that converting it stays quick.
+_MAX_STORAGE_CHARS = 1_000_000
+# How long one page's conversion may run, off the event loop, before the page
+# is recorded as unreadable (not retried until its version changes).
+_CONVERT_TIMEOUT_S = 60.0
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_PAGE_ID_COMMENT = re.compile(r"<!--\s*confluence_page_id:\s*(\d{1,20})\s*-->")
+_PAGE_ID_COMMENT = re.compile(r"<!--\s*confluence_page_id:\s*([0-9]{1,20})\s*-->")
 
 
 def _state_path() -> Path:
@@ -110,8 +116,13 @@ def reset_local_state(*, profile_path: Path | None = None) -> None:
 
 
 def _safe_title(title: str) -> str:
-    cleaned = " ".join(title.replace("<!--", "").replace("-->", "").split())
-    return cleaned[:200] or "Untitled"
+    cleaned = title
+    while True:  # until stable: one pass can leave a new marker behind
+        stripped = cleaned.replace("<!--", "").replace("-->", "")
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    return " ".join(cleaned.split())[:200] or "Untitled"
 
 
 def slugify(title: str, page_id: str) -> str:
@@ -170,6 +181,12 @@ class _TickFetch:
     visible_ids: set[str] = field(default_factory=set)
     # Pages the listing returned, restricted ones included.
     listed: int = 0
+    # Listed pages left out as restricted. Positive information: they are
+    # purged even when the rest of the listing is incomplete.
+    restricted_ids: set[str] = field(default_factory=set)
+    # Spaces listed in full, and how many pages each returned. Reconcile can
+    # run for these even when another space failed.
+    complete_spaces: dict[str, int] = field(default_factory=dict)
     # Why the listing is not the whole picture (reconcile must not run).
     incomplete: str | None = None
     # A short, user-facing reason for the knowledge page, when listing failed.
@@ -219,6 +236,8 @@ async def _list_spaces(
             fetch.incomplete = fetch.incomplete or (
                 f"space {space} could not be listed in full"
             )
+        else:
+            fetch.complete_spaces[space] = len(listed)
         for page in listed:
             pages.setdefault(page.id, page)
     return pages
@@ -239,6 +258,7 @@ async def _fetch_tick(
     stats["seen"] = fetch.listed = len(pages)
     restricted = _restricted_ids(pages) if settings.confluence_sync_skip_restricted else set()
     stats["restricted"] = len(restricted)
+    fetch.restricted_ids = restricted
 
     dirty: list[ConfluencePage] = []
     for page in pages.values():
@@ -264,13 +284,28 @@ async def _fetch_tick(
         try:
             await _sleep()
             seen, storage = await client.page_body(page)
-            text = storage_to_markdown(storage)
         except ConfluenceResponseTooLarge:
             logger.info("confluence_sync: page %s is too large — not synced", page.id)
-            seen, text = page, ""
+            fetch.fetched.append((page, ""))
+            continue
         except Exception:
             stats["failed"] += 1
             logger.exception("confluence_sync: failed to fetch page %s", page.id)
+            continue
+        try:
+            text = await asyncio.wait_for(
+                asyncio.to_thread(storage_to_markdown, storage[:_MAX_STORAGE_CHARS]),
+                timeout=_CONVERT_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.warning(
+                "confluence_sync: page %s took over %.0fs to convert — not synced",
+                page.id, _CONVERT_TIMEOUT_S,
+            )
+            text = ""
+        except Exception:
+            stats["failed"] += 1
+            logger.exception("confluence_sync: failed to convert page %s", page.id)
             continue
         fetch.fetched.append((seen, text))
     return fetch
@@ -320,14 +355,39 @@ def purge_page(
 
 
 def reconcile_missing_pages(
-    visible_ids: set[str], store: ChromaDBStore, state: dict[str, Any]
+    visible_ids: set[str],
+    store: ChromaDBStore,
+    state: dict[str, Any],
+    *,
+    spaces: set[str] | None = None,
 ) -> int:
     """Purge pages (and orphan text files) no longer listed, or now
-    restricted. Blocking I/O: run it via ``asyncio.to_thread``."""
+    restricted. With ``spaces``, only pages on record in those spaces are
+    considered (the spaces whose listing completed); orphan files are then
+    left for a full reconcile. Blocking I/O: run it via ``asyncio.to_thread``."""
     file_index = _build_file_index()
-    gone = {p for p in state.get("pages", {}) if p not in visible_ids}
-    gone |= {p for p in file_index if p not in visible_ids and p not in state["pages"]}
+    pages = state.get("pages", {})
+    gone = {
+        p for p, rec in pages.items()
+        if p not in visible_ids
+        and (spaces is None or (isinstance(rec, dict) and rec.get("space") in spaces))
+    }
+    if spaces is None:
+        gone |= {p for p in file_index if p not in visible_ids and p not in pages}
     return sum(purge_page(pid, store, state, file_index=file_index) for pid in sorted(gone))
+
+
+def purge_restricted_pages(
+    restricted_ids: set[str], store: ChromaDBStore, state: dict[str, Any]
+) -> int:
+    """Purge pages on record that the listing returned as restricted. Runs
+    on every tick, complete listing or not: a page known to be restricted
+    must leave the knowledge base now. Blocking I/O, like reconcile."""
+    targets = sorted(p for p in state.get("pages", {}) if p in restricted_ids)
+    if not targets:
+        return 0
+    file_index = _build_file_index()
+    return sum(purge_page(pid, store, state, file_index=file_index) for pid in targets)
 
 
 def _ingest_page_sync(
@@ -386,8 +446,24 @@ async def _apply_tick(
     # may have replaced the state file while the network phase ran.
     state = load_state()
     known = state["pages"]
+    stats["purged"] = await asyncio.to_thread(
+        purge_restricted_pages, fetch.restricted_ids, store, state
+    )
     if fetch.incomplete:
         _note_reconcile_skip(state, f"listing incomplete ({fetch.incomplete})")
+        # Spaces that did list in full still reconcile, unless one came back
+        # empty with pages on record (the same blank-listing caution).
+        on_record = {
+            rec.get("space") for rec in known.values() if isinstance(rec, dict)
+        }
+        complete = {
+            space for space, count in fetch.complete_spaces.items()
+            if count or space not in on_record
+        }
+        if complete:
+            stats["purged"] += await asyncio.to_thread(
+                reconcile_missing_pages, fetch.visible_ids, store, state, spaces=complete
+            )
     elif not fetch.listed and known:
         # Only an empty listing is suspect. Pages listed but all restricted
         # are purged: what became restricted must leave the knowledge base.
@@ -397,7 +473,7 @@ async def _apply_tick(
             "(refusing a mass purge on a blank listing)",
         )
     else:
-        stats["purged"] = await asyncio.to_thread(
+        stats["purged"] += await asyncio.to_thread(
             reconcile_missing_pages, fetch.visible_ids, store, state
         )
         state["reconcile_skips"] = 0
