@@ -114,7 +114,7 @@
  * zooms the page in whenever one is tapped. Markdown tables scroll sideways
  * inside their own box instead of pushing the page wider than the screen.
  * Unlayered on purpose, so these win over Tailwind's utility layer. */
-@media (max-width: 767px) {
+@media (max-width: 639.98px) {
   .text-\[9px\],
   .text-\[10px\],
   .text-\[11px\] {

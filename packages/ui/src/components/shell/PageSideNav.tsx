@@ -9,7 +9,8 @@ import Icon from "@/components/Icon";
 // is a fixed-width column beside the page. Below `md` a full column would
 // squeeze the page into a strip a few words wide, so it folds into a bar at
 // the top that opens the same menu over the page and closes again once the
-// selection changes.
+// selection changes, or when an item marked `data-closes-nav` is tapped
+// (re-tapping the current item changes nothing, so the key alone misses it).
 //
 // The children render once, in one place, at every width, so element ids and
 // observers inside them behave the same on phones and desktops. The parent
@@ -58,6 +59,9 @@ export default function PageSideNav({
         />
       </button>
       <aside
+        onClick={(e) => {
+          if ((e.target as Element).closest("[data-closes-nav]")) setOpen(false);
+        }}
         className={`${
           open ? "flex" : "hidden"
         } md:flex flex-col flex-shrink-0 overflow-y-auto border-line absolute md:static inset-x-0 top-full z-20 max-h-[70vh] md:max-h-none border-b md:border-b-0 md:border-r shadow-lg md:shadow-none ${className}`}

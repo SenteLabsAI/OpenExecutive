@@ -440,6 +440,7 @@ export default function CouncilPage() {
             {listedAgents.map((a) => (
               <button
                 key={a.name}
+                data-closes-nav
                 onClick={() => setSelected(a.name)}
                 className={`w-full text-left flex items-start gap-2 px-2 py-2 md:py-1.5 rounded-lg text-sm md:text-xs transition-colors ${
                   selected === a.name

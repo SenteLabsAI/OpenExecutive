@@ -92,6 +92,7 @@ export default function GuidePage() {
                 <a
                   key={id}
                   href={`#${id}`}
+                  data-closes-nav
                   onClick={(e) => {
                     e.preventDefault();
                     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
