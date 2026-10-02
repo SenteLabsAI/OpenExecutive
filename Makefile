@@ -55,10 +55,13 @@ lint:
 # Everything CI checks, in one command. Unsets the two env vars that make
 # full-app tests 401 or fail at import (see CLAUDE.md -> Testing), builds the
 # UI only when packages/ui differs from BASE, then runs the PR rules. Test
-# temp files go to RAM where there is a /dev/shm (Linux), as in CI: the per-test
-# SQLite setup is mostly disk syncs, and tmpfs makes them free.
+# temp files go to RAM when /dev/shm (Linux) has 2 GB free, as in CI: the
+# per-test SQLite setup is mostly disk syncs, and tmpfs makes them free. A run
+# peaks near 1 GB, so a small /dev/shm (Docker's default is 64 MB) falls back to
+# $TMPDIR or /tmp. Set TEST_TMPDIR to choose.
 BASE ?= origin/main
-TEST_TMPDIR ?= $(if $(wildcard /dev/shm),/dev/shm,$(or $(TMPDIR),/tmp))
+TEST_TMPDIR ?= $(shell free=$$(df -Pk /dev/shm 2>/dev/null | awk 'NR==2 {print $$4}'); \
+	if [ "$${free:-0}" -ge 2097152 ]; then echo /dev/shm; else echo "$${TMPDIR:-/tmp}"; fi)
 check: lint
 	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT TMPDIR=$(TEST_TMPDIR) \
 		uv run pytest tests/unit/ tests/integration/ -n auto --dist loadfile -q
