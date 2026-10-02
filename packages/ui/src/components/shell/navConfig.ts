@@ -343,7 +343,7 @@ export function advancedItemsByGroup(): {
 // itself both read this list, so the two can't drift; the ids are the
 // hashes a link can land on (`/settings#workspace`). "act-as-me" is only
 // on the page for the owner — the page drops it when the card is hidden.
-export type SettingsSectionId = "executive" | "workspace" | "act-as-me" | "tools";
+export type SettingsSectionId = "executive" | "workspace" | "act-as-me" | "tools" | "about";
 
 export interface SettingsSectionDef {
   id: SettingsSectionId;
@@ -355,6 +355,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "workspace", label: "Workspace" },
   { id: "act-as-me", label: "Act as me" },
   { id: "tools", label: "Tools" },
+  { id: "about", label: "About" },
 ];
 
 // Anchors the mobile bottom nav. ≤5 per Material guidance; "More" opens

@@ -47,6 +47,7 @@ from openexecutive.api.routes import (
     skill_drafts,
     skills,
     today,
+    version,
     watchlist,
     workflow_designer,
     workflows,
@@ -963,6 +964,7 @@ def create_app() -> FastAPI:
     app.include_router(architecture.router, tags=["architecture"])
     app.include_router(guide.router, tags=["guide"])
     app.include_router(health.router, tags=["health"])
+    app.include_router(version.router, tags=["health"])
     app.include_router(setup_status.router, tags=["setup"])
 
     # Expose Open Executive as an MCP server at /mcp (Streamable-HTTP). Gated

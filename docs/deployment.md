@@ -265,6 +265,53 @@ theirs alone: the owner sees only who uses it and how much.
 
 ---
 
+## Upgrading
+
+**Settings → About** shows the version you are running. When a newer release
+is out it says so and links the release notes and this section. The API asks
+GitHub's public releases API for the latest release at most every six hours,
+and sends nothing about your install. Set `UPDATE_CHECK_ENABLED=false` to turn
+the check off (for an air-gapped host, say); the running version is still shown.
+`GET /version` returns the same facts as JSON.
+
+There is no in-app update button: updating means replacing the containers,
+which the app cannot do from inside one without being given control of the
+host's Docker. Upgrade from the host instead.
+
+1. **Read the release notes.** Each release's entry in
+   [CHANGELOG.md](../CHANGELOG.md) (also on the GitHub Release) lists what
+   changed. Before 1.0 a minor bump (`0.4.x` → `0.5.0`) marks a breaking
+   change, such as a new required env var; do what its entry says first.
+2. **Back up the database.** `/data/episodic_memory.db` is the part you cannot
+   rebuild; see Backups under [Operations](#operations).
+3. **Replace the containers.** Your data lives in the `executive_data` volume,
+   which survives both of these.
+
+   From a checkout, with `make docker`:
+
+   ```bash
+   git fetch --tags
+   git checkout vX.Y.Z     # or `git pull` on main to follow unreleased changes
+   make docker             # rebuilds the API image and restarts the stack
+   ```
+
+   From the published images: change the image tags to the new release
+   (`ghcr.io/sentelabsai/openexecutive-api:X.Y.Z` and
+   `ghcr.io/sentelabsai/openexecutive-ui:X.Y.Z`), then
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+   Never run `docker compose down -v` to upgrade: `-v` deletes the volume.
+4. **Check it came back.** `curl -s http://localhost:8000/health` reports the
+   new `version`, and Settings → About shows it.
+
+To go back, see **Rollback** under [Operations](#operations).
+
+---
+
 ## Operations
 
 ```bash

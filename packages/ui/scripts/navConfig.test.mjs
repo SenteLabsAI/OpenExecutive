@@ -155,7 +155,7 @@ test("the Settings tools are grouped by what you'd use them for", () => {
 
 test("the Settings sections have unique ids and a label each", () => {
   const ids = SETTINGS_SECTIONS.map((s) => s.id);
-  assert.deepEqual(ids, ["executive", "workspace", "act-as-me", "tools"]);
+  assert.deepEqual(ids, ["executive", "workspace", "act-as-me", "tools", "about"]);
   assert.equal(new Set(ids).size, ids.length);
   for (const s of SETTINGS_SECTIONS) assert.ok(s.label.trim(), s.id);
 });

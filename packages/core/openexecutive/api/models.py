@@ -150,6 +150,16 @@ class HealthResponse(BaseModel):
     version: str = "0.4.5"  # x-release-please-version
 
 
+class VersionResponse(BaseModel):
+    """The running version and, when the update check is on, the latest release."""
+
+    current: str
+    latest: str | None = None
+    update_available: bool = False
+    release_url: str | None = None
+    check_enabled: bool = True
+
+
 class SkillWorkflowRef(BaseModel):
     name: str
     title: str
