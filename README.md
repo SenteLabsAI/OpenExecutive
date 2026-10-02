@@ -192,6 +192,7 @@ setup guide:
 | **OneDrive in chat** | Search, read, upload, move, copy and share OneDrive files (no delete, no anonymous links) | Set `MS365_MCP_ONEDRIVE=true` and sign in again ([docs/onedrive_sync_setup.md](docs/onedrive_sync_setup.md)) |
 | **Confluence** | Syncs chosen spaces into the knowledge base (read-only, Cloud or Server/Data Center) | [docs/confluence_sync_setup.md](docs/confluence_sync_setup.md) |
 | **Notion** | Syncs the pages shared with an internal integration into the knowledge base | Set `NOTION_SYNC_ENABLED=true` and `NOTION_API_KEY` (see [.env.example](.env.example)) |
+| **MCP tools** | Gives the Executive tools from other MCP servers, with deny rules for destructive ones | Copy [packages/core/mcp_servers.json.example](packages/core/mcp_servers.json.example) to `company/mcp_servers.json` and list your servers under `mcpServers`; MCP turns on when the file exists (Docker keeps it on `/data`, see [docs/deployment.md](docs/deployment.md#persistent-state)) |
 | **MCP clients** | Lets any MCP client talk to the Executive | [Connect as an MCP Server](#connect-as-an-mcp-server) |
 
 Synced Drive, OneDrive, Confluence and Notion content is kept apart from your uploaded
@@ -400,6 +401,8 @@ the app refuses to start.
 | `MS365_MCP_CLIENT_SECRET` | No | — | Entra client secret (only for a confidential app registration) |
 | `MS365_MCP_EXPECTED_USERNAME` | No | — | Pin the Microsoft 365 sign-in to this mailbox UPN |
 | `MS365_MCP_ONEDRIVE` | No | `false` | Add the OneDrive tools (and the file permissions they need) to the Microsoft 365 sign-in; run `--login` again after turning it on |
+| `MCP_ENABLED` | No | on when the config file exists | MCP gateway (the Executive using other servers' tools); `false` keeps it off with the file in place |
+| `MCP_SERVERS_CONFIG_PATH` | No | `./company/mcp_servers.json` | MCP gateway server list and tool filters (see [mcp_servers.json.example](packages/core/mcp_servers.json.example)) |
 | `EMAIL_PROVIDER` | No | `google` | Backend for the inbound mailbox poller + alert email: `google` or `microsoft` |
 | `CALENDAR_PROVIDER` | No | `google` | Backend for the typed calendar booking tools: `google` or `microsoft` |
 | `DELEGATION_GOOGLE_CREDENTIALS_DIR` | No | — | Where the owner's own Gmail credential for Act as me lives (see [docs/deployment.md](docs/deployment.md#your-own-gmail-act-as-me-optional)) |
