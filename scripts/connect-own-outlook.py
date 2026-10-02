@@ -46,10 +46,6 @@ from typing import Any
 
 LOGIN_BASE = "https://login.microsoftonline.com"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName"
-SENT_ITEMS = (
-    "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages"
-    "?$orderby=sentDateTime%20desc&$top=10&$select=from,isDraft"
-)
 GRAPH_SCOPES = ("User.Read", "Mail.ReadWrite", "Mail.Send")
 SCOPE = " ".join(["openid", "offline_access", *(f"https://graph.microsoft.com/{s}" for s in GRAPH_SCOPES)])
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
@@ -125,19 +121,10 @@ def _graph(url: str, access_token: str) -> dict[str, Any]:
 
 
 def _profile_email(access_token: str) -> str:
-    """The mailbox's own address, as delegation.outlook reads it: /me's mail,
-    else (a personal account signed in with another address) the address its
-    latest sent mail went from, else the sign-in name."""
+    """The mailbox's address as delegation.outlook reads it: the directory's
+    mail, else the sign-in name (never anything read from the mail itself)."""
     me = _graph(GRAPH_ME, access_token)
-    if me.get("mail"):
-        return str(me["mail"]).strip().lower()
-    sent = _graph(SENT_ITEMS, access_token)
-    for item in sent.get("value") or []:
-        if isinstance(item, dict) and item.get("isDraft") is not True:
-            address = ((item.get("from") or {}).get("emailAddress") or {}).get("address")
-            if address:
-                return str(address).strip().lower()
-    return str(me.get("userPrincipalName") or "").strip().lower()
+    return str(me.get("mail") or me.get("userPrincipalName") or "").strip().lower()
 
 
 def _sign_in(tenant: str, client_id: str) -> dict[str, Any]:

@@ -543,35 +543,26 @@ class DelegateOutlook:
     def _parse(self, raw: object) -> MailMessage:
         return parse_message(raw if isinstance(raw, dict) else {}, self._sent_folder, self.email)
 
-    async def _mailbox_address(self, client: httpx.AsyncClient, me: dict[str, Any]) -> str:
-        """The mailbox's own address. A personal account may sign in with
-        another address (even a Gmail one) and have no ``mail`` on /me; its
-        sent mail then says which address it sends from."""
-        mail = normalize_email(str(me.get("mail") or ""))
-        if mail:
-            return mail
-        # Graph refuses isDraft in $filter with this $orderby: filtered here.
-        data = await self._get(client, "/mailFolders/sentitems/messages", {
-            "$orderby": "sentDateTime desc", "$top": 10, "$select": "from,isDraft",
-        })
-        for raw in data.get("value") or []:
-            if isinstance(raw, dict) and raw.get("isDraft") is not True:
-                sent_from = _address(raw.get("from"))[1]
-                if sent_from:
-                    return sent_from
-        return normalize_email(str(me.get("userPrincipalName") or ""))
+    @staticmethod
+    def _directory_address(me: dict[str, Any]) -> str:
+        """The mailbox's address as Microsoft's directory has it: ``mail``,
+        else the sign-in name. Never anything read from the mail itself, which
+        its owner controls, so a credential can't claim someone else's
+        address. A personal account that signs in with another address (even
+        a Gmail one) is matched by that sign-in address."""
+        return normalize_email(str(me.get("mail") or me.get("userPrincipalName") or ""))
 
     async def profile_email(self) -> str:
-        """The address of the mailbox the credential opens."""
+        """The address of the mailbox the credential opens, from the directory."""
         async with self._client() as client:
             me = await self._get(client, "", {"$select": "mail,userPrincipalName"})
-            return await self._mailbox_address(client, me)
+        return self._directory_address(me)
 
     async def send_as_addresses(self) -> list[str]:
         """The person's primary address and their mailbox's SMTP aliases."""
         async with self._client() as client:
             data = await self._get(client, "", {"$select": "mail,userPrincipalName,proxyAddresses"})
-            primary = await self._mailbox_address(client, data)
+        primary = self._directory_address(data)
         aliases = [
             normalize_email(p.split(":", 1)[1])
             for p in data.get("proxyAddresses") or []

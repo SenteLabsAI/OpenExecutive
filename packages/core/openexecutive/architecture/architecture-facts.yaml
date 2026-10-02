@@ -8445,6 +8445,13 @@ delegation:
     is put in the token URL. Microsoft rotates the refresh token on use: the
     new one is written back atomically (0600), keeping every other key, and
     only when the file still holds the old one (a reconnect meanwhile wins).
+    The mailbox's address (profile_email, the primary of
+    send_as_addresses) is the directory's /me mail, else
+    userPrincipalName — never an address read from mail, because Sent
+    Items is the owner's to fill and the People check binds the file to a
+    person (a review found a Sent Items fallback let one mailbox claim
+    another person's address). A personal account signing in with a
+    non-Outlook address is matched by that sign-in address.
     Graph differences, all absorbed in the client: Prefer
     IdType="ImmutableId" and text bodies on every call (a sent draft keeps
     its id); a thread is conversationId; a draft's message id is

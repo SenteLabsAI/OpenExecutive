@@ -262,6 +262,10 @@ from any browser, and writes the same kind of file, which goes in the same
 directory. The app needs public client flows on and the delegated Graph
 permissions `User.Read`, `Mail.ReadWrite` and `Mail.Send`. A person has one
 mailbox for Act as me: connecting the other kind replaces the file.
+The address is checked against Microsoft's directory, never the mail itself:
+a personal account that signs in with another address (a Gmail one, say) and
+has no Outlook address of its own on file is matched by that sign-in address,
+so use it on the People page and with `--email`.
 
 ```bash
 MS365_MCP_CLIENT_ID=<app id> uv run python scripts/connect-own-outlook.py --email you@example.com
