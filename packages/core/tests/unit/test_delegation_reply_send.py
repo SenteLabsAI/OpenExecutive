@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
@@ -366,43 +367,49 @@ def test_the_reconciler_leaves_a_card_being_sent_alone(owner: Any, models: dict[
 _ROOT = Path(openexecutive.__file__).parent
 
 
-def _trees() -> list[tuple[str, ast.AST]]:
-    return [
-        (path.relative_to(_ROOT).as_posix(), ast.parse(path.read_text(), filename=str(path)))
-        for path in _ROOT.rglob("*.py")
-    ]
+@functools.cache
+def _index() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """One pass over every module under openexecutive/, shared by every lookup
+    in this file: re-parsing the package for each lookup made these the
+    slowest tests in the suite.
+
+    Returns (names, imports). ``names`` maps each name used in code (a call,
+    an attribute, an imported name) to the files that use it. ``imports`` maps
+    each module (openexecutive.a.b) to the files that import it, however it is
+    spelled: ``import a.b``, ``from a.b import x`` or ``from a import b``.
+    Paths are relative to the package."""
+    names: dict[str, set[str]] = {}
+    imports: dict[str, set[str]] = {}
+    for path in _ROOT.rglob("*.py"):
+        rel = path.relative_to(_ROOT).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if isinstance(node, ast.Attribute):
+                names.setdefault(node.attr, set()).add(rel)
+            elif isinstance(node, ast.Name):
+                names.setdefault(node.id, set()).add(rel)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    names.setdefault(alias.name, set()).add(rel)
+                if node.module is not None:
+                    imports.setdefault(node.module, set()).add(rel)
+                    for alias in node.names:
+                        imports.setdefault(f"{node.module}.{alias.name}", set()).add(rel)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.setdefault(alias.name, set()).add(rel)
+    return names, imports
 
 
 def _uses(name: str) -> set[str]:
     """Files under openexecutive/ that name ``name`` in code (a call, an
     attribute, an imported name), relative to the package."""
-    found: set[str] = set()
-    for rel, tree in _trees():
-        for node in ast.walk(tree):
-            if (
-                (isinstance(node, ast.Attribute) and node.attr == name)
-                or (isinstance(node, ast.Name) and node.id == name)
-                or (isinstance(node, ast.ImportFrom) and any(a.name == name for a in node.names))
-            ):
-                found.add(rel)
-    return found
+    return set(_index()[0].get(name, set()))
 
 
 def _importers(module: str) -> set[str]:
     """Files under openexecutive/ that import ``module`` (openexecutive.a.b),
     however it is spelled."""
-    package, _, leaf = module.rpartition(".")
-    found: set[str] = set()
-    for rel, tree in _trees():
-        for node in ast.walk(tree):
-            if (
-                (isinstance(node, ast.ImportFrom) and node.module == module)
-                or (isinstance(node, ast.ImportFrom) and node.module == package
-                    and any(a.name == leaf for a in node.names))
-                or (isinstance(node, ast.Import) and any(a.name == module for a in node.names))
-            ):
-                found.add(rel)
-    return found
+    return set(_index()[1].get(module, set()))
 
 
 def test_only_the_send_path_sends_and_only_the_approve_route_reaches_it() -> None:

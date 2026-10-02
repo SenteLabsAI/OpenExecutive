@@ -83,12 +83,20 @@ jobs:
       # pytest-xdist: one worker per core (4 on ubuntu-latest). `loadfile` keeps
       # each test module on a single worker, so module-level state behaves as in
       # a serial run.
+      #
+      # TMPDIR on tmpfs: most tests build a fresh SQLite file under tmp_path,
+      # and every CREATE/ALTER commits with a disk sync. In RAM those syncs are
+      # free, which more than halves the run; each test still gets its own file.
       - name: Run unit tests
+        env:
+          TMPDIR: /dev/shm
         run: cd packages/core && uv run pytest tests/unit/ -n auto --dist loadfile --tb=short
 
       # Route-level tests against a temp SQLite DB, with the model calls
       # stubbed; no API key needed. Left out of CI, one rotted unnoticed.
       - name: Run integration tests
+        env:
+          TMPDIR: /dev/shm
         run: cd packages/core && uv run pytest tests/integration/ -n auto --dist loadfile --tb=short
 
   ui-typecheck:

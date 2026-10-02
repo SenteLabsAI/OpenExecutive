@@ -113,6 +113,10 @@ explicit = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A run leaves close to 1 GB of temp files, and CI and `make check` put them
+# in RAM (/dev/shm). Keep only the failed tests' directories, not the last
+# three runs' worth.
+tmp_path_retention_policy = "failed"
 
 [dependency-groups]
 dev = [

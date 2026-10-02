@@ -54,10 +54,13 @@ lint:
 
 # Everything CI checks, in one command. Unsets the two env vars that make
 # full-app tests 401 or fail at import (see CLAUDE.md -> Testing), builds the
-# UI only when packages/ui differs from BASE, then runs the PR rules.
+# UI only when packages/ui differs from BASE, then runs the PR rules. Test
+# temp files go to RAM where there is a /dev/shm (Linux), as in CI: the per-test
+# SQLite setup is mostly disk syncs, and tmpfs makes them free.
 BASE ?= origin/main
+TEST_TMPDIR ?= $(if $(wildcard /dev/shm),/dev/shm,$(or $(TMPDIR),/tmp))
 check: lint
-	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT \
+	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT TMPDIR=$(TEST_TMPDIR) \
 		uv run pytest tests/unit/ tests/integration/ -n auto --dist loadfile -q
 	@if ! git diff --quiet $$(git merge-base $(BASE) HEAD) -- packages/ui \
 		|| [ -n "$$(git ls-files --others --exclude-standard packages/ui)" ]; then \
