@@ -51,6 +51,7 @@ const PROSE_CLASS =
 const BADGE_CLASS: Record<DocSource, string> = {
   upload: "bg-surface-input text-fg-muted border-line-strong",
   drive: "bg-emerald-500/15 text-emerald-400 border-emerald-500/40",
+  onedrive: "bg-blue-500/15 text-blue-400 border-blue-500/40",
   notion: "bg-sky-500/15 text-sky-400 border-sky-500/40",
 };
 
@@ -58,6 +59,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const [uploads, setUploads] = useState<CompanyDoc[]>([]);
   const [synced, setSynced] = useState<Record<SyncedSourceId, SyncedDoc[]>>({
     drive: [],
+    onedrive: [],
     notion: [],
   });
   const [sources, setSources] = useState<SyncSourceStatus[]>([]);
@@ -103,7 +105,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   }, [loadAll]);
 
   const rows = useMemo(
-    () => mergeDocs(uploads, synced.drive, synced.notion),
+    () => mergeDocs(uploads, synced.drive, synced.notion, synced.onedrive),
     [uploads, synced]
   );
   const shown = useMemo(() => filterDocs(rows, sourceFilter, query), [rows, sourceFilter, query]);
@@ -210,7 +212,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const usedSources = new Set(rows.map((r) => r.source));
   const filterOptions: (DocSource | "all")[] = [
     "all",
-    ...(["upload", "drive", "notion"] as DocSource[]).filter((s) => usedSources.has(s)),
+    ...(["upload", "drive", "onedrive", "notion"] as DocSource[]).filter((s) => usedSources.has(s)),
   ];
 
   return (
@@ -345,7 +347,7 @@ function SourcesStrip({
   if (connected.length === 0) {
     return (
       <p className="text-xs text-fg-subtle">
-        Connect Google Drive or Notion to bring documents in automatically.{" "}
+        Connect Google Drive, OneDrive or Notion to bring documents in automatically.{" "}
         <Link href="/settings/integrations" className="text-indigo-400 hover:underline">
           Set up in Settings
         </Link>
@@ -540,7 +542,7 @@ function Viewer({ doc, onClose }: { doc: Viewing; onClose: () => void }) {
   );
 }
 
-// Synced Drive / Notion text is written by anyone who can edit the shared
+// Synced Drive / OneDrive / Notion text is written by anyone who can edit the shared
 // folder or page, so the viewer never fetches its images (a remote image is a
 // read beacon) and opens its links in a new tab, away from the app.
 const SAFE_MARKDOWN: Components = {

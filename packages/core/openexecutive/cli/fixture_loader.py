@@ -493,11 +493,15 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
     from openexecutive.knowledge.notion_sync import reset_local_state
 
     reset_local_state(profile_path=settings.company_profile_path)
-    # Synced Drive files are per-company too, like Notion's.
+    # Synced Drive and OneDrive files are per-company too, like Notion's.
     store.delete_drive_docs()
     from openexecutive.knowledge import drive_sync
 
     drive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    store.delete_onedrive_docs()
+    from openexecutive.knowledge import onedrive_sync
+
+    onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
 
     docs_indexed = 0
     for dest_doc in sorted(company_docs_dir.glob("*.md")):
@@ -760,11 +764,15 @@ async def reset_all_state(
         from openexecutive.knowledge.notion_sync import reset_local_state
 
         reset_local_state(profile_path=settings.company_profile_path)
-        # Synced Drive files are per-company too, like Notion's.
+        # Synced Drive and OneDrive files are per-company too, like Notion's.
         store.delete_drive_docs()
         from openexecutive.knowledge import drive_sync
 
         drive_sync.reset_local_state(profile_path=settings.company_profile_path)
+        store.delete_onedrive_docs()
+        from openexecutive.knowledge import onedrive_sync
+
+        onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
 
         # 2b. Company-authored skills — delete the filesystem directory and
         # the company-source rows from the shared `skills` ChromaDB

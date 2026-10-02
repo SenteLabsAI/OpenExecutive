@@ -134,13 +134,18 @@ RUN chmod +x /usr/local/bin/workspace-mcp-launch.sh
 COPY --from=ms365-build /usr/local/bin/node /usr/local/bin/node
 COPY --from=ms365-build /usr/local/lib/node_modules/@softeria /usr/local/lib/node_modules/@softeria
 COPY docker/ms365-mcp-launch.sh /usr/local/bin/ms365-mcp-launch.sh
+# The OneDrive sync's token helper (`ms365-mcp-launch.sh --access-token`). The
+# smoke below fails the build if a package bump removes the AuthManager calls
+# it relies on.
+COPY docker/ms365-access-token.mjs /usr/local/bin/ms365-access-token.mjs
 RUN printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/@softeria/ms-365-mcp-server/dist/index.js "$@"\n' \
         > /usr/local/bin/ms-365-mcp-server \
     && chmod +x /usr/local/bin/ms-365-mcp-server /usr/local/bin/ms365-mcp-launch.sh \
     && MS365_MCP_CLIENT_ID=00000000-0000-0000-0000-000000000000 \
        MS365_MCP_CREDENTIALS_DIR=/tmp/ms365-smoke \
        /usr/local/bin/ms365-mcp-launch.sh --list-permissions >/dev/null \
-    && rm -rf /tmp/ms365-smoke
+    && rm -rf /tmp/ms365-smoke \
+    && node --input-type=module -e "const m = await import('/usr/local/bin/ms365-access-token.mjs'); const A = await m.loadAuthManager(); for (const f of ['loadTokenCache', 'getCurrentAccount']) if (typeof A.prototype[f] !== 'function') throw new Error('AuthManager.' + f + ' is missing'); if (typeof A.create !== 'function') throw new Error('AuthManager.create is missing');"
 
 COPY packages/core/ .
 

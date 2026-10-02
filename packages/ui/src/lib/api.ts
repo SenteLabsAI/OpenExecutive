@@ -509,9 +509,9 @@ export async function getDocument(filename: string): Promise<CompanyDocContent> 
   return res.json();
 }
 
-// --- Connected sources (Google Drive, Notion) --------------------------------
+// --- Connected sources (Google Drive, OneDrive, Notion) ----------------------
 
-export type SyncedSourceId = "drive" | "notion";
+export type SyncedSourceId = "drive" | "onedrive" | "notion";
 
 export interface SyncedDoc {
   id: string;

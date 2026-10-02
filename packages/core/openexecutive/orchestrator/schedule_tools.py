@@ -1821,7 +1821,7 @@ PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
     "google_workspace__search_gmail_messages",
     "google_workspace__send_gmail_message",
     # The Microsoft 365 twins, for an Executive whose mailbox is Outlook
-    # (EMAIL_PROVIDER=microsoft): its mail and calendar reads, and the two
+    # (EMAIL_PROVIDER=microsoft): its mail, calendar and OneDrive search reads, and the two
     # mail writes whose every recipient `_check_m365_recipients` checks
     # against the same narrowed `_roster_allow_set`. Hyphenated, exactly as
     # ms-365-mcp-server names them.
@@ -1833,6 +1833,7 @@ PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
     "microsoft_365__list-calendars",
     "microsoft_365__list-mail-folder-messages",
     "microsoft_365__list-mail-messages",
+    "microsoft_365__search-onedrive-files",
     "microsoft_365__send-mail",
 })
 

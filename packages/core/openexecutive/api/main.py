@@ -493,6 +493,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from openexecutive.knowledge.drive_sync import bootstrap_drive_sync_scan
 
         bootstrap_drive_sync_scan()
+    if settings.onedrive_sync_enabled:
+        from openexecutive.knowledge.onedrive_sync import bootstrap_onedrive_sync_scan
+
+        bootstrap_onedrive_sync_scan()
 
     audit_logger = AuditLogger()
     app.state.audit = audit_logger

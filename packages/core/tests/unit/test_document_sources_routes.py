@@ -1,4 +1,4 @@
-"""Routes behind the knowledge page's connected sources (Google Drive, Notion).
+"""Routes behind the knowledge page's connected sources (Google Drive, OneDrive, Notion).
 
 The lists and viewers read the sync state files only; "Sync now" starts one
 tick of the same sync the scheduler runs, guarded so it can't overlap a
@@ -18,12 +18,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import documents
-from openexecutive.knowledge import drive_sync, notion_sync
+from openexecutive.knowledge import drive_sync, notion_sync, onedrive_sync
 
 from ._fake_store import FakeStore
 
 DRIVE_ID = "1docAAAAAAAA"
 PAGE_ID = "11111111-1111-1111-1111-111111111111"
+ONEDRIVE_KEY = "b!AbC-12_x:01DOCXFILE"
 
 
 @pytest.fixture
@@ -34,6 +35,10 @@ def company(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DRIVE_SYNC_SERVICE_ACCOUNT_FILE", str(tmp_path / "sa.json"))
     monkeypatch.setenv("DRIVE_SYNC_FOLDER_IDS", "1rootAAAAAAA")
     monkeypatch.setenv("NOTION_SYNC_ENABLED", "false")
+    monkeypatch.setenv("ONEDRIVE_SYNC_ENABLED", "true")
+    monkeypatch.setenv("ONEDRIVE_SYNC_FOLDERS", "b!AbC-12_x/01ROOTFOLDER")
+    monkeypatch.setattr(onedrive_sync, "_RUN_LOCK", asyncio.Lock())
+    monkeypatch.setattr(onedrive_sync, "_last_finished_at", None)
     # Fresh locks per test: a module-level asyncio.Lock binds to the first
     # loop that waits on it.
     monkeypatch.setattr(drive_sync, "_RUN_LOCK", asyncio.Lock())
@@ -96,6 +101,54 @@ def test_drive_files_list_and_open(client: TestClient, company: Path) -> None:
     assert client.get("/documents/drive/1emptyAAAAAA").status_code == 404
     assert client.get("/documents/drive/unknownAAAAA").status_code == 404
     assert client.get("/documents/drive/..%2F..%2Fprofile.yaml").status_code == 404
+
+
+def test_onedrive_files_list_and_open(client: TestClient, company: Path) -> None:
+    (company / "docs" / "onedrive").mkdir(parents=True)
+    (company / "docs" / "onedrive" / "onedrive-01docxfile-plan.md").write_text(
+        f"<!-- onedrive_key: {ONEDRIVE_KEY} -->\n\n# Plan.docx\n\nHire two.\n"
+    )
+    (company / "onedrive_sync_state.json").write_text(
+        json.dumps(
+            {
+                "last_run": "2026-09-30T10:00:00+00:00",
+                "files": {
+                    ONEDRIVE_KEY: {
+                        "name": "Plan.docx",
+                        "filename": "onedrive-01docxfile-plan.md",
+                        "url": "https://contoso-my.sharepoint.com/plan",
+                        "modified": "2026-09-29T08:00:00Z",
+                        "synced_at": "2026-09-30T10:00:00+00:00",
+                    }
+                },
+            }
+        )
+    )
+    body = client.get("/documents/onedrive").json()
+    assert body["enabled"] is True and [f["id"] for f in body["files"]] == [ONEDRIVE_KEY]
+    doc = client.get(f"/documents/onedrive/{ONEDRIVE_KEY}").json()
+    assert doc["name"] == "Plan.docx" and "Hire two." in doc["content"]
+    assert client.get("/documents/onedrive/b!AbC-12_x:01UNKNOWN").status_code == 404
+    assert client.get("/documents/onedrive/..%2F..%2Fprofile.yaml").status_code == 404
+    sources = {s["id"]: s for s in client.get("/documents/sources").json()["sources"]}
+    assert sources["onedrive"]["label"] == "OneDrive" and sources["onedrive"]["file_count"] == 1
+
+
+def test_onedrive_sync_now_runs_the_onedrive_tick(
+    client: TestClient, company: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    async def fake_run() -> dict[str, int]:
+        calls.append("onedrive")
+        return {"updated": 0}
+
+    monkeypatch.setattr(onedrive_sync, "run_onedrive_sync", fake_run)
+    assert client.post("/documents/sources/onedrive/sync").status_code == 202
+    deadline = time.monotonic() + 2
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == ["onedrive"]
 
 
 def test_notion_pages_list_and_open(client: TestClient, company: Path) -> None:

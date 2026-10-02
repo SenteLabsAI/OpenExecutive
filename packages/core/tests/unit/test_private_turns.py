@@ -1306,7 +1306,7 @@ def test_the_private_turn_allow_list_is_reads_and_gated_gmail_only() -> None:
         assert name not in _GATED_CALENDAR_TOOLS and not _is_drive_share_tool(name)
     # Microsoft 365: the two mail writes are argument-gated sends with every
     # recipient in their arguments (no reply-by-id, whose recipient the
-    # referenced message names); everything else is a get / list read.
+    # referenced message names); everything else is a get / list / search read.
     writes = {"microsoft_365__send-mail", "microsoft_365__create-draft-email"}
     assert writes <= microsoft
     for name in writes:
@@ -1314,7 +1314,7 @@ def test_the_private_turn_allow_list_is_reads_and_gated_gmail_only() -> None:
         assert normalized in _GATED_M365_MAIL_TOOLS and normalized not in _M365_REPLY_BY_ID_TOOLS
     for name in microsoft - writes:
         verb = name[len(_M365_PREFIX):].split("-", 1)[0]
-        assert verb in {"get", "list"}, name
+        assert verb in {"get", "list", "search"}, name
         normalized = _normalize_tool_name(name)
         assert normalized not in _GATED_M365_MAIL_TOOLS | _GATED_M365_CALENDAR_TOOLS
         assert normalized not in _M365_EVENT_BY_ID_TOOLS

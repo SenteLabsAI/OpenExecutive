@@ -122,6 +122,9 @@ class ChromaDBStore(KnowledgeStore):
     # multi-writer and unreviewed. Retrieved under its own labelled,
     # lower-ranked section.
     DRIVE_COLLECTION = "drive_docs"
+    # Files synced from OneDrive folders (knowledge.onedrive_sync). Isolated
+    # and ranked like DRIVE, for the same reason.
+    ONEDRIVE_COLLECTION = "onedrive_docs"
     # Files attached in an integration channel. Same isolation reasoning as
     # the two above, taken one step further: this collection is NEVER
     # queried — not by ``retriever.retrieve``, not by anything else.
@@ -349,6 +352,10 @@ class ChromaDBStore(KnowledgeStore):
     def delete_drive_docs(self) -> None:
         """Drop every synced Google Drive chunk."""
         self.delete_documents(collection=self.DRIVE_COLLECTION, where={"type": "drive"})
+
+    def delete_onedrive_docs(self) -> None:
+        """Drop every synced OneDrive chunk."""
+        self.delete_documents(collection=self.ONEDRIVE_COLLECTION, where={"type": "onedrive"})
 
     def delete_attachment_docs(self) -> None:
         """Drop every inbound attachment chunk, plus any pre-isolation

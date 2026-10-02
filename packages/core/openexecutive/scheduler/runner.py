@@ -867,6 +867,34 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
+    # OneDrive folder sync — the Microsoft twin of the Drive sync above.
+    # ------------------------------------------------------------------
+    if action.kind == "onedrive_sync_scan":
+        from openexecutive.knowledge.onedrive_sync import (
+            enqueue_next_onedrive_sync_scan,
+            run_onedrive_sync,
+        )
+        try:
+            stats = await run_onedrive_sync(now=now)
+            logger.info("scheduler: onedrive_sync_scan %s", stats)
+        except Exception:
+            logger.exception("scheduler: onedrive_sync_scan (action %d) crashed", action.id)
+        try:
+            mark_action_done(action.id)
+        except Exception:
+            logger.exception(
+                "scheduler: onedrive_sync_scan (action %d) — mark_done failed", action.id
+            )
+        try:
+            enqueue_next_onedrive_sync_scan(after=datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "scheduler: failed to chain next onedrive_sync_scan "
+                "heartbeat — sync will stall until next bootstrap"
+            )
+        return
+
+    # ------------------------------------------------------------------
     # Proactive nudge — re-check reachability at dispatch time before
     # falling through to the ad-hoc dispatch path. The person may have
     # gone on leave between schedule and fire; if so, defer rather than

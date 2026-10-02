@@ -1102,6 +1102,52 @@ class Settings(BaseSettings):
             raise ValueError(f"DRIVE_SYNC_FOLDER_IDS has ids Drive would not issue: {bad}")
         return self
 
+    # OneDrive folder → isolated collection sync. OFF by default. The Microsoft
+    # analogue of the Drive sync above: a scheduler heartbeat re-indexes the
+    # files in ONEDRIVE_SYNC_FOLDERS (and their subfolders) into the ONEDRIVE
+    # Chroma collection. Microsoft has no per-folder service account, so it
+    # reads as the Executive's own Microsoft 365 sign-in (the one the
+    # microsoft_365 MCP server holds), with Files.Read.All, and only the
+    # folders listed here. Each entry is ``<drive id>/<item id>``; the
+    # ``onedrive-folder`` CLI command turns a share link into one. See
+    # docs/onedrive_sync_setup.md.
+    onedrive_sync_enabled: bool = Field(False, alias="ONEDRIVE_SYNC_ENABLED")
+    onedrive_sync_folders: str = Field("", alias="ONEDRIVE_SYNC_FOLDERS")
+    onedrive_sync_interval_minutes: int = Field(60, alias="ONEDRIVE_SYNC_INTERVAL_MINUTES")
+    onedrive_max_files_per_scan: int = Field(40, alias="ONEDRIVE_MAX_FILES_PER_SCAN")
+    # The Microsoft 365 MCP launcher; the sync asks it for an access token
+    # (``--access-token``) so it reads with the server's own sign-in.
+    ms365_mcp_launcher: str = Field(
+        "/usr/local/bin/ms365-mcp-launch.sh", alias="MS365_MCP_LAUNCHER"
+    )
+
+    @property
+    def onedrive_sync_folder_list(self) -> list[tuple[str, str]]:
+        """``ONEDRIVE_SYNC_FOLDERS`` as ``(drive id, item id)`` pairs, blanks and
+        repeats dropped, order kept. Entries that don't parse are dropped here;
+        the validator refuses them when the sync is on."""
+        from openexecutive.knowledge.onedrive_client import parse_folder_entry
+
+        pairs = (parse_folder_entry(p) for p in self.onedrive_sync_folders.split(","))
+        return list(dict.fromkeys(p for p in pairs if p is not None))
+
+    @model_validator(mode="after")
+    def _validate_onedrive_sync(self) -> "Settings":
+        if not self.onedrive_sync_enabled:
+            return self
+        from openexecutive.knowledge.onedrive_client import parse_folder_entry
+
+        entries = [p.strip() for p in self.onedrive_sync_folders.split(",") if p.strip()]
+        if not entries:
+            raise ValueError("ONEDRIVE_SYNC_ENABLED=true requires ONEDRIVE_SYNC_FOLDERS")
+        bad = [e for e in entries if parse_folder_entry(e) is None]
+        if bad:
+            raise ValueError(
+                f"ONEDRIVE_SYNC_FOLDERS entries must be <drive id>/<item id>: {bad} "
+                "(run `openexecutive onedrive-folder <share link>` to get one)"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_notion_sync(self) -> "Settings":
         if self.notion_sync_enabled and not self.notion_api_key:

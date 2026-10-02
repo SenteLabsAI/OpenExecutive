@@ -58,6 +58,17 @@ export MS365_MCP_USE_KEYTAR="${MS365_MCP_USE_KEYTAR:-0}"
 # STDIO transport is the server's default, so no --http. Unlike workspace-mcp
 # it binds no helper port in stdio mode, so there is no port-clash guard here.
 #
+# `--access-token` (the only argument it may come with) prints an access
+# token for the signed-in account instead of starting the server, through
+# docker/ms365-access-token.mjs with exactly this environment: the API's
+# OneDrive folder sync (knowledge/onedrive_account.py) reads files with it.
+# The helper mints file-read tokens only; scopes come on stdin.
+if [ "${1:-}" = "--access-token" ]; then
+    [ "$#" -eq 1 ] || { echo "--access-token takes no other arguments" >&2; exit 64; }
+    exec "${MS365_MCP_NODE_BIN:-/usr/local/bin/node}" \
+        "${MS365_ACCESS_TOKEN_SCRIPT:-/usr/local/bin/ms365-access-token.mjs}"
+fi
+
 # Tool surface: an EXPLICIT allow-list (--enabled-tools, an anchored regex of
 # tool names), not the upstream `mail,calendar` preset. The preset also
 # registers tools that can address people the gateway's roster gate does not
@@ -66,15 +77,30 @@ export MS365_MCP_USE_KEYTAR="${MS365_MCP_USE_KEYTAR:-0}"
 # permission sharing, whole-calendar delete — and an upstream bump can add
 # more. The list below is exactly the Outlook mail + calendar tools the
 # gateway gates or that carry no recipient; the scopes requested at --login
-# follow from it (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite). The
+# follow from it (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite). The
 # server's account tools (login, logout, verify-login, list-accounts,
 # select-account, remove-account) are always registered regardless of the
 # filter; the gateway refuses login / logout / select-account /
 # remove-account itself (orchestrator/mcp_gateway.py).
+#
+# OneDrive: the same surface the Executive has on Google Drive — search, list,
+# read (download-bytes, pinned by the gateway to mail attachments and drive
+# file content), upload / edit, create folders, move, rename, copy, and share.
+# The two sharing tools are gated like Drive sharing: every invitee must be on
+# the People roster, and a link must be scoped to specific people; writes are
+# kept to the Executive's own drives and search to plain words
+# (orchestrator/mcp_gateway.py). Delete is left out. The tool scopes alone
+# are Files.ReadWrite (the account's own drive, where every write lands);
+# --extra-scopes below adds Files.Read.All so files and folders shared WITH
+# the Executive can be read too, which is also what the OneDrive folder sync
+# (knowledge/onedrive_sync.py) reads with. Files.ReadWrite.All is not asked
+# for: nothing writes outside the Executive's own drives.
+EXTRA_SCOPES='Files.Read.All'
+#
 # Override with MS365_MCP_ENABLED_TOOLS (a regex) or MS365_MCP_PRESET (an
 # upstream preset name) only if you also extend the gate in
 # orchestrator/mcp_gateway.py — re-verify with --list-permissions.
-DEFAULT_ENABLED_TOOLS='^(list-mail-folders|list-mail-folder-messages|list-mail-messages|get-mail-message|list-mail-attachments|download-bytes|send-mail|reply-mail-message|reply-all-mail-message|forward-mail-message|create-draft-email|create-reply-draft|create-reply-all-draft|create-forward-draft|update-mail-message|send-draft-message|move-mail-message|list-calendars|list-calendar-events|get-calendar-event|create-calendar-event|update-calendar-event|delete-calendar-event|cancel-calendar-event|accept-calendar-event|decline-calendar-event|tentatively-accept-calendar-event|get-calendar-view)$'
+DEFAULT_ENABLED_TOOLS='^(list-mail-folders|list-mail-folder-messages|list-mail-messages|get-mail-message|list-mail-attachments|download-bytes|send-mail|reply-mail-message|reply-all-mail-message|forward-mail-message|create-draft-email|create-reply-draft|create-reply-all-draft|create-forward-draft|update-mail-message|send-draft-message|move-mail-message|list-calendars|list-calendar-events|get-calendar-event|create-calendar-event|update-calendar-event|delete-calendar-event|cancel-calendar-event|accept-calendar-event|decline-calendar-event|tentatively-accept-calendar-event|get-calendar-view|list-drives|get-drive-root-item|list-folder-files|get-drive-item|search-onedrive-files|upload-file-content|create-onedrive-folder|move-rename-onedrive-item|copy-drive-item|share-drive-item|create-drive-item-share-link|list-drive-item-permissions)$'
 #
 # The script's own arguments stay at the END of the command line so the
 # seeding path works with the exact environment the gateway will use:
@@ -82,6 +108,9 @@ DEFAULT_ENABLED_TOOLS='^(list-mail-folders|list-mail-folder-messages|list-mail-m
 #   ms365-mcp-launch.sh --verify-login
 #   ms365-mcp-launch.sh --list-permissions
 # With no extra args this execs the stdio server, as the gateway expects.
+
+# The OneDrive .All scopes (see EXTRA_SCOPES above), asked for at --login.
+set -- --extra-scopes "$EXTRA_SCOPES" "$@"
 
 # Pin the account the cached token may belong to. The env var is honoured
 # natively too; the flag makes the pin visible in `ps` and survives an
