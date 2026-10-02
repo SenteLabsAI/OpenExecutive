@@ -10,8 +10,10 @@ skill tools. They let the Executive:
 - send a Discord DM directly via `send_discord_dm`
 - look up a person by name via `lookup_person` (returns routing identifiers)
 
-Email sends already work via the MCP gateway tool `google_workspace__send_gmail_message`,
-so there is no `send_email` wrapper here.
+Email sends already work via the MCP gateway's mail send tool (Gmail's
+`google_workspace__send_gmail_message` or Outlook's `microsoft_365__send-mail`,
+per EMAIL_PROVIDER — see `integrations.workspace`), so there is no `send_email`
+wrapper here.
 """
 from __future__ import annotations
 
@@ -1818,6 +1820,20 @@ PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
     "google_workspace__search_drive_files",
     "google_workspace__search_gmail_messages",
     "google_workspace__send_gmail_message",
+    # The Microsoft 365 twins, for an Executive whose mailbox is Outlook
+    # (EMAIL_PROVIDER=microsoft): its mail and calendar reads, and the two
+    # mail writes whose every recipient `_check_m365_recipients` checks
+    # against the same narrowed `_roster_allow_set`. Hyphenated, exactly as
+    # ms-365-mcp-server names them.
+    "microsoft_365__create-draft-email",
+    "microsoft_365__get-calendar-event",
+    "microsoft_365__get-calendar-view",
+    "microsoft_365__get-mail-message",
+    "microsoft_365__list-calendar-events",
+    "microsoft_365__list-calendars",
+    "microsoft_365__list-mail-folder-messages",
+    "microsoft_365__list-mail-messages",
+    "microsoft_365__send-mail",
 })
 
 

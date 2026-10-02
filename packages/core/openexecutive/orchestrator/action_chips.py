@@ -415,8 +415,8 @@ def summarize_action(
         # MCP — the underlying tool name lives in tool_input["name"]. We
         # can't tell from here whether the underlying call was a read or a
         # write, so emit a generic chip with the tool name. Users will
-        # naturally tolerate "Called google_workspace__send_gmail_message"
-        # when that's what just happened.
+        # naturally tolerate "Called google_workspace__send_gmail_message" (or
+        # "Called microsoft_365__send-mail") when that's what just happened.
         mcp_name = tool_input.get("name", "tool")
         payload["tool"] = mcp_name  # surface the real tool for UI mapping
         payload["summary"] = f"Called {mcp_name}"

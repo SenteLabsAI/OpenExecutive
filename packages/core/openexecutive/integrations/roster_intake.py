@@ -349,7 +349,7 @@ async def _notify_principal(request: rr.RosterRequest, *, acknowledged: bool) ->
 async def _email_principal(
     request: rr.RosterRequest, principal_email: str, acknowledged: bool = True,
 ) -> bool:
-    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import send_from_executive
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.workflows.action_step import looks_like_error
 
@@ -358,15 +358,7 @@ async def _email_principal(
         return False
     token = await asyncio.to_thread(rr.issue_email_token, request.id)
     subject, body = _email_prompt(request, token, acknowledged)
-    result = await gateway.call_tool({
-        "name": "google_workspace__send_gmail_message",
-        "arguments": {
-            "user_google_email": get_settings().exec_email_address,
-            "to": principal_email,
-            "subject": subject,
-            "body": body,
-        },
-    })
+    result = await send_from_executive(gateway, to=principal_email, subject=subject, body=body)
     if looks_like_error(result):
         logger.warning("roster_intake: confirmation email failed: %s", str(result)[:200])
         return False
@@ -382,7 +374,11 @@ async def send_email_ack(gateway: Any, to: str) -> None:
     """Send ``ACK_TEXT`` to exactly ``to`` — the one send the gateway lets
     reach an address off the roster, under a one-shot grant that admits only
     this subject, this body and this recipient (``mcp_gateway.roster_ack_grant``).
-    Raises when the send fails, so the caller can release its claim."""
+    Raises when the send fails, so the caller can release its claim.
+
+    Gmail only: it runs only for a sender Gmail authenticated
+    (``fact_confirmation.sender_authenticated``), which is never the case on
+    an Outlook mailbox, and the grant admits only the Gmail send tool."""
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.mcp_gateway import roster_ack_grant
     from openexecutive.orchestrator.schedule_tools import set_session
@@ -688,20 +684,14 @@ async def _apply_answer(request: rr.RosterRequest, text: str, *, via: str) -> st
 
 
 async def _reply_to_principal(gateway: Any, to: str, request: rr.RosterRequest, text: str) -> None:
-    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import send_from_executive
     from openexecutive.orchestrator.schedule_tools import set_session
 
     try:
         with set_session(None):
-            await gateway.call_tool({
-                "name": "google_workspace__send_gmail_message",
-                "arguments": {
-                    "user_google_email": get_settings().exec_email_address,
-                    "to": to,
-                    "subject": f"Re: roster request {request.id}",
-                    "body": text,
-                },
-            })
+            await send_from_executive(
+                gateway, to=to, subject=f"Re: roster request {request.id}", body=text,
+            )
     except Exception:
         logger.warning("roster_intake: replying to the principal failed", exc_info=True)
 

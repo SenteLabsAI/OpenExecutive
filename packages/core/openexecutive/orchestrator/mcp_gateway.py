@@ -10,10 +10,11 @@ import logging
 import os
 import re
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from email.utils import getaddresses
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from openexecutive.config import get_settings, mcp_config_file_present
 from openexecutive.memory import drive_reads
@@ -90,6 +91,20 @@ _FORWARDED_ENV_VARS = (
     "WORKSPACE_MCP_CREDENTIALS_DIR",
     "WORKSPACE_MCP_TOOL_TIER",
     "WORKSPACE_MCP_TOOLS",
+    # Microsoft 365 (ms-365-mcp-server) child — consumed by the `env` block of
+    # the microsoft_365 entry and by docker/ms365-mcp-launch.sh. Same
+    # contract as the Google vars above: an entry here is what turns a
+    # deployment secret into something the child can see.
+    "MS365_MCP_CLIENT_ID",
+    "MS365_MCP_TENANT_ID",
+    "MS365_MCP_CLIENT_SECRET",
+    "MS365_MCP_EXPECTED_USERNAME",
+    "MS365_MCP_ORG_MODE",
+    "MS365_MCP_OAUTH_TOKEN",
+    "MS365_MCP_CREDENTIALS_DIR",
+    "MS365_MCP_TOKEN_CACHE_PATH",
+    "MS365_MCP_SELECTED_ACCOUNT_PATH",
+    "MS365_MCP_USE_KEYTAR",
 )
 
 # Outbound Gmail tools whose arguments may carry recipients. Any tool name
@@ -116,6 +131,172 @@ _GATED_CALENDAR_TOOLS = frozenset({
 # Namespace prefix every workspace-mcp tool carries once proxied through the
 # gateway.
 _GW_PREFIX = "google_workspace__"
+
+# Namespace prefix of the Microsoft 365 server (ms-365-mcp-server). Its tool
+# names are hyphenated Graph endpoint aliases (`send-mail`,
+# `create-calendar-event`); extensible-mcp proxies them verbatim as
+# `microsoft_365__send-mail`.
+_M365_PREFIX = "microsoft_365__"
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Canonical form for gate lookups: lowercase, ``-`` and ``_`` collapsed.
+
+    The M365 gate sets below are stored in underscore form and matched against
+    this, so `microsoft_365__send-mail` and `microsoft_365__send_mail` (should a
+    proxy layer ever rewrite hyphens) are gated identically. Google's gates keep
+    their exact-name matching — nothing there is hyphenated.
+    """
+    return name.strip().lower().replace("-", "_")
+
+
+# Microsoft 365 write tools whose arguments can carry a recipient — the whole
+# send / reply / forward / draft surface, in normalized (underscore) form.
+# Names track @softeria/ms-365-mcp-server 0.154.2 `dist/endpoints.json`
+# (the README drifts; endpoints.json is authoritative). Drafts and
+# `update_mail_message` are gated too: a draft carries recipients that
+# `send_draft_message` later sends, and an update can PATCH `toRecipients` onto
+# it. Re-verify on any ms-365-mcp-server bump (docker/Dockerfile pin).
+_GATED_M365_MAIL_TOOLS = frozenset({
+    "microsoft_365__send_mail",
+    "microsoft_365__reply_mail_message",
+    "microsoft_365__reply_all_mail_message",
+    "microsoft_365__forward_mail_message",
+    "microsoft_365__create_draft_email",
+    "microsoft_365__create_reply_draft",
+    "microsoft_365__create_reply_all_draft",
+    "microsoft_365__create_forward_draft",
+    "microsoft_365__update_mail_message",
+    "microsoft_365__send_draft_message",
+    # Not in the launcher's default allow-list (docker/ms365-mcp-launch.sh) —
+    # gated anyway so an operator who widens the list still gets the roster
+    # check: inbox rules can forwardTo/redirectTo any address, mailbox settings
+    # carry an external auto-reply.
+    "microsoft_365__create_mail_rule",
+    "microsoft_365__update_mail_rule",
+    "microsoft_365__update_mailbox_settings",
+})
+
+# The subset of the mail writes above whose recipients are NOT in the
+# arguments at all: Graph's reply / reply-all / send-draft actions address
+# whoever the referenced message (`messageId`) names. The argument walk in
+# `_check_m365_recipients` sees nothing to check for them, so a reply to an
+# unrostered sender would sail through — the gate must read the referenced
+# message from the server first (`_check_m365_referenced_message`) and
+# validate the recipients Graph will derive from it. Fail-closed: a lookup
+# that fails, errors, or returns no addressable recipient refuses the call.
+_M365_REPLY_BY_ID_TOOLS = frozenset({
+    "microsoft_365__reply_mail_message",
+    "microsoft_365__reply_all_mail_message",
+    "microsoft_365__create_reply_draft",
+    "microsoft_365__create_reply_all_draft",
+    "microsoft_365__send_draft_message",
+})
+_M365_REPLY_ALL_TOOLS = frozenset({
+    "microsoft_365__reply_all_mail_message",
+    "microsoft_365__create_reply_all_draft",
+})
+_M365_SEND_DRAFT_TOOL = "microsoft_365__send_draft_message"
+_M365_MESSAGE_LOOKUP_TOOL = "microsoft_365__get-mail-message"
+_M365_MESSAGE_LOOKUP_SELECT = "id,from,replyTo,toRecipients,ccRecipients,bccRecipients"
+
+# Calendar actions whose free-text `comment` Exchange EMAILS to people the
+# arguments never name: an RSVP (accept / decline / tentatively-accept with
+# sendResponse) goes to the event's ORGANIZER, a cancel goes to every
+# ATTENDEE. Like the reply family, the gate reads the event first
+# (`_check_m365_referenced_event` → get-calendar-event) and roster-checks the
+# implied recipients; fail-closed. `delete-calendar-event` carries no free
+# text and stays ungated (it is the typed cancel_calendar_event path).
+_M365_EVENT_RESPONSE_TOOLS = frozenset({
+    "microsoft_365__accept_calendar_event",
+    "microsoft_365__decline_calendar_event",
+    "microsoft_365__tentatively_accept_calendar_event",
+})
+_M365_EVENT_CANCEL_TOOL = "microsoft_365__cancel_calendar_event"
+_M365_EVENT_BY_ID_TOOLS = _M365_EVENT_RESPONSE_TOOLS | {_M365_EVENT_CANCEL_TOOL}
+_M365_EVENT_LOOKUP_TOOL = "microsoft_365__get-calendar-event"
+_M365_EVENT_LOOKUP_SELECT = "id,organizer,attendees"
+
+# `download-bytes` is a generic authenticated Graph GET proxy (any path under
+# the token's scopes), which would let the read side of the launcher's
+# allow-list be bypassed (`/me/messages/{id}/$value` MIME, calendar
+# permissions, …). The Executive only needs it for mail attachment bytes, so
+# the gateway pins its `target` to exactly that shape.
+_M365_DOWNLOAD_TOOL = "microsoft_365__download_bytes"
+_M365_ATTACHMENT_TARGET_RE = re.compile(r"/me/messages/([^/?#\\\s]+)/attachments/([^/?#\\\s]+)/\$value")
+
+# ms-365-mcp-server registers its account tools whatever `--enabled-tools`
+# says, so the launcher's allow-list cannot remove them and the deny globs in
+# mcp_servers.json.example only help an operator who copied them. A chat turn
+# that can call these could sign the Executive out (wiping the seeded token),
+# switch the mailbox every later call acts as, or start a device-code sign-in
+# for an account someone else controls. Setup is the launcher's `--login`, so
+# the gateway refuses them outright and keeps them out of `search_tools`
+# results. The read-only `verify-login` / `list-accounts` stay callable.
+# Normalized (underscore) form, matched via `_normalize_tool_name`.
+_BLOCKED_M365_AUTH_TOOLS = frozenset({
+    "microsoft_365__login",
+    "microsoft_365__logout",
+    "microsoft_365__select_account",
+    "microsoft_365__remove_account",
+})
+
+# Mail fields that name who a message is FROM (or who replies go to). Graph
+# lets a delegated caller set `from` / `sender` to any mailbox it holds
+# Send As / Send on Behalf rights on, and `replyTo` steers every reply. The
+# recipient gate only roster-checks them, so a rostered colleague's address
+# would pass as the sender. Pinned to the Executive's own address instead,
+# like `_check_acting_account` pins Gmail's acting account. Normalized keys
+# (lowercase, alphanumerics only).
+_M365_SENDER_KEYS = frozenset({"from", "sender", "replyto"})
+
+# `move-mail-message` to one of these well-known folders is a trash (or a
+# junk-mark) with no gate at all. Matched lowercased; a folder's opaque id is
+# not resolved, so only the well-known names are caught.
+_M365_MOVE_TOOL = "microsoft_365__move_mail_message"
+_M365_TRASH_FOLDERS = frozenset({
+    "deleteditems",
+    "junkemail",
+    "recoverableitemsdeletions",
+    "recoverableitemspurges",
+})
+
+# Microsoft 365 calendar mutations that carry an `attendees` / `ToRecipients` /
+# `emailAddress` list in their ARGUMENTS. Delete and the read tools carry no
+# invitee and pass through; RSVP / cancel are gated separately by an event
+# lookup (`_M365_EVENT_BY_ID_TOOLS`) because their comment is emailed to
+# people the arguments never name. The "specific calendar", forward and
+# permission-sharing tools are outside the launcher's default allow-list but
+# gated here too (see the mail set above for why).
+_GATED_M365_CALENDAR_TOOLS = frozenset({
+    "microsoft_365__create_calendar_event",
+    "microsoft_365__update_calendar_event",
+    "microsoft_365__create_specific_calendar_event",
+    "microsoft_365__update_specific_calendar_event",
+    "microsoft_365__forward_calendar_event",
+    "microsoft_365__create_my_calendar_permission",
+    "microsoft_365__update_my_calendar_permission",
+})
+
+# Argument keys (lowercased) whose values are free text the gate does NOT scan
+# for addresses: a reply that quotes a signature, or a body that mentions a
+# vendor's address, must not be refused as if it were addressed to them. Safe
+# only because the server's send/reply/event shapes are JSON objects — a body
+# string cannot address anyone; every recipient-carrying field
+# (`toRecipients[].emailAddress.address`, `attendees[]…`, `replyTo`, custom
+# headers, anything unforeseen) is outside this set and stays fail-closed.
+# `body` itself is NOT here: it is also the name of the request-body wrapper
+# (`{"body": {"Message": …}}`), so exempting it would exempt everything.
+_M365_FREE_TEXT_KEYS = frozenset({"content", "subject", "comment", "bodypreview"})
+# OData annotation KEYS (`@odata.type` on a Graph fileAttachment, `@odata.id`,
+# …) carry a literal `@` that is not an address. The key itself is skipped by
+# the malformed-address check; its VALUE is still scanned like any other.
+_ODATA_ANNOTATION_KEY_RE = re.compile(r"@odata\.[A-Za-z]+")
+
+# The one M365 send whose arguments name the recipients explicitly, so an
+# outbound-context linkage can be recorded after it succeeds. Reply/forward
+# tools identify the recipient by message id only — nothing to key a linkage on.
+_M365_RECORD_SEND_TOOL = "microsoft_365__send_mail"
 
 # Drive sharing / permission tools exposed at the `complete` tool tier. These
 # grant another principal access to a file — the Drive analogue of sending an
@@ -472,6 +653,12 @@ def _is_apps_script_tool(tool_name: object) -> bool:
     return "script" in bare or "deployment" in bare
 
 
+def _is_blocked_m365_auth_tool(tool_name: object) -> bool:
+    """True for the Microsoft 365 account tools the gateway never runs
+    (`_BLOCKED_M365_AUTH_TOOLS`), whatever the spelling or case."""
+    return isinstance(tool_name, str) and _normalize_tool_name(tool_name) in _BLOCKED_M365_AUTH_TOOLS
+
+
 def _check_url_fetch(tool: str, arguments: dict[str, Any]) -> str | None:
     """Return None unless a Google Workspace call asks the server to fetch a
     URL (see `_URL_FETCH_ARGS`); else a JSON error. A key set to null / ""
@@ -744,10 +931,10 @@ _ROSTER_ACK_KEYS = frozenset({"user_google_email", "to", "subject", "body"})
 # people.roster_requests) proves an email answer came from the principal's
 # mailbox, and so does a standing-fact confirmation token ("FC-",
 # memory.facts). The confirmation email carrying one sits in the Executive's
-# own Sent folder, so every Google Workspace result is scrubbed of tokens — a
-# model turn (anyone's) reading that mail sees "RR-[hidden]" / "FC-[hidden]"
-# — except the email poller's own fetch of an inbound message, inside
-# reveal_roster_tokens.
+# own Sent folder, so every Google Workspace and Microsoft 365 result is
+# scrubbed of tokens — a model turn (anyone's) reading that mail sees
+# "RR-[hidden]" / "FC-[hidden]" — except the email poller's own fetch of an
+# inbound message, inside reveal_roster_tokens.
 _ROSTER_TOKEN_RE = re.compile(r"\b(RR|FC)-[A-Z2-7]{20}\b", re.IGNORECASE)
 _reveal_tokens: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "reveal_roster_tokens", default=False
@@ -762,8 +949,8 @@ def hide_roster_tokens(text: str) -> str:
 
 @contextlib.contextmanager
 def reveal_roster_tokens() -> Iterator[None]:
-    """Leave roster answer tokens in Google Workspace results (the poller's
-    read of one inbound message, before any model sees it)."""
+    """Leave roster answer tokens in mailbox results (the poller's read of
+    one inbound message, before any model sees it)."""
     token = _reveal_tokens.set(True)
     try:
         yield
@@ -810,6 +997,26 @@ _MAX_ARTIFACT_ATTACHMENT_BYTES = 15 * 1024 * 1024
 _ARTIFACT_ATTACHMENT_KEYS = frozenset({"artifact_id", "as"})
 
 
+# Where Graph expects a message's `attachments` for each Microsoft 365 mail
+# write, as a key path (matched case-insensitively; created with this casing
+# when absent). The send / reply / forward ACTIONS and the createReply* draft
+# actions wrap the message in a `Message` parameter; `create-draft-email`
+# POSTs the message itself. `update-mail-message` (PATCH) cannot add
+# attachments and `send-draft-message` takes no body, so an artifact entry on
+# either is refused rather than passed through unexpanded.
+_M365_ARTIFACT_MESSAGE_PATHS: dict[str, tuple[str, ...]] = {
+    "microsoft_365__send_mail": ("body", "Message"),
+    "microsoft_365__reply_mail_message": ("body", "Message"),
+    "microsoft_365__reply_all_mail_message": ("body", "Message"),
+    "microsoft_365__forward_mail_message": ("body", "Message"),
+    "microsoft_365__create_reply_draft": ("body", "Message"),
+    "microsoft_365__create_reply_all_draft": ("body", "Message"),
+    "microsoft_365__create_forward_draft": ("body", "Message"),
+    "microsoft_365__create_draft_email": ("body",),
+}
+_GRAPH_FILE_ATTACHMENT_TYPE = "#microsoft.graph.fileAttachment"
+
+
 def _recipients(arguments: dict[str, Any]) -> list[str]:
     """Every to/cc/bcc address on a Gmail call, for audit rows."""
     raw = [arguments.get(f) for f in _GMAIL_RECIPIENT_FIELDS]
@@ -820,6 +1027,21 @@ def _recipients(arguments: dict[str, Any]) -> list[str]:
     return [addr for _, addr in getaddresses(values) if addr]
 
 
+def _audit_recipients(tool: str, arguments: dict[str, Any]) -> list[str]:
+    """The addresses an attachment audit row names: Gmail's flat to/cc/bcc,
+    or the Graph message's recipient lists for a Microsoft 365 tool (a reply
+    or forward names none in its arguments — the row then carries []).
+    """
+    normalized = _normalize_tool_name(tool)
+    if not normalized.startswith(_M365_PREFIX):
+        return _recipients(arguments)
+    message = _ci_walk(arguments, _M365_ARTIFACT_MESSAGE_PATHS.get(normalized, ("body",)))
+    out: list[str] = []
+    for field in ("toRecipients", "ccRecipients", "bccRecipients"):
+        out.extend(_m365_recipient_addresses(_ci_get(message, field)))
+    return out
+
+
 def _refuse_attachment(tool: str, arguments: dict[str, Any], reason: str) -> str:
     from openexecutive.audit import log_event as audit_log
 
@@ -828,43 +1050,71 @@ def _refuse_attachment(tool: str, arguments: dict[str, Any], reason: str) -> str
         "artifact_attachment_refused",
         f"Refused an artifact attachment on {tool}: {reason[:160]}",
         actor="mcp_gateway",
-        details={"tool": tool, "reason": reason, "recipients": _recipients(arguments)},
+        details={
+            "tool": tool, "reason": reason, "recipients": _audit_recipients(tool, arguments),
+        },
     )
     return json.dumps({"error": f"attachment: {reason}"})
 
 
-async def _expand_artifact_attachments(
-    tool: str, arguments: dict[str, Any]
-) -> tuple[dict[str, Any], list[str]] | str:
-    """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` attachment entries
-    with the rendered file (`content` base64 + `filename` + `mime_type`, the
-    shape workspace-mcp's Gmail tools accept).
+def _normalize_attachment_list(attachments: Any) -> list[Any] | None | str:
+    """The attachment entries as a list, None when there is nothing artifact-
+    shaped to expand, or an error reason. Models sometimes stringify nested
+    arguments, or send one object instead of a list; both are normalised so
+    an artifact entry can never reach the MCP unexpanded (workspace-mcp would
+    skip it and send the mail without it; Graph would reject the shape).
+    """
+    if isinstance(attachments, str) and "artifact_id" in attachments:
+        try:
+            attachments = json.loads(attachments)
+        except json.JSONDecodeError:
+            return "attachments is not valid JSON"
+    if isinstance(attachments, dict):
+        attachments = [attachments]
+    if not isinstance(attachments, list) or not any(
+        isinstance(a, dict) and "artifact_id" in a for a in attachments
+    ):
+        return None
+    return attachments
+
+
+def _gmail_file_entry(file: Any) -> dict[str, str]:
+    """workspace-mcp's own attachment shape."""
+    return {
+        "content": base64.b64encode(file.content).decode("ascii"),
+        "filename": file.filename,
+        "mime_type": file.mime,
+    }
+
+
+def _graph_file_entry(file: Any) -> dict[str, str]:
+    """Graph's `fileAttachment` shape, inline in the message."""
+    return {
+        "@odata.type": _GRAPH_FILE_ATTACHMENT_TYPE,
+        "name": file.filename,
+        "contentType": file.mime,
+        "contentBytes": base64.b64encode(file.content).decode("ascii"),
+    }
+
+
+async def _expand_artifact_entries(
+    tool: str,
+    arguments: dict[str, Any],
+    attachments: list[Any],
+    to_entry: Callable[[Any], dict[str, str]],
+) -> tuple[list[Any], list[str]] | str:
+    """Replace `{"artifact_id": "alert:5", "as"?: "docx"}` entries in
+    ``attachments`` with the rendered file in the backend's shape
+    (``to_entry``), keeping every other entry as it is.
 
     Lets the Executive email one of its artifacts without ever holding the
     bytes: the file is rendered server-side exactly as `/artifacts/{id}/
     download` serves it, and only artifact rows can resolve (see
     `artifact_records`). At most `_MAX_ARTIFACT_ATTACHMENTS` distinct entries
     (repeats are dropped) and `_MAX_ARTIFACT_ATTACHMENT_BYTES` in total;
-    rendering runs off the event loop. Returns the (copied) arguments plus
-    the attached artifact ids, or an audited JSON error string. Other
-    attachment entries pass through untouched.
+    rendering runs off the event loop. Returns the expanded list plus the
+    attached artifact ids, or an audited JSON error string.
     """
-    attachments = arguments.get("attachments")
-    # Models sometimes stringify nested arguments, or send one object instead
-    # of a list. Normalise both, so an artifact entry can never reach the MCP
-    # unexpanded (workspace-mcp would skip it and send the mail without it).
-    if isinstance(attachments, str) and "artifact_id" in attachments:
-        try:
-            attachments = json.loads(attachments)
-        except json.JSONDecodeError:
-            return _refuse_attachment(tool, arguments, "attachments is not valid JSON")
-    if isinstance(attachments, dict):
-        attachments = [attachments]
-    if not isinstance(attachments, list) or not any(
-        isinstance(a, dict) and "artifact_id" in a for a in attachments
-    ):
-        return arguments, []
-
     from openexecutive.orchestrator.artifact_records import (
         ArtifactNotFound,
         MalformedArtifactId,
@@ -911,11 +1161,7 @@ async def _expand_artifact_attachments(
                 f"{_MAX_ARTIFACT_ATTACHMENT_BYTES}-byte email limit — send "
                 "a link instead"
             ))
-        rendered[(artifact_id, as_)] = {
-            "content": base64.b64encode(file.content).decode("ascii"),
-            "filename": file.filename,
-            "mime_type": file.mime,
-        }
+        rendered[(artifact_id, as_)] = to_entry(file)
         attached.append(rec.id)
 
     expanded: list[Any] = []
@@ -930,7 +1176,160 @@ async def _expand_artifact_attachments(
         if key not in emitted:
             emitted.add(key)
             expanded.append(rendered[key])
+    return expanded, attached
+
+
+async def _expand_artifact_attachments(
+    tool: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]] | str:
+    """Gmail: expand artifact entries in the top-level ``attachments`` into
+    workspace-mcp's `{content, filename, mime_type}` shape. Returns the
+    (copied) arguments plus the attached artifact ids, or an audited JSON
+    error string; arguments without an artifact entry come back untouched.
+    """
+    attachments = _normalize_attachment_list(arguments.get("attachments"))
+    if attachments is None:
+        return arguments, []
+    if isinstance(attachments, str):
+        return _refuse_attachment(tool, arguments, attachments)
+    out = await _expand_artifact_entries(tool, arguments, attachments, _gmail_file_entry)
+    if isinstance(out, str):
+        return out
+    expanded, attached = out
     return {**arguments, "attachments": expanded}, attached
+
+
+def _ci_walk(mapping: Any, path: tuple[str, ...]) -> Any:
+    """`_ci_get` along a key path; None as soon as a step is missing."""
+    cursor = mapping
+    for key in path:
+        cursor = _ci_get(cursor, key)
+        if cursor is None:
+            return None
+    return cursor
+
+
+def _has_artifact_entry(value: Any, skip: frozenset[int] = frozenset()) -> bool:
+    """Whether an `artifact_id` entry (a dict carrying that key, or a string
+    that spells it — a stringified entry) appears anywhere under ``value``,
+    not descending into the objects whose ids are in ``skip``."""
+    if id(value) in skip:
+        return False
+    if isinstance(value, dict):
+        return "artifact_id" in value or any(_has_artifact_entry(v, skip) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_artifact_entry(v, skip) for v in value)
+    return isinstance(value, str) and "artifact_id" in value
+
+
+def _coerce_attachment_list(value: Any) -> list[Any] | str:
+    """A Graph `attachments` value as a list: a list as is, one object wrapped,
+    a JSON string decoded (models stringify nested arguments), None empty.
+    Returns an error reason for anything else."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return "attachments is not valid JSON"
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return "attachments must be a list of attachment objects"
+
+
+def _with_message_attachments(
+    arguments: dict[str, Any], path: tuple[str, ...], expanded: list[Any]
+) -> dict[str, Any]:
+    """A copy of ``arguments`` with ``expanded`` as the message's
+    `attachments` at ``path`` (existing key casing kept, the canonical casing
+    used for a level that does not exist yet) and no top-level `attachments`.
+    Every level on the path is copied, never mutated; the caller has already
+    refused a level that exists but is not an object.
+    """
+    result = {k: v for k, v in arguments.items() if not (isinstance(k, str) and k.lower() == "attachments")}
+    cursor: dict[str, Any] = result
+    for key in path:
+        actual = next(
+            (k for k in cursor if isinstance(k, str) and k.lower() == key.lower()), key
+        )
+        existing = cursor.get(actual)
+        child: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        cursor[actual] = child
+        cursor = child
+    actual = next((k for k in cursor if isinstance(k, str) and k.lower() == "attachments"),
+                  "attachments")
+    cursor[actual] = expanded
+    return result
+
+
+def _non_object_on_path(arguments: dict[str, Any], path: tuple[str, ...]) -> str | None:
+    """The first key on ``path`` whose value exists but is not an object (a
+    stringified body, a list) — writing attachments through it would replace
+    the model's message with an empty one."""
+    cursor: Any = arguments
+    for key in path:
+        nxt = _ci_get(cursor, key)
+        if nxt is None:
+            return None
+        if not isinstance(nxt, dict):
+            return key
+        cursor = nxt
+    return None
+
+
+async def _expand_m365_artifact_attachments(
+    tool: str, normalized: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]] | str:
+    """Microsoft 365: expand artifact entries into Graph `fileAttachment`
+    objects on the message.
+
+    The artifact tool text tells the model to pass `attachments=[{"artifact_id"
+    …}]` on "the mail send or draft tool", so the entries may arrive at the top
+    level of the arguments (where Gmail takes them) or already inside the
+    Graph message (`body.Message.attachments` / `body.attachments`, see
+    `_M365_ARTIFACT_MESSAGE_PATHS`). Both are read, expanded together with
+    whatever other attachments sit there, and written to the Graph location —
+    a top-level list is moved, never left for the server to reject. An
+    artifact entry anywhere else, on a tool whose request cannot carry
+    attachments, or behind a body that is not an object is refused rather than
+    forwarded unexpanded (the server would drop it and the model would believe
+    the file went out).
+    """
+    path = _M365_ARTIFACT_MESSAGE_PATHS.get(normalized)
+    top_raw = _ci_get(arguments, "attachments")
+    nested_raw = _ci_get(_ci_walk(arguments, path), "attachments") if path else None
+    stray = _has_artifact_entry(arguments, frozenset({id(top_raw), id(nested_raw)}))
+    if not (stray or _has_artifact_entry(top_raw) or _has_artifact_entry(nested_raw)):
+        return arguments, []
+    if path is None:
+        return _refuse_attachment(tool, arguments, (
+            f"{tool} cannot carry attachments; send with "
+            f"{_M365_PREFIX}send-mail or create a draft with them instead"
+        ))
+    if stray:
+        return _refuse_attachment(tool, arguments, (
+            "an artifact attachment must be in the top-level 'attachments' or in "
+            f"the message's 'attachments' ({'.'.join(path)}) for {tool}"
+        ))
+    bad_level = _non_object_on_path(arguments, path)
+    if bad_level is not None:
+        return _refuse_attachment(tool, arguments, (
+            f"'{bad_level}' must be a JSON object (not a string or list) to carry attachments"
+        ))
+    nested = _coerce_attachment_list(nested_raw)
+    top = _coerce_attachment_list(top_raw)
+    if isinstance(nested, str):
+        return _refuse_attachment(tool, arguments, nested)
+    if isinstance(top, str):
+        return _refuse_attachment(tool, arguments, top)
+    out = await _expand_artifact_entries(tool, arguments, [*nested, *top], _graph_file_entry)
+    if isinstance(out, str):
+        return out
+    expanded, attached = out
+    return _with_message_attachments(arguments, path, expanded), attached
 
 
 def _check_gmail_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
@@ -1163,6 +1562,363 @@ def _iter_arg_strings(value: Any, depth: int = 0) -> Iterator[str]:
             yield from _iter_arg_strings(v, depth + 1)
 
 
+def _iter_arg_strings_skipping(value: Any, skip_keys: frozenset[str]) -> Iterator[str]:
+    """`_iter_arg_strings`, except a dict entry whose lowercased key is in
+    ``skip_keys`` yields the key and is not descended into.
+
+    The M365 gate walks Graph's nested recipient shapes with this, exempting
+    only the free-text fields in `_M365_FREE_TEXT_KEYS`. The Drive gate keeps
+    the plain walker — its scan-everything stance is deliberate there.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str):
+                yield k
+                if k.lower() in skip_keys:
+                    continue
+            yield from _iter_arg_strings_skipping(v, skip_keys)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _iter_arg_strings_skipping(v, skip_keys)
+
+
+def _block_unless_rostered(addr: str, tool: str, allow: RosterAllow) -> str | None:
+    """One address against the roster: refuse a control character (header
+    injection) or an address outside ``allow``. Shared by both M365 gates so
+    the two paths cannot drift."""
+    if any(ord(ch) < 0x20 for ch in addr):
+        return _block(
+            "recipient", "<contains-control-char>", tool,
+            reason=(
+                f"a recipient of {tool} contains a control character "
+                "(header-injection risk) — refusing."
+            ),
+        )
+    if addr.strip().lower() not in allow:
+        return _block(
+            "recipient", addr, tool,
+            reason=(
+                f"Microsoft 365 recipient/attendee {addr!r} is not on the People "
+                "roster — refusing. Only rostered people (and the Executive's own "
+                "mailbox) may be addressed."
+            ),
+        )
+    return None
+
+
+def _check_m365_recipients(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Roster egress gate for Microsoft 365 mail and calendar writes.
+
+    Graph nests addresses (`body.Message.toRecipients[].emailAddress.address`,
+    `body.attendees[].emailAddress.address`, `replyTo`, `internetMessageHeaders`
+    values…), and ms-365-mcp-server exposes those shapes as-is, so a fixed
+    field allow-list in the style of `_check_gmail_recipients` would either
+    miss a path or reject every call. Instead every string in the argument
+    tree — keys and values, at any depth — except the free-text fields in
+    `_M365_FREE_TEXT_KEYS` is scanned: any email-shaped token must be on the
+    People roster (or the Executive's own address), and any C0 control
+    character is refused (a display name or header value with an embedded
+    newline is a header-injection attempt). Fail-closed: a recipient smuggled
+    through an unforeseen key is still found by the walk.
+
+    Returns None to allow, else the JSON error string from `_block` (which also
+    writes the `integration_outbound_blocked` audit row).
+    """
+    allow = _roster_allow_set()
+    for s in _iter_arg_strings_skipping(arguments, _M365_FREE_TEXT_KEYS):
+        if _ODATA_ANNOTATION_KEY_RE.fullmatch(s):
+            continue
+        if any(ord(ch) < 0x20 for ch in s):
+            return _block(
+                "recipient", "<contains-control-char>", tool,
+                reason=(
+                    f"an argument of {tool} contains a control character "
+                    "(header-injection risk) — refusing."
+                ),
+            )
+        # `_EMAIL_RE` is ASCII-only, so an internationalized address
+        # (`x@evïl.example`, `x@evil.срб`) would yield no match and slip past
+        # the roster check while Graph still delivers it. Any non-exempt
+        # string that looks like an address but is not pure ASCII is refused.
+        if "@" in s and not s.isascii():
+            return _block(
+                "recipient", "<non-ascii-address>", tool,
+                reason=(
+                    f"an argument of {tool} contains a non-ASCII address — refusing "
+                    "(the roster holds ASCII addresses only)."
+                ),
+            )
+        matches = _EMAIL_RE.findall(s)
+        # A quoted local part (`"rostered@x.com"@evil.com`) or a stray `@`
+        # can hide an address the regex does not extract. Every `@` in a
+        # non-exempt string must belong to exactly one extracted address.
+        if "@" in s and ('"' in s or s.count("@") != len(matches)):
+            return _block(
+                "recipient", "<malformed-address>", tool,
+                reason=(
+                    f"an argument of {tool} contains an address the roster check "
+                    "cannot parse unambiguously — refusing."
+                ),
+            )
+        for match in matches:
+            blocked = _block_unless_rostered(match, tool, allow)
+            if blocked is not None:
+                return blocked
+    return None
+
+
+def _m365_implied_recipients(normalized: str, message: dict[str, Any]) -> list[str]:
+    """The addresses Graph will put on the wire for a by-id action on
+    ``message``: the draft's own to/cc/bcc for send-draft; ``replyTo`` if set
+    else ``from`` for a reply; for reply-all, ``replyTo`` and ``from`` both
+    plus the original to/cc."""
+    if normalized == _M365_SEND_DRAFT_TOOL:
+        return [
+            addr
+            for key in ("toRecipients", "ccRecipients", "bccRecipients")
+            for addr in _m365_recipient_addresses(_ci_get(message, key))
+        ]
+    reply_to = _m365_recipient_addresses(_ci_get(message, "replyTo"))
+    sender = _m365_recipient_addresses([_ci_get(message, "from")])
+    if normalized in _M365_REPLY_ALL_TOOLS:
+        # Fail closed: whether Graph's reply-all addresses `replyTo`, `from`
+        # or both, every one of them must be on the roster.
+        implied = reply_to + sender
+        for key in ("toRecipients", "ccRecipients"):
+            implied += _m365_recipient_addresses(_ci_get(message, key))
+        return implied
+    return reply_to or sender
+
+
+_Discover = Callable[[str], Awaitable[bool]]
+
+
+async def _fetch_m365_json(
+    session: Any, tool_name: str, arguments: dict[str, Any], discover: _Discover | None = None,
+) -> dict[str, Any] | None:
+    """One read through the MCP server for a gate lookup; ``None`` on any
+    failure (transport error, error payload, non-object). extensible-mcp
+    refuses a tool this session's searches never returned, and a chat turn
+    that only searched for the reply tool never returned the lookup: then
+    ``discover`` it and read once more."""
+    try:
+        result = await session.call_tool(
+            "call_tool", {"tool_name": tool_name, "arguments": arguments},
+        )
+        text = result.content[0].text if result.content else ""
+        if (
+            discover is not None
+            and isinstance(text, str)
+            and text.startswith(f"Error: Tool '{tool_name}' ")
+            and _UNDISCOVERED_MARKER in text
+            and await discover(tool_name)
+        ):
+            result = await session.call_tool(
+                "call_tool", {"tool_name": tool_name, "arguments": arguments},
+            )
+            text = result.content[0].text if result.content else ""
+        parsed = json.loads(text) if isinstance(text, str) and text.strip() else None
+    except Exception:
+        logger.warning("m365 gate: lookup via %s failed", tool_name, exc_info=True)
+        return None
+    if not isinstance(parsed, dict) or "error" in parsed:
+        return None
+    return parsed
+
+
+async def _check_m365_referenced_event(
+    session: Any, tool: str, normalized: str, arguments: dict[str, Any], discover: _Discover | None = None,
+) -> str | None:
+    """Roster gate for RSVP / cancel: the `comment` is emailed to the event's
+    organizer (RSVP) or every attendee (cancel), none of whom is in the
+    arguments. Reads the event and checks those addresses; fail-closed."""
+    event_id = arguments.get("eventId")
+    if not isinstance(event_id, str) or not event_id.strip():
+        return _block(
+            "eventId", "<missing>", tool,
+            reason=f"{tool} needs an eventId so its recipients can be roster-checked — refusing.",
+        )
+    event = await _fetch_m365_json(
+        session, _M365_EVENT_LOOKUP_TOOL,
+        {"eventId": event_id, "select": _M365_EVENT_LOOKUP_SELECT}, discover,
+    )
+    if event is None:
+        return _block(
+            "eventId", event_id, tool,
+            reason=f"could not read event {event_id!r} to roster-check the recipients of {tool} — refusing.",
+        )
+    if normalized == _M365_EVENT_CANCEL_TOOL:
+        implied = _m365_recipient_addresses(_ci_get(event, "attendees"))
+    else:
+        implied = _m365_recipient_addresses([_ci_get(event, "organizer")])
+    if not implied:
+        return _block(
+            "eventId", event_id, tool,
+            reason=f"event {event_id!r} names no recipient for {tool} to notify — refusing.",
+        )
+    allow = _roster_allow_set()
+    for addr in implied:
+        blocked = _block_unless_rostered(addr, tool, allow)
+        if blocked is not None:
+            return blocked
+    return None
+
+
+def _unsafe_id_segment(segment: str) -> bool:
+    decoded = unquote(segment)
+    return decoded.strip(".") == "" or any(c in decoded for c in "/\\?#")
+
+
+def _check_m365_download_target(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Pin `download-bytes` to mail attachment bytes only."""
+    target = arguments.get("target")
+    match = _M365_ATTACHMENT_TARGET_RE.fullmatch(target) if isinstance(target, str) else None
+    # A dot segment (`..`, or `%2e%2e`) or an encoded slash would resolve off
+    # the attachment shape.
+    if match is None or any(_unsafe_id_segment(segment) for segment in match.groups()):
+        return _block(
+            "target", str(target)[:120], tool,
+            reason=(
+                f"{tool} may only fetch a mail attachment "
+                "(/me/messages/{id}/attachments/{id}/$value) — refusing."
+            ),
+        )
+    return None
+
+
+def _m365_sender_fields(value: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
+    """Every ``(field, value)`` in an argument tree that names a sender or a
+    reply-to: a key in `_M365_SENDER_KEYS` (any spelling, any depth), or an
+    internet-header ``{"name": "Reply-To", "value": …}`` pair. Past
+    `_WALK_DEPTH_MAX` yields ``(_TOO_DEEP, None)`` so the caller refuses."""
+    if depth > _WALK_DEPTH_MAX:
+        yield _TOO_DEEP, None
+        return
+    if isinstance(value, dict):
+        header_name = _ci_get(value, "name")
+        if isinstance(header_name, str) and _norm_key(header_name) in _M365_SENDER_KEYS:
+            yield header_name, _ci_get(value, "value")
+        for k, v in value.items():
+            if isinstance(k, str) and _norm_key(k) in _M365_SENDER_KEYS:
+                yield k, v
+            yield from _m365_sender_fields(v, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _m365_sender_fields(v, depth + 1)
+
+
+def _check_m365_sender(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Pin an Outlook mail write's ``from`` / ``sender`` / ``replyTo`` to the
+    Executive's own address; None when it may run.
+
+    Every string under such a field that contains ``@`` must be exactly the
+    Executive's address (case-insensitive). Display names (no ``@``) pass, as
+    does leaving the field out — Graph then sends as the signed-in mailbox."""
+    exec_address = get_settings().exec_email_address.strip().lower()
+    for field, value in _m365_sender_fields(arguments):
+        if field == _TOO_DEEP:
+            return _block(
+                "sender", "<too-deep>", tool,
+                reason=f"an argument of {tool} is nested too deep to check its sender — refusing.",
+            )
+        for s in _iter_arg_strings(value):
+            if s == _TOO_DEEP:
+                return _block(
+                    field, "<too-deep>", tool,
+                    reason=f"{field!r} of {tool} is nested too deep to check — refusing.",
+                )
+            if "@" in s and s.strip().lower() != exec_address:
+                return _block(
+                    field, s[:200], tool,
+                    reason=(
+                        f"Outlook mail goes out only from the Executive's own address "
+                        f"({exec_address}); refusing {field}={s[:200]!r}. Leave it out "
+                        "or use that address. Do not retry with another sender."
+                    ),
+                )
+    return None
+
+
+def _check_m365_move_destination(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Refuse `move-mail-message` into Deleted Items, Junk or Recoverable
+    Items (a trash with no gate); None when it may run. Every
+    ``destinationId`` (any spelling, any depth) is checked."""
+    stack: list[tuple[Any, int]] = [(arguments, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > _WALK_DEPTH_MAX:
+            return _block(
+                "destinationId", "<too-deep>", tool,
+                reason=f"an argument of {tool} is nested too deep to check — refusing.",
+            )
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if isinstance(k, str) and _norm_key(k) == "destinationid":
+                    if not isinstance(v, str):
+                        return _block(
+                            "destinationId", repr(v)[:120], tool,
+                            reason=f"{tool} needs a folder id string as destinationId — refusing.",
+                        )
+                    if _norm_key(v) in _M365_TRASH_FOLDERS:
+                        return _block(
+                            "destinationId", v[:120], tool,
+                            reason=(
+                                f"{tool} may not move mail to {v.strip()!r} (deleted items, "
+                                "junk or recoverable items) — refusing. Leave the message "
+                                "where it is or move it to a regular folder."
+                            ),
+                        )
+                stack.append((v, depth + 1))
+        elif isinstance(value, (list, tuple)):
+            stack.extend((v, depth + 1) for v in value)
+    return None
+
+
+async def _check_m365_referenced_message(
+    session: Any, tool: str, normalized: str, arguments: dict[str, Any], discover: _Discover | None = None,
+) -> str | None:
+    """Roster gate for M365 tools that address recipients via ``messageId``.
+
+    Reads the referenced message through the MCP server (the source of truth
+    for who Graph will address) and validates the recipients the action
+    implies (`_m365_implied_recipients`). Every implied address must be on the
+    roster (or be the Executive's own mailbox). Any lookup failure, or a
+    message that implies no addressable recipient, refuses the call.
+    """
+    message_id = arguments.get("messageId")
+    if not isinstance(message_id, str) or not message_id.strip():
+        return _block(
+            "messageId", "<missing>", tool,
+            reason=f"{tool} needs a messageId so its recipients can be roster-checked — refusing.",
+        )
+    message = await _fetch_m365_json(
+        session, _M365_MESSAGE_LOOKUP_TOOL,
+        {"messageId": message_id, "select": _M365_MESSAGE_LOOKUP_SELECT}, discover,
+    )
+    if message is None:
+        return _block(
+            "messageId", message_id, tool,
+            reason=(
+                f"could not read message {message_id!r} to roster-check the recipients "
+                f"of {tool} — refusing."
+            ),
+        )
+    implied = _m365_implied_recipients(normalized, message)
+    if not implied:
+        return _block(
+            "messageId", message_id, tool,
+            reason=f"message {message_id!r} names no recipient for {tool} to address — refusing.",
+        )
+    allow = _roster_allow_set()
+    for addr in implied:
+        blocked = _block_unless_rostered(addr, tool, allow)
+        if blocked is not None:
+            return blocked
+    return None
+
+
 def _is_truthy_public(value: Any) -> bool:
     """Whether a value under a public-share key actually enables exposure.
 
@@ -1333,41 +2089,112 @@ def _record_email_outbound_context(arguments: dict[str, Any]) -> None:
         if not (isinstance(body, str) and body.strip()):
             return
 
-        from openexecutive.orchestrator.schedule_tools import (
-            _record_outbound_context,
-            _resolve_recipient_person_id,
-        )
-
-        self_addr = get_settings().exec_email_address.lower()
-        seen: set[str] = set()
-        primary_taken = False
+        addresses: list[tuple[str, bool]] = []
         for field in _OUTBOUND_CONTEXT_RECIPIENT_FIELDS:
             value = arguments.get(field)
             if not value:
                 continue
             items = value if isinstance(value, list) else [value]
-            for _name, addr in getaddresses([s for s in items if isinstance(s, str)]):
-                norm = addr.strip().lower()
-                if not norm or norm == self_addr or norm in seen:
-                    continue
-                # Only the first rostered "to" address is who the email was
-                # addressed to; every recipient still gets reply linkage.
-                primary = (
-                    field == "to" and not primary_taken
-                    and _resolve_recipient_person_id("email", norm) is not None
-                )
-                primary_taken = primary_taken or primary
-                seen.add(norm)
-                _record_outbound_context(
-                    channel="email",
-                    channel_ref=norm,
-                    text=body,
-                    outbound_message_id=None,
-                    record_outcome=primary,
-                )
+            addresses.extend(
+                (addr, field == "to")
+                for _name, addr in getaddresses([s for s in items if isinstance(s, str)])
+            )
+        _record_outbound_context_for(addresses, body)
     except Exception:
         logger.exception(
             "record_email_outbound_context: persist failed (non-fatal)"
+        )
+
+
+def _record_outbound_context_for(
+    addresses: Iterable[tuple[str, bool]], body: str
+) -> None:
+    """Record one open ``email`` linkage per distinct recipient address.
+
+    Shared by the Gmail and Microsoft 365 recorders: ``addresses`` pairs each
+    address with whether it came from the primary (``to``) field. Normalizes to
+    the bare lowercased address, skips the Executive's own mailbox and
+    duplicates, and defers to `_record_outbound_context` (which itself only
+    writes when a live session is active). Only the first rostered "to"
+    address is who the email was addressed to (``record_outcome``); every
+    recipient still gets reply linkage.
+    """
+    from openexecutive.orchestrator.schedule_tools import (
+        _record_outbound_context,
+        _resolve_recipient_person_id,
+    )
+
+    self_addr = get_settings().exec_email_address.lower()
+    seen: set[str] = set()
+    primary_taken = False
+    for addr, is_to in addresses:
+        norm = addr.strip().lower()
+        if not norm or norm == self_addr or norm in seen:
+            continue
+        primary = (
+            is_to and not primary_taken
+            and _resolve_recipient_person_id("email", norm) is not None
+        )
+        primary_taken = primary_taken or primary
+        seen.add(norm)
+        _record_outbound_context(
+            channel="email",
+            channel_ref=norm,
+            text=body,
+            outbound_message_id=None,
+            record_outcome=primary,
+        )
+
+
+def _ci_get(mapping: Any, key: str) -> Any:
+    """Case-insensitive dict lookup (Graph action parameters arrive as
+    ``Message``/``SaveToSentItems`` in the tool schema, ``message`` in the docs)."""
+    if not isinstance(mapping, dict):
+        return None
+    for k, v in mapping.items():
+        if isinstance(k, str) and k.lower() == key.lower():
+            return v
+    return None
+
+
+def _m365_recipient_addresses(recipients: Any) -> list[str]:
+    """Addresses from a Graph ``recipient[]`` list
+    (``[{"emailAddress": {"address": …}}]``); tolerant of missing parts."""
+    out: list[str] = []
+    if not isinstance(recipients, list):
+        return out
+    for item in recipients:
+        email_obj = _ci_get(item, "emailAddress")
+        addr = _ci_get(email_obj, "address")
+        if isinstance(addr, str):
+            out.append(addr)
+    return out
+
+
+def _record_m365_outbound_context(arguments: dict[str, Any]) -> None:
+    """The Microsoft 365 twin of `_record_email_outbound_context`, reading the
+    nested Graph `sendMail` shape: ``body.Message.body.content`` for the text,
+    ``body.Message.toRecipients`` + ``ccRecipients`` for the linkages (bcc
+    skipped, same reasoning as `_OUTBOUND_CONTEXT_RECIPIENT_FIELDS`).
+
+    Best-effort: a failure here never turns a successful send into an error.
+    """
+    try:
+        message = _ci_get(_ci_get(arguments, "body"), "message")
+        if message is None:
+            return
+        content = _ci_get(_ci_get(message, "body"), "content")
+        if not (isinstance(content, str) and content.strip()):
+            return
+        addresses = [
+            (addr, True) for addr in _m365_recipient_addresses(_ci_get(message, "toRecipients"))
+        ] + [
+            (addr, False) for addr in _m365_recipient_addresses(_ci_get(message, "ccRecipients"))
+        ]
+        _record_outbound_context_for(addresses, content)
+    except Exception:
+        logger.exception(
+            "record_m365_outbound_context: persist failed (non-fatal)"
         )
 
 
@@ -1400,6 +2227,19 @@ def _remember_drive_read(tool_name: str, arguments: dict[str, Any], result_text:
     if drive_reads.is_empty_search(tool_name, result_text):
         result_text += drive_reads.empty_search_note(arguments)
     return result_text
+
+
+def _drop_blocked_tools(text: object) -> Any:
+    """``search_tools`` output without the tools `call_tool` always refuses
+    (the Microsoft 365 account tools), so the model is never offered them.
+    Output naming none of them comes back unchanged."""
+    from openexecutive.workflows.tool_catalog import filter_search_results, parse_search_results
+
+    if not isinstance(text, str):
+        return text
+    if not any(_is_blocked_m365_auth_tool(t.name) for t in parse_search_results(text)):
+        return text
+    return filter_search_results(text, lambda name: not _is_blocked_m365_auth_tool(name))
 
 
 def _is_undiscovered_refusal(tool_name: object, result_text: object) -> bool:
@@ -1543,7 +2383,8 @@ class MCPGateway:
         if isinstance(tool_input.get("top_k"), int):
             args["top_k"] = tool_input["top_k"]
         result = await session.call_tool("search_tools", args)
-        return result.content[0].text if result.content else json.dumps({"tools": []})
+        text = result.content[0].text if result.content else json.dumps({"tools": []})
+        return _drop_blocked_tools(text)
 
     async def _discover(self, tool_name: str) -> bool:
         """Run the exact-name search that registers ``tool_name`` with
@@ -1602,6 +2443,7 @@ class MCPGateway:
                 logger.warning("call_tool: arguments was a string but not valid JSON — using empty dict")
                 arguments = {}
         tool_name = tool_input.get("name", "")
+        normalized = _normalize_tool_name(tool_name)
         attached_artifacts: list[str] = []
         # Every Google Workspace call acts as the Executive's own account.
         if _is_apps_script_tool(tool_name):
@@ -1611,6 +2453,16 @@ class MCPGateway:
                     f"{tool_name} is not available: Apps Script runs code as "
                     "the Executive's Google account outside the outbound "
                     "gates. Do not retry with another script tool."
+                ),
+            )
+        if _is_blocked_m365_auth_tool(tool_name):
+            return _refuse(
+                tool_name, "tool", "<m365-account>",
+                reason=(
+                    f"{tool_name} is not available: the Microsoft 365 sign-in is "
+                    "managed by the operator (ms365-mcp-launch.sh --login), not "
+                    "from chat. verify-login and list-accounts still report the "
+                    "signed-in account."
                 ),
             )
         if isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX):
@@ -1654,6 +2506,46 @@ class MCPGateway:
             blocked = _check_drive_share(tool_name, arguments)
             if blocked is not None:
                 return blocked
+        if normalized.startswith(_M365_PREFIX) and not isinstance(arguments, dict):
+            # As for Google: every Outlook gate below reads a dict.
+            return _refuse(
+                tool_name, "arguments", "<non-object>",
+                reason="arguments must be a JSON object — refusing.",
+            )
+        if normalized in _GATED_M365_MAIL_TOOLS:
+            blocked = _check_m365_sender(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized in _GATED_M365_MAIL_TOOLS or normalized in _GATED_M365_CALENDAR_TOOLS:
+            blocked = _check_m365_recipients(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized in _M365_REPLY_BY_ID_TOOLS:
+            blocked = await _check_m365_referenced_message(
+                session, tool_name, normalized, arguments, self._discover
+            )
+            if blocked is not None:
+                return blocked
+        if normalized in _M365_EVENT_BY_ID_TOOLS:
+            blocked = await _check_m365_referenced_event(
+                session, tool_name, normalized, arguments, self._discover
+            )
+            if blocked is not None:
+                return blocked
+        if normalized == _M365_DOWNLOAD_TOOL:
+            blocked = _check_m365_download_target(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized == _M365_MOVE_TOOL:
+            blocked = _check_m365_move_destination(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized in _GATED_M365_MAIL_TOOLS:
+            # Same order as Gmail: only after every recipient gate above passed.
+            expanded = await _expand_m365_artifact_attachments(tool_name, normalized, arguments)
+            if isinstance(expanded, str):
+                return expanded
+            arguments, attached_artifacts = expanded
         result = await session.call_tool(
             "call_tool",
             {"tool_name": tool_input["name"], "arguments": arguments},
@@ -1670,9 +2562,11 @@ class MCPGateway:
             )
             result_text = result.content[0].text if result.content else json.dumps({"result": None})
         # On the final result, retry or not: roster answer tokens are hidden
-        # from every Google Workspace read but the poller's own.
+        # from every mailbox read (Google Workspace or Microsoft 365) but the
+        # poller's own.
         if (
-            isinstance(tool_name, str) and tool_name.startswith(_GW_PREFIX)
+            isinstance(tool_name, str)
+            and _normalize_tool_name(tool_name).startswith((_GW_PREFIX, _M365_PREFIX))
             and not _reveal_tokens.get()
         ):
             result_text = hide_roster_tokens(result_text)
@@ -1684,6 +2578,8 @@ class MCPGateway:
         # phantom linkage that would hydrate a reply that can never come.
         if tool_name == "google_workspace__send_gmail_message" and not _is_error_payload(result_text):
             _record_email_outbound_context(arguments)
+        elif normalized == _M365_RECORD_SEND_TOOL and not _is_error_payload(result_text):
+            _record_m365_outbound_context(arguments)
         if attached_artifacts and not _is_error_payload(result_text):
             from openexecutive.audit import log_event as audit_log
 
@@ -1694,7 +2590,7 @@ class MCPGateway:
                 details={
                     "tool": tool_name,
                     "artifact_ids": attached_artifacts,
-                    "recipients": _recipients(arguments),
+                    "recipients": _audit_recipients(tool_name, arguments),
                 },
             )
         return result_text

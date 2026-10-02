@@ -971,9 +971,10 @@ async def _execute_action(
         logger.info("scheduler: action %d (__internal__) completed without dispatch", action.id)
         return
 
-    # Email channel requires MCP (Gmail send tool is an MCP tool). Without
-    # a gateway, the Executive cannot deliver — short-circuit with a clear
-    # error rather than burning attempts on silent failures.
+    # Email channel requires MCP (the mail send tool is an MCP tool, whichever
+    # backend EMAIL_PROVIDER names). Without a gateway, the Executive cannot
+    # deliver — short-circuit with a clear error rather than burning attempts
+    # on silent failures.
     if action.channel == "email" and gateway is None:
         mark_action_failed_or_retry(
             action.id,
@@ -1008,12 +1009,19 @@ async def _execute_action(
         retrieved_context = retrieve(query=action.intent_text)
         episodic_context = format_for_prompt()
 
-        send_tool_hint = {
-            "telegram": "send_telegram_message",
-            "slack_dm": "send_slack_dm",
-            "discord_dm": "send_discord_dm",
-            "email": "google_workspace__send_gmail_message (via MCP)",
-        }.get(action.channel, "the appropriate send tool")
+        if action.channel == "email":
+            # Names the configured mail backend's send tool (EMAIL_PROVIDER);
+            # resolved only here so a provider lookup can never affect the
+            # DM channels.
+            from openexecutive.integrations.workspace.registry import get_mail_provider
+
+            send_tool_hint = get_mail_provider().send_tool_hint()
+        else:
+            send_tool_hint = {
+                "telegram": "send_telegram_message",
+                "slack_dm": "send_slack_dm",
+                "discord_dm": "send_discord_dm",
+            }.get(action.channel, "the appropriate send tool")
 
         # Wrap stored intent in delimiters to make prompt-injection harder.
         # The framing tells the Executive that everything inside the tag is
@@ -1684,9 +1692,21 @@ def google_workspace_ready() -> bool:
 
 
 def email_ready() -> bool:
-    """Whether the Executive can send email: ``google_workspace_ready`` (its
-    Gmail tools)."""
-    return google_workspace_ready()
+    """Whether the Executive can send email: the MCP gateway is up and runs
+    the server of the configured mail backend (``EMAIL_PROVIDER``: the Google
+    Workspace server for Gmail, the Microsoft 365 one for Outlook)."""
+    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import get_mail_provider
+    from openexecutive.orchestrator.mcp_gateway import (
+        configured_server_names,
+        get_active_gateway,
+    )
+
+    if get_active_gateway() is None:
+        return False
+    settings = get_settings()
+    server = get_mail_provider(settings).server_name
+    return server in configured_server_names(settings.mcp_servers_config_path)
 
 
 def principal_delivery_plan() -> tuple[Person | None, list[str]]:
@@ -1723,7 +1743,7 @@ async def _email_principal(principal: Person, text: str, label: str) -> bool:
     the gateway's egress gate allows it). False when there is no gateway or
     the tool reports an error in-band.
     """
-    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import send_from_executive
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.utils.markdown_email import markdown_to_email_html
     from openexecutive.workflows.action_step import looks_like_error
@@ -1731,16 +1751,13 @@ async def _email_principal(principal: Person, text: str, label: str) -> bool:
     gateway = get_active_gateway()
     if gateway is None or not principal.email:
         return False
-    result = await gateway.call_tool({
-        "name": "google_workspace__send_gmail_message",
-        "arguments": {
-            "user_google_email": get_settings().exec_email_address,
-            "to": principal.email,
-            "subject": _email_subject(label),
-            "body": markdown_to_email_html(text),
-            "body_format": "html",
-        },
-    })
+    result = await send_from_executive(
+        gateway,
+        to=principal.email,
+        subject=_email_subject(label),
+        body=markdown_to_email_html(text),
+        html=True,
+    )
     if looks_like_error(result):
         logger.warning("scheduler: email to the principal failed: %s", result[:300])
         return False

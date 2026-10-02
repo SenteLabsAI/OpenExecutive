@@ -154,6 +154,22 @@ def test_attachment_isolation_doc_and_code_agree() -> None:
     )
 
 
+def test_facts_document_the_microsoft_365_gate_and_provider_switch() -> None:
+    """The M365 egress family and the workspace provider switch are load-bearing
+    behavior under `integrations`; the facts must name them as the code does."""
+    from openexecutive.orchestrator import mcp_gateway
+
+    integrations = _load_facts()["integrations"]
+    gateway_notes = integrations["mcp_gateway"]
+    assert hasattr(mcp_gateway, "_GATED_M365_MAIL_TOOLS")
+    for needle in ("_GATED_M365_MAIL_TOOLS", "_check_m365_recipients", "microsoft_365",
+                   "ms365-mcp-launch.sh", "_normalize_tool_name"):
+        assert needle in gateway_notes, needle
+    providers = integrations["workspace_providers"]
+    for needle in ("EMAIL_PROVIDER", "CALENDAR_PROVIDER", "MailProvider", "CalendarProvider",
+                   "add_video_link", "list-mail-folder-messages"):
+        assert needle in providers, needle
+    assert "workspace_providers" in integrations["email_poller"]
 def _delegation_facts() -> dict[str, Any]:
     facts: dict[str, Any] = _load_facts()["delegation"]
     return facts

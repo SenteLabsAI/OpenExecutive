@@ -1,16 +1,17 @@
-"""MCP-based Gmail polling loop.
+"""MCP-based inbound mailbox polling loop.
 
-Polls Gmail via the Google Workspace MCP server (OAuth). Each unread message is
-passed raw to the Executive, which decides what to do: reply, fetch attachments,
-create an alert, or ignore.
-
-Actual tool names (confirmed via tools/list on the live MCP server):
-  google_workspace__search_gmail_messages          → plain-text list of Message IDs + Thread IDs
-  google_workspace__get_gmail_message_content      → plain-text Subject/From/--- BODY ---/--- ATTACHMENTS ---
-  google_workspace__modify_gmail_message_labels    → mark as read (Complete/Extended tier)
+Polls the Executive's own mailbox through the configured workspace backend
+(`integrations.workspace`: Gmail via workspace-mcp, or Outlook via
+ms-365-mcp-server — `EMAIL_PROVIDER`). Each unread message is rendered into
+one backend-neutral text (`workspace.mail.render_for_executive`) and handed
+to the Executive, which decides what to do: reply, fetch attachments, create
+an alert, or ignore. The `--- REPLY ---` block at the end of that text names
+the exact reply tool and threading ids for the backend in use, so the persona
+stays backend-neutral (and cacheable).
 
 No reply logic, no attachment logic, no alert logic lives here — all of that is the
-Executive's responsibility via its tool access.
+Executive's responsibility via its tool access. The backend argument shapes
+live in `workspace/google.py` and `workspace/microsoft.py`.
 """
 from __future__ import annotations
 
@@ -18,13 +19,23 @@ import asyncio
 import json
 import logging
 import re
-from email.utils import parseaddr
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.config import get_settings
 from openexecutive.integrations.email_attachments import (
     EmailAttachmentRef,
     read_email_attachments,
+)
+from openexecutive.integrations.workspace.google import _parse_recipients
+from openexecutive.integrations.workspace.mail import (
+    MailProvider,
+    MessageRef,
+    render_message,
+    render_reply_block,
+)
+from openexecutive.integrations.workspace.registry import (
+    get_mail_provider,
+    provider_server_missing,
 )
 from openexecutive.orchestrator.content_trust import wrap_untrusted
 
@@ -41,116 +52,21 @@ _processed_ids: set[str] = set()
 _SKIP_SENDERS = ("noreply", "no-reply", "mailer-daemon", "postmaster", "do-not-reply")
 
 
-# Headers that can steer where a reply is sent. Stripped from the raw email
-# before the Executive sees it. Lowercased for comparison.
-_REPLY_REDIRECT_HEADERS = (
-    "reply-to:",
-    "resent-reply-to:",
-    "mail-reply-to:",
-    "mail-followup-to:",
-)
+def _mail_provider() -> MailProvider:
+    """The configured mail backend, resolved through this module's `get_settings`
+    (tests patch it with a stub; a stub without `email_provider` → google)."""
+    return get_mail_provider(get_settings())
 
 
-def _strip_reply_to(raw: str) -> str:
-    """Remove headers that could redirect a reply, plus their folded continuations.
-
-    The Executive constructs outbound `to:` itself; if it sees a Reply-To-style
-    header it may honor it instead of the From address. The egress gate in
-    MCPGateway is the real enforcement, but stripping here removes the attack
-    surface entirely so the Executive never has to choose.
-
-    Stops processing at the header/body boundary (the first blank line) so
-    body text that happens to contain `Reply-To: ...` is left alone.
-    """
-    out: list[str] = []
-    in_drop = False
-    in_body = False
-    for line in raw.splitlines(keepends=True):
-        if in_body:
-            out.append(line)
-            continue
-        # Header/body boundary: a line that's only CR/LF.
-        if line in ("\n", "\r\n", "\r"):
-            in_body = True
-            in_drop = False
-            out.append(line)
-            continue
-        # Folded continuation of the previous header.
-        if line and line[0] in (" ", "\t"):
-            if in_drop:
-                continue
-            out.append(line)
-            continue
-        # Start of a new header.
-        lower = line.lower()
-        if any(lower.startswith(h) for h in _REPLY_REDIRECT_HEADERS):
-            in_drop = True
-            continue
-        in_drop = False
-        out.append(line)
-    return "".join(out)
-
-
-_RECIPIENT_HEADERS = ("to:", "cc:")
-# Strips both `Name <addr@example.com>` and bare `addr@example.com` forms.
-# Permissive on the local-part / domain — we only need to identify
-# candidates that find_person_by_email then looks up exactly.
-_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w.\-]+\.[A-Za-z]{2,}")
-
-
-def _parse_recipients(raw: str) -> list[str]:
-    """Return distinct lowercase email addresses from the raw email's To+Cc headers.
-
-    Mirrors :func:`_strip_reply_to`'s header walker: iterates lines
-    until the first blank line (header/body boundary) and honours
-    folded-header continuations (leading whitespace). Returns at most
-    one entry per address, lowercased for downstream case-insensitive
-    lookup via :func:`openexecutive.people.store.find_person_by_email`.
-    """
-    found: list[str] = []
-    seen: set[str] = set()
-    capturing_value = ""
-
-    def _flush_value() -> None:
-        nonlocal capturing_value
-        if not capturing_value:
-            return
-        for addr in _EMAIL_RE.findall(capturing_value):
-            low = addr.lower()
-            if low not in seen:
-                seen.add(low)
-                found.append(low)
-        capturing_value = ""
-
-    in_recipient = False
-    for line in raw.splitlines():
-        # Header/body boundary.
-        if not line:
-            _flush_value()
-            break
-        # Folded continuation: appended to the current header value.
-        if line[0] in (" ", "\t"):
-            if in_recipient:
-                capturing_value += " " + line.strip()
-            continue
-        # New header line — flush whatever we were collecting.
-        _flush_value()
-        lower = line.lower()
-        in_recipient = any(lower.startswith(h) for h in _RECIPIENT_HEADERS)
-        if in_recipient:
-            # Strip "To:" / "Cc:" prefix; keep the rest as raw value.
-            capturing_value = line.split(":", 1)[1] if ":" in line else ""
-    # Body never seen (no blank line) — flush trailing header value.
-    _flush_value()
-    return found
-
-
-# Section markers in get_gmail_message_content's text output: header lines,
-# then the body, then an optional numbered attachment list whose lines read
-# `1. <filename> (<mime type>, <size> KB)`. The attachment list is appended
-# last, so a marker-looking line inside the body is told apart by position.
+# Section markers in the rendered inbound text (`workspace.mail.render_for_
+# executive`, which mirrors get_gmail_message_content's layout): header
+# lines, then the body, then an optional numbered attachment list whose lines
+# read `1. <filename> (<mime type>, <size> KB)`, then the `--- REPLY ---`
+# block the poller appends. The attachment list is appended after the body,
+# so a marker-looking line inside the body is told apart by position.
 _BODY_MARKER = "--- BODY ---"
 _ATTACHMENTS_MARKER = "--- ATTACHMENTS ---"
+_REPLY_MARKER = "--- REPLY ---"
 # What the MCP writes when a message has no text/plain part — not the
 # sender's words.
 _NO_BODY_PLACEHOLDER = "[No text/plain body found]"
@@ -228,6 +144,22 @@ _OUTLOOK_HEADER_RE = re.compile(r"^From:\s")
 _OUTLOOK_SENT_RE = re.compile(r"^(Sent|Date):\s")
 # How far below an Outlook-style "From:" line its "Sent:" line may sit.
 _OUTLOOK_HEADER_SPAN = 4
+
+
+def _strip_reply_block(raw: str) -> str:
+    """Drop the trailing ``--- REPLY ---`` block `render_for_executive` appends.
+
+    That block names the reply tool and threading ids — the poller's words, not
+    the sender's — and it is always the LAST such line: a forged copy inside a
+    body is quoted (``> --- REPLY ---``) by `workspace.mail._neutralize_markers`
+    before this runs, so it never matches.
+    """
+    lines = raw.splitlines()
+    stripped = [ln.strip() for ln in lines]
+    if _REPLY_MARKER not in stripped:
+        return raw
+    end = len(stripped) - 1 - stripped[::-1].index(_REPLY_MARKER)
+    return "\n".join(lines[:end])
 
 
 def _split_gmail_content(raw: str) -> tuple[list[str], list[str], list[str]]:
@@ -391,7 +323,7 @@ def _email_memory_text(raw: str) -> str:
     attachment filenames and the subject — unless it is a reply's or
     forward's, which is the earlier message's subject, not the sender's.
     """
-    header, body, attachments = _split_gmail_content(raw)
+    header, body, attachments = _split_gmail_content(_strip_reply_block(raw))
     subject = next(
         (ln.split(":", 1)[1].strip() for ln in header if ln.lower().startswith("subject:")),
         "",
@@ -414,56 +346,21 @@ def _email_memory_text(raw: str) -> str:
     return "\n\n".join(parts)
 
 
-def _parse_search_results(raw: str) -> list[dict[str, str]]:
-    """Parse plain-text search_gmail_messages response into [{message_id, thread_id}].
-
-    Confirmed response format (MCP server v3.3.1):
-      Message ID: 19e3280dac59147f
-      Thread ID:  19e3280c8d101120
-    """
-    messages = []
-    msg_ids = re.findall(r"Message ID:\s*(\S+)", raw)
-    thread_ids = re.findall(r"Thread ID:\s*(\S+)", raw)
-    for mid, tid in zip(msg_ids, thread_ids, strict=False):
-        messages.append({"message_id": mid, "thread_id": tid})
-    for mid in msg_ids[len(messages):]:
-        messages.append({"message_id": mid, "thread_id": ""})
-    return messages
-
-
-async def poll_once(gateway: MCPGateway) -> None:
+async def poll_once(gateway: MCPGateway, provider: MailProvider | None = None) -> None:
     """One poll cycle: find unread messages, hand each to the Executive."""
-    from openexecutive.config import get_settings
-
     settings = get_settings()
     user_email = settings.exec_email_address
+    provider = provider or _mail_provider()
 
-    try:
-        raw = await gateway.call_tool({
-            "name": "google_workspace__search_gmail_messages",
-            "arguments": {
-                "query": "is:unread in:inbox",
-                "user_google_email": user_email,
-                "page_size": 10,
-            },
-        })
-    except Exception:
-        logger.exception("search_gmail_messages failed")
-        return
+    refs = await provider.list_unread(gateway, user_email, 10)
+    logger.debug("poll cycle — %d unread message(s)", len(refs))
 
-    if not raw or not raw.strip():
-        return
-
-    messages = _parse_search_results(raw)
-    logger.debug("poll cycle — %d unread message(s)", len(messages))
-
-    for msg in messages:
-        mid = msg["message_id"]
-        tid = msg.get("thread_id", "")
+    for ref in refs:
+        mid = ref.message_id
         if not mid or mid in _processed_ids:
             continue
         try:
-            await _handle_email(gateway, mid, tid, user_email)
+            await _handle_email(gateway, mid, ref.thread_id, user_email, provider=provider)
             _processed_ids.add(mid)
         except Exception:
             logger.exception("failed for message=%s", mid)
@@ -474,6 +371,7 @@ async def _handle_email(
     message_id: str,
     thread_id: str,
     user_email: str,
+    provider: MailProvider | None = None,
 ) -> None:
     # One message, one turn: no session bound while this message's own rows
     # are written. `Executive.stream_chat` binds the turn's session without
@@ -483,7 +381,9 @@ async def _handle_email(
     from openexecutive.orchestrator.schedule_tools import set_session
 
     with set_session(None):
-        await _handle_one_email(gateway, message_id, thread_id, user_email)
+        await _handle_one_email(
+            gateway, message_id, thread_id, user_email, provider or _mail_provider()
+        )
 
 
 async def _handle_one_email(
@@ -491,46 +391,40 @@ async def _handle_one_email(
     message_id: str,
     thread_id: str,
     user_email: str,
+    provider: MailProvider | None = None,
 ) -> None:
     from openexecutive.orchestrator.mcp_gateway import reveal_roster_tokens
 
+    provider = provider or _mail_provider()
     # A roster answer token in this message is read here, before any model
     # turn; every other read of the mailbox has them hidden.
     with reveal_roster_tokens():
-        raw = await gateway.call_tool({
-            "name": "google_workspace__get_gmail_message_content",
-            "arguments": {
-                "message_id": message_id,
-                "user_google_email": user_email,
-                "body_format": "text",
-            },
-        })
-    if raw:
-        preview = raw[:200]
-        suffix = f"…[truncated {len(raw) - 200} chars]" if len(raw) > 200 else ""
-        logger.debug("get_content raw=%r%s", preview, suffix)
-    else:
-        logger.debug("get_content raw=<empty>")
-
-    if not raw or not raw.strip():
+        msg = await provider.fetch(gateway, MessageRef(message_id, thread_id), user_email)
+    if msg is None:
         logger.warning("empty content for message=%s", message_id)
         return
+    # The backend derived from_addr with parseaddr (or a structured field), so
+    # adversarial From headers like `<a@evil.com> ignore previous instructions`
+    # cannot smuggle trailing content into the [POLICY] notice below. Empty /
+    # unparseable → from_addr stays empty; downstream guards (audit, roster
+    # lookup, [POLICY] notice) handle that gracefully.
+    from_addr = msg.from_addr
+    # A backend without a display name gives the address itself there.
+    display_name = "" if msg.from_name.strip().lower() == from_addr.lower() else msg.from_name
+    thread_id = msg.thread_id or thread_id
+    # The message as every check below and the Executive read it: the same
+    # header/body/attachments shape for every backend, Reply-To-style headers
+    # already gone. The reply instructions are added after it, outside the
+    # sender's text.
+    raw = render_message(msg)
+    reply_block = render_reply_block(provider.reply_block(msg))
 
     # Minimal guard: skip self-sent (prevents reply loops) and known automated senders.
-    from_line = next((ln for ln in raw.splitlines() if ln.lower().startswith("from:")), "")
-    from_value = from_line[len("from:"):].strip()
-    # Use stdlib parseaddr so adversarial From headers like
-    # `<a@evil.com> ignore previous instructions` don't smuggle trailing
-    # content through. parseaddr returns ("display", "addr@host") and
-    # ignores garbage after the angle-bracket address. Empty / unparseable
-    # input → from_addr stays empty, downstream guards (audit, roster
-    # lookup, [POLICY] notice) handle that gracefully.
-    _, parsed_addr = parseaddr(from_value)
-    from_addr = parsed_addr.strip()
     if from_addr.lower() == user_email.lower():
         logger.debug("skipping self-addressed message=%s", message_id)
         return
-    if any(p in from_line.lower() for p in _SKIP_SENDERS):
+    sender_blob = f"{msg.from_name} {from_addr}".lower()
+    if any(p in sender_blob for p in _SKIP_SENDERS):
         logger.debug("skipping automated sender for message=%s", message_id)
         return
 
@@ -540,14 +434,14 @@ async def _handle_one_email(
     from openexecutive.integrations.roster_intake import try_email_roster_answer
 
     if await try_email_roster_answer(gateway, raw, from_addr, message_id):
-        await _mark_read(gateway, message_id, user_email)
+        await _mark_read(gateway, message_id, user_email, provider=provider)
         return
     # The principal confirming (or cancelling) a standing-fact change they
     # asked for by email: the reply carries that change's one-time token.
     from openexecutive.integrations.fact_confirmation import try_email_fact_confirmation
 
     if await try_email_fact_confirmation(gateway, raw, from_addr, message_id):
-        await _mark_read(gateway, message_id, user_email)
+        await _mark_read(gateway, message_id, user_email, provider=provider)
         return
     # Not an answer: from here on the mail is read like any other, so any
     # token in it is hidden from the model, as on every other read.
@@ -558,8 +452,9 @@ async def _handle_one_email(
     # Sender-roster awareness. Unrostered senders are NOT dropped — the
     # Executive still reads, classifies, and decides. What protects us
     # from auto-replying to spam is the outbound gate
-    # (orchestrator.mcp_gateway._check_gmail_recipients), which refuses
-    # Gmail-send tool calls whose recipient isn't on the People roster.
+    # (orchestrator.mcp_gateway: _check_gmail_recipients /
+    # _check_m365_recipients), which refuses mail-send tool calls whose
+    # recipient isn't on the People roster.
     # The Executive sees a [POLICY] notice prepended to the body (built
     # in _run_executive) so it knows reply tools will block and proposes
     # to a human instead.
@@ -609,7 +504,7 @@ async def _handle_one_email(
             )
             if not private:
                 held_for_roster, roster_acknowledged = await _hold_for_roster(
-                    gateway, raw, from_value, from_addr, message_id, thread_id
+                    gateway, raw, display_name, from_addr, message_id, thread_id
                 )
 
         logger.info("routing message=%s to Executive", message_id)
@@ -639,8 +534,8 @@ async def _handle_one_email(
             full["body"] = _audit_text(body, _AUDIT_TEXT_MAX_JSON)
         # Deterministic per-thread session id so every audit row from this inbound
         # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
-        # with the integration_inbound row. Falls back to from_addr when the Gmail
-        # message exposes no thread header.
+        # with the integration_inbound row. Falls back to from_addr when the
+        # backend exposes no thread id.
         session_id = f"email:{thread_id or from_addr}"
         audit_log(
             "integration_inbound",
@@ -649,6 +544,7 @@ async def _handle_one_email(
             session_id=session_id,
             details={
                 "channel": "email",
+                "provider": provider.name,
                 "message_id": message_id,
                 "thread_id": thread_id,
                 "from": from_addr,
@@ -661,20 +557,22 @@ async def _handle_one_email(
         )
         try:
             await _run_executive(
-                gateway, _strip_reply_to(raw), message_id, thread_id, from_addr, session_id,
+                gateway, raw, message_id, thread_id, from_addr, session_id,
                 held_for_roster=held_for_roster,
                 roster_acknowledged=roster_acknowledged,
+                reply_block=reply_block,
+                provider=provider,
             )
         except Exception:
             logger.exception("Executive raised for message=%s", message_id)
 
-        await _mark_read(gateway, message_id, user_email)
+        await _mark_read(gateway, message_id, user_email, provider=provider)
 
 
 async def _hold_for_roster(
     gateway: MCPGateway,
     raw: str,
-    from_value: str,
+    display_name: str,
     from_addr: str,
     message_id: str,
     thread_id: str,
@@ -697,7 +595,6 @@ async def _hold_for_roster(
 
     if not from_addr or roster_intake.looks_automated(raw, from_addr):
         return False, False
-    display_name, _addr = parseaddr(from_value)
     header, body_lines, _att = _split_gmail_content(raw)
     new_lines, _fw = _new_text_lines(body_lines)
     subject_line = next((ln for ln in header if ln.lower().startswith("subject:")), "")
@@ -857,6 +754,8 @@ async def _run_executive(
     *,
     held_for_roster: bool = False,
     roster_acknowledged: bool = False,
+    reply_block: str = "",
+    provider: MailProvider | None = None,
 ) -> None:
     from openexecutive.knowledge.retriever import retrieve
     from openexecutive.memory.episodic import format_for_prompt
@@ -1009,8 +908,11 @@ async def _run_executive(
     # stay a list, so a stranger cannot make every inbound cost downloads and
     # conversion. Runs outside the model loop, so it works on private turns,
     # where the attachment tool itself is not offered.
+    # Gmail only: the download tool and the ids it takes are workspace-mcp's.
+    # An Outlook message's attachments stay the list in its text.
     attachment_text = ""
-    if person is not None or contact is not None:
+    provider_name = (provider or _mail_provider()).name
+    if provider_name == "google" and (person is not None or contact is not None):
         try:
             refs = _attachment_refs(raw_email)
             if refs:
@@ -1036,6 +938,8 @@ async def _run_executive(
     )
     if attachment_text:
         base_message += f"\n\n--- ATTACHMENT TEXT ---\n{attachment_text}"
+    if reply_block:
+        base_message += f"\n\n{reply_block}"
     if from_addr:
         from openexecutive.integrations.inbound_hydration import (
             hydrate_user_message,
@@ -1066,43 +970,37 @@ async def _run_executive(
     )
 
 
-async def _mark_read(gateway: MCPGateway, message_id: str, user_email: str) -> None:
-    try:
-        await gateway.call_tool({
-            "name": "google_workspace__modify_gmail_message_labels",
-            "arguments": {
-                "message_id": message_id,
-                "user_google_email": user_email,
-                "remove_label_ids": ["UNREAD"],
-            },
-        })
-        logger.debug("marked message=%s as read", message_id)
-    except Exception:
-        logger.warning("failed to mark message=%s as read", message_id)
+async def _mark_read(
+    gateway: MCPGateway, message_id: str, user_email: str, provider: MailProvider | None = None,
+) -> None:
+    provider = provider or _mail_provider()
+    await provider.mark_read(gateway, MessageRef(message_id), user_email)
 
 
-async def _discover_gmail_tools(gateway: MCPGateway) -> None:
-    """Discover Gmail MCP tools (extensible-mcp requires per-session discovery)."""
-    queries = [
-        "search gmail messages unread inbox",
-        "get gmail message content subject body sender",
-        "get gmail attachment content download base64",
-        "modify gmail message labels mark read unread",
-    ]
-    for query in queries:
+async def _discover_mail_tools(gateway: MCPGateway, provider: MailProvider) -> None:
+    """Discover the backend's mail tools (extensible-mcp requires per-session discovery)."""
+    for query in provider.discovery_queries:
         result = await gateway.search_tools({"query": query})
         logger.debug(
             "search_tools(%r) -> %r",
             query, str(result)[:200] if result else "",
         )
-    logger.info("Gmail tools discovered")
+    logger.info("%s mail tools discovered", provider.name)
 
 
-async def run_email_poller(gateway: MCPGateway) -> None:
-    """Async polling loop. Run as a background task; cancelled on shutdown."""
+async def run_email_poller(gateway: MCPGateway, provider: MailProvider | None = None) -> None:
+    """Async polling loop. Run as a background task; cancelled on shutdown.
+
+    Fail-soft on a misconfigured switch: when the chosen backend's MCP server
+    is not in the config, every cycle logs one ERROR and skips instead of
+    spraying tool-not-found errors (and the API keeps serving).
+    """
     from openexecutive.scheduler.pause import is_paused
 
-    logger.info("started (interval=%ds)", POLL_INTERVAL_SECONDS)
+    settings = get_settings()
+    provider = provider or get_mail_provider(settings)
+    logger.info("started (provider=%s, interval=%ds)", provider.name, POLL_INTERVAL_SECONDS)
+    config_path = getattr(settings, "mcp_servers_config_path", None)
     from openexecutive.integrations.roster_intake import register_replayer
 
     register_replayer("email", replay_held_email)
@@ -1113,15 +1011,22 @@ async def run_email_poller(gateway: MCPGateway) -> None:
             # unread and is processed on the first poll after resume.
             if is_paused():
                 if not holding_for_pause:
-                    logger.warning("executive paused — not polling Gmail")
+                    logger.warning("executive paused — not polling the %s mailbox", provider.name)
                     holding_for_pause = True
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
             if holding_for_pause:
-                logger.info("executive resumed — polling Gmail again")
+                logger.info("executive resumed — polling the %s mailbox again", provider.name)
                 holding_for_pause = False
-            await _discover_gmail_tools(gateway)
-            await poll_once(gateway)
+            if config_path is not None and provider_server_missing(provider.server_name, config_path):
+                logger.error(
+                    "email poller: EMAIL_PROVIDER=%s but MCP server '%s' is not defined in %s "
+                    "— skipping this cycle",
+                    provider.name, provider.server_name, config_path,
+                )
+            else:
+                await _discover_mail_tools(gateway, provider)
+                await poll_once(gateway, provider)
         except asyncio.CancelledError:
             logger.info("cancelled")
             raise

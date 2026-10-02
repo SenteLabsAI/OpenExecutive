@@ -1,3 +1,17 @@
+# Microsoft 365 MCP server (@softeria/ms-365-mcp-server) — a Node package, so
+# it is installed in a throwaway Node stage and only the runtime bits are copied
+# into the Python API image below (no npm/apt-node in the final image).
+# `--omit=optional` skips keytar (a native OS-keychain binding that needs
+# libsecret and a build toolchain) and the Azure Key Vault SDKs; the launcher
+# runs with MS365_MCP_USE_KEYTAR=0 so the server uses its file-backed token
+# store on the /data volume instead. Pinned: the tool names the gateway's
+# egress gate keys on (_GATED_M365_* in orchestrator/mcp_gateway.py) and the
+# argument shapes workspace/microsoft.py sends are verified against this exact
+# version — bump them together.
+FROM node:20-bookworm-slim AS ms365-build
+RUN npm install -g --omit=optional --no-audit --no-fund \
+    "@softeria/ms-365-mcp-server@0.154.2"
+
 FROM python:3.11-slim AS api
 
 WORKDIR /app
@@ -10,8 +24,10 @@ WORKDIR /app
 # (`curl -f http://localhost:8000/health`). python:3.11-slim does not ship it,
 # so that check failed on every run and compose marked a working API
 # unhealthy. git already pulls in libcurl, so this adds only the binary.
+# libstdc++6 is what the copied-in Node binary (ms365 stage below) links
+# against; python:*-slim does not ship it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl \
+    && apt-get install -y --no-install-recommends git curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install uv
@@ -104,6 +120,28 @@ RUN uv venv /opt/workspace-mcp \
 COPY docker/workspace-mcp-launch.sh /usr/local/bin/workspace-mcp-launch.sh
 RUN chmod +x /usr/local/bin/workspace-mcp-launch.sh
 
+# Microsoft 365 MCP server, run co-located as a stdio child of the MCP gateway
+# (see docker/ms365-mcp-launch.sh + packages/core/mcp_servers.json.example) —
+# the Outlook analogue of the workspace-mcp block above. Only the Node binary
+# and the installed package come across from the ms365-build stage; the
+# /usr/local/bin/ms-365-mcp-server wrapper is written here (the package's own
+# bin symlink is relative to the Node image's layout). The build-time smoke
+# runs the LAUNCHER ITSELF with `--list-permissions` (a throwaway client id and
+# credentials dir), i.e. the exact `--enabled-tools` allow-list the gateway
+# will start it with, and loads the whole tool registry: if a future bump
+# renames a tool, drops a flag, or fails to import, the BUILD fails loudly
+# instead of crash-looping in production.
+COPY --from=ms365-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=ms365-build /usr/local/lib/node_modules/@softeria /usr/local/lib/node_modules/@softeria
+COPY docker/ms365-mcp-launch.sh /usr/local/bin/ms365-mcp-launch.sh
+RUN printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/@softeria/ms-365-mcp-server/dist/index.js "$@"\n' \
+        > /usr/local/bin/ms-365-mcp-server \
+    && chmod +x /usr/local/bin/ms-365-mcp-server /usr/local/bin/ms365-mcp-launch.sh \
+    && MS365_MCP_CLIENT_ID=00000000-0000-0000-0000-000000000000 \
+       MS365_MCP_CREDENTIALS_DIR=/tmp/ms365-smoke \
+       /usr/local/bin/ms365-mcp-launch.sh --list-permissions >/dev/null \
+    && rm -rf /tmp/ms365-smoke
+
 COPY packages/core/ .
 
 # Demo fixtures live at the repo root, not inside packages/core/. Copy them
@@ -143,6 +181,14 @@ ENV WORKSPACE_MCP_TOOLS=all
 # Act as me: each person's own-Gmail credential (scripts/connect-own-gmail.py),
 # on the volume too, and deliberately NOT inside the workspace-mcp dir above.
 ENV DELEGATION_GOOGLE_CREDENTIALS_DIR=/data/delegation_google
+
+# Defaults for the co-located Microsoft 365 MCP child. The MSAL token cache
+# lives on the /data volume so the one-time device-code login survives
+# restarts; keytar (OS keychain) is off because the container has none and the
+# native module is not installed. Per-install identity (MS365_MCP_CLIENT_ID,
+# MS365_MCP_TENANT_ID, MS365_MCP_EXPECTED_USERNAME) is set by the deployment.
+ENV MS365_MCP_CREDENTIALS_DIR=/data/ms365_credentials
+ENV MS365_MCP_USE_KEYTAR=0
 
 EXPOSE 8000
 

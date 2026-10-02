@@ -451,10 +451,11 @@ class Settings(BaseSettings):
         None, alias="TELEGRAM_DEFAULT_CHAT_ID"
     )
 
-    # Required: the Executive's own Google Workspace address. No default —
-    # we never want the Executive to operate as some other user's account
-    # because an env var silently fell through. The email poller, alert
-    # dispatcher, and the persona's identity addendum all read this.
+    # Required: the Executive's own mailbox address (Google Workspace or
+    # Microsoft 365 — see EMAIL_PROVIDER). No default — we never want the
+    # Executive to operate as some other user's account because an env var
+    # silently fell through. The email poller, alert dispatcher, and the
+    # persona's identity addendum all read this.
     exec_email_address: str = Field(..., alias="EXEC_EMAIL_ADDRESS")
     # Display name the Executive signs messages with. Pinned into the
     # identity addendum so the model has a concrete self-name and never
@@ -648,9 +649,11 @@ class Settings(BaseSettings):
     calendar_max_events_per_day: int = Field(10, alias="CALENDAR_MAX_EVENTS_PER_DAY")
     # Maximum number of attendees per event (inclusive of organizer).
     calendar_max_attendees: int = Field(8, alias="CALENDAR_MAX_ATTENDEES")
-    # When true, every booking requests a Google Meet video link
-    # (add_google_meet on the manage_event MCP call). The model can still
-    # opt out per-event via the tool's add_google_meet=false.
+    # When true, every booking requests a video-meeting link — Google Meet
+    # (add_google_meet on the manage_event MCP call) or Microsoft Teams
+    # (isOnlineMeeting on the Graph event), per CALENDAR_PROVIDER. The model can
+    # still opt out per-event via the tool's add_video_link=false. The env alias
+    # keeps its historical name for compatibility.
     calendar_meet_links_enabled: bool = Field(True, alias="CALENDAR_MEET_LINKS_ENABLED")
     # Default duration (minutes) for an impromptu create_instant_meeting that
     # doesn't specify one.
@@ -659,6 +662,23 @@ class Settings(BaseSettings):
     # DMs a human attendee for the recap (decisions + action items).
     calendar_post_meeting_followup_enabled: bool = Field(
         True, alias="CALENDAR_POST_MEETING_FOLLOWUP_ENABLED"
+    )
+
+    # Which workspace backend the code paths that call a fixed mailbox /
+    # calendar use — the inbound email poller, alert email dispatch and the
+    # scheduler's email hint (EMAIL_PROVIDER); the typed booking tools and the
+    # approval-time conflict check (CALENDAR_PROVIDER). "google" = Gmail /
+    # Google Calendar via the google_workspace MCP server; "microsoft" =
+    # Outlook via the microsoft_365 MCP server (integrations.workspace).
+    # Separate switches: Outlook mail with a Google calendar is legitimate.
+    # Fail-soft, no validator tying either to its server being configured —
+    # a missing server is logged at startup and the poller skips its cycle;
+    # it never blocks boot (see the calendar_booking_enabled note above).
+    # Pydantic enforces the Literal, so a typo fails at startup with a clear
+    # message.
+    email_provider: Literal["google", "microsoft"] = Field("google", alias="EMAIL_PROVIDER")
+    calendar_provider: Literal["google", "microsoft"] = Field(
+        "google", alias="CALENDAR_PROVIDER"
     )
 
     # Anthropic native web_search server tool. Enabled by default — the

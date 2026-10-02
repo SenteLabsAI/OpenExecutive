@@ -118,6 +118,7 @@ One volume, mounted at `/data`:
 - `/data/company/profile.yaml` + `/data/company/docs/` — onboarding output + uploaded docs
 - `/data/company/mcp_servers.json` — MCP gateway config. Placing this file is what **enables** MCP when `MCP_ENABLED` is unset; set `MCP_ENABLED=false` to keep MCP off with the file in place. A config defining no servers under `mcpServers`, or a gateway that fails to start, is logged and skipped — the API boots without MCP tools (and without the email poller) rather than failing to boot.
 - `/data/google_credentials/` — Google Workspace OAuth token, if that integration is enabled
+- `/data/ms365_credentials/` — Microsoft 365 MSAL token cache (+ its `.cache-key`), if that integration is enabled
 
 Nothing hardcodes those paths. Each is an env var, and the defaults are
 repo-relative so a local checkout works with no configuration:
@@ -128,6 +129,7 @@ EPISODIC_DB_PATH              = /data/episodic_memory.db
 COMPANY_PROFILE_PATH          = /data/company/profile.yaml
 MCP_SERVERS_CONFIG_PATH       = /data/company/mcp_servers.json
 WORKSPACE_MCP_CREDENTIALS_DIR = /data/google_credentials
+MS365_MCP_CREDENTIALS_DIR     = /data/ms365_credentials
 ```
 
 On first boot the volume is empty. ChromaDB rebuilds the built-in knowledge index
@@ -149,8 +151,8 @@ with "no company profile" on a fresh volume is expected, not a fault.
 | `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. |
 | `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in. See [auth.md](auth.md). |
 
-Integrations (Slack, Discord, email, Google Workspace) are all optional and off
-unless their variables are set. [.env.example](../.env.example) is the full list.
+Integrations (Slack, Discord, email, Google Workspace, Microsoft 365) are all
+optional and off unless their variables are set. [.env.example](../.env.example) is the full list.
 
 ### `OE_PUBLIC_DEPLOYMENT`
 
@@ -309,6 +311,96 @@ host's Docker. Upgrade from the host instead.
    new `version`, and Settings → About shows it.
 
 To go back, see **Rollback** under [Operations](#operations).
+
+---
+
+## Microsoft 365 credentials
+
+Outlook mail and calendar tools come from `@softeria/ms-365-mcp-server`, a
+Node MCP server that — like `workspace-mcp` — runs co-located inside the API as
+a stdio child of the MCP gateway. It is baked into the API image (a Node build
+stage copies the pinned package and the `node` binary in; there is no npm in
+the runtime image) and launched by
+[docker/ms365-mcp-launch.sh](../docker/ms365-mcp-launch.sh) from the
+`microsoft_365` entry in `/data/company/mcp_servers.json` (see
+[packages/core/mcp_servers.json.example](../packages/core/mcp_servers.json.example)
+for the exact block). Both servers can be configured at once; the Executive
+discovers whichever tools are present.
+
+Auth is the MSAL **device-code** flow against your own Entra app registration
+(the server's built-in public client id is refused). Register the app (Entra
+admin center → App registrations → New; *Allow public client flows: Yes*;
+delegated Graph permissions `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
+plus `User.Read` and `offline_access` for the sign-in, with admin consent —
+`ms365-mcp-launch.sh --list-permissions` prints exactly what the configured
+tool list requests), then set:
+
+```
+MS365_MCP_CLIENT_ID=<application (client) id>
+MS365_MCP_TENANT_ID=<directory (tenant) id>          # or "common" / "consumers"
+MS365_MCP_EXPECTED_USERNAME=exec@yourcompany.com     # pins the signed-in account
+MS365_MCP_CLIENT_SECRET=<only for a confidential app registration>
+```
+
+The API serves no OAuth callback and needs none: sign in once from inside the
+container and the refresh token lands on the volume.
+
+```bash
+docker compose exec api /usr/local/bin/ms365-mcp-launch.sh --login          # prints a URL + code; sign in as the exec mailbox
+docker compose exec api /usr/local/bin/ms365-mcp-launch.sh --verify-login
+docker compose restart api        # the gateway reads config and credentials at startup
+```
+
+Setup is the launcher's `--login`, never chat: `MS365_MCP_EXPECTED_USERNAME`
+is what stops a different account being bound. Run `--login` again if the
+refresh token is ever revoked — until then every Microsoft 365 call answers
+with an error payload and the API keeps serving. The server registers its
+account tools whatever `--enabled-tools` says, so the gateway refuses
+`microsoft_365__login`, `logout`, `select-account` and `remove-account`
+itself and leaves them out of `search_tools` results — a chat turn cannot
+sign the mailbox out, wipe the seeded token or switch accounts, whatever
+`mcp_servers.json` says. The example config denies them too (defense in
+depth). The read-only `verify-login` and `list-accounts` stay callable.
+
+The launcher scrubs `$VAR` placeholders that extensible-mcp leaves literal for
+unset variables, refuses to start without `MS365_MCP_CLIENT_ID`, keeps the
+token cache under `MS365_MCP_CREDENTIALS_DIR` (0700), and starts the server
+with an **explicit allow-list** of tools (`--enabled-tools`, an anchored regex
+in the launcher) rather than the upstream `mail,calendar` preset: the preset
+also registers inbox forwarding rules, mailbox settings (external auto-reply),
+calendar sharing and event forwarding, which can address people the gateway
+never sees. Exactly the Outlook mail + calendar tools (plus the login tools)
+are exposed. Egress is gated like Google: `send-mail`, forward and every draft
+tool have their recipients roster-checked from the arguments; reply,
+reply-all and send-draft — whose recipient is whoever the referenced message
+names — have the gateway read that message first and check the sender /
+original recipients / draft recipients (reply-all checks `replyTo` and the
+sender together); `create-/update-calendar-event` attendees must be People
+on the roster. Every mail write's `from`, `sender` and `replyTo` may name
+only `EXEC_EMAIL_ADDRESS` (the Outlook twin of the Gmail acting-account pin),
+and `move-mail-message` into Deleted Items, Junk Email or Recoverable Items
+is refused, so the model cannot trash mail through a move. Widening the allow-list
+(`MS365_MCP_ENABLED_TOOLS` / `MS365_MCP_PRESET`) is an operator decision that
+must come with a matching gate change in `orchestrator/mcp_gateway.py`.
+
+### Switching the mailbox and calendar to Microsoft 365
+
+Adding the server only gives the Executive Outlook *tools*. Three code paths
+call a fixed backend without the model choosing — the inbound mailbox poller,
+alert email dispatch and the scheduler's email hint, and the typed
+`create_calendar_event` / `create_instant_meeting` tools with their approval
+ledger. They follow two switches, both defaulting to `google`:
+
+```
+EMAIL_PROVIDER=microsoft      # poll the Outlook inbox; reply via microsoft_365__reply-mail-message
+CALENDAR_PROVIDER=microsoft   # book on the Outlook calendar with a Teams link
+```
+
+The switches are independent. A chosen backend whose MCP server is missing
+from `mcp_servers.json` is logged at startup and the poller skips its cycle;
+boot never fails. On Microsoft the approval-time conflict check reads only the
+Executive's own calendar (delegated permissions cannot read attendees'
+free/busy), so it is advisory in a narrower sense than Google's.
 
 ---
 

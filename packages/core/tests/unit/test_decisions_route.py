@@ -345,6 +345,49 @@ def test_approve_with_no_linked_alert_still_succeeds(client: TestClient, db: Pat
     assert res.json()["status"] == "approved_unchanged"
 
 
+
+
+# ---------------------------------------------------------------------------
+# CALENDAR_PROVIDER=microsoft: approval books through the Outlook backend and
+# the advisory conflict check reads the Executive's calendar view
+# ---------------------------------------------------------------------------
+
+def test_approve_with_microsoft_provider(client: TestClient, db: Path) -> None:
+    iid = _seed(db)
+    calls: list[dict] = []
+
+    async def _call_tool(args: dict) -> str:
+        calls.append(args)
+        if args.get("name") == "microsoft_365__get-calendar-view":
+            return json.dumps({"value": [{"id": "busy-1", "showAs": "busy"}]})
+        return json.dumps({
+            "id": "evt-ms-approve",
+            "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/x"},
+        })
+
+    fake_gw = type("GW", (), {})()
+    fake_gw.call_tool = AsyncMock(side_effect=_call_tool)
+    from openexecutive.config import get_settings
+
+    settings = get_settings().model_copy(
+        update={"calendar_provider": "microsoft", "calendar_meet_links_enabled": True}
+    )
+
+    with (
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw),
+        patch("openexecutive.config.get_settings", return_value=settings),
+    ):
+        res = client.post(f"/decisions/{iid}/approve", json={})
+
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["status"] == "approved_unchanged"
+    assert data["external_event_id"] == "evt-ms-approve"
+    assert [c["name"] for c in calls] == [
+        "microsoft_365__get-calendar-view",
+        "microsoft_365__create-calendar-event",
+    ]
+    assert json.loads(data["final_payload_json"])["meet_link"] == "https://teams.microsoft.com/l/meetup-join/x"
 # ---------------------------------------------------------------------------
 # Who may resolve a decision
 # ---------------------------------------------------------------------------

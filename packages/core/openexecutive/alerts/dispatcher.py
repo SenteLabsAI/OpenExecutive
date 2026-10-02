@@ -55,19 +55,33 @@ async def dispatch_email(alert: Alert) -> bool:
         logger.warning("dispatch_email: MCP gateway not available — skipping")
         return False
 
+    from openexecutive.integrations.workspace.registry import get_mail_provider
+    from openexecutive.orchestrator.mcp_gateway import _is_error_payload
+
     settings = get_settings()
+    provider = get_mail_provider(settings)
     try:
         subject = f"[{alert.severity.upper()}] {alert.headline}"
         body = f"{alert.body}\n\nSuggested action: {alert.suggested_action or 'None'}"
-        await gateway.call_tool({
-            "name": "google_workspace__send_gmail_message",
-            "arguments": {
-                "user_google_email": settings.exec_email_address,
-                "to": settings.exec_email_address,
-                "subject": subject,
-                "body": body,
-            },
+        # A self-send to the Executive's own mailbox, through whichever backend
+        # EMAIL_PROVIDER names; the provider spells the tool's argument shape.
+        result = await gateway.call_tool({
+            "name": provider.send_tool_name,
+            "arguments": provider.build_send_arguments(
+                mailbox=settings.exec_email_address,
+                to=settings.exec_email_address,
+                subject=subject,
+                body=body,
+            ),
         })
+        # The send tool reports a soft failure in-band (`{"error": ...}`), so
+        # a delivery row must not claim success for mail that never left.
+        if isinstance(result, str) and _is_error_payload(result):
+            logger.warning(
+                "dispatch_email: %s reported an error for alert=%s: %s",
+                provider.send_tool_name, alert.id, result[:300],
+            )
+            return False
         return True
     except Exception:
         logger.exception("dispatch_email failed for alert=%s", alert.id)

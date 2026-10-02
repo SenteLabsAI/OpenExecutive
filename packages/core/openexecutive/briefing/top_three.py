@@ -313,11 +313,14 @@ async def read_todays_calendar(now: datetime, tz: tzinfo) -> list[CalendarEvent]
     calendar to read. One tool call with a short timeout; never raises."""
     try:
         from openexecutive.config import get_settings
+        from openexecutive.integrations.workspace.registry import get_calendar_provider
         from openexecutive.orchestrator.mcp_gateway import get_active_gateway
         from openexecutive.people.store import find_principal_person
         from openexecutive.scheduler.runner import google_workspace_ready
 
-        if not google_workspace_ready():
+        # The listing below is Google Calendar's; on Outlook the brief goes
+        # without a calendar block, as when no calendar is connected.
+        if get_calendar_provider().name != "google" or not google_workspace_ready():
             return None
         gateway = get_active_gateway()
         principal = find_principal_person()
