@@ -9,6 +9,24 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.4.6](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.5...v0.4.6) (2026-10-02)
+
+
+### Added
+
+* **auth:** add SSO sign-in through any OpenID Connect provider ([#338](https://github.com/SenteLabsAI/OpenExecutive/issues/338)) ([d338f1f](https://github.com/SenteLabsAI/OpenExecutive/commit/d338f1f9088fefca2d6cbe4e760bd1261b33813a))
+* **delegation:** let Act as me use an Outlook mailbox ([#336](https://github.com/SenteLabsAI/OpenExecutive/issues/336)) ([6b7957e](https://github.com/SenteLabsAI/OpenExecutive/commit/6b7957eef63a6e113944a0601e2681efb91013f8))
+* **integrations:** add a Microsoft 365 (Outlook) mail and calendar backend ([#326](https://github.com/SenteLabsAI/OpenExecutive/issues/326)) ([5ec59a4](https://github.com/SenteLabsAI/OpenExecutive/commit/5ec59a4ccc2a8291693fbd22ec683bcf55da16cd))
+* **integrations:** sync OneDrive folders into knowledge and add OneDrive tools in chat ([#331](https://github.com/SenteLabsAI/OpenExecutive/issues/331)) ([29d3037](https://github.com/SenteLabsAI/OpenExecutive/commit/29d3037b328b969e833428bb9f6ac3269d5f7d95))
+* **knowledge:** sync Confluence spaces into the knowledge base ([#324](https://github.com/SenteLabsAI/OpenExecutive/issues/324)) ([27b44bc](https://github.com/SenteLabsAI/OpenExecutive/commit/27b44bc7baa59e4bc8488e1d8fad1781611bcee9))
+* **settings:** show the running version and when a newer release is out ([#323](https://github.com/SenteLabsAI/OpenExecutive/issues/323)) ([5d23f29](https://github.com/SenteLabsAI/OpenExecutive/commit/5d23f299dea5cb786bb5b402ef2ba416565f15b9))
+
+
+### Fixed
+
+* **ui:** make `npm run lint` real again, package-wide, and enforce it in CI ([#327](https://github.com/SenteLabsAI/OpenExecutive/issues/327)) ([398519f](https://github.com/SenteLabsAI/OpenExecutive/commit/398519f3c53194bf0abb677cf5716858672e3f5f))
+* **ui:** make the web app readable and usable on phones ([#335](https://github.com/SenteLabsAI/OpenExecutive/issues/335)) ([3ff5f50](https://github.com/SenteLabsAI/OpenExecutive/commit/3ff5f50d3982e3b0b5a36d0129a6bbc1ebc39523))
+
 ## [0.4.5](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.4...v0.4.5) (2026-10-01)
 
 
