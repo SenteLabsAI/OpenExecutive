@@ -45,6 +45,10 @@ from typing import Any
 
 LOGIN_BASE = "https://login.microsoftonline.com"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName"
+SENT_ITEMS = (
+    "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages"
+    "?$orderby=sentDateTime%20desc&$top=10&$select=from,isDraft"
+)
 GRAPH_SCOPES = ("User.Read", "Mail.ReadWrite", "Mail.Send")
 SCOPE = " ".join(["openid", "offline_access", *(f"https://graph.microsoft.com/{s}" for s in GRAPH_SCOPES)])
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
@@ -115,11 +119,27 @@ def _post(url: str, form: dict[str, str]) -> tuple[int, dict[str, Any]]:
             return exc.code, {}
 
 
-def _profile_email(access_token: str) -> str:
-    request = urllib.request.Request(GRAPH_ME, headers={"Authorization": f"Bearer {access_token}"})
+def _graph(url: str, access_token: str) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}"})
     with urllib.request.urlopen(request, timeout=15) as resp:  # noqa: S310 — fixed https URL
         data = json.load(resp)
-    return str(data.get("mail") or data.get("userPrincipalName") or "").strip().lower()
+    return data if isinstance(data, dict) else {}
+
+
+def _profile_email(access_token: str) -> str:
+    """The mailbox's own address, as delegation.outlook reads it: /me's mail,
+    else (a personal account signed in with another address) the address its
+    latest sent mail went from, else the sign-in name."""
+    me = _graph(GRAPH_ME, access_token)
+    if me.get("mail"):
+        return str(me["mail"]).strip().lower()
+    sent = _graph(SENT_ITEMS, access_token)
+    for item in sent.get("value") or []:
+        if isinstance(item, dict) and item.get("isDraft") is not True:
+            address = ((item.get("from") or {}).get("emailAddress") or {}).get("address")
+            if address:
+                return str(address).strip().lower()
+    return str(me.get("userPrincipalName") or "").strip().lower()
 
 
 def _sign_in(tenant: str, client_id: str, client_secret: str) -> dict[str, Any]:

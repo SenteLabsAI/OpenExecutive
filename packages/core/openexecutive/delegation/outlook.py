@@ -533,19 +533,35 @@ class DelegateOutlook:
     def _parse(self, raw: object) -> MailMessage:
         return parse_message(raw if isinstance(raw, dict) else {}, self._sent_folder, self.email)
 
-    async def _me(self, select: str) -> dict[str, Any]:
-        async with self._client() as client:
-            return await self._get(client, "", {"$select": select})
+    async def _mailbox_address(self, client: httpx.AsyncClient, me: dict[str, Any]) -> str:
+        """The mailbox's own address. A personal account may sign in with
+        another address (even a Gmail one) and have no ``mail`` on /me; its
+        sent mail then says which address it sends from."""
+        mail = normalize_email(str(me.get("mail") or ""))
+        if mail:
+            return mail
+        # Graph refuses isDraft in $filter with this $orderby: filtered here.
+        data = await self._get(client, "/mailFolders/sentitems/messages", {
+            "$orderby": "sentDateTime desc", "$top": 10, "$select": "from,isDraft",
+        })
+        for raw in data.get("value") or []:
+            if isinstance(raw, dict) and raw.get("isDraft") is not True:
+                sent_from = _address(raw.get("from"))[1]
+                if sent_from:
+                    return sent_from
+        return normalize_email(str(me.get("userPrincipalName") or ""))
 
     async def profile_email(self) -> str:
-        """The address the credential opens, as Microsoft reports it."""
-        data = await self._me("mail,userPrincipalName")
-        return normalize_email(str(data.get("mail") or data.get("userPrincipalName") or ""))
+        """The address of the mailbox the credential opens."""
+        async with self._client() as client:
+            me = await self._get(client, "", {"$select": "mail,userPrincipalName"})
+            return await self._mailbox_address(client, me)
 
     async def send_as_addresses(self) -> list[str]:
         """The person's primary address and their mailbox's SMTP aliases."""
-        data = await self._me("mail,userPrincipalName,proxyAddresses")
-        primary = normalize_email(str(data.get("mail") or data.get("userPrincipalName") or ""))
+        async with self._client() as client:
+            data = await self._get(client, "", {"$select": "mail,userPrincipalName,proxyAddresses"})
+            primary = await self._mailbox_address(client, data)
         aliases = [
             normalize_email(p.split(":", 1)[1])
             for p in data.get("proxyAddresses") or []

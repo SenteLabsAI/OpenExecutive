@@ -330,6 +330,21 @@ def test_graph_errors_map_onto_the_gmail_ones(status: int, error: type[Exception
         asyncio.run(graph.client().get_message("m1"))
 
 
+def test_a_personal_account_signed_in_with_another_address_reads_its_mailbox() -> None:
+    """A personal account can sign in with, say, a Gmail address and have no
+    mail on /me: its own sent mail says which address the mailbox is."""
+    graph = FakeGraph()
+    graph.me = {"mail": None, "userPrincipalName": "olivia@gmail.example"}
+    graph.listing = [
+        {"isDraft": True, "from": {"emailAddress": {"address": "draft@x.example"}}},
+        {"isDraft": False, "from": {"emailAddress": {"address": EMAIL}}},
+    ]
+    assert asyncio.run(graph.client().profile_email()) == EMAIL
+    assert asyncio.run(gmail_status(EMAIL, gmail=graph.client())) == "connected"
+    graph.listing = []
+    assert asyncio.run(graph.client().profile_email()) == "olivia@gmail.example"
+
+
 def test_send_as_addresses_are_the_primary_and_its_aliases() -> None:
     assert asyncio.run(FakeGraph().client().send_as_addresses()) == [EMAIL, "o@co.example"]
 
