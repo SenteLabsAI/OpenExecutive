@@ -100,6 +100,7 @@ _FORWARDED_ENV_VARS = (
     "MS365_MCP_CLIENT_SECRET",
     "MS365_MCP_EXPECTED_USERNAME",
     "MS365_MCP_ORG_MODE",
+    "MS365_MCP_ONEDRIVE",
     "MS365_MCP_OAUTH_TOKEN",
     "MS365_MCP_CREDENTIALS_DIR",
     "MS365_MCP_TOKEN_CACHE_PATH",
@@ -220,10 +221,69 @@ _M365_EVENT_LOOKUP_SELECT = "id,organizer,attendees"
 # `download-bytes` is a generic authenticated Graph GET proxy (any path under
 # the token's scopes), which would let the read side of the launcher's
 # allow-list be bypassed (`/me/messages/{id}/$value` MIME, calendar
-# permissions, …). The Executive only needs it for mail attachment bytes, so
-# the gateway pins its `target` to exactly that shape.
+# permissions, …). The Executive needs it for two things only — mail
+# attachment bytes and OneDrive file content (optionally as Graph's PDF
+# rendering) — so the gateway pins its `target` to exactly those shapes, and
+# hands back OneDrive content as extracted text rather than base64
+# (`_onedrive_content_as_text`).
 _M365_DOWNLOAD_TOOL = "microsoft_365__download_bytes"
 _M365_ATTACHMENT_TARGET_RE = re.compile(r"/me/messages/([^/?#\\\s]+)/attachments/([^/?#\\\s]+)/\$value")
+_M365_DRIVE_CONTENT_TARGET_RE = re.compile(
+    r"/drives/([^/?#\\\s]+)/items/([^/?#\\\s]+)/content(\?format=pdf)?"
+)
+
+# OneDrive sharing — the Microsoft analogue of `_GATED_DRIVE_TOOLS`, in
+# normalized form. `share-drive-item` invites named people (recipients by
+# email; an `objectId` / `alias` recipient names nobody the roster can
+# check, so it is refused), and `create-drive-item-share-link` mints a link,
+# which must be scoped to specific people (`scope: "users"`): an `anonymous`
+# or `organization` link, or one with no scope (the tenant's default, often
+# anonymous), reaches people the roster never sees.
+_M365_DRIVE_INVITE_TOOL = "microsoft_365__share_drive_item"
+_M365_DRIVE_LINK_TOOL = "microsoft_365__create_drive_item_share_link"
+_M365_DRIVE_SHARE_TOOLS = frozenset({_M365_DRIVE_INVITE_TOOL, _M365_DRIVE_LINK_TOOL})
+_M365_UNCHECKABLE_GRANTEE_KEYS = frozenset({"objectid", "alias", "siteuser", "application", "device"})
+_M365_LINK_SCOPE_OK = "users"
+# An invite must require sign-in (Graph's default is not to, which on many
+# tenants makes the invite an open link) and grant view or edit only; a link
+# must be a view or edit link (an `embed` link is public on personal drives).
+_M365_INVITE_ROLES_OK = frozenset({"read", "write"})
+_M365_LINK_TYPES_OK = frozenset({"view", "edit"})
+_M365_SHARE_PINNED_KEYS = frozenset({"scope", "roles", "type", "requiresignin"})
+
+# `search-onedrive-files` substitutes `q` into the request path unencoded
+# (`/drives/{d}/search(q='{q}')`), so a quote, slash or dot-dot in it walks
+# the request to any other Graph GET (mail, mailbox rules, other drives): the
+# same bypass the `download-bytes` pin exists to stop. `q` is therefore plain
+# search words only.
+_M365_DRIVE_SEARCH_TOOL = "microsoft_365__search_onedrive_files"
+_M365_DRIVE_SEARCH_Q_MAX = 200
+_M365_DRIVE_SEARCH_Q_BAD = frozenset("'\"/\\?#%()&")
+
+# OneDrive writes land only in the Executive's own drives (`list-drives`,
+# i.e. /me/drives). The launcher asks for Files.ReadWrite, not .All, which
+# already keeps writes there; this holds if an operator widens the scopes,
+# where a planted instruction could otherwise have the account copy or save
+# company files into any folder a stranger shared with it, with nothing
+# shared and no roster check. Reading shared drives stays open.
+_M365_DRIVE_WRITE_TOOLS = frozenset({
+    "microsoft_365__upload_file_content",
+    "microsoft_365__create_onedrive_folder",
+    "microsoft_365__move_rename_onedrive_item",
+    "microsoft_365__copy_drive_item",
+})
+_M365_DRIVE_COPY_TOOL = "microsoft_365__copy_drive_item"
+_M365_PARENT_REFERENCE_KEYS = frozenset({"driveid", "id"})
+_M365_DRIVES_LOOKUP_TOOL = "microsoft_365__list-drives"
+# Normalized: the server takes `drive-id` and `driveId` alike, and when both
+# are given the first one fills the path, so every spelling is checked.
+_M365_DRIVE_ID_KEYS = frozenset({"driveid", "driveitemid"})
+_TOO_DEEP_VALUE = object()
+
+
+def _top_level_values(arguments: dict[str, Any], norm: str) -> list[Any]:
+    """Values of every top-level key that normalizes to ``norm``."""
+    return [v for k, v in arguments.items() if isinstance(k, str) and _norm_key(k) == norm]
 
 # ms-365-mcp-server registers its account tools whatever `--enabled-tools`
 # says, so the launcher's allow-list cannot remove them and the deny globs in
@@ -1772,21 +1832,333 @@ def _unsafe_id_segment(segment: str) -> bool:
 
 
 def _check_m365_download_target(tool: str, arguments: dict[str, Any]) -> str | None:
-    """Pin `download-bytes` to mail attachment bytes only."""
+    """Pin `download-bytes` to mail attachment bytes and OneDrive file content."""
     target = arguments.get("target")
-    match = _M365_ATTACHMENT_TARGET_RE.fullmatch(target) if isinstance(target, str) else None
+    match = None
+    if isinstance(target, str):
+        match = _M365_ATTACHMENT_TARGET_RE.fullmatch(target) or _M365_DRIVE_CONTENT_TARGET_RE.fullmatch(
+            target
+        )
     # A dot segment (`..`, or `%2e%2e`) or an encoded slash would resolve off
-    # the attachment shape.
-    if match is None or any(_unsafe_id_segment(segment) for segment in match.groups()):
+    # the pinned shape.
+    ids = [g for g in match.groups()[:2]] if match is not None else []
+    if match is None or any(_unsafe_id_segment(segment) for segment in ids):
         return _block(
             "target", str(target)[:120], tool,
             reason=(
                 f"{tool} may only fetch a mail attachment "
-                "(/me/messages/{id}/attachments/{id}/$value) — refusing."
+                "(/me/messages/{id}/attachments/{id}/$value) or a OneDrive file "
+                "(/drives/{drive-id}/items/{item-id}/content, optionally ?format=pdf) "
+                "— refusing."
             ),
         )
     return None
 
+
+# OneDrive content types `_onedrive_content_as_text` reads, and the suffix the
+# knowledge loader reads each as.
+_ONEDRIVE_TEXT_TYPES: dict[str, str] = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-excel.sheet.macroenabled.12": ".xlsx",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/csv": ".csv",
+}
+_ONEDRIVE_TEXT_MAX_BYTES = 20 * 1024 * 1024
+_ONEDRIVE_TEXT_MAX_CHARS = 200_000
+
+
+async def _onedrive_content_as_text(target: str, result_text: str) -> str:
+    """A `download-bytes` result for a OneDrive file, as the file's text.
+
+    The server returns the bytes base64-encoded, which the model cannot read.
+    A PDF, Word, Excel, text, Markdown or CSV file is read with the knowledge
+    loader's extractors (the OneDrive folder sync's); any other type comes back
+    as a note naming it, with the PDF-rendering target to retry for Office
+    formats. Anything unparseable is returned as it came."""
+    try:
+        payload = json.loads(result_text)
+    except (TypeError, ValueError):
+        return result_text
+    if not isinstance(payload, dict) or "error" in payload:
+        return result_text
+    encoded = payload.get("contentBytes")
+    content_type = str(payload.get("contentType") or "").split(";")[0].strip().lower()
+    if not isinstance(encoded, str):
+        return result_text
+    if len(encoded) > _ONEDRIVE_TEXT_MAX_BYTES * 4 // 3 + 4:
+        return json.dumps({"error": "That OneDrive file is over 20 MB; it can't be read here."})
+    suffix = _ONEDRIVE_TEXT_TYPES.get(content_type)
+    if suffix is None:
+        retry = "" if target.endswith("?format=pdf") else f" For an Office file, retry with target {target}?format=pdf."
+        return json.dumps({
+            "content_type": content_type or "unknown",
+            "note": f"This file can't be shown as text ({content_type or 'unknown type'}).{retry}",
+        })
+    try:
+        data = base64.b64decode(encoded, validate=False)
+    except ValueError:
+        return json.dumps({"error": "The OneDrive file came back unreadable."})
+    from openexecutive.knowledge.drive_sync import _EXTRACT_TIMEOUT_S, _extract
+
+    try:
+        text = await asyncio.wait_for(
+            asyncio.to_thread(_extract, data, suffix), timeout=_EXTRACT_TIMEOUT_S
+        )
+    except Exception as exc:
+        logger.warning("onedrive read: text extraction failed (%s)", type(exc).__name__)
+        return json.dumps({"error": f"Could not read text from that {suffix[1:]} file."})
+    return json.dumps({
+        "content_type": content_type,
+        "text": text[:_ONEDRIVE_TEXT_MAX_CHARS],
+        "truncated": len(text) > _ONEDRIVE_TEXT_MAX_CHARS,
+    })
+
+
+def _check_m365_drive_share(tool: str, normalized: str, arguments: dict[str, Any]) -> str | None:
+    """Gate a OneDrive share like a Drive share; None when it may run.
+
+    Everything `_check_drive_share` refuses (an off-roster email anywhere in
+    the arguments, a public / whole-domain scope or flag) is refused here
+    too. On top of that: an `anonymous` or `organization` scope, a link
+    whose scope isn't `users`, an `owner` role, and a grantee named by
+    anything other than an email."""
+    blocked = _check_drive_share(tool, arguments)
+    if blocked is not None:
+        return blocked
+    body = _ci_get(arguments, "body")
+    if not isinstance(body, dict):
+        # A string body is parsed by the server but would hide its grantee
+        # keys from the walk below: only an object is checked, so only an
+        # object is sent.
+        return _refuse(
+            tool, "body", "<non-object>",
+            reason=f"{tool} needs its body as a JSON object — refusing.",
+        )
+
+    def walk(value: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
+        if depth > _WALK_DEPTH_MAX:
+            yield _TOO_DEEP, None
+            return
+        if isinstance(value, dict):
+            for k, v in value.items():
+                yield (k if isinstance(k, str) else ""), v
+                yield from walk(v, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                yield from walk(v, depth + 1)
+
+    for key, _value in walk(arguments):
+        if key == _TOO_DEEP:
+            return _refuse(
+                tool, "share", "<unreadable>",
+                reason="a share argument nested this deep cannot be checked — refusing. Flatten it.",
+            )
+        if _norm_key(key) in _M365_UNCHECKABLE_GRANTEE_KEYS:
+            return _block(
+                key, "<non-email grantee>", tool,
+                reason=f"{tool} may only share with People named by email — refusing.",
+            )
+    # The pinned fields count only where Graph reads them: the body's top
+    # level, or a top-level argument the server merges into the body. The
+    # same key anywhere deeper (say inside a recipient) is a decoy that would
+    # satisfy the pin while Graph applies its default, so it is refused.
+    top_level = [
+        (k, v) for k, v in [*body.items(), *arguments.items()]
+        if isinstance(k, str) and _norm_key(k) != "body"
+    ]
+    for value in [v for _, v in top_level]:
+        for key, _inner in walk(value):
+            if _norm_key(key) in _M365_SHARE_PINNED_KEYS:
+                return _refuse(
+                    tool, key, "<nested>",
+                    reason=f"{tool} takes {key!r} only at the top of its body — refusing.",
+                )
+    scopes: list[str] = []
+    roles: list[Any] = []
+    link_types: list[Any] = []
+    require_sign_in: list[Any] = []
+    for key, value in top_level:
+        nk = _norm_key(key)
+        if nk == "scope":
+            scopes.append(_norm_share_token(value) if isinstance(value, str) else "<non-string>")
+        elif nk == "roles":
+            roles.extend(value if isinstance(value, list) else [value])
+        elif nk == "type":
+            link_types.append(value)
+        elif nk == "requiresignin":
+            require_sign_in.append(value)
+    if normalized == _M365_DRIVE_INVITE_TOOL:
+        if not require_sign_in or any(v is not True for v in require_sign_in):
+            return _refuse(
+                tool, "requireSignIn", str(require_sign_in[0]) if require_sign_in else "<default>",
+                reason=(
+                    f"{tool} must set requireSignIn to true, so only the invited "
+                    "People can open the item — refusing."
+                ),
+            )
+        if not roles or any(
+            not isinstance(r, str) or _norm_share_token(r) not in _M365_INVITE_ROLES_OK for r in roles
+        ):
+            return _refuse(
+                tool, "roles", ",".join(str(r) for r in roles) or "<default>",
+                reason=f"{tool} may grant only the \"read\" or \"write\" role — refusing.",
+            )
+    if normalized == _M365_DRIVE_LINK_TOOL and (
+        not link_types
+        or any(not isinstance(t, str) or _norm_share_token(t) not in _M365_LINK_TYPES_OK for t in link_types)
+    ):
+        return _refuse(
+            tool, "type", ",".join(str(t) for t in link_types) or "<default>",
+            reason=f"{tool} may make only a \"view\" or \"edit\" link — refusing.",
+        )
+    for s in _iter_arg_strings(arguments):
+        if isinstance(s, str) and _norm_share_token(s) in {"anonymous", "organization", "owner"}:
+            return _block(
+                "scope", s.strip(), tool,
+                reason=(
+                    f"OneDrive sharing as {s.strip()!r} is not allowed — share only "
+                    "with People on the roster, as view or edit."
+                ),
+            )
+    if normalized == _M365_DRIVE_LINK_TOOL and (not scopes or any(sc != _M365_LINK_SCOPE_OK for sc in scopes)):
+        return _block(
+            "scope", ",".join(scopes) or "<default>", tool,
+            reason=(
+                f"{tool} must set scope \"users\" (a link only people already given "
+                "access can open) — refusing."
+            ),
+        )
+    return None
+
+
+
+def _check_m365_drive_ids(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Refuse a dot-only `drive-id` / `driveItem-id`. The server percent-encodes
+    them, but `..` survives encoding and the URL parser then resolves it,
+    walking the request out of /drives/{id}/items/{id}."""
+    for norm in sorted(_M365_DRIVE_ID_KEYS):
+        for value in _top_level_values(arguments, norm):
+            if not isinstance(value, str) or unquote(value).strip(".") == "":
+                return _refuse(
+                    tool, norm, str(value)[:40],
+                    reason=f"{tool} needs a real drive or item id — refusing.",
+                )
+    return None
+
+
+def _check_m365_drive_search(tool: str, arguments: dict[str, Any]) -> str | None:
+    """Pin `search-onedrive-files`' `q` to plain search words (see
+    `_M365_DRIVE_SEARCH_TOOL`)."""
+    values = _top_level_values(arguments, "q")
+    q = values[0] if len(values) == 1 else None
+    if (
+        not isinstance(q, str)
+        or not q.strip()
+        or len(q) > _M365_DRIVE_SEARCH_Q_MAX
+        or ".." in q
+        or any(c in _M365_DRIVE_SEARCH_Q_BAD or ord(c) < 32 or ord(c) == 127 for c in q)
+    ):
+        return _refuse(
+            tool, "q", (q[:40] if isinstance(q, str) else "<missing>"),
+            reason=(
+                f"{tool} takes plain search words only (no quotes, slashes, "
+                "brackets, ?, #, % or &) — refusing."
+            ),
+        )
+    return None
+
+
+async def _check_m365_drive_write(
+    session: Any, tool: str, normalized: str, arguments: dict[str, Any], discover: _Discover | None = None,
+) -> str | None:
+    """Keep OneDrive writes in the Executive's own drives (see
+    `_M365_DRIVE_WRITE_TOOLS`). The drive written to is `drive-id`, except
+    that a copy writes to its `parentReference.driveId` (a copy may read from
+    a shared drive). Any `driveId` in the body must be the Executive's too.
+    Fail closed when the drives can't be read."""
+    body = _ci_get(arguments, "body")
+    if body is not None and not isinstance(body, (dict, str)):
+        return _refuse(tool, "body", "<unreadable>", reason=f"{tool} body must be an object — refusing.")
+    if normalized != "microsoft_365__upload_file_content" and isinstance(body, str):
+        # upload's body is the file's base64; every other body is an object
+        # whose driveId must be readable.
+        return _refuse(tool, "body", "<non-object>", reason=f"{tool} needs its body as a JSON object — refusing.")
+    drive_ids = _top_level_values(arguments, "driveid")
+    if not drive_ids or any(not isinstance(d, str) or not d.strip() for d in drive_ids):
+        return _refuse(tool, "drive-id", "<missing>", reason=f"{tool} needs a drive-id — refusing.")
+    drive_id = drive_ids[0]
+    targets: list[str] = []
+    body_drive_ids: list[Any] = []
+    if isinstance(body, dict):
+        body_drive_ids.extend(_iter_dict_values_for_key(body, "driveid"))
+    if any(not isinstance(d, str) for d in body_drive_ids):
+        return _refuse(tool, "driveId", "<unreadable>", reason=f"{tool} driveId must be a string — refusing.")
+    # A destination may be named only by driveId + id: Graph's itemReference
+    # also takes a path, siteId or shareId, none of which this gate can pin.
+    refs = _top_level_values(arguments, "parentreference")
+    if isinstance(body, dict):
+        refs += _top_level_values(body, "parentreference")
+    for ref in refs:
+        if not isinstance(ref, dict) or any(
+            not isinstance(k, str) or _norm_key(k) not in _M365_PARENT_REFERENCE_KEYS for k in ref
+        ):
+            return _refuse(
+                tool, "parentReference", "<unpinnable>",
+                reason=f"{tool} may name its destination only by driveId and id — refusing.",
+            )
+    ref_drive_ids = [v for ref in refs for k, v in ref.items() if _norm_key(k) == "driveid"]
+    if any(not isinstance(d, str) for d in ref_drive_ids):
+        return _refuse(tool, "driveId", "<unreadable>", reason=f"{tool} driveId must be a string — refusing.")
+    if normalized == _M365_DRIVE_COPY_TOOL:
+        if not ref_drive_ids:
+            return _refuse(
+                tool, "parentReference", "<missing>",
+                reason=f"{tool} needs parentReference.driveId naming where the copy goes — refusing.",
+            )
+    else:
+        targets.extend(drive_ids)
+    targets.extend(body_drive_ids)
+    targets.extend(ref_drive_ids)
+    drives = await _fetch_m365_json(session, _M365_DRIVES_LOOKUP_TOOL, {}, discover)
+    values = _ci_get(drives, "value") if drives is not None else None
+    own = {
+        d.get("id") for d in values if isinstance(d, dict) and isinstance(d.get("id"), str)
+    } if isinstance(values, list) else set()
+    if not own:
+        return _refuse(
+            tool, "drive-id", drive_id[:40],
+            reason=f"could not read the Executive's own drives to check {tool} — refusing.",
+        )
+    for target in targets:
+        if target not in own:
+            return _refuse(
+                tool, "drive-id", target[:40],
+                reason=(
+                    f"{tool} may only write to the Executive's own OneDrive, not a drive "
+                    "someone shared with it — refusing. Save it to the Executive's "
+                    "OneDrive and share it with the People who need it."
+                ),
+            )
+    return None
+
+
+def _iter_dict_values_for_key(value: Any, norm: str, depth: int = 0) -> Iterator[Any]:
+    """Every value under a key that normalizes to ``norm``, at any depth;
+    a too-deep value yields an unreadable marker so the caller refuses."""
+    if depth > _WALK_DEPTH_MAX:
+        yield _TOO_DEEP_VALUE
+        return
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str) and _norm_key(k) == norm:
+                yield v
+            yield from _iter_dict_values_for_key(v, norm, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _iter_dict_values_for_key(v, norm, depth + 1)
 
 def _m365_sender_fields(value: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
     """Every ``(field, value)`` in an argument tree that names a sender or a
@@ -2536,6 +2908,24 @@ class MCPGateway:
             blocked = _check_m365_download_target(tool_name, arguments)
             if blocked is not None:
                 return blocked
+        if any(isinstance(k, str) and _norm_key(k) in _M365_DRIVE_ID_KEYS for k in arguments):
+            blocked = _check_m365_drive_ids(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized == _M365_DRIVE_SEARCH_TOOL:
+            blocked = _check_m365_drive_search(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized in _M365_DRIVE_SHARE_TOOLS:
+            blocked = _check_m365_drive_share(tool_name, normalized, arguments)
+            if blocked is not None:
+                return blocked
+        if normalized in _M365_DRIVE_WRITE_TOOLS:
+            blocked = await _check_m365_drive_write(
+                session, tool_name, normalized, arguments, self._discover
+            )
+            if blocked is not None:
+                return blocked
         if normalized == _M365_MOVE_TOOL:
             blocked = _check_m365_move_destination(tool_name, arguments)
             if blocked is not None:
@@ -2572,6 +2962,10 @@ class MCPGateway:
             result_text = hide_roster_tokens(result_text)
         if tool_name in drive_reads.DRIVE_READ_TOOLS:
             result_text = _remember_drive_read(tool_name, arguments, result_text)
+        if normalized == _M365_DOWNLOAD_TOOL and isinstance(arguments.get("target"), str):
+            target = arguments["target"]
+            if _M365_DRIVE_CONTENT_TARGET_RE.fullmatch(target):
+                result_text = await _onedrive_content_as_text(target, result_text)
         # Record an outbound-context linkage only for a genuinely-sent email.
         # The send tool returns its outcome as text; a soft-error payload
         # (`{"error": ...}`) means nothing was sent, so skip it to avoid a

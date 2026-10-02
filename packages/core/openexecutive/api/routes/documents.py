@@ -244,17 +244,17 @@ async def list_documents(request: Request = None) -> dict:  # type: ignore[assig
 
 
 # ---------------------------------------------------------------------------
-# Connected sources (Google Drive, Notion): read-only lists, a viewer, and a
+# Connected sources (Google Drive, OneDrive, Notion): read-only lists, a viewer, and a
 # "Sync now" that runs one tick of the same sync the scheduler runs. Files
 # from these sources are managed where they live — removing one from the
 # shared folder / Notion integration is what drops it from the knowledge base.
 #
-# Declared before ``/documents/{filename}`` so "sources", "drive" and
-# "notion" are never read as an uploaded file's name.
+# Declared before ``/documents/{filename}`` so "sources", "drive",
+# "onedrive" and "notion" are never read as an uploaded file's name.
 # ---------------------------------------------------------------------------
 
-SourceId = Literal["drive", "notion"]
-_SOURCE_LABELS: dict[str, str] = {"drive": "Google Drive", "notion": "Notion"}
+SourceId = Literal["drive", "onedrive", "notion"]
+_SOURCE_LABELS: dict[str, str] = {"drive": "Google Drive", "onedrive": "OneDrive", "notion": "Notion"}
 # A manual sync this soon after the last tick is refused: the sync is
 # incremental, so a second run finds nothing new and only spends API quota.
 SYNC_COOLDOWN_S = 60
@@ -269,6 +269,10 @@ def _source_module(source: str) -> Any:
         from openexecutive.knowledge import drive_sync
 
         return drive_sync
+    if source == "onedrive":
+        from openexecutive.knowledge import onedrive_sync
+
+        return onedrive_sync
     if source == "notion":
         from openexecutive.knowledge import notion_sync
 
@@ -282,6 +286,8 @@ def _source_enabled(source: str) -> bool:
     settings = get_settings()
     if source == "drive":
         return bool(settings.drive_sync_enabled)
+    if source == "onedrive":
+        return bool(settings.onedrive_sync_enabled)
     return bool(settings.notion_sync_enabled and settings.notion_api_key)
 
 
@@ -291,13 +297,15 @@ def _source_interval(source: str) -> int:
     settings = get_settings()
     if source == "drive":
         return int(settings.drive_sync_interval_minutes)
+    if source == "onedrive":
+        return int(settings.onedrive_sync_interval_minutes)
     return int(settings.notion_sync_interval_minutes)
 
 
 def _list_source(source: str) -> dict[str, Any]:
     module = _source_module(source)
     listing: dict[str, Any] = (
-        module.list_synced_files() if source == "drive" else module.list_synced_pages()
+        module.list_synced_pages() if source == "notion" else module.list_synced_files()
     )
     return listing
 
@@ -357,7 +365,12 @@ async def sync_source(source: SourceId) -> dict:
     # task, so the two can't interleave.
     if module.is_syncing() or source in _SYNC_TASKS:
         raise HTTPException(status_code=409, detail="A sync is already running")
-    runner = module.run_drive_sync if source == "drive" else module.run_notion_sync
+    runners = {
+        "drive": "run_drive_sync",
+        "onedrive": "run_onedrive_sync",
+        "notion": "run_notion_sync",
+    }
+    runner = getattr(module, runners[source])
     task = asyncio.create_task(_run_manual_sync(source, runner))
     _SYNC_TASKS[source] = task
     task.add_done_callback(lambda _t: _SYNC_TASKS.pop(source, None))
@@ -384,6 +397,22 @@ async def get_drive_document(file_id: str) -> SyncedDocContent:
     from openexecutive.knowledge.drive_sync import read_synced_file
 
     doc = await asyncio.to_thread(read_synced_file, file_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return SyncedDocContent(**doc)
+
+
+@router.get("/documents/onedrive")
+async def list_onedrive_documents() -> dict:
+    listing = await asyncio.to_thread(_list_source, "onedrive")
+    return {"enabled": _source_enabled("onedrive"), **listing}
+
+
+@router.get("/documents/onedrive/{file_key}", response_model=SyncedDocContent)
+async def get_onedrive_document(file_key: str) -> SyncedDocContent:
+    from openexecutive.knowledge.onedrive_sync import read_synced_file
+
+    doc = await asyncio.to_thread(read_synced_file, file_key)
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return SyncedDocContent(**doc)

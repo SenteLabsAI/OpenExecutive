@@ -32,7 +32,8 @@ from urllib.parse import urlsplit
 logger = logging.getLogger(__name__)
 
 SourceKind = Literal[
-    "company", "knowledge", "notion", "drive", "confluence", "research", "document", "web"
+    "company", "knowledge", "notion", "drive", "onedrive", "confluence", "research", "document",
+    "web",
 ]
 
 # Enough to show what an answer drew on without burying it. Web pages get

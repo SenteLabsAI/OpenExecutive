@@ -907,3 +907,239 @@ def test_move_with_a_non_string_destination_is_refused() -> None:
     args = {"messageId": "AAMkAGI=", "body": {"DestinationId": ["deleteditems"]}}
     assert _blocked(_call(gateway, args, [], tool_name="microsoft_365__move-mail-message"))
     assert session_call.await_count == 0
+
+
+# --- OneDrive: file content, read as text ------------------------------------
+
+
+def _gateway_returning(text: str) -> tuple[MCPGateway, AsyncMock]:
+    gateway, session_call = _make_gateway()
+    session_call.return_value.content = [MagicMock(text=text)]
+    return gateway, session_call
+
+
+def test_download_bytes_reads_onedrive_files_as_text() -> None:
+    import base64
+
+    body = json.dumps({
+        "contentType": "text/plain", "encoding": "base64",
+        "contentBytes": base64.b64encode(b"Q3 budget: 1.2M").decode(),
+    })
+    for target in (
+        "/drives/b!AbC-1/items/01ABC/content",
+        "/drives/d4648f06c91d9d3d/items/D4648F06C91D9D3D!54927/content?format=pdf",
+    ):
+        gateway, session_call = _gateway_returning(body)
+        result = json.loads(_call(gateway, {"target": target}, [], tool_name="microsoft_365__download-bytes"))
+        assert session_call.await_count == 1
+        assert result["text"] == "Q3 budget: 1.2M" and result["truncated"] is False
+
+
+def test_onedrive_content_of_an_unreadable_type_points_at_the_pdf_rendering() -> None:
+    import base64
+
+    body = json.dumps({
+        "contentType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "contentBytes": base64.b64encode(b"PK..").decode(),
+    })
+    gateway, _ = _gateway_returning(body)
+    target = "/drives/b!AbC-1/items/01DECK/content"
+    result = json.loads(_call(gateway, {"target": target}, [], tool_name="microsoft_365__download-bytes"))
+    assert "text" not in result and f"{target}?format=pdf" in result["note"]
+
+
+def test_onedrive_content_targets_off_the_pinned_shape_are_refused() -> None:
+    for target in (
+        "/drives/x/items/../content",
+        "/drives/x/items/%2e%2e/content",
+        "/drives/x/items/y/content?format=html",
+        "/drives/x/items/y/children",
+        "/drives/x/root:/secret.txt:/content",
+        "/me/drive/items/y/content",
+    ):
+        gateway, session_call = _make_gateway()
+        assert _blocked(_call(gateway, {"target": target}, [], tool_name="microsoft_365__download-bytes")), target
+        assert session_call.await_count == 0
+
+
+def test_attachment_bytes_are_not_rewritten() -> None:
+    gateway, _ = _gateway_returning('{"contentType": "text/plain", "contentBytes": "aGk="}')
+    ok = {"target": "/me/messages/AAMkAGI=/attachments/AAMkAtt=/$value"}
+    assert json.loads(_call(gateway, ok, [], tool_name="microsoft_365__download-bytes"))["contentBytes"] == "aGk="
+
+
+# --- OneDrive sharing: gated like Drive sharing --------------------------------
+
+
+def _invite(emails: list[str], **extra: Any) -> dict[str, Any]:
+    return {
+        "drive-id": "b!AbC-1", "driveItem-id": "01ABC",
+        "body": {"recipients": [{"email": e} for e in emails], "roles": ["read"],
+                 "requireSignIn": True, "sendInvitation": True, **extra},
+    }
+
+
+def test_onedrive_invite_to_roster_passes_and_stranger_is_refused() -> None:
+    gateway, session_call = _make_gateway()
+    assert not _blocked(_call(gateway, _invite([ROSTER]), [ROSTER], tool_name="microsoft_365__share-drive-item"))
+    assert session_call.await_count == 1
+    for args in (
+        _invite([STRANGER]),
+        _invite([ROSTER, STRANGER]),
+        _invite([ROSTER], message=f"cc {STRANGER}"),
+        _invite([ROSTER], roles=["owner"]),
+        _invite([ROSTER], roles=["sp.full control"]),
+        _invite([ROSTER], roles=[]),
+        _invite([ROSTER], requireSignIn=False),
+        _invite([ROSTER], requireSignIn="true"),
+        {"drive-id": "b!AbC-1", "driveItem-id": "01ABC",
+         "body": {"recipients": [{"email": ROSTER}], "roles": ["read"], "sendInvitation": False}},
+        {"drive-id": "b!AbC-1", "driveItem-id": "01ABC",
+         "body": json.dumps({"recipients": [{"objectId": "6f1c"}], "roles": ["write"], "requireSignIn": True})},
+        {"drive-id": "b!AbC-1", "driveItem-id": "01ABC",
+         "body": {"recipients": [{"email": ROSTER, "requireSignIn": True}], "roles": ["read"]}},
+        {"drive-id": "b!AbC-1", "driveItem-id": "01ABC",
+         "body": {"recipients": [{"email": ROSTER, "roles": ["owner"]}], "roles": ["read"],
+                  "requireSignIn": True}},
+        {"body": {"recipients": [{"objectId": "8f1c-..."}], "roles": ["write"]}},
+        {"body": {"recipients": [{"alias": "everyone"}], "roles": ["read"]}},
+    ):
+        gateway, session_call = _make_gateway()
+        assert _blocked(_call(gateway, args, [ROSTER], tool_name="microsoft_365__share_drive_item")), args
+        assert session_call.await_count == 0
+
+
+def test_onedrive_links_must_be_scoped_to_specific_people() -> None:
+    gateway, session_call = _make_gateway()
+    ok = {"drive-id": "b!AbC-1", "driveItem-id": "01ABC", "body": {"type": "view", "scope": "users"}}
+    assert not _blocked(_call(gateway, ok, [], tool_name="microsoft_365__create-drive-item-share-link"))
+    for body in (
+        {"type": "edit", "scope": "anonymous"},
+        {"type": "view", "scope": "organization"},
+        {"type": "view"},
+        {"type": "view", "scope": "Anonymous"},
+        {"type": "embed", "scope": "users"},
+        {"type": "view", "recipients": [{"email": ROSTER, "scope": "users"}]},
+        {"scope": "users"},
+    ):
+        gateway, session_call = _make_gateway()
+        args = {"drive-id": "b!AbC-1", "driveItem-id": "01ABC", "body": body}
+        assert _blocked(_call(gateway, args, [], tool_name="microsoft_365__create-drive-item-share-link")), body
+        assert session_call.await_count == 0
+
+
+# --- OneDrive search: plain words only -----------------------------------------
+
+
+def test_onedrive_search_takes_plain_words() -> None:
+    gateway, session_call = _make_gateway()
+    ok = {"drive-id": "b!AbC-1", "q": "Q3 board deck"}
+    assert not _blocked(_call(gateway, ok, [], tool_name="microsoft_365__search-onedrive-files"))
+    assert session_call.await_count == 1
+    for args in (
+        {"drive-id": "b!AbC-1", "q": "x')/../../../me/mailFolders/inbox/messageRules?$top=50&z=('"},
+        {"drive-id": "b!AbC-1", "q": "x')/../../me/messages"},
+        {"drive-id": "b!AbC-1", "q": "a..b"},
+        {"drive-id": "b!AbC-1", "q": "50%"},
+        {"drive-id": "b!AbC-1", "q": "line\nbreak"},
+        {"drive-id": "b!AbC-1", "q": ""},
+        {"drive-id": "b!AbC-1"},
+        {"drive-id": "..", "q": "budget"},
+        {"driveId": "%2e%2e", "q": "budget"},
+    ):
+        gateway, session_call = _make_gateway()
+        assert _blocked(_call(gateway, args, [], tool_name="microsoft_365__search_onedrive_files")), args
+        assert session_call.await_count == 0
+
+
+# --- OneDrive writes: the Executive's own drives only ---------------------------
+
+
+OWN_DRIVE = "b!Own-1"
+SHARED_DRIVE = "b!Shared-9"
+
+
+def _drive_gateway(drives: Any = None) -> tuple[MCPGateway, AsyncMock]:
+    """A gateway whose `list-drives` lookup returns ``drives`` and whose
+    other calls succeed."""
+    gateway = MCPGateway()
+    session = MagicMock()
+    listing = {"value": [{"id": OWN_DRIVE}]} if drives is None else drives
+
+    async def _call_tool(_name: str, args: dict[str, Any]) -> Any:
+        fake = MagicMock()
+        if args.get("tool_name") == "microsoft_365__list-drives":
+            fake.content = [MagicMock(text=json.dumps(listing))]
+        else:
+            fake.content = [MagicMock(text='{"ok": true}')]
+        return fake
+
+    session.call_tool = AsyncMock(side_effect=_call_tool)
+    gateway._session = session
+    return gateway, session.call_tool
+
+
+def _writes(call: AsyncMock) -> list[str]:
+    return [
+        c.args[1]["tool_name"] for c in call.await_args_list
+        if c.args[1].get("tool_name") != "microsoft_365__list-drives"
+    ]
+
+
+@pytest.mark.parametrize(("tool_name", "args"), [
+    ("microsoft_365__upload-file-content", {"drive-id": OWN_DRIVE, "driveItem-id": "root:/notes.txt:", "body": "aGk="}),
+    ("microsoft_365__create-onedrive-folder", {"drive-id": OWN_DRIVE, "driveItem-id": "root",
+                                               "body": {"name": "Board", "folder": {}}}),
+    ("microsoft_365__move-rename-onedrive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                                  "body": {"name": "Final.docx"}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": SHARED_DRIVE, "driveItem-id": "01A",
+                                        "body": {"parentReference": {"driveId": OWN_DRIVE, "id": "root"}}}),
+])
+def test_onedrive_writes_to_own_drive_pass(tool_name: str, args: dict[str, Any]) -> None:
+    gateway, call = _drive_gateway()
+    assert not _blocked(_call(gateway, args, [], tool_name=tool_name))
+    assert _writes(call) == [tool_name]
+
+
+@pytest.mark.parametrize(("tool_name", "args"), [
+    ("microsoft_365__upload-file-content", {"drive-id": SHARED_DRIVE, "driveItem-id": "01A", "body": "aGk="}),
+    ("microsoft_365__create-onedrive-folder", {"drive-id": SHARED_DRIVE, "driveItem-id": "root",
+                                               "body": {"name": "x", "folder": {}}}),
+    ("microsoft_365__move-rename-onedrive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                                  "body": {"parentReference": {"driveId": SHARED_DRIVE, "id": "9"}}}),
+    ("microsoft_365__move-rename-onedrive-item", {"drive-id": SHARED_DRIVE, "driveItem-id": "01A",
+                                                  "body": {"name": "Renamed.docx"}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                        "body": {"parentReference": {"driveId": SHARED_DRIVE, "id": "9"}}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": SHARED_DRIVE, "driveItem-id": "01A",
+                                        "body": {"parentReference": {"id": "9"}}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                        "body": {"parentReference": {"id": "9"}}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                        "body": {"parentReference": {"path": "/drives/b!Attacker/root:/Partner"}}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                        "body": {"parentReference": {"driveId": OWN_DRIVE, "siteId": "s1",
+                                                                     "id": "01P"}}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                        "parentReference": {"driveId": SHARED_DRIVE, "id": "9"},
+                                        "body": {"name": "x"}}),
+    ("microsoft_365__move-rename-onedrive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                                  "body": {"parentReference": {"shareId": "u!abc"}}}),
+    ("microsoft_365__copy-drive-item", {"drive-id": OWN_DRIVE, "driveItem-id": "01A",
+                                        "body": json.dumps({"parentReference": {"driveId": SHARED_DRIVE}})}),
+    ("microsoft_365__upload-file-content", {"drive-id": OWN_DRIVE, "driveId": SHARED_DRIVE,
+                                            "driveItem-id": "01A", "body": "aGk="}),
+    ("microsoft_365__upload-file-content", {"driveItem-id": "01A", "body": "aGk="}),
+])
+def test_onedrive_writes_outside_own_drive_are_refused(tool_name: str, args: dict[str, Any]) -> None:
+    gateway, call = _drive_gateway()
+    assert _blocked(_call(gateway, args, [], tool_name=tool_name)), args
+    assert _writes(call) == []
+
+
+@pytest.mark.parametrize("drives", [{"value": []}, {"error": "boom"}, ["not", "an", "object"]])
+def test_onedrive_writes_fail_closed_when_drives_cannot_be_read(drives: Any) -> None:
+    gateway, call = _drive_gateway(drives)
+    args = {"drive-id": OWN_DRIVE, "driveItem-id": "01A", "body": {"name": "x", "folder": {}}}
+    assert _blocked(_call(gateway, args, [], tool_name="microsoft_365__create-onedrive-folder"))
+    assert _writes(call) == []

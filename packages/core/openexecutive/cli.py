@@ -304,6 +304,126 @@ async def _purge_drive(file_id: str | None, stale: bool, purge_all: bool) -> Non
     console.print(f"[green]Drive stale purge:[/green] {stats}")
 
 
+@cli.command("sync-onedrive")
+def sync_onedrive() -> None:
+    """Run one OneDrive folder → isolated collection sync tick."""
+    asyncio.run(_sync_onedrive())
+
+
+async def _sync_onedrive() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.onedrive_sync import load_state, run_onedrive_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.onedrive_sync_enabled:
+        console.print(
+            "[yellow]ONEDRIVE_SYNC_ENABLED is false. See docs/onedrive_sync_setup.md.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_onedrive_sync(store=store)
+    console.print(f"[green]OneDrive sync:[/green] {stats}")
+    error = load_state().get("last_error")
+    if isinstance(error, str) and error:
+        console.print(f"[yellow]{error}[/yellow]")
+
+
+@cli.command("purge-onedrive")
+@click.option("--key", default=None, help="Purge one synced file by <drive id>:<item id>.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge files no longer in the synced folders (needs the sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced file.")
+def purge_onedrive(key: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced OneDrive files and Chroma chunks."""
+    asyncio.run(_purge_onedrive(key, stale, purge_all))
+
+
+async def _purge_onedrive(key: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.onedrive_sync import (
+        load_state,
+        purge_all_synced,
+        purge_file,
+        run_onedrive_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    if sum(bool(x) for x in (key, stale, purge_all)) != 1:
+        console.print("[red]Specify exactly one of --key, --stale, or --all.[/red]")
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if key:
+        state = load_state()
+        if purge_file(key, store, state):
+            save_state(state)
+            console.print(f"[green]Purged OneDrive file[/green] {key}")
+        else:
+            console.print(f"[red]Could not purge[/red] {key}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced OneDrive file(s).[/green]")
+        return
+    if not settings.onedrive_sync_enabled:
+        console.print(
+            "[yellow]ONEDRIVE_SYNC_ENABLED is false. See docs/onedrive_sync_setup.md.[/yellow]"
+        )
+        return
+    stats = await run_onedrive_sync(store=store, reconcile_only=True)
+    console.print(f"[green]OneDrive stale purge:[/green] {stats}")
+
+
+@cli.command("onedrive-folder")
+@click.argument("link")
+def onedrive_folder(link: str) -> None:
+    """Turn a OneDrive or SharePoint folder sharing link into the
+    <drive id>/<item id> entry ONEDRIVE_SYNC_FOLDERS takes. Reads as the
+    Executive's Microsoft 365 sign-in, so the folder must be shared with it."""
+    asyncio.run(_onedrive_folder(link))
+
+
+async def _onedrive_folder(link: str) -> None:
+    import httpx
+
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.onedrive_account import (
+        OneDriveAuthTransient,
+        OneDriveCredentialMissing,
+        onedrive_token_provider,
+    )
+    from openexecutive.knowledge.onedrive_client import OneDriveClient, share_id
+
+    try:
+        share_id(link)
+    except ValueError as exc:
+        console.print(f"[red]{exc}.[/red] Paste the folder's https sharing link.")
+        return
+    try:
+        token = onedrive_token_provider(get_settings())
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            item = await OneDriveClient(http, token).resolve_share(link)
+    except (OneDriveCredentialMissing, OneDriveAuthTransient) as exc:
+        console.print(f"[red]Could not sign in to Microsoft 365:[/red] {exc}")
+        return
+    except httpx.HTTPStatusError as exc:
+        console.print(
+            f"[red]Microsoft answered {exc.response.status_code}.[/red] Check the link, "
+            "and that the folder is shared with the Executive's Microsoft account."
+        )
+        return
+    if item is None or not item.is_folder:
+        console.print("[red]That link isn't to a folder.[/red] Share the folder itself.")
+        return
+    console.print(f"{item.name}: [green]{item.drive_id}/{item.id}[/green]")
+    console.print("Add that to ONEDRIVE_SYNC_FOLDERS (comma-separated for several).")
+
+
 @cli.command("sync-confluence")
 def sync_confluence() -> None:
     """Run one Confluence space → isolated collection sync tick."""

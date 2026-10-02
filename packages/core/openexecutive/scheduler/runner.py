@@ -867,6 +867,34 @@ async def _execute_action(
         return
 
     # ------------------------------------------------------------------
+    # OneDrive folder sync — the Microsoft twin of the Drive sync above.
+    # ------------------------------------------------------------------
+    if action.kind == "onedrive_sync_scan":
+        from openexecutive.knowledge.onedrive_sync import (
+            enqueue_next_onedrive_sync_scan,
+            run_onedrive_sync,
+        )
+        try:
+            stats = await run_onedrive_sync(now=now)
+            logger.info("scheduler: onedrive_sync_scan %s", stats)
+        except Exception:
+            logger.exception("scheduler: onedrive_sync_scan (action %d) crashed", action.id)
+        try:
+            mark_action_done(action.id)
+        except Exception:
+            logger.exception(
+                "scheduler: onedrive_sync_scan (action %d) — mark_done failed", action.id
+            )
+        try:
+            enqueue_next_onedrive_sync_scan(after=datetime.now(UTC))
+        except Exception:
+            logger.exception(
+                "scheduler: failed to chain next onedrive_sync_scan "
+                "heartbeat — sync will stall until next bootstrap"
+            )
+        return
+
+    # ------------------------------------------------------------------
     # Confluence space sync — same shape as the Drive sync above: pages in
     # the configured spaces go into the isolated CONFLUENCE collection.
     # ------------------------------------------------------------------

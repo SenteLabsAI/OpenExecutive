@@ -1491,9 +1491,10 @@ knowledge:
         do NOT land here — see NOTION_WIKI.
 
         The knowledge page shows ONE Company documents list: these uploads
-        plus synced Drive files and Notion pages (GET /documents/drive,
-        GET /documents/notion, each read from that sync's state file, with a
-        text view at /documents/{drive|notion}/{id} whose path comes from the
+        plus synced Drive and OneDrive files and Notion pages (GET
+        /documents/drive, GET /documents/onedrive, GET /documents/notion,
+        each read from that sync's state file, with a text view at
+        /documents/{drive|onedrive|notion}/{id} whose path comes from the
         state record, never the caller). Synced rows are read-only — removing
         the file from the folder / integration is what drops it. Each
         connected source shows last_run, last_error and a Sync now button
@@ -1615,6 +1616,57 @@ knowledge:
         open the live file with get_drive_file_content, using only the id
         after "file id" at the start of a label. Recorded as `drive` answer sources with the Drive link.
         Manual: `openexecutive sync-drive` / `purge-drive`.
+    - name: ONEDRIVE
+      what: |
+        Files synced from OneDrive / SharePoint folders (ChromaDB collection
+        `onedrive_docs`, metadata `onedrive_key` (`<drive id>:<item id>`) /
+        `type=onedrive` / `name` / `url` / `synced_at`), by
+        knowledge.onedrive_sync — DRIVE's twin, isolated for the same reason.
+        Optional (`ONEDRIVE_SYNC_ENABLED`, off by default; setup in
+        docs/onedrive_sync_setup.md): heartbeat `onedrive_sync_scan` lists
+        `ONEDRIVE_SYNC_FOLDERS` (`<drive id>/<item id>` pairs; the
+        `openexecutive onedrive-folder <link>` command resolves a sharing link
+        via Graph /shares) through knowledge.onedrive_client, which calls
+        Graph directly with httpx, GETs only. CREDENTIAL: unlike Drive there
+        is no per-folder service account (app-only Graph access is the whole
+        tenant), so it reads as the Executive's own Microsoft 365 sign-in,
+        via the launcher's --access-token helper (see the Microsoft 365
+        hosting note); the folder list is the scope. Ids are checked against
+        [A-Za-z0-9!_-]{1,256}; a paging nextLink is followed only to
+        https://graph.microsoft.com; a `remoteItem` shortcut inside a
+        listed folder is NOT followed (Files.Read.All reaches far more than
+        the list, and a multi-writer folder's editor could otherwise pull an
+        unlisted folder into the knowledge base); OneNote packages are
+        skipped. `/content`
+        answers 302 to a pre-authenticated URL on another host, which is
+        fetched WITHOUT the bearer token, streamed and cut at 20 MB; its
+        errors never carry that URL (a personal drive puts the credential in
+        its path), so the sync logs exception types only.
+
+        Change detection: (lastModifiedDateTime, cTag) against
+        <company_profile_dir>/onedrive_sync_state.json; newest first, capped
+        at ONEDRIVE_MAX_FILES_PER_SCAN. PDF / .docx / .xlsx / .xlsm / txt /
+        md / csv are read as stored; .pptx / .ppt / .pps / .ppsx / .doc /
+        .xls / .rtf / .odt / .odp / .ods are fetched as Graph's PDF rendering
+        (`?format=pdf`) and read as PDF. The extractor, size caps, depth 4,
+        2000-item cap, 120 s deadline and request pause are imported from
+        drive_sync, so the two stay in step. Text is written under
+        <company_profile_dir>/docs/onedrive/ (onedrive-<id>-<slug>.md, with
+        an onedrive_key comment). Reconcile, skip rules, locking and resets
+        (fixture load/reset, client-slot switch) are Drive's. A refused
+        sign-in stops the tick before any listing and records a user-facing
+        last_error.
+
+        At retrieval: n=3, right after DRIVE, under "Synced OneDrive
+        (unreviewed, multi-writer …)", labelled
+        `[onedrive · item <drive id>:<item id> · synced … · "<name>"]` with
+        the name defanged exactly as Drive's (shared helpers in retriever).
+        The block tells the Executive to open the live file with the
+        microsoft_365 OneDrive tools using only the ids after "item".
+        Recorded as `onedrive` answer sources. Knowledge page: source
+        `onedrive` (GET /documents/onedrive, /documents/onedrive/{key}, Sync
+        now via /documents/sources/onedrive/sync). Manual: `openexecutive
+        sync-onedrive` / `purge-onedrive`.
     - name: CONFLUENCE
       what: |
         Pages synced from Confluence spaces (ChromaDB collection
@@ -1703,7 +1755,7 @@ knowledge:
         client changed) and the same per-process _RUN_LOCK.
 
         At retrieval the retriever queries this collection with n=3 and
-        appends it after the Drive block, under "Synced Confluence wiki
+        appends it after the Drive and OneDrive blocks, under "Synced Confluence wiki
         (unreviewed, multi-writer …)", each chunk labelled `[confluence ·
         page id … · space … · synced … · "<title>"]` (title defused like
         Drive names) and every line prefixed by _format_untrusted_wiki. The
@@ -7073,6 +7125,66 @@ integrations:
     gate is keyed to the literal server name `microsoft_365`;
     registry.log_provider_status warns at startup about a look-alike server
     under another name (which would expose the same tools ungated).
+    OneDrive tools (opt-in, MS365_MCP_ONEDRIVE=true; off by default because
+    the server requests every scope of its tool list on each silent token
+    refresh, so adding file scopes to a sign-in that never consented to them
+    breaks mail and calendar too until --login is rerun): the allow-list
+    then also admits the Google Drive-equivalent
+    OneDrive surface — list-drives, get-drive-root-item, list-folder-files,
+    get-drive-item, search-onedrive-files, upload-file-content,
+    create-onedrive-folder, move-rename-onedrive-item, copy-drive-item,
+    share-drive-item, create-drive-item-share-link,
+    list-drive-item-permissions. delete-onedrive-file,
+    delete-drive-item-permission and get-download-url stay out. The launcher
+    adds `--extra-scopes "Files.Read.All"` (the tool scopes alone are
+    Files.ReadWrite, the account's own drive; Files.Read.All reads folders
+    shared WITH the Executive). Files.ReadWrite.All is deliberately not
+    requested. Gates: share-drive-item and
+    create-drive-item-share-link (_M365_DRIVE_SHARE_TOOLS) pass
+    _check_drive_share (every email on the roster, no public / domain scope
+    or flag) and _check_m365_drive_share: no `anonymous` / `organization` /
+    `owner` value, no grantee named by objectId / alias / siteUser /
+    application / device (nothing the roster can check), and a link's scope
+    must be exactly `users` (no scope = the tenant default, often
+    anonymous); a share body must be an object (a JSON-string body would hide
+    its grantee keys); an invite must set requireSignIn true (Graph defaults
+    to false, an open link on many tenants) and roles only read / write; a
+    link's type only view / edit (embed is public). Those four pinned
+    fields (scope, roles, type, requireSignIn) count only at the body's top
+    level (or as a top-level argument the server merges into it); the same
+    key deeper, e.g. inside a recipient, is a decoy and refused. Writes
+    (_M365_DRIVE_WRITE_TOOLS: upload-file-content, create-onedrive-folder,
+    move-rename-onedrive-item, copy-drive-item) must target the Executive's
+    own drives, read through list-drives (/me/drives) at call time,
+    fail-closed: every top-level drive-id spelling and every body driveId
+    (a copy's destination) must be one of them; a parentReference may hold
+    only driveId and id (no path / siteId / shareId the gate cannot pin),
+    and a copy must name its destination driveId, so a planted instruction
+    cannot write company files into a stranger's shared folder.
+    search-onedrive-files' q is substituted into the request path unencoded
+    (/drives/{d}/search(q='{q}')), so a quote / slash / dot-dot would walk
+    the GET to any Graph path (mail MIME, inbox rules): q must be plain words
+    (no ' " / \ ? # % ( ) &, no "..", no control characters, at most 200
+    chars). A dot-only drive-id / driveItem-id is refused on every tool
+    (`..` survives the server's percent-encoding). download-bytes is pinned to mail attachments AND
+    `/drives/{id}/items/{id}/content` (optionally `?format=pdf`, Graph's PDF
+    rendering), with the same dot-segment / encoded-slash refusal; a OneDrive
+    result is rewritten from base64 to the file's text
+    (_onedrive_content_as_text: drive_sync._extract on PDF / docx / xlsx /
+    txt / md / csv, 20 MB, 200k chars; any other type gets a note pointing at
+    the ?format=pdf target). search-onedrive-files is in
+    PRIVATE_TURN_MCP_TOOLS beside search_drive_files. Not yet in
+    memory.drive_reads (Google only).
+    OneDrive sync token: `ms365-mcp-launch.sh --access-token` (only argument
+    allowed; after the placeholder scrub and cache-path defaults) execs
+    docker/ms365-access-token.mjs, which loads the server's own AuthManager
+    over the same encrypted cache and prints {access_token, expires_on} for
+    scopes read from stdin. INVARIANT: the helper mints only Files.Read /
+    Files.Read.All tokens (any other scope is refused), and prints only the
+    token JSON on stdout; errors are one stderr line with the MSAL code.
+    knowledge.onedrive_account runs it per sync tick and holds the token in
+    memory; a reconnect-class error (invalid_grant, interaction_required,
+    consent_required, no_account) is not retried within the tick.
     Account tools: ms-365-mcp-server registers login, logout, verify-login,
     list-accounts, select-account and remove-account whatever
     `--enabled-tools` says, so neither the launcher allow-list nor an

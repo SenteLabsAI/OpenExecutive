@@ -88,6 +88,14 @@ _EXPECTED_ALLOWED = {
     "cancel-calendar-event", "accept-calendar-event", "decline-calendar-event",
     "tentatively-accept-calendar-event", "get-calendar-view",
 }
+# OneDrive: the Drive-equivalent surface, sharing gated in the gateway; added
+# only with MS365_MCP_ONEDRIVE on.
+_ONEDRIVE_ALLOWED = {
+    "list-drives", "get-drive-root-item", "list-folder-files", "get-drive-item",
+    "search-onedrive-files", "upload-file-content", "create-onedrive-folder",
+    "move-rename-onedrive-item", "copy-drive-item", "share-drive-item",
+    "create-drive-item-share-link", "list-drive-item-permissions",
+}
 # Tools the preset would have registered that must NOT be admitted: they can
 # address people the gateway never sees (forwarding rules, external auto-reply,
 # calendar sharing) or write to the container filesystem.
@@ -95,23 +103,39 @@ _MUST_BE_EXCLUDED = {
     "create-mail-rule", "update-mail-rule", "update-mailbox-settings", "forward-calendar-event",
     "create-specific-calendar-event", "create-my-calendar-permission", "delete-calendar",
     "delete-mail-message", "download-bytes-to-file", "get-mail-message-mime",
+    "delete-onedrive-file", "delete-drive-item-permission", "get-download-url",
 }
 
 
-def test_default_argv_is_an_explicit_anchored_allow_list(tmp_path: Path) -> None:
-    proc = _run(tmp_path, {"MS365_MCP_CLIENT_ID": "client-1"})
+@pytest.mark.parametrize(("onedrive", "expected"), [
+    (None, _EXPECTED_ALLOWED),
+    ("false", _EXPECTED_ALLOWED),
+    ("$MS365_MCP_ONEDRIVE", _EXPECTED_ALLOWED),
+    ("true", _EXPECTED_ALLOWED | _ONEDRIVE_ALLOWED),
+    ("ON", _EXPECTED_ALLOWED | _ONEDRIVE_ALLOWED),
+])
+def test_default_argv_is_an_explicit_anchored_allow_list(
+    tmp_path: Path, onedrive: str | None, expected: set[str],
+) -> None:
+    env = {"MS365_MCP_CLIENT_ID": "client-1"}
+    if onedrive is not None:
+        env["MS365_MCP_ONEDRIVE"] = onedrive
+    proc = _run(tmp_path, env)
     assert proc.returncode == 0, proc.stderr
     argv = _argv(proc)
     assert argv[0] == "--enabled-tools"
     pattern = argv[1]
     assert pattern.startswith("^(") and pattern.endswith(")$")
     regex = re.compile(pattern)
-    assert set(pattern[2:-2].split("|")) == _EXPECTED_ALLOWED
-    for name in _EXPECTED_ALLOWED:
+    assert set(pattern[2:-2].split("|")) == expected
+    for name in expected:
         assert regex.match(name), name
-    for name in _MUST_BE_EXCLUDED:
+    for name in _MUST_BE_EXCLUDED | (_ONEDRIVE_ALLOWED - expected):
         assert not regex.match(name), name
     assert "--preset" not in argv
+    # The file scope comes only with the file tools: asking for it on a
+    # sign-in that never granted it would fail every token refresh.
+    assert ("--extra-scopes" in argv) == bool(_ONEDRIVE_ALLOWED & expected)
 
 
 def test_seeding_flags_pass_through_after_the_allow_list(tmp_path: Path) -> None:
@@ -141,7 +165,10 @@ def test_expected_username_becomes_a_flag(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     argv = _argv(proc)
     assert argv[0] == "--enabled-tools"
-    assert argv[2:] == ["--expected-username", "exec@contoso.com", "--verify-login"]
+    assert argv[2:] == [
+        "--expected-username", "exec@contoso.com",
+        "--verify-login",
+    ]
     assert "MS365_MCP_EXPECTED_USERNAME=exec@contoso.com" in proc.stdout
 
 
@@ -170,3 +197,50 @@ def test_explicit_token_path_and_keytar_are_respected(tmp_path: Path) -> None:
 def test_launcher_is_executable_in_git() -> None:
     assert LAUNCHER.exists()
     assert LAUNCHER.stat().st_mode & stat.S_IXUSR
+
+
+def test_onedrive_adds_the_read_shared_file_scope(tmp_path: Path) -> None:
+    proc = _run(tmp_path, {"MS365_MCP_CLIENT_ID": "client-1", "MS365_MCP_ONEDRIVE": "true"}, "--login")
+    argv = _argv(proc)
+    i = argv.index("--extra-scopes")
+    assert argv[i + 1].split() == ["Files.Read.All"]
+
+
+def test_access_token_mode_runs_the_helper_with_the_launcher_env(tmp_path: Path) -> None:
+    helper = tmp_path / "helper.sh"
+    helper.write_text(
+        "#!/bin/sh\nprintf 'HELPER %s\\n' \"$1\"\nenv | grep '^MS365_MCP_' | sort\ncat\n"
+    )
+    helper.chmod(0o755)
+    env = {
+        "MS365_MCP_CLIENT_ID": "client-1",
+        "MS365_MCP_TENANT_ID": "$MS365_MCP_TENANT_ID",
+        "MS365_MCP_NODE_BIN": "/bin/sh",
+        "MS365_ACCESS_TOKEN_SCRIPT": str(helper),
+    }
+    stub = tmp_path / "stub-server.sh"
+    stub.write_text(_STUB)
+    stub.chmod(0o755)
+    proc = subprocess.run(
+        ["sh", str(LAUNCHER), "--access-token"],
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "MS365_MCP_SERVER_BIN": str(stub),
+            "MS365_MCP_CREDENTIALS_DIR": str(tmp_path / "creds"),
+            **env,
+        },
+        input='{"scopes": ["Files.Read.All"]}',
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "ARGV:" not in proc.stdout  # never the server
+    assert f"MS365_MCP_TOKEN_CACHE_PATH={tmp_path / 'creds'}/.token-cache.json" in proc.stdout
+    assert "MS365_MCP_TENANT_ID" not in proc.stdout  # placeholder scrubbed first
+    assert proc.stdout.rstrip().endswith('{"scopes": ["Files.Read.All"]}')
+    extra = subprocess.run(
+        ["sh", str(LAUNCHER), "--access-token", "--login"],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+             "MS365_MCP_CREDENTIALS_DIR": str(tmp_path / "creds"), **env},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert extra.returncode == 64

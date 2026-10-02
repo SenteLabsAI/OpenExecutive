@@ -122,6 +122,9 @@ class ChromaDBStore(KnowledgeStore):
     # multi-writer and unreviewed. Retrieved under its own labelled,
     # lower-ranked section.
     DRIVE_COLLECTION = "drive_docs"
+    # Files synced from OneDrive folders (knowledge.onedrive_sync). Isolated
+    # and ranked like DRIVE, for the same reason.
+    ONEDRIVE_COLLECTION = "onedrive_docs"
     # Synced Confluence spaces (knowledge.confluence_sync). SEPARATE from
     # COMPANY for the same reason as NOTION and DRIVE: a wiki is multi-writer
     # and unreviewed, so the retriever labels it and ranks it lower.
@@ -354,6 +357,9 @@ class ChromaDBStore(KnowledgeStore):
         """Drop every synced Google Drive chunk."""
         self.delete_documents(collection=self.DRIVE_COLLECTION, where={"type": "drive"})
 
+    def delete_onedrive_docs(self) -> None:
+        """Drop every synced OneDrive chunk."""
+        self.delete_documents(collection=self.ONEDRIVE_COLLECTION, where={"type": "onedrive"})
     def delete_confluence_docs(self) -> None:
         """Drop every synced Confluence chunk."""
         self.delete_documents(collection=self.CONFLUENCE_COLLECTION, where={"type": "confluence"})

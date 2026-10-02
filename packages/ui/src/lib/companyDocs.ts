@@ -1,10 +1,10 @@
 /**
  * The knowledge page's single list of company documents: files uploaded in
- * the app plus files the Google Drive and Notion syncs pulled in. Pure, so
+ * the app plus files the Google Drive, OneDrive and Notion syncs pulled in. Pure, so
  * the merge, ordering and labels are unit-tested (scripts/companyDocs.test.mjs).
  */
 
-export type DocSource = "upload" | "drive" | "notion";
+export type DocSource = "upload" | "drive" | "onedrive" | "notion";
 
 export interface UploadedDocIn {
   filename: string;
@@ -44,6 +44,7 @@ export interface DocRow {
 export const SOURCE_LABELS: Record<DocSource, string> = {
   upload: "Uploaded",
   drive: "Google Drive",
+  onedrive: "OneDrive",
   notion: "Notion",
 };
 
@@ -56,6 +57,7 @@ export function mergeDocs(
   uploads: UploadedDocIn[],
   drive: SyncedDocIn[],
   notion: SyncedDocIn[],
+  onedrive: SyncedDocIn[] = [],
 ): DocRow[] {
   const rows: DocRow[] = [
     ...uploads.map((d) => ({
@@ -72,6 +74,7 @@ export function mergeDocs(
     })),
     ...[
       ["drive", drive] as const,
+      ["onedrive", onedrive] as const,
       ["notion", notion] as const,
     ].flatMap(([source, files]) =>
       files.map((f) => ({

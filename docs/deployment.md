@@ -348,6 +348,7 @@ Auth is the MSAL **device-code** flow against your own Entra app registration
 (the server's built-in public client id is refused). Register the app (Entra
 admin center → App registrations → New; *Allow public client flows: Yes*;
 delegated Graph permissions `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
+`Files.ReadWrite` and `Files.Read.All` (only with `MS365_MCP_ONEDRIVE=true`, below),
 plus `User.Read` and `offline_access` for the sign-in, with admin consent —
 `ms365-mcp-launch.sh --list-permissions` prints exactly what the configured
 tool list requests), then set:
@@ -386,8 +387,8 @@ with an **explicit allow-list** of tools (`--enabled-tools`, an anchored regex
 in the launcher) rather than the upstream `mail,calendar` preset: the preset
 also registers inbox forwarding rules, mailbox settings (external auto-reply),
 calendar sharing and event forwarding, which can address people the gateway
-never sees. Exactly the Outlook mail + calendar tools (plus the login tools)
-are exposed. Egress is gated like Google: `send-mail`, forward and every draft
+never sees. Exactly the Outlook mail + calendar tools and the OneDrive tools
+(plus the login tools) are exposed. Egress is gated like Google: `send-mail`, forward and every draft
 tool have their recipients roster-checked from the arguments; reply,
 reply-all and send-draft — whose recipient is whoever the referenced message
 names — have the gateway read that message first and check the sender /
@@ -396,7 +397,22 @@ sender together); `create-/update-calendar-event` attendees must be People
 on the roster. Every mail write's `from`, `sender` and `replyTo` may name
 only `EXEC_EMAIL_ADDRESS` (the Outlook twin of the Gmail acting-account pin),
 and `move-mail-message` into Deleted Items, Junk Email or Recoverable Items
-is refused, so the model cannot trash mail through a move. Widening the allow-list
+is refused, so the model cannot trash mail through a move. OneDrive gets the
+surface Google Drive has (search, list, upload and edit, folders, move,
+rename, copy, share; no delete), but only with `MS365_MCP_ONEDRIVE=true`
+and a fresh `--login`: the server asks for its tools' permissions on every
+token refresh, so the file tools are off until the sign-in grants them. `download-bytes` is pinned to mail
+attachments and OneDrive file content, and a OneDrive file comes back as its
+text rather than base64. `share-drive-item` invitees must be on the roster
+and named by email, and `create-drive-item-share-link` must be scoped to
+specific people (`scope: "users"`); an invite must require sign-in and grant
+only view or edit. Writes (upload, new folder, move, copy) land only in the
+Executive's own drives, so nothing is written into a folder someone else
+shared, and `search-onedrive-files` takes plain words only (its query goes
+into the request path unencoded). The same sign-in feeds the optional
+OneDrive folder sync ([onedrive_sync_setup.md](onedrive_sync_setup.md)),
+which asks the launcher for a token (`--access-token`) rather than keeping a
+credential of its own. Widening the allow-list
 (`MS365_MCP_ENABLED_TOOLS` / `MS365_MCP_PRESET`) is an operator decision that
 must come with a matching gate change in `orchestrator/mcp_gateway.py`.
 
