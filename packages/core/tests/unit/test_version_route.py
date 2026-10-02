@@ -31,13 +31,20 @@ def _client(current: str = "0.4.4") -> TestClient:
     return TestClient(app)
 
 
-def _github(monkeypatch: pytest.MonkeyPatch, tag: object, status: int = 200) -> list[str]:
+def _github(
+    monkeypatch: pytest.MonkeyPatch, tag: object, status: int = 200, body: object = None
+) -> list[str]:
     """Answer GitHub's latest-release call with `tag`; returns the URLs asked."""
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(str(request.url))
-        return httpx.Response(status, json={"tag_name": tag, "html_url": "https://evil.example/x"})
+        return httpx.Response(
+            status,
+            json=body
+            if body is not None
+            else {"tag_name": tag, "html_url": "https://evil.example/x"},
+        )
 
     def fake_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
         return _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler))
@@ -133,3 +140,14 @@ def test_disabled_check_skips_github(monkeypatch: pytest.MonkeyPatch) -> None:
         "check_enabled": False,
     }
     assert calls == []
+
+
+@pytest.mark.parametrize("body", [[], "v0.5.0", 5])
+def test_non_object_answer_is_a_cached_miss(monkeypatch: pytest.MonkeyPatch, body: object) -> None:
+    calls = _github(monkeypatch, None, body=body)
+    client = _client()
+    resp = client.get("/version")
+    assert resp.status_code == 200
+    assert resp.json()["latest"] is None
+    client.get("/version")
+    assert len(calls) == 1

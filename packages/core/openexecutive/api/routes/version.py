@@ -65,7 +65,8 @@ async def _fetch_latest() -> str | None:
             },
         )
     resp.raise_for_status()
-    tag = resp.json().get("tag_name")
+    data = resp.json()
+    tag = data.get("tag_name") if isinstance(data, dict) else None
     if not isinstance(tag, str):
         return None
     parsed = parse_version(tag)
