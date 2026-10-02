@@ -29,6 +29,12 @@ export interface SignInEnv {
   localLogin: boolean;
   googleClientId: string | undefined;
   googleClientSecret: string | undefined;
+  /** AUTH_OIDC_ISSUER / _ID / _SECRET — SSO sign-in (lib/oidc.ts). */
+  oidcIssuer: string | undefined;
+  oidcClientId: string | undefined;
+  oidcClientSecret: string | undefined;
+  /** AUTH_OIDC_TRUST_UNVERIFIED_EMAIL, read as lib/oidc.ts reads it. */
+  oidcTrustUnverifiedEmail: boolean;
   /** ALLOWED_EMAILS, parsed the way sign-in parses it. */
   allowedEmails: ReadonlySet<string>;
   authUrl: string | undefined;
@@ -63,7 +69,19 @@ export function signInCheck(env: SignInEnv): SetupCheck {
   if (env.localLogin) {
     return check("ok", "Local login: no sign-in needed, and only this computer can open the app.");
   }
-  if (!env.googleClientId?.trim() || !env.googleClientSecret?.trim()) {
+  const googleStarted = Boolean(env.googleClientId?.trim() || env.googleClientSecret?.trim());
+  const google = Boolean(env.googleClientId?.trim() && env.googleClientSecret?.trim());
+  const oidcStarted = Boolean(env.oidcIssuer?.trim() || env.oidcClientId?.trim() || env.oidcClientSecret?.trim());
+  const oidc = Boolean(env.oidcIssuer?.trim() && env.oidcClientId?.trim() && env.oidcClientSecret?.trim());
+  if (oidcStarted && !oidc) {
+    return check(
+      "error",
+      "SSO sign-in isn't fully set up: it needs AUTH_OIDC_ISSUER, AUTH_OIDC_ID and AUTH_OIDC_SECRET.",
+      "Set all three from the client you registered at your sign-in provider (docs/auth.md), then restart the app.",
+    );
+  }
+  // With nothing set up at all, Google is what the sign-in page offers.
+  if ((googleStarted || !oidc) && !google) {
     return check(
       "error",
       "Google sign-in isn't fully set up: it needs both AUTH_GOOGLE_ID and AUTH_GOOGLE_SECRET.",
@@ -75,22 +93,30 @@ export function signInCheck(env: SignInEnv): SetupCheck {
     return check(
       "warn",
       `ALLOWED_EMAILS still lists sample addresses: ${samples.join(", ")}.`,
-      "Replace them in .env with the Google addresses of the people who should sign in, then restart the app.",
+      "Replace them in .env with the addresses of the people who should sign in, then restart the app.",
     );
   }
   if (env.publicDeployment && !env.authUrl?.trim()) {
     return check(
       "warn",
-      "AUTH_URL isn't set, so Google can send people back to the wrong address after they sign in.",
+      "AUTH_URL isn't set, so the sign-in provider can send people back to the wrong address after they sign in.",
       "Set AUTH_URL to this app's public address (for example https://exec.example.com), then restart the app.",
     );
   }
+  if (oidc && env.oidcTrustUnverifiedEmail) {
+    return check(
+      "warn",
+      "SSO sign-in accepts emails your sign-in provider hasn't verified (AUTH_OIDC_TRUST_UNVERIFIED_EMAIL).",
+      "Keep it only if people can't change their own email at the provider; otherwise mark their emails verified there and remove it (docs/auth.md).",
+    );
+  }
+  const method = google && oidc ? "Google and SSO sign-in" : oidc ? "SSO sign-in" : "Google sign-in";
   const listed = env.allowedEmails.size;
   return check(
     "ok",
     listed > 0
-      ? `Google sign-in, for the ${listed} address${listed === 1 ? "" : "es"} in ALLOWED_EMAILS and anyone with an email on the team list.`
-      : "Google sign-in, for anyone with an email on the team list.",
+      ? `${method}, for the ${listed} address${listed === 1 ? "" : "es"} in ALLOWED_EMAILS and anyone with an email on the team list.`
+      : `${method}, for anyone with an email on the team list.`,
   );
 }
 

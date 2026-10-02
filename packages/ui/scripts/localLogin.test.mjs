@@ -14,6 +14,7 @@ const MAKE_DEV = {
   devServer: true,
   flag: "1",
   googleClientId: "",
+  oidcIssuer: undefined,
   publicDeployment: undefined,
 };
 
@@ -37,6 +38,11 @@ test("once Google sign-in is set up it is the only way in", () => {
   assert.equal(localLoginEnabled({ ...MAKE_DEV, googleClientId: "123.apps.googleusercontent.com" }), false);
   // Whitespace alone is not a client id.
   assert.equal(localLoginEnabled({ ...MAKE_DEV, googleClientId: "  " }), true);
+});
+
+test("once SSO sign-in is set up it is the only way in", () => {
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, oidcIssuer: "https://sso.acme.io/realms/acme" }), false);
+  assert.equal(localLoginEnabled({ ...MAKE_DEV, oidcIssuer: " " }), true);
 });
 
 test("OE_PUBLIC_DEPLOYMENT's off-values match the API's exactly", () => {

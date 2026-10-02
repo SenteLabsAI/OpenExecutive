@@ -1,5 +1,5 @@
 // Local login: running Open Executive on your own computer without setting
-// up Google sign-in. The sign-in page offers an "Open" button instead, and the
+// up sign-in (Google or SSO). The sign-in page offers an "Open" button instead, and the
 // session it creates carries no email — so the UI proxy sends no
 // `x-caller-email`, and the backend treats the caller as the principal, exactly
 // as it does for the CLI.
@@ -30,6 +30,8 @@ export interface LocalLoginEnv {
   flag: string | undefined;
   /** AUTH_GOOGLE_ID — once Google sign-in is set up, it is the only way in. */
   googleClientId: string | undefined;
+  /** AUTH_OIDC_ISSUER — the same for SSO sign-in (lib/oidc.ts). */
+  oidcIssuer: string | undefined;
   /** OE_PUBLIC_DEPLOYMENT — an internet-facing instance always requires sign-in. */
   publicDeployment: string | undefined;
 }
@@ -44,6 +46,7 @@ export function localLoginEnabled(env: LocalLoginEnv): boolean {
     env.devServer &&
     env.flag?.trim() === "1" &&
     !env.googleClientId?.trim() &&
+    !env.oidcIssuer?.trim() &&
     FALSEY_ENV.has((env.publicDeployment ?? "").trim().toLowerCase())
   );
 }
@@ -64,7 +67,7 @@ export function isLoopbackHost(host: string | null | undefined): boolean {
 /**
  * Whether a local-login session may be used for this request. It stays
  * valid only while the mode is on and the request still comes from this
- * machine — so setting up Google sign-in ends it on the next request.
+ * machine — so setting up Google or SSO sign-in ends it on the next request.
  */
 export function localLoginSessionAllowed(modeEnabled: boolean, host: string | null | undefined): boolean {
   return modeEnabled && isLoopbackHost(host);

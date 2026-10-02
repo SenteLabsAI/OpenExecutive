@@ -238,7 +238,7 @@ export default function OnboardDraftReview({
           )}{" "}
           Setting this up for someone else? Enter the Google email they will sign in with.
           {session?.localLogin &&
-            " Optional on this computer — add one if you set up Google sign-in later."}
+            " Optional on this computer — add one if you set up Google or SSO sign-in later."}
         </p>
         <input
           id="owner-email"

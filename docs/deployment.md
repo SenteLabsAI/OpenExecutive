@@ -149,7 +149,7 @@ with "no company profile" on a fresh volume is expected, not a fault.
 | `CALLER_ASSERTION_PUBLIC_KEYS` (API), `CALLER_ASSERTION_PRIVATE_KEY` (UI) | Signed callers: the UI signs who is signed in and the API checks it, so the shared secret alone can't act as the owner. Recommended. Make the pair with `scripts/make-caller-keys.py`; see [auth.md](auth.md#signed-callers). |
 | `OE_PUBLIC_DEPLOYMENT=1` | **Set this on every internet-reachable instance.** See below. |
 | `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. |
-| `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in. See [auth.md](auth.md). |
+| `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_OIDC_ISSUER`, `AUTH_OIDC_ID`, `AUTH_OIDC_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in (Google and/or SSO). See [auth.md](auth.md). |
 
 Integrations (Slack, Discord, email, Google Workspace, Microsoft 365) are all
 optional and off unless their variables are set. [.env.example](../.env.example) is the full list.

@@ -120,11 +120,11 @@ make dev
 ```
 
 **Trying it on your own computer needs no sign-in setup.** While
-`AUTH_GOOGLE_ID` is blank, `make dev` uses local login: the web app
+`AUTH_GOOGLE_ID` and `AUTH_OIDC_ISSUER` are blank, `make dev` uses local login: the web app
 only accepts connections from this computer, you click **Open**, and you are
 the owner. To invite your team, or to run it on a server or with `make docker`,
-set up Google sign-in by filling in the `AUTH_*` block (see
-[docs/auth.md](docs/auth.md) for the Google Cloud Console steps).
+set up Google or SSO sign-in by filling in the `AUTH_*` block (see
+[docs/auth.md](docs/auth.md) for the Google Cloud Console and SSO steps).
 
 All configuration lives in that repo-root `.env` — `make dev` and `make docker`
 both load it for the API *and* the UI (Auth.js needs `AUTH_SECRET` /
@@ -362,7 +362,7 @@ health-check timing, resource sizing, operations, and common failure modes.
 
 ### Access control
 
-The deployed UI is gated behind Google sign-in with an email allow-list, and the public API is protected by a shared-secret header between the UI proxy and the FastAPI backend. See [docs/auth.md](docs/auth.md) for the full setup (Google Cloud Console steps, required environment variables, adding/removing users, rotating secrets, and a debugging table).
+The deployed UI is gated behind Google sign-in or SSO sign-in (any OpenID Connect provider, such as Keycloak, Okta or Entra ID) with an email allow-list, and the public API is protected by a shared-secret header between the UI proxy and the FastAPI backend. See [docs/auth.md](docs/auth.md) for the full setup (Google Cloud Console and SSO steps, required environment variables, adding/removing users, rotating secrets, and a debugging table).
 
 ## Configuration
 

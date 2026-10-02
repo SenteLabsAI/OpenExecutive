@@ -6211,7 +6211,17 @@ user_guide:
 
 auth:
   ui_provider: |
-    NextAuth.js with Google OAuth, JWT session strategy (24h maxAge).
+    NextAuth.js with Google OAuth and/or one generic OpenID Connect
+    provider (SSO: Keycloak, Okta, Entra ID, ...; packages/ui/src/lib/oidc.ts,
+    on when AUTH_OIDC_ISSUER / _ID / _SECRET are all set, provider id `oidc`,
+    endpoints from the issuer's discovery document), JWT session strategy
+    (24h maxAge). Both feed the same email-keyed gate: an SSO sign-in adds no
+    admission logic. Its email must be verified - the standard
+    `email_verified` claim, or on an Entra issuer only Microsoft's `xms_edov`
+    - unless the operator sets AUTH_OIDC_TRUST_UNVERIFIED_EMAIL=true (Setup
+    status then shows amber), because access is granted by email alone and an
+    unverified address at many providers is whatever the user typed. Google
+    stays offered unless SSO is the only sign-in set up.
     Lives in packages/ui/src/auth.ts. Gate is enforced at two points:
       - `signIn` callback: strict initial check when a user first logs
         in. Denies on miss.
@@ -6230,7 +6240,7 @@ auth:
         JWT expired. /signin bounces a visitor onward only when
         `sessionStillAllowed` agrees, or a refused session would loop.
     Local login (packages/ui/src/lib/localLogin.ts): `make dev` with
-    Google sign-in not set up starts the UI with `-H 127.0.0.1` and
+    neither Google nor SSO sign-in set up starts the UI with `-H 127.0.0.1` and
     OE_LOCAL_LOGIN=1 in one recipe line (the flag alone would hand
     the owner's seat to the network, so nothing else sets it). The recipe
     decides via scripts/devMode.mjs, which loads the env the way Next does
@@ -6240,12 +6250,12 @@ auth:
     then offers a Credentials provider (`local-login`) instead of Google:
     an "Open" button with no password. Guards: the mode is compiled out
     of production builds (literal `process.env.NODE_ENV`, folded at build
-    time), off whenever AUTH_GOOGLE_ID or OE_PUBLIC_DEPLOYMENT is set, and
+    time), off whenever AUTH_GOOGLE_ID, AUTH_OIDC_ISSUER or OE_PUBLIC_DEPLOYMENT is set, and
     every sign-in and request must carry a loopback raw `Host` header —
     that stops DNS rebinding, since a browser cannot forge Host (it CAN
     set X-Forwarded-Host, which is why request.url is not used). The
     session has no email; the JWT carries `localLogin`, and it stops
-    working the moment Google sign-in is set up. An AUTH_SECRET blank in
+    working the moment Google or SSO sign-in is set up. An AUTH_SECRET blank in
     every env file gets a throwaway per-run value from the Makefile, and
     trustHost is on in this mode without AUTH_TRUST_HOST (no OAuth redirect
     to steer; its checks read the raw Host). Docker (`make docker`)

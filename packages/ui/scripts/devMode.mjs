@@ -5,7 +5,7 @@
 // disagree about local login.
 //
 // Prints one word:
-//   sign-in                start as usual (Google sign-in, or a server setting)
+//   sign-in                start as usual (Google or SSO sign-in, or a server setting)
 //   local-login            bind 127.0.0.1 and set OE_LOCAL_LOGIN
 //   local-login-no-secret  the same, and AUTH_SECRET is blank everywhere, so
 //                          the recipe supplies a throwaway one for this run
@@ -26,6 +26,7 @@ const useLocalLogin = localLoginEnabled({
   devServer: true,
   flag: "1",
   googleClientId: process.env.AUTH_GOOGLE_ID,
+  oidcIssuer: process.env.AUTH_OIDC_ISSUER,
   publicDeployment: process.env.OE_PUBLIC_DEPLOYMENT,
 });
 

@@ -1,8 +1,9 @@
 import { AuthError } from "next-auth";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { LOCAL_LOGIN, auth, sessionStillAllowed, signIn } from "@/auth";
+import { GOOGLE_SIGN_IN, LOCAL_LOGIN, OIDC, auth, sessionStillAllowed, signIn } from "@/auth";
 import { LOCAL_LOGIN_PROVIDER_ID } from "@/lib/localLogin";
+import { OIDC_PROVIDER_ID } from "@/lib/oidc";
 
 type SearchParams = Promise<{ callbackUrl?: string; error?: string }>;
 
@@ -28,6 +29,8 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
 
   const errorMessage = error ? describeError(error) : null;
   const googleConfigured = Boolean(process.env.AUTH_GOOGLE_ID?.trim());
+  const buttonClass =
+    "w-full rounded-md bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100 transition";
 
   return (
     <main className="min-h-screen flex items-center justify-center px-6">
@@ -72,28 +75,40 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
               </button>
             </form>
             <p className="mt-4 text-xs text-fg-subtle">
-              To invite your team, or to run it on a server, set up Google sign-in (see docs/auth.md).
+              To invite your team, or to run it on a server, set up Google or SSO sign-in (see docs/auth.md).
             </p>
           </>
         ) : (
           <>
-            <form
-              action={async () => {
-                "use server";
-                await signIn("google", { redirectTo: safeDest });
-              }}
-              className="mt-6"
-            >
-              <button
-                type="submit"
-                className="w-full rounded-md bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100 transition"
+            {OIDC && (
+              <form
+                action={async () => {
+                  "use server";
+                  await signIn(OIDC_PROVIDER_ID, { redirectTo: safeDest });
+                }}
+                className="mt-6"
               >
-                Sign in with Google
-              </button>
-            </form>
-            {!googleConfigured && (
+                <button type="submit" className={buttonClass}>
+                  Sign in with {OIDC.name}
+                </button>
+              </form>
+            )}
+            {GOOGLE_SIGN_IN && (
+              <form
+                action={async () => {
+                  "use server";
+                  await signIn("google", { redirectTo: safeDest });
+                }}
+                className={OIDC ? "mt-3" : "mt-6"}
+              >
+                <button type="submit" className={buttonClass}>
+                  Sign in with Google
+                </button>
+              </form>
+            )}
+            {!googleConfigured && !OIDC && (
               <p className="mt-4 text-xs text-fg-subtle">
-                Google sign-in isn’t set up here yet (see docs/auth.md). On your own computer,
+                Sign-in isn’t set up here yet: set up Google or SSO sign-in (see docs/auth.md). On your own computer,
                 start Open Executive with <code>make dev</code> to use it without signing in.
               </p>
             )}
@@ -107,7 +122,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
 function describeError(code: string): string {
   switch (code) {
     case "AccessDenied":
-      return "Your Google account is not on the allow-list for this workspace. Ask an admin to add you.";
+      return "That account can’t sign in here: it isn’t on the allow-list for this workspace, or its email isn’t verified. Ask an admin to add you.";
     case "CredentialsSignin":
       return "Open only works in a browser on the computer running Open Executive, at http://localhost:3000.";
     case "Configuration":

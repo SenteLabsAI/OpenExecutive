@@ -1,6 +1,6 @@
 # Authentication & Access Control
 
-Open Executive is gated behind Google sign-in plus an email allow-list — except with [local login](#local-login-no-google-sign-in), for trying it on your own computer. This doc explains what's protected, how, and how to operate it (add/remove users, rotate secrets, debug failures).
+Open Executive is gated behind Google sign-in or [SSO sign-in](#sso-sign-in-openid-connect) (any OpenID Connect provider: Keycloak, Okta, Entra ID, …) plus an email allow-list — except with [local login](#local-login-no-google-sign-in), for trying it on your own computer. This doc explains what's protected, how, and how to operate it (add/remove users, rotate secrets, debug failures).
 
 ---
 
@@ -10,7 +10,7 @@ Two independent layers. Either one alone would be insufficient; together they fa
 
 | Layer | What it does | Where |
 |---|---|---|
-| **UI: Auth.js v5 + Google OAuth** | Anyone hitting the public UI is redirected to `/signin`. Only Google accounts on the allow-list can complete sign-in — the **union** of `ALLOWED_EMAILS` and the People roster (see below). | [packages/ui/src/auth.ts](../packages/ui/src/auth.ts), [packages/ui/src/middleware.ts](../packages/ui/src/middleware.ts), [packages/ui/src/app/signin/page.tsx](../packages/ui/src/app/signin/page.tsx) |
+| **UI: Auth.js v5 + Google OAuth and/or OpenID Connect** | Anyone hitting the public UI is redirected to `/signin`. Only accounts with a verified email on the allow-list can complete sign-in — the **union** of `ALLOWED_EMAILS` and the People roster (see below). | [packages/ui/src/auth.ts](../packages/ui/src/auth.ts), [packages/ui/src/middleware.ts](../packages/ui/src/middleware.ts), [packages/ui/src/app/signin/page.tsx](../packages/ui/src/app/signin/page.tsx) |
 | **API: shared-secret header** | The FastAPI backend is reachable over the network. It rejects every request whose `x-api-key` header doesn't match `BACKEND_SHARED_SECRET`. The UI proxy stamps this header on every upstream call. | [packages/core/openexecutive/api/main.py](../packages/core/openexecutive/api/main.py), [packages/ui/src/app/api/backend/[...path]/route.ts](../packages/ui/src/app/api/backend/%5B...path%5D/route.ts) |
 | **API: signed callers** (optional, recommended on a server) | The proxy also signs *who* is signed in, with a key only the UI holds; the API checks the signature instead of taking `x-caller-email` from whoever holds the shared secret. See [Signed callers](#signed-callers). | [packages/core/openexecutive/api/caller.py](../packages/core/openexecutive/api/caller.py), [packages/ui/src/lib/callerAssertion.ts](../packages/ui/src/lib/callerAssertion.ts) |
 
@@ -48,7 +48,7 @@ backend answers.
 ```
 Browser ──► exec.example.com (UI) ──► (middleware: session check)
                 │
-                ├── no session  ──► redirect to /signin → Google → callback → cookie set
+                ├── no session  ──► redirect to /signin → Google or SSO → callback → cookie set
                 │
                 └── has session ──► /api/backend/[...path] (proxy)
                                         │ stamps x-api-key and x-caller-email,
@@ -76,7 +76,7 @@ See [`_UNAUTHENTICATED_PATHS`](../packages/core/openexecutive/api/main.py) — a
 
 ## Local login (no Google sign-in)
 
-While `AUTH_GOOGLE_ID` is blank, `make dev` starts the web app with local
+While `AUTH_GOOGLE_ID` and `AUTH_OIDC_ISSUER` are blank, `make dev` starts the web app with local
 login. The sign-in page shows an **Open** button instead of Google, and whoever
 clicks it is the owner (the principal). This is for trying Open Executive on
 your own computer; it never runs anywhere else.
@@ -87,10 +87,10 @@ There is no password, so the protection is *where* a request can come from:
   `127.0.0.1`, so other machines on your network cannot connect. It sets
   `OE_LOCAL_LOGIN=1` for the UI; don't set that yourself. It reads the
   same settings the app does (the root `.env` and `packages/ui/.env.local`),
-  so if either one sets up Google sign-in, `make dev` starts as usual.
+  so if either one sets up Google or SSO sign-in, `make dev` starts as usual.
 - **Never on a server.** A production build (`next build`, the deploy image)
-  compiles the mode out, and it stays off whenever `AUTH_GOOGLE_ID` or
-  `OE_PUBLIC_DEPLOYMENT` is set. `make docker` publishes port 3000 to your
+  compiles the mode out, and it stays off whenever `AUTH_GOOGLE_ID`,
+  `AUTH_OIDC_ISSUER` or `OE_PUBLIC_DEPLOYMENT` is set. `make docker` publishes port 3000 to your
   network, so it keeps Google sign-in.
 - **Only from this computer's browser.** Signing in, and every request after,
   must be addressed to `localhost`, `127.0.0.1` or `[::1]`, and the API on
@@ -113,9 +113,9 @@ sign-in with signed callers instead. If
 run, so you click **Open** again after a restart. `AUTH_TRUST_HOST` isn't
 needed in this mode.
 
-To invite your team, or to run on a server, set up Google sign-in (below). As
-soon as `AUTH_GOOGLE_ID` is set, local login is off and any session it
-created stops working.
+To invite your team, or to run on a server, set up Google or SSO sign-in
+(below). As soon as `AUTH_GOOGLE_ID` or `AUTH_OIDC_ISSUER` is set, local login
+is off and any session it created stops working.
 
 ---
 
@@ -129,6 +129,62 @@ created stops working.
    - **Authorized JavaScript origins**: `http://localhost:3000`, plus your deployed UI origin (e.g. `https://exec.example.com`)
    - **Authorized redirect URIs**: `http://localhost:3000/api/auth/callback/google`, plus `<your UI origin>/api/auth/callback/google`
 4. Copy the Client ID and Client secret immediately — the secret is shown only once.
+
+### SSO sign-in (OpenID Connect)
+
+For a company whose people sign in through their own identity provider —
+Keycloak, Okta, Auth0, Authentik, JumpCloud, GitLab, Microsoft Entra ID, or
+any other OpenID Connect provider — instead of (or as well as) Google. The
+sign-in page then shows **Sign in with SSO** (or the name you give it); when
+Google is set up too, both buttons are there.
+
+SSO only adds a way in. The provider returns the person's email, and that
+email goes through the same allow-list (`ALLOWED_EMAILS` plus the People
+roster), the same per-request re-check and the same audit log as a Google
+sign-in. One provider per install.
+
+1. At your provider, register a **confidential web client** (one with a
+   client secret) using the authorization-code flow, with the redirect URI
+   `<your UI origin>/api/auth/callback/oidc` (and
+   `http://localhost:3000/api/auth/callback/oidc` for local testing). It needs
+   the `openid email profile` scopes.
+2. Set on the UI:
+
+   ```
+   AUTH_OIDC_ISSUER=https://sso.example.com/realms/company
+   AUTH_OIDC_ID=<client id>
+   AUTH_OIDC_SECRET=<client secret>
+   AUTH_OIDC_NAME=Okta        # optional: the button says "Sign in with Okta"
+   ```
+
+   `AUTH_OIDC_ISSUER` is the provider's issuer, exactly as its tokens state
+   it; the app reads everything else from
+   `<issuer>/.well-known/openid-configuration`. All three of issuer, id and
+   secret are needed; Settings → Setup status says which is missing.
+3. Restart the UI.
+
+**The email must be verified.** Access is granted by email address, so an
+SSO sign-in is refused (`email not verified` in the audit log) unless the
+provider marks the email verified with the standard `email_verified` claim.
+At many providers people can edit their own profile, and an unverified
+address could be anyone's, including the owner's. How to satisfy it:
+
+| Provider | What to do |
+|---|---|
+| Keycloak | Tick **Email verified** on each user, or for users imported from LDAP / Active Directory turn on **Trust Email** on the user federation provider. Also check that users can't change their own email in the account console, or that changing it requires re-verification. |
+| Okta, Auth0, Authentik, JumpCloud | Sends `email_verified` for verified addresses; nothing to do. |
+| Microsoft Entra ID | Entra doesn't send `email_verified`. Use the tenant's issuer `https://login.microsoftonline.com/<tenant-id>/v2.0` (not `common`), and under **Token configuration** add the optional ID-token claims `email` and `xms_edov`. The app accepts `xms_edov` (Microsoft's "email domain verified") from an Entra issuer only. |
+
+If your provider can't say an email is verified and people **cannot** change
+their own email there, you can opt in with
+`AUTH_OIDC_TRUST_UNVERIFIED_EMAIL=true`. Setup status then shows an amber
+light as a reminder. Don't set it on a provider where people can edit their
+own email or sign themselves up.
+
+An email means the same person whichever button they used: a Google sign-in
+and an SSO sign-in with the same address are one user. Your provider decides
+which addresses it hands out, so only connect one you trust as much as the
+allow-list itself.
 
 ### Local dev (repo-root `.env`, gitignored)
 
@@ -189,6 +245,10 @@ AUTH=$(openssl rand -base64 32)
 AUTH_SECRET=$AUTH
 AUTH_GOOGLE_ID=<your client id>
 AUTH_GOOGLE_SECRET=<your client secret>
+# …and/or SSO (see "SSO sign-in" above):
+# AUTH_OIDC_ISSUER=https://sso.example.com/realms/company
+# AUTH_OIDC_ID=<client id>
+# AUTH_OIDC_SECRET=<client secret>
 ALLOWED_EMAILS=alice@x.com,bob@y.com
 AUTH_TRUST_HOST=true
 AUTH_URL=https://exec.example.com
@@ -330,7 +390,7 @@ If `AUTH_GOOGLE_SECRET` is leaked, regenerate in Google Cloud Console (Clients �
 | `OAuth client was not found` / `invalid_client` | `AUTH_GOOGLE_ID` typo, swapped with `AUTH_GOOGLE_SECRET`, or the client lives in a different GCP project |
 | `redirect_uri_mismatch` | The Authorized redirect URI in Google Console doesn't exactly match `<origin>/api/auth/callback/google`. Wait 5 min for Google to propagate after edits |
 | Browser tries to load `0.0.0.0` after sign-in | `AUTH_URL` not set on the UI |
-| `AccessDenied` page after Google login | Email is in neither `ALLOWED_EMAILS` nor the People roster (the two are unioned), or Google returned `email_verified !== true`. Check the `auth_login` audit row's `source`: `no_match` = checked against both lists and genuinely not on either; `env_only_roster_unavailable` = the roster fetch failed and the email isn't in the env list |
+| `AccessDenied` page after Google or SSO login | Email is in neither `ALLOWED_EMAILS` nor the People roster (the two are unioned), or the provider didn't mark it verified (audit `reason`: `email_not_verified`; for SSO see [the table above](#sso-sign-in-openid-connect)). Check the `auth_login` audit row's `source`: `no_match` = checked against both lists and genuinely not on either; `env_only_roster_unavailable` = the roster fetch failed and the email isn't in the env list |
 | A removed teammate can still sign in | Their email is still in `ALLOWED_EMAILS`. The roster is additive, so archiving the Person alone doesn't revoke access |
 | API returns `401` for every request | UI and API have different `BACKEND_SHARED_SECRET` values (very common after rotating in two separate terminal sessions) |
 | API refuses to start with `RuntimeError: BACKEND_SHARED_SECRET is required` | `OE_PUBLIC_DEPLOYMENT` is set and the secret is missing. Set it; the next restart will boot |
@@ -342,7 +402,10 @@ If `AUTH_GOOGLE_SECRET` is leaked, regenerate in Google Cloud Console (Clients �
 | Sign-in works but the chat stays empty | Backend is auth'd but `ANTHROPIC_API_KEY` is missing on the API. Its logs will show the error |
 | Signed in, but no past chats are listed | Your email isn't on your own People entry, so the API can't tell who you are. Setup saves it from the **Your sign-in email** field; to fix it afterwards, add the email to your row on the People page |
 | **Open** says it only works on this computer | You opened the app by a network address. Use `http://localhost:3000` in a browser on the machine running `make dev` |
-| Sign-in page shows Google, but you wanted local login | `AUTH_GOOGLE_ID` is set (in the root `.env` or `packages/ui/.env.local`), or the app was started some way other than `make dev` |
+| SSO sign-in fails with `Configuration` | `AUTH_OIDC_ISSUER` isn't the provider's exact issuer (the UI log shows the discovery error; open `<issuer>/.well-known/openid-configuration` and compare its `issuer`), or the client id / secret is wrong. For Entra ID, use the tenant issuer, not `common` |
+| SSO login comes back with `redirect_uri` errors at the provider | The client's redirect URI must be exactly `<origin>/api/auth/callback/oidc` |
+| No SSO button | One of `AUTH_OIDC_ISSUER`, `AUTH_OIDC_ID`, `AUTH_OIDC_SECRET` is blank. Settings → Setup status names it |
+| Sign-in page shows Google, but you wanted local login | `AUTH_GOOGLE_ID` or `AUTH_OIDC_ISSUER` is set (in the root `.env` or `packages/ui/.env.local`), or the app was started some way other than `make dev` |
 
 ### Useful commands
 

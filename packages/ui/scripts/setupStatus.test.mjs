@@ -15,6 +15,10 @@ const GOOGLE = {
   localLogin: false,
   googleClientId: "id.apps.googleusercontent.com",
   googleClientSecret: "google-secret",
+  oidcIssuer: undefined,
+  oidcClientId: undefined,
+  oidcClientSecret: undefined,
+  oidcTrustUnverifiedEmail: false,
   allowedEmails: parseAllowedEmails("ada@acme.io, bo@acme.io"),
   authUrl: "https://exec.acme.io",
   publicDeployment: true,
@@ -38,6 +42,53 @@ test("Google sign-in with a real allow-list is green", () => {
 test("half-configured Google sign-in is red", () => {
   assert.equal(signInCheck({ ...GOOGLE, googleClientSecret: " " }).state, "error");
   assert.equal(signInCheck({ ...GOOGLE, googleClientId: undefined }).state, "error");
+});
+
+const SSO_ONLY = {
+  ...GOOGLE,
+  googleClientId: undefined,
+  googleClientSecret: undefined,
+  oidcIssuer: "https://sso.acme.io/realms/acme",
+  oidcClientId: "open-executive",
+  oidcClientSecret: "kc-secret",
+};
+
+test("SSO sign-in alone, or next to Google, is green", () => {
+  const ssoOnly = signInCheck(SSO_ONLY);
+  assert.equal(ssoOnly.state, "ok");
+  assert.match(ssoOnly.summary, /^SSO sign-in, for the 2 addresses/);
+  assert.ok(!JSON.stringify(ssoOnly).includes("kc-secret"));
+  const both = signInCheck({ ...SSO_ONLY, googleClientId: GOOGLE.googleClientId, googleClientSecret: GOOGLE.googleClientSecret });
+  assert.equal(both.state, "ok");
+  assert.match(both.summary, /^Google and SSO sign-in/);
+});
+
+test("half-configured SSO sign-in is red", () => {
+  for (const missing of ["oidcIssuer", "oidcClientId", "oidcClientSecret"]) {
+    const check = signInCheck({ ...SSO_ONLY, [missing]: " " });
+    assert.equal(check.state, "error", missing);
+    assert.match(check.summary, /AUTH_OIDC_ISSUER, AUTH_OIDC_ID and AUTH_OIDC_SECRET/);
+  }
+  // Even with Google working, a half-filled SSO block is named.
+  assert.equal(signInCheck({ ...GOOGLE, oidcClientId: "open-executive" }).state, "error");
+});
+
+test("half-configured Google next to working SSO is still red", () => {
+  assert.equal(signInCheck({ ...SSO_ONLY, googleClientId: "id.apps.googleusercontent.com" }).state, "error");
+});
+
+test("nothing set up asks for Google, as before", () => {
+  const check = signInCheck({ ...GOOGLE, googleClientId: undefined, googleClientSecret: undefined });
+  assert.equal(check.state, "error");
+  assert.match(check.summary, /AUTH_GOOGLE_ID and AUTH_GOOGLE_SECRET/);
+});
+
+test("trusting unverified SSO emails is amber", () => {
+  const check = signInCheck({ ...SSO_ONLY, oidcTrustUnverifiedEmail: true });
+  assert.equal(check.state, "warn");
+  assert.match(check.summary, /AUTH_OIDC_TRUST_UNVERIFIED_EMAIL/);
+  // The opt-in means nothing while SSO is off.
+  assert.equal(signInCheck({ ...GOOGLE, oidcTrustUnverifiedEmail: true }).state, "ok");
 });
 
 test("sample addresses left in ALLOWED_EMAILS are named", () => {
