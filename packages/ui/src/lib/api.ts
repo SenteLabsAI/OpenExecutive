@@ -1494,6 +1494,21 @@ export interface WorkspaceUpdate extends Partial<PrincipalRole> {
   company_domains?: string[] | null;
 }
 
+/** GET /version: the running version and, unless turned off, the latest release. */
+export interface VersionInfo {
+  current: string;
+  latest: string | null;
+  update_available: boolean;
+  release_url: string | null;
+  check_enabled: boolean;
+}
+
+export async function getVersion(signal?: AbortSignal): Promise<VersionInfo> {
+  const res = await fetch(`${API_BASE}/version`, { signal });
+  if (!res.ok) throw new Error("Failed to load version");
+  return res.json();
+}
+
 export async function getWorkspace(signal?: AbortSignal): Promise<WorkspaceSettings> {
   const res = await fetch(`${API_BASE}/workspace`, { signal });
   if (!res.ok) throw new Error("Failed to load workspace settings");

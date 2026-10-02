@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import VoicePicker from "@/components/executive/VoicePicker";
 import Icon from "@/components/Icon";
+import AboutCard from "@/components/settings/AboutCard";
 import ActAsMeCard from "@/components/settings/ActAsMeCard";
 import SettingsNav from "@/components/settings/SettingsNav";
 import SettingsSection from "@/components/settings/SettingsSection";
@@ -14,7 +15,7 @@ import { advancedItemsByGroup, SETTINGS_SECTIONS } from "@/components/shell/navC
 import { useActiveSection } from "@/lib/useActiveSection";
 
 // Settings — the configuration that lives outside the day-to-day nav, as
-// one page of sections (Executive, Workspace, Act as me, Tools) with an
+// one page of sections (Executive, Workspace, Act as me, Tools, About) with an
 // in-page nav to jump between them. Each section id is a hash a link can
 // land on; the Tools section points at the admin / power-user pages
 // (ADVANCED_ITEMS), grouped by what you'd use them for.
@@ -124,6 +125,14 @@ export default function SettingsPage() {
                   </div>
                 ))}
               </div>
+            </SettingsSection>
+
+            <SettingsSection
+              id="about"
+              title="About"
+              description="The version this install is running, and whether a newer release is out."
+            >
+              <AboutCard />
             </SettingsSection>
           </div>
         </div>

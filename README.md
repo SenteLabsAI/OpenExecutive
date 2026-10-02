@@ -321,6 +321,11 @@ published release, and `main` for the current head of `main`. The available vers
 each package's page under the repository's Packages. See
 [docs/deployment.md](docs/deployment.md#images) for how releases are cut.
 
+**Upgrading.** Settings → About shows the running version and says when a newer
+release is out (`UPDATE_CHECK_ENABLED=false` turns the check off). To upgrade,
+back up, then rebuild or pull the new tag; see
+[docs/deployment.md](docs/deployment.md#upgrading).
+
 > **⚠️ Single-instance only**: the scheduler claims rows via `UPDATE … RETURNING`,
 > which is not safe across processes. A second API replica double-fires every
 > scheduled action. Pin the API to one instance. The UI is stateless.

@@ -337,6 +337,13 @@ class Settings(BaseSettings):
             )
         return self
 
+    # ---- Update check ---------------------------------------------------
+    # GET /version asks GitHub for the latest Open Executive release (at most
+    # every few hours) so Settings can say when a newer one is out. Turn it
+    # off for an air-gapped install or one that must not call out to GitHub;
+    # the running version is still shown.
+    update_check_enabled: bool = Field(True, alias="UPDATE_CHECK_ENABLED")
+
     # ---- Honcho memory provider ----------------------------------------
     # External per-person memory layer (https://honcho.dev). When enabled,
     # the Executive fetches a `<peer_memory>` block keyed off the inbound
