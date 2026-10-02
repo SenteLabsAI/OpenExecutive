@@ -39,6 +39,7 @@ import httpx
 from openexecutive.config import Settings, get_settings
 from openexecutive.knowledge.confluence_client import (
     ConfluenceClient,
+    ConfluenceHostNotPublic,
     ConfluencePage,
     ConfluenceResponseTooLarge,
     auth_headers,
@@ -196,6 +197,11 @@ class _TickFetch:
 
 
 def _listing_error(space: str, exc: Exception) -> str:
+    if isinstance(exc, ConfluenceHostNotPublic):
+        return (
+            "CONFLUENCE_URL points at a private or local address, which "
+            "CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY refuses."
+        )
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         if code in (401, 403):
@@ -547,8 +553,18 @@ def build_client(settings: Settings) -> tuple[ConfluenceClient, httpx.AsyncClien
         timeout=60.0,
         verify=ssl_verify(settings.confluence_ssl_verify),
         follow_redirects=False,
+        # The public-hosts check pins the address it checked, and a proxy
+        # tunnel would check the certificate against that bare address
+        # instead of the site's name, so those requests go direct.
+        trust_env=not settings.confluence_sync_public_hosts_only,
     )
-    return ConfluenceClient(http, str(settings.confluence_url), auth_headers(settings)), http
+    client = ConfluenceClient(
+        http,
+        str(settings.confluence_url),
+        auth_headers(settings),
+        public_hosts_only=settings.confluence_sync_public_hosts_only,
+    )
+    return client, http
 
 
 async def run_confluence_sync(

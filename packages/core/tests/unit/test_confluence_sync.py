@@ -147,7 +147,8 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CONFLUENCE_SYNC_SPACE_KEYS", "ENG")
     monkeypatch.setenv("COMPANY_PROFILE_PATH", str(tmp_path / "profile.yaml"))
     for var in ("CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN", "CONFLUENCE_SSL_VERIFY",
-                "CONFLUENCE_SYNC_SKIP_RESTRICTED", "CONFLUENCE_MAX_PAGES_PER_SCAN"):
+                "CONFLUENCE_SYNC_SKIP_RESTRICTED", "CONFLUENCE_MAX_PAGES_PER_SCAN",
+                "CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(confluence_sync, "_sleep", AsyncMock())
     monkeypatch.setattr(confluence_sync, "_RUN_LOCK", asyncio.Lock())
@@ -419,6 +420,126 @@ async def test_oversize_responses_are_abandoned(monkeypatch: pytest.MonkeyPatch)
     client = ConfluenceClient(httpx.AsyncClient(transport=httpx.MockTransport(handler)), BASE, {})
     with pytest.raises(confluence_client.ConfluenceResponseTooLarge):
         await client.list_space("ENG", max_items=10, with_restrictions=True)
+
+
+def _resolves_to(monkeypatch: pytest.MonkeyPatch, *addresses: str) -> None:
+    def fake(host: str, port: int, *args: Any, **kwargs: Any) -> list[Any]:
+        return [(0, 0, 0, "", (a, port)) for a in addresses]
+
+    monkeypatch.setattr(confluence_client.socket, "getaddrinfo", fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("addresses", [
+    ("127.0.0.1",), ("10.0.0.5",), ("169.254.169.254",), ("100.64.0.1",),
+    ("fdaa::3",), ("::ffff:10.0.0.5",), ("93.184.216.34", "192.168.1.2"),
+    ("64:ff9b::a9fe:a9fe",), ("64:ff9b:1::a00:1",), ("::a00:1",), ("2002:a00:1::",),
+    ("2001:0:4136:e378:8000:63bf:f5ff:fffe",), ("0.0.0.0",),
+])
+async def test_public_hosts_only_refuses_inward_addresses(
+    monkeypatch: pytest.MonkeyPatch, addresses: tuple[str, ...]
+) -> None:
+    _resolves_to(monkeypatch, *addresses)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    client = ConfluenceClient(
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)), BASE, {},
+        public_hosts_only=True,
+    )
+    with pytest.raises(confluence_client.ConfluenceHostNotPublic):
+        await client.list_space("ENG", max_items=10, with_restrictions=True)
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_public_hosts_only_pins_the_checked_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    _resolves_to(monkeypatch, "93.184.216.34")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": [_page("100", "Home")]})
+
+    client = ConfluenceClient(
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)), BASE + ":8443/wiki", {},
+        public_hosts_only=True,
+    )
+    pages, _ = await client.list_space("ENG", max_items=10, with_restrictions=True)
+    assert [p.id for p in pages] == ["100"]
+    sent = requests[0]
+    assert sent.url.host == "93.184.216.34" and sent.url.port == 8443
+    assert sent.url.path == "/wiki/rest/api/content/search"
+    assert sent.headers["Host"] == "wiki.example.com:8443"
+    assert sent.extensions["sni_hostname"] == "wiki.example.com"
+
+
+@pytest.mark.asyncio
+async def test_a_sync_refused_for_a_private_host_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY", "true")
+    _resolves_to(monkeypatch, "10.1.2.3")
+    stats = await confluence_sync.run_confluence_sync(store=FakeStore())  # type: ignore[arg-type]
+    assert stats["updated"] == 0
+    assert "private or local address" in _state(tmp_path)["last_error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("base", "host", "sni"), [
+    ("https://[2606:4700::1111]:8443", "[2606:4700::1111]:8443", None),
+    ("https://bücher.example", "xn--bcher-kva.example", "xn--bcher-kva.example"),
+])
+async def test_public_hosts_only_sends_ascii_host_and_no_ip_sni(
+    monkeypatch: pytest.MonkeyPatch, base: str, host: str, sni: str | None
+) -> None:
+    _resolves_to(monkeypatch, "2606:4700::1111")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    client = ConfluenceClient(
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)), base, {},
+        public_hosts_only=True,
+    )
+    await client.list_space("ENG", max_items=10, with_restrictions=True)
+    assert requests[0].headers["Host"] == host
+    assert requests[0].extensions.get("sni_hostname") == sni
+
+
+@pytest.mark.asyncio
+async def test_a_resolver_that_never_answers_fails_like_an_unreachable_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    monkeypatch.setattr(confluence_client, "_RESOLVE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(
+        confluence_client.socket, "getaddrinfo", lambda *a, **k: time.sleep(0.5) or []
+    )
+    client = ConfluenceClient(
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200))),
+        BASE, {}, public_hosts_only=True,
+    )
+    with pytest.raises(httpx.ConnectTimeout):
+        await client.list_space("ENG", max_items=10, with_restrictions=True)
+
+
+def test_config_problem_is_the_settings_check() -> None:
+    good: dict[str, Any] = {
+        "url": BASE, "personal_token": None, "username": "u", "api_token": "t",
+        "space_keys": ["ENG"],
+    }
+    assert confluence_client.config_problem(**good) is None
+    assert "https://" in (confluence_client.config_problem(**{**good, "url": "wiki"}) or "")
+    assert "API_TOKEN" in (confluence_client.config_problem(**{**good, "api_token": ""}) or "")
+    assert "invalid" in (confluence_client.config_problem(**{**good, "space_keys": ["a b"]}) or "")
+    assert confluence_client.site_url_problem("https://[bad") is not None
 
 
 def test_ids_keys_and_links_are_validated_before_use() -> None:

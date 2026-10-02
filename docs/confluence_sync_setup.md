@@ -72,6 +72,7 @@ CONFLUENCE_SYNC_SPACE_KEYS=ENG,OPS
 # CONFLUENCE_SSL_VERIFY=true
 # CONFLUENCE_SYNC_SKIP_RESTRICTED=true
 # CONFLUENCE_SYNC_ALLOW_HTTP=false
+# CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY=false
 # CONFLUENCE_SYNC_INTERVAL_MINUTES=60
 # CONFLUENCE_MAX_PAGES_PER_SCAN=40
 ```
@@ -87,6 +88,22 @@ test setup.
 **Plain HTTP.** The URL must be `https://` unless you set
 `CONFLUENCE_SYNC_ALLOW_HTTP=true`. Over plain HTTP the token crosses the
 network unencrypted, so use it only on a network you trust.
+
+**Public hosts only.** If the person who sets `CONFLUENCE_URL` should not be
+able to point the sync at the network the backend runs in (a hosted install
+where each user brings their own Confluence site), set
+`CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY=true`. Every request then resolves the
+site's host, refuses it if any address is loopback, private, link-local,
+shared or otherwise not public, and connects to the address it checked, so
+the name cannot be re-pointed between the check and the request. The
+certificate is still checked against the site's name. These requests
+connect directly, not through `HTTPS_PROXY`, and ignore `SSL_CERT_FILE` /
+`SSL_CERT_DIR`: give a private certificate authority through
+`CONFLUENCE_SSL_VERIFY` instead. IPv6 addresses that carry an IPv4 one
+(NAT64's `64:ff9b::/96`, 6to4, Teredo) are judged by the IPv4 address inside;
+a NAT64 gateway on a network-specific prefix can't be recognised, so block
+inward traffic at that gateway too. A refused host shows as the sync's last
+error.
 
 Restart the backend. The first sync runs about a minute after startup and
 then every `CONFLUENCE_SYNC_INTERVAL_MINUTES`. To run one immediately:
@@ -118,6 +135,9 @@ on the next runs.
 - `openexecutive purge-confluence --page-id <id>` removes one page now.
 - `purge-confluence --stale` runs a purge-only pass.
 - `purge-confluence --all` removes everything synced.
+- Turning the sync off (`CONFLUENCE_SYNC_ENABLED=false`) stops syncing but
+  leaves what was synced searchable; run `purge-confluence --all` to remove
+  it as well.
 
 If a space cannot be listed (a wrong key, an expired token, the server
 down), pages are not purged from that space that run, so a passing outage

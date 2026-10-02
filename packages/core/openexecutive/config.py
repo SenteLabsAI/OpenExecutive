@@ -1082,6 +1082,13 @@ class Settings(BaseSettings):
     confluence_sync_space_keys: str = Field("", alias="CONFLUENCE_SYNC_SPACE_KEYS")
     confluence_sync_skip_restricted: bool = Field(True, alias="CONFLUENCE_SYNC_SKIP_RESTRICTED")
     confluence_sync_allow_http: bool = Field(False, alias="CONFLUENCE_SYNC_ALLOW_HTTP")
+    # Refuse a CONFLUENCE_URL whose host resolves to a loopback, private,
+    # link-local or other non-public address, checked on every request. For
+    # an install where whoever sets the URL must not reach the network the
+    # app runs in. Off by default: a Server/DC wiki on the LAN is common.
+    confluence_sync_public_hosts_only: bool = Field(
+        False, alias="CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY"
+    )
     confluence_sync_interval_minutes: int = Field(60, alias="CONFLUENCE_SYNC_INTERVAL_MINUTES")
     confluence_max_pages_per_scan: int = Field(40, alias="CONFLUENCE_MAX_PAGES_PER_SCAN")
 
@@ -1098,36 +1105,18 @@ class Settings(BaseSettings):
     def _validate_confluence_sync(self) -> "Settings":
         if not self.confluence_sync_enabled:
             return self
-        from urllib.parse import urlsplit
+        from openexecutive.knowledge.confluence_client import config_problem
 
-        from openexecutive.knowledge.confluence_client import sanitize_space_key
-
-        url = (self.confluence_url or "").strip()
-        parts = urlsplit(url)
-        allowed = ("https", "http") if self.confluence_sync_allow_http else ("https",)
-        if parts.scheme not in allowed or not parts.hostname:
-            raise ValueError(
-                "CONFLUENCE_SYNC_ENABLED=true requires CONFLUENCE_URL as an https:// URL "
-                "(set CONFLUENCE_SYNC_ALLOW_HTTP=true to allow http:// on a private network)"
-            )
-        if parts.username or parts.password or parts.query or parts.fragment:
-            raise ValueError(
-                "CONFLUENCE_URL must be the site's base URL, with no credentials, "
-                "query or fragment"
-            )
-        has_basic = bool(self.confluence_username and self.confluence_api_token)
-        if not self.confluence_personal_token and not has_basic:
-            # Both set is fine: the personal access token wins.
-            raise ValueError(
-                "CONFLUENCE_SYNC_ENABLED=true requires CONFLUENCE_PERSONAL_TOKEN "
-                "(Server/Data Center), or CONFLUENCE_USERNAME and CONFLUENCE_API_TOKEN (Cloud)"
-            )
-        keys = self.confluence_sync_space_key_list
-        if not keys:
-            raise ValueError("CONFLUENCE_SYNC_ENABLED=true requires CONFLUENCE_SYNC_SPACE_KEYS")
-        bad = [k for k in keys if not sanitize_space_key(k)]
-        if bad:
-            raise ValueError(f"CONFLUENCE_SYNC_SPACE_KEYS has invalid space keys: {bad}")
+        problem = config_problem(
+            url=self.confluence_url,
+            personal_token=self.confluence_personal_token,
+            username=self.confluence_username,
+            api_token=self.confluence_api_token,
+            space_keys=self.confluence_sync_space_key_list,
+            allow_http=self.confluence_sync_allow_http,
+        )
+        if problem:
+            raise ValueError(f"CONFLUENCE_SYNC_ENABLED=true: {problem}")
         return self
 
     @model_validator(mode="after")

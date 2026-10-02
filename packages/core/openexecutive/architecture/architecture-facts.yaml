@@ -1620,6 +1620,18 @@ knowledge:
         or `start` (DC) parameter out of `_links.next`, re-issued against the
         client's own endpoint. Page ids are checked against [0-9]{1,20} and space
         keys against [A-Za-z0-9_]{1,255} or ~[A-Za-z0-9._@-]{1,255} before use.
+        CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY (default false) is for an install
+        where whoever sets CONFLUENCE_URL must not reach the backend's own
+        network: each request resolves the host, refuses it when any address
+        is not global (loopback, RFC 1918, link-local, CGNAT, ULA, and the
+        IPv4 inside IPv4-mapped, NAT64, 6to4 and Teredo forms), with a 10 s
+        resolver timeout, and connects to the checked address with the Host
+        header and TLS server name kept as the site's name, so a re-pointed
+        name cannot slip between check and connect. Those requests skip any
+        HTTP(S)_PROXY (a tunnel would verify the certificate against the bare
+        address). confluence_client.config_problem is the Settings check as a
+        pure function, for a caller that writes these settings for someone
+        else and must not write a set the app would refuse to start with.
 
         ACL: a Confluence token is a user's, so the sync sees what that user
         sees, and anything it syncs is retrievable by everyone who talks to

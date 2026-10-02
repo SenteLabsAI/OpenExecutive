@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import re
+import socket
 import ssl
 from dataclasses import dataclass
 from typing import Any
@@ -55,8 +57,112 @@ def sanitize_space_key(value: object) -> str | None:
     return raw if _SPACE_KEY_RE.fullmatch(raw) else None
 
 
+def site_url_problem(url: str | None, *, allow_http: bool = False) -> str | None:
+    """Why ``url`` cannot be ``CONFLUENCE_URL``, or None when it can: an
+    https:// base URL (http:// only with ``allow_http``) with a host and no
+    credentials, query or fragment."""
+    allowed = ("https", "http") if allow_http else ("https",)
+    try:
+        parts = urlsplit((url or "").strip())
+        hostname = parts.hostname
+    except ValueError:
+        return "CONFLUENCE_URL is not a valid URL"
+    if parts.scheme not in allowed or not hostname:
+        return (
+            "CONFLUENCE_URL must be an https:// URL "
+            "(set CONFLUENCE_SYNC_ALLOW_HTTP=true to allow http:// on a private network)"
+        )
+    if parts.username or parts.password or parts.query or parts.fragment:
+        return "CONFLUENCE_URL must be the site's base URL, with no credentials, query or fragment"
+    return None
+
+
+def config_problem(
+    *,
+    url: str | None,
+    personal_token: str | None,
+    username: str | None,
+    api_token: str | None,
+    space_keys: list[str],
+    allow_http: bool = False,
+) -> str | None:
+    """Why these settings cannot run the sync, or None when they can. The
+    same check ``Settings`` applies when ``CONFLUENCE_SYNC_ENABLED=true``, so
+    a caller that writes these settings for someone else can refuse a set
+    the app would not start with."""
+    problem = site_url_problem(url, allow_http=allow_http)
+    if problem:
+        return problem
+    if not personal_token and not (username and api_token):
+        # Both set is fine: the personal access token wins.
+        return (
+            "the sync needs CONFLUENCE_PERSONAL_TOKEN (Server/Data Center), "
+            "or CONFLUENCE_USERNAME and CONFLUENCE_API_TOKEN (Cloud)"
+        )
+    if not space_keys:
+        return "the sync needs CONFLUENCE_SYNC_SPACE_KEYS"
+    bad = [k for k in space_keys if not sanitize_space_key(k)]
+    if bad:
+        return f"CONFLUENCE_SYNC_SPACE_KEYS has invalid space keys: {bad}"
+    return None
+
+
 class ConfluenceResponseTooLarge(Exception):
     """A response would exceed the client's byte cap."""
+
+
+class ConfluenceHostNotPublic(Exception):
+    """With ``CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY``, the site's host resolved to
+    a loopback, private, link-local or otherwise non-public address."""
+
+
+# IPv6 forms that carry an IPv4 address a translator or tunnel may deliver
+# to: NAT64 (RFC 6052 well-known and local-use prefixes) and the deprecated
+# IPv4-compatible ``::a.b.c.d``. The embedded address is what gets checked.
+_EMBEDS_IPV4 = (
+    ipaddress.IPv6Network("64:ff9b::/96"),
+    ipaddress.IPv6Network("64:ff9b:1::/48"),
+    ipaddress.IPv6Network("::/96"),
+)
+_RESOLVE_TIMEOUT_S = 10.0
+
+
+def _is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded: ipaddress.IPv4Address | None = ip.ipv4_mapped or ip.sixtofour
+        if embedded is None and ip.teredo is not None:
+            embedded = ip.teredo[1]
+        if embedded is None and any(ip in net for net in _EMBEDS_IPV4):
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if embedded is not None and not _is_public(embedded):
+            return False
+    return ip.is_global and not ip.is_multicast
+
+
+async def resolve_public_address(host: str, port: int) -> str:
+    """One address ``host`` resolves to, refusing the lot when ANY of them is
+    not a public address (a name that also resolves inward is not trusted).
+    A resolver that does not answer within ``_RESOLVE_TIMEOUT_S`` fails the
+    request like an unreachable site."""
+    try:
+        infos = await asyncio.wait_for(
+            asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM),
+            timeout=_RESOLVE_TIMEOUT_S,
+        )
+    except TimeoutError as exc:
+        raise httpx.ConnectTimeout(f"resolving {host} timed out") from exc
+    addresses: list[str] = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+        except ValueError as exc:
+            raise ConfluenceHostNotPublic(host) from exc
+        if not _is_public(ip):
+            raise ConfluenceHostNotPublic(host)
+        addresses.append(str(ip))
+    if not addresses:
+        raise ConfluenceHostNotPublic(host)
+    return addresses[0]
 
 
 @dataclass(frozen=True)
@@ -126,15 +232,56 @@ async def _sleep_before_retry(response: httpx.Response, attempt: int) -> None:
     await asyncio.sleep(delay)
 
 
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
 class ConfluenceClient:
     """The two calls the sync needs: list a space's pages with version,
     ancestors and read restrictions, and fetch one page's storage body."""
 
-    def __init__(self, http: httpx.AsyncClient, base_url: str, headers: dict[str, str]) -> None:
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        base_url: str,
+        headers: dict[str, str],
+        *,
+        public_hosts_only: bool = False,
+    ) -> None:
         self._http = http
         self._base = base_url.rstrip("/")
         self._api = f"{self._base}/rest/api"
         self._headers = {**headers, "Accept": "application/json"}
+        self._public_hosts_only = public_hosts_only
+
+    async def _target(self, path: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """URL, headers and request extensions for one call. With
+        ``public_hosts_only`` the host is resolved here, checked, and the
+        request sent to that very address (Host header and TLS server name
+        kept, so the certificate is still checked against the site's name).
+        Pinning the address closes the gap a re-resolving name would leave
+        between the check and the connection."""
+        url = httpx.URL(f"{self._api}{path}")
+        if not self._public_hosts_only:
+            return str(url), self._headers, {}
+        # ASCII forms: an IDN site's punycode, and an IPv6 literal in brackets.
+        host = url.raw_host.decode("ascii")
+        port = url.port or (443 if url.scheme == "https" else 80)
+        address = await resolve_public_address(host.strip("[]"), port)
+        extensions: dict[str, Any] = {}
+        if url.scheme == "https" and not _is_ip_literal(host):
+            # An IP-literal site has no name to send; its certificate is
+            # checked against the address instead.
+            extensions["sni_hostname"] = host
+        return (
+            str(url.copy_with(host=address)),
+            {**self._headers, "Host": url.netloc.decode("ascii")},
+            extensions,
+        )
 
     def web_url(self, webui: object) -> str:
         """Absolute link for a ``_links.webui`` path, or "" when it is not a
@@ -154,8 +301,9 @@ class ConfluenceClient:
         loop."""
         cap = _MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
         for attempt in range(_MAX_ATTEMPTS):
+            url, headers, extensions = await self._target(path)
             async with self._http.stream(
-                "GET", f"{self._api}{path}", params=params, headers=self._headers
+                "GET", url, params=params, headers=headers, extensions=extensions
             ) as response:
                 retryable = response.status_code == 429 or response.status_code >= 500
                 if retryable and attempt < _MAX_ATTEMPTS - 1:
