@@ -40,6 +40,7 @@ packages/core/openexecutive/knowledge/external/
 # Local Google Workspace OAuth credential minted by scripts/mint-google-token.py
 # (the live refresh token — never commit)
 .gworkspace-credentials/
+.ms365-credentials/
 # Act as me: scripts/connect-own-gmail.py's default output (a refresh token)
 delegation-credentials/
 

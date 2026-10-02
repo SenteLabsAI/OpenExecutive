@@ -161,6 +161,29 @@ def test_gateway_forwards_embedding_cache_env(
     assert "TRANSFORMERS_OFFLINE" not in env
 
 
+def test_gateway_forwards_ms365_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The microsoft_365 child's `$MS365_MCP_*` placeholders are interpolated by
+    extensible-mcp from ITS environment, so the API's values must be forwarded
+    exactly like the Google ones — and only the ones actually set."""
+    monkeypatch.setenv("MS365_MCP_CLIENT_ID", "client-1")
+    monkeypatch.setenv("MS365_MCP_CREDENTIALS_DIR", "/data/ms365_credentials")
+    monkeypatch.delenv("MS365_MCP_TENANT_ID", raising=False)
+    session = _make_mock_session()
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{}")
+
+    with _FakeMcpModules(session, _make_mock_stdio_cm()):
+        asyncio.run(MCPGateway().start(config))
+        params_cls = sys.modules["mcp"].StdioServerParameters
+        env = params_cls.call_args.kwargs["env"]
+
+    assert env["MS365_MCP_CLIENT_ID"] == "client-1"
+    assert env["MS365_MCP_CREDENTIALS_DIR"] == "/data/ms365_credentials"
+    assert "MS365_MCP_TENANT_ID" not in env
+
+
 def test_gateway_launches_the_pinned_extensible_mcp(tmp_path: Path) -> None:
     """start() must use the shared launch args, so the pin and cutoff the Dockerfile
     pre-warms are what actually runs."""
@@ -375,9 +398,10 @@ _EXAMPLE_CONFIG = _CORE_DIR / "mcp_servers.json.example"
 _DOCKERFILE = _CORE_DIR.parents[1] / "docker" / "Dockerfile"
 
 # Bare (non-absolute) commands the API image can actually resolve on PATH.
-# `uvx` arrives with `pip install uv` in docker/Dockerfile. Node is NOT
-# installed — the image apt-installs only git — so `npx` is not on this list
-# and never should be without a Dockerfile change to match.
+# `uvx` arrives with `pip install uv` in docker/Dockerfile. Node exists in the
+# image only as the absolute-path binary copied in for the co-located
+# Microsoft 365 server (there is no npm/npx), so `npx` is not on this list and
+# never should be without a Dockerfile change to match.
 _IMAGE_INTERPRETERS = frozenset({"uvx"})
 
 
@@ -401,6 +425,22 @@ def test_example_config_parses_and_every_server_is_launchable() -> None:
             f"server '{name}' has neither 'command' nor 'url' — "
             "extensible-mcp's load_config rejects this config outright"
         )
+
+
+def test_example_config_env_placeholders_are_forwarded_by_the_gateway() -> None:
+    """Every `$VAR` a server's `env` block references must be in
+    `_FORWARDED_ENV_VARS`, or the value never reaches extensible-mcp and the
+    child sees the literal placeholder (drift guard for both Google and M365)."""
+    placeholder = re.compile(r"^\$([A-Z0-9_]+)$")
+    for name, server in _example_servers().items():
+        for key, value in (server.get("env") or {}).items():
+            match = placeholder.match(str(value))
+            if match is None:
+                continue
+            assert match.group(1) in _FORWARDED_ENV_VARS, (
+                f"server '{name}' env {key}={value} is not forwarded by "
+                "orchestrator/mcp_gateway._FORWARDED_ENV_VARS"
+            )
 
 
 def test_example_config_commands_are_present_in_the_api_image() -> None:

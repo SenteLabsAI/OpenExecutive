@@ -7,7 +7,8 @@ Exposes two tools to the Executive:
 The handler enforces code-enforced caps regardless of trust-ledger mode, routes
 through gate_action for the MEETING_SCHEDULING scope, writes a decision_instances
 row so the trust ledger fills, and delegates the actual calendar operation to the
-Google Workspace MCP via MCPGateway.call_tool("google_workspace__manage_event").
+configured backend (`integrations.workspace`: Google Calendar via workspace-mcp
+or Outlook via ms-365-mcp-server, per CALENDAR_PROVIDER).
 
 The approve→execute bridge lives in api/routes/decisions.py.
 """
@@ -40,9 +41,10 @@ CREATE_CALENDAR_EVENT_TOOL: dict[str, Any] = {
         "Schedule a FUTURE calendar meeting with one or more people from the "
         "roster (use create_instant_meeting for a call happening right now). "
         "In propose-only mode (default) this creates a Proposal that the "
-        "approver must action before the event is actually created. A Google "
-        "Meet video link is attached automatically unless you set "
-        "add_google_meet=false for an in-person meeting. "
+        "approver must action before the event is actually created. A video-"
+        "meeting link (Google Meet or Microsoft Teams, per the configured "
+        "calendar) is attached automatically unless you set "
+        "add_video_link=false for an in-person meeting. "
         "Use `attendee_person_ids` — NOT raw email addresses — so the system can "
         "verify attendees are on the People roster. "
         "You may use this proactively (e.g. when a goal has stalled and a sync "
@@ -91,10 +93,11 @@ CREATE_CALENDAR_EVENT_TOOL: dict[str, Any] = {
                     "(the account owner). Never assume — always ask first."
                 ),
             },
-            "add_google_meet": {
+            "add_video_link": {
                 "type": "boolean",
                 "description": (
-                    "Whether to attach a Google Meet video link (default true). "
+                    "Whether to attach a video-meeting link — Google Meet or "
+                    "Microsoft Teams, per the configured calendar (default true). "
                     "Set false only for an explicitly in-person meeting."
                 ),
             },
@@ -107,10 +110,11 @@ CREATE_INSTANT_MEETING_TOOL: dict[str, Any] = {
     "name": "create_instant_meeting",
     "description": (
         "Start an impromptu meeting RIGHT NOW with one or more people from the "
-        "roster and get back a Google Meet link to share immediately. Use this "
+        "roster and get back a video-meeting link (Google Meet or Microsoft "
+        "Teams, per the configured calendar) to share immediately. Use this "
         "(not create_calendar_event) when the user wants to meet now / asap, or "
         "when you proactively decide a live call is needed this moment. The event "
-        "starts in ~1 minute and a Google Meet link is always attached. This "
+        "starts in ~1 minute and a video link is always attached. This "
         "books immediately (no approval step) and emails a calendar invite to "
         "every attendee, so use it deliberately. Use `attendee_person_ids` — NOT "
         "raw emails. Supply `confidence` (0.0–1.0) for trust-ledger calibration."
@@ -306,29 +310,6 @@ def _daily_cap_reached(now: datetime, max_per_day: int) -> bool:
         and i.status not in (STATUS_FAILED, "rejected", "auto_no_response")
     ]
     return len(today_instances) >= max_per_day
-
-
-def _extract_meet_link(event: dict[str, Any]) -> str | None:
-    """Pull the Google Meet video URL out of a created-event response.
-
-    The workspace-mcp ``manage_event`` returns the Calendar event object; the
-    Meet link lives under ``conferenceData.entryPoints[].uri`` for the ``video``
-    entry point. Some servers also surface ``hangoutLink`` directly. Tolerant of
-    both snake_case and camelCase key spellings.
-    """
-    for key in ("meet_link", "hangoutLink", "hangout_link"):
-        val = event.get(key)
-        if isinstance(val, str) and val:
-            return val
-    conf = event.get("conferenceData") or event.get("conference_data") or {}
-    if isinstance(conf, dict):
-        entry_points = conf.get("entryPoints") or conf.get("entry_points") or []
-        for ep in entry_points:
-            if isinstance(ep, dict) and ep.get("entryPointType") == "video":
-                uri = ep.get("uri")
-                if isinstance(uri, str) and uri:
-                    return uri
-    return None
 
 
 def _pick_recap_target(
@@ -676,11 +657,14 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     private = _has_contact(attendee_int_ids)
     approver_person_id = _principal_id() if private else gate_decision.assignee_person_id
 
-    # A Google Meet link is requested by default; the model can opt out for an
-    # in-person meeting via add_google_meet=false.
-    add_google_meet = bool(tool_input.get(
-        "add_google_meet", getattr(settings, "calendar_meet_links_enabled", True)
-    ))
+    # A video-meeting link is requested by default; the model can opt out for
+    # an in-person meeting via add_video_link=false. `add_google_meet` is the
+    # pre-rename spelling, still honoured for callers that learned it.
+    from openexecutive.integrations.workspace.calendar import wants_video_link
+
+    add_video_link = wants_video_link(
+        tool_input, getattr(settings, "calendar_meet_links_enabled", True)
+    )
 
     # Build the payload that will be re-used at execute time.
     proposed_payload = {
@@ -690,7 +674,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         "attendee_emails": attendee_emails,
         "attendee_person_ids": attendee_int_ids,
         "description": description,
-        "add_google_meet": add_google_meet,
+        "add_video_link": add_video_link,
         **({"private": True} if private else {}),
     }
 
@@ -759,7 +743,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
 
 
 async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
-    """Book an impromptu meeting starting now and return the Google Meet link.
+    """Book an impromptu meeting starting now and return the video-meeting link.
 
     Unlike create_calendar_event this auto-executes immediately (no approval
     step — the user asked for a call *now*) and skips the horizon and
@@ -845,7 +829,7 @@ async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
         "attendee_emails": attendee_emails,
         "attendee_person_ids": attendee_int_ids,
         "description": description,
-        "add_google_meet": True,  # instant meetings always get a Meet link
+        "add_video_link": True,  # instant meetings always get a video link
         **({"private": True} if _has_contact(attendee_int_ids) else {}),
     }
 
@@ -897,79 +881,37 @@ async def _do_create_event(
     gateway: Any,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Call google_workspace__manage_event action=create via the MCP gateway.
+    """Create the event through the configured calendar backend.
 
-    Returns a dict with "event_id" (and "meet_link" when a Google Meet link was
+    Returns a dict with "event_id" (and "meet_link" when a video link was
     minted) on success, or "error" on failure. On success it also schedules the
-    best-effort post-meeting recap follow-up. The gateway backstop
-    (_check_calendar_attendees) will run again on this call — belt-and-suspenders.
+    best-effort post-meeting recap follow-up. The gateway backstop (the
+    provider's attendee egress gate) will run again on this call —
+    belt-and-suspenders.
     """
-    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import get_calendar_provider
 
-    settings = get_settings()
-    arguments: dict[str, Any] = {
-        "action": "create",
-        "summary": payload["title"],
-        "start_time": payload["start"],
-        "end_time": payload["end"],
-        "attendees": payload["attendee_emails"],
-        "send_updates": "all",
-    }
-    # Request a Google Meet link unless the payload explicitly opted out.
-    if bool(payload.get("add_google_meet", getattr(settings, "calendar_meet_links_enabled", True))):
-        arguments["add_google_meet"] = True
-    if payload.get("description"):
-        arguments["description"] = payload["description"]
-
+    result = await get_calendar_provider().create_event(gateway, payload)
+    if "error" in result:
+        return result
+    # Best-effort: a follow-up failure must never break a successful booking.
     try:
-        raw = await gateway.call_tool({
-            "name": "google_workspace__manage_event",
-            "arguments": arguments,
-        })
-        result = json.loads(raw) if isinstance(raw, str) else raw
-        # If the MCP returned an error dict, surface it directly.
-        if isinstance(result, dict) and "error" in result:
-            return {"error": result["error"]}
-        # The MCP returns the event object; extract the id field.
-        event_id = (
-            result.get("id")
-            or result.get("event_id")
-            or result.get("eventId")
+        await _schedule_post_meeting_followup(
+            payload, result.get("event_id"), result.get("meet_link")
         )
-        meet_link = _extract_meet_link(result) if isinstance(result, dict) else None
-        out: dict[str, Any] = {"event_id": event_id, "raw": result}
-        if meet_link:
-            out["meet_link"] = meet_link
-        # Best-effort: a follow-up failure must never break a successful booking.
-        try:
-            await _schedule_post_meeting_followup(payload, event_id, meet_link)
-        except Exception:
-            logger.exception("calendar_tools: post-meeting follow-up scheduling failed")
-        return out
-    except Exception as exc:
-        logger.exception("calendar_tools: manage_event create failed")
-        return {"error": str(exc)}
+    except Exception:
+        logger.exception("calendar_tools: post-meeting follow-up scheduling failed")
+    return result
 
 
 async def _do_delete_event(
     gateway: Any,
     external_event_id: str,
 ) -> dict[str, Any]:
-    """Call google_workspace__manage_event action=delete via the MCP gateway."""
-    try:
-        raw = await gateway.call_tool({
-            "name": "google_workspace__manage_event",
-            "arguments": {
-                "action": "delete",
-                "event_id": external_event_id,
-                "send_updates": "all",
-            },
-        })
-        result = json.loads(raw) if isinstance(raw, str) else raw
-        return result if isinstance(result, dict) else {"ok": True}
-    except Exception as exc:
-        logger.exception("calendar_tools: manage_event delete failed")
-        return {"error": str(exc)}
+    """Delete the event through the configured calendar backend."""
+    from openexecutive.integrations.workspace.registry import get_calendar_provider
+
+    return await get_calendar_provider().delete_event(gateway, external_event_id)
 
 
 async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:

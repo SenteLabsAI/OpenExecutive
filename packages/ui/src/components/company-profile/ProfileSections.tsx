@@ -245,7 +245,9 @@ function usePendingSection(
 ): [boolean, (v: boolean) => void] {
   const [editing, setEditing] = useState(false);
   const appliersRef = useRef(appliers);
-  appliersRef.current = appliers;
+  useEffect(() => {
+    appliersRef.current = appliers;
+  });
   useEffect(() => {
     if (!pending) return;
     let touched = false;
@@ -485,7 +487,7 @@ function PrioritiesSection({ profile, saving, onSave, pending }: SectionComponen
       onSave={() => onSave({ strategic_priorities: { current_year: textToList(priorities), north_star_metric: northStar } })}
       viewContent={
         <div className="space-y-4">
-          <div><FieldLabel>This Year's Priorities</FieldLabel><Pills items={profile.strategic_priorities.current_year} /></div>
+          <div><FieldLabel>This Year&apos;s Priorities</FieldLabel><Pills items={profile.strategic_priorities.current_year} /></div>
           <div><FieldLabel>North Star Metric</FieldLabel><FieldValue>{profile.strategic_priorities.north_star_metric}</FieldValue></div>
         </div>
       }

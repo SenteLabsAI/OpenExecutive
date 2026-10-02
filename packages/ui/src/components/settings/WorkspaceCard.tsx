@@ -59,7 +59,7 @@ export default function WorkspaceCard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const browserZone = useMemo(browserTimeZone, []);
+  const browserZone = useMemo(() => browserTimeZone(), []);
   const zones = useMemo(() => {
     const list = allTimeZones();
     // A stored zone the browser's list lacks (e.g. "UTC" in some engines)

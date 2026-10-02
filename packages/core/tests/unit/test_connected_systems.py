@@ -45,10 +45,12 @@ def test_the_manifest_is_google_workspace_tools_without_apps_script() -> None:
     for name in PINNED_GOOGLE_TOOLS:
         assert name.startswith("google_workspace__")
         assert "script" not in name
-    # The names the code already calls through the gateway are all pinned.
+    # The Google names the code already calls through the gateway are all
+    # pinned (the private-turn list also holds their Microsoft 365 twins).
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS
 
-    assert PRIVATE_TURN_MCP_TOOLS <= PINNED_GOOGLE_TOOLS
+    google = {n for n in PRIVATE_TURN_MCP_TOOLS if n.startswith("google_workspace__")}
+    assert google <= PINNED_GOOGLE_TOOLS
 
 
 # ── the rendered section ────────────────────────────────────────────────────

@@ -107,6 +107,14 @@ MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "google_workspace__query_freebusy",
     "google_workspace__search_drive_files",
     "google_workspace__search_gmail_messages",
+    # The same reads of an Outlook mailbox (EMAIL_PROVIDER=microsoft).
+    "microsoft_365__get-calendar-event",
+    "microsoft_365__get-calendar-view",
+    "microsoft_365__get-mail-message",
+    "microsoft_365__list-calendar-events",
+    "microsoft_365__list-calendars",
+    "microsoft_365__list-mail-folder-messages",
+    "microsoft_365__list-mail-messages",
 })
 
 REFUSAL = (

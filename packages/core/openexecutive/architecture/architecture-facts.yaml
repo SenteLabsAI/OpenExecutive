@@ -904,18 +904,35 @@ routing:
       `artifact_records` (unknown / non-artifact ids error, nothing sent).
       The link rides the normal DM path, outbound guard included; it only
       opens for people with Open Executive access.
-    - Gmail send / draft through the MCP gateway may attach
-      `{"artifact_id", "as"?}`; `mcp_gateway._expand_artifact_attachments`
-      renders it with `artifact_records.render_artifact_file` (shared with
-      `/download`) into workspace-mcp's `{content, filename, mime_type}`
-      shape, AFTER the recipient gate passes. Normalises a stringified or
+    - A mail send / draft through the MCP gateway may attach
+      `{"artifact_id", "as"?}`; the shared `mcp_gateway._expand_artifact_
+      entries` renders it with `artifact_records.render_artifact_file`
+      (shared with `/download`) AFTER the recipient gate passes, into the
+      backend's shape: workspace-mcp's `{content, filename, mime_type}` for
+      the Gmail tools (`_expand_artifact_attachments`, top-level
+      `attachments`), or a Graph `#microsoft.graph.fileAttachment`
+      (`name, contentType, contentBytes`) for the Microsoft 365 mail writes
+      (`_expand_m365_artifact_attachments`). The Graph location is per tool
+      (`_M365_ARTIFACT_MESSAGE_PATHS`: `body.Message.attachments` for
+      send-mail / reply / forward / createReply* drafts, `body.attachments`
+      for create-draft-email); an entry the model put at the top level (where
+      the artifact tool text says) or inside the message is read from either
+      place and written to the Graph one; an artifact entry ANYWHERE else in
+      the arguments (the other tool's location, an unrelated key, a
+      stringified copy) is refused, as is one on update-mail-message /
+      send-draft-message (their requests cannot carry attachments) or behind
+      a `body` that is not an object (writing through it would replace the
+      model's message with an empty one) — nothing is ever forwarded
+      unexpanded. Normalises a stringified or
       single-object `attachments` first (an unexpanded artifact entry would be
-      silently skipped by workspace-mcp). Refuses unknown / non-artifact ids,
-      links, extra keys, more than 5 distinct artifacts (repeats dropped) and
-      over 15 MB rendered in total; renders via `asyncio.to_thread`. Audits
-      `artifact_attachment_refused` on refusal and `artifact_attached` only
-      after a non-error send, both with recipients. Other attachment entries
-      are untouched.
+      silently skipped by workspace-mcp, rejected by Graph). Refuses unknown /
+      non-artifact ids, links, extra keys, more than 5 distinct artifacts
+      (repeats dropped) and over 15 MB rendered in total; renders via
+      `asyncio.to_thread`. Audits `artifact_attachment_refused` on refusal and
+      `artifact_attached` only after a non-error send, both with recipients
+      (`_audit_recipients`: Gmail's to/cc/bcc or the Graph message's
+      recipient lists). Other attachment entries are untouched; the gate
+      skips OData annotation KEYS (`@odata.type`) whose `@` is not an address.
     Side-effecting (`draft_artifact` only): a `tool_invocation` audit row
     (actor="executive", details carry `format`, `supersedes`) and an
     `action_taken` chip ("Drafted artifact for review: {title}") linking to
@@ -6374,6 +6391,10 @@ integrations:
         roster-checked) and ``forward_message_id`` /
         ``include_forwarded_attachments`` (forward any inbox message)
         are refused.
+      • Outlook (Microsoft 365) send/reply/forward/draft/update and
+        create-/update-calendar-event are gated by
+        ``_check_m365_recipients`` on the same roster set; see
+        ``mcp_gateway`` for the nested-shape walk.
       • ``send_telegram_message`` and ``send_discord_dm`` apply the
         same People-roster check pre-send.
       • Contacts (``people.kind``, private to the principal): a contact's
@@ -6400,21 +6421,36 @@ integrations:
     TELEGRAM_ALLOWED_CHAT_IDS / DISCORD_ALLOWED_USER_IDS) have been
     removed; access is managed entirely via the /people UI.
   email_poller: |
-    Gmail poll loop in openexecutive.integrations.email_poller — reads
-    and marks mail through the Google Workspace MCP's Gmail tools (no
-    IMAP/SMTP), and runs as an asyncio task in the FastAPI lifespan,
-    started only once the MCP gateway is up. While the Executive is
-    paused (scheduler.pause) each poll is skipped and the inbox left
-    unread, so held mail is processed after resume. Strips Reply-To
-    headers to defend against redirect attacks; filters auto-replies
-    (mailer-daemon, noreply senders) and self-sent messages. INBOUND
+    MCP poll loop in openexecutive.integrations.email_poller — runs
+    as an asyncio task in the FastAPI lifespan, started by
+    api.main._start_mcp_gateway once the gateway is up. It talks to the
+    Executive's mailbox through the configured mail backend
+    (integrations.workspace, EMAIL_PROVIDER: ``google`` = Gmail via
+    workspace-mcp, ``microsoft`` = Outlook via ms-365-mcp-server — see
+    ``workspace_providers`` below): provider.list_unread → provider.fetch
+    → render_for_executive → Executive.chat → provider.mark_read. The
+    backend never surfaces a Reply-To-style redirect header (Google strips
+    them from the raw text; the Microsoft rendering has none), defending
+    against redirect attacks; the poller filters auto-replies
+    (mailer-daemon, noreply senders) and self-sent messages. Every backend
+    renders the same Subject/From/To/Cc + ``--- BODY ---`` text the persona
+    expects, followed by a ``--- REPLY ---`` block naming the exact reply
+    tool and threading ids for THIS message (Gmail: send_gmail_message +
+    thread_id; Outlook: reply-mail-message + messageId). That block rides
+    in the user turn, which is what lets the cached persona say "use the
+    reply tool in the REPLY block" instead of naming a vendor tool.
+    Fail-soft: EMAIL_PROVIDER naming a server absent from mcp_servers.json
+    logs one ERROR per cycle and skips, never crashes the loop. While the
+    Executive is paused (scheduler.pause) each poll is skipped and the
+    inbox left unread, so held mail is processed after resume. INBOUND
     is NOT roster-gated — see ``channel_access`` for the split. When
     the sender isn't on the People roster the poller prepends a
     [POLICY] notice to the message body the Executive sees, so the
     model picks a non-reply path (classify, log, alert, propose-add-
     to-roster) instead of wasting a turn discovering the outbound
-    block. The outbound gate at ``mcp_gateway._check_gmail_recipients``
-    is the actual security boundary against auto-replying to spam.
+    block. The outbound gate at ``mcp_gateway._check_gmail_recipients`` /
+    ``_check_m365_recipients`` is the actual security boundary against
+    auto-replying to spam.
     Mail from one of the principal's CONTACTS gets a contact [POLICY]
     notice instead (`_contact_notice`): it names them (name, role /
     company), says not to reply unless the principal asks, and asks for
@@ -6472,8 +6508,25 @@ integrations:
     added. ``replay_held_email`` (registered as the email replayer)
     re-fetches the message from Gmail after approval and handles it as
     new mail from a now-known sender.
+
+    On an Outlook mailbox (EMAIL_PROVIDER=microsoft) the same flow runs on
+    the provider's rendered text (`workspace.mail.render_message`, the
+    Gmail layout), with three differences: no sender is ever
+    authenticated (`fact_confirmation.read_raw` reads nothing for a
+    non-Google backend, so `sender_authenticated` is False — no roster
+    acknowledgement, no emailed fact confirmation, the principal's mail
+    is never `email_authenticated`); attachments stay a list (the
+    download is Gmail's); and the code's own emails to the principal
+    (roster-request prompt and reply, fact confirmation, scheduled
+    deliveries) go through `workspace.registry.send_from_executive`, the
+    configured backend's send tool. The `--- REPLY ---` block naming the
+    reply tool is appended after the untrusted-content block, never
+    inside it.
     Peer memory records ``_email_memory_text(raw)`` as the sender's
-    words, not the prompt: the subject, the body cut at the first quoted
+    words, not the prompt (the poller's own trailing ``--- REPLY ---``
+    block is dropped first — it is the LAST such line, a forged copy in
+    the body having been quoted by workspace.mail._neutralize_markers):
+    the subject, the body cut at the first quoted
     or forwarded message (Gmail's possibly-wrapped "On … wrote:",
     "-----Original Message-----", an Outlook From:/Sent: block, "--
     Forwarded message --", ">" lines) and the ``--- ATTACHMENTS ---``
@@ -6490,6 +6543,54 @@ integrations:
     inbound email (at least 5 model calls per message, ``medium`` Honcho
     prefetch) and removed because the revision pass never reaches
     Gmail anyway (outbound mail is sent from the draft's tool loop).
+  workspace_providers: |
+    openexecutive.integrations.workspace — the mailbox and calendar the
+    Executive ITSELF runs on, behind two Protocols (MailProvider,
+    CalendarProvider) with one module per backend (google.py, microsoft.py)
+    and a registry keyed on settings (EMAIL_PROVIDER / CALENDAR_PROVIDER,
+    Literal["google","microsoft"], default google, separate switches because
+    Outlook mail + Google Calendar is legitimate). Layout mirrors
+    openexecutive.providers. Why it exists: the Executive can DISCOVER any
+    mail/calendar tool the gateway exposes, but three paths call a fixed
+    backend with no model in the loop and used to spell Gmail tool names
+    inline — the email poller (list/fetch/mark-read), alert email dispatch +
+    the scheduler's email send-tool hint (alerts.dispatcher.dispatch_email,
+    scheduler.runner), and the typed booking tools + the approval-time
+    conflict check (orchestrator.calendar_tools._do_create_event /
+    _do_delete_event, api.routes.decisions). Those now delegate; nothing else
+    changed. The google backend is the old inline code moved verbatim (tests
+    pin the argument dicts byte-for-byte). The microsoft backend: inbox
+    polling via list-mail-folder-messages (mailFolderId=inbox, filter
+    "isRead eq false" — never the all-folders /me/messages, which includes
+    Junk/Deleted), get-mail-message with HTML→text (workspace/_html, a real
+    HTMLParser) plus one list-mail-attachments call when hasAttachments, so
+    the ATTACHMENTS section carries the same `N. name (mime, size KB)` lines
+    workspace-mcp prints for Gmail (inline parts skipped; the sender-
+    controlled name and MIME type are whitespace-collapsed / restricted to
+    media-type characters and length-capped so they cannot forge or break a
+    line; names go to peer memory via email_poller._attachment_name; on a
+    failed listing only the download-bytes hint remains), mark read via
+    update-mail-message
+    {isRead:true}, send via
+    send-mail's nested Graph shape (body.Message.toRecipients[].emailAddress),
+    events via create-calendar-event with isOnlineMeeting +
+    onlineMeetingProvider=teamsForBusiness and the Teams join link read from
+    onlineMeeting.joinUrl (one re-read of the event if Graph returns before
+    the meeting is attached), delete-calendar-event to cancel, and the
+    advisory conflict check via get-calendar-view on the Executive's OWN
+    calendar (delegated permissions cannot read attendees' free/busy — narrower
+    than Google's query_freebusy, documented as such). The typed tools' video
+    flag was renamed add_google_meet → add_video_link (Meet or Teams per
+    CALENDAR_PROVIDER); calendar.wants_video_link still honours the old key
+    for decision-ledger payloads written before the rename. INVARIANT: a
+    provider never raises on a malformed backend response — [] / None /
+    {"error": …} — so one bad poll cycle or booking never kills a loop.
+    INVARIANT: the persona and the cached calendar tool definitions stay
+    backend-neutral static text; the per-provider detail (which tool, which
+    ids) rides in the user turn (REPLY block, scheduler hint). Startup logs
+    both choices (registry.log_provider_status) and WARNS when a chosen
+    backend's server is not in mcp_servers.json — fail-soft, never a boot
+    failure, matching the calendar_booking_enabled precedent.
   slack: |
     openexecutive.integrations.slack_bot — async Bolt socket-mode
     adapter (``AsyncApp`` + ``AsyncSocketModeHandler``) embedded in the
@@ -6917,6 +7018,77 @@ integrations:
     the child's env block from its own environment. No separate service, deploy
     credential, or deploy job. See docs/deployment.md.
 
+    Microsoft 365 hosting (the Outlook twin of the block above): the
+    microsoft_365 server is @softeria/ms-365-mcp-server, a Node package,
+    pinned (0.154.2) and installed in a throwaway `node:20-bookworm-slim`
+    build stage with `--omit=optional` (skips keytar, the native OS-keychain
+    binding); only the node binary and the installed package are copied into
+    the python API image (docker/Dockerfile; libstdc++6 added for the node
+    binary; a /usr/local/bin/ms-365-mcp-server wrapper is written there). A
+    build-time smoke runs the launcher's exact flag combo
+    (`--preset mail,calendar --list-permissions`) so a bump that breaks a flag
+    fails the build, not production. Launched by docker/ms365-mcp-launch.sh
+    as the `command` of the microsoft_365 entry. Auth is MSAL device-code
+    against the operator's OWN Entra app (MS365_MCP_CLIENT_ID is REQUIRED;
+    the server's built-in Softeria client id is refused): the refresh token
+    persists at MS365_MCP_CREDENTIALS_DIR=/data/ms365_credentials (0700,
+    file-backed store because MS365_MCP_USE_KEYTAR=0), seeded once with
+    `ms365-mcp-launch.sh --login` from inside the container (the server has a
+    native device-code CLI, so unlike Google there is no mint script and no
+    file to copy). MS365_MCP_EXPECTED_USERNAME pins the bound account.
+    INVARIANT (launcher): extensible-mcp leaves an UNSET `$VAR` placeholder
+    as the literal string "$VAR" in the child's env, so the launcher scrubs
+    any MS365_MCP_* value starting with "$" back to unset before its checks —
+    otherwise MSAL would be handed "$MS365_MCP_TENANT_ID" as an authority.
+    INVARIANT: the MS365_MCP_* vars are in _FORWARDED_ENV_VARS
+    (test_mcp_gateway guards that every `$VAR` in the example config's env
+    blocks is forwarded).
+    Tool surface: the launcher starts the server with an EXPLICIT allow-list
+    (`--enabled-tools`, an anchored regex of ~28 Outlook mail + calendar tool
+    names, DEFAULT_ENABLED_TOOLS in the launcher), NOT the upstream
+    `mail,calendar` preset. Security review showed the preset also registers
+    recipient-carrying tools the gate never saw — forward-calendar-event,
+    create-/update-specific-calendar-event, create-/update-mail-rule (a
+    persistent forwardTo/redirectTo of all future inbound mail),
+    update-mailbox-settings (external auto-reply), calendar permission sharing,
+    whole-calendar delete, download-bytes-to-file (writes to the container
+    filesystem) — and an upstream bump could add more. With the allow-list the
+    scopes requested at --login are exactly Mail.ReadWrite, Mail.Send,
+    Calendars.ReadWrite (+ User.Read/offline_access); MailboxSettings.* is no
+    longer requested. INVARIANT: every tool the allow-list admits is either
+    roster-gated in mcp_gateway (_GATED_M365_*, the by-id lookups, the
+    download-bytes target pin) or carries no recipient (test_ms365_launcher
+    pins the exact set). The gate ALSO covers the excluded writers (mail
+    rules, mailbox settings, specific-calendar, forward-calendar-event,
+    calendar permissions) so an operator who widens the list via
+    MS365_MCP_ENABLED_TOOLS / MS365_MCP_PRESET still gets the roster check;
+    the example config denies mail-rule / mailbox-settings /
+    calendar-permission tools as a third layer. Tool names are HYPHENATED
+    Graph endpoint aliases (`microsoft_365__send-mail`), proxied verbatim by
+    extensible-mcp; the underscore deny globs in mcp_servers.json therefore do
+    not match them, and the example config carries hyphenated patterns
+    (`*delete-mail*`, `*__logout`, `*__remove-account`,
+    `*download-bytes-to-file*`). Deliberately NOT denied: delete-calendar-event,
+    the only cancel path (Google parity with manage_event action=delete). The
+    gate is keyed to the literal server name `microsoft_365`;
+    registry.log_provider_status warns at startup about a look-alike server
+    under another name (which would expose the same tools ungated).
+    Account tools: ms-365-mcp-server registers login, logout, verify-login,
+    list-accounts, select-account and remove-account whatever
+    `--enabled-tools` says, so neither the launcher allow-list nor an
+    operator-merged deny glob can be relied on. INVARIANT: MCPGateway.call_tool
+    refuses login / logout / select-account / remove-account
+    (_BLOCKED_M365_AUTH_TOOLS, matched via _normalize_tool_name, checked
+    before any argument gate) with the standard _refuse error and an
+    integration_outbound_blocked audit row, independent of operator config,
+    and MCPGateway.search_tools drops them from search results
+    (_drop_blocked_tools) so the model is never offered them. A chat turn
+    therefore cannot sign the mailbox out, wipe the seeded token, switch the
+    acting account or start a device-code sign-in for an account someone
+    else controls; setup is only the launcher's `--login`. The read-only
+    verify-login / list-accounts stay callable. The example config's deny
+    globs remain as defense in depth.
+
     Acting-account pin: workspace-mcp takes the acting Google account per
     call (user_google_email). Nothing checked it, so a model-chosen address
     could open another mailbox the server holds a credential for, or under
@@ -7049,8 +7221,8 @@ integrations:
     every pending request with CONNECTION_CLOSED, so initialize() raises
     McpError); only the silent one needed a clock.
 
-    Egress gating: MCPGateway.call_tool intercepts three tool families before
-    delegating to the MCP subprocess. All three resolve the allow-list from the
+    Egress gating: MCPGateway.call_tool intercepts four tool families before
+    delegating to the MCP subprocess. All four resolve the allow-list from the
     shared _roster_allow_set() helper, which returns a people.identity.RosterAllow
     (a set-like object: exact primaries and aliases, plus — for a teammate — any
     address on a company domain whose local part matches theirs, the rule
@@ -7060,6 +7232,81 @@ integrations:
     contact's address is refused exactly like a stranger's, so the refusal never
     reveals a contact. A private turn (Session.private_to_principal) narrows it
     to the principal's address and the exec's:
+    - Microsoft 365 (_GATED_M365_MAIL_TOOLS: send-mail, reply-/reply-all-/
+      forward-mail-message, create-draft-email, create-reply-/reply-all-/
+      forward-draft, update-mail-message, send-draft-message;
+      _GATED_M365_CALENDAR_TOOLS: create-/update-calendar-event — matched via
+      _normalize_tool_name, which lowercases and collapses "-"/"_" so a proxy
+      rewrite of hyphens cannot un-gate a tool): Graph nests recipients
+      (body.Message.toRecipients[].emailAddress.address, body.attendees[]…),
+      so _check_m365_recipients walks EVERY string in the argument tree — keys
+      and values, any depth — except the free-text keys in
+      _M365_FREE_TEXT_KEYS (content, subject, comment, bodyPreview; NOT
+      "body", which is also the request-body wrapper); every email-shaped
+      token must be on the roster, any C0 control character is refused
+      (header injection via a display name), any non-exempt string that
+      contains "@" but is not pure ASCII is refused (_EMAIL_RE is ASCII-only,
+      so an internationalized domain like evïl.example would otherwise yield
+      no match and pass while Graph still delivers), and so is any non-exempt
+      string with a quote or a stray "@" the regex does not account for (a
+      quoted local part like "a@roster"@evil.example). Fail-closed on
+      unforeseen keys
+      (replyTo, internetMessageHeaders values…). The free-text exemption is
+      safe only because the server's send shapes are JSON objects — a body
+      string cannot address anyone; a raw-MIME send tool, should one appear,
+      must be gated separately or denied. update-mail-message is gated because
+      it can PATCH toRecipients onto a draft that send-draft-message later
+      sends; delete-calendar-event and all reads pass through. RSVP
+      (accept / decline / tentatively-accept) and cancel-calendar-event are
+      gated by an EVENT lookup (_check_m365_referenced_event →
+      get-calendar-event, select organizer/attendees): their free-text
+      comment is emailed by Exchange to the organizer (RSVP) or every
+      attendee (cancel), none of whom is in the arguments — an attacker's
+      invite could otherwise exfiltrate text through a decline comment.
+      download-bytes (a generic authenticated Graph GET proxy in
+      ms-365-mcp-server) is pinned by _check_m365_download_target to
+      /me/messages/{id}/attachments/{id}/$value, the only shape the
+      Executive needs, so the read side of the allow-list cannot be
+      bypassed through it. The reply family is different: Graph's reply /
+      reply-all / send-draft actions carry NO recipient in their arguments —
+      the recipient is whoever the referenced messageId names — so the
+      argument walk alone would let a reply to an unrostered sender through.
+      For _M365_REPLY_BY_ID_TOOLS (reply-mail-message, reply-all-mail-message,
+      create-reply-draft, create-reply-all-draft, send-draft-message) the gate
+      first READS the referenced message through the server
+      (_check_m365_referenced_message → get-mail-message, select
+      from/replyTo/to/cc/bcc) and roster-checks the recipients Graph will
+      derive: replyTo-else-from for a reply, plus the original to/cc for
+      reply-all, the draft's own to/cc/bcc for send-draft. Reply-all checks
+      the UNION of replyTo and from (plus to/cc), failing closed whichever of
+      them Graph addresses. INVARIANT:
+      fail-closed — a missing messageId, a lookup error/exception, a
+      non-object result, or a message implying no addressable recipient all
+      refuse the call.
+      Sender pin (_check_m365_sender, every _GATED_M365_MAIL_TOOLS call,
+      before the recipient walk): Graph lets a delegated caller set from /
+      sender to any mailbox it holds Send As / Send on Behalf on, and replyTo
+      steers every reply, while the roster walk would accept a rostered
+      colleague's address there. Any key normalizing to from, sender or
+      replyto (any depth, any spelling), or an internet-header pair named
+      one of them, may carry only EXEC_EMAIL_ADDRESS (case-insensitive) in
+      any string containing "@"; display names pass, leaving the field out
+      sends as the signed-in mailbox. The Outlook twin of the Gmail
+      acting-account pin (_check_acting_account).
+      Move guard (_check_m365_move_destination): move-mail-message into the
+      well-known folders deletedItems, junkEmail, recoverableItemsDeletions
+      or recoverableItemsPurges (any destinationId, any depth,
+      case-insensitive) is refused, so a move cannot be used as an ungated
+      trash; a non-string destinationId is refused too. An opaque folder id
+      is not resolved, so only the well-known names are caught. This is what makes the poller's [POLICY] promise ("the
+      gateway will block a reply to an unrostered sender") true on Outlook.
+      The rendered inbound text also defangs any `--- REPLY ---` /
+      `--- BODY ---` / `--- ATTACHMENTS ---` line inside a body (quoted with
+      "> ") so a message cannot forge the block the persona reads the reply
+      tool from. After a successful send-mail (not reply/forward,
+      which name the recipient only by message id) an outbound_context linkage
+      is recorded per to/cc address (_record_m365_outbound_context), sharing
+      _record_outbound_context_for with the Gmail path.
     - Gmail (_GATED_GMAIL_TOOLS): to/cc/bcc must be on the People roster
       or the exec address; unknown argument keys rejected. One exception,
       checked after the key checks and before the roster check:
@@ -7222,14 +7469,20 @@ integrations:
         card) nor reveal that one exists. mark_reversed is also called with
         decision_class, so the ledger refuses the wrong class itself.
 
-    Google Meet links: every booking requests a Meet link by default via
-    add_google_meet=true on the manage_event call (workspace-mcp builds the
-    conferenceData createRequest; conferenceDataVersion=1). The video URL is
-    parsed back out of conferenceData.entryPoints[type=video].uri and surfaced
-    in the tool result + persisted on the decision_instances final_payload as
-    `meet_link`. The model can opt out per-event with add_google_meet=false for
-    an in-person meeting (gate: CALENDAR_MEET_LINKS_ENABLED, default true).
-    Instant meetings always attach a link.
+    Video links: every booking requests a video-meeting link by default —
+    on Google via add_google_meet=true on the manage_event call (workspace-mcp
+    builds the conferenceData createRequest; conferenceDataVersion=1; the URL
+    is parsed back out of conferenceData.entryPoints[type=video].uri), on
+    Microsoft via isOnlineMeeting + onlineMeetingProvider=teamsForBusiness (URL
+    from onlineMeeting.joinUrl) — per CALENDAR_PROVIDER (see
+    ``workspace_providers``). Either way it is surfaced in the tool result +
+    persisted on the decision_instances final_payload as `meet_link`. The
+    model can opt out per-event with add_video_link=false for an in-person
+    meeting (gate: CALENDAR_MEET_LINKS_ENABLED, default true; the pre-rename
+    add_google_meet key is still accepted). Instant meetings always attach a
+    link. The typed tools' descriptions are static, backend-neutral text
+    ("Google Meet or Microsoft Teams, per the configured calendar") so the
+    cached tool block never depends on settings.
 
     Around-the-meeting participation: on any successful booking, a best-effort
     post-meeting follow-up is scheduled (CALENDAR_POST_MEETING_FOLLOWUP_ENABLED,

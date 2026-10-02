@@ -44,6 +44,20 @@ _SENSITIVE_SUBSTRINGS = (
     "get_thread",
     "search_threads",
     "get_event",
+    # Microsoft 365 (ms-365-mcp-server) mail/calendar readers — hyphenated
+    # names, so the underscore entries above do not match them. Graph list/get
+    # responses carry full bodies, attendee lists and inline attachment bytes.
+    # Substrings on purpose: "mail-message" covers get-/list-mail-messages/
+    # update-/…, "folder-messages" the folder-scoped listing (its name has no
+    # "mail-message" run), "calendar-event" the get/list/specific variants.
+    "mail-message",
+    "folder-messages",
+    "mail-attachment",
+    "download-bytes",
+    "calendar-event",
+    "calendar-view",
+    "get-schedule",
+    "find-meeting-times",
     # Roster tools: on the principal's turn they carry the principal's
     # contacts (names, kind, addresses), which are private to the principal,
     # and the audit log is readable by every signed-in user. Redacted for

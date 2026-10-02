@@ -405,7 +405,7 @@ export default function DepartmentDetailPage() {
                           </div>
                         ))}
                         <p className="text-[10px] text-fg-muted mt-1">
-                          When set, the specialist posts a check-in on this schedule. You'll see it in Today.
+                          When set, the specialist posts a check-in on this schedule. You&apos;ll see it in Today.
                           Examples (UTC): <code className="font-mono">daily@09:00</code>, <code className="font-mono">weekly@mon@09:00</code>, <code className="font-mono">quarterly@01-09:00</code>.
                         </p>
                       </div>

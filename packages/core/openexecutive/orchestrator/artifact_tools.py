@@ -91,8 +91,9 @@ DRAFT_ARTIFACT_TOOL: dict[str, Any] = {
         "publish the new version with `supersedes` set to its id; the old "
         "version is archived.\n\n"
         "To deliver it: message_person(person_id, text, artifact_id) sends "
-        "its title and link; to email the file itself, call the Gmail send "
-        "or draft tool with attachments=[{\"artifact_id\": \"<id>\"}] (add "
+        "its title and link; to email the file itself, call the mail send "
+        "or draft tool (Gmail or Outlook) with "
+        "attachments=[{\"artifact_id\": \"<id>\"}] (add "
         "\"as\": \"docx\" to send a Markdown artifact as Word) and it is "
         "rendered and attached for you."
     ),

@@ -41,8 +41,10 @@ from openexecutive.prompts.executive_persona import (
 from ._agent_loop_fakes import FinalMsg, ScriptedProvider, TextBlock, ToolUseBlock
 
 # sha256 of EXECUTIVE_PERSONA_PROMPT before it was split into sections. The
-# split must not move a single byte of the team prompt.
-TEAM_PERSONA_SHA256 = "43d49a6d9170e8278503371a5ef27e03777d29435b36b20ecbe2864f1e02d347"
+# split must not move a single byte of the team prompt. Updated once since,
+# deliberately: the inbound-email reply step names the `--- REPLY ---` block
+# instead of the Gmail send tool, so it holds for Outlook too.
+TEAM_PERSONA_SHA256 = "419725695c173451666ff8a64849bb13a5fabcbbb8f56ac0c1831e0cf61db5c4"
 
 SOLO_HEADINGS = (
     "## You Work for One Person",

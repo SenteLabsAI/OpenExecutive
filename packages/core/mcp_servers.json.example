@@ -1,9 +1,11 @@
 {
-  "_comment": "google_workspace runs workspace-mcp co-located as a stdio child via docker/workspace-mcp-launch.sh, which selects the auth mode from GWORKSPACE_AUTH_MODE (oauth | service_account). The $VAR values in its env block are interpolated by extensible-mcp from the API's environment, so the API must have those secrets set and orchestrator/mcp_gateway.py forwards them (_FORWARDED_ENV_VARS). For local dev without the launcher script, use {\"command\":\"uvx\",\"args\":[\"workspace-mcp\",\"--tool-tier\",\"complete\",\"--single-user\"],\"env\":{...}} instead. See docs/deployment.md → 'Google Workspace (co-located in the API)'.",
+  "_comment": "google_workspace runs workspace-mcp co-located as a stdio child via docker/workspace-mcp-launch.sh, which selects the auth mode from GWORKSPACE_AUTH_MODE (oauth | service_account). The $VAR values in its env block are interpolated by extensible-mcp from the API's environment, so the API must have those secrets set and orchestrator/mcp_gateway.py forwards them (_FORWARDED_ENV_VARS). For local dev without the launcher script, use {\"command\":\"uvx\",\"args\":[\"workspace-mcp\",\"--tool-tier\",\"complete\",\"--single-user\"],\"env\":{...}} instead. See docs/deployment.md \u2192 'Google Workspace (co-located in the API)'. microsoft_365 runs @softeria/ms-365-mcp-server (Node) co-located the same way via docker/ms365-mcp-launch.sh; its MS365_MCP_* vars are forwarded by the gateway too. Its tool names are HYPHENATED (send-mail, delete-calendar-event), which the underscore deny globs below do not match \u2014 the hyphenated patterns exist for that reason. The launcher already restricts the server to an explicit allow-list of mail + calendar tools; the mail-rule / mailbox-settings / calendar-permission denies are defense in depth for an operator who widens that list (inbox rules can forward every future email anywhere). delete-calendar-event is deliberately left callable: it is the only way to cancel an Outlook event (Google parity with manage_event action=delete); '*delete-calendar' (no trailing star) denies only the delete-calendar tool that removes a whole calendar. See docs/deployment.md -> 'Microsoft 365 credentials'.",
   "mcpServers": {
     "fetch": {
       "command": "uvx",
-      "args": ["mcp-server-fetch"]
+      "args": [
+        "mcp-server-fetch"
+      ]
     },
     "google_workspace": {
       "command": "/usr/local/bin/workspace-mcp-launch.sh",
@@ -18,20 +20,54 @@
         "GOOGLE_SERVICE_ACCOUNT_KEY_JSON": "$GOOGLE_SERVICE_ACCOUNT_KEY_JSON",
         "USER_GOOGLE_EMAIL": "$USER_GOOGLE_EMAIL"
       }
+    },
+    "microsoft_365": {
+      "command": "/usr/local/bin/ms365-mcp-launch.sh",
+      "args": [],
+      "env": {
+        "MS365_MCP_CLIENT_ID": "$MS365_MCP_CLIENT_ID",
+        "MS365_MCP_TENANT_ID": "$MS365_MCP_TENANT_ID",
+        "MS365_MCP_CLIENT_SECRET": "$MS365_MCP_CLIENT_SECRET",
+        "MS365_MCP_EXPECTED_USERNAME": "$MS365_MCP_EXPECTED_USERNAME",
+        "MS365_MCP_ORG_MODE": "$MS365_MCP_ORG_MODE",
+        "MS365_MCP_CREDENTIALS_DIR": "$MS365_MCP_CREDENTIALS_DIR",
+        "MS365_MCP_USE_KEYTAR": "$MS365_MCP_USE_KEYTAR"
+      }
     }
   },
   "filters": {
     "access_control": {
       "deny_patterns": [
-        "*__delete_*", "*__drop_*", "*__destroy_*", "*__remove_*",
-        "*delete_email*", "*delete_message*", "*trash*",
-        "*delete_file*", "*delete_document*"
+        "*__delete_*",
+        "*__drop_*",
+        "*__destroy_*",
+        "*__remove_*",
+        "*delete_email*",
+        "*delete_message*",
+        "*trash*",
+        "*delete_file*",
+        "*delete_document*",
+        "*delete-mail*",
+        "*delete-calendar",
+        "*__remove-*",
+        "*__drop-*",
+        "*__destroy-*",
+        "*__login",
+        "*__logout",
+        "*__select-account",
+        "*__remove-account",
+        "*download-bytes-to-file*",
+        "*-mail-rule*",
+        "*update-mailbox-settings*",
+        "*calendar-permission*"
       ],
       "deny": [],
       "allow_servers": []
     },
     "load_control": {
-      "deny_url_patterns": ["http://*"],
+      "deny_url_patterns": [
+        "http://*"
+      ],
       "allow_url_patterns": []
     },
     "similarity_threshold": 0.3

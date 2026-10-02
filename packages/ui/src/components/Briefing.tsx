@@ -1900,7 +1900,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
   // re-syncs. The optimistic actedAlertIds set already hides the card; this
   // refreshes everything computed from it. Best-effort: a failed refresh leaves
   // the stale-but-still-usable view rather than erroring the briefing.
-  const lastFetchRef = useRef(Date.now());
+  const [mountedAt] = useState(() => Date.now());
+  const lastFetchRef = useRef(mountedAt);
   const refreshToday = useCallback(() => {
     lastFetchRef.current = Date.now();
     getToday().then(setToday).catch(() => { /* keep current view on failure */ });
@@ -1978,7 +1979,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
     } catch (e) {
       // Revert the optimistic removal on failure so the user can retry.
       setActedAlertIds(prev);
-      // eslint-disable-next-line no-console
       console.error("Approve failed", e);
     }
   }, [actedAlertIds, onContinue, refreshToday]);
@@ -2012,7 +2012,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       await ackAlert(proposal.alert_id, "dismissed");
     } catch (e) {
       setActedAlertIds(prev);
-      // eslint-disable-next-line no-console
       console.error("Dismiss failed", e);
     }
   }, [actedAlertIds, refreshToday]);
@@ -2031,7 +2030,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       refreshToday();
     } catch (e) {
       setActedAlertIds(prev);
-      // eslint-disable-next-line no-console
       console.error("Bulk dismiss failed", e);
     }
   }, [actedAlertIds, refreshToday]);
@@ -2045,7 +2043,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       await reviewAlerts();
       refreshToday();
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error("Alert review failed", e);
     } finally {
       setRecheckBusy(false);
@@ -2065,7 +2062,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
         setUndoneRows((prev) => new Set(prev).add(rowKey));
         return;
       }
-      // eslint-disable-next-line no-console
       console.error("Reopen failed", e);
     }
   }, [refreshToday]);
@@ -2090,7 +2086,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName }: 
       }
     } catch (e) {
       setActedAlertIds(prev);
-      // eslint-disable-next-line no-console
       console.error("Approve-with-edits failed", e);
     }
   }, [actedAlertIds, onContinue]);

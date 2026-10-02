@@ -158,7 +158,7 @@ function summarize(event: DebugEvent): string {
   }
 }
 
-function EventCard({ event, index }: { event: DebugEvent; index: number }) {
+function EventCard({ event }: { event: DebugEvent; index: number }) {
   const [expanded, setExpanded] = useState(false);
   const cfg = KIND_CONFIG[event.kind] ?? {
     border: "border-l-fg-subtle",

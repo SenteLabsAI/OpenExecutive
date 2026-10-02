@@ -348,28 +348,27 @@ async def _approve_booking(
         if "attendee_emails" in body.edits:
             final_payload["attendee_emails"] = body.edits["attendee_emails"]
 
-    # Re-run the freebusy conflict check if the MCP supports it — advisory here,
-    # but we log a warning if the slot is busy.
+    # Re-run the backend's conflict check — advisory here, but we log a
+    # warning if the slot is busy. (Google: multi-calendar freebusy; Microsoft:
+    # the Executive's own calendar view — see integrations.workspace.)
     try:
+        from openexecutive.integrations.workspace.registry import get_calendar_provider
         from openexecutive.orchestrator.mcp_gateway import get_active_gateway
         gw = get_active_gateway()
         if gw is not None:
-            fb_result = await gw.call_tool({
-                "name": "google_workspace__query_freebusy",
-                "arguments": {
-                    "time_min": final_payload["start"],
-                    "time_max": final_payload["end"],
-                    "calendar_ids": final_payload.get("attendee_emails", []),
-                },
-            })
-            fb = json.loads(fb_result) if isinstance(fb_result, str) else fb_result
-            if isinstance(fb, dict) and fb.get("has_conflicts"):
+            busy = await get_calendar_provider().has_conflicts(
+                gw,
+                final_payload["start"],
+                final_payload["end"],
+                list(final_payload.get("attendee_emails", [])),
+            )
+            if busy:
                 logger.warning(
-                    "decisions/approve: freebusy reports conflict for instance %d — proceeding anyway (human override)",
+                    "decisions/approve: calendar reports conflict for instance %d — proceeding anyway (human override)",
                     instance_id,
                 )
     except Exception:
-        logger.debug("decisions/approve: freebusy check skipped", exc_info=True)
+        logger.debug("decisions/approve: conflict check skipped", exc_info=True)
 
     # Create the actual calendar event. Contacts on the invite only when the
     # principal is the one approving.
@@ -380,8 +379,8 @@ async def _approve_booking(
         raise HTTPException(status_code=502, detail=result["error"])
 
     external_event_id = result.get("event_id")
-    # Persist the Google Meet link (if one was minted) so the UI and any later
-    # reference can surface it.
+    # Persist the video-meeting link (Meet or Teams, if one was minted) so the
+    # UI and any later reference can surface it.
     if result.get("meet_link"):
         final_payload["meet_link"] = result["meet_link"]
     edited = _payload_diff(original_payload, final_payload)

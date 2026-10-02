@@ -396,7 +396,7 @@ def _handle_through_the_turn(raw: str) -> list[Any]:
     gateway.call_tool = AsyncMock(return_value=raw)
     settings = SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)
 
-    async def _mark_read(*_args: Any) -> None:
+    async def _mark_read(*_args: Any, **_kwargs: Any) -> None:
         log_event("integration_inbound", "Marked the mail read")
 
     with (
@@ -1288,15 +1288,36 @@ def test_the_private_turn_allow_list_is_reads_and_gated_gmail_only() -> None:
     from openexecutive.orchestrator.mcp_gateway import (
         _GATED_CALENDAR_TOOLS,
         _GATED_GMAIL_TOOLS,
+        _GATED_M365_CALENDAR_TOOLS,
+        _GATED_M365_MAIL_TOOLS,
+        _M365_EVENT_BY_ID_TOOLS,
+        _M365_PREFIX,
+        _M365_REPLY_BY_ID_TOOLS,
         _is_drive_share_tool,
+        _normalize_tool_name,
     )
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS
     from openexecutive.workflows.tool_catalog import _read_only_label
 
     assert _GATED_GMAIL_TOOLS <= PRIVATE_TURN_MCP_TOOLS
-    for name in PRIVATE_TURN_MCP_TOOLS - _GATED_GMAIL_TOOLS:
+    microsoft = {n for n in PRIVATE_TURN_MCP_TOOLS if n.startswith(_M365_PREFIX)}
+    for name in PRIVATE_TURN_MCP_TOOLS - _GATED_GMAIL_TOOLS - microsoft:
         assert _read_only_label(name, {}) is True, name
         assert name not in _GATED_CALENDAR_TOOLS and not _is_drive_share_tool(name)
+    # Microsoft 365: the two mail writes are argument-gated sends with every
+    # recipient in their arguments (no reply-by-id, whose recipient the
+    # referenced message names); everything else is a get / list read.
+    writes = {"microsoft_365__send-mail", "microsoft_365__create-draft-email"}
+    assert writes <= microsoft
+    for name in writes:
+        normalized = _normalize_tool_name(name)
+        assert normalized in _GATED_M365_MAIL_TOOLS and normalized not in _M365_REPLY_BY_ID_TOOLS
+    for name in microsoft - writes:
+        verb = name[len(_M365_PREFIX):].split("-", 1)[0]
+        assert verb in {"get", "list"}, name
+        normalized = _normalize_tool_name(name)
+        assert normalized not in _GATED_M365_MAIL_TOOLS | _GATED_M365_CALENDAR_TOOLS
+        assert normalized not in _M365_EVENT_BY_ID_TOOLS
 
 
 @pytest.mark.parametrize(("name", "allowed"), [

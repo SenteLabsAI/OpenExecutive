@@ -205,8 +205,13 @@ async def read_raw(gateway: Any, message_id: str) -> str:
     Auto-Submitted — workspace-mcp prints a fixed set of headers. "" on any
     failure. Never raises."""
     from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import get_mail_provider
 
     if gateway is None or not message_id:
+        return ""
+    # Only Gmail's raw read carries Gmail's Authentication-Results; another
+    # mailbox's message is read as nothing, so every check on it fails closed.
+    if get_mail_provider().name != "google":
         return ""
     try:
         raw = await gateway.call_tool({
@@ -257,7 +262,7 @@ def _confirmation_email(summary: str, token: str) -> tuple[str, str]:
 async def _send(to: str, subject: str, body: str) -> str:
     """Send one email from the Executive's mailbox, outside any turn's
     outbound context. Returns the tool result (an error payload on failure)."""
-    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import send_from_executive
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.schedule_tools import set_session
 
@@ -265,16 +270,7 @@ async def _send(to: str, subject: str, body: str) -> str:
     if gateway is None:
         return json.dumps({"error": "email is not connected"})
     with set_session(None):
-        result = await gateway.call_tool({
-            "name": "google_workspace__send_gmail_message",
-            "arguments": {
-                "user_google_email": get_settings().exec_email_address,
-                "to": to,
-                "subject": subject,
-                "body": body,
-            },
-        })
-    return str(result)
+        return await send_from_executive(gateway, to=to, subject=subject, body=body)
 
 
 async def request_confirmation(action: dict[str, Any], summary: str) -> str | None:

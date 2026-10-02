@@ -92,7 +92,6 @@ function ItemSlideOver({
     setExternalChunks([]);
     setExternalChunkLimit(10);
     setLoadingChunks(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemId_stable]);
 
   useEffect(() => {
