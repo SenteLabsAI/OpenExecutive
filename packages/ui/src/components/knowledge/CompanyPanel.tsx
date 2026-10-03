@@ -350,11 +350,12 @@ function SourcesStrip({
         <p className="flex-1 text-[15px] text-fg-muted">
           Connect Google Drive, OneDrive or Notion to bring documents in automatically.
         </p>
+        {/* Sources are connected with environment settings; the guide says how. */}
         <Link
-          href="/settings/integrations"
+          href="/guide#knowledge"
           className={buttonClass("secondary", "md", "self-start sm:self-auto")}
         >
-          Set up in Settings
+          How to connect
         </Link>
       </div>
     );
@@ -398,8 +399,8 @@ function SourcesStrip({
               <p className="text-sm text-red-500 mt-1.5">
                 {message ?? s.last_error}{" "}
                 {!message && (
-                  <Link href="/settings/integrations" className="underline">
-                    Check settings
+                  <Link href="/guide#knowledge" className="underline">
+                    How to fix
                   </Link>
                 )}
               </p>

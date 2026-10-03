@@ -188,7 +188,7 @@ export function StatTile({
   return (
     <div className="rounded-2xl border border-line bg-surface-elevated px-3 py-3 sm:px-5 sm:py-4 min-w-0">
       <div className="text-sm font-medium text-fg-muted leading-snug">{label}</div>
-      <div className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight tabular-nums truncate ${STAT_VALUE_TONE[tone]}`}>
+      <div className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight tabular-nums leading-tight break-words ${STAT_VALUE_TONE[tone]}`}>
         {value}
       </div>
       {hint && <div className="text-sm text-fg-subtle mt-0.5 leading-snug line-clamp-2">{hint}</div>}

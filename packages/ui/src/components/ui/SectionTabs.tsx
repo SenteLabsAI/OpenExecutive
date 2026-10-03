@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 // A row of tabs inside one page or panel (a person's page, a settings form
 // split into short sections, the Pulse and Knowledge views), as opposed to
@@ -44,6 +44,19 @@ export default function SectionTabs<T extends string>({
 }) {
   const base = idBase;
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // A row that scrolls sideways (a phone) keeps the active tab in view, so a
+  // deep link to a later tab (`/memories?tab=corrections`) shows it selected.
+  const activeIndex = tabs.findIndex((t) => t.id === active);
+  useEffect(() => {
+    const row = rowRef.current;
+    const el = refs.current[activeIndex];
+    if (!row || !el || row.scrollWidth <= row.clientWidth) return;
+    if (el.offsetLeft < row.scrollLeft || el.offsetLeft + el.offsetWidth > row.scrollLeft + row.clientWidth) {
+      row.scrollLeft = el.offsetLeft - (row.clientWidth - el.offsetWidth) / 2;
+    }
+  }, [activeIndex]);
 
   const onKeyDown = (e: React.KeyboardEvent, i: number) => {
     const last = tabs.length - 1;
@@ -61,9 +74,10 @@ export default function SectionTabs<T extends string>({
 
   return (
     <div
+      ref={rowRef}
       role="tablist"
       aria-label={label}
-      className={`inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl bg-surface-overlay p-1 ${className}`}
+      className={`relative inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl bg-surface-overlay p-1 ${className}`}
     >
       {tabs.map((tab, i) => {
         const selected = tab.id === active;

@@ -63,7 +63,7 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
   { prefix: "/goals", guideId: "departments", title: "Goals" },
   { prefix: "/people", guideId: "people", title: "People" },
   { prefix: "/company-profile", guideId: "company_profile", title: "Company profile" },
-  { prefix: "/knowledge", guideId: "knowledge", title: "Knowledge base" },
+  { prefix: "/knowledge", guideId: "knowledge", title: "Knowledge" },
   { prefix: "/council", guideId: "council", title: "Agent Council" },
   { prefix: "/demo", guideId: "simulator", title: "Company Simulator" },
   { prefix: "/settings", guideId: "settings", title: "Settings" },
