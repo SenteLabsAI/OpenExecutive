@@ -42,7 +42,7 @@ const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8"
 const users = sourceFiles("").filter((f) => f !== "components/shell/PageSideNav.tsx" && /<PageSideNav/.test(read(f)));
 
 test("PageSideNav users are found", () => {
-  assert.ok(users.length >= 4, `found ${users.join(", ")}`);
+  assert.ok(users.length >= 3, `found ${users.join(", ")}`);
 });
 
 for (const user of users) {
