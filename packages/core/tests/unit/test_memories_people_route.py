@@ -62,6 +62,13 @@ def roster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     return {"principal": principal, "member": member, "archived": gone}
 
 
+@pytest.fixture(autouse=True)
+def _everyone_visible(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests cover how the overview reads peer memory; who may see whose
+    # entry is covered in test_people_contacts.py.
+    monkeypatch.setattr(episodic_route, "_sees_everyone", lambda request: True)
+
+
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(episodic_route.router)

@@ -1717,7 +1717,7 @@ def test_ask_about_the_principal_answers_only_the_principal(
     assert own_view["found"] is True
 
 
-def test_memories_people_shows_the_principals_entry_to_the_principal_only(
+def test_memories_people_shows_each_caller_only_their_own_entry(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from openexecutive.api.routes import episodic as episodic_route
@@ -1738,11 +1738,16 @@ def test_memories_people_shows_the_principals_entry_to_the_principal_only(
     as_teammate = client.get("/memories/people", headers=_as(TEAM_EMAIL)).json()
     assert [p["person_id"] for p in as_teammate["people"]] == [roster.teammate]
     assert as_teammate["conclusion_total"] == 2
+    # The owner too sees only their own.
     as_owner = client.get("/memories/people", headers=_as(OWNER_EMAIL)).json()
-    assert [p["person_id"] for p in as_owner["people"]] == [roster.principal, roster.teammate]
-    assert client.get(
-        f"/memories/people/{roster.principal}/conclusions", headers=_as(TEAM_EMAIL)
-    ).status_code == 404
+    assert [p["person_id"] for p in as_owner["people"]] == [roster.principal]
+    # Signed in but not on the People list: nobody's.
+    assert client.get("/memories/people", headers=_as("stranger@x.example")).json()["people"] == []
+    for who, other in ((TEAM_EMAIL, roster.principal), (OWNER_EMAIL, roster.teammate)):
+        assert client.get(f"/memories/people/{other}/conclusions", headers=_as(who)).status_code == 404
+    # One's own conclusions are still read (None here is the "no peer" 404).
+    client.get(f"/memories/people/{roster.teammate}/conclusions", headers=_as(TEAM_EMAIL))
+    episodic_route.person_conclusions.assert_awaited_once_with(roster.teammate, page=1, size=50)
 
 
 @pytest.mark.parametrize(("private", "synced"), [(True, False), (False, True)])

@@ -379,33 +379,41 @@ def _caller_is_principal(request: Request) -> bool:
     return caller_is_principal(request)
 
 
-def _is_principal_id(person_id: int) -> bool:
-    """Whether ``person_id`` is a principal row. Fails closed (True): an
-    unreadable roster must not open the principal's memory to others."""
-    try:
-        from openexecutive.people.store import get_person
+def _viewer(request: Request) -> int | None:
+    """The caller's own People entry, or None (signed in but not on the
+    roster, a service call, an unreadable roster)."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
 
-        person = get_person(person_id)
+    try:
+        return _resolve_caller_person_id(request)
     except Exception:
-        return True
-    return bool(person is not None and person.is_principal)
+        logger.exception("memories: caller lookup failed — showing no one's peer memory")
+        return None
+
+
+def _sees_everyone(request: Request) -> bool:
+    """Whether this caller may see what peer memory learned about other
+    people. Nobody may, the principal included: it is drawn from each
+    person's own conversations, so each person sees only their own."""
+    return False
 
 
 @router.get("/memories/people", response_model=PeopleMemory)
 async def list_people_memory(
     request: Request, recent: int = Query(5, ge=1, le=50)
 ) -> PeopleMemory:
-    """What peer memory knows about each rostered person: card, conclusion
-    count, last-learned time and the ``recent`` newest conclusions. Read-only
-    and LLM-free; ``status`` is ``disabled`` when peer memory is off.
+    """What peer memory knows about the caller: card, conclusion count,
+    last-learned time and the ``recent`` newest conclusions. Read-only and
+    LLM-free; ``status`` is ``disabled`` when peer memory is off.
 
-    The principal's own entry is shown to the principal only: it is drawn
-    from all their conversations, including about their contacts, which are
-    private to them."""
+    Only the caller's own entry: peer memory is drawn from each person's own
+    conversations, so nobody else's is shown, the principal included. A
+    caller who isn't on the roster sees none."""
     overview = await people_overview(recent=recent)
-    if _caller_is_principal(request):
+    if _sees_everyone(request):
         return overview
-    people = [p for p in overview.people if not p.is_principal]
+    viewer = _viewer(request)
+    people = [p for p in overview.people if viewer is not None and p.person_id == viewer]
     return overview.model_copy(update={
         "people": people,
         "conclusion_total": sum(p.conclusion_count for p in people),
@@ -419,12 +427,11 @@ async def list_person_conclusions(
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=PERSON_CONCLUSIONS_MAX_PAGE),
 ) -> PersonConclusionsPage:
-    """One page of every conclusion peer memory holds about one person,
+    """One page of every conclusion peer memory holds about the caller,
     newest first. Read-only and LLM-free; 404 when the person is not on the
-    roster or peer memory has no peer for them yet — and, for anyone but
-    the principal, for the principal (their memory covers their contacts,
-    which are private to them)."""
-    if _is_principal_id(person_id) and not _caller_is_principal(request):
+    roster or peer memory has no peer for them yet, and for anyone but the
+    caller themselves, exactly as for an id that does not exist."""
+    if not _sees_everyone(request) and _viewer(request) != person_id:
         raise HTTPException(status_code=404, detail="Person not found in peer memory")
     result = await person_conclusions(person_id, page=page, size=size)
     if result is None:

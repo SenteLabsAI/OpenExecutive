@@ -2872,8 +2872,9 @@ peer_memory:
       per probe).
     people_overview: |
       ``GET /memories/people?recent=N`` (``honcho_client.people_overview``)
-      — what peer memory knows about each rostered person, for the Pulse
-      page's People tab. Read-only, no LLM call: one ``peers()`` listing
+      — what peer memory knows about the caller, for the Pulse page's
+      People tab: only the caller's own entry, the principal included (a
+      caller off the roster sees none; /conclusions 404s for anyone else). Read-only, no LLM call: one ``peers()`` listing
       (every page, under one 15 s clock — the SDK walk is otherwise bounded
       only per request), then per matched person (at most 8 in flight, each
       under the unscaled prefetch budget, because the reads share the
@@ -3731,7 +3732,7 @@ people:
     nothing to peer or department memory, and the principal's own peer
     memory answers only the principal (`ask_about_person` returns the empty
     answer on anyone else's turn; `/memories/people` and `/conclusions`
-    leave the principal out for anyone else). Still open: a row on the
+    show each caller only their own entry, the principal included). Still open: a row on the
     principal's own turn that names a contact some other way than their
     address, full name, person id or chat id (a first name, a nickname)
     is not recognised and stays readable by everyone.
