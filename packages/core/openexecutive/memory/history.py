@@ -198,6 +198,20 @@ def company_retention(*, db_path: Path | None = None) -> int | None:
     return int(row[0]) if row[0] is not None else None
 
 
+def valid_retention(days: Any) -> int | None:
+    """``days`` as a company retention, or SettingError."""
+    return _valid_retention(days)
+
+
+def valid_person_retention(days: Any, company: int | None) -> int | None:
+    """``days`` as a person's own retention under the company's ``company``:
+    one of the choices, never longer. SettingError otherwise."""
+    value = _valid_retention(days)
+    if value is not None and company is not None and value > company:
+        raise SettingError(f"Your notes can't last longer than the company's {company} days.")
+    return value
+
+
 def set_company_retention(days: Any, *, by: str, db_path: Path | None = None, now: datetime | None = None) -> int | None:
     """Set the company default. Shortening it shortens everyone's stored
     notes too (a person's own setting can only be shorter). Returns it."""
@@ -263,10 +277,7 @@ def set_person_settings(
     notes = current.reply_notes if reply_notes is None else bool(reply_notes)
     days = current.retention_days
     if retention_days is not ...:
-        days = _valid_retention(retention_days)
-        company = company_retention(db_path=db_path)
-        if days is not None and company is not None and days > company:
-            raise SettingError(f"Your notes can't last longer than the company's {company} days.")
+        days = valid_person_retention(retention_days, company_retention(db_path=db_path))
     conn = _connect(db_path)
     try:
         conn.execute(
@@ -307,7 +318,7 @@ def _expiry(occurred_at: str, days: int | None) -> str | None:
 
 def _reapply_expiry(person_id: int | None, *, db_path: Path | None = None) -> None:
     """Recompute ``expires_at`` on unpinned notes after a retention change
-    (one person's, or everyone's)."""
+    (one person's, or everyone's), from when each note's clock started."""
     conn = _connect(db_path)
     try:
         if person_id is None:
@@ -321,7 +332,7 @@ def _reapply_expiry(person_id: int | None, *, db_path: Path | None = None) -> No
         conn = _connect(db_path)
         try:
             rows = conn.execute(
-                f"SELECT id, occurred_at FROM {NOTES_TABLE} WHERE person_id = ? AND pinned = 0",  # noqa: S608 — constant table name
+                f"SELECT id, COALESCE(kept_from, occurred_at) FROM {NOTES_TABLE} WHERE person_id = ? AND pinned = 0",  # noqa: S608 — constant table name
                 (pid,),
             ).fetchall()
             conn.executemany(
@@ -509,14 +520,19 @@ def pin_note(
     note = get_note(person_id, note_id, db_path=db_path, now=now)
     if note is None:
         return None
-    start = max(_now(now).isoformat(), note.occurred_at)
-    expires = None if pinned else _expiry(start, effective_retention(person_id, db_path=db_path))
     conn = _connect(db_path)
     try:
-        conn.execute(
-            f"UPDATE {NOTES_TABLE} SET pinned = ?, expires_at = ? WHERE id = ? AND person_id = ?",  # noqa: S608 — constant table name
-            (int(pinned), expires, note_id, person_id),
-        )
+        if pinned:
+            conn.execute(
+                f"UPDATE {NOTES_TABLE} SET pinned = 1, expires_at = NULL WHERE id = ? AND person_id = ?",  # noqa: S608 — constant table name
+                (note_id, person_id),
+            )
+        else:
+            start = max(_now(now).isoformat(), note.occurred_at)
+            conn.execute(
+                f"UPDATE {NOTES_TABLE} SET pinned = 0, kept_from = ?, expires_at = ? WHERE id = ? AND person_id = ?",  # noqa: S608 — constant table name
+                (start, _expiry(start, effective_retention(person_id, db_path=db_path)), note_id, person_id),
+            )
         conn.commit()
     finally:
         conn.close()

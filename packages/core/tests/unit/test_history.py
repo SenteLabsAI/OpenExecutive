@@ -143,3 +143,15 @@ def test_tables_swap_with_a_client_slot() -> None:
     from openexecutive.memory.history_schema import TABLES
 
     assert set(TABLES) <= set(slots._BLANK_WIPE_TABLES)
+
+
+def test_a_retention_change_never_backdates_an_unpinned_note() -> None:
+    [nid] = _add(when=NOW - timedelta(days=200))
+    assert h.pin_note(1, nid, True, now=NOW - timedelta(days=199)) is not None
+    h.pin_note(1, nid, False, now=NOW)
+    h.set_person_settings(1, by="t", retention_days=30)
+    note = h.get_note(1, nid, now=NOW)
+    assert note is not None and note.expires_at == (NOW + timedelta(days=30)).isoformat()
+    h.set_company_retention(30, by="owner")
+    assert h.sweep_expired(now=NOW + timedelta(days=1)) == 0
+    assert h.get_note(1, nid, now=NOW + timedelta(days=1)) is not None

@@ -42,7 +42,10 @@ _DDL: tuple[str, ...] = (
     "  expires_at TEXT,"
     "  pinned INTEGER NOT NULL DEFAULT 0,"
     "  correction TEXT,"
-    "  corrected_at TEXT"
+    "  corrected_at TEXT,"
+    # When the retention clock starts: NULL means occurred_at; an unpin
+    # restarts it, so a later retention change never backdates the note.
+    "  kept_from TEXT"
     ")",
     f"CREATE INDEX IF NOT EXISTS idx_{NOTES_TABLE}_person_occurred "
     f"ON {NOTES_TABLE}(person_id, occurred_at)",

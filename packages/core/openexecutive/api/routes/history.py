@@ -163,33 +163,46 @@ async def update_history_settings(request: Request, body: SettingsUpdate) -> His
     person = _caller(request)
     assert person.id is not None
     fields = body.model_fields_set
+    company_change = "company_retention_days" in fields
+    own_change = "reply_notes" in fields or "retention_days" in fields
+    # Check everything before changing anything, so a refusal never leaves
+    # half the request applied.
+    if company_change and not person.is_principal:
+        raise _refuse(403, "principal_only", "Only the account owner can change how long notes last for everyone.")
+    if own_change and body.reply_notes and not _can_note_replies(person):
+        raise _refuse(
+            403, "not_available_yet",
+            "Notes from your replies need Act as me, which isn't available to you here.",
+        )
     try:
-        if "company_retention_days" in fields:
-            if not person.is_principal:
-                raise _refuse(403, "principal_only", "Only the account owner can change how long notes last for everyone.")
-            history.set_company_retention(body.company_retention_days, by=f"person:{person.id}")
-            _audit(
-                "history_settings_changed", f"Company note retention changed by person {person.id}",
-                {"person_id": person.id, "company_retention_days": body.company_retention_days},
-            )
-        if "reply_notes" in fields or "retention_days" in fields:
-            if body.reply_notes and not _can_note_replies(person):
-                raise _refuse(
-                    403, "not_available_yet",
-                    "Notes from your replies need Act as me, which isn't available to you here.",
-                )
-            kwargs: dict[str, Any] = {}
-            if "reply_notes" in fields and body.reply_notes is not None:
-                kwargs["reply_notes"] = body.reply_notes
-            if "retention_days" in fields:
-                kwargs["retention_days"] = body.retention_days
-            history.set_person_settings(person.id, by=f"person:{person.id}", **kwargs)
-            _audit(
-                "history_settings_changed", f"Note settings changed by person {person.id}",
-                {"person_id": person.id, **{k: v for k, v in kwargs.items()}},
-            )
+        company = (
+            history.valid_retention(body.company_retention_days) if company_change else history.company_retention()
+        )
+        if "retention_days" in fields:
+            history.valid_person_retention(body.retention_days, company)
     except history.SettingError as exc:
         raise _refuse(422, "invalid_setting", str(exc)) from exc
+
+    if company_change:
+        history.set_company_retention(company, by=f"person:{person.id}")
+        _audit(
+            "history_settings_changed", f"Company note retention changed by person {person.id}",
+            {"person_id": person.id, "company_retention_days": company},
+        )
+    if own_change:
+        kwargs: dict[str, Any] = {}
+        if "reply_notes" in fields and body.reply_notes is not None:
+            kwargs["reply_notes"] = body.reply_notes
+        if "retention_days" in fields:
+            kwargs["retention_days"] = body.retention_days
+        try:
+            history.set_person_settings(person.id, by=f"person:{person.id}", **kwargs)
+        except history.SettingError as exc:
+            raise _refuse(422, "invalid_setting", str(exc)) from exc
+        _audit(
+            "history_settings_changed", f"Note settings changed by person {person.id}",
+            {"person_id": person.id, **kwargs},
+        )
     return _state(person)
 
 

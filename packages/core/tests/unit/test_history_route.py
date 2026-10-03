@@ -154,3 +154,16 @@ def test_dont_remember_this_forgets_the_conversation_for_good(client: TestClient
     assert len(client.get("/memories/history", headers=OWNER).json()["notes"]) == 1
     assert h.is_excluded(ids["principal"], h.conversation_key(h.CHANNEL_EMAIL, "t1"))
     assert len(client.get("/memories/history", headers=TEAMMATE).json()["notes"]) == 1
+
+
+def test_a_refused_request_changes_nothing(client: TestClient, ids: dict[str, int]) -> None:
+    # The owner's company change and an own retention longer than it: both refused together.
+    resp = client.put(
+        "/memories/history/settings", json={"company_retention_days": 30, "retention_days": 90}, headers=OWNER
+    )
+    assert resp.status_code == 422
+    assert h.company_retention() == 90
+    resp = client.put(
+        "/memories/history/settings", json={"company_retention_days": 30, "retention_days": 30}, headers=OWNER
+    )
+    assert resp.status_code == 200 and resp.json()["retention_days"] == 30
