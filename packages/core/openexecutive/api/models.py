@@ -147,7 +147,7 @@ class HealthResponse(BaseModel):
     company_name: str | None = None
     builtin_skills: int = 0
     company_skills: int = 0
-    version: str = "0.4.6"  # x-release-please-version
+    version: str = "0.5.0"  # x-release-please-version
 
 
 class VersionResponse(BaseModel):

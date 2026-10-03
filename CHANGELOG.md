@@ -9,6 +9,28 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.5.0](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.6...v0.5.0) (2026-10-03)
+
+
+### Added
+
+* **memory:** bring Always in the loop notes into the owner's briefs and remind when due ([#348](https://github.com/SenteLabsAI/OpenExecutive/issues/348)) ([a5b399d](https://github.com/SenteLabsAI/OpenExecutive/commit/a5b399d1da2708e07299b80b99ad146db3731835))
+* **memory:** keep notes of what people say in chat ([#346](https://github.com/SenteLabsAI/OpenExecutive/issues/346)) ([eebda07](https://github.com/SenteLabsAI/OpenExecutive/commit/eebda072821a3294c2ce09b9c3cd2f7372a44885))
+* **memory:** keep private notes from replies you approve and send ([#342](https://github.com/SenteLabsAI/OpenExecutive/issues/342)) ([96098b7](https://github.com/SenteLabsAI/OpenExecutive/commit/96098b7d2a5898c5970a207582a8b982580ea329))
+* **ui:** add the History tab and settings for Always in the loop ([#344](https://github.com/SenteLabsAI/OpenExecutive/issues/344)) ([870ff2b](https://github.com/SenteLabsAI/OpenExecutive/commit/870ff2b146b84faf12892eba132ae3b42b8e9e1d))
+* **ui:** move the Agent Council's Advanced toggle into the agent panel ([#345](https://github.com/SenteLabsAI/OpenExecutive/issues/345)) ([29de6ca](https://github.com/SenteLabsAI/OpenExecutive/commit/29de6ca9eb869b49c42f611cc03e039e8f8f20ce))
+* **ui:** simplify every screen with a six-place menu and focused pages ([3155921](https://github.com/SenteLabsAI/OpenExecutive/commit/3155921a77a77057115f3c5c40018d1997ce749a))
+
+
+### Fixed
+
+* **delegation:** stop drafting inbox replies to group emails that ask someone else ([#343](https://github.com/SenteLabsAI/OpenExecutive/issues/343)) ([5da0b29](https://github.com/SenteLabsAI/OpenExecutive/commit/5da0b29821e54bc2651d51280a14388636160ca6))
+
+
+### Changed
+
+* **ci:** run tests with temp files in RAM and parse the package once ([#339](https://github.com/SenteLabsAI/OpenExecutive/issues/339)) ([75e3163](https://github.com/SenteLabsAI/OpenExecutive/commit/75e31638496feed9f28f6258be7f8ea8089d667b))
+
 ## [0.4.6](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.5...v0.4.6) (2026-10-02)
 
 
