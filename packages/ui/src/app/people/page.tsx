@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import Button from "@/components/ui/Button";
+import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
+import SidePanel from "@/components/ui/SidePanel";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   createPerson,
@@ -21,6 +24,7 @@ import {
   hiddenTeamCount,
   isContact,
   peopleForTab,
+  personCardStatus,
   shouldOfferTeamMode,
   tabsFor,
   type PeopleTab,
@@ -46,59 +50,47 @@ const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
 const KINDS: PersonKind[] = ["team", "contact"];
 
 // ---------------------------------------------------------------------------
-// PersonCard (unchanged from read-only)
+// PersonCard — name, role, channel and one status. Approval scopes are on
+// the person's own page.
 // ---------------------------------------------------------------------------
 
-function ScopePill({ scope }: { scope: string }) {
-  const entry = ALL_SCOPES.find((s) => s.value === scope);
-  const label = entry?.label ?? scope;
-  const isStar = scope === "wildcard";
-  return (
-    <span
-      className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium ${
-        isStar
-          ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/30"
-          : "bg-surface-input/40 text-fg-muted border-line"
-      }`}
-    >
-      {label}
-    </span>
-  );
+const TONE_DOT = { ok: "bg-emerald-500", warn: "bg-amber-500", muted: "bg-fg-subtle" } as const;
+
+function channelLabel(channel: string): string {
+  return channel === "any" ? "Any channel" : channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
-function PersonCard({ person }: { person: Person }) {
+function PersonCard({ person, today }: { person: Person; today: string }) {
   const contact = isContact(person);
+  const status = personCardStatus(person, today);
   return (
     <Link
       href={`/people/${person.id}`}
-      className="block rounded-xl border border-line bg-surface-elevated hover:bg-surface-overlay transition-colors p-4 group"
+      className="flex items-start gap-4 rounded-2xl border border-line bg-surface-elevated hover:bg-surface-hover hover:border-line-strong transition-colors p-5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
     >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div>
-          <div className="text-sm font-semibold text-fg group-hover:text-indigo-300 transition-colors flex items-center gap-2">
-            {person.full_name}
-            {person.is_principal && (
-              <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/20 text-violet-300 border-violet-500/30">
-                Principal
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-fg-muted mt-0.5">{person.role || "—"}</div>
-        </div>
-        {contact ? (
-          <div className="flex-shrink-0 text-xs text-fg-muted">{person.email ? "Email on file" : "No email"}</div>
-        ) : (
-          <div className="flex-shrink-0 text-xs text-fg-muted capitalize">{person.preferred_channel}</div>
-        )}
+      <div className="w-11 h-11 rounded-full bg-accent/10 text-accent flex items-center justify-center flex-shrink-0 text-base font-semibold">
+        {person.full_name.charAt(0).toUpperCase()}
       </div>
-      {!contact && <div className="text-xs text-fg-muted mb-2">SLA: {person.response_sla_hours}h</div>}
-      {!contact && person.authority_scope.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {person.authority_scope.map((s) => (
-            <ScopePill key={s} scope={s} />
-          ))}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate">
+            {person.full_name}
+          </span>
+          {person.is_principal && (
+            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent">
+              Principal
+            </span>
+          )}
         </div>
-      )}
+        <div className="text-[15px] text-fg-muted mt-0.5 truncate">{person.role || "—"}</div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-fg-muted">
+          {!contact && <span>{channelLabel(person.preferred_channel)}</span>}
+          <span className="inline-flex items-center gap-1.5">
+            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${TONE_DOT[status.tone]}`} />
+            {status.label}
+          </span>
+        </div>
+      </div>
     </Link>
   );
 }
@@ -129,6 +121,11 @@ const BLANK_FORM = {
   authority_scope: [] as string[],
 };
 
+const INPUT_CLS =
+  "w-full h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent";
+const LABEL_CLS = "text-sm text-fg-muted flex flex-col gap-1.5";
+const HINT_CLS = "text-[13px] text-fg-subtle mt-1";
+
 function DisclosureSection({
   label,
   open,
@@ -146,12 +143,39 @@ function DisclosureSection({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex items-center justify-between w-full py-1.5 text-xs font-medium text-fg-muted hover:text-fg transition-colors"
+        className="flex items-center justify-between w-full min-h-11 py-2 text-[15px] font-medium text-fg hover:text-accent transition-colors"
       >
         <span>{label}</span>
-        <span aria-hidden="true" className="text-fg-subtle text-[10px]">{open ? "▲" : "▼"}</span>
+        <span aria-hidden="true" className="text-fg-subtle text-xs">{open ? "▲" : "▼"}</span>
       </button>
-      {open && <div className="pt-2 space-y-3">{children}</div>}
+      {open && <div className="pt-2 pb-1 space-y-4">{children}</div>}
+    </div>
+  );
+}
+
+// The approval scopes as toggles, each with what it routes to the person.
+function ScopePicker({ selected, onToggle }: { selected: string[]; onToggle: (value: string) => void }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {ALL_SCOPES.map(({ value, label, hint }) => {
+        const active = selected.includes(value);
+        return (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onToggle(value)}
+            className={`px-3.5 py-2.5 rounded-xl border text-left transition-colors ${
+              active
+                ? "bg-accent/10 border-accent/60 text-fg"
+                : "bg-surface-elevated border-line text-fg-muted hover:border-line-strong"
+            }`}
+          >
+            <div className="text-[15px] font-medium">{label}</div>
+            <div className="text-[13px] leading-snug mt-0.5 text-fg-muted">{hint}</div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -169,7 +193,10 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
   const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    nameRef.current?.focus();
+    // After the panel has taken focus on open, so it remembers the button
+    // that opened it (and returns focus there on close).
+    const id = requestAnimationFrame(() => nameRef.current?.focus());
+    return () => cancelAnimationFrame(id);
   }, []);
 
   // Registered with Ask OE for the modal's lifetime — closing the modal
@@ -267,7 +294,7 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
       }
       setForm(next);
       // Open the disclosures so the suggested values are visible to review.
-      if (applied.some((k) => ["email", "slack_user_id", "discord_user_id", "telegram_chat_id", "preferred_channel", "response_sla_hours"].includes(k))) {
+      if (applied.some((k) => ["slack_user_id", "discord_user_id", "telegram_chat_id", "preferred_channel", "response_sla_hours"].includes(k))) {
         setShowContact(true);
       }
       if (applied.includes("authority_scope")) setShowAuthority(true);
@@ -318,17 +345,31 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
     }
   }
 
+  const title = contact ? "Add contact" : "Add person";
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={saving ? undefined : onClose}>
-      <div
-        className="w-full max-w-lg bg-surface border border-line rounded-2xl shadow-2xl p-6 mx-4 max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-base font-semibold text-fg mb-4">{contact ? "Add contact" : "Add person"}</h2>
-
-        <div className="space-y-3">
+    <SidePanel
+      open
+      onClose={saving ? () => {} : onClose}
+      title={title}
+      footer={
+        <div className="flex gap-2">
+          <Button
+            variant="primary"
+            disabled={saving || !form.full_name.trim()}
+            onClick={submit}
+            className="flex-1"
+          >
+            {saving ? "Creating…" : title}
+          </Button>
+          <Button disabled={saving} onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      }
+    >
+        <div className="space-y-4">
           {canAddContacts && !form.is_principal && (
-            <div role="radiogroup" aria-label="Team member or contact" className="grid grid-cols-2 gap-2">
+            <div role="radiogroup" aria-label="Team member or contact" className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {KINDS.map((k) => (
                 <button
                   key={k}
@@ -336,14 +377,14 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
                   role="radio"
                   aria-checked={form.kind === k}
                   onClick={() => { setForm((f) => ({ ...f, kind: k })); clearSuggested("kind"); }}
-                  className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+                  className={`px-4 py-3 rounded-xl border text-left transition-colors ${
                     form.kind === k
-                      ? "bg-indigo-600/30 border-indigo-500/50 text-indigo-300"
-                      : "bg-surface-input border-line text-fg-muted hover:border-indigo-500/40"
+                      ? "bg-accent/10 border-accent/60 text-fg"
+                      : "bg-surface-elevated border-line text-fg-muted hover:border-line-strong"
                   } ${suggestedCls("kind")}`}
                 >
-                  <div className="text-sm font-medium">{k === "team" ? "Team member" : "Contact"}</div>
-                  <div className="text-[10px] leading-tight mt-0.5 opacity-80">
+                  <div className="text-[15px] font-semibold">{k === "team" ? "Team member" : "Contact"}</div>
+                  <div className="text-sm leading-snug mt-1 text-fg-muted">
                     {k === "team"
                       ? "Works with you: can sign in, message the Executive and approve."
                       : "Outside the team and private to you: emailed or invited only when you ask."}
@@ -354,41 +395,40 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
           )}
 
           {/* Always-visible: the 10-second path */}
-          <label className="text-xs text-fg-muted flex flex-col gap-1">
+          <label className={LABEL_CLS}>
             Full name *
             <input
               ref={nameRef}
               value={form.full_name}
               onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, full_name: v })); clearSuggested("full_name"); }}
-              className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("full_name")}`}
+              className={`${INPUT_CLS} ${suggestedCls("full_name")}`}
               placeholder="Sarah Chen"
             />
           </label>
 
-          <label className="text-xs text-fg-muted flex flex-col gap-1">
+          <label className={LABEL_CLS}>
             {contact ? "Role and company" : "Role"}
             <input
               value={form.role}
               onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, role: v })); clearSuggested("role"); }}
-              className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("role")}`}
+              className={`${INPUT_CLS} ${suggestedCls("role")}`}
               placeholder={contact ? "Head of Procurement, Acme" : "CFO (fractional)"}
             />
           </label>
 
-          {contact && (
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
-              Email
-              <input
-                value={form.email}
-                onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, email: v })); clearSuggested("email"); }}
-                className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("email")}`}
-                placeholder="jordan@acme.example"
-              />
-            </label>
-          )}
+          <label className={LABEL_CLS}>
+            Email
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, email: v })); clearSuggested("email"); }}
+              className={`${INPUT_CLS} ${suggestedCls("email")}`}
+              placeholder={contact ? "jordan@acme.example" : "sarah@example.com"}
+            />
+          </label>
 
           {!contact && (
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+          <label className="flex items-start gap-3 cursor-pointer select-none rounded-xl border border-line px-4 py-3">
             <input
               type="checkbox"
               checked={form.is_principal}
@@ -397,10 +437,12 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
                 setForm((f) => ({ ...f, is_principal: checked }));
                 if (checked) setShowAuthority(true);
               }}
-              className="w-4 h-4 rounded accent-indigo-500"
+              className="mt-0.5 w-5 h-5 rounded accent-indigo-500 flex-shrink-0"
             />
-            <span className="text-sm text-fg">This is me — Primary</span>
-            <span className="text-xs text-fg-muted">— marks you as the primary decision-maker</span>
+            <span>
+              <span className="block text-[15px] font-medium text-fg">This is me — Primary</span>
+              <span className="block text-sm text-fg-muted">Marks you as the primary decision-maker.</span>
+            </span>
           </label>
           )}
 
@@ -411,86 +453,74 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
             onToggle={() => setShowContact((v) => !v)}
           >
             {!contact && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="text-xs text-fg-muted flex flex-col gap-1">
+                <label className={LABEL_CLS}>
                   Preferred channel
                   <select
                     value={form.preferred_channel}
                     onChange={(e) => setForm((f) => ({ ...f, preferred_channel: e.target.value }))}
-                    className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                    className={INPUT_CLS}
                   >
                     {CHANNELS.map((c) => (
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
                 </label>
-                <p className="text-[10px] text-fg-muted mt-1">
+                <p className={HINT_CLS}>
                   Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : form.preferred_channel}.
                 </p>
               </div>
               <div>
-                <label className="text-xs text-fg-muted flex flex-col gap-1">
+                <label className={LABEL_CLS}>
                   Expected reply within
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <input
                       type="number"
                       min={1}
                       value={form.response_sla_hours}
                       onChange={(e) => setForm((f) => ({ ...f, response_sla_hours: e.target.value }))}
-                      className="flex-1 px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                      className={`${INPUT_CLS} flex-1 min-w-0`}
                     />
-                    <span className="text-xs text-fg-muted flex-shrink-0">hours</span>
+                    <span className="text-sm text-fg-muted flex-shrink-0">hours</span>
                   </div>
                 </label>
-                <p className="text-[10px] text-fg-muted mt-1">
+                <p className={HINT_CLS}>
                   Items overdue in Today after {form.response_sla_hours || 24}h with no reply.
                 </p>
               </div>
             </div>
             )}
 
-            {!contact && (
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
-              Email
-              <input
-                value={form.email}
-                onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, email: v })); clearSuggested("email"); }}
-                className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("email")}`}
-                placeholder="sarah@example.com"
-              />
-            </label>
-            )}
-
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
+            <label className={LABEL_CLS}>
               Slack user ID
               <input
                 value={form.slack_user_id}
                 onChange={(e) => setForm((f) => ({ ...f, slack_user_id: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                className={INPUT_CLS}
                 placeholder="U01ABC123"
               />
             </label>
 
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
+            <label className={LABEL_CLS}>
               Discord user ID
               <input
                 value={form.discord_user_id}
                 onChange={(e) => setForm((f) => ({ ...f, discord_user_id: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                className={INPUT_CLS}
                 placeholder="123456789012345678"
               />
-              <span className="text-[10px] text-fg-muted">
+              <span className={HINT_CLS}>
                 Right-click your Discord username and &quot;Copy User ID&quot; (developer mode required).
               </span>
             </label>
 
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
+            <label className={LABEL_CLS}>
               Telegram chat ID
               <input
                 value={form.telegram_chat_id}
                 onChange={(e) => setForm((f) => ({ ...f, telegram_chat_id: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                className={INPUT_CLS}
                 placeholder="123456789"
               />
             </label>
@@ -503,53 +533,15 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
             open={showAuthority}
             onToggle={() => setShowAuthority((v) => !v)}
           >
-            <div className="text-[10px] text-fg-muted mb-1.5">What this person approves</div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {ALL_SCOPES.map(({ value, label, hint }) => {
-                const active = form.authority_scope.includes(value);
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => toggleScope(value)}
-                    title={hint}
-                    className={`px-2 py-1.5 rounded-lg border text-xs transition-colors text-left ${
-                      active
-                        ? "bg-indigo-600/30 border-indigo-500/50 text-indigo-300"
-                        : "bg-surface-input border-line text-fg-muted hover:border-indigo-500/40"
-                    }`}
-                  >
-                    <div className="font-medium">{label}</div>
-                    <div className="text-[9px] leading-tight mt-0.5 opacity-70 line-clamp-2">{hint}</div>
-                  </button>
-                );
-              })}
-            </div>
+            <div className="text-sm text-fg-muted">What this person approves</div>
+            <ScopePicker selected={form.authority_scope} onToggle={toggleScope} />
           </DisclosureSection>
           )}
 
         </div>
 
-        {err && <p className="text-xs text-rose-300 mt-3">{err}</p>}
-
-        <div className="flex gap-2 mt-5">
-          <button
-            disabled={saving || !form.full_name.trim()}
-            onClick={submit}
-            className="flex-1 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 font-medium"
-          >
-            {saving ? "Creating…" : contact ? "Add contact" : "Add person"}
-          </button>
-          <button
-            disabled={saving}
-            onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+        {err && <p className="text-sm text-rose-500 mt-4">{err}</p>}
+    </SidePanel>
   );
 }
 
@@ -562,13 +554,13 @@ const TAB_COPY: Record<PeopleTab, { label: string; blurb: string; empty: string;
     label: "Team",
     blurb: "People who work with you. They can sign in, message the Executive and approve what their authority covers.",
     empty: "No team members yet.",
-    add: "+ Add person",
+    add: "Add person",
   },
   contacts: {
     label: "Contacts",
     blurb: "Clients, contractors and advisors outside the team — private to you. The Executive emails or invites them only when you ask it to; they can't sign in or message it, and nobody else on the team sees them.",
     empty: "No contacts yet.",
-    add: "+ Add contact",
+    add: "Add contact",
   },
 };
 
@@ -610,6 +602,9 @@ export default function PeoplePage() {
   const shown = peopleForTab(people, activeTab, mode);
   const hidden = activeTab === "team" ? hiddenTeamCount(people, mode) : 0;
   const copy = TAB_COPY[activeTab];
+  const tabsId = useId();
+  // Local date (YYYY-MM-DD) for "on leave until", sampled once per mount.
+  const [today] = useState(() => new Date().toLocaleDateString("en-CA"));
 
   return (
     <div className="flex flex-col h-full bg-surface">
@@ -629,76 +624,63 @@ export default function PeoplePage() {
       )}
       {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
-          <div className="flex items-baseline justify-between mb-4">
-            <div>
-              <h1 className="text-xl font-semibold text-fg">People</h1>
-              <p className="text-sm text-fg-muted mt-0.5">{copy.blurb}</p>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-6">
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">People</h1>
+              <p className="text-[15px] text-fg-muted mt-2 max-w-2xl">{copy.blurb}</p>
             </div>
-            <button
-              onClick={() => setShowAdd(true)}
-              className="flex-shrink-0 px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
-            >
+            <Button variant="primary" onClick={() => setShowAdd(true)} className="flex-shrink-0 self-start">
               {copy.add}
-            </button>
+            </Button>
           </div>
 
           {tabs.length > 1 && (
-          <div role="tablist" aria-label="Team or contacts" className="flex gap-1 border-b border-line mb-6">
-            {tabs.map((t) => {
-              const count = peopleForTab(people, t, mode).length;
-              const selected = activeTab === t;
-              return (
-                <button
-                  key={t}
-                  role="tab"
-                  aria-selected={selected}
-                  disabled={(workspaceLoading || viewerLoading) && tab === null}
-                  onClick={() => setTab(t)}
-                  className={`px-3 py-2 text-sm -mb-px border-b-2 transition-colors ${
-                    selected
-                      ? "border-indigo-500 text-fg font-medium"
-                      : "border-transparent text-fg-muted hover:text-fg"
-                  }`}
-                >
-                  {TAB_COPY[t].label}
-                  {!loading && <span className="ml-1.5 text-xs text-fg-subtle">{count}</span>}
-                </button>
-              );
-            })}
-          </div>
+            <div className="mb-6">
+              <SectionTabs
+                idBase={tabsId}
+                label="Team or contacts"
+                active={activeTab}
+                onChange={setTab}
+                disabled={(workspaceLoading || viewerLoading) && tab === null}
+                tabs={tabs.map((t) => ({
+                  id: t,
+                  label: TAB_COPY[t].label,
+                  count: loading ? undefined : peopleForTab(people, t, mode).length,
+                }))}
+              />
+            </div>
           )}
 
-          {loading && <p className="text-fg-muted text-sm">Loading…</p>}
+          <div {...(tabs.length > 1 ? sectionPanelProps(tabsId, activeTab) : {})}>
+          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
           {error && (
-            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm mb-4">
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}
             </div>
           )}
           {!loading && !error && shown.length === 0 && (
-            <div className="rounded-xl border border-line bg-surface-elevated p-8 text-center">
-              <p className="text-fg-muted text-sm mb-3">{copy.empty}</p>
-              <button
-                onClick={() => setShowAdd(true)}
-                className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
-              >
-                {activeTab === "contacts" ? "Add your first contact →" : "Add your first person →"}
-              </button>
+            <div className="rounded-2xl border border-line bg-surface-elevated p-10 text-center">
+              <p className="text-fg-muted text-[15px] mb-5">{copy.empty}</p>
+              <Button variant="primary" onClick={() => setShowAdd(true)}>
+                {activeTab === "contacts" ? "Add your first contact" : "Add your first person"}
+              </Button>
             </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {shown.map((person) => (
-              <PersonCard key={person.id} person={person} />
+              <PersonCard key={person.id} person={person} today={today} />
             ))}
           </div>
 
           {hidden > 0 && (
-            <p className="text-xs text-fg-muted mt-4">
+            <p className="text-sm text-fg-muted mt-5">
               {hidden === 1 ? "1 other team member is" : `${hidden} other team members are`} hidden while you
               use Open Executive just for yourself. Switch to team mode in Settings to see them.
             </p>
           )}
+          </div>
         </div>
       </main>
     </div>

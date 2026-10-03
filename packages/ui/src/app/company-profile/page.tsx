@@ -14,6 +14,8 @@ import {
 } from "@/components/company-profile/ProfileSections";
 import { PROFILE_COPY } from "@/components/company-profile/profileCopy";
 import { profileWording } from "@/components/shell/navConfig";
+import { buttonClass } from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   getCompanyProfile,
@@ -127,43 +129,44 @@ export default function CompanyProfilePage() {
   return (
     <div className="flex flex-col h-full bg-surface">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-4 py-6 sm:px-6 sm:py-10">
+        <div className="max-w-6xl mx-auto px-4 py-8 sm:px-6">
 
           {loading && (
             <div className="flex items-center justify-center h-40">
-              <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
             </div>
           )}
 
           {notFound && (
-            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <p className="text-sm text-fg">{copy.missing}</p>
-              <Link href="/onboard" className="flex-shrink-0 text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
-                Complete setup →
+            <div className="max-w-3xl bg-accent/10 border border-accent/20 rounded-2xl px-5 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-[15px] text-fg">{copy.missing}</p>
+              <Link href="/onboard" className={buttonClass("primary", "md", "flex-shrink-0")}>
+                Complete setup
               </Link>
             </div>
           )}
 
           {profile && (
             <>
-              <div className={`flex items-center justify-between ${copy.intro ? "mb-4" : "mb-8"}`}>
-                <div>
-                  <h1 className="text-lg font-semibold text-fg">{profile.name}</h1>
-                  <p className="text-sm text-fg-muted mt-0.5">{[profile.industry, profile.stage].filter(Boolean).join(" · ")}</p>
+              <div className={`flex items-start justify-between gap-4 ${copy.intro ? "mb-4" : "mb-8"}`}>
+                <div className="min-w-0">
+                  <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">{profile.name}</h1>
+                  <p className="text-[15px] text-fg-muted mt-1.5">{[profile.industry, profile.stage].filter(Boolean).join(" · ")}</p>
                 </div>
-                <Link href="/onboard" className="text-xs text-fg-muted hover:text-fg-muted transition-colors">
-                  Re-run setup →
-                </Link>
+                <OverflowMenu
+                  label="More profile actions"
+                  items={[{ label: "Re-run setup", href: "/onboard" }]}
+                />
               </div>
 
               {copy.intro && (
-                <p className="text-sm text-fg-muted leading-relaxed mb-8">
+                <p className="text-[15px] text-fg-muted leading-relaxed mb-8 max-w-3xl">
                   {copy.intro}
                   {copy.roleNote && (
                     <>
                       {" "}
                       {copy.roleNote}{" "}
-                      <Link href="/settings#workspace" className="whitespace-nowrap text-indigo-400 hover:text-indigo-300 transition-colors">
+                      <Link href="/settings#workspace" className="whitespace-nowrap text-accent hover:underline">
                         Settings → Workspace
                       </Link>
                       .
@@ -178,6 +181,7 @@ export default function CompanyProfilePage() {
                 onSave={save}
                 pending={pending}
                 wording={wording}
+                layout="columns"
               />
             </>
           )}

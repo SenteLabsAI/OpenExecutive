@@ -66,3 +66,23 @@ export function effectiveKind(kind: PersonKind, isPrincipal: boolean): PersonKin
 export function shouldOfferTeamMode(mode: WorkspaceMode, kind: PersonKind, isPrincipal: boolean): boolean {
   return mode === "solo" && effectiveKind(kind, isPrincipal) === "team" && !isPrincipal;
 }
+
+export type CardStatusTone = "ok" | "warn" | "muted";
+
+/**
+ * The one status a People card shows. A contact: whether there's an email to
+ * reach them on. A team member on leave: until when (an ISO date, compared
+ * with `today` as YYYY-MM-DD). Anyone else on the team: how fast they're
+ * expected to reply. Their approval scopes are on their own page.
+ */
+export function personCardStatus(
+  person: Pick<Person, "kind" | "email" | "on_leave_until" | "response_sla_hours">,
+  today: string,
+): { label: string; tone: CardStatusTone } {
+  if (isContact(person)) {
+    return person.email ? { label: "Email on file", tone: "ok" } : { label: "No email", tone: "muted" };
+  }
+  const leave = person.on_leave_until?.slice(0, 10);
+  if (leave && leave >= today) return { label: `On leave until ${leave}`, tone: "warn" };
+  return { label: `Replies within ${person.response_sla_hours}h`, tone: "ok" };
+}

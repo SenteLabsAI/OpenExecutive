@@ -6,6 +6,7 @@ import {
   effectiveKind,
   hiddenTeamCount,
   isContact,
+  personCardStatus,
   peopleForTab,
   shouldOfferTeamMode,
   tabsFor,
@@ -67,4 +68,17 @@ test("adding a teammate in solo offers team mode; a contact or the principal doe
   assert.equal(shouldOfferTeamMode("solo", "team", true), false);
   assert.equal(shouldOfferTeamMode("solo", "contact", true), false);
   assert.equal(shouldOfferTeamMode("team", "team", false), false);
+});
+
+test("a card's one status: email for a contact, leave or reply time for the team", () => {
+  const base = { kind: "team", email: null, on_leave_until: null, response_sla_hours: 12 };
+  assert.deepEqual(personCardStatus(base, "2026-10-03"), { label: "Replies within 12h", tone: "ok" });
+  assert.deepEqual(
+    personCardStatus({ ...base, on_leave_until: "2026-10-10" }, "2026-10-03"),
+    { label: "On leave until 2026-10-10", tone: "warn" },
+  );
+  // A leave that has ended no longer shows.
+  assert.equal(personCardStatus({ ...base, on_leave_until: "2026-09-30" }, "2026-10-03").label, "Replies within 12h");
+  assert.deepEqual(personCardStatus({ ...base, kind: "contact" }, "2026-10-03"), { label: "No email", tone: "muted" });
+  assert.equal(personCardStatus({ ...base, kind: "contact", email: "a@b.c" }, "2026-10-03").label, "Email on file");
 });

@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import TimeframePicker, { TimeframeChips, suggestPeriodValue } from "@/components/TimeframePicker";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   createGoal,
   deleteGoal,
@@ -32,14 +34,31 @@ function isStaleReview(lastReviewedAt: string): boolean {
 export const GOAL_STATUS_OPTS = ["on_track", "at_risk", "off_track"] as const;
 export type GoalStatus = (typeof GOAL_STATUS_OPTS)[number];
 
-export const GOAL_STATUS_COLORS: Record<string, string> = {
-  on_track: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-  at_risk: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  off_track: "bg-rose-500/20 text-rose-300 border-rose-500/30",
+// A goal's status as a dot and a word, the one status pill the goal screens
+// share (a goal row, an area's summary on /goals, a department card).
+const GOAL_STATUS_DOT: Record<string, string> = {
+  on_track: "bg-emerald-500",
+  at_risk: "bg-amber-500",
+  off_track: "bg-rose-500",
 };
 
+export function goalStatusLabel(status: string): string {
+  return status.replace("_", " ");
+}
+
+export function GoalStatusPill({ status, count }: { status: string; count?: number }) {
+  return (
+    <span className="inline-flex flex-shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface-elevated px-2.5 py-1 text-[13px] font-medium text-fg whitespace-nowrap">
+      <span aria-hidden="true" className={cls("h-2 w-2 rounded-full", GOAL_STATUS_DOT[status] ?? "bg-fg-subtle")} />
+      {count !== undefined && <span>{count}</span>}
+      {goalStatusLabel(status)}
+    </span>
+  );
+}
+
 const INPUT_CLS =
-  "px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500";
+  "h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent";
+const LABEL_CLS = "text-sm text-fg-muted flex flex-col gap-1.5";
 
 const GOAL_PLACEHOLDER = "e.g. Close Series A";
 const TARGET_PLACEHOLDER = "How will you know it's done? e.g. $5M raised";
@@ -133,25 +152,30 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
 
   if (!editing) {
     const progress = formatGoalProgress(goal);
+    async function remove() {
+      if (!window.confirm("Delete this goal?")) return;
+      setDeleting(true);
+      setErr(null);
+      try {
+        await deleteGoal(slug, goal.id!);
+        onDeleted(goal.id!);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Delete failed");
+        setDeleting(false);
+      }
+    }
     return (
       <div
         className={cls(
-          "flex items-start gap-3 py-3 border-b border-line last:border-0 group",
+          "flex items-start gap-3 sm:gap-4 py-4 border-b border-line last:border-0",
           stale && "border-l-2 border-l-amber-500/60 pl-3 -ml-3"
         )}
       >
-        <span
-          className={cls(
-            "mt-0.5 flex-shrink-0 inline-block px-2 py-0.5 rounded border text-[10px] font-medium",
-            GOAL_STATUS_COLORS[goal.status]
-          )}
-        >
-          {goal.status.replace("_", " ")}
-        </span>
         <div className="flex-1 min-w-0">
-          <div className="text-sm text-fg font-medium">{goal.key_result}</div>
-          {progress && <div className="text-xs text-fg-muted mt-0.5">{progress}</div>}
-          <div className="text-xs text-fg-subtle mt-0.5 flex items-center gap-2 flex-wrap">
+          <div className="text-base text-fg font-medium leading-snug">{goal.key_result}</div>
+          {progress && <div className="text-[15px] text-fg-muted mt-1">{progress}</div>}
+          <div className="text-sm text-fg-subtle mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap">
+            <GoalStatusPill status={goal.status} />
             <span>{formatGoalPeriod(goal)}</span>
             <span aria-hidden="true">·</span>
             {goal.last_reviewed_at ? (
@@ -163,36 +187,15 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
             )}
           </div>
         </div>
-        {/* Always shown on small screens (no hover on touch); revealed on
-            hover or keyboard focus from md up. */}
-        <div className="flex flex-col items-end gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition-opacity flex-shrink-0">
-          <div className="flex gap-1">
-            <button
-              onClick={() => setEditingAndNotify(true)}
-              className="px-2 py-1 text-xs rounded bg-surface-overlay hover:bg-surface-input border border-line"
-            >
-              Edit
-            </button>
-            <button
-              disabled={deleting}
-              onClick={async () => {
-                if (!window.confirm("Delete this goal?")) return;
-                setDeleting(true);
-                setErr(null);
-                try {
-                  await deleteGoal(slug, goal.id!);
-                  onDeleted(goal.id!);
-                } catch (e) {
-                  setErr(e instanceof Error ? e.message : "Delete failed");
-                  setDeleting(false);
-                }
-              }}
-              className="px-2 py-1 text-xs rounded bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 disabled:opacity-50"
-            >
-              {deleting ? "…" : "Delete"}
-            </button>
-          </div>
-          {err && <span className="text-[10px] text-rose-300">{err}</span>}
+        <div className="flex flex-col items-end gap-1 flex-shrink-0 -mr-2 -mt-1.5">
+          <OverflowMenu
+            label={`Actions for goal: ${goal.key_result}`}
+            items={[
+              { label: "Edit goal", onSelect: () => setEditingAndNotify(true) },
+              { label: deleting ? "Deleting…" : "Delete goal", danger: true, disabled: deleting, onSelect: () => void remove() },
+            ]}
+          />
+          {err && <span className="text-xs text-rose-500">{err}</span>}
         </div>
       </div>
     );
@@ -237,8 +240,8 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
   const onKeyDown = formKeys(save, cancel, saving);
 
   return (
-    <div className="py-3 border-b border-line last:border-0 space-y-2">
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
+    <div className="py-4 border-b border-line last:border-0 space-y-3">
+      <label className={LABEL_CLS}>
         Goal
         <input
           value={form.key_result}
@@ -254,7 +257,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
         onChange={(pt, pv) => setForm((f) => ({ ...f, period_type: pt, period_value: pv }))}
         size="compact"
       />
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
+      <label className={LABEL_CLS}>
         Status
         <select
           value={form.status}
@@ -268,7 +271,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
           ))}
         </select>
       </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
+      <label className={LABEL_CLS}>
         Target (optional)
         <input
           value={form.target}
@@ -278,7 +281,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
           placeholder={TARGET_PLACEHOLDER}
         />
       </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
+      <label className={LABEL_CLS}>
         Where it stands now (optional)
         <input
           value={form.current}
@@ -288,22 +291,14 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
           placeholder={CURRENT_PLACEHOLDER}
         />
       </label>
-      {err && <p className="text-xs text-rose-300">{err}</p>}
+      {err && <p className="text-sm text-rose-500">{err}</p>}
       <div className="flex gap-2">
-        <button
-          disabled={!canSave}
-          onClick={save}
-          className="px-3 py-1.5 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
-        >
+        <Button variant="primary" disabled={!canSave} onClick={save}>
           {saving ? "Saving…" : "Save"}
-        </button>
-        <button
-          disabled={saving}
-          onClick={cancel}
-          className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
-        >
+        </Button>
+        <Button disabled={saving} onClick={cancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -377,9 +372,9 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
   const onKeyDown = formKeys(submit, onCancel, saving);
 
   return (
-    <div className="py-3 border-b border-line space-y-3 bg-surface-overlay/30 px-4 -mx-4 rounded-lg">
-      <div className="text-xs font-semibold text-fg-muted uppercase tracking-wide">New goal</div>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
+    <div className="py-5 space-y-4">
+      <div className="text-base font-semibold text-fg">New goal</div>
+      <label className={LABEL_CLS}>
         What&apos;s the goal?
         <input
           ref={firstRef}
@@ -392,7 +387,7 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
         />
       </label>
       {areas && areas.length > 1 && (
-        <label className="text-xs text-fg-muted flex flex-col gap-1">
+        <label className={LABEL_CLS}>
           {areaLabel}
           <select
             value={areaSlug}
@@ -411,8 +406,8 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
         periodType={form.period_type}
         onChange={(pt, pv) => setForm((f) => ({ ...f, period_type: pt, period_value: pv }))}
       />
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <label className="text-xs text-fg-muted flex flex-col gap-1">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className={LABEL_CLS}>
           Target (optional)
           <input
             value={form.target}
@@ -423,7 +418,7 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
             placeholder={TARGET_PLACEHOLDER}
           />
         </label>
-        <label className="text-xs text-fg-muted flex flex-col gap-1">
+        <label className={LABEL_CLS}>
           Where it stands now (optional)
           <input
             value={form.current}
@@ -435,22 +430,14 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
           />
         </label>
       </div>
-      {err && <p className="text-xs text-rose-300">{err}</p>}
+      {err && <p className="text-sm text-rose-500">{err}</p>}
       <div className="flex gap-2">
-        <button
-          disabled={!canSubmit}
-          onClick={submit}
-          className="px-3 py-1.5 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
-        >
+        <Button variant="primary" disabled={!canSubmit} onClick={submit}>
           {saving ? "Adding…" : "Add goal"}
-        </button>
-        <button
-          disabled={saving}
-          onClick={onCancel}
-          className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
-        >
+        </Button>
+        <Button disabled={saving} onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );
