@@ -203,7 +203,10 @@ function NoteRow({
       <div className="flex items-center justify-between gap-3 mb-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg-muted">
           <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium">{kindLabel(note.kind)}</span>
-          <span className="truncate">{noteWhere(note)}</span>
+          {/* The name is theirs to choose; the address says who it really was. */}
+          <span className="truncate" title={note.counterpart}>
+            {noteWhere(note)}
+          </span>
           <span>{formatDate(note.occurred_at)}</span>
           {note.pinned && <span className="text-xs font-medium text-accent">Pinned</span>}
         </div>
@@ -292,6 +295,12 @@ function CorrectPanel({
             className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="text-sm text-fg-muted space-y-1">
+            {note.counterpart && (
+              <div className="break-all">
+                <span className="text-fg-subtle">With: </span>
+                {note.counterpart}
+              </div>
+            )}
             <div>
               <span className="text-fg-subtle">Noted as: </span>
               {note.summary}
