@@ -142,6 +142,12 @@ class Session:
     # route. A header-less request resolves to the principal but is no
     # sign-in: Act as me needs one (or local login).
     web_caller_signed_in: bool = False
+    # Whose documents this session reads and publishes, when that is not its
+    # own speaker (``artifact_records.current_viewer``): a session a workflow
+    # mints inside someone's turn (``executive_research``'s synthesis) is
+    # pinned to that turn's viewer, so what it drafts is theirs. An
+    # ``artifact_records.Viewer``; None derives it from this session.
+    documents_viewer: Any = None
     # Evals and tests only (``delegation.settings.DelegationOverride``): run
     # as if the speaker had Act as me, against a fake mailbox.
     delegation_override: Any = None

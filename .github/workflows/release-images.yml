@@ -13,10 +13,9 @@
 # on main that CI has passed. The two images are separate matrix jobs, so a
 # release is not atomic — if one job fails, the other's tags still exist.
 #
-# The job is guarded to this repository: the saas fork syncs with
-# `git merge upstream/main` and would otherwise run this on every push to its
-# own main, and a third-party fork would fail with a 403 pushing to the
-# hardcoded ghcr.io/sentelabsai/* names. A fork that wants its own images
+# The job is guarded to this repository: a fork would otherwise run this on
+# every push to its own main and fail with a 403 pushing to the hardcoded
+# ghcr.io/sentelabsai/* names. A fork that wants its own images
 # changes the guard and the image names.
 #
 # Version tags normally come from merging the release PR that

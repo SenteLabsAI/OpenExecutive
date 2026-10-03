@@ -1015,3 +1015,28 @@ def test_a_later_pause_keeps_the_scheduled_recipient(monkeypatch: pytest.MonkeyP
     assert checkpointed[0].resume_state is not None
     assert checkpointed[0].resume_state.deliver_to_person_id == 11
     assert sent == []
+
+
+@pytest.mark.parametrize(("owner", "expected_person"), [(5, 5), (None, None)])
+async def test_a_resumed_run_reads_as_its_owner(
+    monkeypatch: pytest.MonkeyPatch, owner: int | None, expected_person: int | None
+) -> None:
+    """A resumed run's steps read and draft as whoever started it, and as
+    nobody for a team run — never as the principal by default."""
+    from openexecutive.orchestrator.artifact_records import Viewer, current_viewer
+    from openexecutive.workflows import resumer
+
+    seen: list[Viewer] = []
+
+    async def _drive(row: dict, claim: str, db_path: object = None) -> bool:
+        seen.append(current_viewer())
+        return True
+
+    monkeypatch.setattr(resumer, "_drive_resume", _drive)
+    monkeypatch.setattr(
+        resumer._wf_persistence, "get_run",
+        lambda run_id, db_path=None: {"run_id": run_id, "owner_person_id": owner},
+    )
+    assert await resumer._execute_resume({"run_id": "r"}, "claim") is True
+    (viewer,) = seen
+    assert viewer.person_id == expected_person and not viewer.is_principal

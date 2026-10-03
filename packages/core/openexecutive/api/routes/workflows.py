@@ -50,6 +50,7 @@ from openexecutive.workflows.persistence import (
     get_run,
     initialize_runs_db,
     list_runs,
+    run_visible_to,
     stored_artifact,
 )
 from openexecutive.workflows.tool_catalog import resolve as resolve_tools_catalog
@@ -68,14 +69,37 @@ async def list_workflow_meta() -> dict[str, Any]:
 
 
 @router.get("/workflows/runs")
-async def list_workflow_runs(workflow: str | None = None, limit: int = 100) -> dict[str, Any]:
-    """Recent runs across all workflows (or filtered by workflow name)."""
+async def list_workflow_runs(
+    request: Request, workflow: str | None = None, limit: int = 100
+) -> dict[str, Any]:
+    """Recent runs across all workflows (or filtered by workflow name) that
+    the caller may see (``persistence.run_visible_to``): the team's, and
+    their own."""
     initialize_runs_db()
-    return {"runs": list_runs(workflow_name=workflow, limit=limit)}
+    return {
+        "runs": list_runs(
+            workflow_name=workflow, limit=limit, visible_to=_caller_person_id(request)
+        )
+    }
+
+
+def _caller_person_id(request: Request) -> int | None:
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    return _resolve_caller_person_id(request)
+
+
+def _visible_run(run_id: str, request: Request) -> dict[str, Any]:
+    """The run, or 404 — also for someone else's, so its existence is not
+    revealed either."""
+    run = get_run(run_id)
+    if run is None or not run_visible_to(run, _caller_person_id(request)):
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return run
 
 
 @router.get("/workflows/runs/{run_id}")
-async def get_workflow_run(run_id: str) -> dict[str, Any]:
+async def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     """Full record of one run, including the artifact if complete.
 
     `resume_state_json` is replaced by a small `resume_progress` summary. The
@@ -84,15 +108,14 @@ async def get_workflow_run(run_id: str) -> dict[str, Any]:
     returning it would re-send the whole run body every few seconds to render
     a progress list that only needs the step ids.
     """
-    run = get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    run = _visible_run(run_id, request)
     run["resume_progress"] = _resume_progress(run.pop("resume_state_json", None))
     return run
 
 
 @router.delete("/workflows/runs/{run_id}")
-async def delete_workflow_run(run_id: str) -> dict[str, str]:
+async def delete_workflow_run(run_id: str, request: Request) -> dict[str, str]:
+    _visible_run(run_id, request)
     if not delete_run(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return {"status": "deleted", "run_id": run_id}
@@ -122,9 +145,7 @@ async def decide_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     decision = body.get("decision") if isinstance(body, dict) else None
     if decision not in _WEB_DECISIONS:
         raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'")
-    run = get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    run = _visible_run(run_id, request)
     if run.get("status") != "awaiting_human":
         raise HTTPException(status_code=409, detail="This run isn't waiting for an answer.")
     try:
@@ -411,11 +432,31 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
 
     run_id = uuid.uuid4().hex
     title = _derive_title(workflow.name, payload)
+    # Started by hand: the run and its output are the caller's alone. Fails
+    # closed: a caller who can't be placed on the roster starts nothing that
+    # would otherwise land in the team's history.
+    try:
+        owner_person_id = _caller_person_id(request)
+    except Exception as exc:
+        logger.exception("workflow run: caller lookup failed — refusing the run")
+        raise HTTPException(status_code=503, detail="Couldn't read the People list.") from exc
+    if owner_person_id is None and api_caller.caller(request).email:
+        raise HTTPException(
+            status_code=403, detail="Runs are kept for people on the People list."
+        )
+    from openexecutive.orchestrator.artifact_records import (
+        NOBODY,
+        pinned_viewer,
+        viewer_for_person,
+    )
+
+    run_viewer = viewer_for_person(owner_person_id) if owner_person_id is not None else NOBODY
     create_run(
         run_id=run_id,
         workflow_name=workflow.name,
         title=title,
         inputs=payload,
+        owner_person_id=owner_person_id,
     )
 
     store = getattr(request.app.state, "store", None)
@@ -517,8 +558,15 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
                 time.monotonic() - t_start,
             )
 
+    async def owned_stream():
+        # The run's steps read and draft as its owner (nobody for a team
+        # run), so no one else's documents reach its output.
+        with pinned_viewer(run_viewer):
+            async for chunk in event_stream():
+                yield chunk
+
     return StreamingResponse(
-        event_stream(),
+        owned_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

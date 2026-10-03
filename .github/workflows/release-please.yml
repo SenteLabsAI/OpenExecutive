@@ -33,8 +33,8 @@
 # the release tag would publish no images. Use a fine-grained token scoped to
 # this repository with Contents and Pull requests read/write.
 #
-# Guarded to this repository for the same reason as release-images.yml: the
-# saas fork merges upstream/main and must not open release PRs of its own.
+# Guarded to this repository, as release-images.yml is, so a fork never opens
+# release PRs of its own.
 name: Release please
 
 on:

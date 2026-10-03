@@ -359,6 +359,13 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     if refusal is not None:
         return refusal
 
+    from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody
+
+    # A run belongs to whoever starts it; with no one to own it, it would
+    # land in the team's history.
+    if runs_refused_for_nobody():
+        return _err("run_workflow", "runs are kept for people on the People list, and the person you are talking with is not on it", kind="write")
+
     raw_inputs = tool_input.get("inputs")
     if raw_inputs is None:
         raw_inputs = {}
@@ -374,7 +381,12 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
 
     run_id = uuid.uuid4().hex
     try:
-        create_run(run_id, name, f"{workflow.title} (chat-tool fire)", wf_inputs.model_dump())
+        from openexecutive.orchestrator.artifact_records import turn_owner
+
+        create_run(
+            run_id, name, f"{workflow.title} (chat-tool fire)", wf_inputs.model_dump(),
+            owner_person_id=turn_owner(),
+        )
     except Exception as exc:
         # Don't run an untracked workflow: without the run row, a later
         # save_checkpoint would UPDATE nothing (SQLite reports 0 rows, no error)

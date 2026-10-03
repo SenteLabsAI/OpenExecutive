@@ -462,7 +462,7 @@ def _previous_reflection_artifact() -> str | None:
         from openexecutive.workflows import persistence
 
         runs = persistence.list_runs(
-            workflow_name="executive_reflection", status="done", limit=1
+            workflow_name="executive_reflection", status="done", limit=1, visible_to=None
         )
         if not runs:
             return None

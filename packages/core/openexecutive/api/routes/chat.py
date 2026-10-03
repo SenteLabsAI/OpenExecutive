@@ -884,6 +884,9 @@ async def _run_chat_turn(
         # return_exceptions=True so a digest raising never discards the others —
         # each formatter already swallows its own errors, this just guards the
         # to_thread wrappers themselves.
+        # This turn's speaker, not whoever spoke last in this session: the
+        # digest shows a drafted document's card only to its owner.
+        session.caller_person_id = caller_person_id
         results = await asyncio.gather(
             asyncio.to_thread(render_and_trust, session),
             return_exceptions=True,
@@ -944,9 +947,16 @@ async def _run_chat_turn(
     # all raise, and the entry would otherwise be stranded until the registry
     # cap evicted it.
     try:
+        from openexecutive.orchestrator.artifact_records import (
+            pinned_viewer,
+            viewer_for_person,
+        )
+
         with (
             principal_turn_rows(principal_turn),
             rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext(),
+            # The session isn't bound yet: recall the speaker's own documents.
+            pinned_viewer(viewer_for_person(caller_person_id)),
         ):
             (
                 retrieved_context, episodic_context, peer_memory_context, briefing_context,

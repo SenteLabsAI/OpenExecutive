@@ -29,7 +29,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from openexecutive.alerts.models import Alert
+from openexecutive.alerts.models import Alert, visible_alert
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +155,13 @@ def list_live_alerts(
     db_path: Path | None = None,
     *,
     now: datetime | None = None,
+    viewer: object | None = None,
 ) -> list[Alert]:
     """``unread`` alerts that are still live: not past TTL, not snoozed.
+
+    A drafted artifact is its owner's alone (``models.visible_alert``): it is
+    kept only for the ``viewer`` it belongs to, and left out with no viewer —
+    the board the review, the reflection and the shared digests read.
 
     Newest first, like ``store.list_alerts``. This is the read every
     user-facing surface shares; the sweep merely persists what this view
@@ -174,6 +179,7 @@ def list_live_alerts(
         a for a in rows
         if not is_expired(a, now, monitoring_days=monitoring_days, action_days=action_days)
         and not _is_snoozed(a, now)
+        and visible_alert(a, viewer)
     ]
     return live[:limit]
 

@@ -349,3 +349,30 @@ class TestBounds:
         for n in range(15):
             _alert(db, f"Battlecard {n}", external_id=f"bc-{n}")
         assert _find("battlecard", limit="not a number")["count"] == 10
+
+
+class TestSomeoneElsesDocument:
+    """A drafted document is its owner's alone: another person can neither
+    find it nor ack it, and its id answers as if it did not exist."""
+
+    def test_the_principal_cannot_find_or_dismiss_a_teammates_draft(self, db, people, session):
+        aid = _alert(
+            db, "Sara salary notes", source="artifact",
+            routed_to_person_id=people.teammate, owner_person_id=people.teammate,
+        )
+        assert _find("salary").get("matches", []) == []
+        # Even with the id trusted for the turn, it is refused as unknown.
+        session.trusted_alert_ids.add(aid)
+        assert _ack(aid, "dismissed") == {"error": f"alert {aid} not found"}
+        alert = alert_store.get_alert(aid, db_path=db)
+        assert alert is not None and alert.status == "unread"
+
+    def test_the_owner_can_dismiss_their_own(self, db, people):
+        aid = _alert(
+            db, "Sara salary notes", source="artifact",
+            routed_to_person_id=people.teammate, owner_person_id=people.teammate,
+        )
+        s = Session(from_web_chat=True, caller_person_id=people.teammate)
+        s.trusted_alert_ids.add(aid)
+        with _bind(s):
+            assert _ack(aid, "dismissed")["status"] == "dismissed"

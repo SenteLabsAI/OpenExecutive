@@ -901,14 +901,20 @@ async def _apply_draft(ctx: _MoveContext) -> None:
         ctx.label = "drafted"
         return  # the artifact already sits in the queue — never draft it twice
     try:
+        from openexecutive.orchestrator.artifact_records import (
+            pinned_viewer,
+            principal_viewer,
+        )
         from openexecutive.orchestrator.artifact_tools import handle_draft_artifact
 
-        result = json.loads(await handle_draft_artifact({
-            "title": v.draft_title,
-            "document": v.draft_document,
-            "why_interesting": (ctx.note or f"Drafted from alert: {alert.headline[:100]}")[:300],
-            "severity": alert.severity,
-        }))
+        # The review drafts for the principal: the document is theirs.
+        with pinned_viewer(principal_viewer()):
+            result = json.loads(await handle_draft_artifact({
+                "title": v.draft_title,
+                "document": v.draft_document,
+                "why_interesting": (ctx.note or f"Drafted from alert: {alert.headline[:100]}")[:300],
+                "severity": alert.severity,
+            }))
     except Exception:
         logger.exception("alert_review: draft failed for alert %d", ctx.alert_id)
         return
