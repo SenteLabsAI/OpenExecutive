@@ -486,7 +486,7 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
                   </div>
                 </label>
                 <p className={HINT_CLS}>
-                  Items overdue in Today after {form.response_sla_hours || 24}h with no reply.
+                  Items show as overdue on Home after {form.response_sla_hours || 24}h with no reply.
                 </p>
               </div>
             </div>

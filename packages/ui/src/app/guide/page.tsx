@@ -13,7 +13,7 @@ const SECTIONS = [
   { id: 'ask_oe', label: 'Ask OE', sub: 'The page-aware assistant panel — explains any screen and fills forms for you to review.' },
   { id: 'today', label: 'Today / Morning Brief', sub: 'What needs you right now: proposals, department health, and people with open items.' },
   { id: 'pulse', label: 'Pulse (Memory)', sub: "The Executive's running memory — decisions made, initiatives in flight, advice gathered, corrections kept." },
-  { id: 'review', label: 'Review Queue', sub: 'Now inside the Knowledge base. Built-in knowledge is trusted by default. Review what you upload or edit, or send a domain for review yourself.' },
+  { id: 'review', label: 'Review Queue', sub: 'On Knowledge, under Advanced. Built-in knowledge is trusted by default. Review what you upload or edit, or send a domain for review yourself.' },
   { id: 'jobs', label: 'Workflows', sub: 'Multi-step workflows that produce a deliverable — board prep, GTM plan, perf review.' },
   { id: 'artifacts', label: 'Documents', sub: 'Your library of finished documents — drafts and workflow outputs in one place.' },
   { id: 'watchlist', label: 'Watch List', sub: 'External monitors — stock tickers, RSS feeds, status pages, web queries — that raise alerts.' },
@@ -28,7 +28,7 @@ const SECTIONS = [
   { id: 'simulator', label: 'Company Simulator', sub: 'Load a realistic test company to try the Executive before trusting it with real data.' },
   { id: 'clients', label: 'Client Companies', sub: 'Multi-client mode for fractional work — switch the live company between named client slots.' },
   { id: 'integrations', label: 'Integrations', sub: 'Reach the Executive where you already work — Slack, Discord, Telegram, email, Google Chat, MCP.' },
-  { id: 'settings', label: 'Settings & Advanced', sub: 'The hub for power-user tools that sit outside the day-to-day nav — including this guide.' },
+  { id: 'settings', label: 'Settings & Advanced', sub: 'Your Executive, workspace, Act as me, and the Advanced tools outside the day-to-day nav — including this guide.' },
 ];
 
 interface SectionMeta {

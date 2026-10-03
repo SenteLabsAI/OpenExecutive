@@ -166,7 +166,7 @@ export default function CompanyProfilePage() {
                     <>
                       {" "}
                       {copy.roleNote}{" "}
-                      <Link href="/settings#workspace" className="whitespace-nowrap text-accent hover:underline">
+                      <Link href="/settings/workspace" className="whitespace-nowrap text-accent hover:underline">
                         Settings → Workspace
                       </Link>
                       .

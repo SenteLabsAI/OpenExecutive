@@ -48,7 +48,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     GuideSection(
         id="review",
         title="Review Queue",
-        sub="In the Knowledge base: approve, reject, or correct knowledge before the Executive relies on it.",
+        sub="On Knowledge, under Advanced: approve, reject, or correct knowledge before the Executive relies on it.",
     ),
     GuideSection(
         id="jobs",
@@ -123,7 +123,7 @@ GUIDE_SECTIONS: list[GuideSection] = [
     GuideSection(
         id="settings",
         title="Settings & Advanced",
-        sub="The hub for power-user tools that sit outside the day-to-day nav — including this guide.",
+        sub="Your Executive, workspace, Act as me, and the Advanced tools outside the day-to-day nav — including this guide.",
     ),
 ]
 
