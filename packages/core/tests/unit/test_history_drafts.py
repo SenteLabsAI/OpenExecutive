@@ -71,3 +71,9 @@ def test_at_most_eight_newest_first() -> None:
     out = notes_for_draft(1, ["dana@acme.example"])
     assert out is not None
     assert len(out.splitlines()) == 8 and "item 00" in out.splitlines()[0] and "item 11" not in out
+
+
+def test_a_recipient_given_with_a_name_still_matches() -> None:
+    _note("the pilot starts Oct 12", "Dana Lee <dana@acme.example>")
+    out = notes_for_draft(1, ["Dana Lee <Dana@acme.example>"])
+    assert out is not None and "Oct 12" in out

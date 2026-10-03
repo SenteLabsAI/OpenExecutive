@@ -37,7 +37,8 @@ def notes_for_draft(person_id: int | None, recipients: Iterable[str]) -> str | N
         from openexecutive.memory import history
         from openexecutive.utils.prompt_blocks import plain
 
-        wanted = {str(r).strip().lower() for r in recipients if str(r).strip()}
+        # Bare addresses, so "Dana <dana@x>" and "dana@x" match alike.
+        wanted = set().union(*(_addresses(str(r)) for r in recipients)) if recipients else set()
         if person_id is None or not wanted or not history.person_settings(person_id).reply_notes:
             return None
         lines: list[str] = []
