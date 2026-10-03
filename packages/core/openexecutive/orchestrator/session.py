@@ -53,6 +53,8 @@ class Session:
     # (`memory.history_chat`, `orchestrator.history_tools`), never as a grant
     # for anything else. `private_chat` adds that nobody but that person (and
     # the Executive) can read the conversation, so their notes may be recalled.
+    # An adapter sets either only when it resolved `caller_person_id` from the
+    # sender identity it verified itself, never from anything the message says.
     speaker_verified: bool = False
     private_chat: bool = False
     # The live alert board as the server derived it this turn, recorded by
