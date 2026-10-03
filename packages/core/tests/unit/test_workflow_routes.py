@@ -109,7 +109,7 @@ def test_list_artifact_runs_only_done_with_artifact(temp_db: Path) -> None:
     create_run("failed-1", "board_prep", "Boom", {}, db_path=temp_db)
     fail_run("failed-1", "boom", db_path=temp_db)
 
-    runs = list_artifact_runs(db_path=temp_db)
+    runs = list_artifact_runs(visible_to=None, db_path=temp_db)
     assert [r["run_id"] for r in runs] == ["done-1"]
     # List query omits the heavy artifact body.
     assert "artifact" not in runs[0]
@@ -117,7 +117,7 @@ def test_list_artifact_runs_only_done_with_artifact(temp_db: Path) -> None:
 
 def test_list_artifact_runs_empty_on_missing_db(tmp_path: Path) -> None:
     missing = tmp_path / "nope.db"
-    assert list_artifact_runs(db_path=missing) == []
+    assert list_artifact_runs(visible_to=None, db_path=missing) == []
 
 
 def test_list_artifact_runs_excludes_empty_artifact(temp_db: Path) -> None:
@@ -125,7 +125,7 @@ def test_list_artifact_runs_excludes_empty_artifact(temp_db: Path) -> None:
     with the artifacts detail route so a card never dead-ends in a 404."""
     create_run("empty-1", "board_prep", "Empty", {}, db_path=temp_db)
     complete_run("empty-1", "", db_path=temp_db)
-    assert list_artifact_runs(db_path=temp_db) == []
+    assert list_artifact_runs(visible_to=None, db_path=temp_db) == []
 
 
 # -----------------------------------------------------------------------------
@@ -219,6 +219,41 @@ def test_list_runs_empty_initially(client: TestClient) -> None:
     r = client.get("/workflows/runs")
     assert r.status_code == 200
     assert r.json()["runs"] == []
+
+
+def test_a_run_someone_started_is_theirs_alone(
+    client: TestClient, temp_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run started by hand is its starter's (and the person it waits on);
+    a scheduled one is the team's. Someone else's answers 404."""
+    from openexecutive.api.routes import workflows as workflows_route
+
+    create_run("team", "board_prep", "Team", {}, db_path=temp_db)
+    create_run("sams", "board_prep", "Sam's", {}, db_path=temp_db, owner_person_id=7)
+    complete_run("sams", "# Sam's deck", db_path=temp_db)
+    caller: dict[str, int | None] = {"id": 7}
+    monkeypatch.setattr(workflows_route, "_caller_person_id", lambda request: caller["id"])
+
+    assert {r["run_id"] for r in client.get("/workflows/runs").json()["runs"]} == {"team", "sams"}
+    assert client.get("/workflows/runs/sams").json()["artifact"] == "# Sam's deck"
+    for other in (1, 8, None):  # the principal, a teammate, someone off the roster
+        caller["id"] = other
+        assert {r["run_id"] for r in client.get("/workflows/runs").json()["runs"]} == {"team"}
+        assert client.get("/workflows/runs/sams").status_code == 404
+        assert client.delete("/workflows/runs/sams").status_code == 404
+        assert client.get("/workflows/runs/team").status_code == 200
+        answer = client.post("/workflows/runs/sams/decision", json={"decision": "approve"})
+        assert answer.status_code == 404
+    assert get_run("sams", db_path=temp_db) is not None
+
+
+def test_run_visible_to_the_person_it_waits_on(temp_db: Path) -> None:
+    from openexecutive.workflows.persistence import run_visible_to
+
+    run = {"owner_person_id": 7, "awaiting_person_id": 9}
+    assert run_visible_to(run, 7) and run_visible_to(run, 9)
+    assert not run_visible_to(run, 1) and not run_visible_to(run, None)
+    assert run_visible_to({"owner_person_id": None}, None)
 
 
 # -----------------------------------------------------------------------------
@@ -666,8 +701,45 @@ def test_an_unreadable_roster_refuses(
     assert _start(principal_only.client, "weekly_review", PRINCIPAL_EMAIL).status_code == 403
     assert list_runs(db_path=principal_only.db) == []
     assert _refusals(principal_only.audit)[0]["caller_person_id"] is None
-    # ...while a request with no caller header needs no roster read.
-    assert _start(principal_only.client, "weekly_review", None).status_code == 200
+    # ...and so is a request with no caller header: whose run it is (the
+    # principal's) cannot be read either.
+    assert _start(principal_only.client, "weekly_review", None).status_code == 503
+    assert list_runs(db_path=principal_only.db) == []
+
+
+class _WhoReadsWorkflow(_PlainWorkflow):
+    """Records whose documents its steps would read."""
+
+    seen: list[Any] = []
+
+    async def run(self, inputs, store):  # noqa: ANN001, ANN201
+        from openexecutive.orchestrator.artifact_records import current_viewer
+        from openexecutive.workflows.base import WorkflowEvent
+
+        self.seen.append(current_viewer())
+        yield WorkflowEvent(type="artifact", content="# Plain")
+
+
+def test_a_jobs_page_run_is_its_starters_and_reads_as_them(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes import workflows as wf_routes
+    from openexecutive.orchestrator.artifact_records import NOBODY, Viewer
+
+    ids = _roster()
+    _set_mode("team")
+    monkeypatch.setattr(wf_routes, "get_workflow", lambda name: _WhoReadsWorkflow())
+    _WhoReadsWorkflow.seen = []
+
+    assert _start(principal_only.client, "plain", TEAMMATE_EMAIL).status_code == 200
+    (run,) = list_runs(db_path=principal_only.db)
+    stored = get_run(run["run_id"], db_path=principal_only.db)
+    assert stored is not None and stored["owner_person_id"] == ids["teammate"]
+    assert _WhoReadsWorkflow.seen == [Viewer(person_id=ids["teammate"])]
+    # A signed-in email that is on nobody's entry starts nothing.
+    assert _start(principal_only.client, "plain", "stranger@example.com").status_code == 403
+    assert len(list_runs(db_path=principal_only.db)) == 1
+    assert NOBODY not in _WhoReadsWorkflow.seen
 
 
 # The eval runner calls workflow.run directly on live data and streams the

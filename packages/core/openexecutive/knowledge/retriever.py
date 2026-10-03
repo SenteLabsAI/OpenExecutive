@@ -81,6 +81,27 @@ def _resolve_builtin_threshold(
     return shared
 
 
+def _artifact_visible(meta: dict[str, Any]) -> bool:
+    """Whether an indexed chunk may reach this turn: anything that is not a
+    published artifact, or an artifact the turn's viewer may see
+    (``artifact_records.draft_visible_to``). An owner of -1, or none (indexed
+    before artifacts had owners), is the principal's. Fails closed."""
+    if meta.get("type") != "artifact":
+        return True
+    try:
+        from openexecutive.orchestrator.artifact_records import (
+            current_viewer,
+            draft_visible_to,
+        )
+
+        raw = meta.get("owner_person_id")
+        owner = int(raw) if raw is not None and int(raw) >= 0 else None
+        return draft_visible_to(owner, current_viewer())
+    except Exception:
+        logger.exception("retriever: artifact visibility check failed")
+        return False
+
+
 def _passes_threshold(
     row: dict[str, Any], threshold: float = _DISTANCE_THRESHOLD
 ) -> bool:
@@ -390,15 +411,19 @@ def retrieve(
     # BELOW curated company docs. These are unvetted, web-sourced summaries
     # from executive_research runs, so they are clearly labelled as such and
     # never blended into the company-documents section above.
+    # Published artifacts share this collection and are their owner's alone:
+    # anyone else's is dropped, and the over-fetch keeps the two slots from
+    # being spent on them.
     raw_research = store.query(
         query_text=query,
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         domain_filter=None,  # research is cross-domain; never domain-scoped
-        n_results=2,
+        n_results=6,
     )
     research_results = [
-        r for r in raw_research if _passes_threshold(r, distance_threshold)
-    ]
+        r for r in raw_research
+        if _passes_threshold(r, distance_threshold) and _artifact_visible(r["metadata"])
+    ][:2]
 
     active_annotations = rs.list_annotations(domains=effective_domains, active_only=True)
 

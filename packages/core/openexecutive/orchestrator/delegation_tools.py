@@ -333,12 +333,14 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
         return plan, False
     recipients = [*plan["to"], *plan["cc"]]
     stored = get_voice(writer.person.id)
+    from openexecutive.memory.history_drafts import notes_for_draft
     names = (writer.person.full_name or "").split()
     composed = await compose(
         writer_name=" ".join(names) or writer.email,
         voice_block=render_voice_block(stored.profile, first_name=names[0] if names else "them"),
         thread_text=thread_text(thread, writer.email) if thread is not None else None,
         writer_said=writer_said(thread, writer.email) if thread is not None else None,
+        writer_noted=notes_for_draft(writer.person.id, recipients),
         reply_subject=plan["subject"],
         intent=intent,
         recipients=[_recipient(a, roster) for a in recipients],

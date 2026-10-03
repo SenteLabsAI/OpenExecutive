@@ -438,6 +438,10 @@ def test_previous_reflection_artifact_reads_last_done_run(
     wf_persistence.complete_run("r2", "BRIEF TEXT")
     wf_persistence.create_run("r3", "executive_reflection", "Reflection running", {})
     assert _previous_reflection_artifact() == "**Acted on:** DM'd Dana"
+    # A reflection someone started by hand is theirs, never the team's standup.
+    wf_persistence.create_run("mine", "executive_reflection", "Sam's", {}, owner_person_id=7)
+    wf_persistence.complete_run("mine", "SAM'S OWN")
+    assert _previous_reflection_artifact() == "**Acted on:** DM'd Dana"
 
     wf_persistence.create_run("r4", "executive_reflection", "Reflection empty", {})
     wf_persistence.complete_run("r4", "(no artifact)")

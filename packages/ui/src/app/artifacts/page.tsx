@@ -311,10 +311,12 @@ export default function ArtifactsPage() {
                 {view === "archived" ? "Archived documents" : "Your documents"}
               </h1>
               <p className="text-[15px] text-fg-muted">
-                Every deliverable the Executive has produced — memos, web
+                Every deliverable the Executive has produced for you — memos, web
                 pages, Word documents, spreadsheets and links into your connected
-                apps, alongside completed workflow outputs.
-                Archive what you&apos;re done with; delete clears it for good.
+                apps, alongside your workflow outputs and the team&apos;s scheduled
+                ones. Documents from your chats are yours alone; no one else
+                sees them. Archive what you&apos;re done with; delete clears it
+                for good.
               </p>
             </div>
             {/* One filter control: the kind, with Active / Archived in its ⋯. */}

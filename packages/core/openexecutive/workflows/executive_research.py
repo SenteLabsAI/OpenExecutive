@@ -720,27 +720,32 @@ class ExecutiveResearchWorkflow(Workflow):
         # collection (keep-latest), so the next run + the chat Executive can
         # recall it via RAG. Separate collection, clearly labelled at
         # retrieval — never blended into curated company docs. Best-effort.
+        # Only a team run's: one a person started by hand is theirs alone
+        # (``artifact_records.turn_owner``), and everyone's chat reads this.
+        from openexecutive.orchestrator.artifact_records import turn_owner
+
         try:
-            from datetime import UTC, datetime
+            if turn_owner() is None:
+                from datetime import UTC, datetime
 
-            from openexecutive.knowledge.loader import ingest_text
-            from openexecutive.knowledge.store import ChromaDBStore
+                from openexecutive.knowledge.loader import ingest_text
+                from openexecutive.knowledge.store import ChromaDBStore
 
-            now = datetime.now(UTC)
-            store.delete_documents(
-                ChromaDBStore.RESEARCH_COLLECTION,
-                where={"type": "recent_research"},
-            )
-            await ingest_text(
-                artifact,
-                store,
-                source_name=f"recent_research_{now.date().isoformat()}",
-                collection=ChromaDBStore.RESEARCH_COLLECTION,
-                extra_metadata={
-                    "type": "recent_research",
-                    "created_at": now.isoformat(),
-                },
-            )
+                now = datetime.now(UTC)
+                store.delete_documents(
+                    ChromaDBStore.RESEARCH_COLLECTION,
+                    where={"type": "recent_research"},
+                )
+                await ingest_text(
+                    artifact,
+                    store,
+                    source_name=f"recent_research_{now.date().isoformat()}",
+                    collection=ChromaDBStore.RESEARCH_COLLECTION,
+                    extra_metadata={
+                        "type": "recent_research",
+                        "created_at": now.isoformat(),
+                    },
+                )
         except Exception:
             logger.exception("research: persist artifact to knowledge failed")
 
@@ -862,8 +867,12 @@ async def _executive_synthesis_loop(
     # Pin the run's mode so its tool handlers agree with its toolkit.
     # ...and its principal's role, so a specialist it consults (or a workflow
     # it starts) sees the role of the turn that started it, not a fresh read.
+    from openexecutive.orchestrator.artifact_records import current_viewer
+
     synth_session = Session(
         seen_channel_refs=seen,
+        # What it drafts belongs to whoever's turn started the run.
+        documents_viewer=current_viewer(),
         turn_workspace_mode=mode,
         turn_principal_role=effective_principal_role(outer_session),
     )

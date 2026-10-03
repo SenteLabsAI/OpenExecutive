@@ -134,7 +134,12 @@ def test_bulk_ack_teaches_the_watch_like_a_single_dismiss(client: TestClient, db
     assert item is not None and item.dismiss_count == 2 and item.trust_score == pytest.approx(0.64)
 
 
-def test_reopen_brings_a_closed_alert_back(client: TestClient, db: Path) -> None:
+def test_reopen_brings_a_closed_alert_back(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: Viewer(person_id=7))
     aid = _insert(db, "closed")
     alert_store.set_status(aid, "expired", db_path=db)
     alert_store.set_review(aid, verdict="likely_stale", note="x", db_path=db)
@@ -147,6 +152,29 @@ def test_reopen_brings_a_closed_alert_back(client: TestClient, db: Path) -> None
     acked = _insert(db, "approved")
     alert_store.set_status(acked, "ack", db_path=db)
     assert client.post(f"/alerts/{acked}/reopen").status_code == 409
-    art = _insert(db, "doc", source="artifact", topic_tags=["artifact"])
+    art = _insert(db, "doc", source="artifact", topic_tags=["artifact"], owner_person_id=7)
     alert_store.set_status(art, "dismissed", db_path=db)
     assert client.post(f"/alerts/{art}/reopen").status_code == 409
+
+
+def test_someone_elses_drafted_artifact_is_not_found(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    theirs = _insert(db, "their doc", source="artifact", topic_tags=["artifact"], owner_person_id=8)
+    principals = _insert(db, "principal doc", source="artifact", topic_tags=["artifact"])
+    # Not even the principal sees a teammate's document; nobody but the
+    # principal sees one with no owner.
+    for viewer, hidden in (
+        (Viewer(person_id=1, is_principal=True), theirs),
+        (Viewer(person_id=7), principals),
+        (Viewer(person_id=None), theirs),
+    ):
+        monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request, v=viewer: v)
+        res = client.post(f"/alerts/{hidden}/ack", json={"status": "dismissed"})
+        assert res.status_code == 404
+    assert alert_store.get_alert(theirs, db_path=db).status == "unread"  # type: ignore[union-attr]
+    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: Viewer(person_id=8))
+    res = client.post(f"/alerts/{theirs}/ack", json={"status": "dismissed"})
+    assert res.status_code == 200 and res.json()["status"] == "dismissed"

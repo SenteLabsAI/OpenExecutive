@@ -8,6 +8,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from openexecutive.alerts.models import (
     Alert,
@@ -93,6 +94,10 @@ def initialize_db(db_path: Path | None = None) -> None:
             ("artifact_url", "TEXT"),
             ("artifact_link_label", "TEXT"),
             ("supersedes_id", "TEXT"),
+            # Whose document a drafted artifact is: the person whose
+            # conversation published it (orchestrator/artifact_records.py).
+            # NULL on a draft = the principal's.
+            ("owner_person_id", "INTEGER"),
         ):
             if col not in existing:
                 try:
@@ -100,6 +105,13 @@ def initialize_db(db_path: Path | None = None) -> None:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column" not in str(exc).lower():
                         raise
+        if "owner_person_id" not in existing:
+            # Drafts written before ownership went to the principal's queue:
+            # whoever they were routed to keeps them.
+            conn.execute(
+                "UPDATE alerts SET owner_person_id = routed_to_person_id "
+                "WHERE source = 'artifact' AND owner_person_id IS NULL"
+            )
         conn.executescript("""
 
             CREATE TABLE IF NOT EXISTS mute_topics (
@@ -148,6 +160,7 @@ def insert_alert(
     artifact_url: str | None = None,
     artifact_link_label: str | None = None,
     supersedes_id: str | None = None,
+    owner_person_id: int | None = None,
     db_path: Path | None = None,
 ) -> int | None:
     """Insert a new alert. Returns alert id, or None if a duplicate was skipped."""
@@ -158,8 +171,9 @@ def insert_alert(
             INSERT OR IGNORE INTO alerts
                 (external_id, source, severity, headline, body, suggested_action,
                  topic_tags, dedup_key, status, created_at, routed_to_person_id,
-                 artifact_format, artifact_url, artifact_link_label, supersedes_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?)
+                 artifact_format, artifact_url, artifact_link_label, supersedes_id,
+                 owner_person_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 external_id,
@@ -176,6 +190,7 @@ def insert_alert(
                 artifact_url,
                 artifact_link_label,
                 supersedes_id,
+                owner_person_id,
             ),
         )
         if cursor.rowcount == 0:
@@ -287,7 +302,12 @@ def recent_alerts(
 
 
 def list_artifact_alerts(
-    limit: int = 200, db_path: Path | None = None, archived: bool = False
+    limit: int = 200,
+    db_path: Path | None = None,
+    archived: bool = False,
+    *,
+    owner_person_id: int | None,
+    include_unowned: bool = False,
 ) -> list[Alert]:
     """Alerts authored via `draft_artifact` (source='artifact'), newest first.
 
@@ -296,20 +316,35 @@ def list_artifact_alerts(
     out of the `/today` queue — surfacing it is the whole point of the
     Artifacts section (the row persists; `set_status` never deletes it).
 
+    Only one person's drafts: those `owner_person_id` owns, plus the ones
+    with no owner when `include_unowned` (the principal's, see
+    `orchestrator/artifact_records.py`). No owner and no unowned is nothing.
+
     `archived` selects which slice to return: the default (False) lists only
     active artifacts (`archived_at IS NULL`); True lists only archived ones,
     so the gallery's Active / Archived views are clean swaps, not supersets.
     """
     if not _resolve_db_path(db_path).exists():
         return []
+    owners: list[str] = []
+    params: list[Any] = []
+    if owner_person_id is not None:
+        owners.append("owner_person_id = ?")
+        params.append(owner_person_id)
+    if include_unowned:
+        owners.append("owner_person_id IS NULL")
+    if not owners:
+        return []
     archived_clause = (
         "AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL"
     )
+    params.append(limit)
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             f"SELECT * FROM alerts WHERE source = 'artifact' {archived_clause} "
+            f"AND ({' OR '.join(owners)}) "
             "ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+            params,
         ).fetchall()
     return [_row_to_alert(r) for r in rows]
 

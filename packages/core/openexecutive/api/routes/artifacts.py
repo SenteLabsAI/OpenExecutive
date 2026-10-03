@@ -20,6 +20,11 @@ The default list shows only active artifacts; `?archived=true` shows only
 archived ones. Every route refuses non-artifact alert ids — these routes
 must not become general alert/run readers or mutators.
 
+Every route answers for the signed-in caller (`chat._resolve_caller_person_id`)
+and sees only what they may (`artifact_records` module docstring): their own
+drafts and runs, and the team's scheduled ones. Anyone else's answers 404, as
+a missing one does.
+
 Downloads are always served as attachments with `nosniff` and a sandbox CSP,
 so an HTML artifact never renders on the app's origin (the UI shows it in a
 sandboxed iframe instead).
@@ -38,7 +43,7 @@ import logging
 from collections.abc import Callable
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from openexecutive.orchestrator.artifact_formats import get_format
@@ -46,9 +51,11 @@ from openexecutive.orchestrator.artifact_records import (
     ArtifactNotFound,
     ArtifactRecord,
     MalformedArtifactId,
+    Viewer,
     artifact_downloads,
     load_artifact,
     render_artifact_file,
+    viewer_for_person,
 )
 from openexecutive.orchestrator.artifact_records import (
     delete_artifact as delete_artifact_record,
@@ -101,21 +108,21 @@ class ArtifactDetail(ArtifactSummary):
 
 @router.get("/artifacts")
 async def list_artifacts(
-    limit: int = _DEFAULT_LIMIT, archived: bool = False
+    request: Request, limit: int = _DEFAULT_LIMIT, archived: bool = False
 ) -> dict[str, list[ArtifactSummary]]:
-    """Unified, newest-first list of every artifact the Executive produced.
+    """Unified, newest-first list of the artifacts the caller may see.
 
     Defaults to active artifacts; `?archived=true` returns only archived ones
     (the gallery's Active / Archived views are clean swaps, not supersets).
     """
-    records = list_artifact_records(limit, archived=archived)
+    records = list_artifact_records(limit, viewer=_viewer(request), archived=archived)
     return {"artifacts": [_summary(r) for r in records]}
 
 
 @router.get("/artifacts/{composite_id}")
-async def get_artifact(composite_id: str) -> ArtifactDetail:
+async def get_artifact(composite_id: str, request: Request) -> ArtifactDetail:
     """One artifact with its displayable body, addressed by composite id."""
-    rec = _load(composite_id)
+    rec = _load(composite_id, request)
     stored = rec.stored or ""
     body = stored if rec.format == "html" else get_format(rec.format).display(stored)
     return ArtifactDetail(**_summary(rec).model_dump(), body=body, rationale=rec.rationale)
@@ -123,10 +130,12 @@ async def get_artifact(composite_id: str) -> ArtifactDetail:
 
 @router.get("/artifacts/{composite_id}/download")
 async def download_artifact(
-    composite_id: str, as_: Annotated[str | None, Query(alias="as")] = None
+    composite_id: str,
+    request: Request,
+    as_: Annotated[str | None, Query(alias="as")] = None,
 ) -> Response:
     """The artifact as a file. `?as=docx` exports a Markdown artifact to Word."""
-    rec = _load(composite_id)
+    rec = _load(composite_id, request)
     try:
         file = render_artifact_file(rec, as_)
     except ArtifactNotFound as exc:
@@ -149,10 +158,11 @@ async def download_artifact(
 
 
 @router.post("/artifacts/{composite_id}/archive")
-async def archive_artifact(composite_id: str) -> dict[str, str]:
+async def archive_artifact(composite_id: str, request: Request) -> dict[str, str]:
     """Soft-hide an artifact (reversible). Drops it from the default list and
     from the Executive's recall (knowledge index)."""
-    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=True))
+    viewer = _viewer(request)
+    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=True, viewer=viewer))
     from openexecutive.orchestrator.artifact_tools import unindex_artifact
 
     await unindex_artifact(rec.id)
@@ -160,21 +170,23 @@ async def archive_artifact(composite_id: str) -> dict[str, str]:
 
 
 @router.post("/artifacts/{composite_id}/restore")
-async def restore_artifact(composite_id: str) -> dict[str, str]:
+async def restore_artifact(composite_id: str, request: Request) -> dict[str, str]:
     """Un-archive an artifact, returning it to the active list and, for a
     drafted artifact, to the knowledge index."""
-    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=False))
+    viewer = _viewer(request)
+    rec = _mutate(lambda: set_artifact_archived(composite_id, archived=False, viewer=viewer))
     if rec.kind == "draft" and rec.stored:
         from openexecutive.orchestrator.artifact_tools import index_artifact
 
-        await index_artifact(rec.id, rec.title, rec.format, rec.stored)
+        await index_artifact(rec.id, rec.title, rec.format, rec.stored, rec.owner_person_id)
     return {"status": "restored", "id": composite_id}
 
 
 @router.delete("/artifacts/{composite_id}")
-async def delete_artifact(composite_id: str) -> dict[str, str]:
+async def delete_artifact(composite_id: str, request: Request) -> dict[str, str]:
     """Permanently delete the underlying alert / workflow-run row."""
-    rec = _mutate(lambda: delete_artifact_record(composite_id))
+    viewer = _viewer(request)
+    rec = _mutate(lambda: delete_artifact_record(composite_id, viewer=viewer))
     from openexecutive.orchestrator.artifact_tools import unindex_artifact
 
     # The canonical id (`alert:5`, not whatever spelling the path used) is
@@ -188,9 +200,16 @@ async def delete_artifact(composite_id: str) -> dict[str, str]:
 # -----------------------------------------------------------------------------
 
 
-def _load(composite_id: str) -> ArtifactRecord:
+def _viewer(request: Request) -> Viewer:
+    """The caller, as the artifact read model sees them."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    return viewer_for_person(_resolve_caller_person_id(request))
+
+
+def _load(composite_id: str, request: Request) -> ArtifactRecord:
     try:
-        return load_artifact(composite_id)
+        return load_artifact(composite_id, viewer=_viewer(request))
     except MalformedArtifactId as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ArtifactNotFound as exc:

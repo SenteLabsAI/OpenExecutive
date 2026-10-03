@@ -613,6 +613,7 @@ def _build_today(
     stale_out: list[StaleInsight] | None = None,
     *,
     include_private: bool = False,
+    viewer: Any = None,
 ) -> TodayResponse:
     """Assemble the live dashboard snapshot.
 
@@ -794,7 +795,12 @@ def _build_today(
 
     # Live = unread AND inside its TTL AND not snoozed — the read-side twin of
     # the scheduler's expiry sweep, so the page is right before the sweep runs.
-    raw_alerts = list_live_alerts(limit=lifecycle_module.BOARD_LIMIT, now=now)
+    # A drafted artifact's card only for its owner (`viewer`, the caller of
+    # GET /today); every other build (the brief, the digest, the reflection,
+    # a cached narrative) leaves them all out.
+    raw_alerts = list_live_alerts(
+        limit=lifecycle_module.BOARD_LIMIT, now=now, viewer=viewer
+    )
     if not include_private:
         # Alerts private to the principal (mail from one of their contacts,
         # a meeting with one) appear only on the principal's own /today —
@@ -1127,7 +1133,7 @@ def _build_activity(
         if d.config.authority_level == "propose_only"
     }
 
-    from openexecutive.alerts.models import is_private_alert
+    from openexecutive.alerts.models import is_private_alert, visible_alert
 
     for action in list_scheduled_actions(status="done", limit=pool, exclude_internal=True):
         if action.kind == "nudge_scan" or action.channel == "__internal__":
@@ -1174,7 +1180,9 @@ def _build_activity(
     # the Executive finished on its own. The status filter is pushed into SQL
     # (not applied after the pull) so a backlog of running/awaiting runs can't
     # starve the done ones out of the pool. Bucket at `updated_at` (completion).
-    for run in wf_persistence.list_runs(status="done", limit=pool):
+    # Team runs only: the rail is shown to everyone, and a run someone started
+    # by hand is theirs alone (`persistence.run_visible_to`).
+    for run in wf_persistence.list_runs(status="done", limit=pool, visible_to=None):
         if run.get("workflow_name") in exclude_workflows:
             continue
         items.append(ActivityItem(
@@ -1234,7 +1242,7 @@ def _build_activity(
     for alert in (alerts_store.recent_alerts(
         limit=pool, exclude_source=decision_ledger.DECISION_ALERT_SOURCE,
     ) if include_alert_raised else []):
-        if is_private_alert(alert):
+        if is_private_alert(alert) or not visible_alert(alert, None):
             continue  # the rail is shown to everyone
         items.append(ActivityItem(
             kind="alert_raised",
@@ -1822,8 +1830,14 @@ def _is_principal(caller_person_id: int | None) -> bool:
 async def get_today(request: Request, background_tasks: BackgroundTasks) -> TodayResponse:
     stale: list[StaleInsight] = []
     from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.orchestrator.artifact_records import viewer_for_person
+
     caller = _resolve_caller_person_id(request)
-    response = _build_today(stale_out=stale, include_private=_is_principal(caller))
+    response = _build_today(
+        stale_out=stale,
+        include_private=_is_principal(caller),
+        viewer=viewer_for_person(caller),
+    )
     response.caller_person_id = caller
     if stale:
         background_tasks.add_task(_regen_stale_insights, stale)
@@ -2006,7 +2020,9 @@ def _latest_weekly_review() -> WeeklyReviewSummary | None:
     from openexecutive.workflows.weekly_review import WeeklyReviewWorkflow, summarize_review
 
     try:
-        latest = list_runs(workflow_name=WeeklyReviewWorkflow.name, status="done", limit=1)
+        latest = list_runs(
+            workflow_name=WeeklyReviewWorkflow.name, status="done", limit=1, visible_to=None
+        )
         run = get_run(latest[0]["run_id"]) if latest else None
     except Exception:
         logger.warning("today: weekly review runs unreadable", exc_info=True)
@@ -2047,8 +2063,12 @@ def get_morning_brief(request: Request, response: Response) -> TodayResponse:
     response.headers["Sunset"] = "Sat, 22 Aug 2026 00:00:00 GMT"
     response.headers["Link"] = '</today>; rel="successor-version"'
     from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.orchestrator.artifact_records import viewer_for_person
+
     caller = _resolve_caller_person_id(request)
-    payload = _build_today(include_private=_is_principal(caller))
+    payload = _build_today(
+        include_private=_is_principal(caller), viewer=viewer_for_person(caller)
+    )
     payload.caller_person_id = caller
     # Serve the viewer's cached narrative (cache-only — this deprecated alias
     # has no BackgroundTasks to schedule a regen).
