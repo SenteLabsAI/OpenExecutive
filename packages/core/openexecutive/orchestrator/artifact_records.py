@@ -22,7 +22,10 @@ route maps them to 400 / 404.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -102,68 +105,77 @@ def principal_viewer() -> Viewer:
     return Viewer(person_id=principal.id, is_principal=True)
 
 
-def current_viewer() -> Viewer:
-    """Whose artifacts the turn in progress may read and publish.
+# Whose documents work running outside any chat turn is for, when it is
+# someone's (`pinned_viewer`): a run started on the Jobs page, a resumed run.
+_PINNED: contextvars.ContextVar[Viewer | None] = contextvars.ContextVar(
+    "artifact_viewer_pin", default=None
+)
 
-    The speaker when the turn has one. A session pinned to someone else's
-    viewer (``Session.documents_viewer``: a workflow's own loop inside a
-    person's turn) is theirs. A web or channel turn whose speaker isn't on
-    the roster is nobody. With no session, or a session nobody is speaking
-    in (the scheduler, the CLI), it is the principal's own work.
+
+@contextlib.contextmanager
+def pinned_viewer(viewer: Viewer) -> Iterator[None]:
+    """Run the block as ``viewer``'s work: what it reads and drafts, and the
+    runs it starts, are theirs (``current_viewer``, ``turn_owner``)."""
+    token = _PINNED.set(viewer)
+    try:
+        yield
+    finally:
+        _PINNED.reset(token)
+
+
+def current_viewer() -> Viewer:
+    """Whose artifacts the work in progress may read and publish.
+
+    In order: the viewer the session is pinned to
+    (``Session.documents_viewer``: a workflow's own loop inside someone's
+    turn); the speaker (nobody when they are not on the roster, whatever
+    the work is pinned to); the principal on their own CLI; the viewer the
+    work is pinned to (``pinned_viewer``: a Jobs-page or resumed run, or
+    the alert review pinning the principal). Anything else is nobody — no session at all (a
+    scheduled run, retrieval before a turn binds its session), an unattended
+    run, an unrostered speaker — so no one's documents leak into work
+    someone else may read.
     """
     from openexecutive.orchestrator.schedule_tools import current_session
 
     session = current_session.get()
-    if session is None:
-        return principal_viewer()
     pinned = getattr(session, "documents_viewer", None)
     if isinstance(pinned, Viewer):
         return pinned
     person_id = getattr(session, "caller_person_id", None)
-    if person_id is not None:
+    if isinstance(person_id, int):
         return viewer_for_person(person_id)
-    if getattr(session, "from_web_chat", False) or getattr(session, "origin_channel", ""):
+    if _someone_speaking(session):
+        # A speaker who is not on the roster never inherits the work's pin.
         return NOBODY
-    return principal_viewer()
+    if session is not None and getattr(session, "from_cli", False) is True:
+        return principal_viewer()
+    outer = _PINNED.get()
+    if outer is not None:
+        return outer
+    return NOBODY
 
 
-def viewer_to_pin() -> Viewer | None:
-    """The viewer a session minted inside the current turn should be pinned
-    to (``Session.documents_viewer``): the turn's own when someone's turn it
-    is (a speaker, or a web or channel turn with an unrostered one: nobody).
-    None when nobody is speaking, so the new session stays the server's own."""
-    from openexecutive.orchestrator.schedule_tools import current_session
-
-    session = current_session.get()
-    if session is None:
-        return None
-    pinned = getattr(session, "documents_viewer", None)
-    if isinstance(pinned, Viewer):
-        return pinned
-    if (
-        getattr(session, "caller_person_id", None) is not None
-        or getattr(session, "from_web_chat", False)
-        or getattr(session, "origin_channel", "")
-    ):
-        return current_viewer()
-    return None
+def _someone_speaking(session: Any) -> bool:
+    return session is not None and bool(
+        getattr(session, "from_web_chat", False) or getattr(session, "origin_channel", "")
+    )
 
 
 def turn_owner() -> int | None:
     """Who a run started now belongs to (``persistence.create_run``): the
-    person whose turn starts it by hand (the speaker, or the viewer the
-    session is pinned to). None when nobody is speaking (the scheduler, the
-    CLI, an unrostered sender): a team run."""
+    person whose work starts it by hand (``current_viewer``). None when it
+    is nobody's: a team run."""
+    return current_viewer().person_id
+
+
+def runs_refused_for_nobody() -> bool:
+    """Whether a run started now must be refused: someone is speaking but is
+    nobody on the roster, so the run would have no owner and land in the
+    team's history."""
     from openexecutive.orchestrator.schedule_tools import current_session
 
-    session = current_session.get()
-    if session is None:
-        return None
-    pinned = getattr(session, "documents_viewer", None)
-    if isinstance(pinned, Viewer):
-        return pinned.person_id
-    person_id = getattr(session, "caller_person_id", None)
-    return person_id if isinstance(person_id, int) else None
+    return _someone_speaking(current_session.get()) and current_viewer().person_id is None
 
 
 def draft_visible_to(owner_person_id: int | None, viewer: Viewer) -> bool:
@@ -391,6 +403,7 @@ __all__ = [
     "render_artifact_file",
     "set_archived",
     "turn_owner",
+    "pinned_viewer",
+    "runs_refused_for_nobody",
     "viewer_for_person",
-    "viewer_to_pin",
 ]

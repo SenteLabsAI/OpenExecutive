@@ -867,12 +867,12 @@ async def _executive_synthesis_loop(
     # Pin the run's mode so its tool handlers agree with its toolkit.
     # ...and its principal's role, so a specialist it consults (or a workflow
     # it starts) sees the role of the turn that started it, not a fresh read.
-    from openexecutive.orchestrator.artifact_records import viewer_to_pin
+    from openexecutive.orchestrator.artifact_records import current_viewer
 
     synth_session = Session(
         seen_channel_refs=seen,
         # What it drafts belongs to whoever's turn started the run.
-        documents_viewer=viewer_to_pin(),
+        documents_viewer=current_viewer(),
         turn_workspace_mode=mode,
         turn_principal_role=effective_principal_role(outer_session),
     )

@@ -64,6 +64,13 @@ async def handle_run_executive_research(
     if (refused := mail_touched_refusal('run_executive_research')) is not None:
         return refused
 
+    from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody
+
+    # A run belongs to whoever starts it; with no one to own it, it would
+    # land in the team's history.
+    if runs_refused_for_nobody():
+        return _err("runs are kept for people on the People list, and the person you are talking with is not on it")
+
     note = str(tool_input.get("note", "")).strip()
 
     from openexecutive.config import get_settings

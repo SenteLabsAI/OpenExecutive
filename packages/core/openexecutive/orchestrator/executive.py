@@ -479,6 +479,16 @@ def _private_tool_row(tool_name: str) -> bool:
     )
 
 
+def _artifact_row_owner(tool_name: str) -> int | None:
+    """The person a document tool's dispatch row belongs to alone (its input
+    and result quote the speaker's own documents), else None."""
+    if tool_name not in DRAFT_ARTIFACT_TOOL_HANDLERS:
+        return None
+    from openexecutive.orchestrator.artifact_records import current_viewer
+
+    return current_viewer().person_id
+
+
 def _speaker_text(memory_text: str | None, user_message: str) -> str:
     """The speaker's own words for this turn, which every post-turn pass reads
     instead of the prompt — episodic extraction, open loops and peer memory:
@@ -618,7 +628,20 @@ def _emit_memory_snapshot(
             "working_style": working_style,
             "standing_facts": standing_facts,
         },
+        # Recall that quotes the speaker's own documents keeps the row theirs.
+        **_recalled_documents_owner(retrieved_context),
     )
+
+
+def _recalled_documents_owner(retrieved_context: str) -> dict[str, Any]:
+    """`private` / `private_to_person` for a row quoting ``retrieved_context``
+    when it recalled a published document (`knowledge.retriever` labels them),
+    else nothing."""
+    if "[published artifact " not in retrieved_context:
+        return {}
+    from openexecutive.orchestrator.artifact_records import current_viewer
+
+    return {"private": True, "private_to_person": current_viewer().person_id}
 
 
 def _emit_cache_event(
@@ -2178,7 +2201,9 @@ class Executive:
                             },
                             # Act as me reads the speaker's own mailbox; the
                             # fact tools carry the principal's own words.
-                            private=_private_tool_row(tu["name"]),
+                            private=_private_tool_row(tu["name"])
+                            or tu["name"] in DRAFT_ARTIFACT_TOOL_HANDLERS,
+                            private_to_person=_artifact_row_owner(tu["name"]),
                         )
                         # Hand the model an error tool_result and move on. No
                         # chip: summarize_action must never see an exception.
@@ -2235,7 +2260,11 @@ class Executive:
                             "result": audit_tool_result_full(tu["name"], result),
                             "active_prompt_blocks": _system_block_names(system_blocks),
                         },
-                        private=_private_tool_row(tu["name"]),
+                        # A document tool quotes the speaker's own
+                        # documents: the row is theirs alone.
+                        private=_private_tool_row(tu["name"])
+                        or tu["name"] in DRAFT_ARTIFACT_TOOL_HANDLERS,
+                        private_to_person=_artifact_row_owner(tu["name"]),
                     )
 
             if mcp_tool_uses and self._mcp_gateway is not None:

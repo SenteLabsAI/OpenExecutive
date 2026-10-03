@@ -15,6 +15,7 @@ import asyncio
 import base64
 import io
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -36,7 +37,7 @@ UI = "https://oe.example.com/"
 
 
 @pytest.fixture(autouse=True)
-def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     db_path = tmp_path / "episodic.db"
     for module in (alerts_store, people_store, wf_persistence):
         monkeypatch.setattr(module, "DB_PATH", db_path)
@@ -50,7 +51,12 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         full_name="Dana Ops", is_principal=True, discord_user_id="100000000000000001",
         preferred_channel="discord",
     )
-    return db_path
+    # Work outside any session is nobody's: these tests run as the principal's
+    # own (as the CLI or the alert review does).
+    from openexecutive.orchestrator.artifact_records import pinned_viewer, principal_viewer
+
+    with pinned_viewer(principal_viewer()):
+        yield db_path
 
 
 def _artifact(fmt: str = "markdown", body: str = "# Q3 plan\n\nHire two engineers.",

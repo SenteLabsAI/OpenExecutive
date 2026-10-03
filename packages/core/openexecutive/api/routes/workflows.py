@@ -145,9 +145,7 @@ async def decide_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     decision = body.get("decision") if isinstance(body, dict) else None
     if decision not in _WEB_DECISIONS:
         raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'")
-    run = get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    run = _visible_run(run_id, request)
     if run.get("status") != "awaiting_human":
         raise HTTPException(status_code=409, detail="This run isn't waiting for an answer.")
     try:
@@ -434,17 +432,30 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
 
     run_id = uuid.uuid4().hex
     title = _derive_title(workflow.name, payload)
+    # Started by hand: the run and its output are the caller's alone. Fails
+    # closed: a caller who can't be placed on the roster starts nothing that
+    # would otherwise land in the team's history.
     try:
         owner_person_id = _caller_person_id(request)
-    except Exception:
-        logger.exception("workflow run: caller lookup failed — run kept as the team's")
-        owner_person_id = None
+    except Exception as exc:
+        logger.exception("workflow run: caller lookup failed — refusing the run")
+        raise HTTPException(status_code=503, detail="Couldn't read the People list.") from exc
+    if owner_person_id is None and api_caller.caller(request).email:
+        raise HTTPException(
+            status_code=403, detail="Runs are kept for people on the People list."
+        )
+    from openexecutive.orchestrator.artifact_records import (
+        NOBODY,
+        pinned_viewer,
+        viewer_for_person,
+    )
+
+    run_viewer = viewer_for_person(owner_person_id) if owner_person_id is not None else NOBODY
     create_run(
         run_id=run_id,
         workflow_name=workflow.name,
         title=title,
         inputs=payload,
-        # Started by hand: the run and its output are the caller's alone.
         owner_person_id=owner_person_id,
     )
 
@@ -547,8 +558,15 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
                 time.monotonic() - t_start,
             )
 
+    async def owned_stream():
+        # The run's steps read and draft as its owner (nobody for a team
+        # run), so no one else's documents reach its output.
+        with pinned_viewer(run_viewer):
+            async for chunk in event_stream():
+                yield chunk
+
     return StreamingResponse(
-        event_stream(),
+        owned_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

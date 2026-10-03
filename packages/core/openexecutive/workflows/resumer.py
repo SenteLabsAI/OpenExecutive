@@ -358,6 +358,25 @@ async def _process_resumable(now: datetime, db_path: Path | None = None) -> int:
 async def _execute_resume(
     row: dict, claim: str, db_path: Path | None = None
 ) -> bool:
+    """`_drive_resume`, as the work of the person who started the run: what
+    its steps read and draft is theirs (`artifact_records.pinned_viewer`),
+    and nobody's for a team run, so no one's documents reach the run's
+    history that someone else may read."""
+    from openexecutive.orchestrator.artifact_records import (
+        NOBODY,
+        pinned_viewer,
+        viewer_for_person,
+    )
+
+    run = _wf_persistence.get_run(row["run_id"], db_path=db_path) or {}
+    owner = run.get("owner_person_id")
+    with pinned_viewer(viewer_for_person(owner) if owner is not None else NOBODY):
+        return await _drive_resume(row, claim, db_path=db_path)
+
+
+async def _drive_resume(
+    row: dict, claim: str, db_path: Path | None = None
+) -> bool:
     """Drive one claimed run's remaining steps to a terminal state.
 
     `claim` is the fencing token from `claim_run_for_resume`; every write here

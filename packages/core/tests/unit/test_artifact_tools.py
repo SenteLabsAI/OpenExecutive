@@ -11,6 +11,7 @@ import pytest
 
 from openexecutive.alerts import store as alerts_store
 from openexecutive.orchestrator import artifact_tools
+from openexecutive.orchestrator.artifact_records import pinned_viewer, principal_viewer
 from openexecutive.orchestrator.artifact_tools import (
     handle_draft_artifact,
     handle_get_artifact,
@@ -23,7 +24,7 @@ from openexecutive.workflows import persistence as wf_persistence
 
 
 @pytest.fixture()
-def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A shared SQLite DB the alert + people stores both resolve to.
 
     The handler calls `insert_alert` / `find_principal_person` WITHOUT a
@@ -38,7 +39,10 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(people_store, "DB_PATH", db_path)
     # With no conversation behind it, a draft is the principal's own work.
     people_store.upsert_person(full_name="Jordan", role="CEO", is_principal=True, db_path=db_path)
-    return db_path
+    # Work outside any session is nobody's: these tests run as the principal's
+    # own (as the CLI or the alert review does).
+    with pinned_viewer(principal_viewer()):
+        yield db_path
 
 
 @contextlib.contextmanager
@@ -144,9 +148,11 @@ async def test_no_principal_and_no_speaker_publishes_nothing(
 ) -> None:
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE people SET is_principal = 0")
-    result = json.loads(await handle_draft_artifact({
-        "title": "Memo", "document": "Body", "why_interesting": "Worth a read",
-    }))
+    # Server work pinning "the principal" when there is none pins nobody.
+    with pinned_viewer(principal_viewer()):
+        result = json.loads(await handle_draft_artifact({
+            "title": "Memo", "document": "Body", "why_interesting": "Worth a read",
+        }))
     assert "error" in result
     assert alerts_store.list_alerts(db_path=db) == []
 
@@ -509,25 +515,51 @@ def test_whose_turn_it_is(db: Path) -> None:
         Viewer,
         current_viewer,
         turn_owner,
-        viewer_to_pin,
     )
 
     pid, sam = _principal_id(db), _member(db)
-    # Nobody speaking (the scheduler): the principal's own work, a team run,
-    # and nothing to pin a workflow's session to.
-    assert current_viewer() == Viewer(person_id=pid, is_principal=True)
-    assert turn_owner() is None and viewer_to_pin() is None
-    with _speaking(unattended=True):
-        assert current_viewer().is_principal and turn_owner() is None
-        assert viewer_to_pin() is None
+    principal = Viewer(person_id=pid, is_principal=True)
+    # The fixture pins the principal (as the alert review does).
+    assert current_viewer() == principal and turn_owner() == pid
+    # Nothing pinned and no one speaking (a scheduled run): nobody, and a
+    # run started now is the team's.
+    with pinned_viewer(NOBODY):
+        assert current_viewer() == NOBODY and turn_owner() is None
+        with _speaking(unattended=True):
+            assert current_viewer() == NOBODY
+        # The principal on their own CLI.
+        with _speaking(from_cli=True):
+            assert current_viewer() == principal
+    # The speaker wins over the pin.
     with _speaking(caller_person_id=sam, from_web_chat=True):
-        assert current_viewer() == Viewer(person_id=sam)
-        assert turn_owner() == sam and viewer_to_pin() == Viewer(person_id=sam)
+        assert current_viewer() == Viewer(person_id=sam) and turn_owner() == sam
+    # A Jobs-page run pinned to Sam is Sam's.
+    with pinned_viewer(Viewer(person_id=sam)):
+        assert turn_owner() == sam
     # An unrostered speaker is nobody, and so is a session pinned to them.
-    with _speaking(origin_channel="slack"):
-        assert current_viewer() == NOBODY and viewer_to_pin() == NOBODY
+    with pinned_viewer(NOBODY), _speaking(origin_channel="slack"):
+        assert current_viewer() == NOBODY
     with _speaking(documents_viewer=NOBODY):
         assert current_viewer() == NOBODY and turn_owner() is None
     # A workflow's own session inside Sam's turn is Sam's.
     with _speaking(documents_viewer=Viewer(person_id=sam)):
         assert current_viewer() == Viewer(person_id=sam) and turn_owner() == sam
+
+
+def test_audit_rows_quoting_documents_are_their_owners(db: Path) -> None:
+    """A document tool's dispatch row and a turn's recall snapshot quote the
+    speaker's own documents, so the audit log keeps them to that person."""
+    from openexecutive.orchestrator.executive import (
+        _artifact_row_owner,
+        _recalled_documents_owner,
+    )
+
+    sam = _member(db)
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        assert _artifact_row_owner("get_artifact") == sam
+        assert _artifact_row_owner("draft_artifact") == sam
+        assert _artifact_row_owner("web_search") is None
+        assert _recalled_documents_owner("[published artifact alert:3] Memo\nbody") == {
+            "private": True, "private_to_person": sam,
+        }
+        assert _recalled_documents_owner("[knowledge] finance basics") == {}

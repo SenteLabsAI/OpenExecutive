@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,7 +31,7 @@ ALICE = "alice@contoso.com"
 
 
 @pytest.fixture(autouse=True)
-def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     db_path = tmp_path / "episodic.db"
     for module in (alerts_store, people_store, wf_persistence):
         monkeypatch.setattr(module, "DB_PATH", db_path)
@@ -41,7 +42,12 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # With no conversation behind it, the turn is the principal's, and so is
     # a draft with no owner.
     people_store.upsert_person(full_name="Dana Ops", is_principal=True)
-    return db_path
+    # Work outside any session is nobody's: these tests run as the principal's
+    # own (as the CLI or the alert review does).
+    from openexecutive.orchestrator.artifact_records import pinned_viewer, principal_viewer
+
+    with pinned_viewer(principal_viewer()):
+        yield db_path
 
 
 @pytest.fixture()

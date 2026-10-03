@@ -359,6 +359,13 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     if refusal is not None:
         return refusal
 
+    from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody
+
+    # A run belongs to whoever starts it; with no one to own it, it would
+    # land in the team's history.
+    if runs_refused_for_nobody():
+        return _err("run_workflow", "runs are kept for people on the People list, and the person you are talking with is not on it", kind="write")
+
     raw_inputs = tool_input.get("inputs")
     if raw_inputs is None:
         raw_inputs = {}
