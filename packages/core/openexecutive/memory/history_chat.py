@@ -22,7 +22,7 @@ The pass uses the same checks as notes from email (``history_notes.check_note``)
 the quote is found word for word in what they typed, the summary adds no
 figure, name or date word they didn't, no link or address. It is paced: a
 message shorter than ``MIN_CHARS`` is skipped, and each person gets at most
-``MAX_PASSES_PER_DAY`` passes a day (per company, per process).
+``MAX_PASSES_PER_DAY`` passes a day, counted in the company DB.
 
 ``schedule_chat_notes`` is the one entry point. It never raises and logs
 codes, never text.
@@ -71,24 +71,14 @@ through record_notes (an empty list when nothing is worth keeping)."""
 
 # Background tasks, held so they aren't collected mid-run.
 _TASKS: set[Any] = set()
-# Passes run today: (company DB, person, day) -> count.
-_PASSES: dict[tuple[str, int, str], int] = {}
-_PASSES_LOCK = threading.Lock()
 
 
 def _take_pass(person_id: int, today: date) -> bool:
-    """Count one pass against the person's daily cap; False once it is spent."""
-    from openexecutive.memory.history import _db_path
+    """Count one pass against the person's daily cap (in the company DB, so
+    it holds across workers); False once it is spent."""
+    from openexecutive.memory.history import take_pass
 
-    day = today.isoformat()
-    key = (str(_db_path(None)), person_id, day)
-    with _PASSES_LOCK:
-        for old in [k for k in _PASSES if k[2] != day]:
-            del _PASSES[old]
-        if _PASSES.get(key, 0) >= MAX_PASSES_PER_DAY:
-            return False
-        _PASSES[key] = _PASSES.get(key, 0) + 1
-        return True
+    return take_pass(person_id, today.isoformat(), MAX_PASSES_PER_DAY)
 
 
 def verified_speaker(session: Any, person: Any) -> bool:

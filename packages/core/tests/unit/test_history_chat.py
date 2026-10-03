@@ -36,7 +36,6 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     for var in ("OE_LOCAL_LOGIN", "OE_PUBLIC_DEPLOYMENT"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(audit_logger, "_default_logger", AuditLogger(db_path=path))
-    monkeypatch.setattr(hc, "_PASSES", {})
     people_registry.invalidate()
     yield path
     people_registry.invalidate()
@@ -221,6 +220,8 @@ def test_passes_are_capped_per_person_per_day(
     assert len(model["turns"]) == 2
     _note(roster.principal)
     assert len(model["turns"]) == 3
+    # Counted in the company DB, so another worker sees the same count.
+    assert h.take_pass(roster.teammate, "2026-10-01", 2) is False
     # A new day starts over.
     assert hc._take_pass(roster.teammate, date(2026, 10, 2))
 

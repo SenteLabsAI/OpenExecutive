@@ -2455,8 +2455,9 @@ memory:
       grant for anything else. Never another person's words, never the reply,
       never a turn that touched the speaker's mailbox.
     - Paced: messages under MIN_CHARS (40) are skipped and each person gets at
-      most MAX_PASSES_PER_DAY (40) passes a day, counted in process per
-      company DB. CHAT_PROMPT says requests to the assistant, questions and
+      most MAX_PASSES_PER_DAY (40) passes a day, counted in the company DB
+      (history_chat_passes, history.take_pass) so the cap holds across
+      workers and restarts. CHAT_PROMPT says requests to the assistant, questions and
       small talk are not notes; check_note runs with the message as body and
       allowed words. Shared threads are noted too, but read back only in a
       private chat.
@@ -2487,7 +2488,7 @@ memory:
       memory, the lockdown from that round), and marks the conversation
       mail_private so later turns start the same way and, for a team
       member, the principal can't open it.
-    - Notes never feed Honcho, episodic extraction or standing facts. The four
+    - Notes never feed Honcho, episodic extraction or standing facts. The five
       history_* tables swap with client slots and the factory reset clears them.
 
 peer_memory:

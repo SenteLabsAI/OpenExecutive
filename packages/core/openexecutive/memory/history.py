@@ -52,6 +52,7 @@ from openexecutive.memory.history_schema import (
     COMPANY_TABLE,
     EXCLUDED_TABLE,
     NOTES_TABLE,
+    PASSES_TABLE,
     PERSON_TABLE,
     ensure_schema,
 )
@@ -406,6 +407,40 @@ def forget_conversation(person_id: int, key: str, *, db_path: Path | None = None
     finally:
         conn.close()
     return int(deleted or 0)
+
+
+# --- Pacing -----------------------------------------------------------------
+
+
+def take_pass(person_id: int, day: str, limit: int, *, db_path: Path | None = None) -> bool:
+    """Count one note pass for ``person_id`` on ``day`` (YYYY-MM-DD) when
+    fewer than ``limit`` ran that day; False once they are spent. Held in the
+    company DB, so the cap holds across workers and restarts. Fails closed: an
+    unreadable count is a spent one."""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"DELETE FROM {PASSES_TABLE} WHERE day < ?", (day,))  # noqa: S608 — constant table name
+            row = conn.execute(
+                f"SELECT passes FROM {PASSES_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608 — constant table name
+                (person_id, day),
+            ).fetchone()
+            if row is not None and int(row[0]) >= limit:
+                conn.rollback()
+                return False
+            conn.execute(
+                f"INSERT INTO {PASSES_TABLE} (person_id, day, passes) VALUES (?, ?, 1) "  # noqa: S608 — constant table name
+                "ON CONFLICT(person_id, day) DO UPDATE SET passes = passes + 1",
+                (person_id, day),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't count a note pass — skipping it", exc_info=True)
+        return False
+    return True
 
 
 # --- Notes ------------------------------------------------------------------
