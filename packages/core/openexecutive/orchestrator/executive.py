@@ -140,6 +140,11 @@ from openexecutive.orchestrator.schedule_tools import (
 )
 from openexecutive.orchestrator.session import Session
 from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS, SKILL_TOOLS
+from openexecutive.orchestrator.turn_inbox import (
+    TurnInbox,
+    render_added_messages,
+    with_added,
+)
 from openexecutive.orchestrator.watchlist_tools import (
     WATCHLIST_TOOL_HANDLERS,
     WATCHLIST_TOOLS,
@@ -685,6 +690,19 @@ class Executive:
             # the direct path; it never earned its slot anyway, since history
             # turns are flat strings and the system + tool blocks already
             # cover the expensive stable prefix.
+            prev = messages[-1] if messages else None
+            if (
+                prev is not None
+                and prev["role"] == turn["role"]
+                and isinstance(prev["content"], str)
+                and isinstance(turn["content"], str)
+            ):
+                # Two user rows in a row: a message the person sent while
+                # the Executive was working (turn_inbox) is stored as its own
+                # row after the turn's message. One turn per role keeps the
+                # history alternating.
+                prev["content"] = f"{prev['content']}\n\n{turn['content']}"
+                continue
             messages.append({"role": turn["role"], "content": turn["content"]})
 
         user_content_parts: list[dict[str, Any]] = []
@@ -804,6 +822,7 @@ class Executive:
         memory_text: str | None = None,
         turn_sources: TurnSources | None = None,
         standing_facts: str | None = None,
+        inbox: TurnInbox | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Stream a response from the Executive, routing to specialists as needed.
 
@@ -992,6 +1011,7 @@ class Executive:
                 turn_sources=turn_sources,
                 workspace_mode=workspace_mode,
                 principal_role_tag=principal_role_context(principal_role),
+                inbox=inbox,
             ):
                 if isinstance(item, str) and item != self._THINKING:
                     full_response += item
@@ -1005,6 +1025,8 @@ class Executive:
             yield debug_collector.to_sse_dict(evt)
 
         session.add_user_message(user_message)
+        for added_text in inbox.taken_texts() if inbox is not None else []:
+            session.add_user_message(added_text)
         session.add_assistant_message(full_response)
         # A turn that read or drafted in the speaker's own mailbox (Act as me)
         # stays private to them from here on, and teaches no memory: its reply
@@ -1054,7 +1076,7 @@ class Executive:
         # has none to learn from: its reply quotes a draft built from other
         # people's mail, so should_extract refuses the empty text and every
         # other pass below is skipped outright.
-        speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
+        speaker_text = "" if touched_mail else with_added(_speaker_text(memory_text, user_message), inbox)
 
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
@@ -1155,6 +1177,7 @@ class Executive:
         memory_text: str | None = None,
         turn_sources: TurnSources | None = None,
         standing_facts: str | None = None,
+        inbox: TurnInbox | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Committee-reviewed variant of stream_chat.
 
@@ -1325,6 +1348,7 @@ class Executive:
             turn_sources=turn_sources,
             workspace_mode=workspace_mode,
             principal_role_tag=principal_role_context(principal_role),
+            inbox=inbox,
         ):
             # Swallow draft text and the THINKING sentinel — the user sees
             # only the revised stream. Pass debug-event dicts through so the
@@ -1361,6 +1385,8 @@ class Executive:
             fallback = "I was unable to complete the analysis. Please try again."
             yield fallback
             session.add_user_message(user_message)
+            for added_text in inbox.taken_texts() if inbox is not None else []:
+                session.add_user_message(added_text)
             session.add_assistant_message(fallback)
             # Reset audit ContextVars so this task doesn't leak the turn_id
             # to a follow-up turn that runs on the same task.
@@ -1502,6 +1528,8 @@ class Executive:
             yield debug_collector.to_sse_dict(evt)
 
         session.add_user_message(user_message)
+        for added_text in inbox.taken_texts() if inbox is not None else []:
+            session.add_user_message(added_text)
         # Act as me: a turn that touched the speaker's mailbox stays private
         # and teaches no memory (see stream_chat).
         touched_mail = delegation_pin.touched_mail
@@ -1567,7 +1595,7 @@ class Executive:
         # The speaker's own words, for extraction, open loops and peer
         # memory alike — none for a turn that touched their mailbox; see
         # stream_chat.
-        speaker_text = "" if touched_mail else _speaker_text(memory_text, user_message)
+        speaker_text = "" if touched_mail else with_added(_speaker_text(memory_text, user_message), inbox)
         # private_rows: see stream_chat — the scheduled passes copy it.
         with private_rows(touched_mail):
             if should_extract(speaker_text, session=session):
@@ -1636,6 +1664,7 @@ class Executive:
         turn_sources: TurnSources | None = None,
         workspace_mode: str | None = None,
         principal_role_tag: str | None = None,
+        inbox: TurnInbox | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Tool-use loop that yields text deltas as they arrive.
 
@@ -1654,6 +1683,10 @@ class Executive:
         ``principal_role_tag`` is the specialists' ``<principal_role>`` body
         for the turn, resolved by the caller with the mode ("" for none);
         None resolves it here from the current session — solo only.
+
+        ``inbox`` holds messages the person sent while this turn runs (the
+        web chat's POST /chat/add). Whatever has arrived is added after each
+        round's tool results, and a ``message_added`` event names it.
         """
         if workspace_mode is None:
             workspace_mode = effective_workspace_mode(current_session.get())
@@ -2357,6 +2390,22 @@ class Executive:
                 }
                 for tu in tool_uses
             ]
+            # Messages the person sent since the last round ride in this
+            # round's user message, after the tool results (which must come
+            # first). Only this loop's own, newest message changes, so the
+            # cached prefix is untouched.
+            added = inbox.take() if inbox is not None else []
+            if added:
+                tool_results.append({"type": "text", "text": render_added_messages(added)})
+                for m in added:
+                    audit_log(
+                        "chat_turn",
+                        f"User (added while working): {m.text[:200]}",
+                        actor="user",
+                        details={"direction": "in", "added_mid_turn": True, "msg_len": len(m.text)},
+                        full={"message": m.text},
+                    )
+                yield {"type": "message_added", "ids": [m.id for m in added]}
             current_messages.append({"role": "user", "content": tool_results})
             # Bounded to the messages this loop appended: current_messages
             # is a shallow copy, so anything at a lower index is still owned

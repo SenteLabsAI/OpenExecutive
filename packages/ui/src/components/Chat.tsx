@@ -14,6 +14,7 @@ import {
 } from "@/lib/file-attachments";
 import {
   ActionTaken,
+  addChatMessage,
   ChatMessage,
   CommitteePhase,
   DebugEvent,
@@ -25,6 +26,13 @@ import {
 } from "@/lib/api";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
+import {
+  composerText,
+  markTaken,
+  settleQueue,
+  type QueuedMessage,
+} from "@/lib/queuedMessages";
+import { newClientTurnId } from "@/lib/turn-id";
 import { turnStatus } from "@/lib/turnStatus";
 
 interface ChatProps {
@@ -62,6 +70,7 @@ const SUGGESTED_PROMPTS = [
 ];
 
 const DEFAULT_PLACEHOLDER = "What's on your mind?";
+const WORKING_PLACEHOLDER = "Add something while it works…";
 
 // A follow-up is only worth suggesting when the conversation ends on a
 // persisted reply — the backend keys its suggestion on that reply's id.
@@ -105,6 +114,16 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const adoptedSessionIdRef = useRef<string | undefined>(initialSessionId);
+  // Messages typed while a turn runs (see lib/queuedMessages). The ref is
+  // what the turn reads when it ends; the state is what renders.
+  const [queued, setQueuedState] = useState<QueuedMessage[]>([]);
+  const queuedRef = useRef<QueuedMessage[]>([]);
+  function setQueued(next: QueuedMessage[]) {
+    queuedRef.current = next;
+    setQueuedState(next);
+  }
+  // The running turn's id, which addresses it for POST /chat/add.
+  const turnIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -176,15 +195,15 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // We pass the prompt explicitly into handleSend so the state-clearing in
   // handleSend doesn't race with React batching `setInput("")` after the
   // submit reads it back.
-  // Escape stops the turn. This has to be a document listener rather than the
-  // textarea's onKeyDown: the textarea is `disabled` while a turn is in
-  // flight, and a disabled element cannot hold focus or emit key events — so
-  // the one condition under which we want Escape is exactly the one where the
-  // textarea handler can never run.
+  // Escape stops the turn, wherever focus is: a document listener rather than
+  // the textarea's onKeyDown, so it works with focus on the page too. Not
+  // while something is being typed to add to the turn, where Escape throwing
+  // away the answer would be a nasty surprise.
   useEffect(() => {
     if (!isLoading) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (textareaRef.current?.value.trim()) return;
       // An overlay that consumed this Escape (a tooltip, a dialog) calls
       // preventDefault. Stopping the turn as well would make one keypress do
       // two unrelated things.
@@ -222,7 +241,27 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setSessionId(id);
   }
 
-  async function handleSend(text?: string, memoryText?: string) {
+  // A message typed while the Executive works goes to the running turn, which
+  // folds it into the answer it is writing. If the turn can't take it any
+  // more, it is sent as the next turn when this one ends.
+  function addWhileWorking() {
+    const text = input.trim();
+    const turnId = turnIdRef.current;
+    if (!text || !turnId) return;
+    const id = newClientTurnId();
+    setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    setQueued([...queuedRef.current, { id, text, taken: false }]);
+    void addChatMessage(turnId, id, text);
+  }
+
+  // `queuedFollowup`: the leftovers of a turn, sent on their own. They carry
+  // no files and leave alone whatever is being typed in the composer now.
+  async function handleSend(text?: string, memoryText?: string, queuedFollowup = false) {
+    if (isLoading && text === undefined) {
+      addWhileWorking();
+      return;
+    }
     const message = (text ?? input).trim();
     if ((!message && pendingFiles.length === 0) || isLoading) return;
     const restored = restoredHandoffRef.current;
@@ -231,14 +270,16 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       memoryText ??
       (text === undefined && restored?.seed === message ? restored.memoryText : undefined);
 
-    const filesForTurn = pendingFiles;
+    const filesForTurn = queuedFollowup ? [] : pendingFiles;
     const userBubbleContent = filesForTurn.length
       ? `${message}${message ? "\n\n" : ""}📎 ${filesForTurn.length} file${filesForTurn.length === 1 ? "" : "s"} attached`
       : message;
 
-    setInput("");
-    setPendingFiles([]);
-    setFileError(null);
+    if (!queuedFollowup) {
+      setInput("");
+      setPendingFiles([]);
+      setFileError(null);
+    }
     clearFollowup();
     setMessages((prev) => [...prev, { role: "user", content: userBubbleContent }]);
     setIsLoading(true);
@@ -249,9 +290,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setActivityLabel(null);
     setCommitteePhase(null);
     const { clientTurnId, signal } = beginTurn();
+    turnIdRef.current = clientTurnId;
+    setQueued([]);
     onTurnStart?.();
 
-    if (textareaRef.current) {
+    if (textareaRef.current && !queuedFollowup) {
       textareaRef.current.style.height = "auto";
     }
 
@@ -269,9 +312,22 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     let replyId: number | undefined;
     // Session id from `done`, used to fetch the follow-up for this reply.
     let doneSessionId: string | undefined;
+    // What the queue left to send as the next turn, once this one settles.
+    let nextTurn: string | null = null;
+    // Messages the turn took, shown before its reply. Each settle path that
+    // keeps the reply also keeps these.
+    const settleWithReply = () => {
+      const settled = settleQueue(queuedRef.current);
+      setQueued([]);
+      nextTurn = settled.next;
+      return settled.taken.map((t): ChatMessage => ({ role: "user", content: t }));
+    };
 
     try {
-      for await (const item of streamChat(message, sessionId, {
+      // The ref, not the state: a turn sent straight after the previous one
+      // (a message queued while it worked) runs before the state catches up,
+      // and must still continue the conversation it was typed in.
+      for await (const item of streamChat(message, adoptedSessionIdRef.current, {
         committeeReview: committeeEnabled,
         files: filesForTurn,
         clientTurnId,
@@ -310,6 +366,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           setStreamingActions([...turnActions]);
         } else if (item.type === "sources") {
           turnSources = answerSourcesFrom(item);
+        } else if (item.type === "message_added") {
+          setQueued(markTaken(queuedRef.current, item.ids));
         } else if (item.type === "stopped") {
           // The server acknowledged the stop and is winding the turn down
           // itself; `done` follows over the same stream. Stand the abort
@@ -338,20 +396,27 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       // and can edit and resend. Skipped when files were attached — dropping a
       // file selection without saying so would be worse than the mismatch.
       if (wasStopped && !accumulated && turnActions.length === 0) {
+        // Nothing was saved, so nothing typed while it worked was either.
+        const extra = queuedRef.current;
+        setQueued([]);
         if (filesForTurn.length === 0) {
           setMessages((prev) =>
             prev.length && prev[prev.length - 1].role === "user"
               ? prev.slice(0, -1)
               : prev,
           );
-          setInput(message);
-          restoredHandoffRef.current = turnMemoryText
+          setInput(composerText(message, extra));
+          restoredHandoffRef.current = turnMemoryText && extra.length === 0
             ? { seed: message, memoryText: turnMemoryText }
             : undefined;
+        } else if (extra.length > 0) {
+          setInput(composerText("", extra));
         }
       } else if (accumulated || turnActions.length > 0) {
+        const takenBubbles = settleWithReply();
         setMessages((prev) => [
           ...prev,
+          ...takenBubbles,
           {
             role: "assistant",
             content: accumulated,
@@ -372,8 +437,10 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         // Our own safety-net abort fired (the server never sent `stopped`).
         // Keep whatever streamed; this is a stop, not a failure.
         if (accumulated || turnActions.length > 0) {
+          const takenBubbles = settleWithReply();
           setMessages((prev) => [
             ...prev,
+            ...takenBubbles,
             {
               role: "assistant",
               content: accumulated,
@@ -382,6 +449,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               sources: turnSources,
             },
           ]);
+        } else if (queuedRef.current.length > 0) {
+          setInput(composerText("", queuedRef.current));
+          setQueued([]);
         }
         // `done` never arrived, so nothing else will clear the parent's
         // in-flight state or refresh the sidebar. Safe to call with an empty
@@ -389,6 +459,12 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         onTurnComplete?.(adoptedSessionIdRef.current ?? sessionId ?? "");
       } else {
         const detail = err instanceof Error ? err.message : String(err);
+        // A failed turn saved nothing: give back what was typed while it
+        // worked rather than sending it into the same failure.
+        if (queuedRef.current.length > 0) {
+          setInput(composerText("", queuedRef.current));
+          setQueued([]);
+        }
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: `Something went wrong: ${detail}` },
@@ -398,12 +474,16 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       setStreamingActions([]);
     } finally {
       endTurn();
+      turnIdRef.current = null;
       setIsLoading(false);
       setIsConsulting(false);
       setActivityLabel(null);
       setCommitteePhase(null);
       textareaRef.current?.focus();
     }
+    // What was typed while it worked and the turn never got to: its own turn
+    // now, in the same conversation.
+    if (nextTurn) void handleSend(nextTurn, undefined, true);
   }
 
   // 👍/👎 on a persisted reply, applied optimistically and rolled back if
@@ -559,6 +639,17 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 />
               ))}
 
+              {queued.map((q) => (
+                <div key={q.id} className="flex flex-col items-end mb-6">
+                  <div className="max-w-xl px-4 py-3 rounded-2xl rounded-tr-sm bg-surface-overlay text-fg text-sm leading-relaxed">
+                    <p className="whitespace-pre-wrap">{q.text}</p>
+                  </div>
+                  <p className="mt-1 text-xs text-fg-muted" aria-live="polite">
+                    {q.taken ? "👀 Seen, taking it into this answer" : "Sent while it works"}
+                  </p>
+                </div>
+              ))}
+
               {streamingContent && (
                 <Message
                   role="assistant"
@@ -689,9 +780,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 value={input}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
-                placeholder={followup ?? DEFAULT_PLACEHOLDER}
+                placeholder={isLoading ? WORKING_PLACEHOLDER : followup ?? DEFAULT_PLACEHOLDER}
                 rows={1}
-                disabled={isLoading}
                 aria-label="Message"
                 className={
                   "col-start-1 row-start-1 w-full bg-transparent text-fg text-sm sm:text-base leading-relaxed resize-none focus:outline-none disabled:opacity-50 max-h-40 overflow-y-auto " +
@@ -700,7 +790,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 style={{ minHeight: "24px" }}
               />
             </div>
-            {isLoading ? (
+            {isLoading && (
               <button
                 type="button"
                 onClick={handleStop}
@@ -711,12 +801,14 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               >
                 <Icon name="stop" size="w-3.5 h-3.5" fill="currentColor" />
               </button>
-            ) : (
+            )}
+            {/* While it works, Send appears once there is something to add. */}
+            {(!isLoading || input.trim()) && (
               <button
                 type="button"
                 onClick={() => handleSend()}
                 disabled={!input.trim() && pendingFiles.length === 0}
-                aria-label="Send message"
+                aria-label={isLoading ? "Add to what it's working on" : "Send message"}
                 className="flex-shrink-0 w-11 h-11 rounded-xl bg-accent-strong hover:bg-accent-strong/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
               >
                 <Icon name="arrow-send" size="w-4 h-4" className="text-white" />

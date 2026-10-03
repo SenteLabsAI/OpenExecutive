@@ -85,6 +85,19 @@ class StopChatRequest(BaseModel):
     )
 
 
+class AddChatMessageRequest(BaseModel):
+    """Body of POST /chat/add — a message for a turn that is still running."""
+
+    client_turn_id: str = Field(
+        ..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
+    # Client-minted, echoed back in the stream's `message_added` event.
+    message_id: str = Field(
+        ..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
+    message: str = Field(..., min_length=1, max_length=32000)
+
+
 class ChatResponse(BaseModel):
     response: str
     session_id: str

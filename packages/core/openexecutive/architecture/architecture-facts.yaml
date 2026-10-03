@@ -4365,7 +4365,7 @@ today:
 
 chat:
   module: openexecutive.api.routes.chat
-  endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight.
+  endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works.
   sse_event_types:
     - "chunk — one text delta from the assistant response stream. Fields: type, content, session_id."
     - "thinking — keepalive emitted at the start of EVERY tool-use round, not just specialist ones. Fields: type, session_id. It carries no tool information, so the UI uses it purely as an in-flight boolean and takes the wording from the `activity` event that immediately precedes it. It used to be the sole driver of a hardcoded 'Consulting specialists…' string, which is why an MCP or calendar round looked like a specialist fan-out."
@@ -4377,8 +4377,35 @@ chat:
     - "form_patch — emitted when the Executive calls `propose_form_values` (Ask OE panel form-fill tier). Fields: type, form_id, fields (name → proposed value map), rationale, iteration. The panel applies the values into the registered on-screen form as highlighted suggestions; nothing is saved server-side and the user submits through the form's normal Save. NOT persisted with the assistant message (same deferred-persistence bucket as the action-chip note below predating chip persistence) — reopening a panel session loses the proposal cards, though values already applied to a form are unaffected."
     - "stopped — the user halted the turn via POST /chat/stop. Carries type + session_id. ALWAYS followed by `done` over the same still-open stream: the server winds the turn down and reports, rather than the connection simply dying, so a consumer's state machine reaches its normal terminal state and there is no abort path to special-case. Deliberately NOT an `error` — a stop is a user decision, not a failure — so a consumer that ignores the event degrades to 'the turn ended normally', which is the safe reading. Whatever the Executive produced before the stop is persisted and flagged (chat_messages.stopped)."
     - "sources — sent by the route once per turn after the reply, also when it was stopped or timed out, before the stopped / error / done frames; only when the reply has text and the turn looked at something or had to leave an area out. Fields: type, session_id, sources ([{kind: company|knowledge|notion|research|document|web, title, url: http(s), /artifacts/<id> for a document, or null}], ≤12, ≤6 web, cited pages first), unavailable ([area], e.g. \"finance\" — never a specialist name). Persisted as chat_messages.sources; see routing.answer_sources."
+    - "message_added — the running turn took messages the person sent while it worked (POST /chat/add). Fields: type, ids (the client-minted message ids). Emitted by the agent loop at the step boundary where it took them. A message the client queued that no `message_added` names was never seen, and the client sends it as the next turn."
     - "done — final marker carrying the resolved session_id; UI uses this to commit the streamed assistant message and clear the pending-prompt state."
     - "error — terminal error before/after streaming. Always followed by `done` so the stream consumer's state-machine reaches a clean end."
+  added_messages: |
+    The chat box stays open while the Executive works. A message typed then
+    goes to `POST /chat/add` with the turn's `client_turn_id` and a
+    client-minted message id, not to a second /chat. Each stop-registry
+    entry carries a `TurnInbox` (orchestrator/turn_inbox.py); the endpoint
+    checks the same owner key as /chat/stop, with the same 404 for unknown,
+    not yours, stopped or closed. The agent loop takes whatever arrived at
+    each step boundary (after a round's tool results, before the next model
+    call) and appends it as a text block after the tool_result blocks, so the
+    answer it is writing follows the newer message, and the cached prefix is
+    untouched. A message arriving while the final answer is written is never
+    taken: the route closes the inbox when the turn ends and the client sends
+    leftovers as the next turn. Taken messages are audited as the person's
+    words, persisted as their own user rows between the turn's message and
+    its reply, mirrored into the live Session, and fed to the memory passes
+    with the turn's own words. `_build_messages` merges consecutive user
+    history rows so the prompt still alternates. A stop before any output
+    saves none of it, and the UI returns everything to the composer.
+
+    One turn at a time per conversation: `_run_chat_turn` takes a
+    per-session asyncio.Lock (`_session_turn_locks`) before loading the
+    session, so a second /chat on the same conversation (another tab, a
+    retry) waits for the first to finish and persist instead of running on
+    the same history. The wait is bounded by the whole-turn deadline; past
+    it the turn runs anyway, so a stranded lock can't wedge a conversation.
+    Single-process, like the stop registry.
   stop_control: |
     The Stop button. The CLIENT mints a `client_turn_id` (uuid4) and sends it
     with the turn; `POST /chat/stop` takes that id and sets an asyncio.Event

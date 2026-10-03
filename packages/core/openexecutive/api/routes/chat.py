@@ -15,12 +15,18 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from openexecutive.api import caller as api_caller
-from openexecutive.api.models import ChatRequest, PageContext, StopChatRequest
+from openexecutive.api.models import (
+    AddChatMessageRequest,
+    ChatRequest,
+    PageContext,
+    StopChatRequest,
+)
 from openexecutive.audit import log_event as audit_log
 from openexecutive.audit import principal_turn_rows, rows_for_person
 from openexecutive.integrations.attachments import build_attachment_output
 from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
+from openexecutive.orchestrator.turn_inbox import TurnInbox
 
 # Per-file size cap. Mirrors `_DEFAULT_MAX_BYTES` in
 # `openexecutive/integrations/attachments.py` so the web chat behaves the same
@@ -98,6 +104,9 @@ class _StopEntry(NamedTuple):
     # Monotonic registration time, used to reclaim entries stranded by a path
     # that never reaches `_sse_body`'s `finally`.
     started_at: float
+    # Messages the owner sends while this turn runs (POST /chat/add), folded
+    # into the turn at its next step. See `orchestrator.turn_inbox`.
+    inbox: TurnInbox | None = None
 
 
 # client_turn_id -> stop switch for every currently-streaming chat turn. Same
@@ -242,7 +251,7 @@ def _register_stop(
         return None
     event = asyncio.Event()
     _active_stops[client_turn_id] = _StopEntry(
-        event, owner, turn_id, time.monotonic()
+        event, owner, turn_id, time.monotonic(), TurnInbox()
     )
     return event
 
@@ -373,6 +382,58 @@ def _request_stop(client_turn_id: str, owner: str) -> str | None:
         return None
     entry.event.set()
     return entry.turn_id
+
+
+def _add_to_turn(client_turn_id: str, owner: str, message_id: str, text: str) -> str | None:
+    """Hand a message to a running turn's inbox. Returns its server
+    `turn_id`, or None.
+
+    None covers "no such live turn", "not yours" and "the turn won't take it
+    any more" alike, for the same reason as `_request_stop`; the client then
+    sends the message as the next turn.
+    """
+    entry = _active_stops.get(client_turn_id)
+    if entry is None or entry.owner != owner or entry.inbox is None:
+        return None
+    if entry.event.is_set() or not entry.inbox.add(message_id, text):
+        return None
+    return entry.turn_id
+
+
+# One turn at a time per conversation. A second /chat on a conversation that
+# is still answering (another tab, a retry) waits for the first to finish and
+# persist, rather than running beside it on the same history. The web chat's
+# own box never sends one: a message typed mid-turn goes to POST /chat/add.
+_session_turn_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _acquire_session_turn(session_id: str, timeout_s: float) -> asyncio.Lock | None:
+    """Wait for this conversation's turn lock; None if the wait timed out.
+
+    Bounded so a turn stranded holding the lock (a path that never reaches
+    `_sse_body`'s `finally`) can't wedge the conversation for good: past the
+    deadline the turn runs anyway, as every turn did before the lock.
+    """
+    lock = _session_turn_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_turn_locks[session_id] = lock
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=timeout_s)
+    except TimeoutError:
+        logger.warning("chat.session_lock_timeout session_id=%s", session_id)
+        return None
+    return lock
+
+
+def _release_session_turn(session_id: str, lock: asyncio.Lock | None) -> None:
+    if lock is None or not lock.locked():
+        return
+    lock.release()
+    # Drop idle locks so the map tracks live conversations only. A waiter
+    # still holds its own reference and takes the lock as usual.
+    if not lock.locked() and _session_turn_locks.get(session_id) is lock:
+        _session_turn_locks.pop(session_id, None)
 
 
 # Who started each chat this process has served. Lets a caller the roster
@@ -775,6 +836,9 @@ async def _run_chat_turn(
             client_turn_id = None
         else:
             logger.info("chat.stop_registered turn_id=%s", turn_id)
+    inbox: TurnInbox | None = (
+        _active_stops[client_turn_id].inbox if client_turn_id else None
+    )
 
     # Guarded for the same reason as the gather further down: the stop switch
     # is already registered, and `_sse_body`'s `finally` — which normally
@@ -783,10 +847,27 @@ async def _run_chat_turn(
     # that no longer parses, or a locked SQLite DB), and a stranded entry is
     # now permanent-ish: the registry refuses new turns at its cap rather than
     # evicting live ones, so enough of them would disable Stop for everybody.
+    # Wait for any turn still answering in this conversation, so this one
+    # loads its finished history. A fresh chat has nobody to wait for.
+    turn_lock: asyncio.Lock | None = None
+    lock_key = requested_id
+    if lock_key is not None:
+        from openexecutive.config import get_settings as _lock_settings
+
+        _ls = _lock_settings()
+        try:
+            turn_lock = await _acquire_session_turn(
+                lock_key, _ls.chat_stream_timeout_s + _ls.committee_extra_timeout_s
+            )
+        except BaseException:
+            _release_stop(client_turn_id, turn_id)
+            raise
     try:
         session = _get_or_create_session(requested_id, request)
     except BaseException:
         _release_stop(client_turn_id, turn_id)
+        if lock_key is not None:
+            _release_session_turn(lock_key, turn_lock)
         raise
     if access == "missing":
         _session_starters.setdefault(
@@ -985,6 +1066,8 @@ async def _run_chat_turn(
             timeout_s += settings.committee_extra_timeout_s
     except BaseException:
         _release_stop(client_turn_id, turn_id)
+        if lock_key is not None:
+            _release_session_turn(lock_key, turn_lock)
         raise
 
     async def event_generator():
@@ -1027,6 +1110,9 @@ async def _run_chat_turn(
         )
 
         full_response = ""
+        # Messages folded into this turn (POST /chat/add), filled once the
+        # turn's inbox closes and persisted with it.
+        added_texts: list[str] = []
         # Row id of the persisted assistant reply, handed to the client on
         # `done` so it can attach 👍/👎 without a second roundtrip.
         persisted: dict[str, int] = {}
@@ -1058,6 +1144,7 @@ async def _run_chat_turn(
                     turn_id=turn_id,
                     memory_text=memory_text,
                     turn_sources=turn_sources,
+                    inbox=inbox,
                 ).__aiter__()
             else:
                 stream = executive.stream_chat(
@@ -1074,6 +1161,7 @@ async def _run_chat_turn(
                     turn_id=turn_id,
                     memory_text=memory_text,
                     turn_sources=turn_sources,
+                    inbox=inbox,
                 ).__aiter__()
 
             # Whole-turn deadline, not per-chunk: a stream that drips bytes
@@ -1118,6 +1206,13 @@ async def _run_chat_turn(
                 save_message(
                     session.session_id, "user", message, sender_person_id=caller_person_id
                 )
+                # Messages sent while it worked and folded into this reply,
+                # in the order they arrived, before the reply that answers
+                # them.
+                for added_text in added_texts:
+                    save_message(
+                        session.session_id, "user", added_text, sender_person_id=caller_person_id
+                    )
                 persisted["assistant_message_id"] = save_message(
                     session.session_id,
                     "assistant",
@@ -1136,6 +1231,8 @@ async def _run_chat_turn(
                 # never happened, while a page reload showed it.
                 if stopped or client_disconnected or timed_out:
                     session.add_user_message(message)
+                    for added_text in added_texts:
+                        session.add_user_message(added_text)
                     session.add_assistant_message(full_response)
                 logger.info(
                     "chat.turn_persisted turn_id=%s is_first_turn=%s disconnected=%s stopped=%s",
@@ -1277,6 +1374,12 @@ async def _run_chat_turn(
                     # Otherwise: "Task was destroyed but it is pending".
                     stop_waiter.cancel()
 
+            # Nothing more can reach this turn: anything still waiting in the
+            # inbox was never seen, and the client sends it as the next turn.
+            if inbox is not None:
+                inbox.close()
+                added_texts.extend(inbox.taken_texts())
+
             logger.info(
                 "chat.executive_done turn_id=%s chunks=%d duration_s=%.2f timed_out=%s disconnected=%s stopped=%s",
                 turn_id, chunk_count, time.monotonic() - exec_t0, timed_out,
@@ -1376,7 +1479,11 @@ async def _run_chat_turn(
             done = json.dumps({"type": "done", "session_id": session.session_id})
             yield f"data: {done}\n\n"
         finally:
+            if inbox is not None:
+                inbox.close()
             _release_stop(client_turn_id, turn_id)
+            if lock_key is not None:
+                _release_session_turn(lock_key, turn_lock)
 
     return StreamingResponse(
         event_generator(),
@@ -1425,6 +1532,36 @@ async def chat_stop(body: StopChatRequest, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=404, detail="No in-flight turn with that id")
     logger.info("chat.stop_requested turn_id=%s", stopped_turn_id)
     return {"status": "stopping", "turn_id": stopped_turn_id}
+
+
+@router.post("/chat/add")
+async def chat_add(body: AddChatMessageRequest, request: Request) -> dict[str, str]:
+    """Add a message to an in-flight /chat turn, addressed by its
+    `client_turn_id`, while the Executive is still working on it.
+
+    The turn takes it at its next step and the stream names it in a
+    `message_added` event. 404 means the turn won't take it (finished,
+    stopped, full, or not yours, indistinguishably); the client then sends it
+    as the next turn. A message the turn accepted but never reached (it was
+    already writing its final answer) is not named in any `message_added`
+    event, and the client sends that one as the next turn too.
+    """
+    client_turn_id = _clean_client_turn_id(body.client_turn_id)
+    message_id = _clean_client_turn_id(body.message_id)
+    turn_id = (
+        _add_to_turn(
+            client_turn_id,
+            _stop_owner_key(request, _resolve_caller_person_id(request)),
+            message_id,
+            body.message,
+        )
+        if client_turn_id and message_id
+        else None
+    )
+    if turn_id is None:
+        raise HTTPException(status_code=404, detail="No in-flight turn with that id")
+    logger.info("chat.message_added turn_id=%s len=%d", turn_id, len(body.message))
+    return {"status": "added", "turn_id": turn_id}
 
 
 @router.post("/chat/upload")

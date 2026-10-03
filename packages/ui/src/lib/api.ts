@@ -137,13 +137,21 @@ export interface SourcesEvent extends AnswerSources {
   session_id?: string;
 }
 
+// The running turn took messages the user sent while it worked (POST
+// /chat/add), named by the ids the client gave them.
+export interface MessageAdded {
+  type: "message_added";
+  ids: string[];
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
   | ActionTaken
   | FormPatch
   | Activity
-  | SourcesEvent;
+  | SourcesEvent
+  | MessageAdded;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -262,6 +270,30 @@ export async function stopChat(clientTurnId: string): Promise<boolean> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_turn_id: clientTurnId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Hand a message to the turn that is still running, so its answer takes it
+// into account. False when the turn won't take it (finished, stopped, full):
+// the caller then sends it as the next turn.
+export async function addChatMessage(
+  clientTurnId: string,
+  messageId: string,
+  message: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/chat/add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_turn_id: clientTurnId,
+        message_id: messageId,
+        message,
+      }),
     });
     return res.ok;
   } catch {
