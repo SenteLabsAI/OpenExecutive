@@ -44,7 +44,7 @@ import hashlib
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,7 @@ from openexecutive.memory.history_schema import (
     NOTES_TABLE,
     PASSES_TABLE,
     PERSON_TABLE,
+    REMINDERS_TABLE,
     ensure_schema,
 )
 
@@ -560,6 +561,158 @@ def get_note(person_id: int, note_id: int, *, db_path: Path | None = None, now: 
     finally:
         conn.close()
     return _row_note(row) if row else None
+
+
+def _read_notes(sql: str, params: list[Any], db_path: Path | None) -> list[Note]:
+    if not _db_path(db_path).exists():
+        return []
+    try:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read notes", exc_info=True)
+        return []
+    return [_row_note(r) for r in rows]
+
+
+def _kinds_clause(kinds: tuple[str, ...] | None, params: list[Any]) -> str:
+    if not kinds:
+        return ""
+    params.extend(kinds)
+    return f" AND kind IN ({', '.join('?' for _ in kinds)})"
+
+
+def due_notes(
+    person_id: int | None,
+    *,
+    start: date,
+    end: date,
+    kinds: tuple[str, ...] | None = None,
+    sources: tuple[str, ...] | None = None,
+    limit: int = 20,
+    db_path: Path | None = None,
+    now: datetime | None = None,
+) -> list[Note]:
+    """A person's own live notes with a due date from ``start`` to ``end``
+    (inclusive), soonest first. ``kinds`` / ``sources`` narrow them. Empty on
+    any read error."""
+    if person_id is None:
+        return []
+    params: list[Any] = [person_id, _now(now).isoformat(), start.isoformat(), end.isoformat()]
+    sql = (
+        f"SELECT {_COLUMNS} FROM {NOTES_TABLE} WHERE person_id = ? AND {_live_clause()}"  # noqa: S608 — constant table name and columns
+        " AND due_date IS NOT NULL AND due_date >= ? AND due_date <= ?"
+    )
+    sql += _kinds_clause(kinds, params)
+    if sources:
+        sql += f" AND source IN ({', '.join('?' for _ in sources)})"
+        params.extend(sources)
+    sql += " ORDER BY due_date, occurred_at, id LIMIT ?"
+    params.append(max(1, min(int(limit), MAX_LIST)))
+    return _read_notes(sql, params, db_path)
+
+
+def notes_since(
+    person_id: int | None,
+    since: datetime,
+    *,
+    kinds: tuple[str, ...] | None = None,
+    limit: int = 20,
+    db_path: Path | None = None,
+    now: datetime | None = None,
+) -> list[Note]:
+    """A person's own live notes of what happened at or after ``since``,
+    oldest first. Empty on any read error."""
+    if person_id is None:
+        return []
+    params: list[Any] = [person_id, _now(now).isoformat(), since.isoformat()]
+    sql = (
+        f"SELECT {_COLUMNS} FROM {NOTES_TABLE} WHERE person_id = ? AND {_live_clause()}"  # noqa: S608 — constant table name and columns
+        " AND occurred_at >= ?"
+    )
+    sql += _kinds_clause(kinds, params)
+    sql += " ORDER BY occurred_at, id LIMIT ?"
+    params.append(max(1, min(int(limit), MAX_LIST)))
+    return _read_notes(sql, params, db_path)
+
+
+def people_keeping_notes(*, db_path: Path | None = None) -> list[int]:
+    """Everyone who has "Keep track of what happens" on. Empty on any read
+    error."""
+    if not _db_path(db_path).exists():
+        return []
+    try:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(
+                f"SELECT person_id FROM {PERSON_TABLE} WHERE reply_notes = 1 ORDER BY person_id",  # noqa: S608 — constant table name
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read who keeps notes", exc_info=True)
+        return []
+    return [int(r[0]) for r in rows]
+
+
+def reminded(person_id: int, day: str, *, db_path: Path | None = None) -> bool:
+    """Whether ``person_id`` was already reminded on ``day`` (YYYY-MM-DD).
+    Fails closed: an unreadable record counts as reminded."""
+    try:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                f"SELECT 1 FROM {REMINDERS_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608 — constant table name
+                (person_id, day),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read reminders", exc_info=True)
+        return True
+    return row is not None
+
+
+def mark_reminded(person_id: int, day: str, *, db_path: Path | None = None, now: datetime | None = None) -> bool:
+    """Record that ``person_id`` was reminded on ``day``, pruning older days.
+    False when they already were (another worker got there first) or it
+    can't be recorded."""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"DELETE FROM {REMINDERS_TABLE} WHERE day < ?", (day,))  # noqa: S608 — constant table name
+            inserted = conn.execute(
+                f"INSERT OR IGNORE INTO {REMINDERS_TABLE} (person_id, day, sent_at) VALUES (?, ?, ?)",  # noqa: S608 — constant table name
+                (person_id, day, _now(now).isoformat()),
+            ).rowcount
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't record a reminder", exc_info=True)
+        return False
+    return bool(inserted)
+
+
+def unmark_reminded(person_id: int, day: str, *, db_path: Path | None = None) -> None:
+    """Undo :func:`mark_reminded` after a reminder that didn't send, so a
+    later tick tries again. Never raises."""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute(
+                f"DELETE FROM {REMINDERS_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608 — constant table name
+                (person_id, day),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't undo a reminder record", exc_info=True)
 
 
 def forget_note(person_id: int, note_id: int, *, db_path: Path | None = None) -> bool:

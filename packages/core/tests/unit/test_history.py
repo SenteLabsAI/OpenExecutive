@@ -169,3 +169,41 @@ def test_a_conversation_forgotten_mid_pass_still_wins(monkeypatch: pytest.Monkey
         counterpart="", subject="", trust="high", occurred_at=datetime.now(UTC),
     )
     assert ids == [] and h.list_notes(1) == []
+
+
+def test_due_notes_and_notes_since_read_only_the_persons_own() -> None:
+    from datetime import date
+
+    def add(person: int, kind: str, due: str | None, when: datetime, source: str = h.SOURCE_APPROVED_REPLY) -> None:
+        h.add_notes(
+            person, [h.NewNote(kind, f"{kind} {due}", "words", due)], source=source, channel=h.CHANNEL_EMAIL,
+            conversation_ref=f"{kind}{due}{when}", counterpart="", subject="", trust="high", occurred_at=when, now=when,
+        )
+
+    add(1, "promised", "2026-10-03", NOW)
+    add(1, "asked", "2026-10-05", NOW - timedelta(days=2))
+    add(1, "shared", "2026-10-04", NOW, source=h.SOURCE_CHAT_MESSAGE)
+    add(1, "promised", "2026-11-01", NOW)
+    add(2, "promised", "2026-10-03", NOW)
+    found = h.due_notes(1, start=date(2026, 10, 1), end=date(2026, 10, 7), now=NOW)
+    assert [n.due_date for n in found] == ["2026-10-03", "2026-10-04", "2026-10-05"]
+    assert [n.kind for n in h.due_notes(1, start=date(2026, 10, 1), end=date(2026, 10, 7), kinds=("promised",), now=NOW)] == ["promised"]
+    assert [n.kind for n in h.due_notes(
+        1, start=date(2026, 10, 1), end=date(2026, 10, 7), sources=(h.SOURCE_CHAT_MESSAGE,), now=NOW,
+    )] == ["shared"]
+    assert [n.kind for n in h.notes_since(1, NOW - timedelta(hours=1), now=NOW)] == ["promised", "shared", "promised"]
+    assert h.due_notes(None, start=date(2026, 10, 1), end=date(2026, 10, 7)) == []
+
+
+def test_reminders_are_claimed_once_a_day_and_can_be_undone() -> None:
+    h.set_person_settings(1, by="t", reply_notes=True)
+    h.set_person_settings(2, by="t", reply_notes=False)
+    assert h.people_keeping_notes() == [1]
+    assert not h.reminded(1, "2026-10-03")
+    assert h.mark_reminded(1, "2026-10-03", now=NOW)
+    assert h.reminded(1, "2026-10-03") and not h.mark_reminded(1, "2026-10-03", now=NOW)
+    h.unmark_reminded(1, "2026-10-03")
+    assert h.mark_reminded(1, "2026-10-03", now=NOW)
+    # A new day prunes the old ones.
+    assert h.mark_reminded(1, "2026-10-04", now=NOW)
+    assert not h.reminded(1, "2026-10-03")

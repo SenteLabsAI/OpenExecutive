@@ -141,6 +141,19 @@ def _maybe_scan_inbox(now: datetime) -> bool:
         return False
 
 
+def _maybe_remind_notes(now: datetime) -> bool:
+    """Always in the loop's due-today reminders (memory/history_reminders.py),
+    throttled there. A hook here, like the inbox watcher, rather than a
+    scheduled_actions row everyone could see. Never raises."""
+    try:
+        from openexecutive.memory.history_reminders import maybe_remind
+
+        return maybe_remind(now)
+    except Exception:
+        logger.exception("scheduler: note reminders failed to start")
+        return False
+
+
 def _maybe_sweep_alerts(now: datetime) -> int:
     """Run the expiry sweep if the interval has elapsed. Returns rows expired.
 
@@ -301,6 +314,7 @@ async def run_scheduler(
                 continue
             _maybe_refresh_narrative(now)
             _maybe_scan_inbox(now)
+            _maybe_remind_notes(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))
@@ -1855,6 +1869,25 @@ async def _deliver_to_principal(text: str, *, label: str = "Update") -> Principa
     principal, plan = principal_delivery_plan()
     if principal is None:
         return PrincipalDelivery(False, "no principal Person row found", "no_owner")
+    return await _send_on_plan(principal, plan, text, label=label)
+
+
+async def deliver_to_person(person: Person, text: str, *, label: str = "Update") -> PrincipalDelivery:
+    """Send ``text`` to ``person`` alone, the way the briefs reach the
+    principal: their own Slack or Discord DM, their Telegram chat, or email
+    to their own address (``delivery_order``). Never a shared channel: a
+    Telegram id that isn't a private chat (groups are negative) is skipped."""
+    plan = delivery_order(person, email_ready=email_ready())
+    if "telegram" in plan and not str(person.telegram_chat_id or "").isdigit():
+        plan.remove("telegram")
+    return await _send_on_plan(person, plan, text, label=label)
+
+
+async def _send_on_plan(
+    principal: Person, plan: list[str], text: str, *, label: str
+) -> PrincipalDelivery:
+    """Try ``plan``'s channels for ``principal`` (any Person) in order until
+    one sends."""
     if not plan:
         return PrincipalDelivery(
             False, "no deliverable channel configured for principal", "no_channel"

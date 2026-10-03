@@ -2434,7 +2434,8 @@ memory:
 
   always_in_the_loop: |
     Always in the loop (memory.history, memory.history_notes,
-    memory.history_chat, orchestrator.history_tools, api/routes/history.py):
+    memory.history_chat, memory.history_brief, memory.history_reminders,
+    orchestrator.history_tools, api/routes/history.py):
     private, dated notes of what a person said. Two sources: a reply the
     person approved and sent through Act as me (delegation.reply_send starts
     history_notes.note_sent_reply in the background after the send), and what
@@ -2488,7 +2489,24 @@ memory:
       memory, the lockdown from that round), and marks the conversation
       mail_private so later turns start the same way and, for a team
       member, the principal can't open it.
-    - Notes never feed Honcho, episodic extraction or standing facts. The five
+    - recall_history takes due=true to list only dated notes, a week overdue
+      to two weeks ahead, soonest first ("what's due today?").
+    - The owner's briefs read the owner's own notes (memory.history_brief):
+      the morning brief a FROM YOUR NOTES - DUE SOON block, the end-of-day
+      digest a FROM YOUR NOTES - TODAY block. Only on a run for the owner
+      alone (morning_brief._private_ok), only with the owner's switch on,
+      never a teammate's notes. A run that used any is private_to_principal
+      (the run history keeps PRIVATE_RUN_ARTIFACT) and the note ids with
+      their state enter the fingerprint.
+    - Due-today reminders (memory.history_reminders, from the scheduler
+      tick, 09:00 to 18:00 local) cover only promises made by email
+      (approved_reply): chat promises are already open loops the nudge
+      engine chases. The message says how many, never what or to whom,
+      because the channel senders audit the text where others may read it;
+      the person asks for the detail in a private chat. Sent to their own
+      DM, private Telegram chat or email (runner.deliver_to_person), once a
+      day per person (history_reminders, claimed before sending).
+    - Notes never feed Honcho, episodic extraction or standing facts. The six
       history_* tables swap with client slots and the factory reset clears them.
 
 peer_memory:

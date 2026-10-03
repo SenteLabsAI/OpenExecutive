@@ -174,6 +174,37 @@ def test_it_returns_only_the_speakers_own_notes(roster: SimpleNamespace) -> None
     assert _recall(_web(roster.principal), "venue")["result"] == "No notes match."
 
 
+def test_due_lists_only_dated_notes_soonest_first(roster: SimpleNamespace) -> None:
+    from datetime import timedelta
+
+    from openexecutive.memory.history_brief import local_today
+
+    today = local_today(datetime.now(UTC))
+    h.set_person_settings(roster.principal, by="test", reply_notes=True)
+    for summary, quote, due in [
+        ("Said the deck goes to Sam next week.", "the deck goes to Sam next week", (today + timedelta(days=5)).isoformat()),
+        ("Said the quote goes to Dana today.", "the quote goes to Dana today", today.isoformat()),
+        ("Shared the venue is booked.", "the venue is booked", None),
+        ("Said the memo goes out in a month.", "the memo goes out in a month", (today + timedelta(days=30)).isoformat()),
+    ]:
+        h.add_notes(
+            roster.principal, [h.NewNote("promised", summary, quote, due)], source=h.SOURCE_APPROVED_REPLY,
+            channel=h.CHANNEL_EMAIL, conversation_ref=summary, counterpart="", subject="", trust="high",
+            occurred_at=WHEN,
+        )
+
+    async def go(tool_input: dict[str, Any]) -> dict[str, Any]:
+        with set_session(_web(roster.principal)):
+            return json.loads(await ht.handle_recall_history(tool_input))
+
+    out = asyncio.run(go({"due": True}))
+    assert out["notes"] == 2
+    assert out["result"].index("quote goes to Dana") < out["result"].index("deck goes to Sam")
+    assert "venue" not in out["result"] and "memo" not in out["result"]
+    assert asyncio.run(go({"due": True, "query": "sam"}))["notes"] == 1
+    assert asyncio.run(go({"due": True, "query": "nobody"}))["result"] == "Nothing in the notes is due."
+
+
 def test_a_correction_replaces_the_summary(roster: SimpleNamespace) -> None:
     _notes_on(roster.principal)
     [note] = h.list_notes(roster.principal)
