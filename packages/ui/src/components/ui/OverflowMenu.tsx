@@ -26,6 +26,7 @@ export default function OverflowMenu({
   size = "md",
   align = "right",
   placement = "down",
+  icon,
 }: {
   items: OverflowItem[];
   /** Accessible name of the ⋯ button. */
@@ -34,6 +35,8 @@ export default function OverflowMenu({
   align?: "left" | "right";
   /** "up" for a menu at the bottom of the screen (the account menu). */
   placement?: "down" | "up";
+  /** Replaces the ⋯ glyph, e.g. a + for a composer's attach menu. */
+  icon?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState(-1);
@@ -107,11 +110,13 @@ export default function OverflowMenu({
         onClick={() => (open ? close(false) : setOpen(true))}
         className={`${dim} inline-flex items-center justify-center rounded-xl text-fg-muted hover:text-fg hover:bg-surface-overlay border border-transparent hover:border-line transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60`}
       >
-        <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
-          <circle cx="5" cy="12" r="1.8" />
-          <circle cx="12" cy="12" r="1.8" />
-          <circle cx="19" cy="12" r="1.8" />
-        </svg>
+        {icon ?? (
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
+            <circle cx="5" cy="12" r="1.8" />
+            <circle cx="12" cy="12" r="1.8" />
+            <circle cx="19" cy="12" r="1.8" />
+          </svg>
+        )}
       </button>
       {open && (
         <div

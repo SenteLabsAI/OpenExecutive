@@ -7,6 +7,7 @@ import BrandMark from "./BrandMark";
 import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
 import Icon from "./Icon";
 import InfoTip from "./InfoTip";
+import OverflowMenu from "./ui/OverflowMenu";
 import {
   MAX_FILES_PER_TURN,
   mergePickedFiles,
@@ -505,12 +506,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               <div className="mb-6">
                 <BrandMark size="lg" />
               </div>
-              <h2 className="text-xl font-semibold text-fg mb-2">
-                {firstName
-                  ? `Here's where we are, ${firstName}.`
-                  : "Here's where we are."}
+              {/* Not the briefing's headline: Home already greets you. */}
+              <h2 className="text-2xl font-bold tracking-tight text-fg mb-2">
+                {firstName ? `What's on your mind, ${firstName}?` : "What's on your mind?"}
               </h2>
-              <p className="text-fg-muted text-sm max-w-sm mb-10">
+              <p className="text-fg-muted text-[15px] max-w-md mb-10">
                 {subtitle}
               </p>
 
@@ -525,7 +525,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                       <div
                         key={i}
                         aria-hidden
-                        className="min-h-touch rounded-xl bg-surface-overlay/60 border border-line animate-pulse motion-reduce:animate-none"
+                        className="min-h-[52px] rounded-2xl bg-surface-overlay/60 border border-line animate-pulse motion-reduce:animate-none"
                       />
                     ))
                   : suggested.map((prompt) => (
@@ -533,7 +533,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                         type="button"
                         key={prompt}
                         onClick={() => handleSend(prompt)}
-                        className="text-left px-4 py-3 min-h-touch rounded-xl bg-surface-overlay/60 border border-line hover:border-line-strong hover:bg-surface-overlay text-fg-muted hover:text-fg text-sm transition-all duration-150 cursor-pointer"
+                        className="text-left px-4 py-3.5 min-h-[52px] rounded-2xl bg-surface-elevated border border-line hover:border-line-strong hover:bg-surface-hover text-fg-muted hover:text-fg text-[15px] transition-all duration-150 cursor-pointer"
                       >
                         {prompt}
                       </button>
@@ -593,6 +593,24 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       {/* Input */}
       <div className="border-t border-line bg-surface px-4 sm:px-6 py-3 sm:py-4">
         <div className="max-w-3xl mx-auto">
+          {/* Committee review is switched in the + menu; while it is on, this
+              chip says so and turns it off. */}
+          {committeeEnabled && (
+            <div className="mb-2">
+              <button
+                type="button"
+                onClick={() => setCommitteeEnabled(false)}
+                disabled={isLoading}
+                aria-pressed
+                title="Committee review: slower, higher-quality response — adversarial review pass before sending. Click to turn off."
+                className="inline-flex min-h-[32px] items-center gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-2.5 text-xs font-medium text-accent hover:bg-accent/15 disabled:opacity-50 cursor-pointer"
+              >
+                <Icon name="users" size="w-3.5 h-3.5" />
+                Committee review on
+                <Icon name="close" size="w-3 h-3" />
+              </button>
+            </div>
+          )}
           {pendingFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2" aria-label="Pending attachments">
               {pendingFiles.map((f, i) => (
@@ -620,7 +638,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               {fileError}
             </p>
           )}
-          <div className="relative flex items-end gap-1.5 sm:gap-3 bg-surface-overlay/50 border border-line-strong rounded-2xl px-2 sm:px-4 py-2 sm:py-3 focus-within:border-fg-muted transition-colors">
+          <div className="relative flex items-end gap-1.5 sm:gap-2 bg-surface-elevated border border-line-strong rounded-2xl p-1.5 sm:p-2 shadow-sm focus-within:border-accent/60 transition-colors">
             <input
               ref={fileInputRef}
               type="file"
@@ -630,26 +648,34 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               className="hidden"
               aria-hidden="true"
             />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading || pendingFiles.length >= MAX_FILES_PER_TURN}
-              title={
-                pendingFiles.length >= MAX_FILES_PER_TURN
-                  ? `Limit ${MAX_FILES_PER_TURN} files per message`
-                  : "Attach files or photos (PDF, DOCX, TXT, MD, CSV, images)"
-              }
-              aria-label="Attach files"
-              className="flex-shrink-0 min-h-touch min-w-touch w-10 h-10 rounded-xl bg-surface-overlay border border-line-strong text-fg-muted hover:text-fg hover:border-line-strong disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
-            >
-              <Icon name="paperclip" size="w-4 h-4" />
-            </button>
+            {/* The + menu: attach files, and committee review (on/off). */}
+            <OverflowMenu
+              label="Add to your message"
+              align="left"
+              placement="up"
+              icon={<Icon name="plus" size="w-5 h-5" />}
+              items={[
+                {
+                  label:
+                    pendingFiles.length >= MAX_FILES_PER_TURN
+                      ? `Attach files (limit ${MAX_FILES_PER_TURN} per message)`
+                      : "Attach files or photos",
+                  onSelect: () => fileInputRef.current?.click(),
+                  disabled: isLoading || pendingFiles.length >= MAX_FILES_PER_TURN,
+                },
+                {
+                  label: committeeEnabled ? "Turn off committee review" : "Committee review (slower, reviewed)",
+                  onSelect: () => setCommitteeEnabled((v) => !v),
+                  disabled: isLoading,
+                },
+              ]}
+            />
             {/* The suggestion is drawn by a ghost layer sharing the textarea's
                 grid cell rather than by the native placeholder, which a
                 one-row textarea clips to its first line. The cell grows to
                 the ghost's wrapped height; the placeholder attribute still
                 carries the text for screen readers, just painted transparent. */}
-            <div className="grid flex-1 min-w-0">
+            <div className="grid flex-1 min-w-0 self-center py-2">
               {showFollowup && (
                 <div
                   aria-hidden
@@ -674,37 +700,6 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 style={{ minHeight: "24px" }}
               />
             </div>
-            {showFollowup && (
-              <button
-                type="button"
-                onClick={acceptFollowup}
-                title="Use the suggested follow-up (Tab)"
-                aria-label={`Use suggested follow-up: ${followup}`}
-                className="hidden sm:flex flex-shrink-0 min-h-touch px-2.5 rounded-lg border border-line bg-surface-overlay text-xs font-mono text-fg-muted hover:text-fg hover:border-line-strong transition-all duration-150 items-center cursor-pointer"
-              >
-                Tab ↹
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setCommitteeEnabled((v) => !v)}
-              disabled={isLoading}
-              title="Committee review: slower, higher-quality response — adversarial review pass before sending"
-              aria-pressed={committeeEnabled}
-              aria-label="Committee review"
-              className={
-                "flex-shrink-0 min-h-touch min-w-touch sm:px-3 flex items-center justify-center rounded-xl text-xs font-medium transition-all duration-150 border cursor-pointer " +
-                (committeeEnabled
-                  ? "bg-indigo-500/15 border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/20"
-                  : "bg-surface-overlay border-line-strong text-fg-muted hover:text-fg hover:border-line-strong") +
-                " disabled:opacity-30 disabled:cursor-not-allowed"
-              }
-            >
-              {/* An icon on phones, where the word would take most of the
-                  row the message box needs. */}
-              <Icon name="users" size="w-4 h-4" className="sm:hidden" />
-              <span className="hidden sm:inline">Committee</span>
-            </button>
             {isLoading ? (
               <button
                 type="button"
@@ -712,7 +707,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 disabled={isStopping}
                 aria-label="Stop the executive"
                 title="Stop — whatever has been written so far is kept"
-                className="flex-shrink-0 min-h-touch min-w-touch w-10 h-10 rounded-xl bg-surface-overlay border border-line-strong text-fg hover:border-fg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
+                className="flex-shrink-0 w-11 h-11 rounded-xl bg-surface-overlay border border-line-strong text-fg hover:border-fg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
               >
                 <Icon name="stop" size="w-3.5 h-3.5" fill="currentColor" />
               </button>
@@ -722,28 +717,27 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 onClick={() => handleSend()}
                 disabled={!input.trim() && pendingFiles.length === 0}
                 aria-label="Send message"
-                className="flex-shrink-0 min-h-touch min-w-touch w-10 h-10 rounded-xl bg-indigo-500 hover:bg-indigo-400 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
+                className="flex-shrink-0 w-11 h-11 rounded-xl bg-accent-strong hover:bg-accent-strong/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
               >
                 <Icon name="arrow-send" size="w-4 h-4" className="text-white" />
               </button>
             )}
           </div>
           <p className="text-center text-xs text-fg-muted mt-2 inline-flex items-center justify-center gap-1.5 w-full">
-            <span className="hidden sm:inline">
-              Enter to send · Shift+Enter for new line
-              {showFollowup && " · Tab to use suggestion"}
-            </span>
+            <span className="hidden sm:inline">Enter to send · Shift+Enter for new line</span>
             <span className="sm:hidden">Tap send</span>
-            {/* Phones have no Tab key and no room in the input row, so the
-                tap target for the suggestion lives on this line instead. */}
+            {/* The suggestion's hint is also its button: Tab on a keyboard,
+                a tap or click anywhere else. */}
             {showFollowup && (
               <button
                 type="button"
                 onClick={acceptFollowup}
+                title="Use the suggested follow-up (Tab)"
                 aria-label={`Use suggested follow-up: ${followup}`}
-                className="sm:hidden min-h-touch px-1 text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer"
+                className="min-h-touch px-1 text-accent hover:underline font-medium cursor-pointer"
               >
-                · Use suggestion
+                <span className="hidden sm:inline">· Tab ↹ to use suggestion</span>
+                <span className="sm:hidden">· Use suggestion</span>
               </button>
             )}
             <InfoTip align="right">

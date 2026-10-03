@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Icon from "@/components/Icon";
+import { buttonClass } from "@/components/ui/Button";
 import ChatHistory from "@/components/sessions/ChatHistory";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import {
@@ -15,9 +17,9 @@ import {
 
 type ChannelFilter = SessionChannel | "all";
 
-// Full conversation history. The sidebar only lists the latest few web chats;
-// this page holds everything, including conversations that arrived through
-// Slack, Telegram and Discord.
+// Full conversation history: every chat, including conversations that
+// arrived through Slack, Telegram and Discord. Each row opens its chat;
+// Delete is in the row's ⋯ menu and asks first.
 export default function ChatsPage() {
   const router = useRouter();
   const { sessions, loaded, error, refresh, remove } = useSessions();
@@ -53,19 +55,26 @@ export default function ChatsPage() {
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-3xl mx-auto">
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-fg mb-1">Chats</h1>
-            <p className="text-sm text-fg-muted">
-              Every conversation with the Executive, from the web app and from connected
-              channels. The sidebar shows only your latest web chats.
-            </p>
+          <div className="mb-6 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mb-1">Chats</h1>
+              <p className="text-[15px] text-fg-muted">
+                Every conversation with the Executive, from the web app and from connected
+                channels.
+              </p>
+            </div>
+            <Link href="/?new=1" className={buttonClass("primary", "md", "flex-shrink-0")}>
+              <Icon name="plus" size="w-4 h-4" />
+              <span className="hidden sm:inline">New chat</span>
+              <span className="sm:hidden">New</span>
+            </Link>
           </div>
 
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-5">
             <div
               role="tablist"
               aria-label="Filter by channel"
-              className="inline-flex flex-wrap items-center gap-1 p-0.5 rounded-lg ring-1 ring-line bg-surface/40"
+              className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl ring-1 ring-line bg-surface-elevated"
             >
               {tabs.map((t) => {
                 const active = activeChannel === t;
@@ -77,8 +86,8 @@ export default function ChatsPage() {
                     role="tab"
                     aria-selected={active}
                     onClick={() => setChannel(t)}
-                    className={`px-3 py-1.5 text-xs rounded-md transition cursor-pointer ${
-                      active ? "bg-surface-elevated text-fg" : "text-fg-muted hover:text-fg"
+                    className={`min-h-[40px] px-4 text-[15px] font-medium rounded-lg transition cursor-pointer ${
+                      active ? "bg-accent/10 text-accent" : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
                     }`}
                   >
                     {t === "all" ? "All" : CHANNEL_LABELS[t]}
@@ -87,11 +96,11 @@ export default function ChatsPage() {
                 );
               })}
             </div>
-            <div className="relative sm:ml-auto sm:w-64">
+            <div className="relative sm:ml-auto sm:w-72">
               <Icon
                 name="search"
-                size="w-3.5 h-3.5"
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none"
+                size="w-4 h-4"
+                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none"
               />
               <input
                 type="text"
@@ -99,15 +108,15 @@ export default function ChatsPage() {
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search conversations"
                 aria-label="Search conversations"
-                className="w-full rounded-lg bg-surface-input/60 border border-line pl-8 pr-2 py-2 text-sm text-fg placeholder:text-fg-subtle focus:outline-none focus:border-fg-subtle"
+                className="w-full h-11 rounded-xl bg-surface-elevated border border-line pl-10 pr-3 text-[15px] text-fg placeholder:text-fg-subtle focus:outline-none focus:border-accent/60 focus:ring-2 focus:ring-accent/20"
               />
             </div>
           </div>
 
           {!loaded ? (
-            <p className="px-3 py-6 text-sm text-fg-muted">Loading conversations…</p>
+            <p className="px-1 py-6 text-[15px] text-fg-muted">Loading conversations…</p>
           ) : error && sessions.length === 0 ? (
-            <p className="px-3 py-6 text-sm text-fg-muted">
+            <p className="px-1 py-6 text-[15px] text-fg-muted">
               Couldn&apos;t load your conversations.{" "}
               <button
                 type="button"
@@ -118,7 +127,7 @@ export default function ChatsPage() {
               </button>
             </p>
           ) : sessions.length === 0 ? (
-            <p className="px-3 py-6 text-sm text-fg-muted">
+            <p className="px-1 py-6 text-[15px] text-fg-muted">
               No conversations yet. Start one with New chat.
             </p>
           ) : (
@@ -126,7 +135,7 @@ export default function ChatsPage() {
               sessions={visible}
               searching={searching}
               onSelect={(id) => router.push(`/?session=${encodeURIComponent(id)}`)}
-              onDelete={(id) => void remove(id)}
+              onDelete={remove}
             />
           )}
         </div>
