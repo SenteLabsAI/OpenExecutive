@@ -13,6 +13,7 @@ import {
   startWorkflowDesigner,
 } from "@/lib/api";
 import { WORKFLOW_STARTERS, takeWorkflowDescription } from "@/lib/workflowStarters";
+import Button from "@/components/ui/Button";
 import WorkflowDraftReview from "./WorkflowDraftReview";
 
 // Same cap chat applies to its `?draft=` prefill.
@@ -161,7 +162,7 @@ export default function WorkflowWizard() {
         <div className="max-w-3xl mx-auto space-y-4">
           {!started && (
             <div className="space-y-3">
-              <p className="text-sm text-fg">
+              <p className="text-base text-fg">
                 Describe the job you want done — what it should produce, who it&rsquo;s
                 for, and how often. I&rsquo;ll ask about anything I need, then draft the
                 workflow for you to review.
@@ -175,7 +176,7 @@ export default function WorkflowWizard() {
                       setInput(s);
                       inputRef.current?.focus();
                     }}
-                    className="rounded-full border border-line px-3 py-1 text-left text-xs text-fg-muted hover:text-fg hover:border-line-strong transition"
+                    className="min-h-10 rounded-full border border-line bg-surface-elevated px-4 py-2 text-left text-sm text-fg-muted hover:text-fg hover:border-line-strong hover:bg-surface-overlay transition"
                   >
                     {s}
                   </button>
@@ -190,7 +191,7 @@ export default function WorkflowWizard() {
               className={t.role === "user" ? "flex justify-end" : "flex justify-start"}
             >
               <div
-                className={`max-w-[85%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+                className={`max-w-[85%] rounded-2xl px-4 py-3 text-[15px] whitespace-pre-wrap ${
                   t.role === "user"
                     ? "bg-indigo-600/20 text-fg"
                     : "bg-surface-elevated border border-line text-fg"
@@ -198,7 +199,7 @@ export default function WorkflowWizard() {
               >
                 {t.text}
                 {i === lastIndex && t.role === "assistant" && turn?.hint && (
-                  <p className="text-xs text-fg-muted mt-1.5">{turn.hint}</p>
+                  <p className="text-sm text-fg-muted mt-1.5">{turn.hint}</p>
                 )}
               </div>
             </div>
@@ -211,7 +212,7 @@ export default function WorkflowWizard() {
                   key={o}
                   type="button"
                   onClick={() => send(o)}
-                  className="rounded-full border border-indigo-500/40 px-3 py-1 text-xs text-indigo-300 hover:bg-indigo-500/10 transition"
+                  className="min-h-10 rounded-full border border-accent/40 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/10 transition"
                 >
                   {o}
                 </button>
@@ -231,19 +232,19 @@ export default function WorkflowWizard() {
 
           {pending && (
             <div className="flex justify-end">
-              <div className="max-w-[85%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap bg-indigo-600/20 text-fg opacity-70">
+              <div className="max-w-[85%] rounded-2xl px-4 py-3 text-[15px] whitespace-pre-wrap bg-indigo-600/20 text-fg opacity-70">
                 {pending}
               </div>
             </div>
           )}
-          {busy && <p className="text-xs text-fg-muted">Thinking…</p>}
+          {busy && <p className="text-sm text-fg-muted">Thinking…</p>}
           <div ref={bottomRef} />
         </div>
       </div>
 
-      <div className="border-t border-line bg-surface px-6 py-3">
-        <div className="max-w-3xl mx-auto space-y-2">
-          {error && <p className="text-xs text-red-400">{error}</p>}
+      <div className="border-t border-line bg-surface px-4 sm:px-6 py-4">
+        <div className="max-w-3xl mx-auto space-y-3">
+          {error && <p className="text-sm text-red-400">{error}</p>}
           <textarea
             ref={inputRef}
             value={input}
@@ -264,28 +265,23 @@ export default function WorkflowWizard() {
                 ? "Your answer… (Enter to send, Shift+Enter for a new line)"
                 : "e.g. Every Monday, pull together what our top three competitors shipped and send it to me."
             }
-            className="w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors disabled:opacity-50"
+            className="w-full rounded-2xl border border-line bg-surface-elevated px-4 py-3 text-base text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none transition-colors disabled:opacity-50"
           />
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="primary"
               onClick={() => send(input)}
               disabled={busy || !input.trim()}
-              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium rounded-md transition-colors"
+              className="px-6"
             >
               {busy ? "Thinking…" : started ? "Send" : "Start"}
-            </button>
+            </Button>
             {started && !isDraft && (
-              <button
-                type="button"
-                onClick={draftNow}
-                disabled={busy}
-                className="text-xs text-fg-muted hover:text-fg disabled:opacity-40 transition-colors"
-              >
+              <Button variant="ghost" onClick={draftNow} disabled={busy}>
                 Draft it now
-              </button>
+              </Button>
             )}
-            <span className="ml-auto flex items-center gap-3 text-xs text-fg-subtle">
+            <span className="ml-auto flex items-center gap-3 text-sm text-fg-subtle">
               {started && (
                 <span>
                   {turn!.questions_asked} of {turn!.max_questions} questions

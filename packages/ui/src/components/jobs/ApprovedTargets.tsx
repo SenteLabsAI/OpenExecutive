@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Button from "@/components/ui/Button";
 import { ApprovedTarget, forgetApprovedTarget, listApprovedTargets } from "@/lib/api";
 
 /**
@@ -39,32 +40,28 @@ export default function ApprovedTargets({ name }: { name: string }) {
   if (!targets || targets.length === 0) return null;
 
   return (
-    <details className="rounded-md border border-line bg-surface/40 px-3 py-2 text-sm">
-      <summary className="cursor-pointer text-fg">
+    <details className="rounded-2xl border border-line bg-surface-elevated px-5 py-3 text-[15px]">
+      <summary className="flex min-h-10 cursor-pointer items-center gap-1 font-medium text-fg">
         Approved targets <span className="text-fg-muted">({targets.length})</span>
       </summary>
-      <p className="mt-2 text-xs text-fg-muted">
+      <p className="mt-2 text-sm text-fg-muted">
         This workflow can write to these without asking. Remove one and the next
         write there asks again.
       </p>
       <ul className="mt-2 divide-y divide-line/60">
         {targets.map((t) => (
-          <li key={t.value} className="flex items-center gap-3 py-1.5 min-w-0">
-            <span className="shrink-0 text-[11px] text-fg-subtle">{t.key}</span>
-            <code className="min-w-0 flex-1 truncate text-xs text-fg" title={t.value}>
+          <li key={t.value} className="flex items-center gap-3 py-2 min-w-0">
+            <span className="shrink-0 text-xs text-fg-subtle">{t.key}</span>
+            <code className="min-w-0 flex-1 truncate text-sm text-fg" title={t.value}>
               {t.value}
             </code>
-            <button
-              type="button"
-              onClick={() => void remove(t.value)}
-              className="shrink-0 text-[11px] text-fg-muted hover:text-red-400 transition"
-            >
+            <Button variant="ghost" onClick={() => void remove(t.value)}>
               Remove
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
-      {error && <p className="mt-1 text-xs text-red-300">{error}</p>}
+      {error && <p className="mt-1 text-sm text-red-400">{error}</p>}
     </details>
   );
 }

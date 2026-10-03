@@ -9,6 +9,16 @@ export const WORKFLOW_STARTERS = [
   "A launch readiness check I run before every product release",
 ];
 
+/**
+ * Short chips for the front of /jobs: a label to tap and the starter it puts
+ * in the box. The wizard shows the full sentences (all of them).
+ */
+export const WORKFLOW_STARTER_CHIPS: { label: string; text: string }[] = [
+  { label: "Competitor digest", text: WORKFLOW_STARTERS[0] },
+  { label: "Board pre-read", text: WORKFLOW_STARTERS[1] },
+  { label: "Hiring plan review", text: WORKFLOW_STARTERS[2] },
+];
+
 const HANDOFF_KEY = "oe.workflowWizard.describe";
 // A hand-off older than this is from a Start the user walked away from, and
 // must not fire on a later visit to the wizard.
