@@ -457,6 +457,20 @@ def test_reply_to_all_never_copies_the_person_or_the_executive_and_spares_strang
     assert by_thread["t2"].to == [stranger] and by_thread["t2"].cc == []
 
 
+def test_the_eval_path_counts_recipients_as_the_scan_does(owner: Any, models: dict[str, Any]) -> None:
+    # Only the Executive copied: not a group email, on the scan or in reply_for.
+    from openexecutive.config import get_settings
+
+    exec_address = (get_settings().exec_email_address or "").lower()
+    models["verdicts"]["Thursday"] = {
+        "needs_reply": True, "kind": "scheduling", "asked_of_them": False, "confidence": 0.9,
+    }
+    message = _msg("m1", "t1", cc=(exec_address,))
+    thread = MailThread(id="t1", messages=[message])
+    verdict, reply = asyncio.run(inbox.reply_for(owner, message, thread, relation="contact", own={OWNER}))
+    assert verdict is not None and isinstance(reply, inbox.Reply) and reply.cc == []
+
+
 def test_a_stranger_needs_more_certainty_and_gets_a_holding_reply(
     db: Path, owner: Any, models: dict[str, Any]
 ) -> None:

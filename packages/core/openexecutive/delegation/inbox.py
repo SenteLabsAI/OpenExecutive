@@ -704,7 +704,7 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     email = (person.email or "").strip().lower()
     # A group email is answered to everyone on it, as the person would; a
     # stranger's holding reply goes to the stranger alone.
-    plan = plan_reply(thread, email, relation != "stranger")
+    plan = plan_reply(thread, email, False)
     if isinstance(plan, str) or plan["to"] != [message.from_addr]:
         return "no_reply_target"
     if asks_if_ai(plan.pop("last_text", "") or ""):
@@ -712,9 +712,18 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     stored = get_voice(person.id)
     names = (person.full_name or "").split()
     exec_address = (get_settings().exec_email_address or "").strip().lower()
-    # Never the person's own addresses, and never the Executive (Send
-    # refuses a draft addressed to it).
-    cc = [a for a in plan["cc"] if a not in own and a != exec_address]
+    # Everyone else the email went to, never the person's own addresses or
+    # the Executive (Send refuses a draft addressed to it), filtered before
+    # trimming so the room goes to real recipients.
+    cc: list[str] = []
+    if relation != "stranger":
+        cc = [
+            a for a in dict.fromkeys([*message.to, *message.cc])
+            if a not in own and a != exec_address and a != message.from_addr
+        ]
+        if len(cc) > MAX_RECIPIENTS - 1:
+            cc = cc[: MAX_RECIPIENTS - 1]
+            plan["flags"].append("cc_trimmed")
     relation_text = {
         "team": "on their team",
         "contact": "one of their contacts",
@@ -765,7 +774,10 @@ async def reply_for(
     from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
 
     relation = handling_relation(relation, message)
-    addressed = addressing(message, name=person.full_name or "", own=own)
+    from openexecutive.config import get_settings
+
+    exec_address = (get_settings().exec_email_address or "").strip().lower()
+    addressed = addressing(message, name=person.full_name or "", own=own, exec_address=exec_address)
     verdict = await classify(message, relation=relation, addressed=addressed)
     if verdict is None or not wants_draft(verdict, relation, addressed):
         return verdict, None
