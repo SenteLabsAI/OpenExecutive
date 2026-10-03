@@ -38,6 +38,15 @@ export default function MermaidDiagram({ definition, id }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // mermaid.render appends a temporary <div id="d{id}"> to <body> while
+    // rendering, and on a parse error leaves it there holding its "Syntax
+    // error" graphic, which then shows on every page after this one. Remove
+    // it (and the svg it may hold) whatever happens, including on unmount.
+    const uniqueId = `mermaid-${id}-${Math.random().toString(36).slice(2, 10)}`;
+    const cleanup = () => {
+      document.getElementById(`d${uniqueId}`)?.remove();
+      document.getElementById(uniqueId)?.remove();
+    };
 
     async function render() {
       try {
@@ -90,10 +99,7 @@ export default function MermaidDiagram({ definition, id }: Props) {
           },
         });
 
-        // mermaid.render appends a temporary <div id="…"> to <body> while
-        // rendering. Use a uniqueid per call so concurrent renders on a
-        // remount don't collide.
-        const uniqueId = `mermaid-${id}-${Math.random().toString(36).slice(2, 10)}`;
+        // A unique id per call so concurrent renders on a remount don't collide.
         const result = await mermaid.render(uniqueId, withSharedStyles(definition));
         if (!cancelled) {
           setSvg(result.svg);
@@ -109,12 +115,15 @@ export default function MermaidDiagram({ definition, id }: Props) {
           // Keep the console error for devs; users see the inline fallback.
           console.error('Mermaid render failed:', e);
         }
+      } finally {
+        cleanup();
       }
     }
 
     render();
     return () => {
       cancelled = true;
+      cleanup();
     };
   }, [definition, id]);
 
