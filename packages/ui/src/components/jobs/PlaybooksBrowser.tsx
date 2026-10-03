@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Button, { buttonClass } from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -340,68 +342,64 @@ export default function PlaybooksBrowser({
 
   return (
     <div>
-      <p className="mb-4 text-sm text-fg-muted max-w-3xl">
+      <p className="mb-5 text-[15px] text-fg-muted max-w-3xl">
         Playbooks are <span className="text-fg">how</span> the Executive does a
         piece of work: a method, format, or checklist. In chat it looks one up
         when your request matches its “When to use”, and some workflows follow
         them too. Create one here, or ask the Executive to save one from chat.
       </p>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <form onSubmit={handleSearch} className="flex flex-1 min-w-[16rem] gap-2">
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <form onSubmit={handleSearch} className="flex flex-1 min-w-0 basis-full sm:basis-auto gap-2">
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search playbooks (e.g. 'cash forecast for next quarter')"
-            className="flex-1 rounded-lg border border-line-strong bg-surface-elevated px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            aria-label="Search playbooks"
+            className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-surface-elevated px-4 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
-          <button
-            type="submit"
-            disabled={isSearching}
-            className="px-4 py-2 rounded-lg border border-line-strong text-fg-muted hover:text-fg disabled:opacity-40 text-sm transition-colors"
-          >
+          <Button type="submit" disabled={isSearching}>
             {isSearching ? "Searching…" : "Search"}
-          </button>
+          </Button>
           {searchHits !== null && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
               onClick={() => {
                 setSearchQuery("");
                 setSearchHits(null);
                 submittedQueryRef.current = null;
               }}
-              className="px-3 py-2 border border-line-strong text-fg-muted hover:text-fg text-sm rounded-lg transition-colors"
             >
               Clear
-            </button>
+            </Button>
           )}
         </form>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          className="shrink-0"
           onClick={() => {
             setSelected(null);
             setNotice(null);
             openEditor({ mode: "create", customizing: false, initial: EMPTY_INPUT });
           }}
-          className="shrink-0 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition"
         >
           + New playbook
-        </button>
+        </Button>
       </div>
 
       {error && (
-        <p className="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+        <p className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5">
           {error}
         </p>
       )}
       {notice && (
-        <p className="mb-4 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">
+        <p className="mb-4 text-sm text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2.5">
           {notice}
         </p>
       )}
 
       <div className="flex flex-col md:flex-row gap-6">
-        <div className="md:w-60 flex-shrink-0 space-y-5">
+        <div className="md:w-64 flex-shrink-0 space-y-5">
           {searchHits !== null ? (
             <div>
               <SectionLabel>Results</SectionLabel>
@@ -466,7 +464,7 @@ export default function PlaybooksBrowser({
                   emptyMessage="No hidden playbooks."
                 />
               )}
-              <label className="flex items-center gap-2 px-1 text-xs text-fg-muted cursor-pointer">
+              <label className="flex min-h-10 items-center gap-2 px-1 text-sm text-fg-muted cursor-pointer">
                 <input
                   type="checkbox"
                   checked={showHidden}
@@ -548,9 +546,9 @@ function ListButton({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full text-left px-2.5 py-1.5 rounded-lg text-sm transition-colors flex items-center justify-between gap-2 ${
+      className={`w-full min-h-10 text-left px-3 py-2 rounded-xl text-[15px] transition-colors flex items-center justify-between gap-2 ${
         active
-          ? "bg-surface-input text-fg"
+          ? "bg-accent/10 text-accent font-medium"
           : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
       }`}
     >
@@ -623,8 +621,6 @@ function PlaybookView({
   onDelete: () => void;
   onRestore: () => void;
 }) {
-  const btn =
-    "px-3 py-1.5 rounded-lg border text-xs transition-colors disabled:opacity-40";
   const deleteLabel = skill.customized
     ? "Revert to built-in"
     : skill.source === "builtin"
@@ -642,11 +638,11 @@ function PlaybookView({
               {sourceLabel(skill)}
             </span>
           </div>
-          <h2 className="text-base font-semibold text-fg mt-1 break-words">{skill.name}</h2>
-          <p className="text-sm text-fg-muted mt-1">{skill.description}</p>
-          <p className="text-xs text-fg-muted italic mt-1">When to use: {skill.when_to_use}</p>
+          <h2 className="text-xl font-bold tracking-tight text-fg mt-1 break-words">{skill.name}</h2>
+          <p className="text-[15px] text-fg-muted mt-1">{skill.description}</p>
+          <p className="text-sm text-fg-muted italic mt-1">When to use: {skill.when_to_use}</p>
           {skill.used_by.length > 0 && (
-            <p className="text-xs text-fg-muted mt-1">
+            <p className="text-sm text-fg-muted mt-1">
               Followed by{" "}
               {skill.used_by.map((w, i) => (
                 <span key={w.name}>
@@ -661,40 +657,23 @@ function PlaybookView({
             </p>
           )}
         </div>
-        <div className="flex flex-wrap gap-2 flex-shrink-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {skill.hidden ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onRestore}
-              className={`${btn} border-line-strong text-fg hover:bg-surface-overlay`}
-            >
+            <Button variant="primary" disabled={busy} onClick={onRestore}>
               Restore
-            </button>
+            </Button>
           ) : (
             <>
-              <Link
-                href={tryInChatHref(skill.name)}
-                className={`${btn} border-line-strong text-fg-muted hover:text-fg`}
-              >
+              <Button variant="primary" disabled={busy} onClick={onEdit}>
+                {skill.source === "builtin" ? "Customize" : "Edit"}
+              </Button>
+              <Link href={tryInChatHref(skill.name)} className={buttonClass("secondary", "md")}>
                 Try in chat
               </Link>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={onEdit}
-                className={`${btn} border-line-strong text-fg hover:bg-surface-overlay`}
-              >
-                {skill.source === "builtin" ? "Customize" : "Edit"}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={onDelete}
-                className={`${btn} border-red-500/20 text-red-400 hover:bg-red-500/10`}
-              >
-                {deleteLabel}
-              </button>
+              <OverflowMenu
+                label={`More for ${skill.name}`}
+                items={[{ label: deleteLabel, danger: true, disabled: busy, onSelect: onDelete }]}
+              />
             </>
           )}
         </div>
@@ -704,13 +683,13 @@ function PlaybookView({
         prose-p:text-fg prose-p:leading-relaxed
         prose-headings:text-fg prose-headings:font-semibold
         prose-strong:text-fg prose-strong:font-semibold
-        prose-code:text-indigo-300 prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-none prose-code:after:content-none
+        prose-code:text-accent prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-none prose-code:after:content-none
         prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong
         prose-blockquote:border-line-strong prose-blockquote:text-fg-muted
         prose-ul:text-fg prose-ol:text-fg
         prose-li:marker:text-fg-muted
         prose-hr:border-line-strong
-        prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
+        prose-a:text-accent prose-a:no-underline hover:prose-a:underline
         prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{skill.body}</ReactMarkdown>
       </div>
@@ -719,7 +698,7 @@ function PlaybookView({
 }
 
 const MARKDOWN_BOX =
-  "rounded-xl border border-line-strong bg-surface-elevated px-6 py-5 max-h-[420px] overflow-y-auto prose prose-invert prose-sm max-w-none prose-p:text-fg prose-headings:text-fg prose-strong:text-fg prose-ul:text-fg prose-ol:text-fg prose-li:marker:text-fg-muted prose-code:text-indigo-300 prose-a:text-indigo-400";
+  "rounded-xl border border-line-strong bg-surface-elevated px-6 py-5 max-h-[420px] overflow-y-auto prose prose-invert prose-sm max-w-none prose-p:text-fg prose-headings:text-fg prose-strong:text-fg prose-ul:text-fg prose-ol:text-fg prose-li:marker:text-fg-muted prose-code:text-accent prose-a:text-accent";
 
 function DraftView({
   draft,
@@ -734,7 +713,6 @@ function DraftView({
   onDiscard: () => void;
   onEdit: () => void;
 }) {
-  const btn = "px-3 py-1.5 rounded-lg border text-xs transition-colors disabled:opacity-40";
   const heading =
     draft.action === "create"
       ? "New playbook"
@@ -749,53 +727,39 @@ function DraftView({
           <span className="text-[10px] uppercase tracking-wider text-amber-400 px-2 py-0.5 border border-amber-500/30 rounded">
             Proposed by the Executive · {heading}
           </span>
-          <h2 className="text-base font-semibold text-fg mt-2 break-words">{draft.name}</h2>
+          <h2 className="text-xl font-bold tracking-tight text-fg mt-2 break-words">{draft.name}</h2>
           {draft.action !== "delete" && (
             <>
-              <p className="text-sm text-fg-muted mt-1">{draft.description}</p>
-              <p className="text-xs text-fg-muted italic mt-1">
+              <p className="text-[15px] text-fg-muted mt-1">{draft.description}</p>
+              <p className="text-sm text-fg-muted italic mt-1">
                 When to use: {draft.when_to_use} · {draft.category}
               </p>
             </>
           )}
-          <p className="text-[11px] text-fg-subtle mt-1">
+          <p className="text-xs text-fg-subtle mt-1">
             Proposed {new Date(draft.proposed_at).toLocaleString()}. Nothing changes until you
             approve it.
           </p>
           {followers.length > 0 && (
-            <p className="text-xs text-amber-300 mt-1">
+            <p className="text-sm text-amber-600 dark:text-amber-300 mt-1">
               Followed by {followers.map((w) => w.title).join(", ")} — approving changes what
               {followers.length === 1 ? " that workflow" : " those workflows"} follow.
             </p>
           )}
         </div>
-        <div className="flex flex-wrap gap-2 flex-shrink-0">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onApprove}
-            className={`${btn} border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10`}
-          >
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Button variant="primary" disabled={busy} onClick={onApprove}>
             {draft.action === "delete" ? "Approve delete" : "Approve"}
-          </button>
+          </Button>
           {draft.action !== "delete" && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onEdit}
-              className={`${btn} border-line-strong text-fg hover:bg-surface-overlay`}
-            >
+            <Button disabled={busy} onClick={onEdit}>
               Edit, then save
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onDiscard}
-            className={`${btn} border-red-500/20 text-red-400 hover:bg-red-500/10`}
-          >
-            Discard
-          </button>
+          <OverflowMenu
+            label={`More for ${draft.name}`}
+            items={[{ label: "Discard proposal", danger: true, disabled: busy, onSelect: onDiscard }]}
+          />
         </div>
       </div>
 
@@ -840,7 +804,7 @@ function PlaybookEditor({
     form.body.trim() !== "";
 
   const input =
-    "w-full rounded-lg border border-line-strong bg-surface-elevated px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50";
+    "w-full rounded-xl border border-line bg-surface-elevated px-3.5 py-2.5 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40";
 
   return (
     <form
@@ -850,7 +814,7 @@ function PlaybookEditor({
         if (complete) onSave(form);
       }}
     >
-      <h2 className="text-base font-semibold text-fg">
+      <h2 className="text-xl font-bold tracking-tight text-fg">
         {editor.mode === "create"
           ? "New playbook"
           : editor.customizing
@@ -919,20 +883,12 @@ function PlaybookEditor({
       </Field>
 
       <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={!complete || busy}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-40 transition"
-        >
+        <Button type="submit" variant="primary" disabled={!complete || busy}>
           {busy ? "Saving…" : "Save"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="rounded-md border border-line-strong px-3 py-1.5 text-sm text-fg-muted hover:text-fg transition"
-        >
+        </Button>
+        <Button variant="ghost" onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -949,9 +905,9 @@ function Field({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-fg">{label}</span>
+      <span className="text-sm font-medium text-fg">{label}</span>
       {children}
-      {hint && <span className="text-[11px] text-fg-subtle">{hint}</span>}
+      {hint && <span className="text-xs text-fg-subtle">{hint}</span>}
     </label>
   );
 }

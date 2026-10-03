@@ -4,8 +4,12 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import Switch from "@/components/Switch";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   deleteWatchlistItem,
+  listDepartments,
   getWatchlistItem,
   getWatchlistSignals,
   patchWatchlistItem,
@@ -39,6 +43,13 @@ function formatRelTime(iso: string | null): string {
   }
 }
 
+// The research policy's "about" stamp on a watch the Executive added.
+function policyEntity(item: WatchlistItem): string | undefined {
+  const raw = (item.config_json as Record<string, unknown> | undefined)?._policy;
+  const entity = raw && typeof raw === "object" ? (raw as { entity?: unknown }).entity : undefined;
+  return typeof entity === "string" && entity ? entity : undefined;
+}
+
 function outcomeStyle(outcome: string | null): string {
   if (outcome === "alerted") return "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
   if (outcome === "failed") return "bg-rose-500/20 text-rose-300 border-rose-500/30";
@@ -54,13 +65,13 @@ function outcomeLabel(outcome: string | null): string {
 
 function SignalRow({ signal }: { signal: WatchlistSignal }) {
   return (
-    <li className="border border-line rounded-lg bg-surface-elevated p-3">
+    <li className="border border-line rounded-xl bg-surface p-3.5">
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="flex-1 min-w-0">
-          <div className="text-sm text-fg truncate" title={signal.normalized_summary}>
+          <div className="text-[15px] text-fg truncate" title={signal.normalized_summary}>
             {signal.normalized_summary}
           </div>
-          <div className="text-[11px] text-fg-muted mt-0.5">
+          <div className="text-sm text-fg-muted mt-0.5">
             {signal.published_at
               ? `published ${formatRelTime(signal.published_at)} · seen ${formatRelTime(signal.captured_at)}`
               : formatRelTime(signal.captured_at)}
@@ -73,13 +84,13 @@ function SignalRow({ signal }: { signal: WatchlistSignal }) {
           {outcomeLabel(signal.processed_outcome)}
         </span>
       </div>
-      <div className="flex items-center gap-3 text-[11px]">
+      <div className="flex items-center gap-3 text-sm">
         {signal.provenance_url && (
           <a
             href={signal.provenance_url}
             target="_blank"
             rel="noreferrer"
-            className="text-indigo-300 hover:text-indigo-200 truncate max-w-xs"
+            className="text-accent hover:underline truncate max-w-xs"
           >
             source ↗
           </a>
@@ -109,6 +120,16 @@ export default function WatchDetailPage() {
   // toggle-revert race where two clicks land in the wrong final state.
   const [toggling, setToggling] = useState(false);
   const [modeChanging, setModeChanging] = useState(false);
+  // slug → title, for "for: <department>" on a routed research watch.
+  const [departmentTitles, setDepartmentTitles] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    listDepartments()
+      .then((states) =>
+        setDepartmentTitles(Object.fromEntries(states.map((d) => [d.config.slug, d.config.title]))),
+      )
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!slug) return;
@@ -139,9 +160,8 @@ export default function WatchDetailPage() {
     }
   }
 
-  async function toggleMode() {
-    if (!item || modeChanging) return;
-    const nextMode = item.mode === "active" ? "dry_run" : "active";
+  async function setModeTo(nextMode: "active" | "dry_run") {
+    if (!item || modeChanging || item.mode === nextMode) return;
     setModeChanging(true);
     try {
       const updated = await patchWatchlistItem(slug, { mode: nextMode });
@@ -203,49 +223,112 @@ export default function WatchDetailPage() {
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6">
           <Link
             href="/watchlist"
-            className="text-xs text-indigo-300 hover:text-indigo-200 inline-block mb-4"
+            className="text-sm text-fg-muted hover:text-fg inline-block mb-4"
           >
             ← Watch list
           </Link>
 
-          <div className="flex items-baseline justify-between mb-4 gap-4">
+          <div className="flex items-start justify-between mb-6 gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-mono font-semibold text-fg truncate">{item.slug}</h1>
-              <p className="text-sm text-fg-muted mt-0.5 truncate" title={item.target}>
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight font-mono text-fg truncate">
+                {item.slug}
+              </h1>
+              <p className="text-[15px] text-fg-muted mt-1 truncate" title={item.target}>
                 {item.signal_type} · {item.target}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={toggleEnabled}
-                disabled={toggling}
-                className={`px-3 py-1.5 text-xs rounded-lg border disabled:opacity-60 ${
-                  item.enabled
-                    ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/30 hover:bg-indigo-500/30"
-                    : "bg-zinc-500/20 text-zinc-400 border-zinc-500/30 hover:bg-zinc-500/30"
-                }`}
+            <OverflowMenu
+              label="More actions"
+              items={[{ label: "Delete monitor", danger: true, onSelect: () => setConfirming(true) }]}
+            />
+          </div>
+
+          {confirming && (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-4 mb-4 flex flex-wrap items-center gap-3">
+              <span className="text-[15px] text-fg flex-1 min-w-[12rem]">
+                Delete this monitor? Historical signals stay in the audit log.
+              </span>
+              <Button variant="danger" onClick={remove}>
+                Delete
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            </div>
+          )}
+
+          <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4 divide-y divide-line">
+            <div className="flex items-center justify-between gap-4 pb-4">
+              <div>
+                <div id="watch-enabled-label" className="text-[15px] font-semibold text-fg">
+                  {item.enabled ? "Watching" : "Paused"}
+                </div>
+                <p className="text-sm text-fg-muted">
+                  {item.enabled
+                    ? "Polled on its cadence."
+                    : "Not polled until you switch it back on."}
+                </p>
+              </div>
+              {/* The label pads the small switch out to a 40px tap target. */}
+              <label className="inline-flex h-10 w-12 flex-shrink-0 cursor-pointer items-center justify-center">
+                <Switch
+                  checked={item.enabled}
+                  disabled={toggling}
+                  labelledBy="watch-enabled-label"
+                  onChange={() => void toggleEnabled()}
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-4 pt-4">
+              <div>
+                <div className="text-[15px] font-semibold text-fg">When it fires</div>
+                <p className="text-sm text-fg-muted">
+                  {item.mode === "active"
+                    ? "Signals can become alerts in your briefing."
+                    : "Shadow mode (dry_run): polls and records signals, never alerts."}
+                </p>
+              </div>
+              <div
+                role="group"
+                aria-label="Mode"
+                className="inline-flex rounded-xl border border-line bg-surface p-1"
               >
-                {item.enabled ? "Enabled" : "Disabled"}
-              </button>
-              <button
-                onClick={toggleMode}
-                disabled={modeChanging}
-                className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay text-fg-muted disabled:opacity-60"
-              >
-                mode: {item.mode}
-              </button>
+                {(
+                  [
+                    ["active", "Alert me"],
+                    ["dry_run", "Shadow only"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={item.mode === value}
+                    disabled={modeChanging}
+                    onClick={() => void setModeTo(value)}
+                    className={`min-h-10 rounded-lg px-3.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+                      item.mode === value
+                        ? "bg-accent/10 text-accent"
+                        : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
           {error && (
-            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm mb-4">
+            <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}
             </div>
           )}
 
-          <div className="rounded-xl border border-line bg-surface-elevated p-4 mb-4">
-            <h2 className="text-xs uppercase tracking-wide text-fg-subtle mb-3">Configuration</h2>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+          <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
+            <h2 className="text-base font-semibold text-fg mb-3">Configuration</h2>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">
+              <dt className="text-fg-muted">Mode</dt>
+              <dd className="text-fg">{item.mode}</dd>
               <dt className="text-fg-muted">Cadence</dt>
               <dd className="text-fg">{item.cadence}</dd>
               <dt className="text-fg-muted">Severity range</dt>
@@ -264,17 +347,29 @@ export default function WatchDetailPage() {
               <dd className="text-fg">{formatRelTime(item.last_polled_at)}</dd>
               <dt className="text-fg-muted">Last fired</dt>
               <dd className="text-fg">{formatRelTime(item.last_fired_at)}</dd>
+              {item.origin === "research" && (
+                <>
+                  <dt className="text-fg-muted">Added by</dt>
+                  <dd className="text-fg">
+                    The Executive
+                    {policyEntity(item) ? ` · about ${policyEntity(item)}` : ""}
+                    {item.route_to_department
+                      ? ` · for ${departmentTitles[item.route_to_department] ?? item.route_to_department}`
+                      : ""}
+                  </dd>
+                </>
+              )}
             </dl>
             <div className="mt-3">
-              <div className="text-xs text-fg-muted mb-1">Trigger</div>
-              <pre className="text-[11px] font-mono bg-surface-input/40 border border-line rounded p-2 overflow-x-auto">
+              <div className="text-sm text-fg-muted mb-1">Trigger</div>
+              <pre className="text-xs font-mono bg-surface-input/40 border border-line rounded p-2 overflow-x-auto">
                 {JSON.stringify(item.trigger_json, null, 2)}
               </pre>
             </div>
           </div>
 
-          <div className="rounded-xl border border-line bg-surface-elevated p-4 mb-4">
-            <h2 className="text-xs uppercase tracking-wide text-fg-subtle mb-2">Notes</h2>
+          <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
+            <h2 className="text-base font-semibold text-fg mb-2">Notes</h2>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -282,19 +377,20 @@ export default function WatchDetailPage() {
               rows={3}
               maxLength={500}
               placeholder="Why are we watching this?"
-              className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
+              aria-label="Notes"
+              className="w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
             {savingNotes && (
-              <p className="text-[10px] text-fg-subtle mt-1">Saving…</p>
+              <p className="text-xs text-fg-subtle mt-1">Saving…</p>
             )}
           </div>
 
-          <div className="rounded-xl border border-line bg-surface-elevated p-4 mb-4">
-            <h2 className="text-xs uppercase tracking-wide text-fg-subtle mb-3">
+          <div className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4">
+            <h2 className="text-base font-semibold text-fg mb-3">
               Recent signals ({signals.length})
             </h2>
             {signals.length === 0 ? (
-              <p className="text-xs text-fg-muted">
+              <p className="text-sm text-fg-muted">
                 No signals yet. The next poll runs on cadence: {item.cadence}.
               </p>
             ) : (
@@ -306,35 +402,6 @@ export default function WatchDetailPage() {
             )}
           </div>
 
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
-            <h2 className="text-xs uppercase tracking-wide text-rose-300 mb-2">Danger zone</h2>
-            {confirming ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-fg-muted">
-                  Delete this monitor? Historical signals stay in the audit log.
-                </span>
-                <button
-                  onClick={remove}
-                  className="px-3 py-1.5 text-xs rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-medium"
-                >
-                  Delete
-                </button>
-                <button
-                  onClick={() => setConfirming(false)}
-                  className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirming(true)}
-                className="px-3 py-1.5 text-xs rounded-lg border border-rose-500/30 text-rose-300 hover:bg-rose-500/10"
-              >
-                Delete monitor
-              </button>
-            )}
-          </div>
         </div>
       </main>
     </div>

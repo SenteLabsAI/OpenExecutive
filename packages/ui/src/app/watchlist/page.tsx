@@ -1,7 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+
+import Switch from "@/components/Switch";
+import Button from "@/components/ui/Button";
+import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 
 import {
   approveWatchSuggestion,
@@ -17,6 +21,11 @@ import {
   type WatchlistSeverity,
   type WatchlistSignalType,
 } from "@/lib/api";
+import { suggestWatchSlug } from "@/lib/watchSlug";
+
+const fieldCls =
+  "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40";
+const labelCls = "block text-sm font-medium text-fg-muted mb-1.5";
 
 // A research suggestion: the Executive wanted to watch this but was not sure
 // enough to add it on its own. Sits in dry_run (polls, never alerts) until
@@ -91,60 +100,18 @@ function formatRelTime(iso: string | null): string {
   }
 }
 
-function ModePill({ mode }: { mode: string }) {
-  const isDry = mode === "dry_run";
-  const cls = isDry
-    ? "bg-zinc-500/20 text-zinc-300 border-zinc-500/30"
-    : "bg-indigo-500/20 text-indigo-300 border-indigo-500/30";
-  return (
-    <span className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium ${cls}`}>
-      {mode}
-    </span>
-  );
-}
-
-function DeclineMenu({
-  slug,
-  busy,
-  onPick,
-  label,
-}: {
-  slug: string;
-  busy: boolean;
-  onPick: (slug: string, reason: WatchDeclineReason) => void;
-  label: string;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => setOpen((o) => !o)}
-        className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
-      >
-        {label}
-      </button>
-      {open && (
-        <div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-line bg-surface-elevated shadow-lg p-1">
-          {DECLINE_REASONS.map((r) => (
-            <button
-              key={r.value}
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                onPick(slug, r.value);
-              }}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-overlay"
-            >
-              <div className="text-xs text-fg">{r.label}</div>
-              <div className="text-[10px] text-fg-subtle">{r.hint}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+/** The decline reasons as ⋯ items, each saying what it does. */
+function declineItems(
+  verb: string,
+  slug: string,
+  busy: boolean,
+  onPick: (slug: string, reason: WatchDeclineReason) => void,
+): OverflowItem[] {
+  return DECLINE_REASONS.map((r) => ({
+    label: `${verb}: ${r.label.toLowerCase()} (${r.hint.charAt(0).toLowerCase()}${r.hint.slice(1)})`,
+    disabled: busy,
+    onSelect: () => onPick(slug, r.value),
+  }));
 }
 
 function SuggestionCard({
@@ -162,22 +129,22 @@ function SuggestionCard({
 }) {
   const stamp = policyStamp(item);
   return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+    <div className="flex min-w-0 flex-col rounded-2xl border border-amber-500/40 bg-surface-elevated p-5 shadow-sm">
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-fg truncate" title={item.slug}>
+          <div className="text-lg font-semibold text-fg truncate" title={item.slug}>
             {humanizeSlug(item.slug)}
           </div>
-          <div className="text-xs text-fg-muted truncate" title={item.target}>
-            {item.signal_type} · {item.target}
+          <div className="text-sm text-fg-muted truncate" title={item.target}>
+            {SIGNAL_TYPE_LABELS[item.signal_type] ?? item.signal_type} · {item.target}
           </div>
         </div>
-        <span className="flex-shrink-0 inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-amber-500/20 text-amber-200 border-amber-500/30">
-          suggested
+        <span className="flex-shrink-0 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-300">
+          Suggested
         </span>
       </div>
-      {item.notes && <p className="text-xs text-fg mt-2">{item.notes}</p>}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-muted mt-2">
+      {item.notes && <p className="text-[15px] text-fg mt-2">{item.notes}</p>}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-fg-muted mt-2">
         {stamp.entity && <span>about: {stamp.entity}</span>}
         {item.route_to_department && (
           <span title="This department's head was asked to review it">
@@ -187,21 +154,19 @@ function SuggestionCard({
         <span>suggested {formatRelTime(item.created_at)} ago</span>
         <span>seen in shadow: {item.fired_count} signal{item.fired_count === 1 ? "" : "s"}</span>
         {stamp.source_url && (
-          <a href={stamp.source_url} target="_blank" rel="noreferrer" className="text-indigo-300 hover:text-indigo-200">
+          <a href={stamp.source_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
             source ↗
           </a>
         )}
       </div>
-      <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-line">
-        <DeclineMenu slug={item.slug} busy={busy} onPick={onDecline} label="Decline…" />
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onApprove(item.slug)}
-          className="px-3 py-1.5 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium disabled:opacity-50"
-        >
+      <div className="mt-auto flex items-center gap-2 pt-4">
+        <Button variant="primary" disabled={busy} onClick={() => onApprove(item.slug)}>
           {busy ? "…" : "Approve"}
-        </button>
+        </Button>
+        <OverflowMenu
+          label={`Decline ${humanizeSlug(item.slug)}`}
+          items={declineItems("Decline", item.slug, busy, onDecline)}
+        />
       </div>
     </div>
   );
@@ -212,71 +177,56 @@ function WatchCard({
   onToggle,
   toggleBusy,
   onStopWatching,
-  departmentTitle,
 }: {
   item: WatchlistItem;
   onToggle: (slug: string, enabled: boolean) => void;
   toggleBusy: boolean;
   onStopWatching?: (slug: string, reason: WatchDeclineReason) => void;
-  departmentTitle?: string;
 }) {
+  // Mode, severity, cadence and counts live on the monitor's own page.
   const isResearch = item.origin === "research";
-  const stamp = policyStamp(item);
+  const labelId = useId();
+  const href = `/watchlist/${encodeURIComponent(item.slug)}`;
   return (
-    <div className="rounded-xl border border-line bg-surface-elevated hover:bg-surface-overlay transition-colors p-4 group">
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <Link href={`/watchlist/${encodeURIComponent(item.slug)}`} className="flex-1 min-w-0">
-          <div
-            className="text-sm font-semibold text-fg group-hover:text-indigo-300 transition-colors truncate"
-            title={item.slug}
-          >
-            {humanizeSlug(item.slug)}
-          </div>
-          <div className="text-xs text-fg-muted mt-0.5 truncate" title={item.target}>
-            {item.target}
-          </div>
-        </Link>
-        <div className="flex-shrink-0 flex items-center gap-2">
-          <ModePill mode={item.mode} />
+    <div className="flex min-w-0 items-start gap-3 rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm">
+      <Link href={href} className="min-w-0 flex-1 group">
+        <div
+          id={labelId}
+          className="text-lg font-semibold text-fg group-hover:text-accent transition-colors truncate"
+          title={item.slug}
+        >
+          {humanizeSlug(item.slug)}
         </div>
-      </div>
-      {isResearch && (
-        <p className="text-[11px] text-fg-muted mb-2">
-          <span className="text-indigo-300">Added by the Executive</span>
-          {stamp.entity ? ` · about ${stamp.entity}` : ""}
-          {item.route_to_department ? ` · for ${departmentTitle ?? item.route_to_department}` : ""}
-          {item.notes ? ` · ${item.notes}` : ""}
-        </p>
-      )}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-muted mb-2">
-        <span>cadence: {item.cadence}</span>
-        <span>severity: {item.severity_floor}→{item.severity_ceiling}</span>
-        <span>fired: {item.fired_count}</span>
-        {item.dismiss_count > 0 && <span>dismissed: {item.dismiss_count}</span>}
-        <span>last: {formatRelTime(item.last_fired_at)}</span>
-      </div>
-      <div className="flex items-center justify-between gap-2 pt-2 border-t border-line">
-        <label className="flex items-center gap-1.5 text-xs text-fg-muted cursor-pointer">
-          <input
-            type="checkbox"
+        <div className="text-sm text-fg-muted mt-0.5 truncate" title={item.target}>
+          {item.target}
+        </div>
+        <div className="text-sm text-fg-subtle mt-1.5">
+          {item.last_fired_at
+            ? `Last fired ${formatRelTime(item.last_fired_at)} ago`
+            : "Hasn't fired yet"}
+          {isResearch && " · added by the Executive"}
+        </div>
+      </Link>
+      <div className="flex flex-shrink-0 items-center gap-1 pt-1">
+        <span className="sr-only">{item.enabled ? "On" : "Off"}</span>
+        {/* The label pads the small switch out to a 40px tap target. */}
+        <label className="inline-flex h-10 w-12 cursor-pointer items-center justify-center">
+          <Switch
             checked={item.enabled}
             disabled={toggleBusy}
-            onChange={(e) => onToggle(item.slug, e.target.checked)}
-            className="accent-indigo-500 disabled:opacity-50"
+            labelledBy={labelId}
+            onChange={(on) => onToggle(item.slug, on)}
           />
-          enabled
         </label>
-        <div className="flex items-center gap-2">
-          {isResearch && onStopWatching && (
-            <DeclineMenu slug={item.slug} busy={toggleBusy} onPick={onStopWatching} label="Stop watching…" />
-          )}
-          <Link
-            href={`/watchlist/${encodeURIComponent(item.slug)}`}
-            className="text-xs text-indigo-300 hover:text-indigo-200"
-          >
-            inspect →
-          </Link>
-        </div>
+        <OverflowMenu
+          label={`More for ${humanizeSlug(item.slug)}`}
+          items={[
+            { label: "Open details", href },
+            ...(isResearch && onStopWatching
+              ? declineItems("Stop watching", item.slug, toggleBusy, onStopWatching)
+              : []),
+          ]}
+        />
       </div>
     </div>
   );
@@ -299,13 +249,26 @@ function AddWatchModal({ onCreated, onClose }: AddModalProps) {
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const slugRef = useRef<HTMLInputElement>(null);
+  // Slug, trigger, cadence, mode and severity sit under "More options" with
+  // their defaults; it opens by itself when an error points into it.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const typeRef = useRef<HTMLSelectElement>(null);
 
   useEffect(() => {
-    slugRef.current?.focus();
+    typeRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    if (saving) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [saving, onClose]);
+
   const targetHint = SIGNAL_TYPES.find((s) => s.value === signalType)?.hint ?? "";
+  const slugSuggestion = suggestWatchSlug(signalType, target);
 
   async function submit() {
     setSaving(true);
@@ -316,13 +279,14 @@ function AddWatchModal({ onCreated, onClose }: AddModalProps) {
         parsedTrigger = JSON.parse(trigger);
       } catch {
         setErr("Trigger must be valid JSON, e.g. {\"abs_change_pct_gte\": 5}");
+        setMoreOpen(true);
         setSaving(false);
         return;
       }
     }
     try {
       const created = await createWatchlistItem({
-        slug: slug.trim(),
+        slug: slug.trim() || slugSuggestion,
         signal_type: signalType,
         target: target.trim(),
         trigger: parsedTrigger,
@@ -334,7 +298,9 @@ function AddWatchModal({ onCreated, onClose }: AddModalProps) {
       });
       onCreated(created);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Create failed");
+      const message = e instanceof Error ? e.message : "Create failed";
+      setErr(message);
+      if (/slug|trigger|cadence|severity|mode/i.test(message)) setMoreOpen(true);
     } finally {
       setSaving(false);
     }
@@ -342,31 +308,26 @@ function AddWatchModal({ onCreated, onClose }: AddModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60"
       onClick={saving ? undefined : onClose}
     >
       <div
-        className="bg-surface-elevated border border-line rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add monitor"
+        className="bg-surface-elevated border border-line rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[92vh] overflow-y-auto p-5 sm:p-7 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold text-fg mb-4">Add monitor</h2>
-        <div className="space-y-3">
+        <h2 className="text-xl font-bold tracking-tight text-fg mb-5">Add monitor</h2>
+        <div className="space-y-4">
           <div>
-            <label className="block text-xs text-fg-muted mb-1">Slug (kebab-case)</label>
-            <input
-              ref={slugRef}
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              placeholder="stock-aapl"
-              className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-fg-muted mb-1">Signal type</label>
+            <label htmlFor="watch-signal-type" className={labelCls}>Signal type</label>
             <select
+              id="watch-signal-type"
+              ref={typeRef}
               value={signalType}
               onChange={(e) => setSignalType(e.target.value as WatchlistSignalType)}
-              className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
+              className={fieldCls}
             >
               {SIGNAL_TYPES.map((s) => (
                 <option key={s.value} value={s.value}>
@@ -376,130 +337,160 @@ function AddWatchModal({ onCreated, onClose }: AddModalProps) {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-fg-muted mb-1">Target</label>
+            <label htmlFor="watch-target" className={labelCls}>Target</label>
             <input
+              id="watch-target"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
               placeholder={targetHint}
-              className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
+              className={fieldCls}
             />
-            <p className="text-[10px] text-fg-subtle mt-1">{targetHint}</p>
+            <p className="text-sm text-fg-subtle mt-1.5">{targetHint}</p>
             {BILLED_SIGNAL_TYPES.has(signalType) && (
-              <p className="text-[10px] text-amber-300/90 mt-1">
+              <p className="text-sm text-amber-600 dark:text-amber-300 mt-1.5">
                 ⚠ Billed: runs an LLM web search on every poll. Prefer a slower
                 cadence (daily / weekly) and a tight query.
               </p>
             )}
           </div>
           <div>
-            <label className="block text-xs text-fg-muted mb-1">Trigger (JSON, optional)</label>
-            <textarea
-              value={trigger}
-              onChange={(e) => setTrigger(e.target.value)}
-              placeholder={
-                signalType === "stock"
-                  ? '{"abs_change_pct_gte": 5}'
-                  : signalType === "edgar"
-                    ? '{"forms": ["8-K", "10-K"]}'
-                    : signalType === "rss" ||
-                        signalType === "query" ||
-                        signalType === "page_watch"
-                      ? '{"keywords": ["layoffs", "downtime"]}'
-                      : "{}"
-              }
-              rows={3}
-              className="w-full px-3 py-2 text-sm font-mono rounded-lg bg-surface-input border border-line"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-fg-muted mb-1">Cadence</label>
-              <select
-                value={cadence}
-                onChange={(e) => setCadence(e.target.value as WatchlistCadence)}
-                className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
-              >
-                {CADENCES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-fg-muted mb-1">Mode</label>
-              <select
-                value={mode}
-                onChange={(e) => setMode(e.target.value as "active" | "dry_run")}
-                className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
-              >
-                <option value="active">active</option>
-                <option value="dry_run">dry_run</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-fg-muted mb-1">Severity floor</label>
-              <select
-                value={severityFloor}
-                onChange={(e) => setSeverityFloor(e.target.value as WatchlistSeverity)}
-                className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
-              >
-                {SEVERITIES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-fg-muted mb-1">Severity ceiling</label>
-              <select
-                value={severityCeiling}
-                onChange={(e) => setSeverityCeiling(e.target.value as WatchlistSeverity)}
-                className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
-              >
-                {SEVERITIES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs text-fg-muted mb-1">Notes</label>
+            <label htmlFor="watch-notes" className={labelCls}>Notes</label>
             <input
+              id="watch-notes"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               maxLength={500}
-              className="w-full px-3 py-2 text-sm rounded-lg bg-surface-input border border-line"
+              placeholder="Why watch this?"
+              className={fieldCls}
             />
           </div>
+
+          <details
+            className="rounded-xl border border-line px-4 py-2"
+            open={moreOpen}
+            onToggle={(e) => setMoreOpen((e.target as HTMLDetailsElement).open)}
+          >
+            <summary className="flex min-h-10 cursor-pointer items-center text-[15px] font-medium text-fg">
+              More options
+              <span className="ml-2 text-sm font-normal text-fg-subtle">
+                {slug.trim() || slugSuggestion || "name"} · {cadence} · {mode} · {severityFloor}→{severityCeiling}
+              </span>
+            </summary>
+            <div className="space-y-4 py-3">
+              <div>
+                <label htmlFor="watch-slug" className={labelCls}>Slug (kebab-case)</label>
+                <input
+                  id="watch-slug"
+                  value={slug}
+                  onChange={(e) => setSlug(e.target.value)}
+                  placeholder={slugSuggestion || "stock-aapl"}
+                  className={fieldCls}
+                />
+                <p className="text-sm text-fg-subtle mt-1.5">
+                  Left empty, it is named {slugSuggestion ? <code>{slugSuggestion}</code> : "from the type and target"}.
+                </p>
+              </div>
+              <div>
+                <label htmlFor="watch-trigger" className={labelCls}>Trigger (JSON, optional)</label>
+                <textarea
+                  id="watch-trigger"
+                  value={trigger}
+                  onChange={(e) => setTrigger(e.target.value)}
+                  placeholder={
+                    signalType === "stock"
+                      ? '{"abs_change_pct_gte": 5}'
+                      : signalType === "edgar"
+                        ? '{"forms": ["8-K", "10-K"]}'
+                        : signalType === "rss" ||
+                            signalType === "query" ||
+                            signalType === "page_watch"
+                          ? '{"keywords": ["layoffs", "downtime"]}'
+                          : "{}"
+                  }
+                  rows={3}
+                  className={`${fieldCls} font-mono text-sm`}
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="watch-cadence" className={labelCls}>Cadence</label>
+                  <select
+                    id="watch-cadence"
+                    value={cadence}
+                    onChange={(e) => setCadence(e.target.value as WatchlistCadence)}
+                    className={fieldCls}
+                  >
+                    {CADENCES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="watch-mode" className={labelCls}>Mode</label>
+                  <select
+                    id="watch-mode"
+                    value={mode}
+                    onChange={(e) => setMode(e.target.value as "active" | "dry_run")}
+                    className={fieldCls}
+                  >
+                    <option value="active">active</option>
+                    <option value="dry_run">dry_run</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="watch-floor" className={labelCls}>Severity floor</label>
+                  <select
+                    id="watch-floor"
+                    value={severityFloor}
+                    onChange={(e) => setSeverityFloor(e.target.value as WatchlistSeverity)}
+                    className={fieldCls}
+                  >
+                    {SEVERITIES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="watch-ceiling" className={labelCls}>Severity ceiling</label>
+                  <select
+                    id="watch-ceiling"
+                    value={severityCeiling}
+                    onChange={(e) => setSeverityCeiling(e.target.value as WatchlistSeverity)}
+                    className={fieldCls}
+                  >
+                    {SEVERITIES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
 
         {err && (
-          <div className="mt-3 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
+          <div className="mt-4 px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
             {err}
           </div>
         )}
 
-        <div className="flex justify-end gap-2 mt-4">
-          <button
-            type="button"
-            disabled={saving}
-            onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
-          >
+        <div className="flex justify-end gap-2 mt-5">
+          <Button variant="ghost" disabled={saving} onClick={onClose}>
             Cancel
-          </button>
-          <button
-            type="button"
-            disabled={saving || !slug.trim() || !target.trim()}
+          </Button>
+          <Button
+            variant="primary"
+            disabled={saving || !(slug.trim() || slugSuggestion) || !target.trim()}
             onClick={submit}
-            className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium disabled:opacity-50"
           >
             {saving ? "Adding…" : "Add monitor"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -658,56 +649,52 @@ export default function WatchlistPage() {
         />
       )}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
-          <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-3 mb-6">
-            <div>
-              <h1 className="text-xl font-semibold text-fg">Watch list</h1>
-              <p className="text-sm text-fg-muted mt-0.5">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+            <div className="max-w-2xl">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">
+                What the Executive watches
+              </h1>
+              <p className="text-[15px] text-fg-muted mt-2">
                 External conditions the Executive is monitoring. Signals that survive
                 severity + triage become proposals in your briefing.
               </p>
             </div>
-            <button
-              onClick={() => setShowAdd(true)}
-              className="self-start flex-shrink-0 px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
-            >
+            <Button variant="primary" className="self-start sm:self-auto flex-shrink-0" onClick={() => setShowAdd(true)}>
               + Add monitor
-            </button>
+            </Button>
           </div>
 
-          {loading && <p className="text-fg-muted text-sm">Loading…</p>}
+          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
           {error && (
-            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm mb-4">
+            <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}
             </div>
           )}
           {!loading && !error && items.length === 0 && (
-            <div className="rounded-xl border border-line bg-surface-elevated p-8 text-center">
-              <p className="text-fg-muted text-sm mb-3">Nothing being watched yet.</p>
-              <p className="text-xs text-fg-subtle mb-4">
+            <div className="rounded-2xl border border-dashed border-line p-8 text-center">
+              <p className="text-fg-muted text-[15px] mb-3">Nothing being watched yet.</p>
+              <p className="text-sm text-fg-subtle mb-4">
                 Ask the Executive in chat:{" "}
                 <span className="italic">
                   Watch Apple stock, alert me on 5% moves.
                 </span>
               </p>
-              <button
-                onClick={() => setShowAdd(true)}
-                className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
-              >
+              <Button variant="primary" onClick={() => setShowAdd(true)}>
                 Add a monitor →
-              </button>
+              </Button>
             </div>
           )}
 
           {suggestions.length > 0 && (
-            <div className="mb-8">
-              <div className="flex items-baseline gap-2 mb-1">
-                <span className="text-sm font-semibold text-fg">Suggested by the Executive</span>
-                <span className="text-xs text-fg-muted">
+            <div className="mb-10">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-1">
+                <h2 className="text-xl font-bold tracking-tight text-fg">Suggested by the Executive</h2>
+                <span className="text-[15px] text-fg-muted">
                   {suggestions.length} waiting for you
                 </span>
               </div>
-              <p className="text-xs text-fg-subtle mb-3">
+              <p className="text-sm text-fg-subtle mb-4 max-w-3xl">
                 Sources the research council thought worth monitoring but couldn&apos;t tie
                 firmly enough to your company data to add on its own. They poll in
                 shadow mode and never alert until you approve. Declines are remembered.
@@ -734,20 +721,22 @@ export default function WatchlistPage() {
                 <div key={group.key}>
                   <button
                     type="button"
+                    aria-expanded={!isCollapsed}
                     onClick={() => toggleCollapsed(group.key)}
-                    className="w-full flex items-center gap-2 mb-3 text-left"
+                    className="w-full min-h-10 flex items-center gap-2 mb-3 text-left"
                   >
                     <span
+                      aria-hidden="true"
                       className={`text-fg-muted text-xs transition-transform ${
                         isCollapsed ? "" : "rotate-90"
                       }`}
                     >
                       ▶
                     </span>
-                    <span className="text-sm font-semibold text-fg">
+                    <span className="text-base font-semibold text-fg">
                       {group.label}
                     </span>
-                    <span className="text-xs text-fg-muted">
+                    <span className="text-sm text-fg-muted">
                       {group.items.length}{" "}
                       {group.items.length === 1 ? "monitor" : "monitors"}
                     </span>
@@ -761,7 +750,6 @@ export default function WatchlistPage() {
                           onToggle={toggle}
                           toggleBusy={busySlugs.has(item.slug)}
                           onStopWatching={stopWatching}
-                          departmentTitle={departmentTitles[item.route_to_department]}
                         />
                       ))}
                     </div>

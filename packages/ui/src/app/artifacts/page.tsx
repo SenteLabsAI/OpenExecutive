@@ -13,6 +13,8 @@ import {
   restoreArtifact,
 } from "@/lib/api";
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
 type KindFilter = "all" | "draft" | "workflow";
@@ -35,48 +37,16 @@ function FilterButton({
   return (
     <button
       type="button"
+      aria-pressed={active}
       onClick={onClick}
-      className={`px-3 py-1.5 text-xs rounded-md ring-1 transition cursor-pointer ${
+      className={`min-h-10 flex-shrink-0 rounded-lg px-3.5 text-sm font-medium transition-colors cursor-pointer ${
         active
-          ? "bg-surface-elevated ring-indigo-500/40 text-fg"
-          : "ring-line text-fg-muted hover:text-fg hover:ring-line-strong"
+          ? "bg-accent/10 text-accent"
+          : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
       }`}
     >
       {label}
-      <span className="ml-1.5 text-fg-muted">{count}</span>
-    </button>
-  );
-}
-
-/** A single small icon action on a row. Reveals on hover/focus on desktop,
- *  always visible on touch (no hover) so the controls are never gesture-only. */
-function RowAction({
-  icon,
-  label,
-  onClick,
-  disabled,
-  danger,
-}: {
-  icon: "archive" | "restore" | "trash";
-  label: string;
-  onClick: () => void;
-  disabled: boolean;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
-      className={`min-h-8 min-w-8 flex items-center justify-center rounded-md transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-        danger
-          ? "text-fg-muted hover:text-red-400 hover:bg-red-500/10"
-          : "text-fg-muted hover:text-fg hover:bg-surface-elevated"
-      }`}
-    >
-      <Icon name={icon} size="w-4 h-4" />
+      <span className="ml-1.5 font-normal text-fg-subtle">{count}</span>
     </button>
   );
 }
@@ -97,47 +67,36 @@ function ArtifactRow({
   onDelete: (item: ArtifactSummary) => void;
 }) {
   return (
-    <div className="group flex items-center gap-3 rounded-md px-3 py-2.5 hover:bg-surface-elevated/50 transition">
+    <div className="flex items-center gap-2 py-1.5 pl-4 pr-2 hover:bg-surface-overlay/60 transition-colors">
       <Link
         href={`/artifacts/${encodeURIComponent(item.id)}`}
-        className="flex items-center gap-3 min-w-0 flex-1 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+        className="flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
-        <span className="text-sm font-medium text-fg truncate">{item.title}</span>
+        <span className="min-w-0 truncate text-[15px] font-medium text-fg">{item.title}</span>
         {item.format !== "markdown" && (
-          <span className="flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-line text-fg-muted">
+          <span className="flex-shrink-0 rounded-full border border-line px-2 py-0.5 text-xs text-fg-muted">
             {item.format_label}
           </span>
         )}
+        <span className="ml-auto whitespace-nowrap text-sm text-fg-subtle tabular-nums">
+          {formatRelativeTime(item.created_at)}
+        </span>
       </Link>
 
-      <span className="hidden sm:block text-xs text-fg-muted whitespace-nowrap tabular-nums">
-        {formatRelativeTime(item.created_at)}
-      </span>
-
-      <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
-        {view === "active" ? (
-          <RowAction
-            icon="archive"
-            label="Archive"
-            disabled={pending}
-            onClick={() => onArchive(item)}
-          />
-        ) : (
-          <RowAction
-            icon="restore"
-            label="Restore"
-            disabled={pending}
-            onClick={() => onRestore(item)}
-          />
-        )}
-        <RowAction
-          icon="trash"
-          label="Delete permanently"
-          danger
-          disabled={pending}
-          onClick={() => onDelete(item)}
-        />
-      </div>
+      <OverflowMenu
+        label={`More for ${item.title}`}
+        items={[
+          view === "active"
+            ? { label: "Archive", disabled: pending, onSelect: () => onArchive(item) }
+            : { label: "Restore", disabled: pending, onSelect: () => onRestore(item) },
+          {
+            label: "Delete permanently",
+            danger: true,
+            disabled: pending,
+            onSelect: () => onDelete(item),
+          },
+        ]}
+      />
     </div>
   );
 }
@@ -329,6 +288,14 @@ export default function ArtifactsPage() {
     return Array.from(map.values());
   }, [visible, workflowTitleMap]);
 
+  const switchView = useCallback(
+    (v: View) => {
+      setView(v);
+      dismissUndo();
+    },
+    [dismissUndo]
+  );
+
   const emptyMessage =
     view === "archived"
       ? "Nothing archived. Documents you archive will collect here, ready to restore."
@@ -338,51 +305,25 @@ export default function ArtifactsPage() {
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-5xl mx-auto">
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-fg mb-1">
-              Executive Documents
-            </h1>
-            <p className="text-sm text-fg-muted">
-              Every deliverable the Executive has produced — memos, web
-              pages, Word documents, spreadsheets and links into your connected
-              apps, alongside completed workflow outputs.
-              Archive what you&apos;re done with; delete clears it for good.
-            </p>
-          </div>
-
-          {/* Active / Archived view toggle */}
-          <div className="inline-flex items-center gap-1 mb-4 p-0.5 rounded-lg ring-1 ring-line bg-surface/40">
-            {(["active", "archived"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => {
-                  setView(v);
-                  dismissUndo();
-                }}
-                className={`px-3 py-1.5 text-xs rounded-md transition cursor-pointer capitalize ${
-                  view === v
-                    ? "bg-surface-elevated text-fg"
-                    : "text-fg-muted hover:text-fg"
-                }`}
+          <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0 max-w-2xl">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mb-2">
+                {view === "archived" ? "Archived documents" : "Your documents"}
+              </h1>
+              <p className="text-[15px] text-fg-muted">
+                Every deliverable the Executive has produced — memos, web
+                pages, Word documents, spreadsheets and links into your connected
+                apps, alongside completed workflow outputs.
+                Archive what you&apos;re done with; delete clears it for good.
+              </p>
+            </div>
+            {/* One filter control: the kind, with Active / Archived in its ⋯. */}
+            <div className="flex items-center gap-1.5">
+              <div
+                role="group"
+                aria-label="Show"
+                className="inline-flex max-w-full overflow-x-auto rounded-xl border border-line bg-surface-elevated p-1"
               >
-                {v}
-              </button>
-            ))}
-          </div>
-
-          {loading && (
-            <div className="text-sm text-fg-muted">Loading artifacts…</div>
-          )}
-          {error && <div className="text-sm text-red-400 mb-4">Error: {error}</div>}
-
-          {!loading && !error && artifacts.length === 0 && (
-            <div className="text-sm text-fg-muted">{emptyMessage}</div>
-          )}
-
-          {!loading && !error && artifacts.length > 0 && (
-            <>
-              <div className="flex items-center gap-1 mb-5">
                 <FilterButton
                   active={filter === "all"}
                   onClick={() => setFilter("all")}
@@ -402,34 +343,68 @@ export default function ArtifactsPage() {
                   count={counts.workflow}
                 />
               </div>
+              <OverflowMenu
+                label="More filters"
+                items={[
+                  view === "active"
+                    ? { label: "Show archived", onSelect: () => switchView("archived") }
+                    : { label: "Show active documents", onSelect: () => switchView("active") },
+                ]}
+              />
+            </div>
+          </div>
 
-              <div className="space-y-5">
+          {view === "archived" && (
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface-elevated px-4 py-2.5 text-[15px] text-fg-muted">
+              <span>Showing archived documents. Restore one from its ⋯.</span>
+              <Button onClick={() => switchView("active")}>
+                Back to active
+              </Button>
+            </div>
+          )}
+
+          {loading && (
+            <div className="text-[15px] text-fg-muted">Loading documents…</div>
+          )}
+          {error && <div className="text-[15px] text-red-400 mb-4">Error: {error}</div>}
+
+          {!loading && !error && artifacts.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-line px-5 py-8 text-center text-[15px] text-fg-muted">
+              {emptyMessage}
+            </div>
+          )}
+
+          {!loading && !error && artifacts.length > 0 && (
+            <>
+              <div className="space-y-6">
                 {groups.map((group) => {
                   const isCollapsed = !!collapsed[group.key];
                   return (
                     <div key={group.key}>
                       <button
                         type="button"
+                        aria-expanded={!isCollapsed}
                         onClick={() => toggleCollapsed(group.key)}
-                        className="w-full flex items-center gap-2 mb-2 text-left"
+                        className="w-full min-h-10 flex items-center gap-2 mb-2 text-left"
                       >
                         <span
+                          aria-hidden="true"
                           className={`text-fg-muted text-xs transition-transform ${
                             isCollapsed ? "" : "rotate-90"
                           }`}
                         >
                           ▶
                         </span>
-                        <span className="text-sm font-semibold text-fg">
+                        <span className="text-base font-semibold text-fg">
                           {group.label}
                         </span>
-                        <span className="text-xs text-fg-muted">
+                        <span className="text-sm text-fg-muted">
                           {group.items.length}{" "}
-                          {group.items.length === 1 ? "artifact" : "artifacts"}
+                          {group.items.length === 1 ? "document" : "documents"}
                         </span>
                       </button>
                       {!isCollapsed && (
-                        <div className="rounded-lg border border-line bg-surface/40 divide-y divide-line/60">
+                        <div className="overflow-hidden rounded-2xl border border-line bg-surface-elevated divide-y divide-line">
                           {group.items.map((a) => (
                             <ArtifactRow
                               key={a.id}
@@ -454,23 +429,19 @@ export default function ArtifactsPage() {
 
       {/* Undo toast after archive */}
       {undo && (
-        <div className="fixed bottom-4 right-4 z-50 motion-safe:animate-in motion-safe:slide-in-from-right">
+        <div className="fixed bottom-4 left-4 right-4 sm:left-auto z-50 flex justify-end motion-safe:animate-in motion-safe:slide-in-from-right">
           <div className="flex items-center gap-3 rounded-xl border border-line-strong bg-surface-overlay backdrop-blur shadow-xl shadow-black/40 px-4 py-3">
-            <span className="text-sm text-fg">
+            <span className="min-w-0 truncate text-[15px] text-fg">
               Archived <span className="font-medium">{undo.item.title}</span>
             </span>
-            <button
-              type="button"
-              onClick={handleUndo}
-              className="text-sm font-medium text-indigo-400 hover:text-indigo-300 cursor-pointer"
-            >
+            <Button variant="primary" onClick={handleUndo}>
               Undo
-            </button>
+            </Button>
             <button
               type="button"
               onClick={dismissUndo}
               aria-label="Dismiss"
-              className="min-h-8 min-w-8 -mr-1 flex items-center justify-center rounded text-fg-muted hover:text-fg cursor-pointer"
+              className="h-9 w-9 -mr-1 flex flex-shrink-0 items-center justify-center rounded-lg text-fg-muted hover:text-fg hover:bg-surface-hover cursor-pointer"
             >
               <Icon name="close" size="w-3.5 h-3.5" />
             </button>

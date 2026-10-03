@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 
+import { buttonClass } from "@/components/ui/Button";
 import { nextMenuIndex } from "@/lib/menuNav";
 
 // The ⋯ menu: where a card's rarer actions live (edit, dismiss, delete...)
 // so the card shows one primary button. Items are buttons or links.
 // Keyboard: Enter/Space or ArrowDown opens it, arrows move, Escape closes
 // and returns focus to the ⋯ button. A click outside closes it.
+// With `trigger`, the button shows that text instead of ⋯ (e.g. a
+// "Download" menu of formats).
 
 export interface OverflowItem {
   label: string;
@@ -27,6 +30,7 @@ export default function OverflowMenu({
   align = "right",
   placement = "down",
   icon,
+  trigger,
 }: {
   items: OverflowItem[];
   /** Accessible name of the ⋯ button. */
@@ -37,6 +41,8 @@ export default function OverflowMenu({
   placement?: "down" | "up";
   /** Replaces the ⋯ glyph, e.g. a + for a composer's attach menu. */
   icon?: React.ReactNode;
+  /** Text for the button in place of ⋯, styled as a secondary button. */
+  trigger?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState(-1);
@@ -102,15 +108,28 @@ export default function OverflowMenu({
       <button
         ref={buttonRef}
         type="button"
-        aria-label={label}
-        title={label}
+        aria-label={trigger ? undefined : label}
+        title={trigger ? undefined : label}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         onClick={() => (open ? close(false) : setOpen(true))}
-        className={`${dim} inline-flex items-center justify-center rounded-xl text-fg-muted hover:text-fg hover:bg-surface-overlay border border-transparent hover:border-line transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60`}
+        className={
+          trigger
+            ? buttonClass("secondary", size)
+            : `${dim} inline-flex items-center justify-center rounded-xl text-fg-muted hover:text-fg hover:bg-surface-overlay border border-transparent hover:border-line transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60`
+        }
       >
-        {icon ?? (
+        {trigger ? (
+          <>
+            {trigger}
+            <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="currentColor">
+              <path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4z" />
+            </svg>
+          </>
+        ) : icon ? (
+          icon
+        ) : (
           <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
             <circle cx="5" cy="12" r="1.8" />
             <circle cx="12" cy="12" r="1.8" />

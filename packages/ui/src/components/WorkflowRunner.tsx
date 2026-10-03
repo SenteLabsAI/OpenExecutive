@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Button from "@/components/ui/Button";
 import {
   WorkflowEvent,
   WorkflowMeta,
@@ -119,31 +120,23 @@ export default function WorkflowRunner({
   return (
     <div className="space-y-6">
       {!started && (
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleStart}
-            className="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition"
-          >
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm">
+          <Button variant="primary" onClick={handleStart} className="px-7">
             Run workflow
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-4 py-2 rounded-md border border-line-strong text-fg hover:text-fg hover:border-line-strong text-sm transition"
-          >
-            Cancel
-          </button>
-          <span className="text-xs text-fg-muted ml-auto">
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            Back to the details
+          </Button>
+          <span className="text-sm text-fg-muted sm:ml-auto">
             ~{workflow.estimated_minutes} min · {workflow.steps.length} steps
           </span>
         </div>
       )}
 
       {started && (
-        <div className="rounded-lg border border-line bg-surface/40 p-5">
+        <div className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-fg">Progress</h3>
+            <h3 className="text-lg font-semibold text-fg">Progress</h3>
             {streaming && (
               <span className="text-xs text-amber-400 flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
@@ -164,14 +157,14 @@ export default function WorkflowRunner({
                 <StepIndicator state={s.state} index={i + 1} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline justify-between gap-3">
-                    <div className="text-sm text-fg font-medium">
+                    <div className="text-[15px] text-fg font-medium">
                       {s.def.title}
                     </div>
                     <div className="text-[10px] text-fg-muted uppercase tracking-wide">
                       {s.state}
                     </div>
                   </div>
-                  <div className="text-xs text-fg-muted mt-0.5">
+                  <div className="text-sm text-fg-muted mt-0.5">
                     {s.def.description}
                   </div>
                   {s.summary && (
@@ -234,7 +227,7 @@ function PausedNotice({
       {runId && (
         <Link
           href={`/jobs/runs/${encodeURIComponent(runId)}`}
-          className="inline-block text-xs text-indigo-400 hover:underline"
+          className="inline-block text-sm font-medium text-accent hover:underline"
         >
           Follow this run →
         </Link>

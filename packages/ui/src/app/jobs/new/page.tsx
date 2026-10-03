@@ -4,6 +4,8 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
+import Button, { buttonClass } from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import ToolPicker from "@/components/jobs/ToolPicker";
 import WorkflowWizard from "@/components/jobs/WorkflowWizard";
 import {
@@ -55,8 +57,13 @@ function newStep(kind: StepKind, idx: number): DynamicStep {
 }
 
 const inputCls =
-  "w-full px-3 py-1.5 text-sm rounded-md bg-surface/60 border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-indigo-500/40";
-const labelCls = "block text-xs font-medium text-fg-muted mb-1";
+  "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-60";
+const labelCls = "block text-sm font-medium text-fg-muted mb-1.5";
+
+// The editor's sections, shown one at a time. A new workflow walks them in
+// order with Next/Back; an existing one (or a wizard draft) can jump between
+// them and save from any of them.
+const STAGES = ["Details", "Inputs", "Steps", "Schedule"] as const;
 
 // ---- Ask OE form descriptor helpers ---------------------------------------
 
@@ -163,6 +170,7 @@ function BuilderInner() {
   const [cadence, setCadence] = useState("weekly@mon@09:00");
   const [cadencePersonId, setCadencePersonId] = useState<number>(0);
 
+  const [stage, setStage] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!editName || !!designerId);
@@ -418,14 +426,52 @@ function BuilderInner() {
   }
 
   if (loading) {
-    return <div className="text-sm text-fg-muted">Loading…</div>;
+    return <div className="text-[15px] text-fg-muted">Loading…</div>;
   }
 
+  // Editing or refining a draft: every section is already filled in.
+  const prefilled = !!editName || !!designerId;
+  const last = STAGES.length - 1;
+  const saveLabel = saving ? "Saving…" : editName ? "Save changes" : "Create workflow";
+  const cancelHref = designerId
+    ? `/jobs/new?session=${encodeURIComponent(designerId)}`
+    : "/jobs";
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <nav aria-label="Sections" className="flex gap-1 overflow-x-auto">
+        {STAGES.map((label, i) => (
+          <button
+            key={label}
+            type="button"
+            aria-current={stage === i ? "step" : undefined}
+            onClick={() => setStage(i)}
+            className={`flex min-h-10 flex-shrink-0 items-center gap-2 rounded-xl px-3 sm:px-3.5 text-[15px] font-medium transition-colors ${
+              stage === i
+                ? "bg-accent/10 text-accent"
+                : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
+            }`}
+          >
+            {!prefilled && (
+              <span
+                aria-hidden="true"
+                className={`hidden h-6 w-6 items-center justify-center rounded-full text-xs font-semibold sm:inline-flex ${
+                  stage === i ? "bg-accent-strong text-white" : "bg-surface-overlay text-fg-muted"
+                }`}
+              >
+                {i + 1}
+              </span>
+            )}
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <div className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-7">
       {/* Metadata */}
+      {stage === 0 && (
       <section className="space-y-4">
-        <h2 className="text-base font-semibold text-fg">Details</h2>
+        <h2 className="text-lg font-semibold text-fg">Details</h2>
         <div className="grid sm:grid-cols-2 gap-4">
           <div>
             <label className={labelCls}>Name (snake_case, unique)</label>
@@ -484,17 +530,17 @@ function BuilderInner() {
           </div>
         </div>
       </section>
+      )}
 
       {/* Input fields */}
+      {stage === 1 && (
       <section
         className={`space-y-3 rounded-md ${suggestedCls("input_fields")}`}
         onInput={() => clearSuggested("input_fields")}
       >
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-fg">Input fields</h2>
-          <button
-            type="button"
-            className="text-xs text-indigo-400 hover:text-indigo-300"
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-fg">Input fields</h2>
+          <Button
             onClick={() =>
               setFields((fs) => [
                 ...fs,
@@ -503,19 +549,19 @@ function BuilderInner() {
             }
           >
             + Add field
-          </button>
+          </Button>
         </div>
-        <p className="text-xs text-fg-muted">
+        <p className="text-sm text-fg-muted">
           Free-text fields the user fills when running. Reference them in step
           goals with <code>{"{field_name}"}</code>.
         </p>
         {fields.length === 0 && (
-          <p className="text-xs text-fg-subtle">No input fields.</p>
+          <p className="text-sm text-fg-subtle">No input fields.</p>
         )}
         {fields.map((f, i) => (
           <div
             key={i}
-            className="rounded-md border border-line bg-surface/30 p-3 grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end"
+            className="rounded-xl border border-line bg-surface p-4 grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end"
           >
             <div>
               <label className={labelCls}>Field name</label>
@@ -535,63 +581,63 @@ function BuilderInner() {
                 placeholder="Topic"
               />
             </div>
-            <div className="flex items-center gap-3 pb-1.5">
-              <label className="flex items-center gap-1 text-xs text-fg-muted">
+            <div className="flex items-center gap-2">
+              <label className="flex min-h-10 items-center gap-2 px-1 text-sm text-fg-muted">
                 <input
                   type="checkbox"
+                  className="h-4 w-4"
                   checked={f.required}
                   onChange={(e) => updateField(i, { required: e.target.checked })}
                 />
                 Required
               </label>
-              <button
-                type="button"
-                className="text-xs text-fg-muted hover:text-red-400"
-                onClick={() => setFields((fs) => fs.filter((_, idx) => idx !== i))}
-              >
-                Remove
-              </button>
+              <OverflowMenu
+                label={`More for field ${f.label || i + 1}`}
+                items={[
+                  {
+                    label: "Remove field",
+                    danger: true,
+                    onSelect: () => setFields((fs) => fs.filter((_, idx) => idx !== i)),
+                  },
+                ]}
+              />
             </div>
           </div>
         ))}
       </section>
+      )}
 
       {/* Steps */}
+      {stage === 2 && (
       <section
         className={`space-y-3 rounded-md ${suggestedCls("steps")}`}
         onInput={() => clearSuggested("steps")}
       >
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-fg">Steps</h2>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="text-xs text-indigo-400 hover:text-indigo-300"
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold text-fg">Steps</h2>
+          <div className="flex flex-wrap gap-2">
+            <Button
               onClick={() =>
                 setSteps((ss) => [...ss, newStep("specialist", ss.length)])
               }
             >
               + Specialist
-            </button>
-            <button
-              type="button"
-              className="text-xs text-indigo-400 hover:text-indigo-300"
+            </Button>
+            <Button
               onClick={() => setSteps((ss) => [...ss, newStep("action", ss.length)])}
             >
               + Action
-            </button>
-            <button
-              type="button"
-              className="text-xs text-indigo-400 hover:text-indigo-300"
+            </Button>
+            <Button
               onClick={() =>
                 setSteps((ss) => [...ss, newStep("approval_gate", ss.length)])
               }
             >
               + Approval gate
-            </button>
+            </Button>
           </div>
         </div>
-        <p className="text-xs text-fg-muted">
+        <p className="text-sm text-fg-muted">
           Steps run in order. <b>Specialist</b> steps analyze and write;{" "}
           <b>action</b> steps get things done with the tools you choose. The last
           step must be a <b>synthesis</b> step that assembles the result. Place any
@@ -611,12 +657,16 @@ function BuilderInner() {
           />
         ))}
       </section>
+      )}
 
       {/* Cadence */}
-      <section className="space-y-3">
-        <label className="flex items-center gap-2 text-base font-semibold text-fg">
+      {stage === 3 && (
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-fg">Schedule</h2>
+        <label className="flex min-h-10 items-center gap-2.5 text-[15px] font-medium text-fg">
           <input
             type="checkbox"
+            className="h-4 w-4"
             checked={cadenceEnabled}
             onChange={(e) => setCadenceEnabled(e.target.checked)}
           />
@@ -650,37 +700,45 @@ function BuilderInner() {
                 ))}
               </select>
             </div>
-            <p className="sm:col-span-2 text-xs text-fg-subtle">
+            <p className="sm:col-span-2 text-sm text-fg-subtle">
               Scheduled runs supply no inputs, so a scheduled workflow must have
               no <b>required</b> input fields.
             </p>
           </div>
         )}
+        {!cadenceEnabled && (
+          <p className="text-sm text-fg-subtle">
+            Off: the workflow runs when someone starts it.
+          </p>
+        )}
       </section>
+      )}
+      </div>
 
       {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-[15px] text-red-500">
           {error}
         </div>
       )}
 
-      <div className="flex items-center gap-3 border-t border-line pt-4">
-        <button
-          type="button"
-          disabled={saving}
-          onClick={handleSave}
-          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition"
-        >
-          {saving ? "Saving…" : editName ? "Save changes" : "Create workflow"}
-        </button>
-        <Link
-          href={
-            designerId
-              ? `/jobs/new?session=${encodeURIComponent(designerId)}`
-              : "/jobs"
-          }
-          className="text-sm text-fg-muted hover:text-fg"
-        >
+      <div className="flex flex-wrap items-center gap-2">
+        {stage > 0 && (
+          <Button onClick={() => setStage((s) => s - 1)}>Back</Button>
+        )}
+        {stage < last && (
+          <Button
+            variant={prefilled ? "secondary" : "primary"}
+            onClick={() => setStage((s) => s + 1)}
+          >
+            Next: {STAGES[stage + 1]}
+          </Button>
+        )}
+        {(stage === last || prefilled) && (
+          <Button variant="primary" disabled={saving} onClick={handleSave}>
+            {saveLabel}
+          </Button>
+        )}
+        <Link href={cancelHref} className={buttonClass("ghost", "md", "ml-auto")}>
           {designerId ? "Back to conversation" : "Cancel"}
         </Link>
       </div>
@@ -708,30 +766,19 @@ function StepEditor({
   onRemove: () => void;
 }) {
   return (
-    <div className="rounded-md border border-line bg-surface/30 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+    <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold uppercase tracking-wide text-fg-muted">
           {index + 1}. {step.kind.replace("_", " ")}
         </span>
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <button type="button" onClick={() => onMove(-1)} disabled={index === 0}>
-            ↑
-          </button>
-          <button
-            type="button"
-            onClick={() => onMove(1)}
-            disabled={index === total - 1}
-          >
-            ↓
-          </button>
-          <button
-            type="button"
-            className="hover:text-red-400"
-            onClick={onRemove}
-          >
-            Remove
-          </button>
-        </div>
+        <OverflowMenu
+          label={`More for step ${index + 1}`}
+          items={[
+            { label: "Move up", disabled: index === 0, onSelect: () => onMove(-1) },
+            { label: "Move down", disabled: index === total - 1, onSelect: () => onMove(1) },
+            { label: "Remove step", danger: true, onSelect: onRemove },
+          ]}
+        />
       </div>
 
       <div className="grid sm:grid-cols-2 gap-3">
@@ -948,19 +995,19 @@ function AdvancedBuilderPage() {
       <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-3xl mx-auto">
           <div className="mb-6">
-            <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
+            <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
               ← Back to workflows
             </Link>
-            <h1 className="text-2xl font-semibold text-fg mt-2 mb-1">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mt-2 mb-2">
               {editing ? "Edit workflow" : "New workflow"}
             </h1>
-            <p className="text-sm text-fg-muted">
+            <p className="text-[15px] text-fg-muted">
               Build a reusable workflow from specialist steps, optional
               approval gates, and a final synthesis step.
               {!editing && (
                 <>
                   {" "}
-                  <Link href="/jobs/new" className="text-indigo-400 hover:text-indigo-300">
+                  <Link href="/jobs/new" className="text-accent hover:underline">
                     Describe it instead
                   </Link>{" "}
                   and let the assistant draft it.
@@ -978,12 +1025,12 @@ function AdvancedBuilderPage() {
 function WizardPage() {
   return (
     <div className="flex flex-col h-full min-h-0 bg-surface text-fg">
-      <div className="border-b border-line px-6 py-4">
+      <div className="border-b border-line px-4 sm:px-6 py-4">
         <div className="max-w-3xl mx-auto">
-          <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
+          <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
             ← Back to workflows
           </Link>
-          <h1 className="text-xl font-semibold text-fg mt-1">New workflow</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mt-1">New workflow</h1>
         </div>
       </div>
       <div className="flex-1 min-h-0">

@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { ArtifactFormat } from "@/lib/api";
+import { buttonClass } from "@/components/ui/Button";
 import { hostOf } from "@/lib/url";
 
 // Blocks every network fetch and all script from inside an HTML artifact.
@@ -20,17 +21,17 @@ function withCsp(html: string): string {
 export function MarkdownArticle({ markdown }: { markdown: string }) {
   return (
     <article
-      className="prose prose-invert prose-sm max-w-none rounded-lg border border-line bg-surface/40 p-6
+      className="prose prose-invert max-w-none rounded-2xl border border-line bg-surface-elevated p-5 sm:p-8
         prose-headings:text-fg prose-headings:font-semibold
         prose-p:text-fg prose-p:leading-relaxed
         prose-strong:text-fg
-        prose-code:text-indigo-300 prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
+        prose-code:text-accent prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
         prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong
         prose-blockquote:border-line-strong prose-blockquote:text-fg-muted
         prose-ul:text-fg prose-ol:text-fg
         prose-li:marker:text-fg-muted
         prose-hr:border-line-strong
-        prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
+        prose-a:text-accent prose-a:no-underline hover:prose-a:underline
         prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong"
     >
       <ReactMarkdown
@@ -69,7 +70,7 @@ export default function ArtifactViewer({ format, body, title, externalUrl, linkL
         sandbox="allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         srcDoc={withCsp(body)}
-        className="w-full h-[75vh] rounded-lg border border-line bg-white"
+        className="w-full h-[75vh] rounded-2xl border border-line bg-white"
       />
     );
   }
@@ -82,10 +83,10 @@ export default function ArtifactViewer({ format, body, title, externalUrl, linkL
             href={externalUrl}
             target="_blank"
             rel="noopener noreferrer nofollow"
-            className="inline-flex items-center gap-2 rounded-md border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-300 hover:bg-indigo-500/20"
+            className={buttonClass("primary", "md")}
           >
             Open {linkLabel || "link"} ↗
-            <span className="text-xs text-fg-muted">({hostOf(externalUrl)})</span>
+            <span className="text-sm font-normal opacity-80">({hostOf(externalUrl)})</span>
           </a>
         )}
         {body && <MarkdownArticle markdown={body} />}
@@ -96,12 +97,12 @@ export default function ArtifactViewer({ format, body, title, externalUrl, linkL
   return (
     <div className="space-y-2">
       {format === "xlsx" && (
-        <div className="text-xs text-fg-muted">
+        <div className="text-sm text-fg-muted">
           Preview of the workbook. Download it for every row and native Excel formatting.
         </div>
       )}
       {format === "docx" && (
-        <div className="text-xs text-fg-muted">
+        <div className="text-sm text-fg-muted">
           Preview of the Word document. Download it for the .docx file.
         </div>
       )}
