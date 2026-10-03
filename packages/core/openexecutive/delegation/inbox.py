@@ -42,9 +42,11 @@ couldn't authenticate is handled as a stranger (``handling_relation``). The ghos
 writes the reply in the person's voice, from a fixed intent this module
 builds: acknowledge, restate only what the person themselves already said in
 the thread, promise nothing new, and put every unanswered ask in
-``open_questions``. A stranger always gets a short holding reply. The reply
-goes to the sender only; others on the thread are named on the card
-(``others_on_thread``).
+``open_questions``. A stranger always gets a short holding reply. An email that
+also went to others is drafted for only when the person is in To and it asks
+them themselves, not someone else by name or the group at large
+(``inbox_classifier.wants_draft``). The reply goes to the sender only; others
+on the thread are named on the card (``others_on_thread``).
 
 **Limits.** Per scan 5 drafts; per day ``DELEGATION_INBOX_MAX_DRAFTS_PER_DAY``
 within the shared daily limit (``delegation.caps``), 200 classifications, 2
@@ -747,11 +749,12 @@ async def reply_for(
     reply is wanted). The evals run this; a scan runs the same two steps with
     its limits in between."""
     from openexecutive.delegation.ghostwriter import ComposeError
-    from openexecutive.delegation.inbox_classifier import classify, wants_draft
+    from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
 
     relation = handling_relation(relation, message)
-    verdict = await classify(message, relation=relation)
-    if verdict is None or not wants_draft(verdict, relation):
+    addressed = addressing(message, name=person.full_name or "", own=own)
+    verdict = await classify(message, relation=relation, addressed=addressed)
+    if verdict is None or not wants_draft(verdict, relation, addressed):
         return verdict, None
     try:
         return verdict, await compose_reply(person, message, thread, relation=relation, own=own)
@@ -1010,7 +1013,7 @@ async def _consider(
     from openexecutive.delegation import caps, drafts
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
-    from openexecutive.delegation.inbox_classifier import classify, wants_draft
+    from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
 
     email = (person.email or "").strip().lower()
     thread = await client.get_thread(thread_id)
@@ -1036,14 +1039,16 @@ async def _consider(
         return False
     if not _claim(person.id, message, relation=relation, outcome=PROCESSING, now=now):
         return False
-    verdict = await classify(message, relation=relation)
+    asked = addressing(message, name=person.full_name or "", own=own, exec_address=exec_address)
+    verdict = await classify(message, relation=relation, addressed=asked)
     _set_outcome(person.id, message.id, PROCESSING, classified=1)
     if verdict is None:
         # The call failed or answered nonsense: that may pass.
         _count_retry(result, _retry_later(person.id, message.id, "classify_failed"))
         return False
-    if not wants_draft(verdict, relation):
-        _set_outcome(person.id, message.id, NOT_NEEDED, reason=verdict.kind)
+    if not wants_draft(verdict, relation, asked):
+        reason = verdict.kind if not wants_draft(verdict, relation) else "asks_someone_else"
+        _set_outcome(person.id, message.id, NOT_NEEDED, reason=reason)
         result.not_needed += 1
         return False
     settings = get_settings()

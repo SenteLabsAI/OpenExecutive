@@ -1,0 +1,21 @@
+id: delegation_inbox_009
+domain: delegation
+type: inbox
+description: "Inbox watcher: a colleague writes to three people and asks the person by name for something they own. It asks them, so a reply is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: team
+  expect: draft
+  thread:
+    id: t-waterfall
+    subject: Waterfall for Pine View
+    messages:
+      - from: "Annette Bray <annette@fernway.example>"
+        to: ["olivia@fernway.example", "brennan@fernway.example", "russell@fernway.example"]
+        text: |
+          Olivia, could you send round the waterfall analysis for Pine View before Thursday?
+quality_criteria:
+  draft_is_olivias_first_person_reply_to_annette: true
+  promises_nothing_new: true

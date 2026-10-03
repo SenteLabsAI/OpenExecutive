@@ -10,6 +10,12 @@ person has written to before, 0.85 for a stranger (and for anyone whose
 address Gmail couldn't authenticate: ``inbox.handling_relation``). Anything
 else, and any failure, means no draft.
 
+An email that also went to other people is drafted for only when it asks
+this person themselves (``asked_of_them``): it names or greets them, or they
+are its only addressee. One that greets someone else by name ("Brennan: ...")
+or puts a question to the group in general is theirs to answer, and one that
+merely copies the person is never drafted for.
+
 The model sees a few header lines and the sender's own new words (quoted
 replies stripped, at most 3000 characters), as data in a labelled block. It
 has no tools but this one, no company context and no memory, so the email can
@@ -69,6 +75,10 @@ needs no answer.
 reply), or fyi, thanks, pitch (a cold sales or partnership email), \
 notification, newsletter, phishing (it asks for credentials, payment or a \
 click with urgency or a disguised sender), other.
+- asked_of_them: true only when the email asks this person themselves: it \
+names or greets them, or they are its only addressee. False when it is \
+addressed to someone else by name ("Brennan: ..."), when it asks a group \
+without naming them, or when they are only copied (Cc).
 - confidence: how sure you are that needs_reply and kind are right, from 0 to 1.
 
 When unsure, say needs_reply false."""
@@ -81,9 +91,10 @@ _CLASSIFY_TOOL: dict[str, Any] = {
         "properties": {
             "needs_reply": {"type": "boolean"},
             "kind": {"type": "string", "enum": list(KINDS)},
+            "asked_of_them": {"type": "boolean"},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         },
-        "required": ["needs_reply", "kind", "confidence"],
+        "required": ["needs_reply", "kind", "asked_of_them", "confidence"],
     },
 }
 
@@ -93,16 +104,44 @@ class Verdict:
     needs_reply: bool
     kind: str
     confidence: float
+    asked_of_them: bool = False
 
 
-def wants_draft(verdict: Verdict, relation: str) -> bool:
+@dataclass(frozen=True)
+class Addressing:
+    """Who an email went to, from the person's side."""
+
+    # The person's name, as the email may greet them.
+    name: str = ""
+    # "to", "cc" or "" (not addressed: the scan skips those anyway).
+    position: str = "to"
+    # Everyone else it was addressed to, the sender and the Executive aside.
+    others: int = 0
+
+
+def addressing(message: Any, *, name: str, own: set[str], exec_address: str = "") -> Addressing:
+    """``message``'s :class:`Addressing` for a person with addresses ``own``."""
+    to = {a.lower() for a in getattr(message, "to", []) or []}
+    cc = {a.lower() for a in getattr(message, "cc", []) or []}
+    position = "to" if to & own else "cc" if cc & own else ""
+    skip = {*own, (getattr(message, "from_addr", "") or "").lower(), exec_address.lower()}
+    return Addressing(name=name, position=position, others=len((to | cc) - skip))
+
+
+def wants_draft(verdict: Verdict, relation: str, addressed: Addressing | None = None) -> bool:
     """Whether code drafts a reply for ``verdict`` from a sender of this
-    ``relation`` (unknown relations get the stranger's bar)."""
+    ``relation`` (unknown relations get the stranger's bar). An email that
+    also went to others needs the person in To and the email asking them
+    themselves."""
     bar = THRESHOLDS.get(relation, THRESHOLDS["stranger"])
-    return verdict.needs_reply and verdict.kind in DRAFT_KINDS and verdict.confidence >= bar
+    if not (verdict.needs_reply and verdict.kind in DRAFT_KINDS and verdict.confidence >= bar):
+        return False
+    if addressed is not None and addressed.others > 0:
+        return addressed.position == "to" and verdict.asked_of_them
+    return True
 
 
-def render_email(message: Any, *, relation: str) -> str:
+def render_email(message: Any, *, relation: str, addressed: Addressing | None = None) -> str:
     """The user turn: a few header lines and the sender's own new words, as
     data in one ``<email>`` block."""
     from openexecutive.delegation.ghostwriter import one_line
@@ -117,6 +156,14 @@ def render_email(message: Any, *, relation: str) -> str:
         f"Sender: {relation}"
         + ("" if getattr(message, "sender_authenticated", False) else " (address not verified)"),
         f"Recipients: {others}",
+    ]
+    if addressed is not None:
+        header += [
+            f"This person: {one_line(addressed.name, 80) or 'unknown'}, in "
+            + ("To" if addressed.position == "to" else "Cc" if addressed.position == "cc" else "neither To nor Cc"),
+            f"Also addressed: {addressed.others} other people",
+        ]
+    header += [
         f"Subject: {one_line(getattr(message, 'subject', '') or '', 200)}",
     ]
     lines = [scrub_block_line(line, "</email>") for line in [*header, "", *body.splitlines()]]
@@ -151,11 +198,15 @@ def classifier_model() -> str:
     return settings.delegation_classifier_model or settings.routing_model
 
 
-async def classify(message: Any, *, relation: str, model: str | None = None) -> Verdict | None:
+async def classify(
+    message: Any, *, relation: str, addressed: Addressing | None = None, model: str | None = None
+) -> Verdict | None:
     """The verdict on ``message``, or None when there is none to trust (the
     call failed or returned something malformed). Never raises."""
     try:
-        payload = await _call_model(model or classifier_model(), render_email(message, relation=relation))
+        payload = await _call_model(
+            model or classifier_model(), render_email(message, relation=relation, addressed=addressed)
+        )
     except Exception:
         logger.warning("delegation.inbox: classifying an email failed", exc_info=True)
         return None
@@ -166,4 +217,7 @@ async def classify(message: Any, *, relation: str, model: str | None = None) -> 
         return None
     if isinstance(confidence, bool) or not isinstance(confidence, int | float):
         return None
-    return Verdict(needs_reply=needs_reply, kind=str(kind), confidence=max(0.0, min(1.0, float(confidence))))
+    return Verdict(
+        needs_reply=needs_reply, kind=str(kind), confidence=max(0.0, min(1.0, float(confidence))),
+        asked_of_them=payload.get("asked_of_them") is True,
+    )

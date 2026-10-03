@@ -8795,6 +8795,12 @@ delegation:
     be (payload relation) beside handled_as.
     fyi, thanks, pitch, notification, newsletter, phishing and other never
     get one, and any failure or malformed answer means none.
+    A group email (anyone else in To or Cc besides the sender and the
+    Executive) is drafted for only when the person is in To and the
+    classifier's asked_of_them is true: it names or greets them, not someone
+    else by name or the group at large. The classifier is told the person's
+    name, To or Cc, and how many others; a Cc-only person never gets a
+    draft. Recorded not_needed / asks_someone_else.
   inbox_drafting: |
     delegation.inbox.compose_reply — ghostwriter.compose and the person's
     voice block unchanged, with a constant intent in place of a person's.

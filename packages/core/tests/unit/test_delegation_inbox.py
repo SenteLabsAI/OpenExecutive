@@ -225,7 +225,7 @@ def models(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         for marker, verdict in seen["verdicts"].items():
             if marker in turn:
                 return dict(verdict)
-        return {"needs_reply": True, "kind": "scheduling", "confidence": 0.9}
+        return {"needs_reply": True, "kind": "scheduling", "asked_of_them": True, "confidence": 0.9}
 
     async def composer(model: str, system: str, turn: str) -> dict[str, Any]:
         seen["composed"].append(turn)
@@ -416,6 +416,28 @@ def test_a_classifier_failure_is_tried_again_then_given_up(
     results = [_scan(owner, mailbox, now=NOW + timedelta(minutes=10 + i)) for i in range(inbox.MAX_ATTEMPTS + 1)]
     assert [r.failed for r in results] == [0] * (inbox.MAX_ATTEMPTS - 1) + [1, 0]
     assert _ledger(db)["m3"] == ("failed", "classify_failed")
+
+
+def test_a_group_email_is_drafted_for_only_when_it_asks_them(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    group = [OWNER, "brennan@co.example", "russell@co.example"]
+    models["verdicts"]["Brennan:"] = {
+        "needs_reply": True, "kind": "question", "asked_of_them": False, "confidence": 0.95,
+    }
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", to=group, text="Brennan: can you approach Regions? Thoughts?"))
+    mailbox.add(_msg("m2", "t2", to=group, text="Olivia, can you send the waterfall?", minutes_ago=25))
+    mailbox.add(_msg("m3", "t3", to=["brennan@co.example"], cc=(OWNER,), text="Olivia, thoughts?", minutes_ago=20))
+    _scan(owner, mailbox)
+    ledger = _ledger(db)
+    assert ledger["m1"] == ("not_needed", "asks_someone_else")
+    assert ledger["m2"][0] == "drafted"
+    # Only copied: never theirs to answer, whatever the model says.
+    assert ledger["m3"] == ("not_needed", "asks_someone_else")
+    turns = models["classified"]
+    assert any("This person: Olivia Owner, in To\nAlso addressed: 2 other people" in t for t in turns)
+    assert any("This person: Olivia Owner, in Cc\nAlso addressed: 1 other people" in t for t in turns)
 
 
 def test_a_stranger_needs_more_certainty_and_gets_a_holding_reply(
