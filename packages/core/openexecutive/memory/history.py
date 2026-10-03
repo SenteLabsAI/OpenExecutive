@@ -504,11 +504,13 @@ def pin_note(
     person_id: int, note_id: int, pinned: bool, *, db_path: Path | None = None, now: datetime | None = None
 ) -> Note | None:
     """Pin a note (it never expires) or unpin it (it expires as the person's
-    retention says, from when it happened)."""
+    retention says, counted from the unpin when it happened earlier, so an
+    old note isn't lost the moment its pin comes off)."""
     note = get_note(person_id, note_id, db_path=db_path, now=now)
     if note is None:
         return None
-    expires = None if pinned else _expiry(note.occurred_at, effective_retention(person_id, db_path=db_path))
+    start = max(_now(now).isoformat(), note.occurred_at)
+    expires = None if pinned else _expiry(start, effective_retention(person_id, db_path=db_path))
     conn = _connect(db_path)
     try:
         conn.execute(

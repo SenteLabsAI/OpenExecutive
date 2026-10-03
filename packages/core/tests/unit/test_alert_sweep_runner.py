@@ -79,3 +79,13 @@ def test_expired_notes_are_swept_on_the_same_throttle(monkeypatch: pytest.Monkey
     runner._maybe_sweep_alerts(t0)
     runner._maybe_sweep_alerts(t0 + timedelta(minutes=5))
     assert seen == [t0]
+
+
+def test_a_note_sweep_failure_never_breaks_the_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lifecycle, "expire_stale_alerts", lambda now, db_path=None: 1)
+
+    def boom(now: datetime | None = None, db_path: object = None) -> int:
+        raise RuntimeError("notes db locked")
+
+    monkeypatch.setattr(history, "sweep_expired", boom)
+    assert runner._maybe_sweep_alerts(datetime.now(UTC)) == 1

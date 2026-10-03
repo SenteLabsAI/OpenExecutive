@@ -174,12 +174,15 @@ def _maybe_sweep_alerts(now: datetime) -> int:
     except Exception:
         logger.exception("scheduler: watchlist sweep failed")
     # Always in the loop: delete notes past their expiry (reads already skip
-    # them). history.sweep_expired never raises.
-    from openexecutive.memory.history import sweep_expired
+    # them).
+    try:
+        from openexecutive.memory.history import sweep_expired
 
-    removed = sweep_expired(now=now)
-    if removed:
-        logger.info("scheduler: removed %d expired note(s)", removed)
+        removed = sweep_expired(now=now)
+        if removed:
+            logger.info("scheduler: removed %d expired note(s)", removed)
+    except Exception:
+        logger.exception("scheduler: note expiry sweep failed")
     return expired
 
 

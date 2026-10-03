@@ -70,6 +70,14 @@ def test_pin_keeps_it_and_unpin_restores_expiry() -> None:
     assert h.pin_note(2, nid, True, now=NOW) is None
 
 
+def test_unpinning_an_old_note_restarts_its_clock() -> None:
+    [nid] = _add(when=NOW - timedelta(days=200))
+    assert h.pin_note(1, nid, True, now=NOW - timedelta(days=199)) is not None
+    unpinned = h.pin_note(1, nid, False, now=NOW)
+    assert unpinned is not None and unpinned.expires_at == (NOW + timedelta(days=90)).isoformat()
+    assert h.sweep_expired(now=NOW + timedelta(days=1)) == 0
+
+
 def test_correct_and_forget_only_your_own() -> None:
     [nid] = _add()
     corrected = h.correct_note(1, nid, "  Told Dana it comes   Monday.\n", now=NOW)
