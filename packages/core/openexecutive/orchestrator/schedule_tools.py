@@ -129,6 +129,12 @@ def _record_send_to_activity(
         # principal's contacts is theirs alone (the audit row still records it).
         if _is_contact_ref(channel, channel_ref, find_person_by_channel_ref):
             return
+        # So is a send whose audit rows are private (``audit.context``): the
+        # rail would show what the private row keeps from others.
+        from openexecutive.audit.context import rows_private
+
+        if rows_private():
+            return
 
         session = current_session.get()
         session_id = getattr(session, "session_id", None) if session is not None else None

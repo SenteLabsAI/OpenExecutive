@@ -195,15 +195,13 @@ def test_due_notes_and_notes_since_read_only_the_persons_own() -> None:
     assert h.due_notes(None, start=date(2026, 10, 1), end=date(2026, 10, 7)) == []
 
 
-def test_reminders_are_claimed_once_a_day_and_can_be_undone() -> None:
+def test_reminders_are_claimed_once_a_day() -> None:
     h.set_person_settings(1, by="t", reply_notes=True)
     h.set_person_settings(2, by="t", reply_notes=False)
     assert h.people_keeping_notes() == [1]
     assert not h.reminded(1, "2026-10-03")
     assert h.mark_reminded(1, "2026-10-03", now=NOW)
     assert h.reminded(1, "2026-10-03") and not h.mark_reminded(1, "2026-10-03", now=NOW)
-    h.unmark_reminded(1, "2026-10-03")
-    assert h.mark_reminded(1, "2026-10-03", now=NOW)
     # A new day prunes the old ones.
     assert h.mark_reminded(1, "2026-10-04", now=NOW)
     assert not h.reminded(1, "2026-10-03")

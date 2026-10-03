@@ -1743,7 +1743,9 @@ def delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
     ids = {
         "slack_dm": principal.slack_user_id,
         "discord_dm": principal.discord_user_id,
-        "telegram": principal.telegram_chat_id,
+        # Only a private chat: a group's id is negative, and everyone in it
+        # would read the message.
+        "telegram": principal.telegram_chat_id if str(principal.telegram_chat_id or "").isdigit() else None,
     }
     chat = [c for c in _CHAT_DELIVERY_ORDER if ids[c]]
     pref = (principal.preferred_channel or "any").lower()
@@ -1875,12 +1877,8 @@ async def _deliver_to_principal(text: str, *, label: str = "Update") -> Principa
 async def deliver_to_person(person: Person, text: str, *, label: str = "Update") -> PrincipalDelivery:
     """Send ``text`` to ``person`` alone, the way the briefs reach the
     principal: their own Slack or Discord DM, their Telegram chat, or email
-    to their own address (``delivery_order``). Never a shared channel: a
-    Telegram id that isn't a private chat (groups are negative) is skipped."""
-    plan = delivery_order(person, email_ready=email_ready())
-    if "telegram" in plan and not str(person.telegram_chat_id or "").isdigit():
-        plan.remove("telegram")
-    return await _send_on_plan(person, plan, text, label=label)
+    to their own address (``delivery_order``, which skips a Telegram group)."""
+    return await _send_on_plan(person, delivery_order(person, email_ready=email_ready()), text, label=label)
 
 
 async def _send_on_plan(

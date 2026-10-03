@@ -179,6 +179,19 @@ def test_the_owners_due_notes_reach_only_their_own_private_brief(
     assert _result(mine)["private_to_principal"] is True
 
 
+def test_a_chat_run_of_the_brief_never_reads_notes(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _capture(monkeypatch)
+    _keep(roster.owner)
+    _note(roster.owner, "the price list goes to Dana", due=TODAY)
+    # The owner's own private chat may read their private rows, but a chat
+    # run's tool result reaches the turn's shared audit row, so no notes.
+    monkeypatch.setattr(morning_brief, "_private_ok", lambda: True)
+    asyncio.run(_brief(delivered=False))
+    assert "FROM YOUR NOTES" not in str(calls[-1]["rendered_context"])
+
+
 def test_no_notes_in_the_brief_with_the_owners_switch_off(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -304,28 +317,50 @@ def test_no_reminder_for_chat_promises_other_days_or_the_switch_off(
     assert asyncio.run(hr.remind_due(NOW)) == 0 and sends == []
 
 
-def test_a_failed_send_is_tried_again_and_no_channel_is_not(
+def test_a_failed_send_is_not_repeated_the_same_day(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from openexecutive.scheduler import runner
 
-    reasons = ["send_failed", "no_channel"]
-    attempts: list[str] = []
+    attempts: list[int] = []
 
     async def _deliver(person: Any, text: str, *, label: str = "") -> Any:
-        reason = reasons.pop(0)
-        attempts.append(reason)
-        return runner.PrincipalDelivery(False, reason, reason)  # type: ignore[arg-type]
+        attempts.append(person.id)
+        return runner.PrincipalDelivery(False, "send_failed", "send_failed")
 
     monkeypatch.setattr(runner, "deliver_to_person", _deliver)
     _keep(roster.owner)
     _note(roster.owner, "the price list goes to Dana", due=TODAY)
     assert asyncio.run(hr.remind_due(NOW)) == 0
-    assert not h.reminded(roster.owner, TODAY.isoformat())
     assert asyncio.run(hr.remind_due(NOW)) == 0
-    assert h.reminded(roster.owner, TODAY.isoformat())
-    asyncio.run(hr.remind_due(NOW))
-    assert attempts == ["send_failed", "no_channel"]
+    assert attempts == [roster.owner]
+
+
+def test_the_senders_rows_are_the_persons_own_and_off_the_activity_rail(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, db: Path,
+) -> None:
+    from openexecutive.audit import context as audit_context
+    import sqlite3
+    from openexecutive.orchestrator import schedule_tools
+    from openexecutive.scheduler import runner
+
+    seen: list[tuple[bool, int | None]] = []
+
+    async def _deliver(person: Any, text: str, *, label: str = "") -> Any:
+        seen.append((audit_context.rows_private(), audit_context.rows_owner()))
+        schedule_tools._record_send_to_activity(channel="slack_dm", channel_ref="U9", intent_text=text)
+        return runner.PrincipalDelivery(True, "slack_dm → U9", "delivered", "slack_dm")
+
+    monkeypatch.setattr(runner, "deliver_to_person", _deliver)
+    _keep(roster.owner)
+    _keep(roster.teammate)
+    _note(roster.owner, "the price list goes to Dana", due=TODAY)
+    _note(roster.teammate, "the venue deposit goes in", due=TODAY)
+    assert asyncio.run(hr.remind_due(NOW)) == 2
+    assert sorted(seen, key=str) == sorted([(True, None), (True, roster.teammate)], key=str)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM scheduled_actions WHERE status = 'done'").fetchone()[0] == 0
+    assert not audit_context.rows_private()
 
 
 def test_reminders_only_go_out_in_the_daytime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,3 +408,5 @@ def test_delivery_to_a_person_skips_a_group_telegram_chat(monkeypatch: pytest.Mo
     asyncio.run(runner.deliver_to_person(group, "hi"))
     asyncio.run(runner.deliver_to_person(private, "hi"))
     assert plans == [["slack_dm"], ["telegram"]]
+    # The owner's briefs follow the same order, so a group never gets them either.
+    assert runner.delivery_order(group.model_copy(update={"is_principal": True}), email_ready=False) == ["slack_dm"]

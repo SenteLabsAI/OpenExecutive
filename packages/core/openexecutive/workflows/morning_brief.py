@@ -70,7 +70,8 @@ BRIEF_KIND = "principal_brief_morning"
 # a DM, a private Telegram chat — never a shared channel, where the reply is
 # posted for everyone) — does the brief read what is private to them: their
 # contacts' mail and alerts, their drafts, their chats, their calendar, their
-# own Always in the loop notes (``memory.history_brief``).
+# own Always in the loop notes, though, only on the scheduler's delivery
+# (``memory.history_brief``).
 # A run anyone else starts (a teammate in chat, the workflow API) reads what
 # everyone may see, as before.
 PRINCIPAL_DELIVERY: ContextVar[bool] = ContextVar("morning_brief_principal_delivery", default=False)
@@ -244,11 +245,13 @@ class MorningBriefWorkflow(Workflow):
             if private_ok else teammate_changes
         )
         # Always in the loop: what the owner's own notes say is due, only on
-        # a run for them alone and only with their switch on.
+        # the scheduler's delivery to them alone (never a chat run, whose
+        # tool result lands in the turn's shared audit row and peer memory)
+        # and only with their switch on.
         from openexecutive.memory import history_brief
 
         owner_notes = history_brief.NotesBlock()
-        if private_ok:
+        if PRINCIPAL_DELIVERY.get():
             owner = await asyncio.to_thread(history_brief.owner_keeping_notes)
             if owner is not None:
                 owner_notes = await asyncio.to_thread(

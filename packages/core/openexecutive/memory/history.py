@@ -698,23 +698,6 @@ def mark_reminded(person_id: int, day: str, *, db_path: Path | None = None, now:
     return bool(inserted)
 
 
-def unmark_reminded(person_id: int, day: str, *, db_path: Path | None = None) -> None:
-    """Undo :func:`mark_reminded` after a reminder that didn't send, so a
-    later tick tries again. Never raises."""
-    try:
-        conn = _connect(db_path)
-        try:
-            conn.execute(
-                f"DELETE FROM {REMINDERS_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608 — constant table name
-                (person_id, day),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("history: couldn't undo a reminder record", exc_info=True)
-
-
 def forget_note(person_id: int, note_id: int, *, db_path: Path | None = None) -> bool:
     """Delete one of the person's own notes. False when it isn't theirs or
     is gone."""

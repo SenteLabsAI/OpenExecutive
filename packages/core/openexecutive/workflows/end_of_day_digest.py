@@ -313,13 +313,15 @@ class EndOfDayDigestWorkflow(Workflow):
             activity = []
 
         handled = brief_state.handled_since(since)
-        # Always in the loop: what the principal noted today, only on a run
-        # for them alone (the morning brief's rule) and with their switch on.
+        # Always in the loop: what the principal noted today, only on the
+        # scheduler's delivery to them alone (never a chat run, whose tool
+        # result lands in the turn's shared audit row and peer memory) and
+        # with their switch on.
         from openexecutive.memory import history_brief
-        from openexecutive.workflows.morning_brief import _private_ok
+        from openexecutive.workflows.morning_brief import PRINCIPAL_DELIVERY
 
         owner_notes = history_brief.NotesBlock()
-        if _private_ok():
+        if PRINCIPAL_DELIVERY.get():
             owner = await asyncio.to_thread(history_brief.owner_keeping_notes)
             if owner is not None:
                 owner_notes = await asyncio.to_thread(

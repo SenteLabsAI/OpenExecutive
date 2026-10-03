@@ -7,13 +7,14 @@ Only notes from replies they sent with Act as me
 an open loop the nudge engine chases when due (``attunement.open_loops``), so
 reminding of it here too would say it twice.
 
-The message names nothing from the notes, only how many things are due: it
-travels through the ordinary channel senders, whose audit and activity rows
-others may read. The person asks for the detail in a conversation only they
+The message names nothing from the notes, only how many things are due, and
+the channel senders' audit rows for it are private to the person (the owner's
+to the owner) and stay off the shared activity rail. The person asks for the detail in a conversation only they
 can read, where ``recall_history`` answers (``orchestrator.history_tools``).
 It goes to their own DM, Telegram chat or email address
 (``scheduler.runner.deliver_to_person``), never a shared channel, at most once
-a day, during the workspace's daytime.
+a day (one try: a failed send waits for the next due day), during the
+workspace's daytime.
 
 The scheduler tick calls :func:`maybe_remind`. Never raises; logs codes,
 never text.
@@ -56,6 +57,7 @@ async def remind_due(now: datetime) -> int:
     """Remind each person who keeps notes of today's due promises, once a
     day. Returns how many were reminded. Never raises."""
     from openexecutive.audit import log_event
+    from openexecutive.audit.context import private_rows, rows_for_person
     from openexecutive.memory import history
     from openexecutive.memory.history_brief import local_today
     from openexecutive.people.store import get_person
@@ -73,18 +75,21 @@ async def remind_due(now: datetime) -> int:
                 person_id, start=today, end=today, kinds=REMIND_KINDS,
                 sources=(history.SOURCE_APPROVED_REPLY,), now=now,
             )
-            # Claimed before sending, so two workers never both send it.
+            # Claimed before sending, so two workers never both send it, and
+            # never released: one try a day, so a send that half-failed is
+            # never repeated.
             if not due or not history.mark_reminded(person_id, day, now=now):
                 continue
-            delivery = await deliver_to_person(person, reminder_text(len(due), today), label="Due today")
+            # The senders' audit rows (they quote the text) are the person's
+            # own, and the send stays off the shared activity rail.
+            rows = private_rows() if person.is_principal else rows_for_person(person_id)
+            with rows:
+                delivery = await deliver_to_person(person, reminder_text(len(due), today), label="Due today")
         except Exception:
             logger.warning("history: reminding person %s failed", person_id, exc_info=True)
             continue
         if not delivery.ok:
             logger.info("history: reminder for person %s not sent (%s)", person_id, delivery.reason)
-            if delivery.reason == "send_failed":
-                # A channel that may work later: try again on a later tick.
-                history.unmark_reminded(person_id, day)
             continue
         sent += 1
         log_event(

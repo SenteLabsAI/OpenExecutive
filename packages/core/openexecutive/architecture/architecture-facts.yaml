@@ -2493,19 +2493,21 @@ memory:
       to two weeks ahead, soonest first ("what's due today?").
     - The owner's briefs read the owner's own notes (memory.history_brief):
       the morning brief a FROM YOUR NOTES - DUE SOON block, the end-of-day
-      digest a FROM YOUR NOTES - TODAY block. Only on a run for the owner
-      alone (morning_brief._private_ok), only with the owner's switch on,
+      digest a FROM YOUR NOTES - TODAY block. Only on the scheduler's
+      delivery (PRINCIPAL_DELIVERY), never a chat run (its tool result
+      reaches the shared audit row and Honcho), only with the switch on,
       never a teammate's notes. A run that used any is private_to_principal
       (the run history keeps PRIVATE_RUN_ARTIFACT) and the note ids with
       their state enter the fingerprint.
     - Due-today reminders (memory.history_reminders, from the scheduler
       tick, 09:00 to 18:00 local) cover only promises made by email
       (approved_reply): chat promises are already open loops the nudge
-      engine chases. The message says how many, never what or to whom,
-      because the channel senders audit the text where others may read it;
-      the person asks for the detail in a private chat. Sent to their own
-      DM, private Telegram chat or email (runner.deliver_to_person), once a
-      day per person (history_reminders, claimed before sending).
+      engine chases. The message says how many, never what or to whom; the
+      senders' audit rows are private to the person (rows_for_person) and
+      stay off the activity rail. The person asks for the detail in a
+      private chat. Sent to their own DM, private Telegram chat (delivery_order
+      skips group ids, for the briefs too) or email (runner.deliver_to_person),
+      one try a day per person (history_reminders, claimed, never released).
     - Notes never feed Honcho, episodic extraction or standing facts. The six
       history_* tables swap with client slots and the factory reset clears them.
 
