@@ -8819,8 +8819,11 @@ delegation:
     can't answer from their words goes in open_questions), or
     INBOX_HOLDING_INTENT for a stranger (a short thank-you-I'll-get-back
     holding reply, answering nothing). lint still strips any link or
-    address that is not the person's own. The reply goes to the sender only
-    (threads.plan_reply with reply_all off, Reply-To ignored); the card is
+    address that is not the person's own. The reply goes to the sender and, on
+    a group email, Cc to everyone else it went to (threads.plan_reply with
+    reply_all on, minus the person's own addresses and the Executive; a
+    stranger's holding reply has reply_all off; Reply-To ignored; draft_to
+    lists everyone and Send checks it); the card is
     flagged others_on_thread when anyone else was addressed,
     executive_on_thread when the Executive was, and sender_unverified when
     Gmail's SPF/DKIM/DMARC results don't vouch for the From address

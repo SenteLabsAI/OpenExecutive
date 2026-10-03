@@ -45,8 +45,10 @@ the thread, promise nothing new, and put every unanswered ask in
 ``open_questions``. A stranger always gets a short holding reply. An email that
 also went to others is drafted for only when the person is in To and it asks
 them themselves, not someone else by name or the group at large
-(``inbox_classifier.wants_draft``). The reply goes to the sender only; others
-on the thread are named on the card (``others_on_thread``).
+(``inbox_classifier.wants_draft``). The reply goes to everyone the email went to
+(reply to all, never the person's own addresses or the Executive); a
+stranger's holding reply goes to the sender alone. The card flags
+``others_on_thread``.
 
 **Limits.** Per scan 5 drafts; per day ``DELEGATION_INBOX_MAX_DRAFTS_PER_DAY``
 within the shared daily limit (``delegation.caps``), 200 classifications, 2
@@ -79,7 +81,7 @@ import json
 import logging
 import re
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -687,6 +689,8 @@ class Reply:
     flags: list[str]
     in_reply_to: str | None
     references: str | None
+    # Everyone else the email went to, on a group email (reply to all).
+    cc: list[str] = field(default_factory=list)
 
 
 async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str, own: set[str]) -> Reply | str:
@@ -698,7 +702,9 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
 
     email = (person.email or "").strip().lower()
-    plan = plan_reply(thread, email, False)
+    # A group email is answered to everyone on it, as the person would; a
+    # stranger's holding reply goes to the stranger alone.
+    plan = plan_reply(thread, email, relation != "stranger")
     if isinstance(plan, str) or plan["to"] != [message.from_addr]:
         return "no_reply_target"
     if asks_if_ai(plan.pop("last_text", "") or ""):
@@ -706,6 +712,9 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     stored = get_voice(person.id)
     names = (person.full_name or "").split()
     exec_address = (get_settings().exec_email_address or "").strip().lower()
+    # Never the person's own addresses, and never the Executive (Send
+    # refuses a draft addressed to it).
+    cc = [a for a in plan["cc"] if a not in own and a != exec_address]
     relation_text = {
         "team": "on their team",
         "contact": "one of their contacts",
@@ -719,7 +728,10 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
         writer_said=writer_said(thread, email),
         reply_subject=plan["subject"],
         intent=INBOX_HOLDING_INTENT if relation == "stranger" else INBOX_REPLY_INTENT,
-        recipients=[Recipient(email=message.from_addr, name=message.from_name, relation=relation_text)],
+        recipients=[
+            Recipient(email=message.from_addr, name=message.from_name, relation=relation_text),
+            *(Recipient(email=a, relation="also on the email") for a in cc),
+        ],
         signature=stored.profile.signature,
         exec_name=get_settings().exec_display_name,
         model=composer_model(),
@@ -732,6 +744,7 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
         questions.append("They asked whether they're talking to an AI — answer that yourself.")
     return Reply(
         to=plan["to"],
+        cc=cc,
         subject=composed.subject,
         body=composed.body,
         open_questions=questions,
@@ -787,7 +800,8 @@ def _card_payload(
         "subject": one_line(message.subject, 200),
         "received_at": message.received_at,
         "they_wrote": sender_new_text(message.text or "")[:_THEY_WROTE_CHARS],
-        "draft_to": reply.to,
+        # Everyone it goes to: Send checks the draft against this list.
+        "draft_to": [*reply.to, *reply.cc],
         "draft_subject": reply.subject,
         "draft_body": reply.body,
         "open_questions": reply.open_questions,
@@ -1082,6 +1096,7 @@ async def _consider(
         try:
             draft = await client.create_draft(DraftSpec(
                 to=reply.to,
+                cc=reply.cc,
                 subject=reply.subject,
                 body=reply.body,
                 thread_id=thread.id,

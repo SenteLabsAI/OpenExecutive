@@ -284,9 +284,9 @@ def test_a_question_from_a_contact_gets_a_draft_and_a_private_card(
     mailbox.add(_msg("m1", "t1", cc=("ben@northpeak.example",)))
     result = _scan(owner, mailbox)
     assert (result.status, result.drafted) == ("ok", 1)
-    # To the sender only, in the thread, as a reply.
+    # To everyone it went to (reply to all), in the thread, as a reply.
     spec = mailbox.specs[0]
-    assert spec.to == [DANA] and spec.cc == [] and spec.thread_id == "t1"
+    assert spec.to == [DANA] and spec.cc == ["ben@northpeak.example"] and spec.thread_id == "t1"
     assert spec.in_reply_to == "<m1@x.example>"
     # The composer was told to commit to nothing new.
     assert "commit to nothing" in models["composed"][0]
@@ -296,6 +296,7 @@ def test_a_question_from_a_contact_gets_a_draft_and_a_private_card(
     payload = inbox.card_payload(cards[0])
     assert payload["private"] is True and payload["draft_id"] == "d1"
     assert payload["relation"] == "contact" and "others_on_thread" in payload["flags"]
+    assert payload["draft_to"] == [DANA, "ben@northpeak.example"]
     assert payload["open_questions"] == ["Can the call move to Friday at 10?"]
     assert "Thursday" in payload["they_wrote"]
     assert _ledger(db)["m1"] == ("drafted", None)
@@ -438,6 +439,22 @@ def test_a_group_email_is_drafted_for_only_when_it_asks_them(
     turns = models["classified"]
     assert any("This person: Olivia Owner, in To\nAlso addressed: 2 other people" in t for t in turns)
     assert any("This person: Olivia Owner, in Cc\nAlso addressed: 1 other people" in t for t in turns)
+
+
+def test_reply_to_all_never_copies_the_person_or_the_executive_and_spares_strangers(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.config import get_settings
+
+    exec_address = (get_settings().exec_email_address or "").lower()
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", to=[OWNER, "ben@co.example"], cc=(exec_address,)))
+    stranger = "sam@unknown.example"
+    mailbox.add(_msg("m2", "t2", sender=stranger, to=[OWNER, "ben@co.example"], minutes_ago=25))
+    _scan(owner, mailbox)
+    by_thread = {spec.thread_id: spec for spec in mailbox.specs}
+    assert by_thread["t1"].cc == ["ben@co.example"]
+    assert by_thread["t2"].to == [stranger] and by_thread["t2"].cc == []
 
 
 def test_a_stranger_needs_more_certainty_and_gets_a_holding_reply(
