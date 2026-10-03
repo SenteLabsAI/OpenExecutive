@@ -20,6 +20,7 @@ from openexecutive.delegation.settings import DelegationOverride, TurnDelegation
 from openexecutive.memory import episodic
 from openexecutive.orchestrator import executive as ex
 from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOLS
+from openexecutive.orchestrator.history_tools import HISTORY_TOOLS
 from openexecutive.orchestrator.mcp_gateway import MCP_TOOLS
 from openexecutive.orchestrator.router import SPECIALIST_TOOLS
 from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS, current_session
@@ -124,7 +125,7 @@ def _tool_results(call: dict[str, Any]) -> dict[str, str]:
 def test_every_tool_is_classified_once() -> None:
     names = {
         t["name"]
-        for t in [*ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS]
+        for t in [*ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS]
     }
     allowed, withheld = lockdown.MAIL_TOUCHED_ALLOWED_TOOLS, lockdown.MAIL_TOUCHED_WITHHELD_TOOLS
     assert not allowed & withheld

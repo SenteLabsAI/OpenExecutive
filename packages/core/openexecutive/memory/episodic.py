@@ -399,6 +399,12 @@ def initialize_db(db_path: Path | None = None) -> None:
 
         _ensure_delegation_schema(conn)
 
+        # Always in the loop: dated notes of what happened, each person's
+        # switches and the conversations not to remember (memory/history.py).
+        from openexecutive.memory.history_schema import ensure_schema as _ensure_history_schema
+
+        _ensure_history_schema(conn)
+
         # Attunement outcome ledger: one row per proactive DM to a rostered
         # person, resolved replied / acted / void / ignored
         # (attunement/outcomes.py).

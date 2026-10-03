@@ -232,11 +232,13 @@ def test_every_registered_executive_tool_has_a_label() -> None:
     """
     from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_HANDLERS
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
+    from openexecutive.orchestrator.history_tools import HISTORY_TOOL_HANDLERS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
 
     registered = (
         set(_ALL_SKILL_HANDLERS)
         | set(DELEGATION_TOOL_HANDLERS)
+        | set(HISTORY_TOOL_HANDLERS)
         | set(MCP_TOOL_NAMES)
         | {"consult_specialist"}
     )

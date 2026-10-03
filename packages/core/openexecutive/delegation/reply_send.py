@@ -310,6 +310,43 @@ async def _send(
             })
         except Exception as exc:
             logger.warning("delegation.reply_send: recording a sent reply failed (%s)", type(exc).__name__)
+        _note_sent(person.id, current.message, thread, recipients, thread_id, now)
         return sent.id
     finally:
         SENDING.discard(instance.id)
+
+
+# Background note-taking tasks, held so they aren't collected mid-run.
+_NOTE_TASKS: set[Any] = set()
+
+
+def _note_sent(person_id: int, message: Any, thread: Any, recipients: list[str], thread_id: str, now: datetime) -> None:
+    """Always in the loop: once a reply went, note what the person told whom
+    (``memory.history_notes``), in the background, from the words they sent
+    alone. Off unless they turned it on; a failure never touches the send."""
+    import asyncio
+
+    try:
+        from openexecutive.memory.history import person_settings
+        from openexecutive.memory.history_notes import note_sent_reply
+
+        if not person_settings(person_id).reply_notes:
+            return
+        names = {
+            m.from_addr: m.from_name
+            for m in getattr(thread, "messages", []) or []
+            if getattr(m, "from_addr", "") and getattr(m, "from_name", "")
+        }
+        task = asyncio.get_running_loop().create_task(note_sent_reply(
+            person_id,
+            body=str(getattr(message, "text", "") or ""),
+            to_names=[names.get(addr, "") for addr in recipients],
+            to_addresses=list(recipients),
+            subject=str(getattr(message, "subject", "") or ""),
+            thread_id=thread_id,
+            sent_at=now,
+        ))
+        _NOTE_TASKS.add(task)
+        task.add_done_callback(_NOTE_TASKS.discard)
+    except Exception as exc:
+        logger.warning("delegation.reply_send: couldn't start noting a sent reply (%s)", type(exc).__name__)

@@ -48,6 +48,8 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "load_skill",
     "lookup_person",
     "propose_form_values",
+    # The speaker's own notes (Always in the loop): a read, kept to the turn.
+    "recall_history",
     "search_skills",
     "search_tools",
     # Only the reads in MAIL_TOUCHED_MCP_READS (see mail_touched_withholds).

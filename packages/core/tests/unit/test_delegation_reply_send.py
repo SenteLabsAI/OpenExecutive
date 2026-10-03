@@ -453,3 +453,55 @@ def test_a_sent_reply_is_reported_sent_even_when_recording_it_fails(
     monkeypatch.setattr(ledger, "finish_execution", finish)
     assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 1
     assert _status(card) == "approved_unchanged"
+
+
+# ── Always in the loop ────────────────────────────────────────────────────────
+
+
+def _noted(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    from openexecutive.memory import history_notes
+
+    calls: list[dict[str, Any]] = []
+
+    def fake(person_id: int, **kw: Any) -> Any:
+        calls.append({"person_id": person_id, **kw})
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr(history_notes, "note_sent_reply", fake)
+    return calls
+
+
+def test_a_sent_reply_is_not_noted_unless_they_turned_it_on(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _noted(monkeypatch)
+    mailbox, card = _card(owner)
+    _send(card, mailbox, owner)
+    assert calls == []
+
+
+def test_a_sent_reply_is_noted_from_what_went(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory.history import set_person_settings
+
+    calls = _noted(monkeypatch)
+    set_person_settings(owner.id, by="test", reply_notes=True)
+    mailbox, card = _card(owner)
+    _send(card, mailbox, owner)
+    [call] = calls
+    assert call["person_id"] == owner.id and call["thread_id"] == "t1"
+    assert call["to_addresses"] == [DANA] and call["to_names"] == ["Dana Park"]
+
+
+def test_a_failure_to_start_noting_never_touches_the_send(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory import history
+
+    def broken(_person_id: int) -> Any:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(history, "person_settings", broken)
+    mailbox, card = _card(owner)
+    assert _send(card, mailbox, owner) == "sent-d1"

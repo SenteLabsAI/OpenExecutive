@@ -92,6 +92,12 @@ from openexecutive.orchestrator.form_tools import (
     PROPOSE_FORM_VALUES,
     build_form_patch_event,
 )
+from openexecutive.orchestrator.history_tools import (
+    HISTORY_TOOL_HANDLERS,
+    HISTORY_TOOL_NAMES,
+    HISTORY_TOOLS,
+    recall_person,
+)
 from openexecutive.orchestrator.mcp_gateway import (
     MCP_TOOL_NAMES,
     MCP_TOOLS,
@@ -466,7 +472,11 @@ def _private_tool_row(tool_name: str) -> bool:
     me reads the speaker's own mailbox, and the fact tools' input quotes the
     principal verbatim and ties a fact to their chat session and turn, which
     ``GET /memories/facts`` hides from everyone else."""
-    return tool_name in DELEGATION_TOOL_NAMES or tool_name in FACT_TOOL_HANDLERS
+    return (
+        tool_name in DELEGATION_TOOL_NAMES
+        or tool_name in FACT_TOOL_HANDLERS
+        or tool_name in HISTORY_TOOL_NAMES
+    )
 
 
 def _speaker_text(memory_text: str | None, user_message: str) -> str:
@@ -1676,6 +1686,12 @@ class Executive:
             if ghostwrite_offered
             else _ALL_SKILL_HANDLERS
         )
+        # Always in the loop: recall_history joins the same way, only on a
+        # turn whose speaker may read their own notes here (history_tools).
+        history_offered = recall_person(current_session.get()) is not None
+        if history_offered:
+            delegation_tools = [*delegation_tools, *HISTORY_TOOLS]
+            turn_handlers = {**turn_handlers, **HISTORY_TOOL_HANDLERS}
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)

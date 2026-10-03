@@ -118,6 +118,9 @@ _LABELS: dict[str, str] = {
     # Act as me: a draft in the speaker's own Gmail (never sent)
     "ghostwrite_email": "Drafting an email in your voice…",
 
+    # Always in the loop: the speaker's own notes
+    "recall_history": "Checking your notes…",
+
     # MCP gateway. `call_tool` is dynamic and handled in `_label_for`.
     "search_tools": "Looking for the right tool…",
     "load_mcp_server": "Connecting a tool server…",

@@ -70,6 +70,9 @@ _SENSITIVE_SUBSTRINGS = (
     # (delegation.settings.turn_touched_delegate_mail); this keeps the text
     # out of them too — the tool writes its own metadata-only row.
     "ghostwrite",
+    # Always in the loop: recall_history returns the speaker's own notes,
+    # private to them.
+    "recall_history",
 )
 
 # Keys inside a tool_input dict whose values are stripped before being

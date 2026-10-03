@@ -859,6 +859,7 @@ async def reset_all_state(
         # above only guards the file).
         if EPISODIC_DB_PATH.exists():
             from openexecutive.delegation.schema import TABLES as DELEGATION_TABLES
+            from openexecutive.memory.history_schema import TABLES as HISTORY_TABLES
 
             with sqlite3.connect(str(EPISODIC_DB_PATH)) as _conn:
                 for _table in ("attunement_usage", "proactive_outcomes",
@@ -867,7 +868,9 @@ async def reset_all_state(
                                # reset box has proposed nothing yet.
                                "decision_instances", "decision_class_state",
                                # Act as me: every table it keeps.
-                               *DELEGATION_TABLES):
+                               *DELEGATION_TABLES,
+                               # Always in the loop: notes and switches.
+                               *HISTORY_TABLES):
                     if _conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_table,)
                     ).fetchone():
