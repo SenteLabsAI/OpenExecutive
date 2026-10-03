@@ -2462,8 +2462,9 @@ memory:
       the speaker verified on a private surface, attended, not
       private_to_principal, no eval override, with their switch on. Recall
       sets touched_mail first, for the principal too (private rows, no
-      memory, the lockdown from that round), and a team member's
-      conversation is marked mail_private so the principal can't open it.
+      memory, the lockdown from that round), and marks the conversation
+      mail_private so later turns start the same way and, for a team
+      member, the principal can't open it.
     - Notes never feed Honcho, episodic extraction or standing facts. The four
       history_* tables swap with client slots and the factory reset clears them.
 

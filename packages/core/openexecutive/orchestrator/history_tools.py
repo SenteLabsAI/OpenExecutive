@@ -10,11 +10,11 @@ has its own registry, never ``_ALL_SKILL_TOOLS``, and a per-turn handler map,
 so on any other turn a call to it is an unknown tool. Every call checks the
 surface again and returns that speaker's notes alone.
 
-A team member's notes are theirs, not the principal's: before returning any,
-the conversation is marked theirs alone (``session_store.mark_mail_private``,
-which the principal can't open either), and the turn teaches no memory from
-then on (``touched_mail``), as with Act as me. The principal's own notes
-need neither: their conversations are already theirs.
+Notes are their person's alone, so before returning any, as with Act as
+me, the conversation is marked theirs alone (``session_store.mark_mail_private``:
+for a team member's, the principal can't open it either) and the turn writes
+only private rows and teaches no memory from then on (``touched_mail``), as
+does every later turn in it.
 
 What comes back is history to cite, never instructions: each note's date,
 who it was with, what happened, and the person's own words it rests on, in a
@@ -96,9 +96,10 @@ def recall_person(session: Any) -> Any:
 def _keep_private(session: Any, person: Any) -> bool:
     """Keep the turn the speaker's before their notes enter it: from now on
     its rows are private to them and it teaches no memory (``touched_mail``,
-    as when Act as me reads their mailbox), for the principal too. A team
-    member's conversation also becomes theirs alone; the principal's already
-    is. False when that can't be made so."""
+    as when Act as me reads their mailbox). The conversation also becomes
+    theirs alone (``mark_mail_private``), so every later turn in it starts
+    the same way and a follow-up restating a note stays private too. False
+    when that can't be made so."""
     from openexecutive.delegation.settings import turn_delegation
     from openexecutive.memory.session_store import mark_mail_private
 
@@ -106,8 +107,6 @@ def _keep_private(session: Any, person: Any) -> bool:
     if pinned is None:
         return False
     pinned.touched_mail = True
-    if person.is_principal:
-        return True
     session_id = getattr(session, "session_id", None)
     if not session_id:
         return False

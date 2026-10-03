@@ -170,9 +170,9 @@ def test_the_principals_recall_keeps_the_turn_theirs(roster: SimpleNamespace) ->
     _notes_on(roster.principal)
     session = _web(roster.principal)
     assert _recall(session)["notes"] == 1
-    # Their conversation is already theirs; the turn's rows become private
-    # and it teaches no memory, as when Act as me reads their mail.
-    assert session_store.session_mail_private("s-1") is False
+    # As when Act as me reads their mail: the turn's rows are private, it
+    # teaches no memory, and later turns in the conversation start that way.
+    assert session_store.session_mail_private("s-1") is True
     assert session.turn_delegation is not None and session.turn_delegation.touched_mail is True
 
 
