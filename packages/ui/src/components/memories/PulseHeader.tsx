@@ -16,6 +16,7 @@ import Icon from "@/components/Icon";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   deriveVitals,
+  formatNextBeat,
   formatTrend,
   formatVitalDate,
   type TrendDirection,
@@ -25,7 +26,6 @@ import {
   STAT_VALUE_TONE,
   Skeleton,
   StatTile,
-  formatRunAt,
   groupByRhythm,
   metaFor,
   type StatTone,
@@ -231,13 +231,14 @@ function deriveStats(
   const groups = groupByRhythm(pending);
   const followups = pending.filter((a) => a.kind === "ad_hoc").length;
 
-  // Soonest pending fire = the literal "next beat".
+  // Soonest pending fire = the literal "next beat". One whose time has
+  // passed is waiting for the scheduler's next tick, so it reads "Due now".
   const soonest = pending.reduce<ScheduledAction | null>((best, a) => {
     if (!best) return a;
     return a.run_at.localeCompare(best.run_at) < 0 ? a : best;
   }, null);
   const nextBeat = soonest
-    ? { value: formatRunAt(soonest.run_at).relative || "soon", hint: metaFor(soonest).label }
+    ? { value: formatNextBeat(soonest.run_at) || "soon", hint: metaFor(soonest).label }
     : { value: "—", hint: "nothing scheduled" };
 
   // The heatmap is oldest → newest, so the last entry is today.

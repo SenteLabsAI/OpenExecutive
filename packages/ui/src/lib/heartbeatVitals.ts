@@ -124,3 +124,22 @@ export function formatTrend(t: HeartbeatTrend): string {
       return "—";
   }
 }
+
+/**
+ * The "Next beat" tile's value: how long until the soonest pending action
+ * fires. A run time that has already passed (the scheduler picks it up on its
+ * next tick) reads "Due now", never "0m ago"; a future one reads "in 12m",
+ * "in 3h" or "in 2d". Empty for an unparseable time so the caller can fall
+ * back.
+ */
+export function formatNextBeat(runAt: string, now: number = Date.now()): string {
+  const at = new Date(runAt).getTime();
+  if (!Number.isFinite(at)) return "";
+  const deltaMs = at - now;
+  if (deltaMs < 60_000) return "Due now";
+  const mins = Math.round(deltaMs / 60_000);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.round(deltaMs / 3_600_000);
+  if (hours < 48) return `in ${hours}h`;
+  return `in ${Math.round(deltaMs / 86_400_000)}d`;
+}

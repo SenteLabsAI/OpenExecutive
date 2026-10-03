@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   deriveVitals,
+  formatNextBeat,
   formatTrend,
   formatVitalDate,
 } from "../src/lib/heartbeatVitals.ts";
@@ -140,4 +141,21 @@ test("a window shorter than 60 days compares the halves that exist", () => {
 
 test("formatVitalDate formats in UTC", () => {
   assert.equal(formatVitalDate("2026-09-08"), "Tue, Sep 8");
+});
+
+// --- next beat ---------------------------------------------------------------
+
+test("formatNextBeat reads a past or imminent run time as due now", () => {
+  const now = Date.UTC(2026, 9, 3, 12, 0, 0);
+  assert.equal(formatNextBeat("2026-10-03T11:30:00Z", now), "Due now");
+  assert.equal(formatNextBeat("2026-10-03T12:00:00Z", now), "Due now");
+  assert.equal(formatNextBeat("2026-10-03T12:00:30Z", now), "Due now");
+});
+
+test("formatNextBeat counts down to a future run time", () => {
+  const now = Date.UTC(2026, 9, 3, 12, 0, 0);
+  assert.equal(formatNextBeat("2026-10-03T12:12:00Z", now), "in 12m");
+  assert.equal(formatNextBeat("2026-10-03T15:00:00Z", now), "in 3h");
+  assert.equal(formatNextBeat("2026-10-06T12:00:00Z", now), "in 3d");
+  assert.equal(formatNextBeat("not a date", now), "");
 });
