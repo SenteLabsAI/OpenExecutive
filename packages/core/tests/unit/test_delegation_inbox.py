@@ -1003,3 +1003,22 @@ def test_a_send_nobody_confirmed_is_followed_through_with_the_switch_off(
     mailbox.calls.clear()
     assert asyncio.run(inbox.scan_person(owner, gmail=mailbox, now=later + timedelta(minutes=10))).status == "off"
     assert mailbox.calls == []
+
+
+def test_the_writers_notes_for_the_sender_and_everyone_copied_reach_the_composer(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory import history_drafts
+
+    asked: list[tuple[Any, list[str]]] = []
+
+    def notes(person_id: Any, recipients: Any) -> str:
+        asked.append((person_id, list(recipients)))
+        return '[2026-09-28] agreed: "Friday works"'
+
+    monkeypatch.setattr(history_drafts, "notes_for_draft", notes)
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", to=[OWNER, "ben@co.example"]))
+    _scan(owner, mailbox)
+    assert asked == [(owner.id, [DANA, "ben@co.example"])]
+    assert '<writer_noted>\n[2026-09-28] agreed: "Friday works"\n</writer_noted>' in models["composed"][-1]

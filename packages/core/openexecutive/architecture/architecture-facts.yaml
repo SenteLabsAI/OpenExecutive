@@ -2435,6 +2435,7 @@ memory:
   always_in_the_loop: |
     Always in the loop (memory.history, memory.history_notes,
     memory.history_chat, memory.history_brief, memory.history_reminders,
+    memory.history_drafts,
     orchestrator.history_tools, api/routes/history.py):
     private, dated notes of what a person said. Two sources: a reply the
     person approved and sent through Act as me (delegation.reply_send starts
@@ -2508,6 +2509,12 @@ memory:
       private chat. Sent to their own DM, private Telegram chat (delivery_order
       skips group ids, for the briefs too) or email (runner.deliver_to_person),
       one try a day per person (history_reminders, claimed, never released).
+    - Act as me drafts (chat ghostwrite and the inbox watcher) get a
+      <writer_noted> block (memory.history_drafts.notes_for_draft): the
+      writer's own approved_reply notes whose recipients include every
+      recipient of the new draft, at most 8, switch on. Ghostwriter rule 6:
+      a consistency check only; a contradiction becomes an open question,
+      never new content.
     - Notes never feed Honcho, episodic extraction or standing facts. The six
       history_* tables swap with client slots and the factory reset clears them.
 
