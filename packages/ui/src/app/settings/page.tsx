@@ -1,142 +1,193 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
-import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
-import VoicePicker from "@/components/executive/VoicePicker";
+import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import Icon from "@/components/Icon";
-import AboutCard from "@/components/settings/AboutCard";
-import ActAsMeCard from "@/components/settings/ActAsMeCard";
-import SettingsNav from "@/components/settings/SettingsNav";
-import SettingsSection from "@/components/settings/SettingsSection";
-import WorkspaceCard from "@/components/settings/WorkspaceCard";
-import { advancedItemsByGroup, SETTINGS_SECTIONS } from "@/components/shell/navConfig";
-import { useActiveSection } from "@/lib/useActiveSection";
+import { MODE_LABEL } from "@/components/settings/WorkspaceCard";
+import {
+  ADVANCED_ITEMS,
+  SETTINGS_PAGES,
+  settingsPageForHash,
+  type SettingsPageDef,
+  type SettingsPageId,
+} from "@/components/shell/navConfig";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import { getAgentDetail, getDelegation, getVersion, listPersonas, type DelegationSettings } from "@/lib/api";
+import { versionNotice } from "@/lib/versionNotice";
 
-// Settings — the configuration that lives outside the day-to-day nav, as
-// one page of sections (Executive, Workspace, Act as me, Tools, About) with an
-// in-page nav to jump between them. Each section id is a hash a link can
-// land on; the Tools section points at the admin / power-user pages
-// (ADVANCED_ITEMS), grouped by what you'd use them for.
+// Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
+// Act as me, Workspace, Advanced and About. Each tile says what's on its page
+// and, where it's cheap to know, how things stand right now. The one-page
+// Settings this replaces used anchors (`/settings#workspace`); a link that
+// still carries one is sent on to the matching page.
+
+function subscribeHash(onChange: () => void): () => void {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+
+function readHash(): string {
+  return window.location.hash;
+}
+
+type Tone = "ok" | "warn" | "none";
+
+interface TileStatus {
+  text: string;
+  tone: Tone;
+}
+
 export default function SettingsPage() {
-  const mainRef = useRef<HTMLElement>(null);
-  // Act as me decides for itself whether it is on the page (the owner, and
-  // team members once the owner lets them).
-  const [actAsMe, setActAsMe] = useState(false);
-  const sections = useMemo(
-    () => SETTINGS_SECTIONS.filter((s) => s.id !== "act-as-me" || actAsMe),
-    [actAsMe],
-  );
-  const ids = useMemo(() => sections.map((s) => s.id), [sections]);
-  const { active, jumpTo } = useActiveSection(ids, mainRef);
-
-  // A link with a hash lands on its section. The browser does this itself
-  // for a section present at first paint; Act as me mounts after its fetch,
-  // so scroll to the hash once its section exists.
-  const scrolledToHash = useRef(false);
+  const router = useRouter();
+  // The address's hash: null while rendering on the server, where there is
+  // none to read. The hub is held back until it is known, and while an old
+  // anchor link is on its way to its page, so the tiles don't flash.
+  const hash = useSyncExternalStore(subscribeHash, readHash, () => null);
+  const target = hash === null ? null : settingsPageForHash(hash);
   useEffect(() => {
-    if (scrolledToHash.current) return;
-    const id = window.location.hash.slice(1);
-    if (!id || !ids.includes(id as (typeof ids)[number])) return;
-    const el = document.getElementById(id);
-    if (!el) return;
-    scrolledToHash.current = true;
-    el.scrollIntoView({ block: "start" });
-  }, [ids]);
+    if (target) router.replace(target.href);
+  }, [router, target]);
+
+  const statuses = useTileStatuses();
+  // Act as me has a tile only for someone who can have it (GET /delegation
+  // answers null for everyone else).
+  const pages = SETTINGS_PAGES.filter((p) => p.id !== "act-as-me" || statuses.actAsMeOffered);
+
+  if (hash === null || target) return <main className="flex-1" />;
 
   return (
-    <main ref={mainRef} className="flex-1 min-h-0 overflow-y-auto">
-      <div className="max-w-3xl lg:max-w-4xl mx-auto px-4 sm:px-6 pt-8 pb-16">
-        <h1 className="text-xl font-semibold text-fg">Settings &amp; advanced</h1>
-        <p className="mt-1 text-sm text-fg-muted">
-          How the Executive runs, who it runs for, and the tools that sit outside the
-          day-to-day workspace nav.
+    <main className="flex-1 min-h-0 overflow-y-auto">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-10 pb-16">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Settings</h1>
+        <p className="mt-2 text-[15px] text-fg-muted">
+          How the Executive runs, who it runs for, and the tools for looking under the hood.
         </p>
-
-        <div className="mt-6 lg:grid lg:grid-cols-[176px_minmax(0,1fr)] lg:gap-10">
-          <SettingsNav sections={sections} active={active} onJump={jumpTo} />
-
-          <div className="mt-4 lg:mt-0 space-y-8 min-w-0">
-            <SettingsSection
-              id="executive"
-              title="Executive"
-              description="Whether the Executive is doing its own work — briefs, nudges, monitoring, inbox, workflow timers — or holding it, and the voice it answers in."
-            >
-              <ExecutiveRunSwitch variant="card" />
-              <div className="mt-6">
-                <h3 className="text-[10px] font-semibold uppercase tracking-widest text-fg-subtle mb-2">
-                  Voice
-                </h3>
-                <VoicePicker variant="card" />
-              </div>
-            </SettingsSection>
-
-            <SettingsSection
-              id="workspace"
-              title="Workspace"
-              description="Who Open Executive is for, and the time zone your briefs run in."
-            >
-              <WorkspaceCard />
-            </SettingsSection>
-
-            {/* Renders nothing for anyone who can't have Act as me. */}
-            <ActAsMeCard onVisible={setActAsMe} />
-
-            <SettingsSection
-              id="tools"
-              title="Tools"
-              description="Diagnostics, configuration and reference pages. Each opens its own screen."
-            >
-              <div className="space-y-5">
-                {advancedItemsByGroup().map((group) => (
-                  <div key={group.key}>
-                    <h3
-                      id={`tools-${group.key}`}
-                      className="text-[10px] font-semibold uppercase tracking-widest text-fg-subtle"
-                    >
-                      {group.label}
-                    </h3>
-                    <ul className="mt-1 divide-y divide-line">
-                      {group.items.map((item) => (
-                        <li key={item.href}>
-                          <Link
-                            href={item.href}
-                            className="group flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg hover:bg-surface-overlay transition-colors"
-                          >
-                            <span className="text-fg-muted group-hover:text-fg transition-colors">
-                              <Icon name={item.icon} size="w-4 h-4" />
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-sm text-fg">{item.label}</span>
-                              <span className="block text-xs text-fg-muted">
-                                {item.description}
-                              </span>
-                            </span>
-                            <Icon
-                              name="chevron-right"
-                              size="w-3.5 h-3.5"
-                              className="text-fg-subtle group-hover:text-fg transition-colors"
-                            />
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            </SettingsSection>
-
-            <SettingsSection
-              id="about"
-              title="About"
-              description="The version this install is running, and whether a newer release is out."
-            >
-              <AboutCard />
-            </SettingsSection>
-          </div>
-        </div>
+        <ul className="mt-6 sm:mt-8 grid gap-3 sm:gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {pages.map((page) => (
+            <li key={page.id}>
+              <SettingsTile page={page} status={statuses.byPage[page.id]} />
+            </li>
+          ))}
+        </ul>
       </div>
     </main>
   );
+}
+
+function SettingsTile({ page, status }: { page: SettingsPageDef; status?: TileStatus }) {
+  return (
+    <Link
+      href={page.href}
+      className="group flex h-full items-start gap-4 rounded-2xl border border-line bg-surface-elevated p-5 sm:flex-col sm:gap-0 sm:p-6 transition-colors hover:border-accent/50 hover:bg-surface-overlay/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+    >
+      <span className="hidden sm:flex w-11 h-11 items-center justify-center rounded-xl bg-accent/10 text-accent">
+        <Icon name={page.icon} size="w-5 h-5" />
+      </span>
+      <span className="min-w-0 flex-1 sm:mt-4">
+        <span className="block text-lg font-semibold text-fg">{page.label}</span>
+        <span className="hidden sm:block mt-1 text-[15px] text-fg-muted leading-relaxed">
+          {page.description}
+        </span>
+        <span className="mt-1.5 sm:mt-3 flex min-h-[1.25rem] items-center gap-2 text-sm text-fg-muted">
+          {status && (
+            <>
+              {status.tone !== "none" && (
+                <span
+                  className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                    status.tone === "ok" ? "bg-emerald-500" : "bg-amber-500"
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+              <span className="truncate">{status.text}</span>
+            </>
+          )}
+        </span>
+      </span>
+      <Icon
+        name="chevron-right"
+        size="w-5 h-5"
+        className="sm:hidden mt-1 text-fg-subtle group-hover:text-fg transition-colors"
+      />
+    </Link>
+  );
+}
+
+// The one-line status under each tile. Each comes from a read the app makes
+// anyway (run state, workspace) or one small request; a read that fails
+// leaves its tile without a status rather than guessing.
+function useTileStatuses(): {
+  byPage: Partial<Record<SettingsPageId, TileStatus>>;
+  actAsMeOffered: boolean;
+} {
+  const { status: run, unknown } = useExecutiveStatus();
+  const { mode, effectiveTimezone, loading: workspaceLoading } = useWorkspace();
+  const [voice, setVoice] = useState<string | null>(null);
+  const [delegation, setDelegation] = useState<DelegationSettings | null | "error">(null);
+  const [version, setVersion] = useState<TileStatus | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    Promise.all([listPersonas(), getAgentDetail("executive")])
+      .then(([all, exec]) => {
+        const slug = exec.voice_persona_slug ?? "default";
+        const name = all.find((p) => p.slug === slug)?.display_name;
+        if (!ctrl.signal.aborted && name) setVoice(name);
+      })
+      .catch(() => {});
+    getDelegation(ctrl.signal)
+      .then((d) => setDelegation(d))
+      .catch((err) => {
+        if ((err as Error)?.name !== "AbortError") setDelegation("error");
+      });
+    getVersion(ctrl.signal)
+      .then((v) => {
+        const notice = versionNotice(v);
+        setVersion(
+          notice.update
+            ? { text: `${notice.running} · update available`, tone: "warn" }
+            : { text: notice.running, tone: "none" },
+        );
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, []);
+
+  const byPage: Partial<Record<SettingsPageId, TileStatus>> = {};
+
+  if (run) {
+    const state: TileStatus = unknown
+      ? { text: "Status unknown", tone: "none" }
+      : run.paused
+        ? { text: "Paused", tone: "warn" }
+        : { text: "Running", tone: "ok" };
+    byPage.executive = { ...state, text: voice ? `${state.text} · ${voice} voice` : state.text };
+  } else if (voice) {
+    byPage.executive = { text: `${voice} voice`, tone: "none" };
+  }
+
+  if (delegation && delegation !== "error") {
+    byPage["act-as-me"] =
+      delegation.gmail.status === "connected"
+        ? {
+            text: delegation.enabled ? "Mailbox connected · drafts on" : "Mailbox connected",
+            tone: "ok",
+          }
+        : { text: "Mailbox not connected", tone: "warn" };
+  }
+
+  if (!workspaceLoading) {
+    byPage.workspace = {
+      text: [MODE_LABEL[mode], effectiveTimezone].filter(Boolean).join(" · "),
+      tone: "none",
+    };
+  }
+
+  byPage.advanced = { text: `${ADVANCED_ITEMS.length} tools for power users`, tone: "none" };
+  if (version) byPage.about = version;
+
+  return { byPage, actAsMeOffered: delegation !== null };
 }

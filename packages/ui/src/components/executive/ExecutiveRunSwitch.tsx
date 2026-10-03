@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import Icon from "@/components/Icon";
 import { formatPausedAt, useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
+import Button from "@/components/ui/Button";
 
 // What a pause does and does not stop — shown before pausing so the
 // principal knows chat stays live.
@@ -16,37 +17,31 @@ function heldLabel(n: number): string {
 }
 
 /**
- * Pause / resume the Executive's autonomous work.
- *
- * - `sidebar`: a one-line status row in the shared sidebar footer that
- *   expands into the pause/resume panel.
- * - `card`: the body of the Settings page's Executive section — a status
- *   row that opens into the pause form on request, and stays open while
- *   paused so the held count and Resume are always in view.
+ * Pause / resume the Executive's autonomous work: the body of the run card
+ * on Settings → Your Executive. A status row with one button — Pause… opens
+ * the pause form (scope and an optional reason); while paused, who paused it
+ * and the held count stay in view with Resume as the button.
  */
-export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "card" }) {
+export default function ExecutiveRunSwitch() {
   const { status, unknown, busy, error, pause, resume } = useExecutiveStatus();
   const [expanded, setExpanded] = useState(false);
   const [reason, setReason] = useState("");
 
-  if (!status) return null;
+  if (!status) return <p className="text-[15px] text-fg-muted">Loading…</p>;
   if (unknown) {
     // The last status read failed: say so rather than show a stale state,
     // and offer no action whose effect we can't confirm.
     return (
-      <div className={variant === "card" ? "" : "pb-1"} title="Couldn't reach the backend — retrying">
-        <div
-          className={`flex items-center gap-2.5 text-sm text-fg-muted ${variant === "card" ? "" : "px-3 py-2"}`}
-        >
-          <span className="inline-block w-2 h-2 rounded-full flex-shrink-0 bg-fg-subtle" aria-hidden="true" />
-          <span className="truncate">Executive status unknown</span>
-        </div>
+      <div
+        className="flex items-center gap-2.5 text-[15px] text-fg-muted"
+        title="Couldn't reach the backend — retrying"
+      >
+        <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 bg-fg-subtle" aria-hidden="true" />
+        <span>Executive status unknown</span>
       </div>
     );
   }
   const paused = status.paused;
-  // The card opens on request while running and always while paused.
-  const open = variant === "card" ? paused || expanded : expanded;
 
   // Collapse only on success so a failure's error stays visible.
   const onPause = async () => {
@@ -55,25 +50,43 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
       setExpanded(false);
     }
   };
-  const onResume = async () => {
-    if (await resume()) setExpanded(false);
-  };
 
-  const dot = (
-    <span
-      className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
-        paused ? "bg-amber-400" : "bg-emerald-400"
-      }`}
-      aria-hidden="true"
-    />
-  );
-  const label = paused ? "Executive paused" : "Executive running";
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 text-base font-semibold text-fg">
+          <span
+            className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+              paused ? "bg-amber-400" : "bg-emerald-500"
+            }`}
+            aria-hidden="true"
+          />
+          <span>{paused ? "Paused" : "Running"}</span>
+        </div>
+        {paused ? (
+          status.can_resume && (
+            <Button variant="primary" onClick={() => void resume()} disabled={busy}>
+              <Icon name="play" size="w-4 h-4" />
+              {busy ? "Resuming…" : "Resume"}
+            </Button>
+          )
+        ) : (
+          !expanded && (
+            <Button
+              onClick={() => setExpanded(true)}
+              aria-expanded={false}
+              aria-controls="executive-pause-panel"
+            >
+              <Icon name="pause" size="w-4 h-4" />
+              Pause…
+            </Button>
+          )
+        )}
+      </div>
 
-  const panel = (
-    <div className="space-y-2.5">
       {paused ? (
-        <>
-          <p className="text-xs text-fg-muted leading-relaxed">
+        <div className="mt-3 space-y-1.5">
+          <p className="text-sm text-fg-muted leading-relaxed">
             Paused
             {status.paused_at && <> since {formatPausedAt(status.paused_at)}</>}
             {status.paused_by && <> by {status.paused_by}</>}.
@@ -84,24 +97,14 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
               </>
             )}
           </p>
-          <p className="text-xs text-amber-300">{heldLabel(status.held_actions)}</p>
-          {!status.can_resume ? (
-            <p className="text-xs text-fg-muted">Only the principal can resume the Executive.</p>
-          ) : (
-          <button
-            type="button"
-            onClick={onResume}
-            disabled={busy}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Icon name="play" size="w-3.5 h-3.5" />
-            {busy ? "Resuming…" : "Resume Executive"}
-          </button>
+          <p className="text-sm text-amber-500">{heldLabel(status.held_actions)}</p>
+          {!status.can_resume && (
+            <p className="text-sm text-fg-muted">Only the principal can resume the Executive.</p>
           )}
-        </>
-      ) : (
-        <>
-          <p className="text-xs text-fg-muted leading-relaxed">{PAUSE_SCOPE}</p>
+        </div>
+      ) : expanded ? (
+        <div id="executive-pause-panel" className="mt-4 space-y-3">
+          <p className="text-sm text-fg-muted leading-relaxed">{PAUSE_SCOPE}</p>
           <input
             type="text"
             value={reason}
@@ -112,75 +115,24 @@ export default function ExecutiveRunSwitch({ variant }: { variant: "sidebar" | "
             }}
             placeholder="Reason (optional)"
             aria-label="Reason for pausing (optional)"
-            className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:border-line-strong"
+            className="w-full h-11 px-3.5 rounded-xl text-[15px] bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:border-line-strong"
           />
-          <button
-            type="button"
-            onClick={onPause}
-            disabled={busy}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-500/15 text-amber-200 hover:bg-amber-500/25 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Icon name="pause" size="w-3.5 h-3.5" />
-            {busy ? "Pausing…" : "Pause Executive"}
-          </button>
-        </>
-      )}
-      {error && <p className="text-xs text-red-400">{error}</p>}
-    </div>
-  );
-
-  if (variant === "card") {
-    return (
-      <div className="max-w-md">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 text-sm font-medium text-fg">
-            {dot}
-            <span>{label}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="primary" onClick={() => void onPause()} disabled={busy}>
+              <Icon name="pause" size="w-4 h-4" />
+              {busy ? "Pausing…" : "Pause Executive"}
+            </Button>
+            <Button variant="ghost" onClick={() => setExpanded(false)} disabled={busy}>
+              Cancel
+            </Button>
           </div>
-          {!paused && (
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              aria-expanded={open}
-              aria-controls="executive-pause-panel"
-              className="flex items-center gap-1 text-xs text-fg-muted hover:text-fg transition-colors cursor-pointer"
-            >
-              Pause…
-              <Icon
-                name="chevron-right"
-                size="w-3.5 h-3.5"
-                className={`transition-transform ${open ? "rotate-90" : ""}`}
-              />
-            </button>
-          )}
         </div>
-        {open && (
-          <div id="executive-pause-panel" className="mt-3">
-            {panel}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="pb-1">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={open}
-        title={paused ? "Autonomous work is on hold — click to resume" : "Pause the Executive's autonomous work"}
-        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors cursor-pointer ${
-          paused
-            ? "text-amber-200 bg-amber-500/10 hover:bg-amber-500/15"
-            : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
-        }`}
-      >
-        {dot}
-        <span className="flex-1 text-left truncate">{label}</span>
-        <Icon name={paused ? "play" : "pause"} size="w-4 h-4" />
-      </button>
-      {open && <div className="px-3 pt-2 pb-1">{panel}</div>}
+      ) : (
+        <p className="mt-2 text-sm text-fg-muted leading-relaxed">
+          Doing its own work — briefs, nudges, monitoring, inbox and workflow timers.
+        </p>
+      )}
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </div>
   );
 }

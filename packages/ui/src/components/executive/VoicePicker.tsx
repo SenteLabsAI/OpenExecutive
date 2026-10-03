@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from "react";
 
+import Icon from "@/components/Icon";
 import { getAgentDetail, listPersonas, patchAgent, type PersonaMeta } from "@/lib/api";
 
 // The Executive's voice, picked from the three general voices. Shared by the
-// setup flow (/onboard) and Settings; both save through PATCH
+// setup flow (/onboard) and Settings → Your Executive, the one place it is
+// chosen after setup; both save through PATCH
 // /agents/executive, the same field the Agent Council edits.
 //
 // Named built-in voices are legacy: hidden here, but an install that already
@@ -99,22 +101,25 @@ export default function VoicePicker({ variant, onDone }: Props) {
               aria-checked={selected}
               onClick={() => void pick(v.slug)}
               disabled={saving || !loaded}
-              className={`flex flex-col justify-start text-left rounded-xl border p-4 transition-colors cursor-pointer disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${
+              className={`flex flex-col justify-start text-left rounded-2xl border-2 p-4 transition-colors cursor-pointer disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
                 selected
-                  ? "border-indigo-500/60 bg-indigo-500/10"
-                  : "border-line bg-surface-elevated hover:border-indigo-500/40"
+                  ? "border-accent bg-accent/10"
+                  : "border-line bg-surface-elevated hover:border-accent/50"
               }`}
             >
-              <span className="block text-sm font-semibold text-fg">{v.display_name}</span>
+              <span className="flex items-center justify-between gap-2 text-base font-semibold text-fg">
+                {v.display_name}
+                {selected && <Icon name="check" size="w-4 h-4" className="text-accent" />}
+              </span>
               {v.description ? (
-                <span className="block text-xs text-fg-muted mt-1 leading-relaxed">
+                <span className="block text-sm text-fg-muted mt-1 leading-relaxed">
                   {v.description}
                 </span>
               ) : (
-                <span className="block text-xs text-fg-muted mt-1">Your current voice</span>
+                <span className="block text-sm text-fg-muted mt-1">Your current voice</span>
               )}
               {v.sample && (
-                <span className="block text-xs text-fg-subtle italic mt-3 leading-relaxed">
+                <span className="block text-[13px] text-fg-subtle italic mt-3 leading-relaxed">
                   &ldquo;{v.sample}&rdquo;
                 </span>
               )}
@@ -123,11 +128,13 @@ export default function VoicePicker({ variant, onDone }: Props) {
         })}
       </div>
 
-      {error && <p className="mt-3 text-xs text-red-400">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
 
       {variant === "card" && (
-        <p className="mt-3 text-xs text-fg-subtle">
-          {saving ? "Saving…" : "Applies from the next message. The Agent Council has more voices."}
+        <p className="mt-3 text-sm text-fg-subtle">
+          {saving
+            ? "Saving…"
+            : "Applies from the next message. Custom voices are made under Agent Council → Advanced."}
         </p>
       )}
 

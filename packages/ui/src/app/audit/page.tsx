@@ -11,6 +11,8 @@ import {
   type AuditEventDetail,
   type AuditQuery,
 } from "@/lib/api";
+import Icon from "@/components/Icon";
+import { buttonClass } from "@/components/ui/Button";
 
 const PAGE_SIZE = 100;
 
@@ -446,6 +448,24 @@ function AuditPageInner() {
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+          <Link
+            href="/settings/advanced"
+            className="-ml-2 inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2 text-[15px] text-fg-muted hover:text-fg hover:bg-surface-overlay transition-colors"
+          >
+            <Icon name="arrow-left" size="w-4 h-4" />
+            Settings
+          </Link>
+          <div className="mt-2 mb-5 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Audit log</h1>
+              <p className="mt-1 text-[15px] text-fg-muted">
+                Every chat turn, specialist consult, tool call and scheduled action, newest first.
+              </p>
+            </div>
+            <Link href="/audit/usage" className={buttonClass("secondary", "sm")}>
+              Token usage
+            </Link>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4">
             <input
               type="search"

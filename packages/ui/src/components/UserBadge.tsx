@@ -6,10 +6,11 @@ import { GUIDE_NAV_ITEM } from "@/components/shell/navConfig";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 
 // The account menu at the foot of the sidebar: help, the Executive's
-// pause switch (on Settings) and signing out, kept off the main menu.
+// pause switch (on Settings → Your Executive) and signing out, kept off
+// the main menu.
 const ACCOUNT_ITEMS: OverflowItem[] = [
   { label: GUIDE_NAV_ITEM.label, href: GUIDE_NAV_ITEM.href },
-  { label: "Pause or resume the Executive", href: "/settings#executive" },
+  { label: "Pause or resume the Executive", href: "/settings/executive" },
 ];
 
 interface UserBadgeProps {

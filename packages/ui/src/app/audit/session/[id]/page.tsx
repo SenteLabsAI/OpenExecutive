@@ -3,6 +3,7 @@
 import "@xyflow/react/dist/style.css";
 
 import Dagre from "@dagrejs/dagre";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -18,6 +19,7 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 
+import Icon from "@/components/Icon";
 import {
   getAuditLog,
   getAuditSession,
@@ -837,6 +839,22 @@ export default function AuditSessionPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
+      {/* Title row: the way back to the log, and which session this is. */}
+      <div className="flex-shrink-0 border-b border-line px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+        <Link
+          href="/audit"
+          className="-ml-2 inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2 text-[15px] text-fg-muted hover:text-fg hover:bg-surface-overlay transition-colors"
+        >
+          <Icon name="arrow-left" size="w-4 h-4" />
+          Audit log
+        </Link>
+        <h1 className="min-w-0 text-xl sm:text-2xl font-bold tracking-tight text-fg">Session flow</h1>
+        {sessionId && (
+          <span className="min-w-0 truncate font-mono text-xs text-fg-subtle" title={sessionId}>
+            {sessionId}
+          </span>
+        )}
+      </div>
       <main className="flex-1 min-h-0 flex">
         {loading && (
           <div className="flex-1 flex items-center justify-center text-fg-muted">

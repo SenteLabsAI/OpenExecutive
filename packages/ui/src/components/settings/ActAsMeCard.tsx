@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
-import SettingsSection from "@/components/settings/SettingsSection";
+import AdvancedFold from "@/components/settings/AdvancedFold";
+import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
+import Button from "@/components/ui/Button";
 import {
   checkInboxNow,
   getDelegation,
@@ -26,13 +28,15 @@ import { formatAgo } from "@/lib/setupStatus";
 // Settings → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
 // for mail that needs you, which it sends only when you tap Send on Today.
-// Backed by GET/PUT /delegation, /delegation/inbox and /delegation/voice. Hidden for anyone who can't have it
-// (the owner can, and team members once the owner lets them: PUT
-// /delegation/team) and on a backend without it — so, unlike the other
-// sections, this one renders its own heading and tells the page (via
-// `onVisible`) whether it is on the page at all.
+// Backed by GET/PUT /delegation, /delegation/inbox and /delegation/voice.
+// Not offered to anyone who can't have it (the owner can, and team members
+// once the owner lets them: PUT /delegation/team) or on a backend without
+// it: the hub then shows no tile, and this page says so.
+//
+// The page body: the mailbox, Write drafts as me and Draft replies to my
+// inbox up front; How I write and Let team members use it under Advanced.
 
-const INTRO =
+export const ACT_AS_ME_INTRO =
   "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own mailbox (Gmail or Outlook) for you to review and send. Nothing goes out as you unless you send it, from your mailbox or with Send on a reply waiting on Today. Everything else it writes stays in its own name.";
 
 const LENGTHS = ["short", "medium", "long"] as const;
@@ -62,7 +66,7 @@ function greetingFields(p: VoiceProfile): Record<string, string> {
   return Object.fromEntries(AUDIENCES.map((a) => [a, p.greetings[a] ?? ""]));
 }
 
-export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boolean) => void }) {
+export default function ActAsMeCard() {
   const [settings, setSettings] = useState<DelegationSettings | null>(null);
   const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
   const [busy, setBusy] = useState(false);
@@ -88,12 +92,6 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
-
-  // The page lists the section in its nav only while it is on the page, and
-  // scrolls a `#act-as-me` link here once it is.
-  useEffect(() => {
-    onVisible?.(state === "ready" || state === "error");
-  }, [state, onVisible]);
 
   // While an inbox check runs, look again every few seconds until it's done.
   // A failed look keeps the card as it is and tries again; after
@@ -123,12 +121,22 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
     return () => clearTimeout(timer);
   }, [checking, pollTick]);
 
-  if (state === "hidden" || state === "loading") return null;
+  if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (state === "hidden") {
+    return (
+      <SettingsCard>
+        <p className="text-[15px] text-fg-muted leading-relaxed">
+          Act as me isn&apos;t available to you here. The owner of this Open Executive can turn it
+          on for team members.
+        </p>
+      </SettingsCard>
+    );
+  }
   if (state === "error" || !settings) {
     return (
-      <SettingsSection id="act-as-me" title="Act as me" description={INTRO}>
-        <p className="text-xs text-fg-subtle">Couldn&apos;t load this setting.</p>
-      </SettingsSection>
+      <SettingsCard>
+        <p className="text-[15px] text-fg-muted">Couldn&apos;t load this setting.</p>
+      </SettingsCard>
     );
   }
 
@@ -156,93 +164,93 @@ export default function ActAsMeCard({ onVisible }: { onVisible?: (visible: boole
     setBusy(false);
   };
 
+  const pre =
+    "mt-2 whitespace-pre-wrap break-all rounded-xl border border-line bg-surface px-3 py-2 text-xs text-fg font-mono";
   return (
-    <SettingsSection id="act-as-me" title="Act as me" description={INTRO}>
-      <div className="max-w-md divide-y divide-line">
-        {/* Your mailbox */}
-        <div className="py-4 first:pt-0 last:pb-0">
-          <div className="text-xs font-medium text-fg">{connected ? `Your ${mailbox}` : "Your mailbox"}</div>
-          <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
-            {connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
-          </p>
-          {!connected && settings.gmail.status === "not_configured" && (
-            <div className="mt-2">
-              <p className="text-xs text-fg-muted leading-relaxed">
-                For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth client
-                exported, run this and sign in as yourself, then put the file it writes where the API
-                reads it (see the Act as me section of .env.example):
-              </p>
-              <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-fg">
-                {settings.gmail.connect_command}
-              </pre>
-              {settings.gmail.outlook_connect_command && (
-                <>
-                  <p className="mt-2 text-xs text-fg-muted leading-relaxed">
-                    For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this instead
-                    and sign in as yourself with the code it prints:
-                  </p>
-                  <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-fg">
-                    {settings.gmail.outlook_connect_command}
-                  </pre>
-                </>
-              )}
-            </div>
-          )}
-          {!connected && (
-            <button
-              type="button"
-              onClick={() => void recheck()}
-              disabled={busy}
-              className="mt-2 text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
-            >
-              Check again
-            </button>
-          )}
-        </div>
-
-        {/* The switch */}
-        <div className="py-4 first:pt-0 last:pb-0">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-xs font-medium text-fg" id="act-as-me-label">
-                Write drafts as me
+    <>
+      <SettingsCard
+        title={connected ? `Your ${mailbox}` : "Your mailbox"}
+        description={connected ? `Connected to ${settings.gmail.email}.` : settings.gmail.message}
+        action={
+          connected ? (
+            <span className="inline-flex items-center gap-2 text-sm font-medium text-fg">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" aria-hidden="true" />
+              Connected
+            </span>
+          ) : undefined
+        }
+      >
+        {!connected && (
+          <div className="space-y-3">
+            {settings.gmail.status === "not_configured" && (
+              <div>
+                <p className="text-sm text-fg-muted leading-relaxed">
+                  For Gmail, on a computer with a browser, with the Executive&apos;s Google OAuth
+                  client exported, run this and sign in as yourself, then put the file it writes
+                  where the API reads it (see the Act as me section of .env.example):
+                </p>
+                <pre className={pre}>{settings.gmail.connect_command}</pre>
+                {settings.gmail.outlook_connect_command && (
+                  <>
+                    <p className="mt-3 text-sm text-fg-muted leading-relaxed">
+                      For Outlook, with the Executive&apos;s Microsoft 365 app exported, run this
+                      instead and sign in as yourself with the code it prints:
+                    </p>
+                    <pre className={pre}>{settings.gmail.outlook_connect_command}</pre>
+                  </>
+                )}
               </div>
-              <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
-                {on
-                  ? `On: ask it in chat — “reply to Dana as me: yes to the 5th” — and the draft waits in your ${mailbox} Drafts.`
-                  : connected
-                    ? "Off: the Executive only ever writes as itself."
-                    : "Connect your mailbox first."}
-              </p>
-            </div>
-            <Switch
-              checked={on}
-              onChange={() => void toggle()}
-              disabled={busy || (!on && !connected)}
-              labelledBy="act-as-me-label"
-            />
+            )}
+            <Button variant="primary" onClick={() => void recheck()} disabled={busy}>
+              {busy ? "Checking…" : "Check again"}
+            </Button>
           </div>
-          {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-        </div>
-
-        {settings.inbox && (
-          <InboxSection
-            inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
-            actAsMeOn={on}
-            onSettings={setSettings}
-            onInbox={(inbox) => {
-              setStoppedWaiting(false);
-              polls.current = 0;
-              setSettings((prev) => (prev ? { ...prev, inbox } : prev));
-            }}
-          />
         )}
+      </SettingsCard>
 
+      <SettingsCard
+        title="Write drafts as me"
+        titleId="act-as-me-label"
+        description={
+          on
+            ? `On: ask it in chat — “reply to Dana as me: yes to the 5th” — and the draft waits in your ${mailbox} Drafts.`
+            : connected
+              ? "Off: the Executive only ever writes as itself."
+              : "Connect your mailbox first."
+        }
+        action={
+          <Switch
+            checked={on}
+            onChange={() => void toggle()}
+            disabled={busy || (!on && !connected)}
+            labelledBy="act-as-me-label"
+          />
+        }
+      >
+        {error && <p className="text-sm text-red-500">{error}</p>}
+      </SettingsCard>
+
+      {settings.inbox && (
+        <InboxSection
+          inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
+          actAsMeOn={on}
+          onSettings={setSettings}
+          onInbox={(inbox) => {
+            setStoppedWaiting(false);
+            polls.current = 0;
+            setSettings((prev) => (prev ? { ...prev, inbox } : prev));
+          }}
+        />
+      )}
+
+      <AdvancedFold
+        id="act-as-me-advanced"
+        summary={settings.team ? "How I write · Let team members use it" : "How I write"}
+      >
         <VoiceSection connected={connected} outlook={outlook} />
-
         {settings.team && <TeamSection team={settings.team} onSettings={setSettings} />}
-      </div>
-    </SettingsSection>
+      </AdvancedFold>
+    </>
   );
 }
 
@@ -273,38 +281,36 @@ function TeamSection({
   };
 
   return (
-    <div className="py-4 first:pt-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium text-fg" id="act-as-me-team-label">
-            Let team members use it
-          </div>
-          <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
-            {team.enabled
-              ? "On: each team member can connect their own Gmail or Outlook and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
-              : "Off: only you can use Act as me."}
-          </p>
-        </div>
+    <SettingsCard
+      title="Let team members use it"
+      titleId="act-as-me-team-label"
+      description={
+        team.enabled
+          ? "On: each team member can connect their own Gmail or Outlook and turn it on for themselves. Their mail, drafts and replies stay theirs alone. You see only who uses it and how much."
+          : "Off: only you can use Act as me."
+      }
+      action={
         <Switch
           checked={team.enabled}
           onChange={() => void toggle()}
           disabled={busy}
           labelledBy="act-as-me-team-label"
         />
-      </div>
+      }
+    >
       {team.enabled && team.members.length > 0 && (
-        <ul className="mt-2 space-y-1">
+        <ul className="divide-y divide-line">
           {team.members.map((m) => (
-            <li key={m.person_id} className="text-xs text-fg-muted">
-              <span className="text-fg">{m.name}</span>
+            <li key={m.person_id} className="py-2 text-sm text-fg-muted">
+              <span className="font-medium text-fg">{m.name}</span>
               {`: ${m.drafts_30d} ${m.drafts_30d === 1 ? "draft" : "drafts"}, ${m.sent_30d} sent in the last 30 days`}
               {m.inbox ? ". Drafts replies to their inbox." : "."}
             </li>
           ))}
         </ul>
       )}
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-    </div>
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </SettingsCard>
   );
 }
 
@@ -351,45 +357,38 @@ function InboxSection({
 
   const last = inbox.last_poll_at && !inbox.checking ? ` Last checked ${formatAgo(inbox.last_poll_at)}.` : "";
   return (
-    <div className="py-4 first:pt-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium text-fg" id="act-as-me-inbox-label">
-            Draft replies to my inbox
-          </div>
-          <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
-            {on
-              ? "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
-              : actAsMeOn
-                ? "Off: it only drafts when you ask it to in chat."
-                : "Turn on Write drafts as me first."}
-          </p>
-        </div>
+    <SettingsCard
+      title="Draft replies to my inbox"
+      titleId="act-as-me-inbox-label"
+      description={
+        on
+          ? "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
+          : actAsMeOn
+            ? "Off: it only drafts when you ask it to in chat."
+            : "Turn on Write drafts as me first."
+      }
+      action={
         <Switch
           checked={on}
           onChange={() => void toggle()}
           disabled={busy || (!on && !actAsMeOn)}
           labelledBy="act-as-me-inbox-label"
         />
-      </div>
+      }
+    >
       {on && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="text-xs text-fg-muted">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="text-sm text-fg-muted">
             {inbox.message}
             {last}
           </span>
-          <button
-            type="button"
-            onClick={() => void checkNow()}
-            disabled={busy || inbox.checking}
-            className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
-          >
+          <Button size="sm" onClick={() => void checkNow()} disabled={busy || inbox.checking}>
             {inbox.checking ? "Checking…" : "Check now"}
-          </button>
+          </Button>
         </div>
       )}
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-    </div>
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </SettingsCard>
   );
 }
 
@@ -432,7 +431,11 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
   }, [adopt]);
 
   if (loadFailed) {
-    return <p className="text-xs text-fg-subtle">Couldn&apos;t load how you write.</p>;
+    return (
+      <SettingsCard title="How I write">
+        <p className="text-sm text-fg-muted">Couldn&apos;t load how you write.</p>
+      </SettingsCard>
+    );
   }
   if (!profile) return null;
 
@@ -490,57 +493,56 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
     signOff !== profile.sign_off ||
     length !== profile.length ||
     formality !== profile.formality;
-  const linkButton = "text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50";
+  const linkButton =
+    "min-h-touch text-sm font-medium text-accent hover:underline disabled:opacity-50 disabled:no-underline";
+  const field =
+    "rounded-xl border border-line bg-surface px-3 text-[15px] text-fg focus:outline-none focus:border-line-strong";
   const showForm = editing || dirty;
 
   return (
-    <div className="py-4 first:pt-0 last:pb-0">
-      <div className="text-xs font-medium text-fg">How I write</div>
-      <p className="text-xs text-fg-muted mt-0.5 leading-relaxed">
-        {learned
+    <SettingsCard
+      title="How I write"
+      description={
+        learned
           ? `Learned from ${profile.sample_count} of your sent emails${profile.locked ? " — locked, so it won't be relearned" : ""}. Drafts follow it; edit anything that isn't you.`
-          : "Not learned yet. It reads your recent sent mail once, keeps only what you wrote, and describes your style — you can edit or lock it."}
-      </p>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+          : "Not learned yet. It reads your recent sent mail once, keeps only what you wrote, and describes your style — you can edit or lock it."
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
         {!profile.locked && (
-          <button
-            type="button"
+          <Button
+            variant={learned ? "secondary" : "primary"}
+            size="sm"
             disabled={busy || !connected}
             onClick={() => void run(learnVoiceProfile)}
-            className="rounded-md border border-line px-2.5 py-1 text-xs text-fg hover:bg-surface-overlay disabled:opacity-50"
           >
             {busy ? "Working…" : learned ? "Learn again from my sent mail" : "Learn from my sent mail"}
-          </button>
+          </Button>
         )}
         {learned && !dirty && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setEditing((v) => !v)}
             aria-expanded={showForm}
             aria-controls="voice-editor"
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
           >
             {showForm ? "Done editing" : "Edit how I write"}
             <Icon
               name="chevron-right"
-              size="w-3.5 h-3.5"
+              size="w-4 h-4"
               className={`transition-transform ${showForm ? "rotate-90" : ""}`}
             />
-          </button>
+          </Button>
         )}
       </div>
 
       {learned && showForm && (
-        <div id="voice-editor" className="mt-3 space-y-4">
-          <div className="flex gap-3">
-            <label className="text-xs text-fg-muted">
+        <div id="voice-editor" className="mt-5 space-y-5">
+          <div className="flex flex-wrap gap-4">
+            <label className="flex items-center gap-2 text-sm text-fg-muted">
               Length
-              <select
-                value={length}
-                onChange={(e) => setLength(e.target.value)}
-                className="ml-1.5 rounded border border-line bg-surface px-1 py-0.5 text-xs text-fg"
-              >
+              <select value={length} onChange={(e) => setLength(e.target.value)} className={`${field} h-10`}>
                 <option value="">—</option>
                 {LENGTHS.map((l) => (
                   <option key={l} value={l}>
@@ -549,12 +551,12 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
                 ))}
               </select>
             </label>
-            <label className="text-xs text-fg-muted">
+            <label className="flex items-center gap-2 text-sm text-fg-muted">
               Tone
               <select
                 value={formality}
                 onChange={(e) => setFormality(e.target.value)}
-                className="ml-1.5 rounded border border-line bg-surface px-1 py-0.5 text-xs text-fg"
+                className={`${field} h-10`}
               >
                 <option value="">—</option>
                 {FORMALITIES.map((f) => (
@@ -567,42 +569,45 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
           </div>
 
           <fieldset>
-            <legend className="text-xs text-fg-muted">Greeting</legend>
-            <p className="text-[11px] text-fg-subtle leading-relaxed">
+            <legend className="text-sm font-medium text-fg">Greeting</legend>
+            <p className="text-[13px] text-fg-subtle leading-relaxed">
               {"{first}"} becomes their first name. Leave one empty to let each draft choose.
             </p>
-            <div className="mt-1.5 space-y-1.5">
+            <div className="mt-2 space-y-2">
               {AUDIENCES.map((audience) => (
-                <label key={audience} className="flex items-center gap-2 text-xs text-fg-muted">
-                  <span className="w-28 flex-shrink-0">{AUDIENCE_LABEL[audience]}</span>
+                <label
+                  key={audience}
+                  className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3 text-sm text-fg-muted"
+                >
+                  <span className="sm:w-36 flex-shrink-0">{AUDIENCE_LABEL[audience]}</span>
                   <input
                     type="text"
                     value={greetings[audience] ?? ""}
                     onChange={(e) => setGreetings((g) => ({ ...g, [audience]: e.target.value }))}
                     placeholder="Not set"
                     maxLength={GREETING_MAX_CHARS}
-                    className="min-w-0 flex-1 rounded border border-line bg-surface px-2 py-1 text-xs text-fg"
+                    className={`${field} h-10 min-w-0 flex-1`}
                   />
                 </label>
               ))}
             </div>
           </fieldset>
 
-          <label className="block text-xs text-fg-muted">
+          <label className="block text-sm font-medium text-fg">
             Sign-off
             <GrowingTextarea value={signOff} onChange={setSignOff} minRows={2} />
           </label>
-          <label className="block text-xs text-fg-muted">
+          <label className="block text-sm font-medium text-fg">
             Habits (one per line)
             <GrowingTextarea value={habits} onChange={setHabits} minRows={3} />
           </label>
-          <label className="block text-xs text-fg-muted">
+          <label className="block text-sm font-medium text-fg">
             Never (one per line)
             <GrowingTextarea value={avoid} onChange={setAvoid} minRows={2} />
           </label>
 
-          <div className="text-xs text-fg-muted">
-            <div>Signature</div>
+          <div className="text-sm text-fg-muted">
+            <div className="font-medium text-fg">Signature</div>
             {profile.signature ? (
               <>
                 <p className="mt-0.5 leading-relaxed">
@@ -610,10 +615,10 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
                     ? "Added to the end of every draft. Outlook doesn't share your signature with apps, so it can't be refreshed from there."
                     : "Added to the end of every draft, from your Gmail settings."}
                 </p>
-                <div className="mt-1 whitespace-pre-wrap break-words border-l-2 border-line pl-2 leading-relaxed text-fg">
+                <div className="mt-2 whitespace-pre-wrap break-words border-l-2 border-line pl-3 leading-relaxed text-fg">
                   {profile.signature}
                 </div>
-                <div className="mt-1 flex flex-wrap gap-x-3">
+                <div className="mt-1 flex flex-wrap gap-x-4">
                   {!outlook && (
                     <button
                       type="button"
@@ -646,7 +651,7 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
                     type="button"
                     disabled={busy || !connected}
                     onClick={takeGmailSignature}
-                    className={`mt-1 ${linkButton}`}
+                    className={linkButton}
                   >
                     Add my Gmail signature
                   </button>
@@ -656,16 +661,16 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
           </div>
 
           {profile.exemplars.length > 0 && (
-            <div className="text-xs text-fg-muted">
-              <div>Examples of your writing</div>
+            <div className="text-sm text-fg-muted">
+              <div className="font-medium text-fg">Examples of your writing</div>
               <p className="mt-0.5 leading-relaxed">
                 Short passages from your sent mail that set the tone. Drafts never reuse what they say.
               </p>
-              <ul className="mt-1 space-y-1.5">
+              <ul className="mt-2 space-y-2">
                 {profile.exemplars.map((example, i) => (
                   <li
                     key={i}
-                    className="whitespace-pre-wrap break-words border-l-2 border-line pl-2 leading-relaxed text-fg"
+                    className="whitespace-pre-wrap break-words border-l-2 border-line pl-3 leading-relaxed text-fg"
                   >
                     {example}
                   </li>
@@ -675,16 +680,16 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
                 type="button"
                 disabled={busy}
                 onClick={() => void run(() => updateVoiceProfile({ clear_exemplars: true }), true)}
-                className={`mt-1 ${linkButton}`}
+                className={linkButton}
               >
                 Remove examples
               </button>
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
+          <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
+            <Button
+              variant="primary"
               disabled={busy || !dirty}
               onClick={() =>
                 void run(() =>
@@ -700,32 +705,24 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
                   }),
                 )
               }
-              className="rounded-md bg-indigo-500 px-2.5 py-1 text-xs text-white hover:bg-indigo-400 disabled:opacity-50"
             >
               Save changes
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               disabled={busy}
               onClick={() => void run(() => updateVoiceProfile({ locked: !profile.locked }), true)}
-              className="rounded-md border border-line px-2.5 py-1 text-xs text-fg hover:bg-surface-overlay disabled:opacity-50"
             >
               {profile.locked ? "Unlock" : "Lock"}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void run(resetVoiceProfile)}
-              className="rounded-md px-2.5 py-1 text-xs text-fg-muted hover:text-fg disabled:opacity-50"
-            >
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void run(resetVoiceProfile)}>
               Reset
-            </button>
+            </Button>
           </div>
         </div>
       )}
-      {notice && <p className="mt-1 text-xs text-fg-muted">{notice}</p>}
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-    </div>
+      {notice && <p className="mt-2 text-sm text-fg-muted">{notice}</p>}
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </SettingsCard>
   );
 }
 
@@ -760,7 +757,7 @@ function GrowingTextarea({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       rows={minRows}
-      className="mt-1 block w-full resize-none overflow-hidden rounded border border-line bg-surface px-2 py-1 text-xs leading-relaxed text-fg"
+      className="mt-1.5 block w-full resize-none overflow-hidden rounded-xl border border-line bg-surface px-3 py-2 text-[15px] font-normal leading-relaxed text-fg focus:outline-none focus:border-line-strong"
     />
   );
 }
