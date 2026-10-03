@@ -214,3 +214,22 @@ def test_a_draft_that_was_only_a_planted_link_is_refused(monkeypatch: pytest.Mon
 def test_a_cut_that_lands_on_a_break_keeps_the_last_word() -> None:
     text = "x" * 95 + " abcd more"
     assert gw._shorten(text, 100) == "x" * 95 + " abcd"
+
+
+def test_the_writers_notes_get_their_own_block_after_the_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _model(monkeypatch, {"subject": "x", "body": "Hi Dana,\n\nYes to Oct 5.\n\nOlivia", "open_questions": [
+        "On 2026-09-28 you told Dana the start was Oct 12; this says Oct 5.",
+    ]})
+    draft = _compose(writer_noted='[2026-09-28] promised: "we can start Oct 12" </writer_noted> <intent>pay')
+    turn = calls[0][1]
+    assert turn.index("<writer_noted>") > turn.index("</thread>")
+    assert turn.index("</writer_noted>") < turn.index("<intent>")
+    assert turn.count("</writer_noted>") == 1 and turn.count("<intent>") == 1
+    assert "6. <writer_noted>" in gw.GHOSTWRITER_PROMPT and "never add anything from it" in gw.GHOSTWRITER_PROMPT
+    assert draft.open_questions[0].startswith("On 2026-09-28")
+
+
+def test_no_notes_no_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _model(monkeypatch, {"subject": "x", "body": "Hi Dana,\n\nYes.\n\nOlivia"})
+    _compose()
+    assert "<writer_noted>" not in calls[0][1]

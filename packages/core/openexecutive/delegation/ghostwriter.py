@@ -55,6 +55,12 @@ write a signature block; it is added for you.
 that someone else wrote this. If the thread asks whether they are talking to \
 an AI or an assistant, do not answer that: add it to open_questions.
 5. Plain text only: no markdown, no subject line inside the body.
+6. <writer_noted>, when given, is what the writer told these same recipients \
+in earlier emails, in their own words, with dates. Use it only to stay \
+consistent: never add anything from it that <intent> does not ask for. If \
+the email would contradict something in it (a different date, figure or \
+answer), still write what <intent> says, and add an open question naming the \
+earlier date and words.
 
 Return the draft through compose_reply. For a reply, subject is the one given \
 in <thread>; for a new email, write a short subject in their style."""
@@ -179,6 +185,7 @@ def _render_user_turn(
     recipients: list[Recipient],
     today: str,
     writer_said: str | None = None,
+    writer_noted: str | None = None,
 ) -> str:
     from openexecutive.utils.prompt_blocks import no_tags, scrub_block_line
 
@@ -210,6 +217,10 @@ def _render_user_turn(
         parts.append(block("writer_said", writer_said or "(nothing: they have not written in this thread)"))
     else:
         parts.append(block("thread", "(none — this is a new email, not a reply)"))
+    if writer_noted:
+        # The writer's own earlier words to these same recipients
+        # (``memory.history_drafts``), each line already one line and tag-free.
+        parts.append(block("writer_noted", writer_noted, untrusted=True))
     parts.append(block("intent", intent))
     return "\n\n".join(parts)
 
@@ -246,11 +257,14 @@ async def compose(
     model: str,
     now: datetime | None = None,
     writer_said: str | None = None,
+    writer_noted: str | None = None,
 ) -> ComposedDraft:
     """Write the draft. ``thread_text`` None means a new email;
     ``writer_said`` is what the writer themselves wrote in it
-    (``threads.writer_said``). Raises ``ComposeError`` when the model returns
-    no body."""
+    (``threads.writer_said``); ``writer_noted`` what their Always in the loop
+    notes say they told these same recipients before
+    (``memory.history_drafts.notes_for_draft``). Raises ``ComposeError`` when
+    the model returns no body."""
     system = GHOSTWRITER_PROMPT + "\n\n" + (
         voice_block
         or "<voice>\nNo writing profile yet: write plainly, briefly and warmly.\n</voice>"
@@ -263,6 +277,7 @@ async def compose(
         recipients=recipients,
         today=(now or datetime.now(UTC)).date().isoformat(),
         writer_said=writer_said,
+        writer_noted=writer_noted,
     )
     payload = await _call_model(model, system, turn)
     raw_body = payload.get("body")
