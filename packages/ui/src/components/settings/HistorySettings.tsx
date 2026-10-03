@@ -117,7 +117,7 @@ export function CompanyRetentionCard() {
     return (
       <SettingsCard>
         <p className="text-[15px] text-fg-muted">
-          {state === null ? "Sign in to see how long your notes last." : "Couldn't load this setting."}
+          {state === null ? "Notes are kept for people on the People list, signed in as themselves." : "Couldn't load this setting."}
         </p>
       </SettingsCard>
     );
