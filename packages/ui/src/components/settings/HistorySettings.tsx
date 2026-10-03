@@ -57,7 +57,14 @@ const fromValue = (value: string) => (value === "" ? null : Number(value));
  * shorter time for their own notes. Nothing for someone who can't have it. */
 export function KeepTrackCard() {
   const { state, save, busy, error } = useHistoryState();
-  if (state === "loading" || state === "error" || state === null) return null;
+  if (state === "loading" || state === null) return null;
+  if (state === "error") {
+    return (
+      <SettingsCard title="Keep track of what happens">
+        <p className="text-[15px] text-fg-muted">Couldn&apos;t load this setting.</p>
+      </SettingsCard>
+    );
+  }
   // Someone who can't use Act as me can still turn it off.
   if (!state.can_note_replies && !state.reply_notes) return null;
 

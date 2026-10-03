@@ -57,7 +57,8 @@ export default function HistoryTab({
         setFailed(true);
         onCount(null);
       } finally {
-        setLoading(false);
+        // An aborted or superseded read leaves the newer one to finish loading.
+        if (mine === latest.current) setLoading(false);
       }
     },
     [onCount, onAvailable],
