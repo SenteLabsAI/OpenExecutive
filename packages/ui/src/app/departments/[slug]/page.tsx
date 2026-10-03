@@ -1,9 +1,13 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { AddGoalForm, GoalRow } from "@/components/goals/GoalEditor";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
+import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
+import SidePanel from "@/components/ui/SidePanel";
 import {
   deleteDepartment,
   getDepartment,
@@ -53,6 +57,23 @@ function cls(...parts: (string | false | undefined)[]) {
   return parts.filter(Boolean).join(" ");
 }
 
+// The settings form, one short section at a time.
+type SettingsTab = "charter" | "acts" | "numbers" | "channels" | "watched";
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "charter", label: "Charter" },
+  { id: "acts", label: "How it acts" },
+  { id: "numbers", label: "Numbers" },
+  { id: "channels", label: "Channels" },
+  { id: "watched", label: "Watched" },
+];
+
+const INPUT_CLS =
+  "w-full px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent";
+const FIELD_CLS = `${INPUT_CLS} h-11`;
+const LABEL_CLS = "text-sm text-fg-muted flex flex-col gap-1.5";
+const HINT_CLS = "text-[13px] text-fg-subtle";
+const SECTION_INTRO_CLS = "text-[15px] text-fg-muted mb-4";
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -84,6 +105,8 @@ export default function DepartmentDetailPage() {
     // One entity per line in the textarea; split + trimmed on save.
     watched_entities: "",
   });
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("charter");
+  const settingsTabsId = useId();
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsErr, setSettingsErr] = useState<string | null>(null);
 
@@ -189,6 +212,46 @@ export default function DepartmentDetailPage() {
     }
   }, [editingSettings]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  function openSettings() {
+    setSettingsTab("charter");
+    setEditingSettings(true);
+  }
+
+  // Close the settings panel, dropping unsaved changes.
+  function cancelSettings() {
+    if (!dept || savingSettings) return;
+    setSettingsForm({
+      authority_level: dept.config.authority_level,
+      mission: dept.config.charter.mission,
+      cadences: { ...dept.config.cadences },
+      headcount: dept.headcount != null ? String(dept.headcount) : "",
+      budget_usd: dept.budget_usd != null ? String(dept.budget_usd) : "",
+      head_person_id: dept.config.head_person_id,
+      slack_channel_id: dept.config.slack_channel_id ?? "",
+      discord_channel_id: dept.config.discord_channel_id ?? "",
+      telegram_chat_id: dept.config.telegram_chat_id ?? "",
+      watched_entities: (dept.config.watched_entities ?? []).join("\n"),
+    });
+    setSettingsErr(null);
+    setEditingSettings(false);
+  }
+
+  async function removeDepartment() {
+    if (!dept) return;
+    if (!window.confirm(
+      `Delete "${dept.config.title}"? This will also remove all its Goals and cannot be undone.`
+    )) return;
+    setDeleting(true);
+    setDeleteErr(null);
+    try {
+      await deleteDepartment(slug);
+      router.push("/departments");
+    } catch (e) {
+      setDeleteErr(e instanceof Error ? e.message : "Delete failed");
+      setDeleting(false);
+    }
+  }
+
   async function saveSettings() {
     if (!dept) return;
     setSavingSettings(true);
@@ -229,367 +292,115 @@ export default function DepartmentDetailPage() {
   return (
     <div className="flex flex-col h-full bg-surface">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6">
-          {loading && <p className="text-fg-muted text-sm">Loading…</p>}
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
           {error && (
-            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
               {error}
             </div>
           )}
           {dept && (
             <>
               {/* Header */}
-              <div className="flex items-start justify-between mb-6 gap-3">
-                <div>
-                  <h1 className="text-xl font-semibold text-fg">{dept.config.title}</h1>
-                  <div className="text-xs text-fg-muted mt-1">
+              <div className="flex items-start justify-between mb-6 gap-4">
+                <div className="min-w-0">
+                  <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">{dept.config.title}</h1>
+                  <div className="text-[15px] text-fg-muted mt-1.5">
                     {dept.config.specialist_key ? (
-                      <>Specialist: <code className="font-mono text-fg">{dept.config.specialist_key}</code></>
+                      <>Specialist: <code className="font-mono text-sm text-fg">{dept.config.specialist_key}</code></>
                     ) : (
                       <span className="italic">Informational department (no specialist agent)</span>
                     )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => {
-                      if (editingSettings) {
-                        // reset
-                        setSettingsForm({
-                          authority_level: dept.config.authority_level,
-                          mission: dept.config.charter.mission,
-                          cadences: { ...dept.config.cadences },
-                          headcount: dept.headcount != null ? String(dept.headcount) : "",
-                          budget_usd: dept.budget_usd != null ? String(dept.budget_usd) : "",
-                          head_person_id: dept.config.head_person_id,
-                          slack_channel_id: dept.config.slack_channel_id ?? "",
-                          discord_channel_id: dept.config.discord_channel_id ?? "",
-                          telegram_chat_id: dept.config.telegram_chat_id ?? "",
-                          watched_entities: (dept.config.watched_entities ?? []).join("\n"),
-                        });
-                        setSettingsErr(null);
-                      }
-                      setEditingSettings((v) => !v);
-                    }}
-                    className="px-3 py-1.5 text-xs rounded-lg border border-line hover:bg-surface-overlay transition-colors"
-                  >
-                    {editingSettings ? "Cancel" : "Edit settings"}
-                  </button>
-                  <button
-                    disabled={deleting}
-                    onClick={async () => {
-                      if (!window.confirm(
-                        `Delete "${dept.config.title}"? This will also remove all its Goals and cannot be undone.`
-                      )) return;
-                      setDeleting(true);
-                      setDeleteErr(null);
-                      try {
-                        await deleteDepartment(slug);
-                        router.push("/departments");
-                      } catch (e) {
-                        setDeleteErr(e instanceof Error ? e.message : "Delete failed");
-                        setDeleting(false);
-                      }
-                    }}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 disabled:opacity-50 transition-colors"
-                  >
-                    {deleting ? "Deleting…" : "Delete department"}
-                  </button>
+                  <Button onClick={openSettings}>Edit settings</Button>
+                  <OverflowMenu
+                    label={`More actions for ${dept.config.title}`}
+                    items={[
+                      {
+                        label: deleting ? "Deleting…" : "Delete department",
+                        danger: true,
+                        disabled: deleting,
+                        onSelect: () => void removeDepartment(),
+                      },
+                    ]}
+                  />
                 </div>
               </div>
               {deleteErr && (
-                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm mb-4">
+                <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
                   {deleteErr}
                 </div>
               )}
 
-              {/* Settings — three stacked cards in edit mode, single summary card in read mode */}
-              {editingSettings ? (
-                <div className="space-y-4 mb-6">
-                  {/* Card 1: Charter */}
-                  <section className="rounded-xl border border-line bg-surface-elevated px-4 py-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-3">Charter</h3>
-                    <label className="text-xs text-fg-muted flex flex-col gap-1">
-                      Mission
-                      <textarea
-                        value={settingsForm.mission}
-                        onChange={(e) =>
-                          setSettingsForm((f) => ({ ...f, mission: e.target.value }))
-                        }
-                        rows={3}
-                        className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 resize-none"
-                      />
-                    </label>
-                  </section>
-
-                  {/* Card 2: How it acts */}
-                  <section className="rounded-xl border border-line bg-surface-elevated px-4 py-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-3">How it acts</h3>
-                    <div className="space-y-3">
-                      <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Department head
-                        <select
-                          value={settingsForm.head_person_id ?? ""}
-                          onChange={(e) =>
-                            setSettingsForm((f) => ({
-                              ...f,
-                              head_person_id: e.target.value ? Number(e.target.value) : null,
-                            }))
-                          }
-                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                        >
-                          <option value="">— None —</option>
-                          {people.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.full_name}{p.role ? ` — ${p.role}` : ""}{p.is_principal ? " (you)" : ""}
-                            </option>
-                          ))}
-                        </select>
-                        <span className="text-[10px] text-fg-muted">
-                          The Executive surfaces this person as the department owner in routing decisions.
-                        </span>
-                      </label>
-                      <div className="space-y-1.5">
-                        {AUTHORITY_OPTS.map((a) => {
-                          const meta = AUTHORITY_META[a];
-                          const checked = settingsForm.authority_level === a;
-                          return (
-                            <label
-                              key={a}
-                              className={cls(
-                                "flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors",
-                                checked
-                                  ? "border-indigo-500/50 bg-indigo-600/10"
-                                  : "border-line hover:border-indigo-500/30 bg-surface-input"
-                              )}
-                            >
-                              <input
-                                type="radio"
-                                name="authority_level"
-                                value={a}
-                                checked={checked}
-                                onChange={() =>
-                                  setSettingsForm((f) => ({ ...f, authority_level: a }))
-                                }
-                                className="mt-0.5 accent-indigo-500 flex-shrink-0"
-                              />
-                              <div className="min-w-0">
-                                <div className="text-xs font-medium text-fg">{meta.label}</div>
-                                <div className="text-[10px] text-fg-muted mt-0.5">{meta.hint}</div>
-                              </div>
-                            </label>
-                          );
-                        })}
+              {/* Settings summary; Edit settings opens the form in a side panel */}
+              <section className="rounded-2xl border border-line bg-surface-elevated px-5 py-2 mb-8">
+                <dl className="divide-y divide-line">
+                  <div className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-4 py-3">
+                    <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">How it acts</dt>
+                    <dd className="min-w-0">
+                      <div className="text-[15px] text-fg">
+                        {AUTHORITY_META[dept.config.authority_level].label}
                       </div>
-
-                      <div>
-                        <div className="text-xs text-fg-muted mb-1">Recurring check-in</div>
-                        {Object.entries(settingsForm.cadences).map(([name, spec]) => (
-                          <div key={name} className="flex items-center gap-2 mb-1.5">
-                            <input
-                              value={name}
-                              readOnly
-                              className="flex-1 px-2 py-1.5 rounded-lg bg-surface-input border border-line text-xs font-mono text-fg-muted focus:outline-none"
-                            />
-                            <input
-                              value={spec}
-                              onChange={(e) =>
-                                setSettingsForm((f) => ({
-                                  ...f,
-                                  cadences: { ...f.cadences, [name]: e.target.value },
-                                }))
-                              }
-                              className="flex-1 px-2 py-1.5 rounded-lg bg-surface-input border border-line text-xs font-mono focus:outline-none focus:border-indigo-500"
-                              placeholder="daily@09:00"
-                            />
-                          </div>
-                        ))}
-                        <p className="text-[10px] text-fg-muted mt-1">
-                          When set, the specialist posts a check-in on this schedule. You&apos;ll see it in Today.
-                          Examples (UTC): <code className="font-mono">daily@09:00</code>, <code className="font-mono">weekly@mon@09:00</code>, <code className="font-mono">quarterly@01-09:00</code>.
-                        </p>
+                      <div className="text-sm text-fg-muted mt-0.5">
+                        {AUTHORITY_META[dept.config.authority_level].hint}
                       </div>
-                    </div>
-                  </section>
-
-                  {/* Card 3: Numbers */}
-                  <section className="rounded-xl border border-line bg-surface-elevated px-4 py-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-3">Numbers</h3>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Headcount
-                        <input
-                          type="number"
-                          min={0}
-                          value={settingsForm.headcount}
-                          onChange={(e) =>
-                            setSettingsForm((f) => ({ ...f, headcount: e.target.value }))
-                          }
-                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                        />
-                      </label>
-                      <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Budget (USD)
-                        <input
-                          type="number"
-                          min={0}
-                          value={settingsForm.budget_usd}
-                          onChange={(e) =>
-                            setSettingsForm((f) => ({ ...f, budget_usd: e.target.value }))
-                          }
-                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                        />
-                      </label>
-                    </div>
-                  </section>
-
-                  {/* Card 4: Broadcast channels — OE can post to these team rooms */}
-                  <section className="rounded-xl border border-line bg-surface-elevated px-4 py-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-1">Team channels</h3>
-                    <p className="text-[10px] text-fg-muted mb-3">
-                      When set, the Executive can post department-scoped updates to these rooms via{" "}
-                      <code className="font-mono">send_department_message</code>. Leave blank to have OE
-                      fall back to DMing the department head.
-                    </p>
-                    <div className="space-y-2">
-                      <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Slack channel ID
-                        <input
-                          type="text"
-                          value={settingsForm.slack_channel_id}
-                          onChange={(e) =>
-                            setSettingsForm((f) => ({ ...f, slack_channel_id: e.target.value }))
-                          }
-                          placeholder="C01234ABCDE"
-                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm font-mono focus:outline-none focus:border-indigo-500"
-                        />
-                      </label>
-                      <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Discord channel ID
-                        <input
-                          type="text"
-                          value={settingsForm.discord_channel_id}
-                          onChange={(e) =>
-                            setSettingsForm((f) => ({ ...f, discord_channel_id: e.target.value }))
-                          }
-                          placeholder="123456789012345678"
-                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm font-mono focus:outline-none focus:border-indigo-500"
-                        />
-                      </label>
-                      <label className="text-xs text-fg-muted flex flex-col gap-1">
-                        Telegram chat ID
-                        <input
-                          type="text"
-                          value={settingsForm.telegram_chat_id}
-                          onChange={(e) =>
-                            setSettingsForm((f) => ({ ...f, telegram_chat_id: e.target.value }))
-                          }
-                          placeholder="-1001234567890"
-                          className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm font-mono focus:outline-none focus:border-indigo-500"
-                        />
-                      </label>
-                    </div>
-                  </section>
-
-                  {/* Card 5: Watched entities — strong grounding for the research watch policy */}
-                  <section className="rounded-xl border border-line bg-surface-elevated px-4 py-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-1">Watched entities</h3>
-                    <p className="text-[10px] text-fg-muted mb-3">
-                      Vendors, competitors or tickers this department cares about, one per line. Named here,
-                      the Executive will start watching their status pages, filings and feeds on its own and
-                      route what it finds to this department and its head.
-                    </p>
-                    <label className="text-xs text-fg-muted flex flex-col gap-1">
-                      Watched entities (one per line)
-                      <textarea
-                        value={settingsForm.watched_entities}
-                        onChange={(e) =>
-                          setSettingsForm((f) => ({ ...f, watched_entities: e.target.value }))
-                        }
-                        rows={4}
-                        placeholder={"Brex\nStripe\nACME"}
-                        className="px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                      />
-                    </label>
-                  </section>
-
-                  {settingsErr && <p className="text-xs text-rose-300">{settingsErr}</p>}
-                  <button
-                    disabled={savingSettings}
-                    onClick={saveSettings}
-                    className="px-4 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
-                  >
-                    {savingSettings ? "Saving…" : "Save settings"}
-                  </button>
-                </div>
-              ) : (
-                <section className="rounded-xl border border-line bg-surface-elevated px-4 py-4 mb-6">
-                  <div className="divide-y divide-line">
-                    <div className="flex items-start gap-3 py-2">
-                      <div className="w-36 flex-shrink-0 text-xs text-fg-muted pt-0.5">How it acts</div>
-                      <div>
-                        <div className="text-sm text-fg">
-                          {AUTHORITY_META[dept.config.authority_level].label}
-                        </div>
-                        <div className="text-[10px] text-fg-muted mt-0.5">
-                          {AUTHORITY_META[dept.config.authority_level].hint}
-                        </div>
-                      </div>
-                    </div>
-                    {[
-                      ["Mission", dept.config.charter.mission || "—"],
-                      ...(dept.config.head_person_id != null
-                        ? [["Head", people.find((p) => p.id === dept.config.head_person_id)?.full_name ?? `Person #${dept.config.head_person_id}`]]
-                        : []),
-                      ...(dept.headcount != null ? [["Headcount", String(dept.headcount)]] : []),
-                      ...(dept.budget_usd != null ? [["Budget", `$${dept.budget_usd.toLocaleString()}`]] : []),
-                      ...(dept.config.slack_channel_id ? [["Slack channel", dept.config.slack_channel_id]] : []),
-                      ...(dept.config.discord_channel_id ? [["Discord channel", dept.config.discord_channel_id]] : []),
-                      ...(dept.config.telegram_chat_id ? [["Telegram chat", dept.config.telegram_chat_id]] : []),
-                      ...((dept.config.watched_entities ?? []).length > 0
-                        ? [["Watched entities", (dept.config.watched_entities ?? []).join(", ")]]
-                        : []),
-                    ].map(([label, value]) => (
-                      <div key={label} className="flex items-start gap-3 py-2">
-                        <div className="w-36 flex-shrink-0 text-xs text-fg-muted pt-0.5">{label}</div>
-                        <div className="text-sm text-fg">{value}</div>
-                      </div>
-                    ))}
-                    {Object.entries(dept.config.cadences).length > 0 && (
-                      <div className="flex items-start gap-3 py-2">
-                        <div className="w-36 flex-shrink-0 text-xs text-fg-muted pt-0.5">Recurring check-in</div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {Object.entries(dept.config.cadences).map(([n, s]) => (
-                            <span key={n} className="px-2 py-0.5 rounded bg-surface-overlay border border-line text-xs font-mono text-fg">
-                              {n}: {s}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    </dd>
                   </div>
-                </section>
-              )}
+                  {[
+                    ["Mission", dept.config.charter.mission || "—"],
+                    ...(dept.config.head_person_id != null
+                      ? [["Head", people.find((p) => p.id === dept.config.head_person_id)?.full_name ?? `Person #${dept.config.head_person_id}`]]
+                      : []),
+                    ...(dept.headcount != null ? [["Headcount", String(dept.headcount)]] : []),
+                    ...(dept.budget_usd != null ? [["Budget", `$${dept.budget_usd.toLocaleString()}`]] : []),
+                    ...(dept.config.slack_channel_id ? [["Slack channel", dept.config.slack_channel_id]] : []),
+                    ...(dept.config.discord_channel_id ? [["Discord channel", dept.config.discord_channel_id]] : []),
+                    ...(dept.config.telegram_chat_id ? [["Telegram chat", dept.config.telegram_chat_id]] : []),
+                    ...((dept.config.watched_entities ?? []).length > 0
+                      ? [["Watched entities", (dept.config.watched_entities ?? []).join(", ")]]
+                      : []),
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-4 py-3">
+                      <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">{label}</dt>
+                      <dd className="text-[15px] text-fg min-w-0 break-words">{value}</dd>
+                    </div>
+                  ))}
+                  {Object.entries(dept.config.cadences).length > 0 && (
+                    <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-4 py-3">
+                      <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">Recurring check-in</dt>
+                      <dd className="flex flex-wrap gap-1.5 min-w-0">
+                        {Object.entries(dept.config.cadences).map(([n, s]) => (
+                          <span key={n} className="px-2.5 py-1 rounded-lg bg-surface-overlay border border-line text-sm font-mono text-fg break-all">
+                            {n}: {s}
+                          </span>
+                        ))}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </section>
 
               {/* Charter scope (read-only) */}
               {(dept.config.charter.scope.length > 0 || dept.config.charter.out_of_scope.length > 0) && (
-                <section className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <section className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-6">
                   {dept.config.charter.scope.length > 0 && (
                     <div>
-                      <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-2">In Scope</h2>
-                      <ul className="list-disc list-inside space-y-1">
+                      <h2 className="text-lg font-semibold text-fg mb-2">In scope</h2>
+                      <ul className="list-disc pl-5 space-y-1.5">
                         {dept.config.charter.scope.map((s, i) => (
-                          <li key={i} className="text-sm text-fg">{s}</li>
+                          <li key={i} className="text-[15px] text-fg">{s}</li>
                         ))}
                       </ul>
                     </div>
                   )}
                   {dept.config.charter.out_of_scope.length > 0 && (
                     <div>
-                      <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted mb-2">Out of Scope</h2>
-                      <ul className="list-disc list-inside space-y-1">
+                      <h2 className="text-lg font-semibold text-fg mb-2">Out of scope</h2>
+                      <ul className="list-disc pl-5 space-y-1.5">
                         {dept.config.charter.out_of_scope.map((s, i) => (
-                          <li key={i} className="text-sm text-fg-muted">{s}</li>
+                          <li key={i} className="text-[15px] text-fg-muted">{s}</li>
                         ))}
                       </ul>
                     </div>
@@ -599,21 +410,18 @@ export default function DepartmentDetailPage() {
 
               {/* Goals */}
               <section>
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
-                    Goals ({goals.length})
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h2 className="text-lg font-semibold text-fg">
+                    Goals <span className="font-normal text-fg-subtle">{goals.length}</span>
                   </h2>
                   {!addingGoal && (
-                    <button
-                      onClick={() => setAddingGoal(true)}
-                      className="px-3 py-1 text-xs rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30"
-                    >
-                      + Add Goal
-                    </button>
+                    <Button variant="primary" onClick={() => setAddingGoal(true)}>
+                      Add goal
+                    </Button>
                   )}
                 </div>
 
-                <div className="rounded-xl border border-line bg-surface-elevated px-4">
+                <div className="rounded-2xl border border-line bg-surface-elevated px-5">
                   {addingGoal && (
                     <AddGoalForm
                       slug={slug}
@@ -625,14 +433,8 @@ export default function DepartmentDetailPage() {
                     />
                   )}
                   {goals.length === 0 && !addingGoal ? (
-                    <p className="py-6 text-sm text-fg-muted text-center">
-                      No Goals yet.{" "}
-                      <button
-                        onClick={() => setAddingGoal(true)}
-                        className="text-indigo-400 hover:underline"
-                      >
-                        Add one →
-                      </button>
+                    <p className="py-8 text-[15px] text-fg-muted text-center">
+                      No Goals yet. Add the first one with Add goal.
                     </p>
                   ) : (
                     goals.map((goal) => (
@@ -652,6 +454,244 @@ export default function DepartmentDetailPage() {
                   )}
                 </div>
               </section>
+
+              <SidePanel
+                open={editingSettings}
+                onClose={cancelSettings}
+                title="Department settings"
+                subtitle={dept.config.title}
+                width="lg"
+                footer={
+                  <div className="space-y-2">
+                    {settingsErr && <p className="text-sm text-rose-500">{settingsErr}</p>}
+                    <div className="flex gap-2">
+                      <Button variant="primary" disabled={savingSettings} onClick={saveSettings} className="flex-1 sm:flex-none">
+                        {savingSettings ? "Saving…" : "Save settings"}
+                      </Button>
+                      <Button disabled={savingSettings} onClick={cancelSettings}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                }
+              >
+                <div className="mb-5">
+                  <SectionTabs
+                    idBase={settingsTabsId}
+                    label="Settings sections"
+                    tabs={SETTINGS_TABS}
+                    active={settingsTab}
+                    onChange={setSettingsTab}
+                  />
+                </div>
+                <div {...sectionPanelProps(settingsTabsId, settingsTab)}>
+                  {settingsTab === "charter" && (
+                    <label className={LABEL_CLS}>
+                      Mission
+                      <textarea
+                        value={settingsForm.mission}
+                        onChange={(e) =>
+                          setSettingsForm((f) => ({ ...f, mission: e.target.value }))
+                        }
+                        rows={5}
+                        className={`${INPUT_CLS} py-2.5 resize-none`}
+                      />
+                    </label>
+                  )}
+
+                  {settingsTab === "acts" && (
+                    <div className="space-y-6">
+                      <label className={LABEL_CLS}>
+                        Department head
+                        <select
+                          value={settingsForm.head_person_id ?? ""}
+                          onChange={(e) =>
+                            setSettingsForm((f) => ({
+                              ...f,
+                              head_person_id: e.target.value ? Number(e.target.value) : null,
+                            }))
+                          }
+                          className={FIELD_CLS}
+                        >
+                          <option value="">— None —</option>
+                          {people.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.full_name}{p.role ? ` — ${p.role}` : ""}{p.is_principal ? " (you)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <span className={HINT_CLS}>
+                          The Executive surfaces this person as the department owner in routing decisions.
+                        </span>
+                      </label>
+                      <fieldset className="space-y-2">
+                        <legend className="text-sm text-fg-muted mb-1.5">How it acts</legend>
+                        {AUTHORITY_OPTS.map((a) => {
+                          const meta = AUTHORITY_META[a];
+                          const checked = settingsForm.authority_level === a;
+                          return (
+                            <label
+                              key={a}
+                              className={cls(
+                                "flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors",
+                                checked
+                                  ? "border-accent/60 bg-accent/10"
+                                  : "border-line hover:border-line-strong bg-surface-elevated"
+                              )}
+                            >
+                              <input
+                                type="radio"
+                                name="authority_level"
+                                value={a}
+                                checked={checked}
+                                onChange={() =>
+                                  setSettingsForm((f) => ({ ...f, authority_level: a }))
+                                }
+                                className="mt-1 w-4 h-4 accent-indigo-500 flex-shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <div className="text-[15px] font-medium text-fg">{meta.label}</div>
+                                <div className="text-sm text-fg-muted mt-0.5">{meta.hint}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </fieldset>
+
+                      <div>
+                        <div className="text-sm text-fg-muted mb-1.5">Recurring check-in</div>
+                        {Object.entries(settingsForm.cadences).map(([name, spec]) => (
+                          <div key={name} className="flex items-center gap-2 mb-2">
+                            <input
+                              value={name}
+                              readOnly
+                              aria-label="Check-in name"
+                              className={`${FIELD_CLS} flex-1 min-w-0 font-mono text-sm text-fg-muted`}
+                            />
+                            <input
+                              value={spec}
+                              aria-label={`Schedule for ${name}`}
+                              onChange={(e) =>
+                                setSettingsForm((f) => ({
+                                  ...f,
+                                  cadences: { ...f.cadences, [name]: e.target.value },
+                                }))
+                              }
+                              className={`${FIELD_CLS} flex-1 min-w-0 font-mono text-sm`}
+                              placeholder="daily@09:00"
+                            />
+                          </div>
+                        ))}
+                        <p className={HINT_CLS}>
+                          When set, the specialist posts a check-in on this schedule. You&apos;ll see it in Today.
+                          Examples (UTC): <code className="font-mono">daily@09:00</code>, <code className="font-mono">weekly@mon@09:00</code>, <code className="font-mono">quarterly@01-09:00</code>.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {settingsTab === "numbers" && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <label className={LABEL_CLS}>
+                        Headcount
+                        <input
+                          type="number"
+                          min={0}
+                          value={settingsForm.headcount}
+                          onChange={(e) =>
+                            setSettingsForm((f) => ({ ...f, headcount: e.target.value }))
+                          }
+                          className={FIELD_CLS}
+                        />
+                      </label>
+                      <label className={LABEL_CLS}>
+                        Budget (USD)
+                        <input
+                          type="number"
+                          min={0}
+                          value={settingsForm.budget_usd}
+                          onChange={(e) =>
+                            setSettingsForm((f) => ({ ...f, budget_usd: e.target.value }))
+                          }
+                          className={FIELD_CLS}
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                  {/* Broadcast channels — OE can post to these team rooms */}
+                  {settingsTab === "channels" && (
+                    <>
+                      <p className={SECTION_INTRO_CLS}>
+                        When set, the Executive can post department-scoped updates to these rooms via{" "}
+                        <code className="font-mono text-sm">send_department_message</code>. Leave blank to have OE
+                        fall back to DMing the department head.
+                      </p>
+                      <div className="space-y-4">
+                        <label className={LABEL_CLS}>
+                          Slack channel ID
+                          <input
+                            type="text"
+                            value={settingsForm.slack_channel_id}
+                            onChange={(e) =>
+                              setSettingsForm((f) => ({ ...f, slack_channel_id: e.target.value }))
+                            }
+                            placeholder="C01234ABCDE"
+                            className={`${FIELD_CLS} font-mono`}
+                          />
+                        </label>
+                        <label className={LABEL_CLS}>
+                          Discord channel ID
+                          <input
+                            type="text"
+                            value={settingsForm.discord_channel_id}
+                            onChange={(e) =>
+                              setSettingsForm((f) => ({ ...f, discord_channel_id: e.target.value }))
+                            }
+                            placeholder="123456789012345678"
+                            className={`${FIELD_CLS} font-mono`}
+                          />
+                        </label>
+                        <label className={LABEL_CLS}>
+                          Telegram chat ID
+                          <input
+                            type="text"
+                            value={settingsForm.telegram_chat_id}
+                            onChange={(e) =>
+                              setSettingsForm((f) => ({ ...f, telegram_chat_id: e.target.value }))
+                            }
+                            placeholder="-1001234567890"
+                            className={`${FIELD_CLS} font-mono`}
+                          />
+                        </label>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Watched entities — strong grounding for the research watch policy */}
+                  {settingsTab === "watched" && (
+                    <>
+                      <p className={SECTION_INTRO_CLS}>
+                        Vendors, competitors or tickers this department cares about, one per line. Named here,
+                        the Executive will start watching their status pages, filings and feeds on its own and
+                        route what it finds to this department and its head.
+                      </p>
+                      <label className={LABEL_CLS}>
+                        Watched entities (one per line)
+                        <textarea
+                          value={settingsForm.watched_entities}
+                          onChange={(e) =>
+                            setSettingsForm((f) => ({ ...f, watched_entities: e.target.value }))
+                          }
+                          rows={6}
+                          placeholder={"Brex\nStripe\nACME"}
+                          className={`${INPUT_CLS} py-2.5`}
+                        />
+                      </label>
+                    </>
+                  )}
+                </div>
+              </SidePanel>
             </>
           )}
         </div>

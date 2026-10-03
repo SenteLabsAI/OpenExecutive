@@ -85,11 +85,11 @@ export function TimeframeChips({
   onChange: (periodType: PeriodType, periodValue: string) => void;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-xs text-fg-muted" id="timeframe-chips-label">
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm text-fg-muted" id="timeframe-chips-label">
         Timeframe
       </span>
-      <div role="radiogroup" aria-labelledby="timeframe-chips-label" className="flex flex-wrap gap-1.5">
+      <div role="radiogroup" aria-labelledby="timeframe-chips-label" className="flex flex-wrap gap-2">
         {PERIOD_TYPES.map((p) => {
           const selected = p.value === periodType;
           return (
@@ -101,9 +101,9 @@ export function TimeframeChips({
               onClick={() => onChange(p.value, suggestPeriodValue(p.value))}
               title={p.value === "ongoing" ? undefined : suggestPeriodValue(p.value)}
               className={
-                "px-2.5 py-1 rounded-full border text-xs transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500/50 " +
+                "h-10 px-4 rounded-full border text-[15px] transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
                 (selected
-                  ? "border-indigo-500/70 bg-indigo-500/10 text-fg font-medium"
+                  ? "border-accent/70 bg-accent/10 text-fg font-medium"
                   : "border-line text-fg-muted hover:text-fg hover:border-line-strong")
               }
             >
@@ -134,12 +134,12 @@ export default function TimeframePicker({
     PERIOD_TYPES.find((p) => p.value === periodType)?.placeholder ?? "";
   const inputCls =
     size === "compact"
-      ? "px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-      : "px-2 py-1.5 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500";
+      ? "h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg focus:outline-none focus:border-accent"
+      : "h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg focus:outline-none focus:border-accent";
 
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
+    <div className="grid grid-cols-2 gap-3">
+      <label className="text-sm text-fg-muted flex flex-col gap-1.5">
         Timeframe
         <select
           value={periodType}
@@ -157,7 +157,7 @@ export default function TimeframePicker({
         </select>
       </label>
       {periodType !== "ongoing" && (
-        <label className="text-xs text-fg-muted flex flex-col gap-1">
+        <label className="text-sm text-fg-muted flex flex-col gap-1.5">
           Period
           <input
             value={periodValue}
