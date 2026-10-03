@@ -471,6 +471,32 @@ def test_the_eval_path_counts_recipients_as_the_scan_does(owner: Any, models: di
     assert verdict is not None and isinstance(reply, inbox.Reply) and reply.cc == []
 
 
+def test_reply_to_all_is_trimmed_to_the_send_limit_and_flagged(owner: Any, models: dict[str, Any]) -> None:
+    # The scan skips mail this wide; the eval path still writes it, trimmed.
+    others = [f"p{i}@co.example" for i in range(11)]
+    message = _msg("m1", "t1", to=[OWNER, *others], text="Olivia, can you send the waterfall?")
+    thread = MailThread(id="t1", messages=[message])
+    _, reply = asyncio.run(inbox.reply_for(owner, message, thread, relation="contact", own={OWNER}))
+    assert isinstance(reply, inbox.Reply)
+    assert reply.cc == others[: inbox.MAX_RECIPIENTS - 1] and "cc_trimmed" in reply.flags
+    assert len([*reply.to, *reply.cc]) == inbox.MAX_RECIPIENTS
+
+
+def test_only_a_real_true_counts_as_asked_of_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def says(model: str, turn: str) -> dict[str, Any]:
+        return {"needs_reply": True, "kind": "question", "asked_of_them": "true", "confidence": 0.9}
+
+    monkeypatch.setattr(ic, "_call_model", says)
+    verdict = asyncio.run(ic.classify(_msg("m1", "t1"), relation="team"))
+    assert verdict is not None and verdict.asked_of_them is False
+
+
+def test_someone_only_copied_never_gets_a_draft() -> None:
+    verdict = ic.Verdict(needs_reply=True, kind="question", confidence=0.95, asked_of_them=True)
+    assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="to", others=1)) is True
+    assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="cc", others=1)) is False
+
+
 def test_a_stranger_needs_more_certainty_and_gets_a_holding_reply(
     db: Path, owner: Any, models: dict[str, Any]
 ) -> None:
