@@ -1,4 +1,5 @@
 import type { AnswerSources } from "@/lib/answerSources";
+import type { HistoryNote, HistoryState } from "@/lib/history";
 import type { SetupStatus } from "@/lib/setupStatus";
 
 const API_BASE = "/api/backend";
@@ -1675,6 +1676,65 @@ export async function getDelegation(signal?: AbortSignal): Promise<DelegationSet
   if (res.status === 403 || res.status === 404) return null;
   if (!res.ok) throw await delegationError(res, "Couldn't load Act as me.");
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Always in the loop: the caller's own notes (/memories/history). Each person
+// sees and changes only their own; the company retention is the owner's.
+// ---------------------------------------------------------------------------
+
+export type { HistoryNote, HistoryState } from "@/lib/history";
+
+// null when this viewer has no notes to see (403: not signed in or not on the
+// People list) or the backend predates it (404).
+export async function getHistory(query?: string, signal?: AbortSignal): Promise<HistoryState | null> {
+  const q = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
+  const res = await fetch(`${API_BASE}/memories/history${q}`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load your notes.");
+  return res.json();
+}
+
+export async function updateHistorySettings(patch: {
+  reply_notes?: boolean;
+  retention_days?: number | null;
+  company_retention_days?: number | null;
+}): Promise<HistoryState> {
+  const res = await fetch(`${API_BASE}/memories/history/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't save the setting.");
+  return res.json();
+}
+
+/** Pin or unpin, or correct it ("" clears the correction). */
+export async function updateHistoryNote(
+  id: number,
+  patch: { pinned?: boolean; correction?: string },
+): Promise<HistoryNote> {
+  const res = await fetch(`${API_BASE}/memories/history/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change the note.");
+  return res.json();
+}
+
+export async function forgetHistoryNote(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/history/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await delegationError(res, "Couldn't forget the note.");
+}
+
+/** "Don't remember this": forgets every note from that note's conversation,
+ * and nothing from it is noted again. Answers how many were forgotten. */
+export async function forgetHistoryConversation(id: number): Promise<number> {
+  const res = await fetch(`${API_BASE}/memories/history/${id}/forget-conversation`, { method: "POST" });
+  if (!res.ok) throw await delegationError(res, "Couldn't forget the conversation.");
+  const body = (await res.json()) as { forgotten?: number };
+  return body.forgotten ?? 0;
 }
 
 export async function setDelegationEnabled(enabled: boolean): Promise<DelegationSettings> {

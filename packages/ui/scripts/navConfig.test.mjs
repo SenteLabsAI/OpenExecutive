@@ -183,6 +183,7 @@ test("the Settings hub: one tile per page, each with its own route", () => {
     [
       "Your Executive → /settings/executive",
       "Act as me → /settings/act-as-me",
+      "Memory → /settings/memory",
       "Workspace → /settings/workspace",
       "Advanced → /settings/advanced",
       "About → /settings/about",
@@ -202,6 +203,7 @@ test("old /settings#anchors land on the matching page", () => {
   assert.equal(to("#executive"), "/settings/executive");
   assert.equal(to("#workspace"), "/settings/workspace");
   assert.equal(to("act-as-me"), "/settings/act-as-me");
+  assert.equal(to("#memory"), "/settings/memory");
   assert.equal(to("#tools"), "/settings/advanced");
   for (const g of ADVANCED_GROUPS) assert.equal(to(`#tools-${g.key}`), "/settings/advanced");
   assert.equal(to("#about"), "/settings/about");

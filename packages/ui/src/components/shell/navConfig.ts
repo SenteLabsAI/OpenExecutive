@@ -394,10 +394,11 @@ export function advancedItemsByGroup(): {
 
 // The Settings hub's tiles, in hub order. Each opens a short page of its
 // own at `href`. "act-as-me" shows only for someone who can have Act as me
-// (the hub drops it when the card is hidden). `hashes` are the anchors the
+// (the hub drops it when the card is hidden), "memory" only for someone with
+// notes to keep (signed in and on the People list). `hashes` are the anchors the
 // old one-page Settings used (`/settings#workspace`): links that still
 // carry one land on the matching page (see settingsPageForHash).
-export type SettingsPageId = "executive" | "act-as-me" | "workspace" | "advanced" | "about";
+export type SettingsPageId = "executive" | "act-as-me" | "memory" | "workspace" | "advanced" | "about";
 
 export interface SettingsPageDef {
   id: SettingsPageId;
@@ -425,6 +426,14 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     icon: "mail",
     description: "Your mailbox, drafts written as you, and how you write.",
     hashes: ["act-as-me"],
+  },
+  {
+    id: "memory",
+    label: "Memory",
+    href: "/settings/memory",
+    icon: "archive",
+    description: "How long the private notes from replies people send last.",
+    hashes: ["memory"],
   },
   {
     id: "workspace",

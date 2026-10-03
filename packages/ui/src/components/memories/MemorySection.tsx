@@ -24,11 +24,19 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import SectionTabs from "@/components/ui/SectionTabs";
 import CorrectionsTab from "./CorrectionsTab";
+import HistoryTab from "./HistoryTab";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
-type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "people";
+type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "people" | "history";
 
-export const MEMORY_TABS: readonly MemoryTab[] = ["decisions", "initiatives", "advice", "corrections", "people"];
+export const MEMORY_TABS: readonly MemoryTab[] = [
+  "decisions",
+  "initiatives",
+  "advice",
+  "corrections",
+  "people",
+  "history",
+];
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 const PEOPLE_EMPTY =
@@ -51,11 +59,15 @@ export default function MemorySection() {
     advice: null,
     corrections: null,
     people: null,
+    history: null,
   });
   // Peer memory is optional: until its status is known the People tab shows
   // (so the bar does not jump on installs that have it); once the backend says
   // "disabled" the tab goes away for good.
   const [peopleEnabled, setPeopleEnabled] = useState<boolean | null>(null);
+  // History (Always in the loop) is the signed-in person's own notes: it goes
+  // away for anyone with none to see (not signed in, not on the roster).
+  const [historyEnabled, setHistoryEnabled] = useState<boolean | null>(null);
   // Stable per-tab callbacks — these are passed to the (always-mounted) tabs as
   // `onCount`, which lives in each tab's `refresh` useCallback deps. They MUST
   // keep a constant identity across renders, or the tab's refresh→useEffect
@@ -72,6 +84,11 @@ export default function MemorySection() {
     (n: number | null) => setCounts((c) => ({ ...c, people: n })),
     [],
   );
+  const onCountHistory = useCallback(
+    (n: number | null) => setCounts((c) => ({ ...c, history: n })),
+    [],
+  );
+  const onHistoryAvailable = useCallback((available: boolean) => setHistoryEnabled(available), []);
   const onPeopleStatus = useCallback(
     (s: PeopleMemory["status"]) => setPeopleEnabled(s !== "disabled"),
     [],
@@ -79,7 +96,8 @@ export default function MemorySection() {
 
   useEffect(() => {
     if (peopleEnabled === false && tab === "people") setTab("decisions");
-  }, [peopleEnabled, tab]);
+    if (historyEnabled === false && tab === "history") setTab("decisions");
+  }, [peopleEnabled, historyEnabled, tab]);
 
   // `/memories?tab=corrections` (the chat chip after remember_fact) opens
   // that tab. Read once on mount from the URL, so the page needs no Suspense
@@ -89,10 +107,9 @@ export default function MemorySection() {
     if (wanted && (MEMORY_TABS as readonly string[]).includes(wanted)) setTab(wanted as MemoryTab);
   }, []);
 
-  const tabs: MemoryTab[] =
-    peopleEnabled === false
-      ? MEMORY_TABS.filter((t) => t !== "people")
-      : [...MEMORY_TABS];
+  const tabs: MemoryTab[] = MEMORY_TABS.filter(
+    (t) => !(t === "people" && peopleEnabled === false) && !(t === "history" && historyEnabled === false),
+  );
 
   return (
     <div>
@@ -124,6 +141,9 @@ export default function MemorySection() {
         </div>
         <div className={tab === "people" ? "" : "hidden"}>
           <PeopleTab onCount={onCountPeople} onStatus={onPeopleStatus} />
+        </div>
+        <div className={tab === "history" ? "" : "hidden"}>
+          <HistoryTab onCount={onCountHistory} onAvailable={onHistoryAvailable} />
         </div>
       </div>
     </div>

@@ -15,11 +15,20 @@ import {
   type SettingsPageId,
 } from "@/components/shell/navConfig";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { getAgentDetail, getDelegation, getVersion, listPersonas, type DelegationSettings } from "@/lib/api";
+import {
+  getAgentDetail,
+  getDelegation,
+  getHistory,
+  getVersion,
+  listPersonas,
+  type DelegationSettings,
+  type HistoryState,
+} from "@/lib/api";
+import { retentionLabel } from "@/lib/history";
 import { versionNotice } from "@/lib/versionNotice";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
-// Act as me, Workspace, Advanced and About. Each tile says what's on its page
+// Act as me, Memory, Workspace, Advanced and About. Each tile says what's on its page
 // and, where it's cheap to know, how things stand right now. The one-page
 // Settings this replaces used anchors (`/settings#workspace`); a link that
 // still carries one is sent on to the matching page.
@@ -54,7 +63,12 @@ export default function SettingsPage() {
   const statuses = useTileStatuses();
   // Act as me has a tile only for someone who can have it (GET /delegation
   // answers null for everyone else).
-  const pages = SETTINGS_PAGES.filter((p) => p.id !== "act-as-me" || statuses.actAsMeOffered);
+  // Memory, only for someone with notes to keep (GET /memories/history
+  // answers null for anyone not signed in or not on the People list).
+  const pages = SETTINGS_PAGES.filter(
+    (p) =>
+      (p.id !== "act-as-me" || statuses.actAsMeOffered) && (p.id !== "memory" || statuses.memoryOffered),
+  );
 
   if (hash === null || target) return <main className="flex-1" />;
 
@@ -122,12 +136,14 @@ function SettingsTile({ page, status }: { page: SettingsPageDef; status?: TileSt
 function useTileStatuses(): {
   byPage: Partial<Record<SettingsPageId, TileStatus>>;
   actAsMeOffered: boolean;
+  memoryOffered: boolean;
 } {
   const { status: run, unknown } = useExecutiveStatus();
   const { mode, effectiveTimezone, loading: workspaceLoading } = useWorkspace();
   const [voice, setVoice] = useState<string | null>(null);
   const [delegation, setDelegation] = useState<DelegationSettings | null | "error">(null);
   const [version, setVersion] = useState<TileStatus | null>(null);
+  const [history, setHistory] = useState<HistoryState | null | "error">(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -142,6 +158,11 @@ function useTileStatuses(): {
       .then((d) => setDelegation(d))
       .catch((err) => {
         if ((err as Error)?.name !== "AbortError") setDelegation("error");
+      });
+    getHistory(undefined, ctrl.signal)
+      .then((h) => setHistory(h))
+      .catch((err) => {
+        if ((err as Error)?.name !== "AbortError") setHistory("error");
       });
     getVersion(ctrl.signal)
       .then((v) => {
@@ -179,6 +200,14 @@ function useTileStatuses(): {
         : { text: "Mailbox not connected", tone: "warn" };
   }
 
+  if (history && history !== "error") {
+    const days = history.company_retention_days;
+    byPage.memory = {
+      text: days === null ? "Notes kept until forgotten" : `Notes last ${retentionLabel(days)}`,
+      tone: "none",
+    };
+  }
+
   if (!workspaceLoading) {
     byPage.workspace = {
       text: [MODE_LABEL[mode], effectiveTimezone].filter(Boolean).join(" · "),
@@ -189,5 +218,5 @@ function useTileStatuses(): {
   byPage.advanced = { text: `${ADVANCED_ITEMS.length} tools for power users`, tone: "none" };
   if (version) byPage.about = version;
 
-  return { byPage, actAsMeOffered: delegation !== null };
+  return { byPage, actAsMeOffered: delegation !== null, memoryOffered: history !== null };
 }
