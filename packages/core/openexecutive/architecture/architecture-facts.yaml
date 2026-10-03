@@ -2442,13 +2442,14 @@ memory:
     - Notes record events, never instructions. Code sets trust, visibility
       and the checks; the model writes only the summary sentence.
     - The note-taker reads only the person's own sent words
-      (email_poller.sender_new_text), the recipients' names and the subject,
-      never the mail being answered, so another person's text can't become a
-      note. One forced record_notes call, a constant NOTES_PROMPT, at most
+      (email_poller.sender_new_text) and the recipients' names cut to four
+      words (short_name), never the mail being answered nor the subject, so
+      another person's text can't become a note. One forced record_notes call, a constant NOTES_PROMPT, at most
       three notes, model DELEGATION_CLASSIFIER_MODEL or the routing model.
     - check_note drops a note whose quote isn't word for word in what they
       sent, whose summary has a figure not in the quote, a name or date word
-      not in their words, recipients or subject, or a link or address. A
+      not in their words or recipients, mostly words they didn't write, or a
+      link or address. A
       due_date is kept only for promised or agreed.
     - Every note is private to its person, the principal included. Company
       retention defaults to 90 days (30, 90, 365 or until forgotten, the
@@ -2459,9 +2460,10 @@ memory:
       a hash of channel and thread id.
     - recall_history is offered only when history_tools.recall_person finds
       the speaker verified on a private surface, attended, not
-      private_to_principal, no eval override, with their switch on. A team
-      member's recall marks the conversation mail_private and touched_mail
-      first, so the principal can't open it and the turn teaches no memory.
+      private_to_principal, no eval override, with their switch on. Recall
+      sets touched_mail first, for the principal too (private rows, no
+      memory, the lockdown from that round), and a team member's
+      conversation is marked mail_private so the principal can't open it.
     - Notes never feed Honcho, episodic extraction or standing facts. The four
       history_* tables swap with client slots and the factory reset clears them.
 

@@ -3,8 +3,9 @@ someone approved and sent into at most three short dated notes of what they
 told whom.
 
 It reads **only the words the person sent** (quoted replies below them
-stripped), the names of who it went to and the subject: never the mail being
-answered, so nothing another person wrote can become a note. One forced tool
+stripped) and the names of who it went to, cut to a short name: never the
+mail being answered, nor the subject (which others write too), so nothing
+another person wrote can become a note. One forced tool
 call (``record_notes``), no other tools, no memory, no company context, and a
 constant prompt short enough that it isn't cached.
 
@@ -13,8 +14,8 @@ fail:
 
 - ``quote`` is the person's own words, found word for word in what they sent;
 - ``summary`` adds nothing they didn't say: every figure is in the quote, and
-  every name or date word is in what they sent, the recipients' names or
-  the subject;
+  every name or date word is in what they sent or the recipients' names,
+  and most of its other words are theirs too;
 - no link or email address appears in the summary;
 - ``kind`` is one of ``history.KINDS``, and ``due_date`` a real date (kept
   only for something promised or agreed).
@@ -47,6 +48,9 @@ _QUOTE_MIN_CHARS = 12
 _QUOTE_MIN_WORDS = 3
 _DUE_KINDS = frozenset({"promised", "agreed"})
 _LINK = re.compile(r"https?://|www\.|[\w.+-]+@[\w-]+\.", re.IGNORECASE)
+_NAME_CHARS = re.compile(r"[^\w .'-]")
+_MAX_NAME_WORDS = 4
+_MAX_NAME_CHARS = 60
 
 NOTES_PROMPT = """You keep a person's record of what they told people by \
 email. <sent_reply> is one email they wrote and sent themselves.
@@ -96,15 +100,24 @@ _RECORD_TOOL: dict[str, Any] = {
 }
 
 
-def render_reply(body: str, *, to_names: list[str], subject: str, sent_on: date) -> str:
-    """The user turn: who it went to, the subject, the date and the body, as
-    data in one ``<sent_reply>`` block."""
+def short_name(name: str) -> str:
+    """A display name as the note-taker may see it: letters and name
+    punctuation only, at most four words. Whoever writes in a thread chooses
+    their own display name, so a long one is never a channel for text."""
+    from openexecutive.utils.prompt_blocks import plain
+
+    words = _NAME_CHARS.sub(" ", plain(name or "")).split()
+    return " ".join(words[:_MAX_NAME_WORDS])[:_MAX_NAME_CHARS].strip()
+
+
+def render_reply(body: str, *, to_names: list[str], sent_on: date) -> str:
+    """The user turn: who it went to, the date and the body, as data in one
+    ``<sent_reply>`` block."""
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.utils.prompt_blocks import no_tags, scrub_block_line
 
     header = [
         f"To: {one_line(', '.join(to_names), 300)}",
-        f"Subject: {one_line(subject, 200)}",
         f"Sent: {sent_on.isoformat()} ({sent_on.strftime('%A')})",
     ]
     lines = [scrub_block_line(line, "</sent_reply>") for line in [*header, "", *body.splitlines()]]
@@ -127,6 +140,24 @@ def _unsaid(summary: str, allowed: str) -> list[str]:
         if key in _DATE_WORDS or ((bare[0].isupper() or not bare.isascii()) and i > 0):
             missing.append(bare)
     return missing
+
+
+def _mostly_theirs(summary: str, allowed: str) -> bool:
+    """Whether at least half the summary's content words (four letters or
+    more, glue words aside) are words they wrote or names they wrote to,
+    matched on the first five letters so "agreed" counts for "agree". A
+    summary that is mostly new words says something they didn't."""
+    from openexecutive.memory.episodic import _normalize_for_quote_match
+    from openexecutive.orchestrator.fact_tools import _GLUE, _WORD, _bare
+
+    def stem(word: str) -> str:
+        return word.lower()[:5]
+
+    said = {stem(_bare(w)) for w in _WORD.findall(_normalize_for_quote_match(allowed))}
+    content = [b for b in (_bare(w) for w in _WORD.findall(summary)) if len(b) >= 4 and b.lower() not in _GLUE]
+    if not content:
+        return True
+    return sum(stem(w) in said for w in content) * 2 >= len(content)
 
 
 def check_note(raw: Any, *, body: str, allowed: str) -> NewNote | None:
@@ -152,7 +183,7 @@ def check_note(raw: Any, *, body: str, allowed: str) -> NewNote | None:
     quoted = _numbers_in(quote)
     if any(not any(_same(n, q) for q in quoted) for n in _numbers_in(summary)):
         return None
-    if _unsaid(summary, allowed):
+    if _unsaid(summary, allowed) or not _mostly_theirs(summary, allowed):
         return None
     due: str | None = None
     raw_due = raw.get("due_date")
@@ -191,7 +222,7 @@ def notes_model() -> str:
 
 
 async def take_notes(
-    body: str, *, to_names: list[str], counterpart: str, subject: str, sent_on: date, model: str | None = None
+    body: str, *, to_names: list[str], sent_on: date, model: str | None = None
 ) -> list[NewNote]:
     """The checked notes for one sent reply. Empty on any failure."""
     from openexecutive.integrations.email_poller import sender_new_text
@@ -201,7 +232,7 @@ async def take_notes(
         return []
     try:
         payload = await _call_model(
-            model or notes_model(), render_reply(own, to_names=to_names, subject=subject, sent_on=sent_on),
+            model or notes_model(), render_reply(own, to_names=to_names, sent_on=sent_on),
         )
     except Exception:
         logger.warning("history: taking notes on a sent reply failed", exc_info=True)
@@ -209,7 +240,7 @@ async def take_notes(
     raw_notes = payload.get("notes")
     if not isinstance(raw_notes, list):
         return []
-    allowed = "\n".join([own, counterpart, " ".join(to_names), subject])
+    allowed = "\n".join([own, " ".join(to_names)])
     kept = [n for n in (check_note(r, body=own, allowed=allowed) for r in raw_notes[:MAX_NOTES]) if n is not None]
     dropped = min(len(raw_notes), MAX_NOTES) - len(kept)
     if dropped:
@@ -240,13 +271,14 @@ async def note_sent_reply(
         if history.is_excluded(person_id, history.conversation_key(CHANNEL_EMAIL, thread_id)):
             return []
         when = sent_at or datetime.now(UTC)
-        names = [n for n in to_names if n] or to_addresses
+        short = [short_name(n) for n in to_names] + [""] * len(to_addresses)
+        names = [n for n in short if n]
         counterpart = ", ".join(
-            f"{name} <{addr}>" if name and name != addr else addr
-            for name, addr in zip(to_names + [""] * len(to_addresses), to_addresses, strict=False)
+            f"{name} <{addr}>" if name else addr
+            for name, addr in zip(short, to_addresses, strict=False)
         )
         notes = await take_notes(
-            body, to_names=names, counterpart=counterpart, subject=subject, sent_on=when.date(), model=model,
+            body, to_names=names, sent_on=when.date(), model=model,
         )
         if not notes:
             return []

@@ -171,6 +171,16 @@ def test_a_send_in_the_same_round_is_refused_too(sent: list[dict[str, Any]]) -> 
     assert "read the user's own mail" in json.loads(results["tu2"])["error"]
 
 
+def test_a_send_beside_a_notes_recall_is_refused(sent: list[dict[str, Any]]) -> None:
+    # Reading the speaker's own notes locks the turn the same way, from the
+    # round that asks for them.
+    _turn([
+        ToolUseBlock("tu1", "recall_history", {}),
+        ToolUseBlock("tu2", "send_slack_dm", SLACK),
+    ])
+    assert sent == []
+
+
 def test_a_turn_that_read_no_mail_still_sends(sent: list[dict[str, Any]]) -> None:
     _turn([ToolUseBlock("tu2", "send_slack_dm", SLACK)])
     assert sent == [SLACK]

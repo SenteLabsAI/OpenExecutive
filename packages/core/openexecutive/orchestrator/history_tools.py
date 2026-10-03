@@ -94,16 +94,20 @@ def recall_person(session: Any) -> Any:
 
 
 def _keep_private(session: Any, person: Any) -> bool:
-    """Make the conversation the team member's alone before their notes enter
-    it. True for the principal, whose conversations are already theirs."""
-    if person.is_principal:
-        return True
+    """Keep the turn the speaker's before their notes enter it: from now on
+    its rows are private to them and it teaches no memory (``touched_mail``,
+    as when Act as me reads their mailbox), for the principal too. A team
+    member's conversation also becomes theirs alone; the principal's already
+    is. False when that can't be made so."""
     from openexecutive.delegation.settings import turn_delegation
     from openexecutive.memory.session_store import mark_mail_private
 
     pinned = turn_delegation(session)
-    if pinned is not None:
-        pinned.touched_mail = True
+    if pinned is None:
+        return False
+    pinned.touched_mail = True
+    if person.is_principal:
+        return True
     session_id = getattr(session, "session_id", None)
     if not session_id:
         return False
@@ -118,21 +122,21 @@ def _keep_private(session: Any, person: Any) -> bool:
 def render_notes(notes: list[Any]) -> str:
     """The notes as one ``<history_notes>`` block of plain lines."""
     from openexecutive.delegation.ghostwriter import one_line
-    from openexecutive.utils.prompt_blocks import no_tags
+    from openexecutive.utils.prompt_blocks import no_tags, plain
+
+    def clean(text: str, limit: int) -> str:
+        return one_line(plain(text or ""), limit)
 
     lines: list[str] = []
     for note in notes:
-        what = note.correction or note.summary
         # "Dana Lee <dana@x>" reads as "Dana Lee (dana@x)": no angle brackets.
-        who = one_line(note.counterpart, 160).replace("<", "(").replace(">", ")")
-        line = (
-            f"[{note.occurred_at[:10]}] {note.channel}, with {who or 'unknown'}: "
-            f"{one_line(what, 400)}"
-        )
+        who = clean(note.counterpart, 160).replace("<", "(").replace(">", ")")
+        line = f"[{note.occurred_at[:10]}] {note.channel}, with {who or 'unknown'}: "
         if note.correction:
-            line += " (as you corrected it)"
+            line += f"{clean(note.correction, 400)} (as you corrected it)"
         else:
-            line += f' — your words: "{one_line(note.quote, 400)}"'
+            # Their own words first; the summary is only how it was noted.
+            line += f'your words: "{clean(note.quote, 400)}" (noted as: {clean(note.summary, 400)})'
         if note.due_date:
             line += f" — due {note.due_date}"
         lines.append(no_tags(line))
