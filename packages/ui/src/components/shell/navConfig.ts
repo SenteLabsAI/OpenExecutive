@@ -282,7 +282,7 @@ export const SETTINGS_NAV_ITEM: NavItem = {
 };
 
 // User Guide — in the account menu at the foot of the sidebar so help is
-// always one click away (it also stays listed on the Settings hub).
+// always one click away (it also stays listed under Settings → Advanced).
 export const GUIDE_NAV_ITEM: NavItem = {
   href: "/guide",
   label: "User Guide",
@@ -297,8 +297,8 @@ export const NEW_CHAT_DESCRIPTION = "Start a fresh conversation with the Executi
 export const BRIEFING_DESCRIPTION =
   "Land on a daily brief of what's happened and what needs you.";
 
-// Where a Settings tool sits on that page: what you open to check on the
-// install, to change how it runs, or to learn how it works.
+// Where a Settings tool sits on Settings → Advanced: what you open to check
+// on the install, to change how it runs, or to learn how it works.
 export type AdvancedGroupKey = "diagnose" | "configure" | "learn";
 
 export interface AdvancedItem extends NavItem {
@@ -311,7 +311,7 @@ export const ADVANCED_GROUPS: { key: AdvancedGroupKey; label: string }[] = [
   { key: "learn", label: "Learn" },
 ];
 
-// Admin / power-user tools surfaced on the Settings page rather than
+// Admin / power-user tools surfaced on Settings → Advanced rather than
 // in the primary nav — they aren't part of the day-to-day loop.
 export const ADVANCED_ITEMS: AdvancedItem[] = [
   {
@@ -379,7 +379,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
   },
 ];
 
-// The tools as the Settings page lists them: by group, in ADVANCED_GROUPS
+// The tools as Settings → Advanced lists them: by group, in ADVANCED_GROUPS
 // order, each keeping its ADVANCED_ITEMS order within the group.
 export function advancedItemsByGroup(): {
   key: AdvancedGroupKey;
@@ -392,24 +392,80 @@ export function advancedItemsByGroup(): {
   }));
 }
 
-// The Settings page's sections in page order. Its in-page nav and the page
-// itself both read this list, so the two can't drift; the ids are the
-// hashes a link can land on (`/settings#workspace`). "act-as-me" is only
-// on the page for the owner — the page drops it when the card is hidden.
-export type SettingsSectionId = "executive" | "workspace" | "act-as-me" | "tools" | "about";
+// The Settings hub's tiles, in hub order. Each opens a short page of its
+// own at `href`. "act-as-me" shows only for someone who can have Act as me
+// (the hub drops it when the card is hidden). `hashes` are the anchors the
+// old one-page Settings used (`/settings#workspace`): links that still
+// carry one land on the matching page (see settingsPageForHash).
+export type SettingsPageId = "executive" | "act-as-me" | "workspace" | "advanced" | "about";
 
-export interface SettingsSectionDef {
-  id: SettingsSectionId;
+export interface SettingsPageDef {
+  id: SettingsPageId;
   label: string;
+  href: string;
+  icon: IconName;
+  /** What's on the page, as the hub tile says it. */
+  description: string;
+  hashes: string[];
 }
 
-export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
-  { id: "executive", label: "Executive" },
-  { id: "workspace", label: "Workspace" },
-  { id: "act-as-me", label: "Act as me" },
-  { id: "tools", label: "Tools" },
-  { id: "about", label: "About" },
+export const SETTINGS_PAGES: SettingsPageDef[] = [
+  {
+    id: "executive",
+    label: "Your Executive",
+    href: "/settings/executive",
+    icon: "cog",
+    description: "Pause or resume its own work, and the voice it answers in.",
+    hashes: ["executive"],
+  },
+  {
+    id: "act-as-me",
+    label: "Act as me",
+    href: "/settings/act-as-me",
+    icon: "mail",
+    description: "Your mailbox, drafts written as you, and how you write.",
+    hashes: ["act-as-me"],
+  },
+  {
+    id: "workspace",
+    label: "Workspace",
+    href: "/settings/workspace",
+    icon: "building",
+    description: "Just you or your team, time zone, meeting booking, email domains.",
+    hashes: ["workspace"],
+  },
+  {
+    id: "advanced",
+    label: "Advanced",
+    href: "/settings/advanced",
+    icon: "grid",
+    description: "Agent Council, audit log, token usage, setup status, simulator, guide.",
+    // The old Tools section, and the anchors of its groups.
+    hashes: ["tools", ...ADVANCED_GROUPS.map((g) => `tools-${g.key}`)],
+  },
+  {
+    id: "about",
+    label: "About",
+    href: "/settings/about",
+    icon: "info",
+    description: "The version this install runs, and whether a newer one is out.",
+    hashes: ["about"],
+  },
 ];
+
+// The page an old `/settings#<hash>` link meant, or null for no hash or one
+// that never named a section. Takes the hash with or without its "#".
+export function settingsPageForHash(hash: string): SettingsPageDef | null {
+  let id = hash.replace(/^#/, "");
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // A malformed escape: match it as typed.
+  }
+  id = id.trim();
+  if (!id) return null;
+  return SETTINGS_PAGES.find((p) => p.hashes.includes(id)) ?? null;
+}
 
 // The phone's bottom bar: five, with New chat in the middle. Knowledge,
 // Pulse and Settings are in the menu the top bar's button opens.

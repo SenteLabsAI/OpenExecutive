@@ -4,7 +4,7 @@ import {
   ADVANCED_GROUPS,
   ADVANCED_ITEMS,
   PROFILE_NAV,
-  SETTINGS_SECTIONS,
+  SETTINGS_PAGES,
   advancedItemsByGroup,
   buildDestinations,
   buildHubs,
@@ -12,6 +12,7 @@ import {
   hubForPath,
   isDestinationActive,
   profileWording,
+  settingsPageForHash,
 } from "../src/components/shell/navConfig.ts";
 
 const links = (items) => items.map((i) => `${i.label} → ${i.href}`);
@@ -176,9 +177,39 @@ test("the Settings tools are grouped by what you'd use them for", () => {
   assert.equal(grouped.flatMap((g) => g.items).length, ADVANCED_ITEMS.length);
 });
 
-test("the Settings sections have unique ids and a label each", () => {
-  const ids = SETTINGS_SECTIONS.map((s) => s.id);
-  assert.deepEqual(ids, ["executive", "workspace", "act-as-me", "tools", "about"]);
-  assert.equal(new Set(ids).size, ids.length);
-  for (const s of SETTINGS_SECTIONS) assert.ok(s.label.trim(), s.id);
+test("the Settings hub: one tile per page, each with its own route", () => {
+  assert.deepEqual(
+    SETTINGS_PAGES.map((p) => `${p.label} → ${p.href}`),
+    [
+      "Your Executive → /settings/executive",
+      "Act as me → /settings/act-as-me",
+      "Workspace → /settings/workspace",
+      "Advanced → /settings/advanced",
+      "About → /settings/about",
+    ],
+  );
+  assert.equal(new Set(SETTINGS_PAGES.map((p) => p.id)).size, SETTINGS_PAGES.length);
+  for (const p of SETTINGS_PAGES) {
+    assert.ok(p.label.trim() && p.description.trim(), p.id);
+    assert.ok(p.href.startsWith("/settings/"), p.id);
+  }
+  // Setup status keeps its own route, outside the tiles.
+  assert.ok(!SETTINGS_PAGES.some((p) => p.href === "/settings/status"));
+});
+
+test("old /settings#anchors land on the matching page", () => {
+  const to = (hash) => settingsPageForHash(hash)?.href ?? null;
+  assert.equal(to("#executive"), "/settings/executive");
+  assert.equal(to("#workspace"), "/settings/workspace");
+  assert.equal(to("act-as-me"), "/settings/act-as-me");
+  assert.equal(to("#tools"), "/settings/advanced");
+  for (const g of ADVANCED_GROUPS) assert.equal(to(`#tools-${g.key}`), "/settings/advanced");
+  assert.equal(to("#about"), "/settings/about");
+  assert.equal(to(""), null);
+  assert.equal(to("#"), null);
+  assert.equal(to("#nope"), null);
+  assert.equal(to("#%E0%A4%A"), null);
+  // Every anchor belongs to exactly one page.
+  const all = SETTINGS_PAGES.flatMap((p) => p.hashes);
+  assert.equal(new Set(all).size, all.length);
 });

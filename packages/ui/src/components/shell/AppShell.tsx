@@ -55,6 +55,11 @@ const SEGMENT_LABELS: Record<string, string> = {
   watchlist: "Watch list",
   settings: "Settings",
   status: "Setup status",
+  executive: "Your Executive",
+  "act-as-me": "Act as me",
+  workspace: "Workspace",
+  advanced: "Advanced",
+  about: "About",
   guide: "User Guide",
   clients: "Client Companies",
 };

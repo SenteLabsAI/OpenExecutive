@@ -26,17 +26,17 @@ export default function AboutCard() {
   }, []);
 
   if (failed) {
-    return <p className="text-sm text-fg-muted">Couldn&apos;t load the version.</p>;
+    return <p className="text-[15px] text-fg-muted">Couldn&apos;t load the version.</p>;
   }
   if (!notice) {
-    return <p className="text-sm text-fg-muted">Loading…</p>;
+    return <p className="text-[15px] text-fg-muted">Loading…</p>;
   }
   return (
-    <div className="space-y-1">
-      <p className="text-sm text-fg">{notice.running}</p>
-      <p className="text-xs text-fg-muted">{notice.status}</p>
+    <div className="space-y-1.5">
+      <p className="text-lg font-semibold text-fg">{notice.running}</p>
+      <p className="text-[15px] text-fg-muted">{notice.status}</p>
       {notice.update && (
-        <p className="text-xs">
+        <p className="pt-1 text-[15px] font-medium">
           <a
             href={notice.update.releaseUrl}
             target="_blank"
