@@ -24,25 +24,65 @@ import {
   updateBuiltinFile,
 } from "@/lib/api";
 import StatusPill from "@/components/ReviewStatusPill";
+import Button from "@/components/ui/Button";
+import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
+import SidePanel from "@/components/ui/SidePanel";
+import ViewTabs from "@/components/ui/ViewTabs";
+import Icon from "@/components/Icon";
+import { domainBulkActions, type BulkAction } from "@/lib/reviewBulk";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const PRIORITY_CLASSES: Record<ReviewPriority, string> = {
-  high: "bg-blue-950/60 text-blue-400 border border-blue-900/60",
+  high: "text-blue-500",
   normal: "",
-  low: "bg-surface-overlay/60 text-fg-muted border border-line-strong/60",
+  low: "text-fg-subtle",
 };
 
 function PriorityPill({ priority }: { priority: ReviewPriority }) {
   if (priority === "normal") return null;
   return (
-    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${PRIORITY_CLASSES[priority]}`}>
+    <span className={`text-xs font-medium ${PRIORITY_CLASSES[priority]}`}>
       {priority === "high" ? "↑ High priority" : "↓ Low priority"}
     </span>
   );
 }
+
+const PRIORITY_LABELS: Record<ReviewPriority, string> = {
+  high: "↑ High",
+  normal: "Normal",
+  low: "↓ Low",
+};
+
+/** The status actions an item offers besides Approve, plus its priority
+ * choices; shared by a row's ⋯ menu and the item panel's. */
+function itemMenu(
+  item: ReviewItem,
+  actions: {
+    onView?: () => void;
+    onFlag: () => void;
+    onReject: () => void;
+    onPriorityChange: (p: ReviewPriority) => void;
+  },
+): OverflowItem[] {
+  const menu: OverflowItem[] = [];
+  if (actions.onView) menu.push({ label: "View details", onSelect: actions.onView });
+  if (item.status !== "needs_revision") menu.push({ label: "Flag for revision", onSelect: actions.onFlag });
+  for (const p of ["high", "normal", "low"] as ReviewPriority[]) {
+    menu.push({
+      label: `Priority: ${PRIORITY_LABELS[p]}${item.priority === p ? " ✓" : ""}`,
+      disabled: item.priority === p,
+      onSelect: () => actions.onPriorityChange(p),
+    });
+  }
+  if (item.status !== "rejected") menu.push({ label: "Reject…", danger: true, onSelect: actions.onReject });
+  return menu;
+}
+
+const SELECT_CLASS =
+  "h-10 rounded-xl border border-line-strong bg-surface-elevated px-3 text-sm text-fg focus:outline-none focus:ring-2 focus:ring-accent/50";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -56,10 +96,18 @@ function ItemSlideOver({
   itemId,
   onClose,
   onUpdated,
+  onApprove,
+  onFlag,
+  onReject,
+  onPriorityChange,
 }: {
   itemId: string;
   onClose: () => void;
   onUpdated: (item: ReviewItem) => void;
+  onApprove: (item: ReviewItem) => Promise<void>;
+  onFlag: (item: ReviewItem) => Promise<ReviewItem>;
+  onReject: (item: ReviewItem) => void;
+  onPriorityChange: (item: ReviewItem, p: ReviewPriority) => Promise<ReviewItem>;
 }) {
   const [detail, setDetail] = useState<{ item: ReviewItem; annotations: ReviewAnnotation[] } | null>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -179,57 +227,82 @@ function ItemSlideOver({
     onUpdated(updated);
   };
 
-  if (!detail) {
-    return (
-      <div className="fixed inset-0 z-50 flex justify-end">
-        <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-        <div className="relative w-[560px] bg-surface-elevated border-l border-line flex items-center justify-center">
-          <span className="text-fg-muted text-sm">Loading…</span>
-        </div>
-      </div>
-    );
-  }
-
-  const { item, annotations } = detail;
-  const isBuiltin = item.content_type === "builtin" || item.content_type === "failure";
-  const isExternal = item.content_type === "external";
+  const item = detail?.item;
+  const annotations = detail?.annotations ?? [];
+  const isBuiltin = item?.content_type === "builtin" || item?.content_type === "failure";
+  const isExternal = item?.content_type === "external";
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-[600px] bg-surface-elevated border-l border-line flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-start justify-between px-5 py-4 border-b border-line flex-shrink-0">
-          <div>
-            <p className="text-sm font-medium text-fg">{item.filename}</p>
-            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-              <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{item.domain}</span>
-              <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{item.content_type}</span>
-              <StatusPill
-                status={item.status}
-                reviewedAt={item.reviewed_at}
-                trustedDefault={item.trusted_default}
-              />
-              <PriorityPill priority={item.priority} />
-            </div>
+    <SidePanel
+      open
+      onClose={onClose}
+      width="lg"
+      title={<span className="block break-words">{item ? item.filename : "Loading…"}</span>}
+      subtitle={
+        item && (
+          <span className="flex items-center gap-2 flex-wrap">
+            <span className="capitalize">{item.domain}</span>
+            <span aria-hidden>·</span>
+            <span>{item.content_type}</span>
+            <StatusPill
+              status={item.status}
+              reviewedAt={item.reviewed_at}
+              trustedDefault={item.trusted_default}
+            />
+            <PriorityPill priority={item.priority} />
+          </span>
+        )
+      }
+      footer={
+        item && (
+          <div className="flex items-center gap-2">
+            {item.status !== "approved" && (
+              <Button
+                variant="primary"
+                onClick={async () => {
+                  await onApprove(item);
+                  onClose();
+                }}
+              >
+                Approve
+              </Button>
+            )}
+            <OverflowMenu
+              placement="up"
+              align="left"
+              label="More review actions"
+              items={itemMenu(item, {
+                onFlag: async () => {
+                  const updated = await onFlag(item);
+                  setDetail((prev) => (prev ? { ...prev, item: updated } : prev));
+                },
+                onReject: () => {
+                  onReject(item);
+                  onClose();
+                },
+                onPriorityChange: async (p) => {
+                  const updated = await onPriorityChange(item, p);
+                  setDetail((prev) => (prev ? { ...prev, item: updated } : prev));
+                },
+              })}
+            />
           </div>
-          <button onClick={onClose} className="text-fg-muted hover:text-fg p-1">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        )
+      }
+    >
+      {!item ? (
+        <p className="text-[15px] text-fg-muted">Loading…</p>
+      ) : (
+        <div className="space-y-7">
           {/* Builtin file content */}
           {isBuiltin && (
             <section>
               <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-medium text-fg-muted uppercase tracking-wide">Document content</p>
+                <p className="text-base font-semibold text-fg">Document content</p>
                 {!editing && content != null && (
                   <button
                     onClick={() => { setEditDraft(content); setEditing(true); }}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                    className="h-9 px-2 text-sm font-medium text-accent hover:underline"
                   >
                     Edit
                   </button>
@@ -240,30 +313,23 @@ function ItemSlideOver({
                   <textarea
                     value={editDraft}
                     onChange={(e) => setEditDraft(e.target.value)}
-                    className="w-full h-72 bg-surface-elevated border border-line-strong rounded-lg px-3 py-2 text-xs text-fg font-mono resize-y focus:outline-none focus:border-indigo-500"
+                    className="w-full h-72 bg-surface-elevated border border-line-strong rounded-xl px-3 py-2 text-sm text-fg font-mono resize-y focus:outline-none focus:ring-2 focus:ring-accent/50"
                   />
                   <div className="flex gap-2">
-                    <button
-                      onClick={handleSaveEdit}
-                      disabled={saving}
-                      className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-                    >
+                    <Button variant="primary" size="sm" className="!h-10" onClick={handleSaveEdit} disabled={saving}>
                       {saving ? "Saving…" : "Save"}
-                    </button>
-                    <button
-                      onClick={() => setEditing(false)}
-                      className="text-xs text-fg-muted hover:text-fg px-3 py-1.5 rounded-lg transition-colors"
-                    >
+                    </Button>
+                    <Button variant="ghost" size="sm" className="!h-10" onClick={() => setEditing(false)}>
                       Cancel
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : contentLoading ? (
-                <p className="text-xs text-fg-subtle">Loading…</p>
+                <p className="text-sm text-fg-subtle">Loading…</p>
               ) : contentError ? (
-                <p className="text-xs text-red-500/70">Could not load file content.</p>
+                <p className="text-sm text-red-500">Could not load file content.</p>
               ) : content != null ? (
-                <pre className="text-xs text-fg bg-surface-elevated/60 border border-line rounded-lg p-3 overflow-x-auto whitespace-pre-wrap font-mono max-h-96">{content}</pre>
+                <pre className="text-sm text-fg bg-surface-overlay/50 border border-line rounded-xl p-3.5 overflow-x-auto whitespace-pre-wrap font-mono max-h-96">{content}</pre>
               ) : null}
             </section>
           )}
@@ -272,30 +338,30 @@ function ItemSlideOver({
           {isExternal && (
             <section>
               <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-medium text-fg-muted uppercase tracking-wide">
+                <p className="text-base font-semibold text-fg">
                   Source content
                 </p>
-                {loadingChunks && <span className="text-[10px] text-fg-subtle">Loading…</span>}
+                {loadingChunks && <span className="text-sm text-fg-subtle">Loading…</span>}
               </div>
-              <p className="text-[11px] text-fg-subtle mb-3">
+              <p className="text-sm text-fg-subtle mb-3">
                 Indexed chunks from <span className="text-fg-muted">{item.filename}</span> — this is the text the AI retrieves from this source.
               </p>
               {!loadingChunks && externalChunks.length === 0 && (
-                <div className="bg-surface-elevated/60 border border-line rounded-lg p-4 text-center">
-                  <p className="text-xs text-fg-muted mb-1">No indexed chunks found.</p>
-                  <p className="text-[11px] text-fg-subtle">
+                <div className="bg-surface-overlay/50 border border-line rounded-xl p-4 text-center">
+                  <p className="text-sm text-fg-muted mb-1">No indexed chunks found.</p>
+                  <p className="text-sm text-fg-subtle">
                     Run <code className="bg-surface-overlay px-1 rounded font-mono">openexecutive ingest-oer</code> to index this source.
                   </p>
                 </div>
               )}
               <div className="space-y-2">
                 {externalChunks.map((chunk) => (
-                  <div key={`${chunk.filename}:${chunk.chunk_index}`} className="bg-surface-elevated/60 border border-line rounded-lg p-3">
+                  <div key={`${chunk.filename}:${chunk.chunk_index}`} className="bg-surface-overlay/50 border border-line rounded-xl p-3.5">
                     <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{chunk.domain}</span>
-                      <span className="text-[10px] text-fg-subtle font-mono">{chunk.filename} · chunk {chunk.chunk_index}</span>
+                      <span className="text-xs text-fg-muted capitalize">{chunk.domain}</span>
+                      <span className="text-xs text-fg-subtle font-mono">{chunk.filename} · chunk {chunk.chunk_index}</span>
                     </div>
-                    <p className="text-xs text-fg leading-relaxed">{chunk.text}</p>
+                    <p className="text-sm text-fg leading-relaxed">{chunk.text}</p>
                   </div>
                 ))}
               </div>
@@ -303,7 +369,7 @@ function ItemSlideOver({
                 <button
                   onClick={() => setExternalChunkLimit((n) => n + 10)}
                   disabled={loadingChunks}
-                  className="mt-3 text-xs text-fg-muted hover:text-fg transition-colors disabled:opacity-40"
+                  className="mt-3 h-10 text-sm font-medium text-accent hover:underline disabled:opacity-40"
                 >
                   Load 10 more chunks…
                 </button>
@@ -313,42 +379,51 @@ function ItemSlideOver({
 
           {/* Notes */}
           <section>
-            <p className="text-xs font-medium text-fg-muted uppercase tracking-wide mb-2">Reviewer notes</p>
+            <p className="text-base font-semibold text-fg mb-2">Reviewer notes</p>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               onBlur={handleSaveNotes}
               placeholder="Add your review notes here…"
-              className="w-full h-20 bg-surface-elevated border border-line-strong rounded-lg px-3 py-2 text-xs text-fg resize-none focus:outline-none focus:border-indigo-500 placeholder:text-fg-subtle"
+              className="w-full h-24 bg-surface-elevated border border-line-strong rounded-xl px-3 py-2 text-[15px] text-fg resize-none focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-fg-subtle"
             />
           </section>
 
           {/* Annotations */}
           <section>
-            <p className="text-xs font-medium text-fg-muted uppercase tracking-wide mb-2">
-              SME corrections
-              <span className="text-fg-subtle ml-1 normal-case font-normal">— injected into AI retrieval context</span>
-            </p>
+            <p className="text-base font-semibold text-fg">SME corrections</p>
+            <p className="text-sm text-fg-subtle mb-2">Injected into AI retrieval context.</p>
             <div className="space-y-2">
               {annotations.map((ann) => (
-                <div key={ann.annotation_id} className={`flex items-start gap-2 p-2 rounded-lg border ${ann.is_active ? "bg-surface-elevated/60 border-line" : "bg-surface-elevated/20 border-line/40 opacity-50"}`}>
-                  <p className="flex-1 text-xs text-fg">{ann.correction}</p>
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <button
-                      onClick={() => handleToggleAnnotation(ann)}
-                      className={`text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${ann.is_active ? "bg-emerald-950/60 text-emerald-400 border-emerald-900/60 hover:bg-red-950/60 hover:text-red-400 hover:border-red-900/60" : "bg-surface-overlay/60 text-fg-muted border-line-strong/60 hover:bg-emerald-950/60 hover:text-emerald-400 hover:border-emerald-900/60"}`}
-                    >
+                <div
+                  key={ann.annotation_id}
+                  className={`flex items-start gap-3 px-3.5 py-2.5 rounded-xl border ${ann.is_active ? "bg-surface-overlay/50 border-line" : "border-line/60 opacity-60"}`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[15px] text-fg">{ann.correction}</p>
+                    <p className="mt-1 flex items-center gap-1.5 text-xs text-fg-muted">
+                      <span
+                        aria-hidden
+                        className={`h-2 w-2 rounded-full ${ann.is_active ? "bg-emerald-500" : "bg-fg-subtle"}`}
+                      />
                       {ann.is_active ? "Active" : "Inactive"}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteAnnotation(ann.annotation_id)}
-                      className="text-fg-subtle hover:text-red-400 transition-colors p-0.5"
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                    </p>
                   </div>
+                  <OverflowMenu
+                    size="sm"
+                    label="Correction actions"
+                    items={[
+                      {
+                        label: ann.is_active ? "Turn off" : "Turn on",
+                        onSelect: () => void handleToggleAnnotation(ann),
+                      },
+                      {
+                        label: "Delete",
+                        danger: true,
+                        onSelect: () => void handleDeleteAnnotation(ann.annotation_id),
+                      },
+                    ]}
+                  />
                 </div>
               ))}
               <div className="flex gap-2">
@@ -357,21 +432,21 @@ function ItemSlideOver({
                   onChange={(e) => setNewCorrection(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleAddAnnotation(); } }}
                   placeholder="Add a correction or clarification…"
-                  className="flex-1 bg-surface-elevated border border-line-strong rounded-lg px-3 py-1.5 text-xs text-fg focus:outline-none focus:border-indigo-500 placeholder:text-fg-subtle"
+                  aria-label="New correction"
+                  className="flex-1 min-w-0 h-11 bg-surface-elevated border border-line-strong rounded-xl px-3 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-fg-subtle"
                 />
-                <button
+                <Button
                   onClick={handleAddAnnotation}
                   disabled={addingAnnotation || !newCorrection.trim()}
-                  className="text-xs bg-surface-overlay hover:bg-surface-input text-fg px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
                 >
                   Add
-                </button>
+                </Button>
               </div>
             </div>
           </section>
         </div>
-      </div>
-    </div>
+      )}
+    </SidePanel>
   );
 }
 
@@ -395,6 +470,8 @@ export default function ReviewQueue() {
   const [rejectModal, setRejectModal] = useState<RejectModalState>(null);
   const [trustedDefaults, setTrustedDefaults] = useState<Record<string, number>>({});
   const [pendingItems, setPendingItems] = useState<ReviewItem[]>([]);
+  // The domain the "Bulk actions" menu acts on ("" until one is picked).
+  const [bulkDomain, setBulkDomain] = useState("");
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
@@ -462,6 +539,7 @@ export default function ReviewQueue() {
     const updated = await patchReviewItem(item.item_id, { status: "needs_revision" });
     setItems((prev) => prev.map((i) => (i.item_id === updated.item_id ? updated : i)));
     setAllItems((prev) => prev.map((i) => (i.item_id === updated.item_id ? updated : i)));
+    return updated;
   };
 
   const handleRejectConfirm = async () => {
@@ -479,6 +557,7 @@ export default function ReviewQueue() {
     const updated = await patchReviewItem(item.item_id, { priority });
     setItems((prev) => prev.map((i) => (i.item_id === updated.item_id ? updated : i)));
     setAllItems((prev) => prev.map((i) => (i.item_id === updated.item_id ? updated : i)));
+    return updated;
   };
 
   const handleBulkApprove = async (domain?: string) => {
@@ -520,79 +599,102 @@ export default function ReviewQueue() {
     ]),
   ).sort();
 
+  const runBulk = (action: BulkAction) => {
+    if (action.kind === "approve") void handleBulkApprove(action.domain);
+    else void handleCurate(action.domain, action.kind === "curate-start" ? "start" : "stop");
+  };
+
+  const rowProps = (item: ReviewItem) => ({
+    item,
+    onApprove: () => handleApprove(item),
+    onReject: () => setRejectModal({ itemId: item.item_id, notes: "" }),
+    onFlag: () => void handleFlag(item),
+    onView: () => setSelectedItemId(item.item_id),
+    onPriorityChange: (p: ReviewPriority) => void handlePriorityChange(item, p),
+  });
+
+  // The bulk menu's domain: the picked one, else the list's domain filter,
+  // else the first domain.
+  const activeBulkDomain =
+    (bulkDomain && domains.includes(bulkDomain) && bulkDomain) ||
+    (filterDomain && domains.includes(filterDomain) && filterDomain) ||
+    domains[0] ||
+    "";
+  const bulkActions = activeBulkDomain
+    ? domainBulkActions(activeBulkDomain, pendingItems, trustedDefaults)
+    : [];
+  const curatable = Object.keys(trustedDefaults).sort((a, b) => a.localeCompare(b));
+  const curateDomainPick = curatable.includes(bulkDomain) ? bulkDomain : curatable[0] ?? "";
+
   // Rendered inside the Knowledge base workspace, which supplies the padding.
   return (
-    <div>
-      <div className="mb-4 max-w-2xl">
-        <h1 className="text-lg font-semibold text-fg">Review queue</h1>
-        <p className="text-sm text-fg-muted mt-1">
+    <div className="max-w-4xl">
+      <div className="mb-5 max-w-2xl">
+        <p className="text-[15px] text-fg-muted">
           Approve, reject, or correct knowledge before the Executive relies on it.
           Pending and rejected items are withheld from retrieval.
         </p>
       </div>
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-line mb-6">
-        {(["queue", "all", "annotations"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              tab === t
-                ? "text-fg border-indigo-500"
-                : "text-fg-muted border-transparent hover:text-fg"
-            }`}
-          >
-            {t === "queue" ? "Review queue" : t === "all" ? "All items" : "Annotations"}
-          </button>
-        ))}
-      </div>
+      <ViewTabs
+        label="Review"
+        className="mb-6"
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { id: "queue", label: "To review" },
+          { id: "all", label: "All items" },
+          { id: "annotations", label: "Annotations" },
+        ]}
+      />
 
       {/* Queue tab */}
       {tab === "queue" && (
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-sm text-fg-muted">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <p className="text-[15px] text-fg-muted">
               {loading ? "Loading…" : `${items.length} item${items.length !== 1 ? "s" : ""} need review`}
             </p>
             {items.length > 0 && (
-              <button
-                onClick={() => handleBulkApprove()}
-                className="text-xs bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-900/60 px-3 py-1.5 rounded-lg transition-colors"
-              >
-                Approve all pending
-              </button>
+              <Button onClick={() => handleBulkApprove()}>Approve all pending</Button>
             )}
           </div>
           {!loading && items.length === 0 && (
-            <div className="py-12 max-w-2xl mx-auto text-center">
-              <p className="text-sm text-fg">Nothing waiting on you.</p>
-              <p className="text-xs text-fg-muted mt-2 leading-relaxed">
-                The knowledge that ships with Open Executive is trusted by default — the
-                Executive can use it right away, and it does not sit here waiting for
-                sign-off. Items appear in this queue when you upload something new, edit an
-                existing file, or deliberately send a domain for review.
-              </p>
-              {Object.keys(trustedDefaults).length > 0 && (
-                <div className="mt-6 text-left">
-                  <p className="text-[11px] uppercase tracking-wide text-fg-subtle mb-2">
-                    Review a domain yourself
-                  </p>
-                  <p className="text-xs text-fg-muted mb-3 leading-relaxed">
+            <div className="rounded-2xl border border-line bg-surface-elevated px-5 py-10 sm:px-8">
+              <div className="max-w-xl mx-auto text-center">
+                <p className="text-lg font-semibold text-fg">Nothing waiting on you.</p>
+                <p className="text-[15px] text-fg-muted mt-2 leading-relaxed">
+                  The knowledge that ships with Open Executive is trusted by default — the
+                  Executive can use it right away, and it does not sit here waiting for
+                  sign-off. Items appear in this queue when you upload something new, edit an
+                  existing file, or deliberately send a domain for review.
+                </p>
+              </div>
+              {curatable.length > 0 && (
+                <div className="mt-8 max-w-xl mx-auto border-t border-line pt-6">
+                  <p className="text-base font-semibold text-fg">Review a domain yourself</p>
+                  <p className="text-sm text-fg-muted mt-1 mb-3 leading-relaxed">
                     Sending a domain for review withholds it from the Executive until you
                     work through it.
                   </p>
-                  <div className="flex gap-2 flex-wrap">
-                    {Object.entries(trustedDefaults)
-                      .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([domain, count]) => (
-                        <button
-                          key={domain}
-                          onClick={() => handleCurate(domain, "start")}
-                          className="text-[11px] text-fg-muted hover:text-amber-400 bg-surface-elevated border border-line-strong hover:border-amber-900/60 px-2.5 py-1.5 rounded-lg transition-colors"
-                        >
-                          Curate {domain} ({count})
-                        </button>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <select
+                      value={curateDomainPick}
+                      onChange={(e) => setBulkDomain(e.target.value)}
+                      aria-label="Domain to review"
+                      className={`${SELECT_CLASS} !h-11 flex-1 capitalize`}
+                    >
+                      {curatable.map((domain) => (
+                        <option key={domain} value={domain}>
+                          {domain} ({trustedDefaults[domain]})
+                        </option>
                       ))}
+                    </select>
+                    <Button
+                      onClick={() => curateDomainPick && handleCurate(curateDomainPick, "start")}
+                      disabled={!curateDomainPick}
+                    >
+                      Curate {curateDomainPick}
+                    </Button>
                   </div>
                 </div>
               )}
@@ -600,15 +702,7 @@ export default function ReviewQueue() {
           )}
           <div className="space-y-2">
             {items.map((item) => (
-              <ItemRow
-                key={item.item_id}
-                item={item}
-                onApprove={() => handleApprove(item)}
-                onReject={() => setRejectModal({ itemId: item.item_id, notes: "" })}
-                onFlag={() => handleFlag(item)}
-                onView={() => setSelectedItemId(item.item_id)}
-                onPriorityChange={(p) => handlePriorityChange(item, p)}
-              />
+              <ItemRow key={item.item_id} {...rowProps(item)} />
             ))}
           </div>
         </div>
@@ -622,7 +716,8 @@ export default function ReviewQueue() {
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value as ReviewStatus | "")}
-              className="bg-surface-elevated border border-line-strong rounded-lg px-3 py-1.5 text-xs text-fg focus:outline-none focus:border-indigo-500"
+              aria-label="Status"
+              className={SELECT_CLASS}
             >
               <option value="">All statuses</option>
               <option value="pending">Pending</option>
@@ -633,7 +728,8 @@ export default function ReviewQueue() {
             <select
               value={filterDomain}
               onChange={(e) => setFilterDomain(e.target.value)}
-              className="bg-surface-elevated border border-line-strong rounded-lg px-3 py-1.5 text-xs text-fg focus:outline-none focus:border-indigo-500"
+              aria-label="Domain"
+              className={SELECT_CLASS}
             >
               <option value="">All domains</option>
               {domains.map((d) => <option key={d} value={d}>{d}</option>)}
@@ -641,7 +737,8 @@ export default function ReviewQueue() {
             <select
               value={filterType}
               onChange={(e) => setFilterType(e.target.value as "builtin" | "external" | "")}
-              className="bg-surface-elevated border border-line-strong rounded-lg px-3 py-1.5 text-xs text-fg focus:outline-none focus:border-indigo-500"
+              aria-label="Type"
+              className={SELECT_CLASS}
             >
               <option value="">All types</option>
               <option value="builtin">Built-in</option>
@@ -650,69 +747,40 @@ export default function ReviewQueue() {
             </select>
           </div>
 
-          {/* Per-domain actions: approve what's queued, or start/stop curating. */}
+          {/* Bulk actions for one domain at a time: approve what's queued, or
+              start / stop curating it. */}
           {domains.length > 0 && (
-            <div className="flex gap-2 mb-4 flex-wrap">
-              {domains.map((d) => {
-                const pendingInDomain = pendingItems.filter((i) => i.domain === d);
-                // "Stop curating" reverses queue_for_curation, whose selector is
-                // `trusted_default = 1 AND reviewed_at IS NULL`. Mirror BOTH: a
-                // user's own upload is pending with no timestamp too, and
-                // counting it would render a button that does nothing.
-                const untouchedPending = pendingInDomain.filter(
-                  (i) => i.trusted_default && i.reviewed_at == null,
-                ).length;
-                const defaultsInDomain = trustedDefaults[d] ?? 0;
-                return (
-                  <div key={d} className="flex gap-1">
-                    {pendingInDomain.length > 0 && (
-                      <button
-                        onClick={() => handleBulkApprove(d)}
-                        className="text-[10px] text-fg-muted hover:text-emerald-400 bg-surface-elevated border border-line-strong hover:border-emerald-900/60 px-2 py-1 rounded-lg transition-colors"
-                      >
-                        Approve all pending in {d}
-                      </button>
-                    )}
-                    {untouchedPending > 0 ? (
-                      <button
-                        onClick={() => handleCurate(d, "stop")}
-                        className="text-[10px] text-fg-muted hover:text-fg bg-surface-elevated border border-line-strong px-2 py-1 rounded-lg transition-colors"
-                        title={`Return ${untouchedPending} unreviewed item(s) in ${d} to trusted default`}
-                      >
-                        Stop curating {d}
-                      </button>
-                    ) : (
-                      defaultsInDomain > 0 && (
-                        <button
-                          onClick={() => handleCurate(d, "start")}
-                          className="text-[10px] text-fg-muted hover:text-amber-400 bg-surface-elevated border border-line-strong hover:border-amber-900/60 px-2 py-1 rounded-lg transition-colors"
-                          title={`Send ${defaultsInDomain} shipped item(s) in ${d} for review — they will be withheld from the Executive until approved`}
-                        >
-                          Curate {d} ({defaultsInDomain})
-                        </button>
-                      )
-                    )}
-                  </div>
-                );
-              })}
+            <div className="mb-5 flex flex-col sm:flex-row sm:items-center gap-2 rounded-2xl border border-line bg-surface-overlay/50 px-4 py-3">
+              <span className="text-sm font-semibold text-fg">Bulk actions</span>
+              <select
+                value={activeBulkDomain}
+                onChange={(e) => setBulkDomain(e.target.value)}
+                aria-label="Domain for bulk actions"
+                className={`${SELECT_CLASS} capitalize`}
+              >
+                {domains.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <div className="flex items-center gap-2 flex-wrap sm:ml-auto">
+                {bulkActions.length === 0 ? (
+                  <span className="text-sm text-fg-subtle">Nothing to do in {activeBulkDomain}.</span>
+                ) : (
+                  bulkActions.map((a) => (
+                    <Button key={a.kind} size="sm" className="!h-10" title={a.detail} onClick={() => runBulk(a)}>
+                      {a.label}
+                    </Button>
+                  ))
+                )}
+              </div>
             </div>
           )}
 
-          {loading && <p className="text-sm text-fg-subtle">Loading…</p>}
+          {loading && <p className="text-[15px] text-fg-subtle">Loading…</p>}
           <div className="space-y-2">
             {allItems.map((item) => (
-              <ItemRow
-                key={item.item_id}
-                item={item}
-                onApprove={() => handleApprove(item)}
-                onReject={() => setRejectModal({ itemId: item.item_id, notes: "" })}
-                onFlag={() => handleFlag(item)}
-                onView={() => setSelectedItemId(item.item_id)}
-                onPriorityChange={(p) => handlePriorityChange(item, p)}
-              />
+              <ItemRow key={item.item_id} {...rowProps(item)} />
             ))}
             {!loading && allItems.length === 0 && (
-              <p className="text-sm text-fg-subtle py-8 text-center">No items match the filters.</p>
+              <p className="text-[15px] text-fg-subtle py-8 text-center">No items match the filters.</p>
             )}
           </div>
         </div>
@@ -721,39 +789,41 @@ export default function ReviewQueue() {
       {/* Annotations tab */}
       {tab === "annotations" && (
         <div>
-          <p className="text-sm text-fg-muted mb-4">
+          <p className="text-[15px] text-fg-muted mb-4">
             {loading ? "Loading…" : `${annotations.length} active SME correction${annotations.length !== 1 ? "s" : ""}`}
           </p>
           <div className="space-y-2">
             {annotations.map((ann) => (
-              <div key={ann.annotation_id} className="bg-surface-elevated/40 border border-line rounded-lg p-3 flex items-start gap-3">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{ann.domain}</span>
-                    <span className="text-[10px] text-fg-subtle">{ann.item_id}</span>
+              <div key={ann.annotation_id} className="bg-surface-elevated border border-line rounded-2xl px-4 py-3.5 flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap text-xs text-fg-muted">
+                    <span className="capitalize font-medium">{ann.domain}</span>
+                    <span className="text-fg-subtle break-all">{ann.item_id}</span>
                   </div>
-                  <p className="text-xs text-fg">{ann.correction}</p>
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button
-                    onClick={() => void patchAnnotation(ann.annotation_id, { is_active: false }).then(loadAnnotations)}
-                    className="text-[10px] bg-emerald-950/60 text-emerald-400 border border-emerald-900/60 px-1.5 py-0.5 rounded-full hover:bg-red-950/60 hover:text-red-400 hover:border-red-900/60 transition-colors"
-                  >
+                  <p className="text-[15px] text-fg">{ann.correction}</p>
+                  <p className="mt-1 flex items-center gap-1.5 text-xs text-fg-muted">
+                    <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-500" />
                     Active
-                  </button>
-                  <button
-                    onClick={() => void deleteAnnotation(ann.annotation_id).then(loadAnnotations)}
-                    className="text-fg-subtle hover:text-red-400 p-0.5"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
+                  </p>
                 </div>
+                <OverflowMenu
+                  label="Correction actions"
+                  items={[
+                    {
+                      label: "Turn off",
+                      onSelect: () => void patchAnnotation(ann.annotation_id, { is_active: false }).then(loadAnnotations),
+                    },
+                    {
+                      label: "Delete",
+                      danger: true,
+                      onSelect: () => void deleteAnnotation(ann.annotation_id).then(loadAnnotations),
+                    },
+                  ]}
+                />
               </div>
             ))}
             {!loading && annotations.length === 0 && (
-              <p className="text-sm text-fg-subtle py-8 text-center">No active corrections. Open a review item to add one.</p>
+              <p className="text-[15px] text-fg-subtle py-8 text-center">No active corrections. Open a review item to add one.</p>
             )}
           </div>
         </div>
@@ -761,40 +831,45 @@ export default function ReviewQueue() {
 
       {/* Reject modal */}
       {rejectModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setRejectModal(null)} />
-          <div className="relative bg-surface-elevated border border-line-strong rounded-xl p-5 w-[400px] shadow-2xl">
-            <p className="text-sm font-medium text-fg mb-3">Reject item</p>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Reject item"
+            className="relative bg-surface-elevated border border-line rounded-2xl p-5 w-full max-w-md shadow-2xl"
+          >
+            <p className="text-lg font-semibold text-fg mb-3">Reject item</p>
             <textarea
               value={rejectModal.notes}
               onChange={(e) => setRejectModal({ ...rejectModal, notes: e.target.value })}
               placeholder="Optional notes about why this is rejected…"
-              className="w-full h-24 bg-surface-elevated border border-line-strong rounded-lg px-3 py-2 text-xs text-fg resize-none focus:outline-none focus:border-red-500 placeholder:text-fg-subtle mb-3"
+              aria-label="Why it is rejected"
+              autoFocus
+              className="w-full h-28 bg-surface-elevated border border-line-strong rounded-xl px-3 py-2 text-[15px] text-fg resize-none focus:outline-none focus:ring-2 focus:ring-red-500/40 placeholder:text-fg-subtle mb-4"
             />
             <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setRejectModal(null)}
-                className="text-xs text-fg-muted hover:text-fg px-3 py-1.5 rounded-lg transition-colors"
-              >
+              <Button variant="ghost" onClick={() => setRejectModal(null)}>
                 Cancel
-              </button>
-              <button
-                onClick={handleRejectConfirm}
-                className="text-xs bg-red-900/40 hover:bg-red-900/60 text-red-400 border border-red-900/60 px-3 py-1.5 rounded-lg transition-colors"
-              >
+              </Button>
+              <Button variant="danger" onClick={handleRejectConfirm}>
                 Reject
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Slide-over */}
+      {/* Item panel */}
       {selectedItemId && (
         <ItemSlideOver
           itemId={selectedItemId}
           onClose={() => setSelectedItemId(null)}
           onUpdated={handleItemUpdated}
+          onApprove={handleApprove}
+          onFlag={handleFlag}
+          onReject={(item) => setRejectModal({ itemId: item.item_id, notes: "" })}
+          onPriorityChange={handlePriorityChange}
         />
       )}
     </div>
@@ -820,80 +895,51 @@ function ItemRow({
   onView: () => void;
   onPriorityChange: (p: ReviewPriority) => void;
 }) {
+  const fileBacked = item.content_type === "builtin" || item.content_type === "failure";
   return (
-    <div className="bg-surface-elevated/40 border border-line rounded-lg px-4 py-3 flex items-center gap-3">
-      {/* Icon */}
-      <div className="flex-shrink-0 text-fg-subtle">
-        {item.content_type === "builtin" || item.content_type === "failure" ? (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-          </svg>
-        ) : (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-          </svg>
-        )}
-      </div>
+    <div className="bg-surface-elevated border border-line rounded-2xl px-4 py-3.5 sm:px-5 flex items-center gap-3 sm:gap-4">
+      <span className="hidden sm:flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-surface-overlay text-fg-muted">
+        <Icon name={fileBacked ? "doc" : "book"} size="w-5 h-5" />
+      </span>
 
-      {/* Info */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm text-fg font-medium truncate">{item.filename}</span>
-          <span className="text-[10px] bg-surface-overlay text-fg-muted border border-line-strong rounded px-1.5 py-0.5">{item.domain}</span>
-          <StatusPill
-                status={item.status}
-                reviewedAt={item.reviewed_at}
-                trustedDefault={item.trusted_default}
-              />
-          <PriorityPill priority={item.priority} />
-        </div>
-        <p className="text-[11px] text-fg-subtle mt-0.5">Added {formatDate(item.registered_at)}</p>
-      </div>
-
-      {/* Priority selector */}
-      <select
-        value={item.priority}
-        onChange={(e) => onPriorityChange(e.target.value as ReviewPriority)}
-        className="bg-surface-elevated border border-line-strong rounded-lg px-2 py-1 text-[10px] text-fg-muted focus:outline-none focus:border-indigo-500"
-        title="Set priority"
-      >
-        <option value="low">↓ Low</option>
-        <option value="normal">Normal</option>
-        <option value="high">↑ High</option>
-      </select>
-
-      {/* Actions */}
-      <div className="flex items-center gap-1 flex-shrink-0">
         <button
           onClick={onView}
-          className="text-[10px] text-fg-muted hover:text-fg bg-surface-overlay hover:bg-surface-input border border-line-strong px-2 py-1 rounded-lg transition-colors"
+          className="block max-w-full truncate text-left text-[15px] font-semibold text-fg hover:text-accent transition-colors"
         >
-          View
+          {item.filename}
         </button>
-        {item.status !== "approved" && (
-          <button
-            onClick={onApprove}
-            className="text-[10px] text-emerald-400 hover:text-emerald-300 bg-emerald-950/40 hover:bg-emerald-950/60 border border-emerald-900/60 px-2 py-1 rounded-lg transition-colors"
-          >
+        <div className="mt-1 flex items-center gap-2 flex-wrap text-sm text-fg-muted">
+          <span className="capitalize">{item.domain}</span>
+          <StatusPill
+            status={item.status}
+            reviewedAt={item.reviewed_at}
+            trustedDefault={item.trusted_default}
+          />
+          <PriorityPill priority={item.priority} />
+          <span className="text-fg-subtle">Added {formatDate(item.registered_at)}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {item.status !== "approved" ? (
+          <Button variant="primary" size="sm" className="!h-10" onClick={onApprove}>
             Approve
-          </button>
+          </Button>
+        ) : (
+          <Button size="sm" className="!h-10" onClick={onView}>
+            View
+          </Button>
         )}
-        {item.status !== "needs_revision" && (
-          <button
-            onClick={onFlag}
-            className="text-[10px] text-violet-400 hover:text-violet-300 bg-violet-950/40 hover:bg-violet-950/60 border border-violet-900/60 px-2 py-1 rounded-lg transition-colors"
-          >
-            Flag
-          </button>
-        )}
-        {item.status !== "rejected" && (
-          <button
-            onClick={onReject}
-            className="text-[10px] text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-950/60 border border-red-900/60 px-2 py-1 rounded-lg transition-colors"
-          >
-            Reject
-          </button>
-        )}
+        <OverflowMenu
+          label={`More actions for ${item.filename}`}
+          items={itemMenu(item, {
+            onView: item.status !== "approved" ? onView : undefined,
+            onFlag,
+            onReject,
+            onPriorityChange,
+          })}
+        />
       </div>
     </div>
   );

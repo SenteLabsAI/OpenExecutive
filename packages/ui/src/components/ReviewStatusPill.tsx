@@ -10,15 +10,15 @@ const STATUS_LABELS: Record<ReviewStatus, string> = {
   needs_revision: "Needs revision",
 };
 
-const STATUS_CLASSES: Record<ReviewStatus, string> = {
-  pending: "bg-amber-950/60 text-amber-400 border border-amber-900/60",
-  approved: "bg-emerald-950/60 text-emerald-400 border border-emerald-900/60",
-  rejected: "bg-red-950/60 text-red-400 border border-red-900/60",
-  needs_revision: "bg-violet-950/60 text-violet-400 border border-violet-900/60",
+// Status is a coloured dot plus a word.
+const STATUS_DOT: Record<ReviewStatus, string> = {
+  pending: "bg-amber-500",
+  approved: "bg-emerald-500",
+  rejected: "bg-red-500",
+  needs_revision: "bg-violet-500",
 };
 
-const TRUSTED_DEFAULT_CLASS =
-  "bg-surface-overlay/60 text-fg-muted border border-line-strong/60";
+const TRUSTED_DEFAULT_DOT = "bg-fg-subtle";
 
 export default function ReviewStatusPill({
   status,
@@ -35,15 +35,17 @@ export default function ReviewStatusPill({
   const trusted = trustedDefault === true && status === "approved" && reviewedAt == null;
   return (
     <span
-      className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
-        trusted ? TRUSTED_DEFAULT_CLASS : STATUS_CLASSES[status]
-      }`}
+      className="inline-flex items-center gap-1.5 text-sm font-medium text-fg-muted"
       title={
         trusted
           ? "Ships with Open Executive. Available to the Executive, but nobody here has reviewed it."
           : undefined
       }
     >
+      <span
+        aria-hidden
+        className={`h-2 w-2 rounded-full ${trusted ? TRUSTED_DEFAULT_DOT : STATUS_DOT[status]}`}
+      />
       {trusted ? "Default" : STATUS_LABELS[status]}
     </span>
   );

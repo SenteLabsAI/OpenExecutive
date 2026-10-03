@@ -7,6 +7,7 @@ import {
   type ExternalPeekChunk,
   type ExternalSourceInfo,
 } from "@/lib/api";
+import { buttonClass } from "@/components/ui/Button";
 
 export default function ReferencePanel() {
   const [sources, setSources] = useState<ExternalSourceInfo[] | null>(null);
@@ -44,7 +45,7 @@ export default function ReferencePanel() {
 
   if (error) {
     return (
-      <div className="text-sm text-red-400 px-4 py-3 rounded-xl bg-red-950/40 border border-red-900/60">
+      <div className="text-sm text-red-500 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20">
         {error}
       </div>
     );
@@ -59,19 +60,18 @@ export default function ReferencePanel() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-base font-semibold text-fg">Reference Library</h2>
-        <p className="text-sm text-fg-muted mt-1">
+        <p className="text-[15px] text-fg-muted max-w-2xl">
           Open-licensed textbooks and handbooks the Executive draws on. Declared in{" "}
           <code className="text-fg">knowledge/sources.yaml</code>. To add or
           refresh: run <code className="text-fg">openexecutive ingest-oer</code>.
         </p>
-        <p className="text-xs text-fg-muted mt-2">
+        <p className="text-sm text-fg-muted mt-2">
           {ingested.length} ingested · {pending.length} pending ·{" "}
           {totalChunks.toLocaleString()} indexed chunks
         </p>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         {sources.map((src) => (
           <SourceCard
             key={src.id}
@@ -112,25 +112,25 @@ function SourceCard({
     : "never";
 
   return (
-    <div className="rounded-xl bg-surface-overlay/60 border border-line-strong/50 overflow-hidden">
-      <div className="flex items-start justify-between gap-4 px-4 py-3">
+    <div className="rounded-2xl bg-surface-elevated border border-line overflow-hidden">
+      <div className="flex items-start justify-between gap-4 px-4 py-4 sm:px-5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm text-fg font-medium">{source.title}</p>
+            <p className="text-base text-fg font-semibold">{source.title}</p>
             <span
-              className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                source.is_ingested
-                  ? "bg-emerald-950/60 text-emerald-400 border border-emerald-900/60"
-                  : "bg-surface-input/60 text-fg-muted border border-line-strong/60"
-              }`}
+              className="inline-flex items-center gap-1.5 text-sm text-fg-muted"
             >
-              {source.is_ingested ? "ingested" : "pending"}
+              <span
+                aria-hidden
+                className={`h-2 w-2 rounded-full ${source.is_ingested ? "bg-emerald-500" : "bg-fg-subtle"}`}
+              />
+              {source.is_ingested ? "Ingested" : "Pending"}
             </span>
-            <span className="text-[10px] uppercase tracking-wide text-fg-muted border border-line-strong px-1.5 py-0.5 rounded">
-              phase {source.phase}
+            <span className="text-sm text-fg-subtle">
+              · phase {source.phase}
             </span>
           </div>
-          <p className="text-xs text-fg-muted mt-1">
+          <p className="text-sm text-fg-muted mt-1">
             {source.publisher} · {source.license} ·{" "}
             <a
               href={source.url}
@@ -145,13 +145,13 @@ function SourceCard({
             {source.domains.map((d) => (
               <span
                 key={d}
-                className="text-[10px] text-fg-muted bg-surface-input/60 border border-line-strong/60 px-1.5 py-0.5 rounded"
+                className="text-xs text-fg-muted bg-surface-overlay border border-line px-2 py-0.5 rounded-lg"
               >
                 {d}
               </span>
             ))}
           </div>
-          <p className="text-xs text-fg-muted mt-2">
+          <p className="text-sm text-fg-muted mt-2">
             {source.chunks.toLocaleString()} chunks · {source.files} file
             {source.files === 1 ? "" : "s"} · fetched {fetchedLabel}
           </p>
@@ -159,20 +159,20 @@ function SourceCard({
         <button
           onClick={isExpanded ? onCollapse : onPeek}
           disabled={!source.is_ingested}
-          className="text-xs px-3 py-1.5 rounded-lg bg-surface-input/60 border border-line-strong/60 text-fg hover:bg-surface-input disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+          className={buttonClass("secondary", "sm", "!h-10 flex-shrink-0")}
         >
           {isExpanded ? "Hide" : "Peek"}
         </button>
       </div>
       {isExpanded && (
-        <div className="border-t border-line-strong/50 px-4 py-3 space-y-2 bg-surface-elevated/40">
-          {peekError && <p className="text-xs text-fg-muted">{peekError}</p>}
+        <div className="border-t border-line px-4 py-3 sm:px-5 space-y-2 bg-surface-overlay/40">
+          {peekError && <p className="text-sm text-fg-muted">{peekError}</p>}
           {chunks.map((c) => (
             <div
               key={`${c.filename}-${c.chunk_index}-${c.domain}`}
-              className="text-xs text-fg bg-surface-overlay/60 border border-line-strong/50 rounded-lg px-3 py-2"
+              className="text-sm text-fg bg-surface-elevated border border-line rounded-xl px-3.5 py-2.5"
             >
-              <p className="text-[10px] text-fg-muted mb-1">
+              <p className="text-xs text-fg-muted mb-1">
                 {c.domain} · {c.filename} · chunk #{c.chunk_index}
               </p>
               <p className="whitespace-pre-wrap leading-relaxed">

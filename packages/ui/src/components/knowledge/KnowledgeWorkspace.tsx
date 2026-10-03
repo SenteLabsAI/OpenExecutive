@@ -23,6 +23,16 @@ import {
 } from "@/lib/api";
 import ReviewQueue from "@/components/ReviewQueue";
 import PageSideNav from "@/components/shell/PageSideNav";
+import Button from "@/components/ui/Button";
+import ViewTabs from "@/components/ui/ViewTabs";
+import {
+  ADVANCED_VIEWS,
+  VIEW_LABELS,
+  isAdvancedView,
+  viewForSelection,
+  viewFromParam,
+  type KnowledgeView,
+} from "@/lib/knowledgeViews";
 import CompanyPanel from "./CompanyPanel";
 import FileEditor from "./FileEditor";
 import NewFileForm from "./NewFileForm";
@@ -30,24 +40,15 @@ import QueryPanel from "./QueryPanel";
 import ReferencePanel from "./ReferencePanel";
 import SourceTree, { type FileKind, type Selection } from "./SourceTree";
 
-// What the phone bar above the source tree names as open.
-function selectionLabel(selection: Selection): string | undefined {
-  switch (selection?.kind) {
-    case "file":
-      return selection.filename;
-    case "new":
-      return "New file";
-    case "company":
-      return "Company documents";
-    case "reference":
-      return "Reference library";
-    case "query":
-      return "Query mode";
-    case "review":
-      return "Review queue";
-    default:
-      return undefined;
-  }
+// What the phone bar above the playbooks tree names as open.
+function fileLabel(selection: Selection): string | undefined {
+  if (selection?.kind === "file") return selection.filename;
+  if (selection?.kind === "new") return "New file";
+  return undefined;
+}
+
+function selectionForView(view: KnowledgeView): Selection {
+  return { kind: view };
 }
 
 const DOMAINS = [
@@ -73,10 +74,10 @@ export default function KnowledgeWorkspace() {
   const [builtinFiles, setBuiltinFiles] = useState<BuiltinFileMeta[]>([]);
   const [failureFiles, setFailureFiles] = useState<BuiltinFileMeta[]>([]);
   // `/knowledge?view=review` (and the old `/review` route, which redirects
-  // here) opens straight onto the review queue.
-  // Everything else opens on the company documents.
+  // here) opens straight onto the review queue; `?view=` also takes the other
+  // Advanced views. Everything else opens on the company documents.
   const [selection, setSelection] = useState<Selection>(() =>
-    searchParams.get("view") === "review" ? { kind: "review" } : { kind: "company" }
+    selectionForView(viewFromParam(searchParams.get("view")))
   );
   const [companyCount, setCompanyCount] = useState<number | null>(null);
   const [reviewCount, setReviewCount] = useState(0);
@@ -86,12 +87,19 @@ export default function KnowledgeWorkspace() {
   // overwrite a newer one.
   const reviewSeq = useRef(0);
 
-  // Also follow `?view=review` on in-app navigation, where the page is not
+  // Also follow `?view=` on in-app navigation, where the page is not
   // remounted and the initializer above doesn't run again.
-  const view = searchParams.get("view");
+  const viewParam = searchParams.get("view");
   useEffect(() => {
-    if (view === "review") setSelection({ kind: "review" });
-  }, [view]);
+    const wanted = viewFromParam(viewParam);
+    if (isAdvancedView(wanted)) setSelection(selectionForView(wanted));
+  }, [viewParam]);
+  const view = viewForSelection(selection?.kind);
+  // The Advanced view last open, so "Advanced" returns to it.
+  const [lastAdvanced, setLastAdvanced] = useState<KnowledgeView>(
+    isAdvancedView(view) ? view : "review"
+  );
+  if (isAdvancedView(view) && view !== lastAdvanced) setLastAdvanced(view);
   const [selectedContent, setSelectedContent] = useState<BuiltinFileContent | null>(null);
   const [editContent, setEditContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
@@ -206,7 +214,7 @@ export default function KnowledgeWorkspace() {
       selection.fileKind === "builtin" ? deleteBuiltinFile : deleteFailureFile;
     try {
       await deleter(selection.domain, selection.filename);
-      setSelection({ kind: "company" });
+      setSelection({ kind: "playbooks" });
       await loadIndex();
     } catch {
       setError("Failed to delete file");
@@ -232,75 +240,148 @@ export default function KnowledgeWorkspace() {
     []
   );
 
-  return (
-    <div className="flex flex-col md:flex-row h-full">
-      <PageSideNav
-        label="Showing"
-        current={selectionLabel(selection)}
-        closeKey={JSON.stringify(selection)}
-        className="md:w-64 bg-surface-elevated md:bg-surface/40 px-4 py-5"
-      >
-        <SourceTree
-          domains={DOMAINS}
-          builtinFiles={builtinFiles}
-          failureFiles={failureFiles}
-          selection={selection}
-          filter={filter}
-          onFilterChange={setFilter}
-          reviewCount={reviewCount}
-          companyCount={companyCount}
-          onSelect={setSelection}
-        />
-      </PageSideNav>
+  function openView(next: KnowledgeView) {
+    if (next === view) return;
+    setSelection(selectionForView(next));
+  }
 
-      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-5 sm:px-8 sm:py-6">
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-8 sm:py-8">
+        <div className="mb-6">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Knowledge</h1>
+          <p className="mt-1.5 text-[15px] text-fg-muted max-w-2xl">
+            Everything here is read by the Executive when it answers questions about your
+            company.
+          </p>
+        </div>
+
+        <ViewTabs
+          label="Knowledge"
+          value={isAdvancedView(view) ? "advanced" : "company"}
+          onChange={(t) => openView(t === "advanced" ? lastAdvanced : "company")}
+          tabs={[
+            { id: "company", label: VIEW_LABELS.company, badge: companyCount },
+            {
+              id: "advanced",
+              label: "Advanced",
+              // The review count rides on "Advanced" so pending items show
+              // from the documents view too.
+              badge: !isAdvancedView(view) && reviewCount > 0 ? reviewCount : null,
+              badgeTone: "attention",
+            },
+          ]}
+        />
+
+        {isAdvancedView(view) && (
+          <div className="mt-3 flex items-center gap-1 overflow-x-auto border-b border-line">
+            {ADVANCED_VIEWS.map((v) => {
+              const active = v === view;
+              return (
+                <button
+                  key={v}
+                  onClick={() => openView(v)}
+                  aria-current={active ? "page" : undefined}
+                  className={`-mb-px inline-flex h-11 flex-shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 text-[15px] font-medium transition-colors ${
+                    active
+                      ? "border-accent text-fg"
+                      : "border-transparent text-fg-muted hover:text-fg"
+                  }`}
+                >
+                  {VIEW_LABELS[v]}
+                  {v === "review" && reviewCount > 0 && (
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-500">
+                      {reviewCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {error && (
-          <div className="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+          <div className="mt-5 text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
             {error}
           </div>
         )}
 
-        {selection?.kind === "file" && selectedContent && (
-          <FileEditor
-            file={selectedContent}
-            content={editContent}
-            isDirty={isDirty}
-            isSaving={isSaving}
-            variant={selection.fileKind === "failures" ? "failure" : "playbook"}
-            review={fileReview}
-            onSetReviewStatus={handleSetReviewStatus}
-            onChange={(v) => {
-              setEditContent(v);
-              setIsDirty(true);
-            }}
-            onSave={handleSave}
-            onDelete={handleDelete}
-          />
-        )}
-
-        {selection?.kind === "file" && !selectedContent && !error && (
-          <p className="text-sm text-fg-muted">Loading…</p>
-        )}
-
-        {selection?.kind === "new" && (
-          <NewFileForm
-            domains={DOMAINS}
-            initialDomain={DOMAINS[0]}
-            variant={selection.fileKind === "failures" ? "failure" : "playbook"}
-            onSave={(domain, filename, content) =>
-              handleCreate(selection.fileKind, domain, filename, content)
-            }
-            onCancel={() => setSelection({ kind: "company" })}
-          />
-        )}
-
-        {selection?.kind === "review" && <ReviewQueue />}
-        {selection?.kind === "company" && <CompanyPanel onCountChange={setCompanyCount} />}
-        {selection?.kind === "reference" && <ReferencePanel />}
-        {selection?.kind === "query" && (
-          <QueryPanel domains={DOMAINS} onOpenFile={openFile} />
-        )}
-      </main>
+        <div className="mt-6">
+          {view === "company" && <CompanyPanel onCountChange={setCompanyCount} />}
+          {view === "review" && <ReviewQueue />}
+          {view === "reference" && <ReferencePanel />}
+          {view === "query" && <QueryPanel domains={DOMAINS} onOpenFile={openFile} />}
+          {view === "playbooks" && (
+            <div className="flex flex-col md:flex-row md:gap-6">
+              <PageSideNav
+                label="File"
+                current={fileLabel(selection)}
+                closeKey={JSON.stringify(selection)}
+                className="md:w-64 md:max-h-[calc(100vh-14rem)] md:sticky md:top-0 bg-surface-elevated md:bg-transparent p-4 md:p-0 md:pr-4"
+              >
+                <SourceTree
+                  domains={DOMAINS}
+                  builtinFiles={builtinFiles}
+                  failureFiles={failureFiles}
+                  selection={selection}
+                  filter={filter}
+                  onFilterChange={setFilter}
+                  onSelect={setSelection}
+                />
+              </PageSideNav>
+              <div className="min-w-0 flex-1 pt-4 md:pt-0">
+                {selection?.kind === "file" && selectedContent && (
+                  <FileEditor
+                    file={selectedContent}
+                    content={editContent}
+                    isDirty={isDirty}
+                    isSaving={isSaving}
+                    variant={selection.fileKind === "failures" ? "failure" : "playbook"}
+                    review={fileReview}
+                    onSetReviewStatus={handleSetReviewStatus}
+                    onChange={(v) => {
+                      setEditContent(v);
+                      setIsDirty(true);
+                    }}
+                    onSave={handleSave}
+                    onDelete={handleDelete}
+                  />
+                )}
+                {selection?.kind === "file" && !selectedContent && !error && (
+                  <p className="text-[15px] text-fg-muted">Loading…</p>
+                )}
+                {selection?.kind === "new" && (
+                  <NewFileForm
+                    domains={DOMAINS}
+                    initialDomain={DOMAINS[0]}
+                    variant={selection.fileKind === "failures" ? "failure" : "playbook"}
+                    onSave={(domain, filename, content) =>
+                      handleCreate(selection.fileKind, domain, filename, content)
+                    }
+                    onCancel={() => setSelection({ kind: "playbooks" })}
+                  />
+                )}
+                {selection?.kind === "playbooks" && (
+                  <div className="rounded-2xl border border-dashed border-line-strong px-6 py-12 text-center">
+                    <p className="text-base font-semibold text-fg">Built-in playbooks</p>
+                    <p className="mt-1.5 text-[15px] text-fg-muted max-w-md mx-auto">
+                      The frameworks and failure case studies each specialist draws on.
+                      Pick a file to read or edit it, or add your own.
+                    </p>
+                    <Button
+                      variant="primary"
+                      className="mt-5"
+                      onClick={() => setSelection({ kind: "new", fileKind: "builtin" })}
+                    >
+                      New playbook
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
