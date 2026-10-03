@@ -29,9 +29,12 @@ import {
 } from "@/lib/companyDocs";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import Icon from "@/components/Icon";
+import Button, { buttonClass } from "@/components/ui/Button";
+import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
+import SidePanel from "@/components/ui/SidePanel";
 
 interface CompanyPanelProps {
-  /** Reports how many documents are listed, for the sidebar count. */
+  /** Reports how many documents are listed, for the tab's count. */
   onCountChange?: (count: number) => void;
 }
 
@@ -46,13 +49,14 @@ const ACCEPT = ".pdf,.docx,.doc,.xlsx,.xlsm,.csv,.md,.txt";
 const POLL_MS = 3000;
 
 const PROSE_CLASS =
-  "prose prose-invert prose-sm max-w-none prose-p:text-fg prose-headings:text-fg prose-strong:text-fg prose-code:text-indigo-300 prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-none prose-code:after:content-none prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong prose-blockquote:border-line-strong prose-blockquote:text-fg-muted prose-ul:text-fg prose-ol:text-fg prose-li:marker:text-fg-muted prose-hr:border-line-strong prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong";
+  "prose prose-sm sm:prose-base max-w-none prose-p:text-fg prose-headings:text-fg prose-strong:text-fg prose-code:text-accent prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-none prose-code:after:content-none prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong prose-blockquote:border-line-strong prose-blockquote:text-fg-muted prose-ul:text-fg prose-ol:text-fg prose-li:marker:text-fg-muted prose-hr:border-line-strong prose-a:text-accent prose-a:no-underline hover:prose-a:underline prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong";
 
-const BADGE_CLASS: Record<DocSource, string> = {
-  upload: "bg-surface-input text-fg-muted border-line-strong",
-  drive: "bg-emerald-500/15 text-emerald-400 border-emerald-500/40",
-  onedrive: "bg-blue-500/15 text-blue-400 border-blue-500/40",
-  notion: "bg-sky-500/15 text-sky-400 border-sky-500/40",
+// The dot beside a document's source name.
+const SOURCE_DOT: Record<DocSource, string> = {
+  upload: "bg-fg-subtle",
+  drive: "bg-emerald-500",
+  onedrive: "bg-blue-500",
+  notion: "bg-sky-500",
 };
 
 export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
@@ -135,16 +139,6 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
     return () => window.clearInterval(timer);
   }, [syncingKey, loadSynced]);
 
-  // Close the viewer on Escape.
-  useEffect(() => {
-    if (!viewing) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setViewing(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [viewing]);
-
   async function handleFiles(files: File[]) {
     if (!files.length) return;
     setError(null);
@@ -216,23 +210,25 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   ];
 
   return (
-    <div className="space-y-5 max-w-3xl">
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
-        <div>
-          <h1 className="text-lg font-semibold text-fg">Company documents</h1>
-          <p className="text-sm text-fg-muted mt-1">
-            Everything here is read by the Executive when it answers questions about your
-            company.
-          </p>
-        </div>
-        <label className="self-start flex-shrink-0 cursor-pointer inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium transition-colors">
-          <Icon name="plus" size="w-4 h-4" />
+    <div className="space-y-6 max-w-4xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <p className="text-[15px] text-fg-muted max-w-xl">
+          Your own files, plus anything synced from a connected source.
+        </p>
+        <label
+          className={buttonClass(
+            "primary",
+            "md",
+            "self-start sm:self-auto flex-shrink-0 cursor-pointer focus-within:ring-2 focus-within:ring-accent/60"
+          )}
+        >
+          <Icon name="plus" size="w-5 h-5" />
           Add documents
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            className="hidden"
+            className="sr-only"
             accept={ACCEPT}
             onChange={(e) => handleFiles(Array.from(e.target.files ?? []))}
           />
@@ -240,7 +236,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
       </div>
 
       {error && (
-        <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+        <p className="text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
           {error}
         </p>
       )}
@@ -263,18 +259,18 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
           setDragOver(false);
           handleFiles(Array.from(e.dataTransfer.files));
         }}
-        className={`rounded-xl border-2 border-dashed transition-colors text-center ${
-          rows.length === 0 && loaded ? "p-10" : "px-4 py-4"
-        } ${dragOver ? "border-indigo-500 bg-indigo-500/5" : "border-line-strong"}`}
+        className={`rounded-2xl border-2 border-dashed transition-colors text-center ${
+          rows.length === 0 && loaded ? "p-10" : "px-4 py-5"
+        } ${dragOver ? "border-accent bg-accent/5" : "border-line-strong/70"}`}
       >
         {uploadProgress ? (
-          <p className="text-sm text-indigo-400 animate-pulse">{uploadProgress}</p>
+          <p className="text-[15px] text-accent animate-pulse">{uploadProgress}</p>
         ) : (
-          <p className="text-sm text-fg-muted">
+          <p className="text-[15px] text-fg-muted">
             {rows.length === 0 && loaded
               ? "No documents yet. Drop files here to add your first ones."
               : "Drop files here to add them"}
-            <span className="block text-xs text-fg-subtle mt-1">
+            <span className="block text-sm text-fg-subtle mt-1">
               PDF, Word, Excel, CSV, Markdown or text, up to 50 MB each
             </span>
           </p>
@@ -283,32 +279,36 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
 
       {rows.length > 0 && (
         <div className="space-y-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            {filterOptions.length > 2 &&
-              filterOptions.map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => setSourceFilter(opt)}
-                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                    sourceFilter === opt
-                      ? "bg-surface-input text-fg border-line-strong"
-                      : "text-fg-muted border-transparent hover:text-fg"
-                  }`}
-                >
-                  {opt === "all" ? `All (${rows.length})` : SOURCE_LABELS[opt]}
-                </button>
-              ))}
-            {rows.length > 8 && (
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search by name…"
-                className="ml-auto w-48 rounded-lg border border-line bg-surface-elevated px-2.5 py-1 text-xs text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-              />
-            )}
-          </div>
+          {(filterOptions.length > 2 || rows.length > 8) && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {filterOptions.length > 2 &&
+                filterOptions.map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => setSourceFilter(opt)}
+                    aria-pressed={sourceFilter === opt}
+                    className={`h-10 text-sm font-medium px-4 rounded-xl border transition-colors ${
+                      sourceFilter === opt
+                        ? "bg-accent/10 text-accent border-accent/30"
+                        : "text-fg-muted border-line hover:text-fg hover:bg-surface-overlay"
+                    }`}
+                  >
+                    {opt === "all" ? `All (${rows.length})` : SOURCE_LABELS[opt]}
+                  </button>
+                ))}
+              {rows.length > 8 && (
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search by name…"
+                  aria-label="Search documents by name"
+                  className="w-full sm:w-60 sm:ml-auto h-10 rounded-xl border border-line bg-surface-elevated px-3 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40"
+                />
+              )}
+            </div>
+          )}
 
-          <ul className="divide-y divide-line-strong/50 rounded-xl border border-line-strong/50 bg-surface-overlay/40">
+          <ul className="divide-y divide-line rounded-2xl border border-line bg-surface-elevated">
             {shown.map((row) => (
               <DocListRow
                 key={row.key}
@@ -319,7 +319,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
               />
             ))}
             {shown.length === 0 && (
-              <li className="px-4 py-6 text-sm text-fg-subtle text-center">
+              <li className="px-5 py-8 text-[15px] text-fg-subtle text-center">
                 No documents match.
               </li>
             )}
@@ -327,7 +327,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
         </div>
       )}
 
-      {viewing && <Viewer doc={viewing} onClose={() => setViewing(null)} />}
+      <Viewer doc={viewing} onClose={() => setViewing(null)} />
     </div>
   );
 }
@@ -346,42 +346,45 @@ function SourcesStrip({
   if (!anyKnown) return null;
   if (connected.length === 0) {
     return (
-      <p className="text-xs text-fg-subtle">
-        Connect Google Drive, OneDrive or Notion to bring documents in automatically.{" "}
-        <Link href="/settings/integrations" className="text-indigo-400 hover:underline">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-2xl border border-line bg-surface-overlay/50 px-5 py-4">
+        <p className="flex-1 text-[15px] text-fg-muted">
+          Connect Google Drive, OneDrive or Notion to bring documents in automatically.
+        </p>
+        <Link
+          href="/settings/integrations"
+          className={buttonClass("secondary", "md", "self-start sm:self-auto")}
+        >
           Set up in Settings
         </Link>
-      </p>
+      </div>
     );
   }
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2">
       {connected.map((s) => {
         const dot = s.syncing
-          ? "bg-indigo-400 animate-pulse"
+          ? "bg-accent animate-pulse"
           : s.last_error
-            ? "bg-red-400"
+            ? "bg-red-500"
             : s.last_run
-              ? "bg-emerald-400"
+              ? "bg-emerald-500"
               : "bg-fg-subtle";
         const message = messages[s.id];
         return (
-          <div
-            key={s.id}
-            className="rounded-xl border border-line-strong/60 bg-surface-overlay/40 px-3.5 py-2.5"
-          >
-            <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
-              <span className="text-sm font-medium text-fg">{s.label}</span>
-              <button
+          <div key={s.id} className="rounded-2xl border border-line bg-surface-elevated px-4 py-3.5">
+            <div className="flex items-center gap-2.5">
+              <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${dot}`} aria-hidden />
+              <span className="text-base font-semibold text-fg truncate">{s.label}</span>
+              <Button
+                size="sm"
+                className="ml-auto !h-10"
                 onClick={() => onSyncNow(s.id)}
                 disabled={s.syncing}
-                className="ml-auto text-xs px-2.5 py-1 rounded-lg border border-line-strong text-fg hover:bg-surface-input disabled:opacity-60 disabled:cursor-default transition-colors"
               >
                 {s.syncing ? "Syncing…" : "Sync now"}
-              </button>
+              </Button>
             </div>
-            <p className="text-xs text-fg-muted mt-1">
+            <p className="text-sm text-fg-muted mt-1.5">
               {s.syncing
                 ? "Checking for new and changed files…"
                 : s.last_run
@@ -392,7 +395,7 @@ function SourcesStrip({
               <span className="text-fg-subtle"> · syncs {formatInterval(s.interval_minutes)}</span>
             </p>
             {(s.last_error || message) && (
-              <p className="text-xs text-red-400 mt-1">
+              <p className="text-sm text-red-500 mt-1.5">
                 {message ?? s.last_error}{" "}
                 {!message && (
                   <Link href="/settings/integrations" className="underline">
@@ -431,114 +434,84 @@ function DocListRow({
         `edited in ${SOURCE_LABELS[row.source]} ${new Date(row.editedAt).toLocaleDateString()}`
       );
   }
+  const source = SOURCE_LABELS[row.source];
+  const menu: OverflowItem[] = [];
+  if (row.url) menu.push({ label: `Open in ${source} ↗`, href: row.url, external: true });
+  if (row.source === "upload") {
+    menu.push({ label: "Delete", danger: true, onSelect: onDelete });
+  } else {
+    // Synced files are removed at their source; say so where Delete would be.
+    menu.push({ label: `Managed in ${source}: remove it there`, disabled: true });
+  }
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
-      <Icon name="doc" size="w-4 h-4" className="text-fg-subtle flex-shrink-0" />
+    <li className="flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-3.5">
+      <span className="hidden sm:flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-surface-overlay text-fg-muted">
+        <Icon name="doc" size="w-5 h-5" />
+      </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            onClick={onView}
-            disabled={!row.indexed}
-            className="text-sm text-fg font-medium truncate hover:text-indigo-300 disabled:hover:text-fg text-left transition-colors"
-          >
-            {row.name}
-          </button>
-          <span
-            className={`flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border ${BADGE_CLASS[row.source]}`}
-          >
-            {SOURCE_LABELS[row.source]}
-          </span>
+        <button
+          onClick={onView}
+          disabled={!row.indexed}
+          className="block max-w-full text-[15px] text-fg font-semibold truncate hover:text-accent disabled:hover:text-fg text-left transition-colors"
+        >
+          {row.name}
+        </button>
+        <p className="text-sm text-fg-muted mt-0.5 flex items-center gap-1.5 min-w-0">
+          <span className={`h-2 w-2 rounded-full flex-shrink-0 ${SOURCE_DOT[row.source]}`} aria-hidden />
+          <span className="flex-shrink-0">{source}</span>
           {row.domain && (
-            <span className="flex-shrink-0 text-[10px] text-fg-subtle capitalize">
-              {row.domain}
-            </span>
+            <span className="hidden sm:inline flex-shrink-0 capitalize text-fg-subtle">· {row.domain}</span>
           )}
-        </div>
-        <p className="text-xs text-fg-muted mt-0.5 truncate">{details.join(" · ")}</p>
+          {details.length > 0 && <span className="truncate">· {details.join(" · ")}</span>}
+        </p>
       </div>
       <div className="flex items-center gap-1 flex-shrink-0">
         {row.indexed && (
-          <button
-            onClick={onView}
-            disabled={loading}
-            className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50 px-2 py-1 rounded transition-colors"
-          >
+          <Button size="sm" className="!h-10" onClick={onView} disabled={loading}>
             {loading ? "Loading…" : "View"}
-          </button>
+          </Button>
         )}
-        {row.url && (
-          <a
-            href={row.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-fg-muted hover:text-fg px-2 py-1 rounded transition-colors"
-          >
-            Open in {SOURCE_LABELS[row.source]} ↗
-          </a>
-        )}
-        {row.source === "upload" ? (
-          <button
-            onClick={onDelete}
-            className="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded transition-colors"
-          >
-            Delete
-          </button>
-        ) : (
-          <span
-            className="text-[11px] text-fg-subtle px-2"
-            title={`Remove it from ${SOURCE_LABELS[row.source]} and it drops off on the next sync.`}
-          >
-            Managed in {SOURCE_LABELS[row.source]}
-          </span>
-        )}
+        <OverflowMenu items={menu} label={`More actions for ${row.name}`} />
       </div>
     </li>
   );
 }
 
-function Viewer({ doc, onClose }: { doc: Viewing; onClose: () => void }) {
+function Viewer({ doc, onClose }: { doc: Viewing | null; onClose: () => void }) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={onClose}
+    <SidePanel
+      open={doc !== null}
+      onClose={onClose}
+      width="lg"
+      title={<span className="block truncate">{doc?.name}</span>}
+      subtitle={
+        doc
+          ? doc.source === "upload"
+            ? "Uploaded document"
+            : `From ${SOURCE_LABELS[doc.source]}`
+          : undefined
+      }
+      footer={
+        doc?.url ? (
+          <a
+            href={doc.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={buttonClass("secondary", "md")}
+          >
+            Open original ↗
+          </a>
+        ) : undefined
+      }
     >
-      <div
-        className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl border border-line-strong bg-surface-elevated shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-line-strong/60 px-6 py-4">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-widest text-indigo-400">
-              {doc.source === "upload" ? "Uploaded document" : `From ${SOURCE_LABELS[doc.source]}`}
-            </p>
-            <h3 className="truncate text-base font-semibold text-fg">{doc.name}</h3>
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            {doc.url && (
-              <a
-                href={doc.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-lg px-3 py-1.5 text-xs text-fg-muted hover:bg-surface-overlay hover:text-fg transition-colors"
-              >
-                Open original ↗
-              </a>
-            )}
-            <button
-              onClick={onClose}
-              className="rounded-lg px-3 py-1.5 text-xs text-fg-muted hover:bg-surface-overlay hover:text-fg transition-colors"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-        <div className={`flex-1 overflow-y-auto px-6 py-5 ${PROSE_CLASS}`}>
+      {doc && (
+        <div className={PROSE_CLASS}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={SAFE_MARKDOWN}>
             {doc.content}
           </ReactMarkdown>
         </div>
-      </div>
-    </div>
+      )}
+    </SidePanel>
   );
 }
 

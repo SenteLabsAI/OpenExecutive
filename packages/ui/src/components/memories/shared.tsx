@@ -46,16 +46,16 @@ export function formatRunAt(iso: string): { absolute: string; relative: string }
 }
 
 export const STATUS_PILL: Record<string, string> = {
-  pending: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  running: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  done: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  failed: "bg-red-500/15 text-red-300 border-red-500/30",
+  pending: "bg-sky-500/15 text-sky-500 border-sky-500/30",
+  running: "bg-amber-500/15 text-amber-500 border-amber-500/30",
+  done: "bg-emerald-500/15 text-emerald-500 border-emerald-500/30",
+  failed: "bg-red-500/15 text-red-500 border-red-500/30",
   cancelled: "bg-surface-input/40 text-fg-muted border-line-strong/40",
 };
 
 export function EmptyState({ message }: { message: string }) {
   return (
-    <div className="text-center py-16 text-fg-muted text-sm">{message}</div>
+    <div className="text-center py-14 px-4 text-fg-muted text-[15px]">{message}</div>
   );
 }
 
@@ -168,12 +168,12 @@ export type StatTone = "default" | "accent" | "emerald" | "amber";
 
 export const STAT_VALUE_TONE: Record<StatTone, string> = {
   default: "text-fg",
-  accent: "text-indigo-300",
-  emerald: "text-emerald-300",
-  amber: "text-amber-300",
+  accent: "text-accent",
+  emerald: "text-emerald-500",
+  amber: "text-amber-500",
 };
 
-/** A single at-a-glance metric: small label, big number, optional hint. */
+/** A single at-a-glance metric: label, big number, optional hint. */
 export function StatTile({
   label,
   value,
@@ -186,14 +186,12 @@ export function StatTile({
   tone?: StatTone;
 }) {
   return (
-    <div className="rounded-xl border border-line bg-surface-elevated px-4 py-3 min-w-0">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle truncate">
-        {label}
-      </div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums truncate ${STAT_VALUE_TONE[tone]}`}>
+    <div className="rounded-2xl border border-line bg-surface-elevated px-3 py-3 sm:px-5 sm:py-4 min-w-0">
+      <div className="text-sm font-medium text-fg-muted leading-snug">{label}</div>
+      <div className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight tabular-nums truncate ${STAT_VALUE_TONE[tone]}`}>
         {value}
       </div>
-      {hint && <div className="text-[11px] text-fg-muted mt-0.5 truncate">{hint}</div>}
+      {hint && <div className="text-sm text-fg-subtle mt-0.5 leading-snug line-clamp-2">{hint}</div>}
     </div>
   );
 }
@@ -218,7 +216,7 @@ export function LivePulse({
         <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
       </span>
       {label && (
-        <span className="text-[11px] font-medium uppercase tracking-wide text-emerald-300">
+        <span className="text-xs font-medium uppercase tracking-wide text-emerald-500">
           {label}
         </span>
       )}
@@ -229,14 +227,14 @@ export function LivePulse({
 export type TagTone = "info" | "muted";
 
 const TAG_TONE: Record<TagTone, string> = {
-  info: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  info: "bg-sky-500/15 text-sky-500 border-sky-500/30",
   muted: "bg-surface-input/40 text-fg-subtle border-line",
 };
 
 /** Small categorical pill (e.g. "Once a day · for you"). Reuses the app's pill recipe. */
 export function Tag({ label, tone = "muted" }: { label: string; tone?: TagTone }) {
   return (
-    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-medium ${TAG_TONE[tone]}`}>
+    <span className={`px-2 py-0.5 rounded-lg border text-xs font-medium ${TAG_TONE[tone]}`}>
       {label}
     </span>
   );
@@ -262,13 +260,13 @@ export function SectionHeading({
     <div className="mb-3">
       <div className="flex items-center gap-2 flex-wrap">
         {icon && <Icon name={icon} size="w-4 h-4" className="text-fg-subtle" />}
-        <h3 className="text-sm font-semibold text-fg">{title}</h3>
+        <h3 className="text-base font-semibold text-fg">{title}</h3>
         {count != null && (
-          <span className="text-xs font-normal tabular-nums text-fg-subtle">{count}</span>
+          <span className="text-sm font-normal tabular-nums text-fg-subtle">{count}</span>
         )}
         {tag && <Tag label={tag} tone={tagTone} />}
       </div>
-      {subtitle && <p className="text-xs text-fg-muted mt-0.5">{subtitle}</p>}
+      {subtitle && <p className="text-sm text-fg-muted mt-1">{subtitle}</p>}
     </div>
   );
 }

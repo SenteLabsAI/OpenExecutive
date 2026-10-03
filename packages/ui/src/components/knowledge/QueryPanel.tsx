@@ -7,6 +7,7 @@ import {
   type KnowledgeSearchResponse,
   type KnowledgeSourceType,
 } from "@/lib/api";
+import Button from "@/components/ui/Button";
 
 interface QueryPanelProps {
   domains: string[];
@@ -77,15 +78,14 @@ export default function QueryPanel({ domains, onOpenFile }: QueryPanelProps) {
   return (
     <div className="flex flex-col gap-5 max-w-4xl">
       <div>
-        <h2 className="text-base font-semibold text-fg">Query mode</h2>
-        <p className="text-xs text-fg-muted mt-1">
+        <p className="text-[15px] text-fg-muted">
           Test what the Executive would retrieve for a given question. Distances are
           cosine — lower is closer.
         </p>
       </div>
 
-      <div className="space-y-3 rounded-xl border border-line bg-surface-elevated/40 p-4">
-        <div className="flex gap-2">
+      <div className="space-y-4 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
+        <div className="flex flex-col sm:flex-row gap-2">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -96,26 +96,23 @@ export default function QueryPanel({ domains, onOpenFile }: QueryPanelProps) {
               }
             }}
             placeholder="e.g. how should we think about pricing for a new SaaS product?"
-            className="flex-1 rounded-lg border border-line-strong bg-surface-elevated px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            aria-label="Question to test"
+            className="w-full sm:flex-1 h-11 rounded-xl border border-line-strong bg-surface-elevated px-3.5 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/50"
           />
-          <button
-            onClick={run}
-            disabled={!query.trim() || running}
-            className="px-4 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 text-white text-sm font-medium transition-colors"
-          >
+          <Button variant="primary" onClick={run} disabled={!query.trim() || running}>
             {running ? "Running…" : "Run"}
-          </button>
+          </Button>
         </div>
 
         <div className="flex flex-wrap gap-4">
-          <div className="flex items-center gap-2">
-            <label className="text-[11px] uppercase tracking-widest text-fg-muted">
+          <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto">
+            <label className="text-sm font-medium text-fg-muted flex-shrink-0">
               Specialist
             </label>
             <select
               value={specialist}
               onChange={(e) => setSpecialist(e.target.value)}
-              className="rounded-lg border border-line-strong bg-surface-elevated px-2 py-1 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+              className="h-10 min-w-0 flex-1 sm:flex-none rounded-xl border border-line-strong bg-surface-elevated px-3 text-sm text-fg focus:outline-none focus:ring-2 focus:ring-accent/50"
             >
               {SPECIALISTS.map((s) => (
                 <option key={s.id || "all"} value={s.id}>
@@ -126,17 +123,18 @@ export default function QueryPanel({ domains, onOpenFile }: QueryPanelProps) {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <label className="text-[11px] uppercase tracking-widest text-fg-muted">
+            <label className="text-sm font-medium text-fg-muted">
               Include
             </label>
             {ALL_SOURCES.map((t) => (
               <button
                 key={t}
                 onClick={() => toggleInclude(t)}
-                className={`text-xs px-2 py-1 rounded border transition-colors ${
+                aria-pressed={includes.has(t)}
+                className={`h-10 text-sm px-3.5 rounded-xl border transition-colors ${
                   includes.has(t)
-                    ? "bg-indigo-500/15 text-indigo-300 border-indigo-500/40"
-                    : "bg-surface-overlay/40 text-fg-muted border-line-strong"
+                    ? "bg-accent/10 text-accent border-accent/30"
+                    : "bg-surface-overlay/40 text-fg-muted border-line"
                 }`}
               >
                 {t}
@@ -146,17 +144,18 @@ export default function QueryPanel({ domains, onOpenFile }: QueryPanelProps) {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <label className="text-[11px] uppercase tracking-widest text-fg-muted">
+          <label className="text-sm font-medium text-fg-muted">
             Domains
           </label>
           {domains.map((d) => (
             <button
               key={d}
               onClick={() => toggleDomain(d)}
-              className={`text-xs px-2 py-1 rounded border transition-colors ${
+              aria-pressed={selectedDomains.has(d)}
+              className={`h-10 text-sm px-3.5 rounded-xl border transition-colors ${
                 selectedDomains.has(d)
-                  ? "bg-surface-input text-fg border-line-strong"
-                  : "bg-surface-overlay/40 text-fg-muted border-line-strong hover:text-fg"
+                  ? "bg-accent/10 text-accent border-accent/30"
+                  : "bg-surface-overlay/40 text-fg-muted border-line hover:text-fg"
               }`}
             >
               {d}
@@ -165,23 +164,23 @@ export default function QueryPanel({ domains, onOpenFile }: QueryPanelProps) {
           {selectedDomains.size > 0 && (
             <button
               onClick={() => setSelectedDomains(new Set())}
-              className="text-xs text-fg-muted hover:text-fg underline-offset-2 hover:underline"
+              className="h-10 px-2 text-sm text-fg-muted hover:text-fg underline-offset-2 hover:underline"
             >
-              clear
+              Clear
             </button>
           )}
         </div>
       </div>
 
       {error && (
-        <div className="text-sm text-red-400 px-4 py-3 rounded-xl bg-red-950/40 border border-red-900/60">
+        <div className="text-sm text-red-500 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20">
           {error}
         </div>
       )}
 
       {result && (
         <div className="space-y-5">
-          <div className="text-xs text-fg-muted space-y-1">
+          <div className="text-sm text-fg-muted space-y-1">
             {result.effective_domains && result.effective_domains.length > 0 ? (
               <p>
                 <span className="text-fg-muted">Domain filter:</span>{" "}
@@ -244,7 +243,7 @@ function ResultGroup({
   onOpenFile?: (kind: "builtin" | "failures", domain: string, filename: string) => void;
 }) {
   const accentClass = {
-    indigo: "text-indigo-400 border-l-indigo-500/40",
+    indigo: "text-accent border-l-accent/40",
     rose: "text-rose-400 border-l-rose-500/50",
     emerald: "text-emerald-400 border-l-emerald-500/40",
     amber: "text-amber-400 border-l-amber-500/40",
@@ -254,22 +253,22 @@ function ResultGroup({
   return (
     <div>
       <div className="flex items-baseline justify-between mb-2">
-        <h3 className={`text-xs font-semibold uppercase tracking-widest ${accentClass.split(" ")[0]}`}>
+        <h3 className={`text-sm font-semibold ${accentClass.split(" ")[0]}`}>
           {title}
         </h3>
-        <span className="text-[10px] text-fg-subtle">{hits.length} hit{hits.length === 1 ? "" : "s"}</span>
+        <span className="text-xs text-fg-subtle">{hits.length} hit{hits.length === 1 ? "" : "s"}</span>
       </div>
       {hits.length === 0 ? (
-        <p className="text-xs text-fg-subtle">No matches.</p>
+        <p className="text-sm text-fg-subtle">No matches.</p>
       ) : (
         <div className="space-y-2">
           {hits.map((h, i) => (
             <div
               key={`${kind}-${h.filename}-${h.chunk_index ?? i}`}
-              className={`rounded-lg bg-surface-elevated/60 border border-line border-l-2 px-3 py-2 ${accentClass}`}
+              className={`rounded-xl bg-surface-elevated border border-line border-l-2 px-4 py-3 ${accentClass}`}
             >
               <div className="flex items-baseline justify-between gap-3 flex-wrap">
-                <div className="flex items-baseline gap-2 flex-wrap text-xs">
+                <div className="flex items-baseline gap-2 flex-wrap text-sm">
                   <span className="text-fg font-medium">{h.filename}</span>
                   <span className="text-fg-muted">·</span>
                   <span className="text-fg-muted">{h.domain}</span>
@@ -285,13 +284,13 @@ function ResultGroup({
                 {isOpenable && onOpenFile && (
                   <button
                     onClick={() => onOpenFile(kind, h.domain, h.filename)}
-                    className="text-[10px] text-fg-muted hover:text-fg transition-colors"
+                    className="h-9 px-2 text-sm font-medium text-accent hover:underline"
                   >
-                    open →
+                    Open →
                   </button>
                 )}
               </div>
-              <p className="text-xs text-fg mt-1.5 whitespace-pre-wrap leading-relaxed">
+              <p className="text-sm text-fg mt-1.5 whitespace-pre-wrap leading-relaxed">
                 {h.text}
               </p>
             </div>
