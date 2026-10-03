@@ -1,10 +1,15 @@
 import type { Metadata, Viewport } from "next";
+import { Geist } from "next/font/google";
 import AuthProvider from "@/components/AuthProvider";
 import { ExecutiveStatusProvider } from "@/components/executive/ExecutiveStatusContext";
 import { SessionsProvider } from "@/components/sessions/SessionsContext";
 import AppShell from "@/components/shell/AppShell";
 import { WorkspaceProvider } from "@/components/workspace/WorkspaceContext";
 import "./globals.css";
+
+// Geist, self-hosted by next/font at build time: no request to Google from
+// the browser, and no layout shift while it loads.
+const geist = Geist({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
 
 export const metadata: Metadata = {
   title: "Open Executive",
@@ -26,7 +31,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="h-full">
+    <html lang="en" className={`h-full ${geist.variable}`}>
       <body className="h-full antialiased bg-surface text-fg">
         <AuthProvider>
           <SessionsProvider>

@@ -6,80 +6,101 @@ import {
   PROFILE_NAV,
   SETTINGS_SECTIONS,
   advancedItemsByGroup,
+  buildDestinations,
+  buildHubs,
   buildMobilePrimary,
-  buildPrimaryNav,
+  hubForPath,
+  isDestinationActive,
   profileWording,
 } from "../src/components/shell/navConfig.ts";
 
-const shape = (groups) =>
-  groups.map((g) => ({ key: g.key, label: g.label, items: g.items.map((i) => `${i.label} → ${i.href}`) }));
-
-// Pinned so a solo change can never leak into what a team install shows.
-const TEAM = [
-  { key: "workspace", label: "Workspace", items: ["Workflows → /jobs", "Documents → /artifacts", "Watch list → /watchlist"] },
-  {
-    key: "company",
-    label: "Company",
-    items: ["Departments → /departments", "Goals → /goals", "People → /people", "Company profile → /company-profile"],
-  },
-  { key: "knowledge", label: "Knowledge", items: ["Knowledge base → /knowledge"] },
-];
-
+const links = (items) => items.map((i) => `${i.label} → ${i.href}`);
 const ROLE_KINDS = ["owner", "in_house", "independent", "other", null, undefined];
 
-test("team nav is unchanged, and team is the default", () => {
-  assert.deepEqual(shape(buildPrimaryNav()), TEAM);
-  assert.deepEqual(buildPrimaryNav({ mode: "team" }), buildPrimaryNav());
-  const notOnboarded = shape(buildPrimaryNav({ isOnboarded: false }));
-  assert.deepEqual(notOnboarded[1].items, [
-    "Departments → /departments",
-    "Goals → /goals",
-    "People → /people",
-    "Set up company → /onboard",
+test("the main menu is six places, team is the default", () => {
+  assert.deepEqual(links(buildDestinations()), [
+    "Home → /",
+    "Chats → /chats",
+    "Work → /jobs",
+    "Company → /people",
+    "Knowledge → /knowledge",
+    "Pulse → /memories",
   ]);
-  const profile = buildPrimaryNav()[1].items[3];
-  assert.equal(profile.description, "Your company's identity and strategy — set up once, edited any time.");
+  assert.deepEqual(buildDestinations({ mode: "team" }), buildDestinations());
 });
 
-test("team nav ignores the role", () => {
+test("solo swaps Company for You, which opens on Goals", () => {
+  const solo = links(buildDestinations({ mode: "solo", roleKind: "owner" }));
+  assert.equal(solo[3], "You → /goals");
+  assert.equal(solo.length, 6);
+});
+
+test("team hubs: Work and Company tabs", () => {
+  const [work, company] = buildHubs();
+  assert.deepEqual(links(work.tabs), ["Workflows → /jobs", "Documents → /artifacts", "Watch list → /watchlist"]);
+  assert.deepEqual(links(company.tabs), [
+    "People → /people",
+    "Goals → /goals",
+    "Departments → /departments",
+    "Company profile → /company-profile",
+  ]);
+  const notOnboarded = buildHubs({ isOnboarded: false })[1].tabs.at(-1);
+  assert.deepEqual([notOnboarded.label, notOnboarded.href], ["Set up company", "/onboard"]);
+  assert.equal(
+    company.tabs.at(-1).description,
+    "Your company's identity and strategy — set up once, edited any time.",
+  );
+});
+
+test("team hubs ignore the role", () => {
   for (const roleKind of ROLE_KINDS) {
-    assert.deepEqual(buildPrimaryNav({ roleKind }), buildPrimaryNav());
-    assert.deepEqual(buildPrimaryNav({ roleKind, isOnboarded: false }), buildPrimaryNav({ isOnboarded: false }));
+    assert.deepEqual(buildHubs({ roleKind }), buildHubs());
+    assert.deepEqual(buildDestinations({ roleKind }), buildDestinations());
   }
 });
 
-test("solo swaps the Company group for You: Goals, People and the profile", () => {
-  const solo = shape(buildPrimaryNav({ mode: "solo", roleKind: "owner" }));
-  assert.deepEqual(solo[1], {
-    key: "you",
-    label: "You",
-    items: ["Goals → /goals", "People → /people", "Business profile → /company-profile"],
-  });
-  // Everything around it is the team nav, unchanged.
-  assert.deepEqual([solo[0], solo[2]], [TEAM[0], TEAM[2]]);
-  assert.ok(!JSON.stringify(solo).includes("/departments"));
-});
-
-test("solo: an owner's profile is their business", () => {
-  const item = buildPrimaryNav({ mode: "solo", roleKind: "owner" })[1].items[2];
-  assert.equal(item.label, "Business profile");
-  assert.equal(item.description, "Your business — what you offer, who you serve, your priorities.");
-  const notOnboarded = buildPrimaryNav({ mode: "solo", roleKind: "owner", isOnboarded: false })[1].items[2];
+test("solo: You holds Goals, People and the profile, and no Departments", () => {
+  const you = buildHubs({ mode: "solo", roleKind: "owner" })[1];
+  assert.equal(you.key, "you");
+  assert.deepEqual(links(you.tabs), ["Goals → /goals", "People → /people", "Business profile → /company-profile"]);
+  assert.ok(!JSON.stringify(buildHubs({ mode: "solo" })).includes("/departments"));
+  const notOnboarded = buildHubs({ mode: "solo", roleKind: "owner", isOnboarded: false })[1].tabs[2];
   assert.deepEqual([notOnboarded.label, notOnboarded.href], ["Set up your business", "/onboard"]);
 });
 
 test("solo: any other role, or none, is 'Your work'", () => {
   // null covers an unset role and one GET /workspace hides from a non-principal.
   for (const roleKind of ["in_house", "independent", "other", null, undefined]) {
-    const item = buildPrimaryNav({ mode: "solo", roleKind })[1].items[2];
+    const item = buildHubs({ mode: "solo", roleKind })[1].tabs[2];
     assert.deepEqual([item.label, item.href], ["Your work", "/company-profile"], String(roleKind));
     assert.equal(item.description, "Your work — the organisation you work in, who it serves, your priorities.");
     assert.ok(!/business|company/i.test(item.label + item.description), String(roleKind));
-    const notOnboarded = buildPrimaryNav({ mode: "solo", roleKind, isOnboarded: false })[1].items[2];
+    const notOnboarded = buildHubs({ mode: "solo", roleKind, isOnboarded: false })[1].tabs[2];
     assert.deepEqual([notOnboarded.label, notOnboarded.href], ["Set up your work", "/onboard"]);
   }
-  // The default (no roleKind passed) is the same as an unset role.
-  assert.deepEqual(buildPrimaryNav({ mode: "solo" }), buildPrimaryNav({ mode: "solo", roleKind: null }));
+  assert.deepEqual(buildHubs({ mode: "solo" }), buildHubs({ mode: "solo", roleKind: null }));
+});
+
+test("a hub's menu entry stays lit on every one of its tabs", () => {
+  const dests = buildDestinations();
+  const lit = (path) => dests.filter((d) => isDestinationActive(d, path)).map((d) => d.key);
+  assert.deepEqual(lit("/"), ["home"]);
+  assert.deepEqual(lit("/jobs/runs/42"), ["work"]);
+  assert.deepEqual(lit("/artifacts/7"), ["work"]);
+  assert.deepEqual(lit("/watchlist"), ["work"]);
+  assert.deepEqual(lit("/goals"), ["company"]);
+  assert.deepEqual(lit("/departments/finance"), ["company"]);
+  assert.deepEqual(lit("/company-profile"), ["company"]);
+  assert.deepEqual(lit("/settings"), []);
+});
+
+test("hubForPath finds the hub a page belongs to", () => {
+  assert.equal(hubForPath("/jobs/new")?.key, "work");
+  assert.equal(hubForPath("/people/3")?.key, "company");
+  assert.equal(hubForPath("/goals", { mode: "solo" })?.key, "you");
+  assert.equal(hubForPath("/departments", { mode: "solo" }), null);
+  assert.equal(hubForPath("/settings"), null);
+  assert.equal(hubForPath("/"), null);
 });
 
 test("profileWording: company for a team, business for a solo owner, work otherwise", () => {
@@ -97,25 +118,27 @@ test("profileWording: company for a team, business for a solo owner, work otherw
   }
 });
 
-test("the review badge rides along in both modes", () => {
+test("the review badge rides on Knowledge in both modes", () => {
   for (const mode of ["team", "solo"]) {
-    const kb = buildPrimaryNav({ mode, reviewBadge: 4 }).at(-1).items[0];
+    const kb = buildDestinations({ mode, reviewBadge: 4 }).find((d) => d.key === "knowledge");
     assert.equal(kb.badge, 4);
   }
 });
 
-test("mobile bar: solo swaps People for Goals", () => {
-  const team = buildMobilePrimary().map((i) => i.href);
-  assert.deepEqual(team, ["/", "/memories", "/?new=1", "/people", "/jobs"]);
-  assert.deepEqual(buildMobilePrimary("team"), buildMobilePrimary());
-  assert.deepEqual(buildMobilePrimary("solo").map((i) => i.href), ["/", "/memories", "/?new=1", "/goals", "/jobs"]);
+test("phone bar: five, with New chat in the middle", () => {
+  assert.deepEqual(buildMobilePrimary().map((i) => i.href), ["/", "/chats", "/?new=1", "/jobs", "/people"]);
+  assert.deepEqual(buildMobilePrimary({ mode: "solo" }).map((i) => i.href), ["/", "/chats", "/?new=1", "/jobs", "/goals"]);
 });
 
-test("every destination explains itself", () => {
+test("every destination and tab explains itself", () => {
   for (const mode of ["team", "solo"]) {
     for (const roleKind of ROLE_KINDS) {
-      const items = [...buildPrimaryNav({ mode, roleKind }).flatMap((g) => g.items), ...buildMobilePrimary(mode)];
-      for (const item of items) assert.ok(item.description.trim(), `${item.href} needs a description`);
+      const items = [
+        ...buildDestinations({ mode, roleKind }),
+        ...buildHubs({ mode, roleKind }).flatMap((h) => [h, ...h.tabs]),
+        ...buildMobilePrimary({ mode, roleKind }),
+      ];
+      for (const item of items) assert.ok(item.description.trim(), `${item.label} needs a description`);
     }
   }
 });

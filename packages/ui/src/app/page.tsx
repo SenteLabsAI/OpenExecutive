@@ -233,7 +233,6 @@ export default function HomePage() {
           activeSessionId,
           onBriefing: handleBackToBriefing,
           onNewChat: handleNewChat,
-          onSelectSession: (id) => void handleSelectSession(id),
         }}
       />
 
@@ -320,7 +319,7 @@ export default function HomePage() {
         {/* Mobile bottom nav — the chat home owns its own layout (it's
             exempt from AppShell), so it renders the shared bar itself to
             match every other route. "More" opens this page's own drawer. */}
-        <MobileBottomNav pathname="/" hideFrom="md" onOpenDrawer={() => setMobileNavOpen(true)} />
+        <MobileBottomNav pathname="/" hideFrom="md" />
       </main>
 
       {/* Debug panel */}

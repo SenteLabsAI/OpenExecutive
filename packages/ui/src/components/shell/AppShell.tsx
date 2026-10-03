@@ -11,10 +11,12 @@ import PausedBanner from "@/components/executive/PausedBanner";
 import AppSidebar from "@/components/shell/AppSidebar";
 import {
   buildMobilePrimary,
-  isNavActive,
+  hubForPath,
+  isDestinationActive,
   PROFILE_NAV,
   profileWording,
 } from "@/components/shell/navConfig";
+import HubTabs from "@/components/ui/HubTabs";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
 // Routes that own their full layout and should not be wrapped by the
@@ -69,12 +71,14 @@ function isExempt(pathname: string): boolean {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const { mode, role } = useWorkspace();
 
   if (isExempt(pathname)) {
     return <>{children}</>;
   }
 
   const segments = pathname.split("/").filter(Boolean);
+  const hub = hubForPath(pathname, { mode, roleKind: role.role_kind });
 
   return (
     <AskOEProvider>
@@ -105,13 +109,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             onOpenDrawer={() => setDrawerOpen(true)}
           />
           <PausedBanner />
+          {hub && <HubTabs hub={hub} pathname={pathname} />}
           {/* The shell slot has overflow-y-auto as a safety net for pages
               that don't manage their own scroll. Pages that DO own a
               scroll region (h-full + inner overflow-y-auto on <main>)
               still work — the inner constraint dominates and the outer
               slot stays a no-op. */}
           <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">{children}</div>
-          <MobileBottomNav pathname={pathname} onOpenDrawer={() => setDrawerOpen(true)} />
+          <MobileBottomNav pathname={pathname} />
         </div>
 
         {/* Ask OE — page-aware assistant panel, docked right on lg+,
@@ -222,11 +227,9 @@ function AskOEButton() {
 // route gets from the shell, keeping mobile nav consistent everywhere.
 export function MobileBottomNav({
   pathname,
-  onOpenDrawer,
   hideFrom = "lg",
 }: {
   pathname: string;
-  onOpenDrawer: () => void;
   // Breakpoint at which the bar disappears, matching the breakpoint where
   // the host layout's persistent sidebar/rail takes over. The shell rail
   // appears at `lg`; the chat home's sidebar appears at `md`, so that host
@@ -235,37 +238,38 @@ export function MobileBottomNav({
   hideFrom?: "md" | "lg";
 }) {
   const hideClass = hideFrom === "md" ? "md:hidden" : "lg:hidden";
-  const { mode } = useWorkspace();
+  const { mode, role } = useWorkspace();
+  // Everything not on the bar (Knowledge, Pulse, Settings, the account
+  // menu) is in the sidebar the top bar's menu button opens.
   return (
     <nav
       aria-label="Primary"
       className={`${hideClass} h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] border-t border-line bg-surface-elevated flex items-stretch flex-shrink-0`}
     >
-      {buildMobilePrimary(mode).map((item) => {
-        const active = isNavActive(item.href, pathname);
+      {buildMobilePrimary({ mode, roleKind: role.role_kind }).map((item) => {
+        const active = isDestinationActive(item, pathname);
+        const isNew = item.key === "new";
         return (
           <Link
             key={item.href}
             href={item.href}
             title={item.description}
-            className={`flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors ${
-              active ? "text-indigo-300" : "text-fg-muted hover:text-fg"
+            aria-current={active ? "page" : undefined}
+            className={`flex-1 flex flex-col items-center justify-center gap-1 transition-colors ${
+              active ? "text-accent" : "text-fg-muted hover:text-fg"
             }`}
           >
-            <Icon name={item.icon} size="w-5 h-5" />
-            <span className="text-[10px] font-medium">{item.label}</span>
+            {isNew ? (
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-strong text-white shadow-sm">
+                <Icon name={item.icon} size="w-5 h-5" />
+              </span>
+            ) : (
+              <Icon name={item.icon} size="w-6 h-6" />
+            )}
+            <span className={`text-[11px] font-medium ${isNew ? "sr-only" : ""}`}>{item.label}</span>
           </Link>
         );
       })}
-      <button
-        type="button"
-        onClick={onOpenDrawer}
-        className="flex-1 flex flex-col items-center justify-center gap-0.5 text-fg-muted hover:text-fg transition-colors cursor-pointer"
-        aria-label="Open menu"
-      >
-        <Icon name="menu" size="w-5 h-5" />
-        <span className="text-[10px] font-medium">More</span>
-      </button>
     </nav>
   );
 }

@@ -2,8 +2,18 @@
 
 import { signOut, useSession } from "next-auth/react";
 
+import { GUIDE_NAV_ITEM } from "@/components/shell/navConfig";
+import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
+
+// The account menu at the foot of the sidebar: help, the Executive's
+// pause switch (on Settings) and signing out, kept off the main menu.
+const ACCOUNT_ITEMS: OverflowItem[] = [
+  { label: GUIDE_NAV_ITEM.label, href: GUIDE_NAV_ITEM.href },
+  { label: "Pause or resume the Executive", href: "/settings#executive" },
+];
+
 interface UserBadgeProps {
-  /** "sidebar" (vertical, with sign-out below name) or "compact" (single row, name only). */
+  /** "sidebar" (name, email and the account menu) or "compact" (single row, name only). */
   variant?: "sidebar" | "compact";
 }
 
@@ -40,13 +50,16 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
         }
         title="Local login: only this computer can reach Open Executive"
       >
-        <Avatar name="ME" size={variant === "sidebar" ? "w-7 h-7" : "w-6 h-6"} />
+        <Avatar name="ME" size={variant === "sidebar" ? "w-8 h-8" : "w-6 h-6"} />
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-fg truncate">You (owner)</p>
+          <p className="text-sm font-medium text-fg truncate">You (owner)</p>
           {variant === "sidebar" && (
-            <p className="text-[10px] text-fg-muted truncate">On this computer</p>
+            <p className="text-xs text-fg-muted truncate">On this computer</p>
           )}
         </div>
+        {variant === "sidebar" && (
+          <OverflowMenu items={ACCOUNT_ITEMS} label="Account menu" size="sm" placement="up" />
+        )}
       </div>
     );
   }
@@ -66,19 +79,20 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
   if (variant === "sidebar") {
     return (
       <div className="px-3 py-3 border-t border-line flex items-center gap-2.5 flex-shrink-0">
-        <Avatar name={initials} image={user.image} />
+        <Avatar name={initials} image={user.image} size="w-8 h-8" />
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-fg truncate">{name}</p>
-          <p className="text-[10px] text-fg-muted truncate">{user.email}</p>
+          <p className="text-sm font-medium text-fg truncate">{name}</p>
+          <p className="text-xs text-fg-muted truncate">{user.email}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => signOut({ callbackUrl: "/signin" })}
-          className="text-[10px] text-fg-muted hover:text-fg transition-colors cursor-pointer flex-shrink-0"
-          title="Sign out"
-        >
-          Sign out
-        </button>
+        <OverflowMenu
+          items={[
+            ...ACCOUNT_ITEMS,
+            { label: "Sign out", onSelect: () => void signOut({ callbackUrl: "/signin" }) },
+          ]}
+          label="Account menu"
+          size="sm"
+          placement="up"
+        />
       </div>
     );
   }

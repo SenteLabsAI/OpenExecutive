@@ -22,12 +22,6 @@ export interface NavItem {
   badge?: number;
 }
 
-export interface NavGroup {
-  key: string;
-  label: string;
-  items: NavItem[];
-}
-
 interface BuildOpts {
   /**
    * When false, the Company-profile entry points at the onboarding
@@ -112,106 +106,113 @@ const GOALS_ITEM: NavItem = {
   description: "What you're working towards, grouped by area — add, update and close goals.",
 };
 
-function companyGroup(isOnboarded: boolean): NavGroup {
-  return {
-    key: "company",
-    label: "Company",
-    items: [
-      {
-        href: "/departments",
-        label: "Departments",
-        icon: "grid",
-        description: "Org units with goals, an authority level, and a specialist behind each.",
-      },
-      {
-        ...GOALS_ITEM,
-        description: "Every department's goals in one place — add, update and close them.",
-      },
-      {
-        href: "/people",
-        label: "People",
-        icon: "users",
-        description: PEOPLE_DESCRIPTION,
-      },
-      profileItem("company", isOnboarded),
-    ],
-  };
-}
-
-// Solo: the same destinations minus Departments (their goals live on /goals,
-// grouped by area), with the copy speaking to one person.
-function youGroup(isOnboarded: boolean, roleKind: RoleKind | null): NavGroup {
-  return {
-    key: "you",
-    label: "You",
-    items: [
-      GOALS_ITEM,
-      {
-        href: "/people",
-        label: "People",
-        icon: "users",
-        description: "The people the Executive knows about — clients, partners, anyone you work with.",
-      },
-      profileItem(profileWording("solo", roleKind), isOnboarded),
-    ],
-  };
-}
-
-// Day-to-day navigation only. Power/admin tools live on the Settings
-// page (see ADVANCED_ITEMS) so this list stays focused.
-export function buildPrimaryNav({
-  isOnboarded = true,
-  reviewBadge = 0,
-  mode = "team",
-  roleKind = null,
-}: BuildOpts = {}): NavGroup[] {
+// The Company hub's tabs in a team: who's on it, what you're aiming for,
+// how it's organised, and the profile.
+function companyTabs(isOnboarded: boolean): NavItem[] {
   return [
+    { href: "/people", label: "People", icon: "users", description: PEOPLE_DESCRIPTION },
     {
-      key: "workspace",
-      label: "Workspace",
-      items: [
-        {
-          href: "/jobs",
-          label: "Workflows",
-          icon: "doc",
-          description:
-            "Workflows that produce a deliverable, plus the playbooks the Executive follows.",
-        },
-        {
-          href: "/artifacts",
-          label: "Documents",
-          icon: "book",
-          description: "Your library of finished documents — drafts and workflow outputs.",
-        },
-        {
-          href: "/watchlist",
-          label: "Watch list",
-          icon: "eye",
-          description: "External monitors — tickers, feeds, status pages — that raise alerts.",
-        },
-      ],
+      ...GOALS_ITEM,
+      description: "Every department's goals in one place — add, update and close them.",
     },
-    mode === "solo" ? youGroup(isOnboarded, roleKind) : companyGroup(isOnboarded),
     {
-      key: "knowledge",
-      label: "Knowledge",
-      items: [
-        {
-          href: "/knowledge",
-          label: "Knowledge base",
-          icon: "book",
-          badge: reviewBadge,
-          description:
-            "Upload company documents so the Executive can ground its answers in your context, and approve what it relies on.",
-        },
-      ],
+      href: "/departments",
+      label: "Departments",
+      icon: "grid",
+      description: "Org units with goals, an authority level, and a specialist behind each.",
     },
+    profileItem("company", isOnboarded),
   ];
 }
 
-// Pinned, always-visible top-level destination — rendered as a standalone link
-// directly beneath Briefing in BOTH navs (rail + chat-home sidebar), the same
-// way Briefing is. Kept here as the single source so the two navs stay in sync.
+// Solo: the same destinations minus Departments (their goals live on /goals,
+// grouped by area), with the copy speaking to one person. Goals come first:
+// it's the page a team of one visits most.
+function youTabs(isOnboarded: boolean, roleKind: RoleKind | null): NavItem[] {
+  return [
+    GOALS_ITEM,
+    {
+      href: "/people",
+      label: "People",
+      icon: "users",
+      description: "The people the Executive knows about — clients, partners, anyone you work with.",
+    },
+    profileItem(profileWording("solo", roleKind), isOnboarded),
+  ];
+}
+
+const WORK_TABS: NavItem[] = [
+  {
+    href: "/jobs",
+    label: "Workflows",
+    icon: "doc",
+    description: "Workflows that produce a deliverable, plus the playbooks the Executive follows.",
+  },
+  {
+    href: "/artifacts",
+    label: "Documents",
+    icon: "book",
+    description: "Your library of finished documents — drafts and workflow outputs.",
+  },
+  {
+    href: "/watchlist",
+    label: "Watch list",
+    icon: "eye",
+    description: "External monitors — tickers, feeds, status pages — that raise alerts.",
+  },
+];
+
+/**
+ * A hub: one menu entry that holds several pages, shown as a row of tabs at
+ * the top of each of them (components/ui/HubTabs.tsx). The menu entry opens
+ * the first tab.
+ */
+export interface Hub {
+  key: "work" | "company" | "you";
+  label: string;
+  icon: IconName;
+  description: string;
+  tabs: NavItem[];
+}
+
+export function buildHubs({
+  isOnboarded = true,
+  mode = "team",
+  roleKind = null,
+}: BuildOpts = {}): Hub[] {
+  const work: Hub = {
+    key: "work",
+    label: "Work",
+    icon: "briefcase",
+    description: "Workflows, finished documents and the watch list.",
+    tabs: WORK_TABS,
+  };
+  const people: Hub =
+    mode === "solo"
+      ? {
+          key: "you",
+          label: "You",
+          icon: "users",
+          description: "Your goals, the people you work with, and your profile.",
+          tabs: youTabs(isOnboarded, roleKind),
+        }
+      : {
+          key: "company",
+          label: "Company",
+          icon: "building",
+          description: "People, goals, departments and the company profile.",
+          tabs: companyTabs(isOnboarded),
+        };
+  return [work, people];
+}
+
+// The hub a page belongs to, or null for a page that isn't in one.
+export function hubForPath(pathname: string, opts: BuildOpts = {}): Hub | null {
+  return (
+    buildHubs(opts).find((hub) => hub.tabs.some((tab) => isNavActive(tab.href, pathname))) ?? null
+  );
+}
+
 export const PULSE_NAV_ITEM: NavItem = {
   href: "/memories",
   label: "Pulse",
@@ -219,6 +220,58 @@ export const PULSE_NAV_ITEM: NavItem = {
   description:
     "The Executive's memory and heartbeat — what it knows and the rhythm it runs on.",
 };
+
+/** A main-menu entry. A hub's entry is active on any of its tabs. */
+export interface Destination extends NavItem {
+  key: string;
+  /** Pages that light this entry up, besides `href` itself. */
+  alsoActiveOn?: string[];
+}
+
+// The main menu, the same in the sidebar on every page: six places, then
+// Settings at the bottom. Everything else is a tab inside one of them or a
+// tool under Settings.
+export function buildDestinations({
+  isOnboarded = true,
+  reviewBadge = 0,
+  mode = "team",
+  roleKind = null,
+}: BuildOpts = {}): Destination[] {
+  const hubs = buildHubs({ isOnboarded, mode, roleKind });
+  const hubEntry = (hub: Hub): Destination => ({
+    key: hub.key,
+    href: hub.tabs[0].href,
+    label: hub.label,
+    icon: hub.icon,
+    description: hub.description,
+    alsoActiveOn: hub.tabs.slice(1).map((t) => t.href),
+  });
+  return [
+    { key: "home", href: "/", label: "Home", icon: "home", description: BRIEFING_DESCRIPTION },
+    {
+      key: "chats",
+      href: "/chats",
+      label: "Chats",
+      icon: "chat",
+      description: "Every conversation, searchable — including Slack, Telegram and Discord.",
+    },
+    ...hubs.map(hubEntry),
+    {
+      key: "knowledge",
+      href: "/knowledge",
+      label: "Knowledge",
+      icon: "book",
+      badge: reviewBadge,
+      description:
+        "Upload company documents so the Executive can ground its answers in your context, and approve what it relies on.",
+    },
+    { key: "pulse", ...PULSE_NAV_ITEM },
+  ];
+}
+
+export function isDestinationActive(dest: Destination, pathname: string): boolean {
+  return [dest.href, ...(dest.alsoActiveOn ?? [])].some((href) => isNavActive(href, pathname));
+}
 
 // Single rail/sidebar entry that leads to the Settings hub.
 export const SETTINGS_NAV_ITEM: NavItem = {
@@ -228,7 +281,7 @@ export const SETTINGS_NAV_ITEM: NavItem = {
   description: "Configuration, diagnostics, and power-user tools.",
 };
 
-// User Guide — pinned next to Settings in both nav footers so help is
+// User Guide — in the account menu at the foot of the sidebar so help is
 // always one click away (it also stays listed on the Settings hub).
 export const GUIDE_NAV_ITEM: NavItem = {
   href: "/guide",
@@ -358,32 +411,22 @@ export const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   { id: "about", label: "About" },
 ];
 
-// Anchors the mobile bottom nav. ≤5 per Material guidance; "More" opens
-// the drawer with the full menu. `/` lands on the briefing surface. Solo
-// swaps People for Goals — the page a team of one visits most.
-export function buildMobilePrimary(mode: WorkspaceMode = "team"): NavItem[] {
-  return [
-    { href: "/", label: "Briefing", icon: "clipboard", description: BRIEFING_DESCRIPTION },
-    PULSE_NAV_ITEM,
-    // `?new=1` signals the chat home to reset to a fresh chat and strip
-    // the query — see the effect in app/page.tsx.
-    { href: "/?new=1", label: "New chat", icon: "plus", description: NEW_CHAT_DESCRIPTION },
-    mode === "solo"
-      ? GOALS_ITEM
-      : {
-          href: "/people",
-          label: "People",
-          icon: "users",
-          description: PEOPLE_DESCRIPTION,
-        },
-    {
-      href: "/jobs",
-      label: "Workflows",
-      icon: "doc",
-      description:
-        "Multi-step workflows that produce a deliverable — board prep, GTM plans, reviews.",
-    },
-  ];
+// The phone's bottom bar: five, with New chat in the middle. Knowledge,
+// Pulse and Settings are in the menu the top bar's button opens.
+// `?new=1` signals the chat home to reset to a fresh chat and strip the
+// query — see the effect in app/page.tsx.
+export function buildMobilePrimary(opts: BuildOpts = {}): Destination[] {
+  const all = buildDestinations(opts);
+  const pick = (key: string) => all.find((d) => d.key === key)!;
+  const newChat: Destination = {
+    key: "new",
+    href: "/?new=1",
+    label: "New chat",
+    icon: "plus",
+    description: NEW_CHAT_DESCRIPTION,
+  };
+  const people = all.find((d) => d.key === "company" || d.key === "you")!;
+  return [pick("home"), pick("chats"), newChat, pick("work"), people];
 }
 
 // Is `href` the active destination for `pathname`? Active on an exact match
