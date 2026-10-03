@@ -317,8 +317,14 @@ async def ask_executive(message: str, caller_email: str = "") -> str:
     from openexecutive.onboarding.profile_builder import load_or_create_profile
 
     profile = await asyncio.to_thread(load_or_create_profile)
+    from openexecutive.orchestrator.artifact_records import NOBODY
+
     session = Session(
         company_profile=profile if not profile.is_empty() else None,
+        # A client that resolves to no one reads and publishes no one's
+        # documents (``artifact_records.current_viewer`` would otherwise take
+        # a speakerless session for the principal's own work).
+        documents_viewer=NOBODY if person_id is None else None,
     )
 
     executive = Executive(mcp_gateway=get_active_gateway())

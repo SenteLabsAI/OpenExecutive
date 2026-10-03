@@ -374,7 +374,12 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
 
     run_id = uuid.uuid4().hex
     try:
-        create_run(run_id, name, f"{workflow.title} (chat-tool fire)", wf_inputs.model_dump())
+        from openexecutive.orchestrator.artifact_records import turn_owner
+
+        create_run(
+            run_id, name, f"{workflow.title} (chat-tool fire)", wf_inputs.model_dump(),
+            owner_person_id=turn_owner(),
+        )
     except Exception as exc:
         # Don't run an untracked workflow: without the run row, a later
         # save_checkpoint would UPDATE nothing (SQLite reports 0 rows, no error)

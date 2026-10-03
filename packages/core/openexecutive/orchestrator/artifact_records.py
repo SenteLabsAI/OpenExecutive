@@ -8,6 +8,15 @@ are addressed by a composite id `"{kind}:{native_id}"` (`alert:<int>` /
 and the Executive's `list_artifacts` / `get_artifact` tools can never drift
 apart on what counts as an artifact.
 
+Every read and change is on behalf of a `Viewer`, and an artifact the viewer
+may not see is `ArtifactNotFound`, exactly like one that does not exist:
+
+- A drafted artifact is its owner's alone (`alerts.owner_person_id`, the
+  person whose conversation published it). One with no owner is the
+  principal's. Not even the principal sees a teammate's.
+- A workflow output follows its run (`persistence.run_visible_to`): a run
+  someone started by hand is theirs; a scheduled or system run is the team's.
+
 Errors are plain exceptions (`MalformedArtifactId`, `ArtifactNotFound`); the
 route maps them to 400 / 404.
 """
@@ -17,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from openexecutive.alerts.models import Alert
+from openexecutive.alerts.models import Alert, artifact_visible_to
 from openexecutive.alerts.store import (
     delete_alert,
     get_alert,
@@ -37,6 +46,7 @@ from openexecutive.workflows.persistence import (
     get_run,
     initialize_runs_db,
     list_artifact_runs,
+    run_visible_to,
     set_run_archived,
 )
 
@@ -49,6 +59,118 @@ class MalformedArtifactId(ValueError):
 
 class ArtifactNotFound(LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class Viewer:
+    """Who an artifact read or change is for. ``person_id`` None is nobody on
+    the roster: they see team workflow outputs and nothing else."""
+
+    person_id: int | None
+    is_principal: bool = False
+
+
+NOBODY = Viewer(person_id=None)
+
+
+def viewer_for_person(person_id: int | None) -> Viewer:
+    """The viewer for a resolved caller (None: nobody). Fails closed: a
+    roster that can't be read makes them no principal."""
+    if person_id is None:
+        return NOBODY
+    from openexecutive.people.store import get_person
+
+    try:
+        person = get_person(person_id)
+    except Exception:
+        return Viewer(person_id=person_id)
+    is_principal = bool(person is not None and person.is_principal and not person.archived)
+    return Viewer(person_id=person_id, is_principal=is_principal)
+
+
+def principal_viewer() -> Viewer:
+    """The principal, for work the server does on its own (the scheduler, a
+    workflow with nobody's conversation behind it, the CLI)."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+    except Exception:
+        return NOBODY
+    if principal is None or principal.id is None:
+        return NOBODY
+    return Viewer(person_id=principal.id, is_principal=True)
+
+
+def current_viewer() -> Viewer:
+    """Whose artifacts the turn in progress may read and publish.
+
+    The speaker when the turn has one. A session pinned to someone else's
+    viewer (``Session.documents_viewer``: a workflow's own loop inside a
+    person's turn) is theirs. A web or channel turn whose speaker isn't on
+    the roster is nobody. With no session, or a session nobody is speaking
+    in (the scheduler, the CLI), it is the principal's own work.
+    """
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None:
+        return principal_viewer()
+    pinned = getattr(session, "documents_viewer", None)
+    if isinstance(pinned, Viewer):
+        return pinned
+    person_id = getattr(session, "caller_person_id", None)
+    if person_id is not None:
+        return viewer_for_person(person_id)
+    if getattr(session, "from_web_chat", False) or getattr(session, "origin_channel", ""):
+        return NOBODY
+    return principal_viewer()
+
+
+def viewer_to_pin() -> Viewer | None:
+    """The viewer a session minted inside the current turn should be pinned
+    to (``Session.documents_viewer``): the turn's own when someone's turn it
+    is (a speaker, or a web or channel turn with an unrostered one: nobody).
+    None when nobody is speaking, so the new session stays the server's own."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None:
+        return None
+    pinned = getattr(session, "documents_viewer", None)
+    if isinstance(pinned, Viewer):
+        return pinned
+    if (
+        getattr(session, "caller_person_id", None) is not None
+        or getattr(session, "from_web_chat", False)
+        or getattr(session, "origin_channel", "")
+    ):
+        return current_viewer()
+    return None
+
+
+def turn_owner() -> int | None:
+    """Who a run started now belongs to (``persistence.create_run``): the
+    person whose turn starts it by hand (the speaker, or the viewer the
+    session is pinned to). None when nobody is speaking (the scheduler, the
+    CLI, an unrostered sender): a team run."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None:
+        return None
+    pinned = getattr(session, "documents_viewer", None)
+    if isinstance(pinned, Viewer):
+        return pinned.person_id
+    person_id = getattr(session, "caller_person_id", None)
+    return person_id if isinstance(person_id, int) else None
+
+
+def draft_visible_to(owner_person_id: int | None, viewer: Viewer) -> bool:
+    """Whether ``viewer`` may see a drafted artifact owned by ``owner_person_id``."""
+    return artifact_visible_to(
+        owner_person_id, viewer.person_id, is_principal=viewer.is_principal
+    )
 
 
 @dataclass(frozen=True)
@@ -69,6 +191,9 @@ class ArtifactRecord:
     url: str | None = None
     link_label: str | None = None
     supersedes_id: str | None = None
+    # Whose it is (module docstring); None on a draft = the principal's, on
+    # a workflow output = the team's.
+    owner_person_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +272,7 @@ def _record_from_alert(alert: Alert) -> ArtifactRecord:
         url=alert.artifact_url,
         link_label=alert.artifact_link_label,
         supersedes_id=alert.supersedes_id,
+        owner_person_id=alert.owner_person_id,
     )
 
 
@@ -163,52 +289,71 @@ def _record_from_run(run: dict[str, Any], *, with_body: bool) -> ArtifactRecord:
         # Workflows always emit Markdown (workflows/base.py contract).
         format="markdown",
         stored=run.get("artifact") if with_body else None,
+        owner_person_id=run.get("owner_person_id"),
     )
 
 
-def _require_alert(native_id: str, composite_id: str) -> Alert:
+def _require_alert(native_id: str, composite_id: str, viewer: Viewer) -> Alert:
     try:
         alert_id = int(native_id)
     except ValueError as exc:
         raise MalformedArtifactId(f"Malformed artifact id: {composite_id!r}") from exc
     alert = get_alert(alert_id)
     # A non-artifact alert id must never resolve here, so neither the routes
-    # nor the tools can become general alert readers / mutators.
-    if alert is None or alert.source != "artifact":
+    # nor the tools can become general alert readers / mutators. Someone
+    # else's draft answers the same as a missing one.
+    if (
+        alert is None
+        or alert.source != "artifact"
+        or not draft_visible_to(alert.owner_person_id, viewer)
+    ):
         raise ArtifactNotFound(f"Artifact {composite_id!r} not found")
     return alert
 
 
-def _require_run(native_id: str, composite_id: str) -> dict[str, Any]:
+def _require_run(native_id: str, composite_id: str, viewer: Viewer) -> dict[str, Any]:
     run = get_run(native_id)
     # An empty body counts as no artifact.
-    if run is None or not run.get("artifact"):
+    if run is None or not run.get("artifact") or not run_visible_to(run, viewer.person_id):
         raise ArtifactNotFound(f"Artifact {composite_id!r} not found")
     return run
 
 
-def load_artifact(composite_id: str) -> ArtifactRecord:
+def load_artifact(composite_id: str, *, viewer: Viewer) -> ArtifactRecord:
     kind, native_id = parse_artifact_id(composite_id)
     if kind == "alert":
-        return _record_from_alert(_require_alert(native_id, composite_id))
-    return _record_from_run(_require_run(native_id, composite_id), with_body=True)
+        return _record_from_alert(_require_alert(native_id, composite_id, viewer))
+    return _record_from_run(_require_run(native_id, composite_id, viewer), with_body=True)
 
 
-def list_artifacts(limit: int, *, archived: bool = False) -> list[ArtifactRecord]:
-    """Both sources merged, newest first, capped at `limit`."""
+def list_artifacts(
+    limit: int, *, viewer: Viewer, archived: bool = False
+) -> list[ArtifactRecord]:
+    """Both sources merged, newest first, capped at `limit`: only what
+    `viewer` may see."""
     initialize_alerts_db()
     initialize_runs_db()
-    items = [_record_from_alert(a) for a in list_artifact_alerts(limit=limit, archived=archived)]
+    items = [
+        _record_from_alert(a)
+        for a in list_artifact_alerts(
+            limit=limit,
+            archived=archived,
+            owner_person_id=viewer.person_id,
+            include_unowned=viewer.is_principal,
+        )
+    ]
     items.extend(
         _record_from_run(r, with_body=False)
-        for r in list_artifact_runs(limit=limit, archived=archived)
+        for r in list_artifact_runs(
+            limit=limit, archived=archived, visible_to=viewer.person_id
+        )
     )
     items.sort(key=lambda a: a.created_at, reverse=True)
     return items[:limit]
 
 
-def set_archived(composite_id: str, *, archived: bool) -> ArtifactRecord:
-    record = load_artifact(composite_id)
+def set_archived(composite_id: str, *, archived: bool, viewer: Viewer) -> ArtifactRecord:
+    record = load_artifact(composite_id, viewer=viewer)
     kind, native_id = parse_artifact_id(composite_id)
     if kind == "alert":
         set_alert_archived(int(native_id), archived)
@@ -217,8 +362,8 @@ def set_archived(composite_id: str, *, archived: bool) -> ArtifactRecord:
     return record
 
 
-def delete_artifact(composite_id: str) -> ArtifactRecord:
-    record = load_artifact(composite_id)
+def delete_artifact(composite_id: str, *, viewer: Viewer) -> ArtifactRecord:
+    record = load_artifact(composite_id, viewer=viewer)
     kind, native_id = parse_artifact_id(composite_id)
     if kind == "alert":
         delete_alert(int(native_id))
@@ -229,15 +374,23 @@ def delete_artifact(composite_id: str) -> ArtifactRecord:
 
 __all__ = [
     "DRAFT_SOURCE_LABEL",
+    "NOBODY",
     "ArtifactFile",
     "ArtifactNotFound",
     "ArtifactRecord",
     "MalformedArtifactId",
+    "Viewer",
     "artifact_downloads",
+    "current_viewer",
     "delete_artifact",
+    "draft_visible_to",
     "list_artifacts",
     "load_artifact",
     "parse_artifact_id",
+    "principal_viewer",
     "render_artifact_file",
     "set_archived",
+    "turn_owner",
+    "viewer_for_person",
+    "viewer_to_pin",
 ]

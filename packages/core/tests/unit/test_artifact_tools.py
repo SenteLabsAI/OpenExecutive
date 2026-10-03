@@ -1,7 +1,10 @@
 """Unit tests for the draft_artifact chat/research tool."""
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,8 @@ from openexecutive.orchestrator.artifact_tools import (
     handle_get_artifact,
     handle_list_artifacts,
 )
+from openexecutive.orchestrator.schedule_tools import current_session
+from openexecutive.orchestrator.session import Session
 from openexecutive.people import store as people_store
 from openexecutive.workflows import persistence as wf_persistence
 
@@ -31,7 +36,29 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     people_store.initialize_db(db_path)
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
     monkeypatch.setattr(people_store, "DB_PATH", db_path)
+    # With no conversation behind it, a draft is the principal's own work.
+    people_store.upsert_person(full_name="Jordan", role="CEO", is_principal=True, db_path=db_path)
     return db_path
+
+
+@contextlib.contextmanager
+def _speaking(**session_fields: object) -> Iterator[None]:
+    """Run the block as a turn of a session with ``session_fields``."""
+    token = current_session.set(Session(**session_fields))  # type: ignore[arg-type]
+    try:
+        yield
+    finally:
+        current_session.reset(token)
+
+
+def _principal_id(db: Path) -> int:
+    principal = people_store.find_principal_person(db_path=db)
+    assert principal is not None and principal.id is not None
+    return principal.id
+
+
+def _member(db: Path, name: str = "Sam") -> int:
+    return people_store.upsert_person(full_name=name, role="Analyst", db_path=db)
 
 
 @pytest.fixture()
@@ -73,26 +100,55 @@ async def test_inserts_review_alert(db: Path, audit_calls: list[dict]) -> None:
                for c in audit_calls)
 
 
-async def test_routes_to_principal(db: Path, audit_calls: list[dict]) -> None:
-    pid = people_store.upsert_person(
-        full_name="Jordan", role="CEO", is_principal=True, db_path=db,
-    )
+async def test_with_no_speaker_it_is_the_principals(db: Path, audit_calls: list[dict]) -> None:
+    pid = _principal_id(db)
     result = json.loads(await handle_draft_artifact({
         "title": "Memo", "document": "Body", "why_interesting": "Worth a read",
     }))
     alert = alerts_store.get_alert(result["alert_id"], db_path=db)
     assert alert is not None
-    assert alert.routed_to_person_id == pid
+    assert alert.routed_to_person_id == pid and alert.owner_person_id == pid
 
 
-async def test_no_principal_tolerated(db: Path, audit_calls: list[dict]) -> None:
+async def test_belongs_to_the_speaker(db: Path, audit_calls: list[dict]) -> None:
+    sam = _member(db)
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        result = json.loads(await handle_draft_artifact({
+            "title": "Memo", "document": "Body", "why_interesting": "Worth a read",
+        }))
+    alert = alerts_store.get_alert(result["alert_id"], db_path=db)
+    assert alert is not None
+    # In Sam's own queue, and Sam's alone.
+    assert alert.routed_to_person_id == sam and alert.owner_person_id == sam
+    draft_rows = [c for c in audit_calls if c["details"].get("tool") == "draft_artifact"]
+    assert draft_rows and draft_rows[0]["details"]["owner_person_id"] == sam
+
+
+@pytest.mark.parametrize("session_fields", [
+    {"from_web_chat": True},          # signed in, not on the People list
+    {"origin_channel": "slack"},      # a stranger in a shared channel
+])
+async def test_an_unrostered_speaker_publishes_nothing(
+    db: Path, audit_calls: list[dict], session_fields: dict,
+) -> None:
+    with _speaking(**session_fields):
+        result = json.loads(await handle_draft_artifact({
+            "title": "Memo", "document": "Body", "why_interesting": "x",
+        }))
+    assert "People list" in result["error"]
+    assert alerts_store.list_alerts(db_path=db) == []
+
+
+async def test_no_principal_and_no_speaker_publishes_nothing(
+    db: Path, audit_calls: list[dict],
+) -> None:
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE people SET is_principal = 0")
     result = json.loads(await handle_draft_artifact({
         "title": "Memo", "document": "Body", "why_interesting": "Worth a read",
     }))
-    assert result["ok"] is True
-    alert = alerts_store.get_alert(result["alert_id"], db_path=db)
-    assert alert is not None
-    assert alert.routed_to_person_id is None
+    assert "error" in result
+    assert alerts_store.list_alerts(db_path=db) == []
 
 
 async def test_invalid_severity_defaults_to_medium(db: Path, audit_calls: list[dict]) -> None:
@@ -363,3 +419,115 @@ async def test_blank_format_is_stored_as_markdown(db: Path, audit_calls: list[di
     assert result["format"] == "markdown"
     alert = alerts_store.get_alert(result["alert_id"], db_path=db)
     assert alert is not None and alert.artifact_format == "markdown"
+
+
+# --------------------------------------------------------------------------- #
+# Ownership: a document is its owner's alone
+# --------------------------------------------------------------------------- #
+
+
+async def test_list_and_get_show_only_the_speakers_own_documents(
+    runs_db: Path, audit_calls: list[dict],
+) -> None:
+    sam, alex = _member(runs_db, "Sam"), _member(runs_db, "Alex")
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        sams = await _draft(title="Sam's salary notes", document="private")
+    principals = await _draft(title="Board memo", document="for the board")
+    # A team run (scheduled) everyone sees; a run Alex started is Alex's.
+    wf_persistence.create_run("team", "board_prep", "Team deck", {}, db_path=runs_db)
+    wf_persistence.complete_run("team", "# Team", db_path=runs_db)
+    wf_persistence.create_run(
+        "alexs", "board_prep", "Alex's deck", {}, db_path=runs_db, owner_person_id=alex
+    )
+    wf_persistence.complete_run("alexs", "# Alex", db_path=runs_db)
+
+    def titles(listing: dict) -> set[str]:
+        return {a["title"] for a in listing["artifacts"]}
+
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        assert titles(json.loads(await handle_list_artifacts({}))) == {
+            "Sam's salary notes", "Team deck",
+        }
+        assert "error" in json.loads(await handle_get_artifact({"id": principals["artifact_id"]}))
+        assert "error" in json.loads(await handle_get_artifact({"id": "run:alexs"}))
+        assert json.loads(await handle_get_artifact({"id": sams["artifact_id"]}))["content"] == "private"
+    with _speaking(caller_person_id=alex, from_web_chat=True):
+        assert titles(json.loads(await handle_list_artifacts({}))) == {"Alex's deck", "Team deck"}
+    # Not even the principal sees a teammate's.
+    with _speaking(caller_person_id=_principal_id(runs_db), from_web_chat=True):
+        assert titles(json.loads(await handle_list_artifacts({}))) == {"Board memo", "Team deck"}
+        got = json.loads(await handle_get_artifact({"id": sams["artifact_id"]}))
+        assert "error" in got and "private" not in json.dumps(got)
+    # Someone not on the People list sees only the team's.
+    with _speaking(from_web_chat=True):
+        assert titles(json.loads(await handle_list_artifacts({}))) == {"Team deck"}
+
+
+async def test_cannot_supersede_someone_elses_document(
+    db: Path, audit_calls: list[dict],
+) -> None:
+    sam = _member(db)
+    principals = await _draft(document="v1")
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        result = await _draft(document="v2", supersedes=principals["artifact_id"])
+    assert "supersedes" in result["error"]
+    old = alerts_store.get_alert(principals["alert_id"], db_path=db)
+    assert old is not None and old.archived_at is None
+
+
+async def test_draft_is_indexed_with_its_owner(
+    db: Path, audit_calls: list[dict], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeStore()
+    monkeypatch.setattr(artifact_tools, "_knowledge_store", lambda: store)
+    sam = _member(db)
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        await _draft(title="Churn memo", document="Churn is up in SMB.")
+    assert store.added[0]["metadatas"][0]["owner_person_id"] == sam
+
+
+def test_legacy_drafts_take_the_owner_they_were_routed_to(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    alerts_store.initialize_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        # As a build from before ownership left it.
+        conn.execute("ALTER TABLE alerts DROP COLUMN owner_person_id")
+        conn.execute(
+            "INSERT INTO alerts (external_id, source, severity, headline, body, created_at, routed_to_person_id) "
+            "VALUES ('a', 'artifact', 'low', 'Old memo', 'x', '2026-01-01', 4), "
+            "('b', 'triage', 'low', 'An alert', 'x', '2026-01-01', 4)"
+        )
+    alerts_store.initialize_db(db_path)
+    by_source = {a.source: a for a in alerts_store.list_alerts(db_path=db_path)}
+    assert by_source["artifact"].owner_person_id == 4
+    assert by_source["triage"].owner_person_id is None
+
+
+def test_whose_turn_it_is(db: Path) -> None:
+    from openexecutive.orchestrator.artifact_records import (
+        NOBODY,
+        Viewer,
+        current_viewer,
+        turn_owner,
+        viewer_to_pin,
+    )
+
+    pid, sam = _principal_id(db), _member(db)
+    # Nobody speaking (the scheduler): the principal's own work, a team run,
+    # and nothing to pin a workflow's session to.
+    assert current_viewer() == Viewer(person_id=pid, is_principal=True)
+    assert turn_owner() is None and viewer_to_pin() is None
+    with _speaking(unattended=True):
+        assert current_viewer().is_principal and turn_owner() is None
+        assert viewer_to_pin() is None
+    with _speaking(caller_person_id=sam, from_web_chat=True):
+        assert current_viewer() == Viewer(person_id=sam)
+        assert turn_owner() == sam and viewer_to_pin() == Viewer(person_id=sam)
+    # An unrostered speaker is nobody, and so is a session pinned to them.
+    with _speaking(origin_channel="slack"):
+        assert current_viewer() == NOBODY and viewer_to_pin() == NOBODY
+    with _speaking(documents_viewer=NOBODY):
+        assert current_viewer() == NOBODY and turn_owner() is None
+    # A workflow's own session inside Sam's turn is Sam's.
+    with _speaking(documents_viewer=Viewer(person_id=sam)):
+        assert current_viewer() == Viewer(person_id=sam) and turn_owner() == sam

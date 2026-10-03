@@ -38,6 +38,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     people_store.initialize_db()
     wf_persistence.initialize_runs_db(db_path)
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    # With no conversation behind it, the turn is the principal's, and so is
+    # a draft with no owner.
+    people_store.upsert_person(full_name="Dana Ops", is_principal=True)
     return db_path
 
 

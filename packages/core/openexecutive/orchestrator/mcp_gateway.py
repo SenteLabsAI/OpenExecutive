@@ -1178,10 +1178,13 @@ async def _expand_artifact_entries(
     from openexecutive.orchestrator.artifact_records import (
         ArtifactNotFound,
         MalformedArtifactId,
+        current_viewer,
         load_artifact,
         render_artifact_file,
     )
 
+    # Only an artifact the speaker may see themselves can be attached.
+    viewer = current_viewer()
     wanted: list[tuple[str, str | None]] = []
     for entry in attachments:
         if not (isinstance(entry, dict) and "artifact_id" in entry):
@@ -1207,7 +1210,7 @@ async def _expand_artifact_entries(
     total = 0
     for artifact_id, as_ in wanted:
         try:
-            rec = await asyncio.to_thread(load_artifact, artifact_id)
+            rec = await asyncio.to_thread(load_artifact, artifact_id, viewer=viewer)
             file = await asyncio.to_thread(render_artifact_file, rec, as_)
         except (MalformedArtifactId, ArtifactNotFound) as exc:
             return _refuse_attachment(tool, arguments, str(exc))

@@ -172,7 +172,8 @@ async def evaluate_and_dispatch(
             "dedup_key": a.dedup_key,
             "topic_tags": a.topic_tags,
         }
-        for a in store.recent_alerts(limit=20, db_path=path)
+        # Never anyone's drafted documents: they are their owners' alone.
+        for a in store.recent_alerts(limit=20, db_path=path, exclude_source="artifact")
     ]
     try:
         initiatives = get_active_initiatives()

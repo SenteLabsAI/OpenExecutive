@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from openexecutive.alerts import lifecycle, store
-from openexecutive.alerts.models import Alert, is_private_alert
+from openexecutive.alerts.models import Alert, is_private_alert, visible_alert
 
 # The standalone alerts UI (panel, live toast stream, mute/severity settings,
 # feedback) was removed — those items now surface only through the briefing
@@ -20,11 +20,23 @@ router = APIRouter()
 
 def _visible_alert(alert_id: int, request: Request) -> Alert:
     """The alert, or 404 — also for one private to the principal when the
-    caller is someone else, so its existence is not revealed either."""
+    caller is someone else, and for a drafted artifact that isn't the
+    caller's, so its existence is not revealed either."""
     existing = store.get_alert(alert_id)
-    if existing is None or (is_private_alert(existing) and not _caller_is_principal(request)):
+    if (
+        existing is None
+        or (is_private_alert(existing) and not _caller_is_principal(request))
+        or not visible_alert(existing, _caller_viewer(request))
+    ):
         raise HTTPException(status_code=404, detail="Alert not found")
     return existing
+
+
+def _caller_viewer(request: Request) -> object:
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.orchestrator.artifact_records import viewer_for_person
+
+    return viewer_for_person(_resolve_caller_person_id(request))
 
 
 def _caller_is_principal(request: Request) -> bool:

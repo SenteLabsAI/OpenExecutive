@@ -1370,7 +1370,7 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
     artifact_id = str(tool_input.get("artifact_id") or "").strip()
     if artifact_id:
         try:
-            link_line = _artifact_link_line(artifact_id, get_settings().ui_base_url)
+            link_line = _artifact_link_line(artifact_id, get_settings().ui_base_url, person_id)
         except LookupError as exc:
             return json.dumps({"error": f"artifact_id: {exc}"})
         text = f"{text.rstrip()}\n\n{link_line}"
@@ -1467,25 +1467,37 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
     return await _alert_undeliverable_person(person, person_id, text, last_error)
 
 
-def _artifact_link_line(artifact_id: str, ui_base_url: str) -> str:
+def _artifact_link_line(artifact_id: str, ui_base_url: str, recipient_id: int) -> str:
     """`📄 <title> — <UI_BASE_URL>/artifacts/<id>` for a real artifact.
 
     Resolved through `artifact_records`, so only artifact rows (never an
-    arbitrary alert) can be shared this way. Raises `LookupError` for a
-    malformed or unknown id.
+    arbitrary alert) can be shared this way, and only one the speaker may see
+    whose link the recipient can open too. Raises `LookupError` for a
+    malformed or unknown id, and for a link that would not open for them.
     """
     from urllib.parse import quote
 
     from openexecutive.orchestrator.artifact_records import (
         ArtifactNotFound,
         MalformedArtifactId,
+        current_viewer,
         load_artifact,
+        viewer_for_person,
     )
 
     try:
-        rec = load_artifact(artifact_id)
+        # Only one the speaker may see themselves.
+        rec = load_artifact(artifact_id, viewer=current_viewer())
     except (MalformedArtifactId, ArtifactNotFound) as exc:
         raise LookupError(str(exc)) from exc
+    try:
+        load_artifact(artifact_id, viewer=viewer_for_person(recipient_id))
+    except ArtifactNotFound as exc:
+        raise LookupError(
+            "its link would not open for this person: a document opens only "
+            "for its owner, so attach it to an email or put what they need in "
+            "the message instead"
+        ) from exc
     title = " ".join(rec.title.split())
     base = ui_base_url.rstrip("/")
     return f"📄 {title} — {base}/artifacts/{quote(rec.id, safe=':')}"
@@ -2278,6 +2290,14 @@ async def handle_find_alerts(tool_input: dict[str, Any]) -> str:
     except Exception:
         logger.exception("find_alerts: search_alerts failed")
         return json.dumps({"error": "could not read the alerts store"})
+
+    # A teammate's drafted artifact is theirs alone, the principal's search
+    # included.
+    from openexecutive.alerts.models import visible_alert
+    from openexecutive.orchestrator.artifact_records import current_viewer
+
+    viewer = current_viewer()
+    matches = [a for a in matches if visible_alert(a, viewer)]
 
     found: set[int] = session.found_alert_ids
     trusted: set[int] = session.trusted_alert_ids

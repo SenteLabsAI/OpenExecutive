@@ -84,11 +84,14 @@ async def handle_run_executive_research(
 
     run_id = str(uuid.uuid4())
     try:
+        from openexecutive.orchestrator.artifact_records import turn_owner
+
         create_run(
             run_id,
             "executive_research",
             f"{workflow.title} (chat-tool fire)",
             wf_inputs.model_dump(),
+            owner_person_id=turn_owner(),
         )
     except Exception:
         logger.exception("run_executive_research: create_run failed")

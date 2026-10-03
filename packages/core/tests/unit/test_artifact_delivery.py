@@ -44,6 +44,12 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     people_store.initialize_db()
     wf_persistence.initialize_runs_db(db_path)
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    # With no conversation behind it, the turn is the principal's, and so is
+    # a draft with no owner.
+    people_store.upsert_person(
+        full_name="Dana Ops", is_principal=True, discord_user_id="100000000000000001",
+        preferred_channel="discord",
+    )
     return db_path
 
 
@@ -82,10 +88,10 @@ def _dm(payload: dict) -> tuple[dict, AsyncMock]:
 
 
 def _person() -> int:
-    return people_store.upsert_person(
-        full_name="Dana Ops", discord_user_id="100000000000000001",
-        preferred_channel="discord",
-    )
+    """The principal, who owns the drafts these tests share with them."""
+    principal = people_store.find_principal_person()
+    assert principal is not None and principal.id is not None
+    return principal.id
 
 
 def test_message_person_appends_artifact_title_and_link() -> None:
@@ -120,6 +126,26 @@ def test_message_person_refuses_non_artifact_alert() -> None:
     result, send = _dm({"person_id": _person(), "text": "hi",
                         "artifact_id": f"alert:{other}"})
     assert "error" in result
+    send.assert_not_awaited()
+
+
+def test_message_person_refuses_a_link_the_recipient_cannot_open() -> None:
+    cid = _artifact()  # the principal's own
+    teammate = people_store.upsert_person(
+        full_name="Sam", discord_user_id="100000000000000002", preferred_channel="discord",
+    )
+    result, send = _dm({"person_id": teammate, "text": "hi", "artifact_id": cid})
+    assert "opens only for its owner" in result["error"]
+    send.assert_not_awaited()
+
+
+def test_message_person_cannot_share_someone_elses_document() -> None:
+    sam = people_store.upsert_person(
+        full_name="Sam", discord_user_id="100000000000000002", preferred_channel="discord",
+    )
+    cid = _artifact(owner_person_id=sam)
+    result, send = _dm({"person_id": sam, "text": "hi", "artifact_id": cid})
+    assert "artifact_id" in result["error"] and "not found" in result["error"]
     send.assert_not_awaited()
 
 
@@ -228,6 +254,15 @@ def test_gmail_artifact_attachment_errors_send_nothing(entry: dict, needle: str)
     result, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
                                   "attachments": [entry]})
     assert needle in json.loads(result)["error"]
+    assert session_call.await_count == 0
+
+
+def test_gmail_cannot_attach_someone_elses_document() -> None:
+    sam = people_store.upsert_person(full_name="Sam")
+    cid = _artifact(owner_person_id=sam)
+    result, session_call = _send({"to": "alice@example.com", "subject": "s", "body": "b",
+                                  "attachments": [{"artifact_id": cid}]})
+    assert "not found" in json.loads(result)["error"]
     assert session_call.await_count == 0
 
 
@@ -349,18 +384,26 @@ def test_gmail_refusal_is_audited_with_recipients(audit: list) -> None:
 
 
 def test_undeliverable_person_alert_carries_the_link() -> None:
-    cid = _artifact()
     pid = people_store.upsert_person(full_name="No Channel")  # no DM ids at all
+    cid = _artifact(owner_person_id=pid)
     created: list[dict] = []
 
     async def _fake_alert(payload: dict) -> str:
         created.append(payload)
         return json.dumps({"ok": True})
 
-    with (
-        patch("openexecutive.config.get_settings", return_value=_dm_settings()),
-        patch("openexecutive.orchestrator.alert_tools.handle_create_alert", _fake_alert),
-    ):
-        asyncio.run(handle_message_person({"person_id": pid, "text": "FYI",
-                                           "artifact_id": cid}))
+    from openexecutive.orchestrator.schedule_tools import current_session
+    from openexecutive.orchestrator.session import Session
+
+    # Their own turn, sharing their own document with themselves.
+    token = current_session.set(Session(caller_person_id=pid))
+    try:
+        with (
+            patch("openexecutive.config.get_settings", return_value=_dm_settings()),
+            patch("openexecutive.orchestrator.alert_tools.handle_create_alert", _fake_alert),
+        ):
+            asyncio.run(handle_message_person({"person_id": pid, "text": "FYI",
+                                               "artifact_id": cid}))
+    finally:
+        current_session.reset(token)
     assert created and f"https://oe.example.com/artifacts/{cid}" in created[0]["body"]

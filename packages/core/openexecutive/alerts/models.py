@@ -20,6 +20,39 @@ def is_private_alert(alert: object) -> bool:
     return any(str(t).lower() == PRIVATE_ALERT_TAG for t in tags)
 
 
+# Source of a document the Executive published (`draft_artifact`). Each one
+# is its owner's alone (``owner_person_id``; none = the principal's): it never
+# reaches a surface that serves anyone else (see ``artifact_visible_to``).
+ARTIFACT_SOURCE = "artifact"
+
+
+def artifact_visible_to(
+    owner_person_id: int | None, person_id: int | None, *, is_principal: bool
+) -> bool:
+    """Whether the person ``person_id`` (``is_principal`` when they are the
+    principal) may see a drafted artifact owned by ``owner_person_id``. Not
+    even the principal sees a teammate's."""
+    if owner_person_id is None:
+        return is_principal
+    return person_id is not None and person_id == owner_person_id
+
+
+def visible_alert(alert: object, viewer: object | None) -> bool:
+    """Whether ``alert`` may be shown to ``viewer`` (anything with
+    ``person_id`` and ``is_principal``, e.g. ``artifact_records.Viewer``).
+    Every alert but a drafted artifact may; an artifact only to its owner,
+    and to no one when there is no viewer (a surface shared by everyone)."""
+    if getattr(alert, "source", None) != ARTIFACT_SOURCE:
+        return True
+    if viewer is None:
+        return False
+    return artifact_visible_to(
+        getattr(alert, "owner_person_id", None),
+        getattr(viewer, "person_id", None),
+        is_principal=bool(getattr(viewer, "is_principal", False)),
+    )
+
+
 class AlertSeverity(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -159,6 +192,9 @@ class Alert(BaseModel):
     artifact_link_label: str | None = None
     # Composite id ('alert:<n>' / 'run:<hex>') of the version this revised.
     supersedes_id: str | None = None
+    # Whose document a drafted artifact is (orchestrator/artifact_records.py);
+    # NULL on a draft = the principal's. Unused on every other source.
+    owner_person_id: int | None = None
 
 
 class UserPreferences(BaseModel):

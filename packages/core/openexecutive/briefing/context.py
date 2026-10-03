@@ -77,8 +77,12 @@ def format_open_alerts_for_prompt(
     trusted_ids: list[int] | None = None,
     *,
     include_private: bool = False,
+    viewer: object | None = None,
 ) -> str:
     """Render current open (unread) alerts as a compact digest, or ``""`` when none.
+
+    A drafted artifact's card is listed only for its owner, ``viewer``
+    (``alerts.models.visible_alert``).
 
     One line per alert::
 
@@ -121,7 +125,7 @@ def format_open_alerts_for_prompt(
         # one — without that the header claimed the list was everything when it
         # was the most recent `limit` of many more (#136, second symptom).
         live = list_live_alerts(
-            limit=max(BOARD_LIMIT, limit + 1), db_path=db_path
+            limit=max(BOARD_LIMIT, limit + 1), db_path=db_path, viewer=viewer
         )
     except Exception:
         logger.exception("briefing_context.list_alerts_failed")
@@ -245,17 +249,19 @@ def _handled_block(db_path: Path | None, now: datetime) -> str:
 
     # Each per-status page is newest-first; the merge is not, so re-sort before
     # capping or the cap would favour whichever status sorts first by name.
-    from openexecutive.alerts.models import is_private_alert
+    from openexecutive.alerts.models import is_private_alert, visible_alert
     from openexecutive.people.roster_requests import ALERT_SOURCE as _ROSTER_SOURCE
 
     # Shown on everyone's turn, so never a card private to the principal (a
-    # contact's mail, a roster request naming who wrote to them).
+    # contact's mail, a roster request naming who wrote to them), nor anyone's
+    # drafted artifact.
     fresh = [
         alert for alert in rows
         if (created := parse_aware(alert.created_at)) is not None
         and now - created <= _HANDLED_WINDOW
         and alert.source != _ROSTER_SOURCE
         and not is_private_alert(alert)
+        and visible_alert(alert, None)
     ]
     fresh.sort(key=lambda a: a.created_at, reverse=True)
 
@@ -297,6 +303,7 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
     trusted: list[int] = []
     verified = False
     try:
+        from openexecutive.orchestrator.artifact_records import viewer_for_person
         from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
         verified = is_principal_on_verified_surface(session)
@@ -304,6 +311,8 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
             db_path=db_path, trusted_ids=trusted,
             # Alerts private to the principal only on their own verified turn.
             include_private=verified,
+            # A drafted artifact's card only on its owner's turn.
+            viewer=viewer_for_person(getattr(session, "caller_person_id", None)),
         )
     except Exception:
         logger.exception("briefing_context.render_and_trust_failed")

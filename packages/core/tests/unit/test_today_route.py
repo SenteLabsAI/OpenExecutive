@@ -308,6 +308,8 @@ def test_artifact_alert_surfaces_as_action_proposal(
     the UI can render it as a document card in the 'Needs you' queue."""
     db = tmp_path / "artifact.db"
     _setup_isolated_db(db, monkeypatch)
+    # No caller header: the principal is asking, and the draft is theirs.
+    pid = people_store.upsert_person(full_name="Jordan", is_principal=True, db_path=db)
 
     alert_store.insert_alert(
         source="artifact",
@@ -317,7 +319,8 @@ def test_artifact_alert_surfaces_as_action_proposal(
         body="## Summary\n\nFull document body.",
         suggested_action="Reframes our Q3 fundraising window.",
         topic_tags=["artifact"],
-        routed_to_person_id=7,
+        routed_to_person_id=pid,
+        owner_person_id=pid,
         db_path=db,
     )
 
@@ -326,8 +329,40 @@ def test_artifact_alert_surfaces_as_action_proposal(
     assert "artifact" in artifact["topic_tags"]
     assert artifact["category"] == "action"
     assert artifact["body"] == "## Summary\n\nFull document body."
-    assert artifact["routed_to_person_id"] == 7
+    assert artifact["routed_to_person_id"] == pid
     assert artifact["artifact_format"] == "markdown"
+
+
+def test_a_drafted_artifact_card_is_only_its_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each person's /today carries their own drafts and nobody else's — not
+    even the principal's carries a teammate's."""
+    db = tmp_path / "artifact_owner.db"
+    _setup_isolated_db(db, monkeypatch)
+    pid = people_store.upsert_person(
+        full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db
+    )
+    sam = people_store.upsert_person(full_name="Sam", email="sam@example.com", db_path=db)
+    for ext, owner in (("p", pid), ("s", sam), ("legacy", None)):
+        alert_store.insert_alert(
+            source="artifact", external_id=ext, severity="medium",
+            headline=f"doc {ext}", body="private body", topic_tags=["artifact"],
+            routed_to_person_id=owner, owner_person_id=owner, db_path=db,
+        )
+
+    def headlines(email: str | None) -> set[str]:
+        headers = {"x-caller-email": email} if email else {}
+        proposals = _make_client().get("/today", headers=headers).json()["proposals"]
+        return {p["headline"] for p in proposals if "artifact" in p["topic_tags"]}
+
+    assert headlines(None) == {"doc p", "doc legacy"}
+    assert headlines("jordan@example.com") == {"doc p", "doc legacy"}
+    assert headlines("sam@example.com") == {"doc s"}
+    assert headlines("stranger@example.com") == set()
+    # The activity rail is everyone's, so it names no one's document.
+    rail = today_route._build_activity(limit=50).items
+    assert not any(i.summary.startswith("doc ") for i in rail)
 
 
 def test_non_markdown_artifact_body_is_rendered_for_the_card(
@@ -339,6 +374,8 @@ def test_non_markdown_artifact_body_is_rendered_for_the_card(
 
     db = tmp_path / "artifact_fmt.db"
     _setup_isolated_db(db, monkeypatch)
+    # No caller header: the principal, whose drafts these are (no owner).
+    people_store.upsert_person(full_name="Jordan", is_principal=True, db_path=db)
     for ext_id, fmt, body, url in (
         ("h", "html", "<h1>Pricing</h1><p>Three tiers.</p>", None),
         ("x", "xlsx", _json.dumps({"summary": "Model", "sheets": [
