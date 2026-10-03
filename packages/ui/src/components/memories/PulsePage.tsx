@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-import ViewTabs from "@/components/ui/ViewTabs";
+import SectionTabs from "@/components/ui/SectionTabs";
 import RhythmSection, { FollowUpsCard, RecentActivity } from "./CadenceSection";
 import MemorySection, { MEMORY_TABS } from "./MemorySection";
 import { HeartbeatCard, PulseSummary, usePulseData } from "./PulseHeader";
@@ -50,9 +50,9 @@ export default function PulsePage() {
 
       <PulseSummary pulse={pulse} />
 
-      <ViewTabs
+      <SectionTabs
         label="Pulse"
-        value={tab}
+        active={tab}
         onChange={setTab}
         tabs={[
           { id: "heartbeat", label: "Heartbeat" },
@@ -63,9 +63,9 @@ export default function PulsePage() {
       {tab === "heartbeat" && (
         <div className="space-y-5">
           <HeartbeatCard pulse={pulse} />
-          <ViewTabs
+          <SectionTabs
             label="Heartbeat"
-            value={beatView}
+            active={beatView}
             onChange={setBeatView}
             tabs={[
               { id: "activity", label: "Activity" },

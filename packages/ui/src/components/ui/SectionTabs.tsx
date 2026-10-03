@@ -3,16 +3,23 @@
 import { useRef } from "react";
 
 // A row of tabs inside one page or panel (a person's page, a settings form
-// split into short sections), as opposed to HubTabs, which links pages. The
-// caller renders the active tab's content and spreads
-// `sectionPanelProps(idBase, active)` on it, with the same `idBase` (from
-// useId) it passed here. Arrow keys, Home and End move between tabs.
+// split into short sections, the Pulse and Knowledge views), as opposed to
+// HubTabs, which links pages. Pill style, 40px tall, with an optional count
+// or badge per tab; too many tabs for a phone scroll sideways inside the row,
+// never the page. The caller renders the active tab's content; when it also
+// spreads `sectionPanelProps(idBase, active)` on it, it passes the same
+// `idBase` (from useId) here so tab and panel point at each other. Arrow
+// keys, Home and End move between tabs.
 
 export interface SectionTab<T extends string> {
   id: T;
   label: string;
   /** Shown after the label, e.g. how many rows the tab lists. */
   count?: number;
+  /** A count drawn as a pill after the label; null or undefined shows none. */
+  badge?: number | null;
+  /** "attention" draws the badge in amber, for things waiting on you. */
+  badgeTone?: "muted" | "attention";
 }
 
 export default function SectionTabs<T extends string>({
@@ -22,15 +29,18 @@ export default function SectionTabs<T extends string>({
   label,
   idBase,
   disabled = false,
+  className = "",
 }: {
   tabs: SectionTab<T>[];
   active: T;
   onChange: (id: T) => void;
   /** Accessible name of the tab row. */
   label: string;
-  /** Shared with the content's `sectionPanelProps`, so the two point at each other. */
-  idBase: string;
+  /** Shared with the content's `sectionPanelProps`, so the two point at each
+   *  other. Leave it out when the content carries no panel attributes. */
+  idBase?: string;
   disabled?: boolean;
+  className?: string;
 }) {
   const base = idBase;
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -53,7 +63,7 @@ export default function SectionTabs<T extends string>({
     <div
       role="tablist"
       aria-label={label}
-      className="inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl bg-surface-overlay p-1"
+      className={`inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl bg-surface-overlay p-1 ${className}`}
     >
       {tabs.map((tab, i) => {
         const selected = tab.id === active;
@@ -65,9 +75,9 @@ export default function SectionTabs<T extends string>({
             }}
             type="button"
             role="tab"
-            id={`${base}-tab-${tab.id}`}
+            id={base ? `${base}-tab-${tab.id}` : undefined}
             aria-selected={selected}
-            aria-controls={`${base}-panel-${tab.id}`}
+            aria-controls={base ? `${base}-panel-${tab.id}` : undefined}
             tabIndex={selected ? 0 : -1}
             disabled={disabled}
             onClick={() => onChange(tab.id)}
@@ -75,12 +85,23 @@ export default function SectionTabs<T extends string>({
             className={`flex h-10 flex-shrink-0 items-center gap-2 rounded-xl px-4 text-[15px] font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:opacity-50 ${
               selected
                 ? "bg-surface-elevated text-fg shadow-sm"
-                : "text-fg-muted hover:text-fg"
+                : "text-fg-muted hover:bg-surface-hover hover:text-fg"
             }`}
           >
             {tab.label}
             {tab.count !== undefined && (
               <span className={`text-sm ${selected ? "text-fg-muted" : "text-fg-subtle"}`}>{tab.count}</span>
+            )}
+            {tab.badge != null && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                  tab.badgeTone === "attention" && tab.badge > 0
+                    ? "bg-amber-500/15 text-amber-500"
+                    : "bg-surface-input text-fg-muted"
+                }`}
+              >
+                {tab.badge}
+              </span>
             )}
           </button>
         );

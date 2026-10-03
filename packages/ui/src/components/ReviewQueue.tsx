@@ -27,7 +27,7 @@ import StatusPill from "@/components/ReviewStatusPill";
 import Button from "@/components/ui/Button";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 import SidePanel from "@/components/ui/SidePanel";
-import ViewTabs from "@/components/ui/ViewTabs";
+import SectionTabs from "@/components/ui/SectionTabs";
 import Icon from "@/components/Icon";
 import { domainBulkActions, type BulkAction } from "@/lib/reviewBulk";
 
@@ -635,10 +635,10 @@ export default function ReviewQueue() {
           Pending and rejected items are withheld from retrieval.
         </p>
       </div>
-      <ViewTabs
+      <SectionTabs
         label="Review"
         className="mb-6"
-        value={tab}
+        active={tab}
         onChange={setTab}
         tabs={[
           { id: "queue", label: "To review" },

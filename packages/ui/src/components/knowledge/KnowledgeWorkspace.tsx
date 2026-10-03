@@ -24,7 +24,7 @@ import {
 import ReviewQueue from "@/components/ReviewQueue";
 import PageSideNav from "@/components/shell/PageSideNav";
 import Button from "@/components/ui/Button";
-import ViewTabs from "@/components/ui/ViewTabs";
+import SectionTabs from "@/components/ui/SectionTabs";
 import {
   ADVANCED_VIEWS,
   VIEW_LABELS,
@@ -256,9 +256,9 @@ export default function KnowledgeWorkspace() {
           </p>
         </div>
 
-        <ViewTabs
+        <SectionTabs
           label="Knowledge"
-          value={isAdvancedView(view) ? "advanced" : "company"}
+          active={isAdvancedView(view) ? "advanced" : "company"}
           onChange={(t) => openView(t === "advanced" ? lastAdvanced : "company")}
           tabs={[
             { id: "company", label: VIEW_LABELS.company, badge: companyCount },

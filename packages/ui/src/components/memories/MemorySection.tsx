@@ -22,7 +22,7 @@ import {
 } from "@/lib/api";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import ViewTabs from "@/components/ui/ViewTabs";
+import SectionTabs from "@/components/ui/SectionTabs";
 import CorrectionsTab from "./CorrectionsTab";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
@@ -96,10 +96,10 @@ export default function MemorySection() {
 
   return (
     <div>
-      <ViewTabs
+      <SectionTabs
         label="Memory"
         className="mb-4"
-        value={tab}
+        active={tab}
         onChange={setTab}
         tabs={tabs.map((t) => ({
           id: t,
