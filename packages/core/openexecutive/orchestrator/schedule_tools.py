@@ -2403,8 +2403,12 @@ async def handle_ack_alert(tool_input: dict[str, Any]) -> str:
     if status not in {"ack", "dismissed"}:
         return json.dumps({"error": f"status must be 'ack' or 'dismissed', got {status!r}"})
 
+    from openexecutive.alerts.models import visible_alert
+    from openexecutive.orchestrator.artifact_records import current_viewer
+
     existing = alert_store.get_alert(alert_id)
-    if existing is None:
+    # Someone else's drafted document answers as if it did not exist.
+    if existing is None or not visible_alert(existing, current_viewer()):
         return json.dumps({"error": f"alert {alert_id} not found"})
     prior_status = existing.status
     if prior_status == status:
