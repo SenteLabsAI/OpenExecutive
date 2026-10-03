@@ -20,12 +20,15 @@ import {
   type PersonConclusion,
   type PersonMemory,
 } from "@/lib/api";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
+import ViewTabs from "@/components/ui/ViewTabs";
 import CorrectionsTab from "./CorrectionsTab";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
 type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "people";
 
-const MEMORY_TABS: readonly MemoryTab[] = ["decisions", "initiatives", "advice", "corrections", "people"];
+export const MEMORY_TABS: readonly MemoryTab[] = ["decisions", "initiatives", "advice", "corrections", "people"];
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 const PEOPLE_EMPTY =
@@ -92,33 +95,21 @@ export default function MemorySection() {
       : [...MEMORY_TABS];
 
   return (
-    <div className="rounded-xl border border-line bg-surface-elevated p-4">
-      <div className="mb-3">
-        <div className="flex flex-wrap gap-1 p-1 bg-surface-overlay/60 rounded-xl w-fit max-w-full border border-line-strong/50">
-          {tabs.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize ${
-                tab === t
-                  ? "bg-surface-input text-fg shadow-sm"
-                  : "text-fg-muted hover:text-fg"
-              }`}
-            >
-              {t}
-              {counts[t] != null && (
-                <span className="ml-1.5 text-xs font-normal tabular-nums text-fg-subtle">
-                  {counts[t]}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
+    <div>
+      <ViewTabs
+        label="Memory"
+        className="mb-4"
+        value={tab}
+        onChange={setTab}
+        tabs={tabs.map((t) => ({
+          id: t,
+          label: t.charAt(0).toUpperCase() + t.slice(1),
+          badge: counts[t],
+        }))}
+      />
 
-      {/* One scroll region shared by all (always-mounted) tabs, mirroring
-          the Recent activity card — the list scrolls instead of growing. */}
-      <div className="max-h-[32rem] overflow-y-auto pr-1">
+      {/* All tabs stay mounted (inactive ones hidden) so every count loads. */}
+      <div className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5 py-1">
         <div className={tab === "decisions" ? "" : "hidden"}>
           <DecisionsTab onCount={onCountDecisions} />
         </div>
@@ -174,7 +165,7 @@ function DecisionsTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -235,17 +226,21 @@ function DecisionRow({
   }, [editing, decision]);
 
   return (
-    <div className="group py-3 hover:bg-surface-overlay/30 transition-colors">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <span className="px-2 py-0.5 rounded bg-surface-overlay text-fg font-medium">{editing ? domain : decision.domain}</span>
+    <div className="py-3.5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2 text-sm text-fg-muted">
+          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? domain : decision.domain}</span>
           <span>{formatDate(decision.timestamp)}</span>
         </div>
         {!editing && (
-          <div className="flex gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onClick={onEdit} className="text-xs text-fg-muted hover:text-fg">Edit</button>
-            <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-300">Delete</button>
-          </div>
+          <OverflowMenu
+            size="sm"
+            label="Memory actions"
+            items={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Delete", danger: true, onSelect: onDelete },
+            ]}
+          />
         )}
       </div>
       {editing ? (
@@ -253,7 +248,7 @@ function DecisionRow({
           <select
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
@@ -262,45 +257,42 @@ function DecisionRow({
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
             placeholder="Summary"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <textarea
             value={rationale}
             onChange={(e) => setRationale(e.target.value)}
             placeholder="Rationale"
             rows={2}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <input
             type="text"
             value={outcome}
             onChange={(e) => setOutcome(e.target.value)}
             placeholder="Outcome"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <input
             type="text"
             value={tags}
             onChange={(e) => setTags(e.target.value)}
             placeholder="Tags"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded text-fg-muted hover:text-fg">Cancel</button>
-            <button
-              onClick={() => onSave({ domain, summary, rationale, outcome, tags })}
-              className="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
+            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
+            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ domain, summary, rationale, outcome, tags })}>
               Save
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-sm text-fg line-clamp-2" title={decision.summary}>{decision.summary}</div>
-          {decision.rationale && <div className="text-xs text-fg-muted line-clamp-2" title={`Rationale: ${decision.rationale}`}><span className="text-fg-muted">Rationale: </span>{decision.rationale}</div>}
-          {decision.outcome && <div className="text-xs text-fg-muted line-clamp-2" title={`Outcome: ${decision.outcome}`}><span className="text-fg-muted">Outcome: </span>{decision.outcome}</div>}
-          {decision.tags && <div className="text-xs text-fg-muted truncate" title={`Tags: ${decision.tags}`}>Tags: {decision.tags}</div>}
+          <div className="text-[15px] font-medium text-fg line-clamp-2" title={decision.summary}>{decision.summary}</div>
+          {decision.rationale && <div className="text-sm text-fg-muted line-clamp-2" title={`Rationale: ${decision.rationale}`}><span className="text-fg-muted">Rationale: </span>{decision.rationale}</div>}
+          {decision.outcome && <div className="text-sm text-fg-muted line-clamp-2" title={`Outcome: ${decision.outcome}`}><span className="text-fg-muted">Outcome: </span>{decision.outcome}</div>}
+          {decision.tags && <div className="text-sm text-fg-subtle truncate" title={`Tags: ${decision.tags}`}>Tags: {decision.tags}</div>}
         </div>
       )}
     </div>
@@ -342,7 +334,7 @@ function InitiativesTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -399,17 +391,21 @@ function InitiativeRow({
   }, [editing, initiative]);
 
   return (
-    <div className="group py-3 hover:bg-surface-overlay/30 transition-colors">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <span className="px-2 py-0.5 rounded bg-surface-overlay text-fg font-medium capitalize">{editing ? status : initiative.status}</span>
+    <div className="py-3.5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2 text-sm text-fg-muted">
+          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? status : initiative.status}</span>
           <span>updated {formatDate(initiative.updated_at)}</span>
         </div>
         {!editing && (
-          <div className="flex gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onClick={onEdit} className="text-xs text-fg-muted hover:text-fg">Edit</button>
-            <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-300">Delete</button>
-          </div>
+          <OverflowMenu
+            size="sm"
+            label="Memory actions"
+            items={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Delete", danger: true, onSelect: onDelete },
+            ]}
+          />
         )}
       </div>
       {editing ? (
@@ -419,12 +415,12 @@ function InitiativeRow({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Title"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -433,22 +429,19 @@ function InitiativeRow({
             onChange={(e) => setSummary(e.target.value)}
             placeholder="Summary"
             rows={2}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded text-fg-muted hover:text-fg">Cancel</button>
-            <button
-              onClick={() => onSave({ title, status, summary })}
-              className="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
+            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
+            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ title, status, summary })}>
               Save
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-sm text-fg font-medium line-clamp-2" title={initiative.title}>{initiative.title}</div>
-          {initiative.summary && <div className="text-xs text-fg-muted line-clamp-2" title={initiative.summary}>{initiative.summary}</div>}
+          <div className="text-[15px] text-fg font-semibold line-clamp-2" title={initiative.title}>{initiative.title}</div>
+          {initiative.summary && <div className="text-sm text-fg-muted line-clamp-2" title={initiative.summary}>{initiative.summary}</div>}
         </div>
       )}
     </div>
@@ -490,7 +483,7 @@ function AdviceTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -547,17 +540,21 @@ function AdviceRow({
   }, [editing, advice]);
 
   return (
-    <div className="group py-3 hover:bg-surface-overlay/30 transition-colors">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <span className="px-2 py-0.5 rounded bg-surface-overlay text-fg font-medium">{editing ? domain : advice.domain}</span>
+    <div className="py-3.5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2 text-sm text-fg-muted">
+          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? domain : advice.domain}</span>
           <span>{formatDate(advice.timestamp)}</span>
         </div>
         {!editing && (
-          <div className="flex gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onClick={onEdit} className="text-xs text-fg-muted hover:text-fg">Edit</button>
-            <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-300">Delete</button>
-          </div>
+          <OverflowMenu
+            size="sm"
+            label="Memory actions"
+            items={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Delete", danger: true, onSelect: onDelete },
+            ]}
+          />
         )}
       </div>
       {editing ? (
@@ -565,7 +562,7 @@ function AdviceRow({
           <select
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
@@ -574,29 +571,26 @@ function AdviceRow({
             value={querySummary}
             onChange={(e) => setQuerySummary(e.target.value)}
             placeholder="What the user asked"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <textarea
             value={adviceSummary}
             onChange={(e) => setAdviceSummary(e.target.value)}
             placeholder="Advice given"
             rows={3}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded text-fg-muted hover:text-fg">Cancel</button>
-            <button
-              onClick={() => onSave({ domain, query_summary: querySummary, advice_summary: adviceSummary })}
-              className="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
+            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
+            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ domain, query_summary: querySummary, advice_summary: adviceSummary })}>
               Save
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-xs text-fg-muted line-clamp-2" title={`Q: ${advice.query_summary}`}>Q: {advice.query_summary}</div>
-          <div className="text-sm text-fg line-clamp-2" title={advice.advice_summary}>{advice.advice_summary}</div>
+          <div className="text-sm text-fg-muted line-clamp-2" title={`Q: ${advice.query_summary}`}>Q: {advice.query_summary}</div>
+          <div className="text-[15px] text-fg line-clamp-2" title={advice.advice_summary}>{advice.advice_summary}</div>
         </div>
       )}
     </div>
@@ -645,7 +639,7 @@ function PeopleTab({
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (failed || !data || data.status === "error") {
     return <div className="text-fg-muted text-sm">{PEOPLE_UNAVAILABLE}</div>;
   }
@@ -653,7 +647,7 @@ function PeopleTab({
   if (data.people.length === 0) return <EmptyState message={PEOPLE_EMPTY} />;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 py-3">
       {data.people.map((p) => (
         <PersonMemoryRow key={p.person_id} item={p} />
       ))}
@@ -673,12 +667,12 @@ function PersonMemoryRow({ item }: { item: PersonMemory }) {
   const learned = item.last_observed_at ? ` · learned ${formatDate(item.last_observed_at)}` : "";
   const nothingYet = !item.error && item.conclusion_count === 0 && item.card.length === 0;
   return (
-    <div className="rounded-lg border border-line bg-surface-overlay/30 p-4">
+    <div className="rounded-xl border border-line bg-surface-overlay/30 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-semibold text-fg truncate">{item.full_name}</span>
+          <span className="text-base font-semibold text-fg truncate">{item.full_name}</span>
           {item.is_principal && (
-            <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/20 text-violet-300 border-violet-500/30">
+            <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/15 text-violet-500 border-violet-500/30">
               Principal
             </span>
           )}
@@ -703,13 +697,13 @@ function PersonCard({ lines }: { lines: string[] }) {
   return (
     <div className="mt-3">
       <div className="text-[10px] uppercase tracking-wide text-fg-subtle mb-1">Profile</div>
-      <ul className="space-y-0.5 text-xs text-fg-muted list-disc pl-4 marker:text-fg-subtle">
+      <ul className="space-y-0.5 text-sm text-fg-muted list-disc pl-4 marker:text-fg-subtle">
         {shown.map((line, i) => (
           <li key={i} className="break-words">{line}</li>
         ))}
       </ul>
       {hidden > 0 && (
-        <button onClick={() => setOpen((o) => !o)} className="mt-1 text-xs text-fg-muted hover:text-fg">
+        <button onClick={() => setOpen((o) => !o)} className="mt-1 h-9 text-sm font-medium text-accent hover:underline">
           {open ? "Show less" : `Show ${hidden} more`}
         </button>
       )}
@@ -789,7 +783,7 @@ function PersonNotes({ item }: { item: PersonMemory }) {
           ))}
         </ul>
         {(loading || failed || (hasMore && nextPage === null)) && (
-          <div className="px-3 py-2 text-xs text-fg-muted border-t border-line/60">
+          <div className="px-3 py-2 text-sm text-fg-muted border-t border-line/60">
             {loading ? (
               "Loading…"
             ) : failed ? (
