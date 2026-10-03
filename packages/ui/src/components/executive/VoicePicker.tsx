@@ -134,7 +134,7 @@ export default function VoicePicker({ variant, onDone }: Props) {
         <p className="mt-3 text-sm text-fg-subtle">
           {saving
             ? "Saving…"
-            : "Applies from the next message. Custom voices are made under Agent Council → Advanced."}
+            : "Applies from the next message. Custom voices are made in Agent Council → Executive → Advanced settings."}
         </p>
       )}
 

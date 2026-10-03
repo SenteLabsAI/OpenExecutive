@@ -203,7 +203,9 @@ function useTileStatuses(): {
   if (history && history !== "error") {
     const days = history.company_retention_days;
     byPage.memory = {
-      text: days === null ? "Notes kept until forgotten" : `Notes last ${retentionLabel(days)}`,
+      text: `${history.reply_notes ? "On" : "Off"} · ${
+        days === null ? "notes kept until forgotten" : `notes last ${retentionLabel(days)}`
+      }`,
       tone: "none",
     };
   }

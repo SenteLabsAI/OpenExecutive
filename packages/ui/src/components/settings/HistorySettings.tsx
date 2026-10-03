@@ -8,9 +8,9 @@ import Switch from "@/components/Switch";
 import { getHistory, updateHistorySettings, type HistoryState } from "@/lib/api";
 import { personRetentionChoices, retentionLabel } from "@/lib/history";
 
-// Always in the loop's settings (PUT /memories/history/settings): each
-// person's own "Keep track of what happens" switch and how long their notes
-// last, on Act as me; the company-wide retention, the owner's, on Memory.
+// Always in the loop's settings (PUT /memories/history/settings), on
+// Settings → Memory: each person's own "Keep track of what happens" switch and
+// how long their notes last, and the company-wide retention, the owner's.
 
 const SELECT =
   "w-full sm:w-auto bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50";
@@ -53,8 +53,8 @@ function useHistoryState(): {
 const asValue = (days: number | null) => (days === null ? "" : String(days));
 const fromValue = (value: string) => (value === "" ? null : Number(value));
 
-/** Act as me → "Keep track of what happens": the person's own switch, and a
- * shorter time for their own notes. Nothing for someone who can't have it. */
+/** "Keep track of what happens": the person's own switch, and a shorter time
+ * for their own notes. Nothing for someone who can't have it. */
 export function KeepTrackCard() {
   const { state, save, busy, error } = useHistoryState();
   if (state === "loading" || state === null) return null;
@@ -65,8 +65,8 @@ export function KeepTrackCard() {
       </SettingsCard>
     );
   }
-  // Someone who can't use Act as me can still turn it off.
-  if (!state.can_note_replies && !state.reply_notes) return null;
+  // Someone who can't keep notes can still turn it off.
+  if (!state.can_keep_notes && !state.reply_notes) return null;
 
   const on = state.reply_notes;
   const company = state.company_retention_days;
@@ -76,14 +76,16 @@ export function KeepTrackCard() {
       titleId="keep-track-label"
       description={
         on
-          ? "On: after you send a reply it drafted, it keeps private notes of what you said, so it can remind you later. Only you see them."
-          : "Off: nothing from your replies is noted."
+          ? state.can_note_replies
+            ? "On: it keeps private notes of what you tell it in chat, and of replies it drafted that you send. Only you see them."
+            : "On: it keeps private notes of what you tell it in chat. Only you see them."
+          : "Off: nothing you say is noted."
       }
       action={
         <Switch
           checked={on}
           onChange={() => void save({ reply_notes: !on })}
-          disabled={busy || (!on && !state.can_note_replies)}
+          disabled={busy || (!on && !state.can_keep_notes)}
           labelledBy="keep-track-label"
         />
       }
@@ -134,7 +136,7 @@ export function CompanyRetentionCard() {
   return (
     <SettingsCard
       title="How long notes last"
-      description="Notes from replies people approve and send are forgotten after this, unless they pin them. Each person can choose a shorter time for their own notes in Act as me."
+      description="Notes are forgotten after this, unless their person pins them. Each person can choose a shorter time for their own notes."
     >
       {state.can_set_company_retention ? (
         <label className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">

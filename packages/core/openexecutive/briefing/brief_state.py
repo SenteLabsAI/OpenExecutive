@@ -355,6 +355,7 @@ def build_brief_fingerprint(
     live_keys: dict[str, Any] | None = None,
     reflection_flags: str = "",
     teammate_changes: str = "",
+    owner_notes: list[Any] | None = None,
 ) -> str:
     """Stable hash of everything the brief would say. Deliberately free of
     dates and timestamps so an unchanged day yields the same fingerprint
@@ -378,7 +379,9 @@ def build_brief_fingerprint(
     only when non-empty, so a caller that passes neither keeps its old
     fingerprint. So is ``teammate_changes`` (the TEAMMATE CORRECTIONS block):
     a correction a teammate made since the last brief un-suppresses it, since
-    the principal hears of it nowhere else."""
+    the principal hears of it nowhere else. ``owner_notes`` (the FROM YOUR
+    NOTES keys, ``history_brief.NotesBlock.keys``: note ids and states, no
+    dates) likewise, only when non-empty."""
     new, carried = split_proposals(today_data.get("proposals", []), since)
     payload = {
         "new": sorted(int(p.get("alert_id") or 0) for p in new),
@@ -428,6 +431,8 @@ def build_brief_fingerprint(
         payload["reflection_flags"] = reflection_flags
     if teammate_changes:
         payload["teammate_changes"] = teammate_changes
+    if owner_notes:
+        payload["owner_notes"] = [list(k) if isinstance(k, tuple) else k for k in owner_notes]
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

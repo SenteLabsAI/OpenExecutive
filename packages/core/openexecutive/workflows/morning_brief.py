@@ -69,7 +69,9 @@ BRIEF_KIND = "principal_brief_morning"
 # own verified chat turn in a conversation only they can read (the web chat,
 # a DM, a private Telegram chat — never a shared channel, where the reply is
 # posted for everyone) — does the brief read what is private to them: their
-# contacts' mail and alerts, their drafts, their chats, their calendar.
+# contacts' mail and alerts, their drafts, their chats, their calendar, their
+# own Always in the loop notes, though, only on the scheduler's delivery
+# (``memory.history_brief``).
 # A run anyone else starts (a teammate in chat, the workflow API) reads what
 # everyone may see, as before.
 PRINCIPAL_DELIVERY: ContextVar[bool] = ContextVar("morning_brief_principal_delivery", default=False)
@@ -242,11 +244,25 @@ class MorningBriefWorkflow(Workflow):
             await asyncio.to_thread(render_teammate_changes, since, include_proposed=False)
             if private_ok else teammate_changes
         )
+        # Always in the loop: what the owner's own notes say is due, only on
+        # the scheduler's delivery to them alone (never a chat run, whose
+        # tool result lands in the turn's shared audit row and peer memory)
+        # and only with their switch on.
+        from openexecutive.memory import history_brief
+
+        owner_notes = history_brief.NotesBlock()
+        if PRINCIPAL_DELIVERY.get():
+            owner = await asyncio.to_thread(history_brief.owner_keeping_notes)
+            if owner is not None:
+                owner_notes = await asyncio.to_thread(
+                    history_brief.due_soon_block, owner.id, history_brief.local_today(now),
+                )
         # Did this brief actually draw on anything private to the principal?
         # Then its text stays out of the shared run history (the principal
         # gets it where it is delivered).
         private_used = private_ok and (
-            teammate_changes != in_force_changes
+            bool(owner_notes.text)
+            or teammate_changes != in_force_changes
             or live.calendar is not None
             or any(
                 str(t).lower() == PRIVATE_ALERT_TAG
@@ -272,7 +288,7 @@ class MorningBriefWorkflow(Workflow):
             today_data=today_data, activity=activity, handled=handled, since=since,
             pending_watch_suggestions=pending_suggestions, mode=mode,
             live_keys=live.keys, reflection_flags=reflection_flags,
-            teammate_changes=teammate_changes,
+            teammate_changes=teammate_changes, owner_notes=owner_notes.keys,
         )
         previous = brief_state.last_delivered(BRIEF_KIND)
         suppressed = (
@@ -284,12 +300,12 @@ class MorningBriefWorkflow(Workflow):
         logger.info(
             "morning_brief: context since=%s proposals=%d activity=%d handled=%d "
             "inbound=%d stuck=%d drafts=%d conversations=%d calendar=%s "
-            "reflection_flags=%s private=%s private_used=%s suppressed=%s",
+            "reflection_flags=%s notes=%d private=%s private_used=%s suppressed=%s",
             since.isoformat()[:16], len(today_data["proposals"]), len(activity),
             len(handled), live.inbound_total, len(live.stuck), live.drafts,
             len(live.conversations),
             "none" if live.calendar is None else len(live.calendar),
-            bool(reflection_flags), private_ok, private_used, suppressed,
+            bool(reflection_flags), len(owner_notes.keys), private_ok, private_used, suppressed,
         )
 
         yield WorkflowEvent(
@@ -352,6 +368,7 @@ class MorningBriefWorkflow(Workflow):
                 pending_watch_suggestions=pending_suggestions, mode=mode,
                 live=live, live_window="since the last brief",
                 reflection_flags=reflection_flags, teammate_changes=teammate_changes,
+                owner_notes=owner_notes.text,
             )
             # standalone=True → the enumerated DM brief (no cards beside it),
             # not the /today header synthesis.

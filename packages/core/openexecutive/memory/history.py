@@ -9,19 +9,27 @@ of those but the summary; a model only writes that sentence, and the quote it
 rests on is checked word for word before anything is stored
 (``memory.history_notes``).
 
-**What writes notes.** For now only one thing: a reply the Executive drafted
-in someone's own mailbox (Act as me), after that person approved and sent it
-(``delegation.reply_send``). The note-taker reads only the words they sent,
-so nothing another person wrote can become a note this way. That is their
-own word, so ``trust`` is ``high``.
+**What writes notes.** Two things, both reading only the person's own words,
+so nothing another person wrote can become a note; that is their own word,
+so ``trust`` is ``high``:
+
+- a reply the Executive drafted in someone's own mailbox (Act as me), after
+  that person approved and sent it (``delegation.reply_send`` →
+  ``memory.history_notes``);
+- what they say to the Executive in a chat where it knows it is them: the web
+  chat signed in, their own Slack, Discord or Telegram, or any channel whose
+  adapter verified the sender (``Session.speaker_verified``)
+  (``memory.history_chat``). Messages between other people are never read.
 
 **Who reads them.** A note's ``visibility`` is ``private``: its own person
 alone, never the principal, and only in a conversation nobody else can read
-(``orchestrator.history_tools``). Each person sees, corrects, pins and
+(``orchestrator.history_tools``), even when it was noted in a shared thread. Each person sees, corrects, pins and
 forgets their own notes in Memories → History (``/memories/history``).
 
 **Switches.** Each person turns it on for themselves (``reply_notes``,
-absent means off). The owner sets how long notes last for the company
+absent means off; despite the name it covers every channel). Any team member
+on the People list may (``can_keep_notes``); notes from email replies still
+need Act as me, which writes them. The owner sets how long notes last for the company
 (``retention_days``: 30, 90, 365, or until forgotten; 90 when unset), and a
 person may shorten it for their own notes, never lengthen it. A pinned note
 never expires. "Don't remember this" forgets a conversation's notes and
@@ -36,7 +44,7 @@ import hashlib
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +52,9 @@ from openexecutive.memory.history_schema import (
     COMPANY_TABLE,
     EXCLUDED_TABLE,
     NOTES_TABLE,
+    PASSES_TABLE,
     PERSON_TABLE,
+    REMINDERS_TABLE,
     ensure_schema,
 )
 
@@ -57,6 +67,7 @@ RETENTION_CHOICES: tuple[int | None, ...] = (30, 90, 365, None)
 KINDS: tuple[str, ...] = ("promised", "agreed", "declined", "answered", "asked", "shared")
 TRUST_LEVELS: tuple[str, ...] = ("high", "medium", "low")
 SOURCE_APPROVED_REPLY = "approved_reply"
+SOURCE_CHAT_MESSAGE = "chat_message"
 CHANNEL_EMAIL = "email"
 
 MAX_SUMMARY_CHARS = 240
@@ -149,6 +160,18 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path(db_path)))
     ensure_schema(conn)
     return conn
+
+
+def can_keep_notes(person: Any) -> bool:
+    """Whether ``person`` may turn "Keep track of what happens" on: someone on
+    the People list who works here (a team member, the principal included),
+    not archived. Never a contact."""
+    return (
+        person is not None
+        and getattr(person, "id", None) is not None
+        and not getattr(person, "archived", False)
+        and getattr(person, "kind", None) == "team"
+    )
 
 
 def conversation_key(channel: str, ref: str) -> str:
@@ -387,6 +410,40 @@ def forget_conversation(person_id: int, key: str, *, db_path: Path | None = None
     return int(deleted or 0)
 
 
+# --- Pacing -----------------------------------------------------------------
+
+
+def take_pass(person_id: int, day: str, limit: int, *, db_path: Path | None = None) -> bool:
+    """Count one note pass for ``person_id`` on ``day`` (YYYY-MM-DD) when
+    fewer than ``limit`` ran that day; False once they are spent. Held in the
+    company DB, so the cap holds across workers and restarts. Fails closed: an
+    unreadable count is a spent one."""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"DELETE FROM {PASSES_TABLE} WHERE day < ?", (day,))  # noqa: S608 — constant table name
+            row = conn.execute(
+                f"SELECT passes FROM {PASSES_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608 — constant table name
+                (person_id, day),
+            ).fetchone()
+            if row is not None and int(row[0]) >= limit:
+                conn.rollback()
+                return False
+            conn.execute(
+                f"INSERT INTO {PASSES_TABLE} (person_id, day, passes) VALUES (?, ?, 1) "  # noqa: S608 — constant table name
+                "ON CONFLICT(person_id, day) DO UPDATE SET passes = passes + 1",
+                (person_id, day),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't count a note pass — skipping it", exc_info=True)
+        return False
+    return True
+
+
 # --- Notes ------------------------------------------------------------------
 
 
@@ -417,6 +474,16 @@ def add_notes(
     ids: list[int] = []
     conn = _connect(db_path)
     try:
+        # Check again under the write lock: a "Don't remember this" that lands
+        # while the note-taker was working must still win.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            f"SELECT 1 FROM {EXCLUDED_TABLE} WHERE person_id = ? AND conversation_key = ?",  # noqa: S608 — constant table name
+            (person_id, key),
+        ).fetchone():
+            conn.rollback()
+            return []
         for note in notes:
             if note.kind not in KINDS:
                 raise ValueError("unknown kind")
@@ -494,6 +561,141 @@ def get_note(person_id: int, note_id: int, *, db_path: Path | None = None, now: 
     finally:
         conn.close()
     return _row_note(row) if row else None
+
+
+def _read_notes(sql: str, params: list[Any], db_path: Path | None) -> list[Note]:
+    if not _db_path(db_path).exists():
+        return []
+    try:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read notes", exc_info=True)
+        return []
+    return [_row_note(r) for r in rows]
+
+
+def _kinds_clause(kinds: tuple[str, ...] | None, params: list[Any]) -> str:
+    if not kinds:
+        return ""
+    params.extend(kinds)
+    return f" AND kind IN ({', '.join('?' for _ in kinds)})"
+
+
+def due_notes(
+    person_id: int | None,
+    *,
+    start: date,
+    end: date,
+    kinds: tuple[str, ...] | None = None,
+    sources: tuple[str, ...] | None = None,
+    limit: int = 20,
+    db_path: Path | None = None,
+    now: datetime | None = None,
+) -> list[Note]:
+    """A person's own live notes with a due date from ``start`` to ``end``
+    (inclusive), soonest first. ``kinds`` / ``sources`` narrow them. Empty on
+    any read error."""
+    if person_id is None:
+        return []
+    params: list[Any] = [person_id, _now(now).isoformat(), start.isoformat(), end.isoformat()]
+    sql = (
+        f"SELECT {_COLUMNS} FROM {NOTES_TABLE} WHERE person_id = ? AND {_live_clause()}"  # noqa: S608 — constant table name and columns
+        " AND due_date IS NOT NULL AND due_date >= ? AND due_date <= ?"
+    )
+    sql += _kinds_clause(kinds, params)
+    if sources:
+        sql += f" AND source IN ({', '.join('?' for _ in sources)})"
+        params.extend(sources)
+    sql += " ORDER BY due_date, occurred_at, id LIMIT ?"
+    params.append(max(1, min(int(limit), MAX_LIST)))
+    return _read_notes(sql, params, db_path)
+
+
+def notes_since(
+    person_id: int | None,
+    since: datetime,
+    *,
+    kinds: tuple[str, ...] | None = None,
+    limit: int = 20,
+    db_path: Path | None = None,
+    now: datetime | None = None,
+) -> list[Note]:
+    """A person's own live notes of what happened at or after ``since``,
+    oldest first. Empty on any read error."""
+    if person_id is None:
+        return []
+    params: list[Any] = [person_id, _now(now).isoformat(), since.isoformat()]
+    sql = (
+        f"SELECT {_COLUMNS} FROM {NOTES_TABLE} WHERE person_id = ? AND {_live_clause()}"  # noqa: S608 — constant table name and columns
+        " AND occurred_at >= ?"
+    )
+    sql += _kinds_clause(kinds, params)
+    sql += " ORDER BY occurred_at, id LIMIT ?"
+    params.append(max(1, min(int(limit), MAX_LIST)))
+    return _read_notes(sql, params, db_path)
+
+
+def people_keeping_notes(*, db_path: Path | None = None) -> list[int]:
+    """Everyone who has "Keep track of what happens" on. Empty on any read
+    error."""
+    if not _db_path(db_path).exists():
+        return []
+    try:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(
+                f"SELECT person_id FROM {PERSON_TABLE} WHERE reply_notes = 1 ORDER BY person_id",  # noqa: S608 — constant table name
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read who keeps notes", exc_info=True)
+        return []
+    return [int(r[0]) for r in rows]
+
+
+def reminded(person_id: int, day: str, *, db_path: Path | None = None) -> bool:
+    """Whether ``person_id`` was already reminded on ``day`` (YYYY-MM-DD).
+    Fails closed: an unreadable record counts as reminded."""
+    try:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                f"SELECT 1 FROM {REMINDERS_TABLE} WHERE person_id = ? AND day = ?",  # noqa: S608 — constant table name
+                (person_id, day),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read reminders", exc_info=True)
+        return True
+    return row is not None
+
+
+def mark_reminded(person_id: int, day: str, *, db_path: Path | None = None, now: datetime | None = None) -> bool:
+    """Record that ``person_id`` was reminded on ``day``, pruning older days.
+    False when they already were (another worker got there first) or it
+    can't be recorded."""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"DELETE FROM {REMINDERS_TABLE} WHERE day < ?", (day,))  # noqa: S608 — constant table name
+            inserted = conn.execute(
+                f"INSERT OR IGNORE INTO {REMINDERS_TABLE} (person_id, day, sent_at) VALUES (?, ?, ?)",  # noqa: S608 — constant table name
+                (person_id, day, _now(now).isoformat()),
+            ).rowcount
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't record a reminder", exc_info=True)
+        return False
+    return bool(inserted)
 
 
 def forget_note(person_id: int, note_id: int, *, db_path: Path | None = None) -> bool:

@@ -36,6 +36,8 @@ test("a note names who it was with, never the bare address when there's a name",
   assert.equal(counterpartName("<dana@acme.example>"), "dana@acme.example");
   assert.equal(noteWhere({ channel: "email", counterpart: "Dana Lee <dana@acme.example>" }), "Email with Dana Lee");
   assert.equal(noteWhere({ channel: "email", counterpart: "" }), "Email");
+  assert.equal(noteWhere({ channel: "web", counterpart: "" }), "Web chat");
+  assert.equal(noteWhere({ channel: "slack", counterpart: "" }), "Slack");
 });
 
 test("their correction replaces the note's words", () => {

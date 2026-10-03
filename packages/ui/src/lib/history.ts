@@ -32,6 +32,10 @@ export interface HistoryState {
   /** null is until forgotten. */
   company_retention_days: number | null;
   retention_choices: (number | null)[];
+  /** Whether they may turn "Keep track of what happens" on: a team member
+   * on the People list. */
+  can_keep_notes: boolean;
+  /** Whether notes from their email replies can come too (Act as me). */
   can_note_replies: boolean;
   can_set_company_retention: boolean;
 }
@@ -81,9 +85,12 @@ export function counterpartName(counterpart: string): string {
   return trimmed.replace(/^<|>$/g, "");
 }
 
-/** "Email with Dana Lee", or "Email" when nobody is named. */
+const CHANNEL_LABELS: Record<string, string> = { email: "Email", web: "Web chat" };
+
+/** "Email with Dana Lee", or the channel alone ("Slack", "Web chat") when
+ * nobody is named, as for what someone said in chat. */
 export function noteWhere(note: Pick<HistoryNote, "channel" | "counterpart">): string {
-  const channel = note.channel === "email" ? "Email" : note.channel.charAt(0).toUpperCase() + note.channel.slice(1);
+  const channel = CHANNEL_LABELS[note.channel] ?? note.channel.charAt(0).toUpperCase() + note.channel.slice(1);
   const who = counterpartName(note.counterpart);
   return who ? `${channel} with ${who}` : channel;
 }

@@ -4,7 +4,10 @@ import {
   agentArea,
   agentCardStatus,
   agentDisplayName,
+  agentHasNoInstructions,
   agentInitials,
+  listedAgents,
+  panelOpensAdvanced,
   shortModelName,
 } from "../src/lib/councilCards.ts";
 
@@ -52,4 +55,29 @@ test("status: instructions, custom model or default", () => {
   // A preset's own override is not the owner's.
   assert.equal(agentCardStatus(true, ["model", "use_deep_reasoning"], false), "default");
   assert.equal(agentCardStatus(true, ["model"], true), "custom-model");
+});
+
+test("listed agents: core ones first, every agent once shown all", () => {
+  const agents = [
+    { name: "executive", visibility: "core" },
+    { name: "cfo", visibility: "core" },
+    { name: "triage", visibility: "internal" },
+    { name: "utility_fast", visibility: "internal" },
+    { name: "research", visibility: "internal" },
+  ];
+  assert.deepEqual(listedAgents(agents, false).map((a) => a.name), ["executive", "cfo"]);
+  assert.deepEqual(
+    listedAgents(agents, true).map((a) => a.name),
+    ["executive", "cfo", "triage", "utility_fast", "research"],
+  );
+});
+
+test("panel mode: helper agents always open the full editor", () => {
+  assert.equal(agentHasNoInstructions("utility_fast"), true);
+  assert.equal(agentHasNoInstructions("research"), true);
+  assert.equal(agentHasNoInstructions("cfo"), false);
+  assert.equal(panelOpensAdvanced("cfo", false), false);
+  assert.equal(panelOpensAdvanced("cfo", true), true);
+  assert.equal(panelOpensAdvanced("utility_fast", false), true);
+  assert.equal(panelOpensAdvanced("research", false), true);
 });

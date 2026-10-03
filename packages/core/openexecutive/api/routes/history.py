@@ -61,8 +61,11 @@ class HistoryOut(BaseModel):
     effective_retention_days: int | None
     company_retention_days: int | None
     retention_choices: list[int | None]
-    # Whether they may turn reply notes on (they can use Act as me) and set
+    # Whether they may turn "Keep track of what happens" on (a team member on
+    # the People list), whether notes from their email replies can come too
+    # (they can use Act as me, which writes them), and whether they may set
     # the company retention (they are the principal).
+    can_keep_notes: bool
     can_note_replies: bool
     can_set_company_retention: bool
 
@@ -147,6 +150,7 @@ def _state(person: Person, query: str | None = None) -> HistoryOut:
         effective_retention_days=history.effective_retention(person.id),
         company_retention_days=history.company_retention(),
         retention_choices=list(history.RETENTION_CHOICES),
+        can_keep_notes=history.can_keep_notes(person),
         can_note_replies=_can_note_replies(person),
         can_set_company_retention=bool(person.is_principal),
     )
@@ -169,10 +173,10 @@ async def update_history_settings(request: Request, body: SettingsUpdate) -> His
     # half the request applied.
     if company_change and not person.is_principal:
         raise _refuse(403, "principal_only", "Only the account owner can change how long notes last for everyone.")
-    if own_change and body.reply_notes and not _can_note_replies(person):
+    if own_change and body.reply_notes and not history.can_keep_notes(person):
         raise _refuse(
-            403, "not_available_yet",
-            "Notes from your replies need Act as me, which isn't available to you here.",
+            403, "not_available",
+            "Notes are kept for team members on the People list.",
         )
     try:
         company = (

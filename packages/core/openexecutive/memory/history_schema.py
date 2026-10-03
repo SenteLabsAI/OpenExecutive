@@ -15,8 +15,12 @@ NOTES_TABLE = "history_notes"
 COMPANY_TABLE = "history_settings"
 PERSON_TABLE = "history_person_settings"
 EXCLUDED_TABLE = "history_excluded"
+PASSES_TABLE = "history_chat_passes"
+REMINDERS_TABLE = "history_reminders"
 
-TABLES: tuple[str, ...] = (NOTES_TABLE, COMPANY_TABLE, PERSON_TABLE, EXCLUDED_TABLE)
+TABLES: tuple[str, ...] = (
+    NOTES_TABLE, COMPANY_TABLE, PERSON_TABLE, EXCLUDED_TABLE, PASSES_TABLE, REMINDERS_TABLE,
+)
 
 _DDL: tuple[str, ...] = (
     # One dated note of what happened. ``person_id`` is whose note it is: a
@@ -73,6 +77,22 @@ _DDL: tuple[str, ...] = (
     "  conversation_key TEXT NOT NULL,"
     "  created_at TEXT NOT NULL,"
     "  PRIMARY KEY (person_id, conversation_key)"
+    ")",
+    # Note passes run on someone's chat messages per UTC day, against the
+    # daily cap (memory.history_chat). Older days are pruned on write.
+    f"CREATE TABLE IF NOT EXISTS {PASSES_TABLE} ("
+    "  person_id INTEGER NOT NULL,"
+    "  day TEXT NOT NULL,"
+    "  passes INTEGER NOT NULL DEFAULT 0,"
+    "  PRIMARY KEY (person_id, day)"
+    ")",
+    # The days someone was reminded of what their notes say is due
+    # (memory.history_reminders): one reminder a person a day.
+    f"CREATE TABLE IF NOT EXISTS {REMINDERS_TABLE} ("
+    "  person_id INTEGER NOT NULL,"
+    "  day TEXT NOT NULL,"
+    "  sent_at TEXT NOT NULL,"
+    "  PRIMARY KEY (person_id, day)"
     ")",
 )
 

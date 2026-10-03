@@ -52,6 +52,8 @@ Synthesized executive response
 
 **Episodic memory** — After every response, a background `claude-haiku-4-5` pass extracts key decisions, initiatives, and advice into SQLite. The next session opens with a `<past_decisions>` block so the Executive remembers what it recommended last month.
 
+**Always in the loop** — Each person can turn on "Keep track of what happens" (Settings → Memory). The Executive then keeps private, dated notes of what they said, in chat where it can confirm it's them (the web app signed in, their own Slack or Discord, Telegram with a webhook secret) and in Act as me replies they send. Every note rests on their own words, checked word for word. Only they see it, in Memories → History, where they can correct, pin or forget it. Notes are read back only to them, in a private chat, and expire after 90 days by default (the owner can change this). The owner's morning brief and evening digest include what the owner's own notes say is due, and anyone with notes on gets a short reminder on the day something they promised by email is due. It needs no setup and no extra service.
+
 **Scheduler** — A built-in job runner claims due actions via `UPDATE … RETURNING` to prevent double-firing. The API must run as a single instance; do not horizontally scale it without gating the scheduler first.
 
 **Prompt caching** — The system prompt is structured so the Executive persona, company profile, and knowledge index are cached separately (up to 85% cache hit rate after the first few turns). No dynamic content ever goes in a cached block.
@@ -430,7 +432,7 @@ the app refuses to start.
 | `LOCAL_MODELS` | No | — | Comma-separated local model slugs to surface in the Council UI and route locally, e.g. `llama3.3,qwen2.5` |
 | `LOCAL_TIMEOUT_S` | No | `300` | Per-call timeout for local generation, in seconds |
 | `LOCAL_REASONING_EFFORT` | No | — | `reasoning_effort` sent on every local request: `none`, `minimal`, `low`, `medium` or `high`. Set it for thinking-only models (GLM on Fireworks) that otherwise spend the whole token budget reasoning |
-| `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels |
+| `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels; on the Memories page each person sees only their own |
 | `HONCHO_API_KEY` | No | — | Required when `HONCHO_ENABLED=true` |
 | `HONCHO_BASE_URL` | No | — | Self-hosted Honcho endpoint |
 | `ENABLE_WEB_SEARCH` | No | `true`² | Let the Executive and specialists answer with live web results (news, market data, competitor moves) alongside your uploaded documents |
@@ -539,6 +541,8 @@ pytest packages/core/tests/unit/ -v
 ## Privacy
 
 Everything in `company/` is gitignored — the profile YAML, uploaded documents, and the ChromaDB vector store. None of this leaves your local machine (or your own volume in cloud deployments) except as part of prompts sent to the Anthropic API. Anthropic does not train on API data.
+
+Inside the app, what the Executive keeps about a person is theirs: Always in the loop notes and the peer memory card are shown only to that person, the owner included.
 
 ## Contributing
 

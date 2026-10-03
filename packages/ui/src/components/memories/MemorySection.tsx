@@ -40,7 +40,7 @@ export const MEMORY_TABS: readonly MemoryTab[] = [
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 const PEOPLE_EMPTY =
-  "Nothing learned about anyone yet — peer memory fills in as people talk with the Executive.";
+  "Nothing learned about you yet. Peer memory fills in as you talk with the Executive. Only you see it.";
 const PEOPLE_UNAVAILABLE = "Peer memory is unavailable right now.";
 
 // ---------------------------------------------------------------------------
@@ -618,8 +618,9 @@ function AdviceRow({
 }
 
 // ---------------------------------------------------------------------------
-// People — peer memory. What the Executive has learned about each person,
-// derived server-side from their conversations. Read-only: unlike the three
+// People — peer memory. What the Executive has learned about the signed-in
+// person, derived server-side from their conversations. Only their own entry
+// comes back (GET /memories/people), the principal's included. Read-only: unlike the three
 // lists above this is not the Executive's own record to edit, and the header
 // counts its notes alongside them.
 // ---------------------------------------------------------------------------

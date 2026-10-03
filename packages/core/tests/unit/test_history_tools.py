@@ -124,11 +124,37 @@ def test_never_off_the_speakers_own_private_surface(roster: SimpleNamespace, lab
     assert "not available" in _recall(session)["error"]
 
 
-def test_a_teammate_needs_act_as_me_too(roster: SimpleNamespace) -> None:
+def test_a_teammate_needs_no_act_as_me(roster: SimpleNamespace) -> None:
     h.set_person_settings(roster.teammate, by="test", reply_notes=True)
     assert ht.recall_person(_web(roster.teammate)) is not None
     set_team_members(False, updated_by="test")
+    assert ht.recall_person(_web(roster.teammate)) is not None
+
+
+def test_an_archived_teammate_or_someone_else_on_the_turn_cannot(roster: SimpleNamespace) -> None:
+    h.set_person_settings(roster.teammate, by="test", reply_notes=True)
+    session = _web(roster.teammate)
+    session.caller_person_id = roster.principal
+    assert ht.recall_person(session) is None
+    people_store.archive_person(roster.teammate)
+    people_registry.invalidate()
     assert ht.recall_person(_web(roster.teammate)) is None
+
+
+def test_an_adapter_verified_private_chat_may_recall(roster: SimpleNamespace) -> None:
+    h.set_person_settings(roster.teammate, by="test", reply_notes=True)
+
+    def chat(**kw: Any) -> Session:
+        session = Session(session_id="x:1", origin_channel="otherchat", caller_person_id=roster.teammate, **kw)
+        pin_turn_delegation(session, "x")
+        return session
+
+    assert ht.recall_person(chat()) is None
+    # Verified but shared: notes may be taken there, never read back.
+    assert ht.recall_person(chat(speaker_verified=True)) is None
+    assert ht.recall_person(chat(private_chat=True)) is None
+    person = ht.recall_person(chat(speaker_verified=True, private_chat=True))
+    assert person is not None and person.id == roster.teammate
 
 
 # --------------------------------------------------------------------------- #
@@ -146,6 +172,37 @@ def test_it_returns_only_the_speakers_own_notes(roster: SimpleNamespace) -> None
     assert 'your words: "I\'ll send the price list on Friday" (noted as: Told Dana Lee' in out["result"]
     assert "due 2026-10-03" in out["result"]
     assert _recall(_web(roster.principal), "venue")["result"] == "No notes match."
+
+
+def test_due_lists_only_dated_notes_soonest_first(roster: SimpleNamespace) -> None:
+    from datetime import timedelta
+
+    from openexecutive.memory.history_brief import local_today
+
+    today = local_today(datetime.now(UTC))
+    h.set_person_settings(roster.principal, by="test", reply_notes=True)
+    for summary, quote, due in [
+        ("Said the deck goes to Sam next week.", "the deck goes to Sam next week", (today + timedelta(days=5)).isoformat()),
+        ("Said the quote goes to Dana today.", "the quote goes to Dana today", today.isoformat()),
+        ("Shared the venue is booked.", "the venue is booked", None),
+        ("Said the memo goes out in a month.", "the memo goes out in a month", (today + timedelta(days=30)).isoformat()),
+    ]:
+        h.add_notes(
+            roster.principal, [h.NewNote("promised", summary, quote, due)], source=h.SOURCE_APPROVED_REPLY,
+            channel=h.CHANNEL_EMAIL, conversation_ref=summary, counterpart="", subject="", trust="high",
+            occurred_at=WHEN,
+        )
+
+    async def go(tool_input: dict[str, Any]) -> dict[str, Any]:
+        with set_session(_web(roster.principal)):
+            return json.loads(await ht.handle_recall_history(tool_input))
+
+    out = asyncio.run(go({"due": True}))
+    assert out["notes"] == 2
+    assert out["result"].index("quote goes to Dana") < out["result"].index("deck goes to Sam")
+    assert "venue" not in out["result"] and "memo" not in out["result"]
+    assert asyncio.run(go({"due": True, "query": "sam"}))["notes"] == 1
+    assert asyncio.run(go({"due": True, "query": "nobody"}))["result"] == "Nothing in the notes is due."
 
 
 def test_a_correction_replaces_the_summary(roster: SimpleNamespace) -> None:
