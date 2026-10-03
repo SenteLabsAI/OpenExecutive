@@ -405,6 +405,11 @@ def _add_to_turn(client_turn_id: str, owner: str, message_id: str, text: str) ->
 # persist, rather than running beside it on the same history. The web chat's
 # own box never sends one: a message typed mid-turn goes to POST /chat/add.
 _session_turn_locks: dict[str, asyncio.Lock] = {}
+# How many turns hold or wait on each conversation's lock. An idle lock is
+# dropped only at zero: `release()` wakes the next waiter but `locked()` reads
+# False until it runs, so "not locked" alone would drop a lock someone still
+# queues on, and the next turn would make a fresh one and run beside them.
+_session_turn_users: dict[str, int] = {}
 
 
 async def _acquire_session_turn(session_id: str, timeout_s: float) -> asyncio.Lock | None:
@@ -418,22 +423,34 @@ async def _acquire_session_turn(session_id: str, timeout_s: float) -> asyncio.Lo
     if lock is None:
         lock = asyncio.Lock()
         _session_turn_locks[session_id] = lock
+    _session_turn_users[session_id] = _session_turn_users.get(session_id, 0) + 1
     try:
         await asyncio.wait_for(lock.acquire(), timeout=timeout_s)
-    except TimeoutError:
-        logger.warning("chat.session_lock_timeout session_id=%s", session_id)
-        return None
+    except BaseException as exc:
+        _leave_session_turn(session_id)
+        if isinstance(exc, TimeoutError):
+            logger.warning("chat.session_lock_timeout session_id=%s", session_id)
+            return None
+        raise
     return lock
+
+
+def _leave_session_turn(session_id: str) -> None:
+    left = _session_turn_users.get(session_id, 1) - 1
+    if left > 0:
+        _session_turn_users[session_id] = left
+        return
+    # Nobody holds or waits on it: drop it so the maps track live
+    # conversations only.
+    _session_turn_users.pop(session_id, None)
+    _session_turn_locks.pop(session_id, None)
 
 
 def _release_session_turn(session_id: str, lock: asyncio.Lock | None) -> None:
     if lock is None or not lock.locked():
         return
     lock.release()
-    # Drop idle locks so the map tracks live conversations only. A waiter
-    # still holds its own reference and takes the lock as usual.
-    if not lock.locked() and _session_turn_locks.get(session_id) is lock:
-        _session_turn_locks.pop(session_id, None)
+    _leave_session_turn(session_id)
 
 
 # Who started each chat this process has served. Lets a caller the roster

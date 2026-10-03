@@ -290,6 +290,33 @@ def test_second_turn_on_a_conversation_waits_for_the_first() -> None:
     assert "conv-1" not in chat_route._session_turn_locks
 
 
+def test_a_turn_arriving_as_the_lock_passes_on_still_waits() -> None:
+    """A releases with B queued; C arrives before B has run. C must queue on
+    the same lock, not find the map empty and run beside B."""
+
+    async def _go() -> list[str]:
+        events: list[str] = []
+        a = await chat_route._acquire_session_turn("conv-3", 5)
+
+        async def turn(name: str) -> None:
+            lock = await chat_route._acquire_session_turn("conv-3", 5)
+            events.append(f"{name} start")
+            await asyncio.sleep(0.01)
+            events.append(f"{name} end")
+            chat_route._release_session_turn("conv-3", lock)
+
+        b = asyncio.create_task(turn("B"))
+        await asyncio.sleep(0)
+        chat_route._release_session_turn("conv-3", a)
+        c = asyncio.create_task(turn("C"))
+        await asyncio.gather(b, c)
+        return events
+
+    assert asyncio.run(_go()) == ["B start", "B end", "C start", "C end"]
+    assert "conv-3" not in chat_route._session_turn_locks
+    assert "conv-3" not in chat_route._session_turn_users
+
+
 def test_lock_wait_is_bounded() -> None:
     async def _go() -> Any:
         held = await chat_route._acquire_session_turn("conv-2", 5)
@@ -299,3 +326,4 @@ def test_lock_wait_is_bounded() -> None:
 
     assert asyncio.run(_go()) is None
     assert "conv-2" not in chat_route._session_turn_locks
+    assert "conv-2" not in chat_route._session_turn_users
