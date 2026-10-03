@@ -456,7 +456,7 @@ def reflection_flags_since(since: datetime) -> str:
         from openexecutive.workflows import persistence
 
         for run in persistence.list_runs(
-            workflow_name="executive_reflection", status="done", limit=3,
+            workflow_name="executive_reflection", status="done", limit=3, visible_to=None,
         ):
             finished = parse_aware(run.get("updated_at"))
             if finished is None or finished < since:

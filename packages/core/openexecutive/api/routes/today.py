@@ -2020,7 +2020,9 @@ def _latest_weekly_review() -> WeeklyReviewSummary | None:
     from openexecutive.workflows.weekly_review import WeeklyReviewWorkflow, summarize_review
 
     try:
-        latest = list_runs(workflow_name=WeeklyReviewWorkflow.name, status="done", limit=1)
+        latest = list_runs(
+            workflow_name=WeeklyReviewWorkflow.name, status="done", limit=1, visible_to=None
+        )
         run = get_run(latest[0]["run_id"]) if latest else None
     except Exception:
         logger.warning("today: weekly review runs unreadable", exc_info=True)
