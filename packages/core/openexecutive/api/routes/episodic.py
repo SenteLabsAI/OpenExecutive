@@ -36,6 +36,7 @@ from openexecutive.memory.honcho_client import (
     PERSON_CONCLUSIONS_MAX_PAGE,
     PeopleMemory,
     PersonConclusionsPage,
+    PersonMemory,
     people_overview,
     person_conclusions,
 )
@@ -391,11 +392,11 @@ def _viewer(request: Request) -> int | None:
         return None
 
 
-def _sees_everyone(request: Request) -> bool:
-    """Whether this caller may see what peer memory learned about other
-    people. Nobody may, the principal included: it is drawn from each
-    person's own conversations, so each person sees only their own."""
-    return False
+def _own_entries(people: list[PersonMemory], viewer: int | None) -> list[PersonMemory]:
+    """The caller's own entry alone. Nobody sees another person's, the
+    principal included: peer memory is drawn from each person's own
+    conversations."""
+    return [p for p in people if viewer is not None and p.person_id == viewer]
 
 
 @router.get("/memories/people", response_model=PeopleMemory)
@@ -410,10 +411,7 @@ async def list_people_memory(
     conversations, so nobody else's is shown, the principal included. A
     caller who isn't on the roster sees none."""
     overview = await people_overview(recent=recent)
-    if _sees_everyone(request):
-        return overview
-    viewer = _viewer(request)
-    people = [p for p in overview.people if viewer is not None and p.person_id == viewer]
+    people = _own_entries(overview.people, _viewer(request))
     return overview.model_copy(update={
         "people": people,
         "conclusion_total": sum(p.conclusion_count for p in people),
@@ -431,7 +429,7 @@ async def list_person_conclusions(
     newest first. Read-only and LLM-free; 404 when the person is not on the
     roster or peer memory has no peer for them yet, and for anyone but the
     caller themselves, exactly as for an id that does not exist."""
-    if not _sees_everyone(request) and _viewer(request) != person_id:
+    if _viewer(request) != person_id:
         raise HTTPException(status_code=404, detail="Person not found in peer memory")
     result = await person_conclusions(person_id, page=page, size=size)
     if result is None:
