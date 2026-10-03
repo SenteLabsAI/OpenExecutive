@@ -432,7 +432,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     label: "Memory",
     href: "/settings/memory",
     icon: "archive",
-    description: "How long the private notes from replies people send last.",
+    description: "Private notes of what you said, and how long they last.",
     hashes: ["memory"],
   },
   {

@@ -124,11 +124,37 @@ def test_never_off_the_speakers_own_private_surface(roster: SimpleNamespace, lab
     assert "not available" in _recall(session)["error"]
 
 
-def test_a_teammate_needs_act_as_me_too(roster: SimpleNamespace) -> None:
+def test_a_teammate_needs_no_act_as_me(roster: SimpleNamespace) -> None:
     h.set_person_settings(roster.teammate, by="test", reply_notes=True)
     assert ht.recall_person(_web(roster.teammate)) is not None
     set_team_members(False, updated_by="test")
+    assert ht.recall_person(_web(roster.teammate)) is not None
+
+
+def test_an_archived_teammate_or_someone_else_on_the_turn_cannot(roster: SimpleNamespace) -> None:
+    h.set_person_settings(roster.teammate, by="test", reply_notes=True)
+    session = _web(roster.teammate)
+    session.caller_person_id = roster.principal
+    assert ht.recall_person(session) is None
+    people_store.archive_person(roster.teammate)
+    people_registry.invalidate()
     assert ht.recall_person(_web(roster.teammate)) is None
+
+
+def test_an_adapter_verified_private_chat_may_recall(roster: SimpleNamespace) -> None:
+    h.set_person_settings(roster.teammate, by="test", reply_notes=True)
+
+    def chat(**kw: Any) -> Session:
+        session = Session(session_id="x:1", origin_channel="otherchat", caller_person_id=roster.teammate, **kw)
+        pin_turn_delegation(session, "x")
+        return session
+
+    assert ht.recall_person(chat()) is None
+    # Verified but shared: notes may be taken there, never read back.
+    assert ht.recall_person(chat(speaker_verified=True)) is None
+    assert ht.recall_person(chat(private_chat=True)) is None
+    person = ht.recall_person(chat(speaker_verified=True, private_chat=True))
+    assert person is not None and person.id == roster.teammate
 
 
 # --------------------------------------------------------------------------- #

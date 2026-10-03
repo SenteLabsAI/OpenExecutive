@@ -47,6 +47,14 @@ class Session:
     # on the session too lets tool handlers running mid-turn tell "the approver
     # is the person I'm already talking to" from "the approver is someone else".
     caller_person_id: int | None = None
+    # Set by a channel adapter that verified for itself that `caller_person_id`
+    # is who sent this turn's message, on a channel the checks in
+    # `people_tools` don't know. Read only by Always in the loop
+    # (`memory.history_chat`, `orchestrator.history_tools`), never as a grant
+    # for anything else. `private_chat` adds that nobody but that person (and
+    # the Executive) can read the conversation, so their notes may be recalled.
+    speaker_verified: bool = False
+    private_chat: bool = False
     # The live alert board as the server derived it this turn, recorded by
     # `briefing.context.render_and_trust`. `ack_alert` refuses anything else on
     # EVERY session, web included, so an id quoted inside an alert's own body —

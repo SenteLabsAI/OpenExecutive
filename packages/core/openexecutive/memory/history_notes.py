@@ -76,7 +76,7 @@ through record_notes (an empty list when nothing is worth keeping)."""
 
 _RECORD_TOOL: dict[str, Any] = {
     "name": "record_notes",
-    "description": "Record what the person told whom in the email they sent.",
+    "description": "Record what the person said: what they committed to, agreed, declined, answered, asked or shared.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -195,23 +195,29 @@ def check_note(raw: Any, *, body: str, allowed: str) -> NewNote | None:
     return NewNote(kind=str(kind), summary=summary, quote=quote, due_date=due)
 
 
-async def _call_model(model: str, turn: str) -> dict[str, Any]:
+async def record(model: str, turn: str, *, system: str, actor: str) -> dict[str, Any]:
+    """One forced ``record_notes`` call with ``system`` as the whole prompt
+    (this one or ``history_chat``'s); its input, or {} when it made none."""
     from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers import get_provider
 
     response = await get_provider(model).messages_create(
         model=model,
         max_tokens=_MAX_TOKENS,
-        system=NOTES_PROMPT,
+        system=system,
         tools=[_RECORD_TOOL],
         tool_choice={"type": "tool", "name": _RECORD_TOOL["name"]},
         messages=[{"role": "user", "content": turn}],
     )
-    log_model_usage(response, model=model, actor="history_notes")
+    log_model_usage(response, model=model, actor=actor)
     for block in response.content:
         if getattr(block, "type", "") == "tool_use" and getattr(block, "name", "") == _RECORD_TOOL["name"]:
             return block.input if isinstance(block.input, dict) else {}
     return {}
+
+
+async def _call_model(model: str, turn: str) -> dict[str, Any]:
+    return await record(model, turn, system=NOTES_PROMPT, actor="history_notes")
 
 
 def notes_model() -> str:

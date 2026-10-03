@@ -9,19 +9,27 @@ of those but the summary; a model only writes that sentence, and the quote it
 rests on is checked word for word before anything is stored
 (``memory.history_notes``).
 
-**What writes notes.** For now only one thing: a reply the Executive drafted
-in someone's own mailbox (Act as me), after that person approved and sent it
-(``delegation.reply_send``). The note-taker reads only the words they sent,
-so nothing another person wrote can become a note this way. That is their
-own word, so ``trust`` is ``high``.
+**What writes notes.** Two things, both reading only the person's own words,
+so nothing another person wrote can become a note; that is their own word,
+so ``trust`` is ``high``:
+
+- a reply the Executive drafted in someone's own mailbox (Act as me), after
+  that person approved and sent it (``delegation.reply_send`` →
+  ``memory.history_notes``);
+- what they say to the Executive in a chat where it knows it is them: the web
+  chat signed in, their own Slack, Discord or Telegram, or any channel whose
+  adapter verified the sender (``Session.speaker_verified``)
+  (``memory.history_chat``). Messages between other people are never read.
 
 **Who reads them.** A note's ``visibility`` is ``private``: its own person
 alone, never the principal, and only in a conversation nobody else can read
-(``orchestrator.history_tools``). Each person sees, corrects, pins and
+(``orchestrator.history_tools``), even when it was noted in a shared thread. Each person sees, corrects, pins and
 forgets their own notes in Memories → History (``/memories/history``).
 
 **Switches.** Each person turns it on for themselves (``reply_notes``,
-absent means off). The owner sets how long notes last for the company
+absent means off; despite the name it covers every channel). Any team member
+on the People list may (``can_keep_notes``); notes from email replies still
+need Act as me, which writes them. The owner sets how long notes last for the company
 (``retention_days``: 30, 90, 365, or until forgotten; 90 when unset), and a
 person may shorten it for their own notes, never lengthen it. A pinned note
 never expires. "Don't remember this" forgets a conversation's notes and
@@ -57,6 +65,7 @@ RETENTION_CHOICES: tuple[int | None, ...] = (30, 90, 365, None)
 KINDS: tuple[str, ...] = ("promised", "agreed", "declined", "answered", "asked", "shared")
 TRUST_LEVELS: tuple[str, ...] = ("high", "medium", "low")
 SOURCE_APPROVED_REPLY = "approved_reply"
+SOURCE_CHAT_MESSAGE = "chat_message"
 CHANNEL_EMAIL = "email"
 
 MAX_SUMMARY_CHARS = 240
@@ -149,6 +158,18 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path(db_path)))
     ensure_schema(conn)
     return conn
+
+
+def can_keep_notes(person: Any) -> bool:
+    """Whether ``person`` may turn "Keep track of what happens" on: someone on
+    the People list who works here (a team member, the principal included),
+    not archived. Never a contact."""
+    return (
+        person is not None
+        and getattr(person, "id", None) is not None
+        and not getattr(person, "archived", False)
+        and getattr(person, "kind", None) == "team"
+    )
 
 
 def conversation_key(channel: str, ref: str) -> str:

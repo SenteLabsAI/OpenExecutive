@@ -1098,6 +1098,14 @@ class Executive:
             if not touched_mail:
                 schedule_style_pass(person_id, session_id=session.session_id)
 
+            # Always in the loop: private notes of what the speaker said, when
+            # they turned it on and this surface verified it is them
+            # (history_chat). Their own words only, never the reply.
+            from openexecutive.memory.history_chat import schedule_chat_notes
+
+            if not touched_mail:
+                schedule_chat_notes(speaker_text, session=session, person_id=person_id)
+
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
             # wrapper no-ops when person_id is None or Honcho is disabled.
@@ -1580,6 +1588,12 @@ class Executive:
 
             if not touched_mail:
                 schedule_style_pass(person_id, session_id=session.session_id)
+
+            # Always in the loop — see stream_chat.
+            from openexecutive.memory.history_chat import schedule_chat_notes
+
+            if not touched_mail:
+                schedule_chat_notes(speaker_text, session=session, person_id=person_id)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one

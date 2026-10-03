@@ -18,9 +18,9 @@ import { kindLabel, noteExpiry, noteText, noteWhere } from "@/lib/history";
 import { EmptyState, formatDate } from "./shared";
 
 // History — Always in the loop. The signed-in person's own private notes of
-// what they said in replies they approved and sent. Only they see them (the
-// owner included); here they correct, pin and forget them, or ask the
-// Executive not to remember a conversation at all.
+// what they said: in chat with the Executive, and in replies they approved and
+// sent. Only they see them (the owner included); here they correct, pin and
+// forget them, or ask the Executive not to remember a conversation at all.
 
 const SEARCH_DELAY_MS = 300;
 
@@ -180,18 +180,18 @@ function retentionPhrase(days: number | null): string {
 function HistoryEmpty({ state }: { state: HistoryState }) {
   if (state.reply_notes) {
     return (
-      <EmptyState message="No notes yet. They're added after you send a reply the Executive drafted for you." />
+      <EmptyState message="No notes yet. They're added when you tell the Executive what you promised, agreed or decided." />
     );
   }
   return (
     <div className="text-center py-14 px-4 text-fg-muted text-[15px] leading-relaxed">
       <p>
         Keep track of what happens is off. When it&apos;s on, the Executive keeps private notes of what
-        you said in replies you approve and send, so it can remind you later.
+        you tell it, so it can remind you later.
       </p>
-      {state.can_note_replies && (
-        <Link href="/settings/act-as-me" className="mt-3 inline-block font-medium text-accent hover:underline">
-          Turn it on in Act as me
+      {state.can_keep_notes && (
+        <Link href="/settings/memory" className="mt-3 inline-block font-medium text-accent hover:underline">
+          Turn it on in Memory settings
         </Link>
       )}
     </div>

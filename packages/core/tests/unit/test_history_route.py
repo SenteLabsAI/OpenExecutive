@@ -12,8 +12,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import history as route
-from openexecutive.delegation import settings as dsettings
-from openexecutive.delegation.settings import set_team_members
 from openexecutive.memory import episodic
 from openexecutive.memory import history as h
 from openexecutive.people import registry as people_registry
@@ -89,29 +87,32 @@ def test_each_person_sees_only_their_own(client: TestClient, ids: dict[str, int]
     assert len(mine["notes"]) == 1 and mine["notes"][0]["quote"] == "I'll send the price list on Friday"
     assert mine["reply_notes"] is False and mine["effective_retention_days"] == 90
     assert mine["retention_choices"] == [30, 90, 365, None]
-    assert mine["can_note_replies"] is True and mine["can_set_company_retention"] is True
+    assert mine["can_keep_notes"] is True and mine["can_note_replies"] is True
+    assert mine["can_set_company_retention"] is True
     theirs = client.get("/memories/history", headers=TEAMMATE).json()
     assert len(theirs["notes"]) == 1 and theirs["notes"][0]["id"] != mine["notes"][0]["id"]
-    assert theirs["can_note_replies"] is False and theirs["can_set_company_retention"] is False
+    # A teammate keeps notes from chat without Act as me; email ones need it.
+    assert theirs["can_keep_notes"] is True and theirs["can_note_replies"] is False
+    assert theirs["can_set_company_retention"] is False
     assert client.get("/memories/history?q=venue", headers=OWNER).json()["notes"] == []
 
 
-def test_switching_reply_notes_on_needs_act_as_me(
-    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,
-    audit: list[tuple[str, dict[str, Any]]],
+def test_any_team_member_may_switch_it_on_without_act_as_me(
+    client: TestClient, ids: dict[str, int], audit: list[tuple[str, dict[str, Any]]],
 ) -> None:
-    resp = client.put("/memories/history/settings", json={"reply_notes": True}, headers=TEAMMATE)
-    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_available_yet"
-    # Turning it off, or choosing a shorter time, never needs it.
-    assert client.put("/memories/history/settings", json={"reply_notes": False}, headers=TEAMMATE).status_code == 200
-    monkeypatch.setattr(dsettings, "team_members_available", lambda: True)
-    set_team_members(True, updated_by="test")
     assert client.put("/memories/history/settings", json={"reply_notes": True}, headers=TEAMMATE).json()["reply_notes"]
     assert client.put("/memories/history/settings", json={"reply_notes": True}, headers=OWNER).json()["reply_notes"]
     assert h.person_settings(ids["teammate"]).reply_notes and h.person_settings(ids["principal"]).reply_notes
     kinds = {kw["private_to_person"] for et, kw in audit if et == "history_settings_changed"}
     assert kinds == {ids["teammate"], ids["principal"]}
     assert all(kw["private"] is True for _, kw in audit)
+
+
+def test_a_contact_cannot_switch_it_on(client: TestClient, ids: dict[str, int]) -> None:
+    people_store.upsert_person(full_name="Carla Contact", email="carla@x.example", kind="contact")
+    people_registry.invalidate()
+    resp = client.put("/memories/history/settings", json={"reply_notes": True}, headers={"x-caller-email": "carla@x.example"})
+    assert resp.status_code == 403
 
 
 def test_retention_only_shorter_and_company_wide_only_for_the_principal(

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import Icon from "@/components/Icon";
 import AdvancedFold from "@/components/settings/AdvancedFold";
-import { KeepTrackCard } from "@/components/settings/HistorySettings";
 import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
@@ -243,8 +242,6 @@ export default function ActAsMeCard() {
           }}
         />
       )}
-
-      <KeepTrackCard />
 
       <AdvancedFold
         id="act-as-me-advanced"
