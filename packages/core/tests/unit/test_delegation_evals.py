@@ -218,6 +218,23 @@ def test_the_inbox_runner_checks_the_verdict_before_judging(
     assert result["outcome"]["no_reply_because"] == (reply if reply not in ("reply", None) else None)
 
 
+def test_the_inbox_runner_scores_a_group_email_as_the_scan_decides(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import inbox
+    from openexecutive.delegation.inbox_classifier import Verdict
+
+    async def fake_reply_for(*a: Any, **kw: Any) -> Any:
+        # Wants a reply, but not from this person: the scan drafts nothing.
+        return Verdict(True, "question", 0.95, asked_of_them=False), None
+
+    monkeypatch.setattr(inbox, "reply_for", fake_reply_for)
+    group = _INBOX.replace(
+        'text: "2pm or 4pm?", verified: false}',
+        'text: "2pm or 4pm?", verified: false, to: [olivia@fernway.example, ben@northpeak.example]}',
+    ).replace("expect: draft", "expect: no_draft")
+    result = asyncio.run(runner_module.run_inbox_scenario(validate_scenario_yaml(group)))
+    assert result["passed"] is True and result["scores"]["notes"] == "drafted nothing, as expected"
+
+
 def test_the_inbox_kind_streams_through_the_suite_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import inbox
     from openexecutive.delegation.inbox_classifier import Verdict

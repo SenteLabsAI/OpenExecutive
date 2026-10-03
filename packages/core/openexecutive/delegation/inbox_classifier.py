@@ -130,15 +130,18 @@ def addressing(message: Any, *, name: str, own: set[str], exec_address: str = ""
 
 def wants_draft(verdict: Verdict, relation: str, addressed: Addressing | None = None) -> bool:
     """Whether code drafts a reply for ``verdict`` from a sender of this
-    ``relation`` (unknown relations get the stranger's bar). An email that
-    also went to others needs the person in To and the email asking them
+    ``relation`` (unknown relations get the stranger's bar). With
+    ``addressed``, the person must be in To (only copied, it is never theirs
+    to answer), and an email that also went to others must ask them
     themselves."""
     bar = THRESHOLDS.get(relation, THRESHOLDS["stranger"])
     if not (verdict.needs_reply and verdict.kind in DRAFT_KINDS and verdict.confidence >= bar):
         return False
-    if addressed is not None and addressed.others > 0:
-        return addressed.position == "to" and verdict.asked_of_them
-    return True
+    if addressed is None:
+        return True
+    if addressed.position != "to":
+        return False
+    return addressed.others == 0 or verdict.asked_of_them
 
 
 def render_email(message: Any, *, relation: str, addressed: Addressing | None = None) -> str:

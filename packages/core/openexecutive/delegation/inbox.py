@@ -763,6 +763,16 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     )
 
 
+def addressed_for(person: Any, message: Any, own: set[str]) -> Any:
+    """Who ``message`` went to, from ``person``'s side, counted as the scan
+    counts it (the Executive copied is nobody else)."""
+    from openexecutive.config import get_settings
+    from openexecutive.delegation.inbox_classifier import addressing
+
+    exec_address = (get_settings().exec_email_address or "").strip().lower()
+    return addressing(message, name=person.full_name or "", own=own, exec_address=exec_address)
+
+
 async def reply_for(
     person: Any, message: Any, thread: Any, *, relation: str, own: set[str]
 ) -> tuple[Any, Reply | str | None]:
@@ -771,13 +781,10 @@ async def reply_for(
     reply is wanted). The evals run this; a scan runs the same two steps with
     its limits in between."""
     from openexecutive.delegation.ghostwriter import ComposeError
-    from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
+    from openexecutive.delegation.inbox_classifier import classify, wants_draft
 
     relation = handling_relation(relation, message)
-    from openexecutive.config import get_settings
-
-    exec_address = (get_settings().exec_email_address or "").strip().lower()
-    addressed = addressing(message, name=person.full_name or "", own=own, exec_address=exec_address)
+    addressed = addressed_for(person, message, own)
     verdict = await classify(message, relation=relation, addressed=addressed)
     if verdict is None or not wants_draft(verdict, relation, addressed):
         return verdict, None

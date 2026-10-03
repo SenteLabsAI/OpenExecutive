@@ -284,7 +284,7 @@ def _make_triage_runner(
 
 async def run_inbox_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     """One ``type: inbox`` scenario: ``{"outcome", "scores", "passed"}``."""
-    from openexecutive.delegation.inbox import handling_relation, reply_for
+    from openexecutive.delegation.inbox import addressed_for, handling_relation, reply_for
     from openexecutive.delegation.inbox_classifier import wants_draft
 
     case = scenario_inbox(scenario)
@@ -294,7 +294,8 @@ async def run_inbox_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
         case.person, case.message, case.thread, relation=case.relation, own={case.person.email}
     )
     handled_as = handling_relation(case.relation, case.message)
-    wanted = verdict is not None and wants_draft(verdict, handled_as)
+    addressed = addressed_for(case.person, case.message, {case.person.email})
+    wanted = verdict is not None and wants_draft(verdict, handled_as, addressed)
     drafted = reply is not None and not isinstance(reply, str)
     outcome: dict[str, Any] = {
         "verdict": asdict(verdict) if verdict is not None else None,

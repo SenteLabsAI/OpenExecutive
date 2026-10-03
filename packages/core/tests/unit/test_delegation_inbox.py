@@ -495,6 +495,22 @@ def test_someone_only_copied_never_gets_a_draft() -> None:
     verdict = ic.Verdict(needs_reply=True, kind="question", confidence=0.95, asked_of_them=True)
     assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="to", others=1)) is True
     assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="cc", others=1)) is False
+    # Copied on mail to the Executive alone: nobody else, still not theirs.
+    assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="cc", others=0)) is False
+    assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="", others=0)) is False
+
+
+def test_mail_to_the_executive_that_copies_them_gets_no_draft(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    from openexecutive.config import get_settings
+
+    exec_address = (get_settings().exec_email_address or "").lower()
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", to=[exec_address], cc=(OWNER,)))
+    _scan(owner, mailbox)
+    assert _ledger(db)["m1"] == ("not_needed", "asks_someone_else")
+    assert mailbox.specs == []
 
 
 def test_a_stranger_needs_more_certainty_and_gets_a_holding_reply(
