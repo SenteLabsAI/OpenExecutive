@@ -37,7 +37,10 @@ import {
   agentArea,
   agentCardStatus,
   agentDisplayName,
+  agentHasNoInstructions,
   agentInitials,
+  listedAgents as listAgentsShown,
+  panelOpensAdvanced,
   shortModelName,
 } from "@/lib/councilCards";
 
@@ -108,7 +111,9 @@ function personaOption(p: PersonaMeta) {
   );
 }
 
-// Remembers, per browser, that the owner prefers the full editor.
+// Remembers, per browser, that the owner prefers the agent panel's full
+// editor. The key predates the panel toggle (it was the page's Advanced
+// view), so returning owners keep their choice.
 const ADVANCED_KEY = "oe.council.advanced";
 
 // The full editor's tabs for the selected agent. Each shows only where the
@@ -181,14 +186,13 @@ export default function CouncilPage() {
   const [tab, setTab] = useState<EditorTab>("model");
 
   const [presets, setPresets] = useState<QualityPresets | null>(null);
-  // The Council opens in its simple view: Quality and the core agents with
-  // their additional instructions (the voice is chosen in Settings → Your
-  // Executive). "Show all agents" lists the
-  // internal ones too; "Advanced" opens the full editor, and this browser
+  // The Council shows Quality and the core agents (the voice is chosen in
+  // Settings → Your Executive). "Show all agents" lists the internal and
+  // helper ones too. An agent's panel opens on its additional instructions;
+  // "Advanced settings" in the panel opens the full editor, and this browser
   // remembers that choice.
   const [showAll, setShowAll] = useState(false);
-  const [advanced, setAdvanced] = useState(false);
-  const simple = !advanced;
+  const [prefersAdvanced, setPrefersAdvanced] = useState(false);
   const [applyingPreset, setApplyingPreset] = useState<QualityPresetId | null>(null);
 
   const [saving, setSaving] = useState(false);
@@ -249,15 +253,17 @@ export default function CouncilPage() {
 
   useEffect(() => {
     try {
-      if (window.localStorage.getItem(ADVANCED_KEY) === "1") setAdvanced(true);
+      if (window.localStorage.getItem(ADVANCED_KEY) === "1") setPrefersAdvanced(true);
     } catch {
-      // Storage can be blocked; the page then opens in the simple view.
+      // Storage can be blocked; panels then open in the simple editor.
     }
   }, []);
 
-  const toggleAdvanced = () => {
-    const next = !advanced;
-    setAdvanced(next);
+  // The open panel's mode. A helper agent has only the full editor.
+  const advanced = selected ? panelOpensAdvanced(selected, prefersAdvanced) : prefersAdvanced;
+
+  const setPanelAdvanced = (next: boolean) => {
+    setPrefersAdvanced(next);
     try {
       window.localStorage.setItem(ADVANCED_KEY, next ? "1" : "0");
     } catch {
@@ -278,7 +284,7 @@ export default function CouncilPage() {
       .catch(() => {});
   };
 
-  const listedAgents = simple && !showAll ? agents.filter((a) => a.visibility === "core") : agents;
+  const listedAgents = listAgentsShown(agents, showAll);
 
   useEffect(() => {
     if (selected) loadDetail(selected);
@@ -522,7 +528,7 @@ export default function CouncilPage() {
         .filter(Boolean)
         .join(" · ")
     : undefined;
-  const noInstructions = detail?.name === "utility_fast" || detail?.name === "research";
+  const noInstructions = detail ? agentHasNoInstructions(detail.name) : false;
 
   const saveButton = (
     <Button variant="primary" onClick={handleSave} disabled={saving || !dirty || !detail}>
@@ -559,16 +565,11 @@ export default function CouncilPage() {
     <div className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-surface text-fg">
       <div className="max-w-5xl mx-auto px-4 py-6 sm:px-8 sm:py-10 space-y-6">
         <div>
-          <div className="flex items-start justify-between gap-4">
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Agent Council</h1>
-            <Button variant="secondary" size="sm" onClick={toggleAdvanced}>
-              {advanced ? "Back to simple view" : "Advanced"}
-            </Button>
-          </div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Agent Council</h1>
           <p className="mt-2 text-[15px] text-fg-muted">
-            {simple
-              ? "Pick how thorough answers should be and add instructions for any agent. Changes apply on the next message."
-              : "Edit each specialist’s prompt, model, and behavior. Changes apply on the next specialist call — no restart needed. Resetting restores the built-in defaults."}
+            Pick how thorough answers should be and add instructions for any agent. Open an
+            agent&apos;s Advanced settings to change its model, prompt and more. Changes apply on
+            the next message.
           </p>
         </div>
 
@@ -628,19 +629,17 @@ export default function CouncilPage() {
           </section>
         )}
 
-        {simple && (
-          <Link
-            href="/settings/executive"
-            className="group flex items-center justify-between gap-3 rounded-2xl border border-line bg-surface-elevated px-5 py-4 text-[15px] text-fg-muted transition-colors hover:border-accent/50 hover:text-fg"
-          >
-            <span>
-              Voice is set in <span className="font-semibold text-fg">Settings → Your Executive</span>
-            </span>
-            <span aria-hidden="true" className="text-fg-subtle group-hover:text-fg">
-              →
-            </span>
-          </Link>
-        )}
+        <Link
+          href="/settings/executive"
+          className="group flex items-center justify-between gap-3 rounded-2xl border border-line bg-surface-elevated px-5 py-4 text-[15px] text-fg-muted transition-colors hover:border-accent/50 hover:text-fg"
+        >
+          <span>
+            Voice is set in <span className="font-semibold text-fg">Settings → Your Executive</span>
+          </span>
+          <span aria-hidden="true" className="text-fg-subtle group-hover:text-fg">
+            →
+          </span>
+        </Link>
 
         <section aria-labelledby="council-agents-heading" className="space-y-3">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -702,11 +701,9 @@ export default function CouncilPage() {
               );
             })}
           </ul>
-          {simple && (
-            <Button variant="secondary" className="w-full sm:w-auto" onClick={() => setShowAll((v) => !v)}>
-              {showAll ? "Show fewer agents" : "Show all agents"}
-            </Button>
-          )}
+          <Button variant="secondary" className="w-full sm:w-auto" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Show fewer agents" : "Show all agents"}
+          </Button>
         </section>
       </div>
 
@@ -725,13 +722,16 @@ export default function CouncilPage() {
         )}
         {!detail || !draft || detail.name !== selected ? (
           <p className="text-[15px] text-fg-muted">Loading…</p>
-        ) : simple ? (
-          noInstructions ? (
-            <p className="text-[15px] text-fg-muted">
-              This agent has no instructions to edit. Its model follows the Quality choice;
-              change it on its own under Advanced.
-            </p>
-          ) : (
+        ) : !advanced ? (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-surface-elevated px-4 py-3">
+              <p className="min-w-0 flex-1 text-sm text-fg-muted">
+                Model, prompt, test runs and history
+              </p>
+              <Button variant="secondary" onClick={() => setPanelAdvanced(true)}>
+                Advanced settings
+              </Button>
+            </div>
             <div>
               <div className="flex items-center justify-between mb-1">
                 <span className={FIELD_LABEL}>Additional instructions</span>
@@ -752,24 +752,32 @@ export default function CouncilPage() {
                 className={`w-full ${FIELD} py-2.5 text-[15px] resize-y leading-relaxed`}
               />
             </div>
-          )
+          </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="min-w-0 text-[13px] text-fg-muted font-mono break-words">
-                {detail.name}
-                {detail.name === "executive"
-                  ? " · orchestrator"
-                  : detail.name === "utility_fast"
-                  ? " · utility model knob"
-                  : detail.name === "research"
-                  ? " · research model knob"
-                  : ` · domains: ${detail.domains.join(", ") || "—"}`}
-              </p>
-              {detail.has_override && (
-                <span className="text-[11px] uppercase tracking-widest px-2 py-1 rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                  Customized
-                </span>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <p className="min-w-0 text-[13px] text-fg-muted font-mono break-words">
+                  {detail.name}
+                  {detail.name === "executive"
+                    ? " · orchestrator"
+                    : detail.name === "utility_fast"
+                    ? " · utility model knob"
+                    : detail.name === "research"
+                    ? " · research model knob"
+                    : ` · domains: ${detail.domains.join(", ") || "—"}`}
+                </p>
+                {detail.has_override && (
+                  <span className="text-[11px] uppercase tracking-widest px-2 py-1 rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                    Customized
+                  </span>
+                )}
+              </div>
+              {/* A helper agent has no simple editor: its settings are only here. */}
+              {!noInstructions && (
+                <Button variant="secondary" onClick={() => setPanelAdvanced(false)}>
+                  Simple view
+                </Button>
               )}
             </div>
             {dirty && (

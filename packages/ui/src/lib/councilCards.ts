@@ -117,3 +117,28 @@ export function agentCardStatus(
   if (overriddenFields.some((f) => !PRESET_FIELDS.has(f))) return "instructions";
   return differsFromPreset ? "custom-model" : "default";
 }
+
+/**
+ * The agents "Your agents" lists: the core ones, or every agent (the
+ * internal and helper ones too) once the owner clicks "Show all agents".
+ */
+export function listedAgents<T extends { visibility: string }>(agents: readonly T[], showAll: boolean): T[] {
+  return showAll ? [...agents] : agents.filter((a) => a.visibility === "core");
+}
+
+// The helper agents that are only a model setting: they have no instructions
+// to edit, so the simple editor has nothing for them.
+const MODEL_ONLY_AGENTS = new Set(["utility_fast", "research"]);
+
+/** True for a helper agent with no instructions to edit (only a model). */
+export function agentHasNoInstructions(name: string): boolean {
+  return MODEL_ONLY_AGENTS.has(name);
+}
+
+/**
+ * Whether the agent panel shows the full tabbed editor: when this browser
+ * prefers it, and always for a helper agent, whose settings live only there.
+ */
+export function panelOpensAdvanced(name: string, prefersAdvanced: boolean): boolean {
+  return prefersAdvanced || agentHasNoInstructions(name);
+}
