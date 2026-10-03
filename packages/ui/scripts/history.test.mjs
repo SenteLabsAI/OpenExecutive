@@ -24,6 +24,9 @@ test("a person may only pick the company default or something shorter", () => {
   assert.deepEqual(personRetentionChoices(CHOICES, 365), [null, 30, 90]);
   // Kept until forgotten for the company: every length is shorter.
   assert.deepEqual(personRetentionChoices(CHOICES, null), [null, 30, 90, 365]);
+  // Their own choice stays on offer, even once the company's caught up with it.
+  assert.deepEqual(personRetentionChoices(CHOICES, 30, 30), [null, 30]);
+  assert.deepEqual(personRetentionChoices(CHOICES, 90, 30), [null, 30]);
 });
 
 test("a note names who it was with, never the bare address when there's a name", () => {

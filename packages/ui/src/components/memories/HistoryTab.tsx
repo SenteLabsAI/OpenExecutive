@@ -37,20 +37,23 @@ export default function HistoryTab({
   const [failed, setFailed] = useState(false);
   const [query, setQuery] = useState("");
   const [correcting, setCorrecting] = useState<HistoryNote | null>(null);
-  const searched = useRef("");
+  // Only the newest read may land: an older one (a reload after a pin, a
+  // search the person has since typed past) must not overwrite it.
+  const latest = useRef(0);
 
   const refresh = useCallback(
     async (q: string, signal?: AbortSignal) => {
+      const mine = ++latest.current;
       setFailed(false);
       try {
         const next = await getHistory(q, signal);
-        searched.current = q;
+        if (mine !== latest.current) return;
         onAvailable(next !== null);
         setState(next);
         // The badge counts every note, not just the ones a search found.
         if (!q.trim()) onCount(next ? next.notes.length : null);
       } catch (err) {
-        if ((err as Error)?.name === "AbortError") return;
+        if ((err as Error)?.name === "AbortError" || mine !== latest.current) return;
         setFailed(true);
         onCount(null);
       } finally {
@@ -69,7 +72,7 @@ export default function HistoryTab({
     };
   }, [query, refresh]);
 
-  const reload = useCallback(() => refresh(searched.current), [refresh]);
+  const reload = useCallback(() => refresh(query), [refresh, query]);
 
   const act = useCallback(
     async (run: () => Promise<unknown>, failure: string) => {
@@ -85,8 +88,17 @@ export default function HistoryTab({
   );
 
   if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
-  if (failed) return <div className="text-fg-muted text-sm py-4">Couldn&apos;t load your notes.</div>;
-  if (!state) return null;
+  const failure = (
+    <div className="text-fg-muted text-sm py-3">
+      Couldn&apos;t load your notes.{" "}
+      <button onClick={() => void reload()} className="font-medium text-accent hover:underline">
+        Try again
+      </button>
+    </div>
+  );
+  // A failed first read has nothing to show; a later one keeps the search box
+  // and the notes already on screen.
+  if (!state) return failed ? failure : null;
 
   const empty = state.notes.length === 0 && !query.trim();
   return (
@@ -103,6 +115,7 @@ export default function HistoryTab({
             aria-label="Search your notes"
             className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
+          {failed && failure}
           {state.notes.length === 0 ? (
             <EmptyState message="No notes match." />
           ) : (

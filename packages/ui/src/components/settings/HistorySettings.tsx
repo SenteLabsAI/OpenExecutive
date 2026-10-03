@@ -91,7 +91,7 @@ export function KeepTrackCard() {
               disabled={busy}
               onChange={(e) => void save({ retention_days: fromValue(e.target.value) })}
             >
-              {personRetentionChoices(state.retention_choices, company).map((days) => (
+              {personRetentionChoices(state.retention_choices, company, state.retention_days).map((days) => (
                 <option key={asValue(days)} value={asValue(days)}>
                   {days === null ? `The company default (${retentionLabel(company)})` : retentionLabel(days)}
                 </option>

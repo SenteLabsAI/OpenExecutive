@@ -44,15 +44,20 @@ export function retentionLabel(days: number | null): string {
 }
 
 /** The choices a person may pick for their own notes: the company default
- * (null), then each choice no longer than the company's. */
+ * (null), then each choice shorter than the company's. Their stored choice
+ * is always among them, even one no longer shorter (the owner shortening the
+ * company time clamps it to the company's), so the box never shows a value
+ * they didn't pick. */
 export function personRetentionChoices(
   choices: (number | null)[],
   company: number | null,
+  current: number | null = null,
 ): (number | null)[] {
   const shorter = choices.filter(
     (d): d is number => d !== null && (company === null || d < company),
   );
-  return [null, ...shorter];
+  if (current !== null && !shorter.includes(current)) shorter.push(current);
+  return [null, ...shorter.sort((a, b) => a - b)];
 }
 
 const KIND_LABELS: Record<string, string> = {
