@@ -438,6 +438,16 @@ def add_notes(
     ids: list[int] = []
     conn = _connect(db_path)
     try:
+        # Check again under the write lock: a "Don't remember this" that lands
+        # while the note-taker was working must still win.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            f"SELECT 1 FROM {EXCLUDED_TABLE} WHERE person_id = ? AND conversation_key = ?",  # noqa: S608 — constant table name
+            (person_id, key),
+        ).fetchone():
+            conn.rollback()
+            return []
         for note in notes:
             if note.kind not in KINDS:
                 raise ValueError("unknown kind")

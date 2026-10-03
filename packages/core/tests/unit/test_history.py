@@ -155,3 +155,17 @@ def test_a_retention_change_never_backdates_an_unpinned_note() -> None:
     h.set_company_retention(30, by="owner")
     assert h.sweep_expired(now=NOW + timedelta(days=1)) == 0
     assert h.get_note(1, nid, now=NOW + timedelta(days=1)) is not None
+
+
+def test_a_conversation_forgotten_mid_pass_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The note-taker checked before its model call; the person said "Don't
+    # remember this" meanwhile. The write must still see it.
+    key = h.conversation_key(h.CHANNEL_EMAIL, "t-race")
+    h.forget_conversation(1, key)
+    monkeypatch.setattr(h, "is_excluded", lambda *a, **k: False)
+    ids = h.add_notes(
+        1, [h.NewNote("promised", "Told Dana Lee it comes Friday.", "I'll send it on Friday")],
+        source=h.SOURCE_APPROVED_REPLY, channel=h.CHANNEL_EMAIL, conversation_ref="t-race",
+        counterpart="", subject="", trust="high", occurred_at=datetime.now(UTC),
+    )
+    assert ids == [] and h.list_notes(1) == []
