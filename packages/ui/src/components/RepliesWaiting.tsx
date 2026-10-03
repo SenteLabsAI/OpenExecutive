@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import InfoTip from "./InfoTip";
-import { SectionHeading } from "./memories/shared";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   dismissReplyCard,
   getReplyCards,
@@ -22,20 +22,24 @@ import {
   senderLine,
 } from "@/lib/replyCards";
 
-// Today: the replies the Executive drafted in your own Gmail for mail that
-// needs you (Settings → Act as me → Draft replies to my inbox). Each card
-// shows who wrote, what they wrote, the draft, what it leaves you to decide
-// and anything to check. Send sends that draft from your Gmail exactly as it
-// is there, after you confirm who it goes to; Edit in Gmail opens it there;
-// Dismiss deletes it unless you edited it. GET /delegation/replies answers
-// only the owner, so this hides itself for everyone else, on a backend
-// without it, and when nothing is waiting.
+// Home: the replies the Executive drafted in your own Gmail for mail that
+// needs you (Settings → Act as me → Draft replies to my inbox), shown as
+// cards in "Needs you". Each card shows who wrote, what they wrote, the
+// draft, what it leaves you to decide and anything to check. Send (the
+// card's primary) sends that draft from your Gmail exactly as it is there,
+// after you confirm who it goes to; Edit in Gmail and Dismiss (deletes it
+// unless you edited it) are in its ⋯ menu. GET /delegation/replies answers
+// only the owner, so nothing shows for everyone else, on a backend without
+// it, and when nothing is waiting.
 
 // While a send Gmail hasn't confirmed is being settled (the card is
 // "executing"), how often the cards are read again.
 const SETTLE_POLL_MS = 20_000;
 
-export default function RepliesWaiting({ id }: { id?: string }) {
+// The cards and their refresh, for the Home "Needs you" list, which shows
+// each one as a card among the proposals. `cards` stays null for anyone but
+// the owner, on a backend without the route, and until the first read.
+export function useReplyCards() {
   const [cards, setCards] = useState<ReplyCard[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -63,31 +67,20 @@ export default function RepliesWaiting({ id }: { id?: string }) {
     return () => clearInterval(timer);
   }, [settling, refresh]);
 
-  if (!cards || (cards.length === 0 && !notice)) return null;
-  const gone = (decisionId: number, note?: string) => {
+  const gone = useCallback((decisionId: number, note?: string) => {
     setCards((prev) => (prev ?? []).filter((c) => c.decision_id !== decisionId));
     setNotice(note ?? null);
-  };
-  return (
-    <section id={id} className="rounded-xl border border-line bg-surface-elevated p-4">
-      <div className="flex items-center gap-1.5">
-        <SectionHeading title="Replies waiting" count={cards.length} icon="mail" />
-        <InfoTip align="left">
-          Mail that needs you, with a first reply the Executive wrote in your voice. Each
-          draft is in your own Drafts, and nothing is sent until you tap Send: it sends that
-          draft exactly as it is in your mailbox, so edit it there first if you want to change it.
-          Dismiss deletes the draft, unless you&apos;ve edited it there. Only you see these.
-        </InfoTip>
-      </div>
-      {notice && <p className="mb-2 text-xs text-emerald-300">{notice}</p>}
-      <div className="max-h-[40rem] overflow-y-auto pr-1 divide-y divide-line">
-        {cards.map((card) => (
-          <ReplyCardRow key={card.decision_id} card={card} onGone={gone} onRefresh={refresh} />
-        ))}
-      </div>
-    </section>
-  );
+  }, []);
+
+  return { cards: cards ?? [], notice, gone, refresh };
 }
+
+// What the Replies-waiting cards are, for the Needs you header's tip.
+export const REPLIES_WAITING_TIP =
+  "Mail that needs you, with a first reply the Executive wrote in your voice. Each " +
+  "draft is in your own Drafts, and nothing is sent until you tap Send: it sends that " +
+  "draft exactly as it is in your mailbox, so edit it there first if you want to change it. " +
+  "Dismiss deletes the draft, unless you've edited it there. Only you see these.";
 
 // What the row is doing: idle, asking before sending (first or second
 // time), or waiting on the backend.
@@ -97,12 +90,14 @@ type Step =
   | { kind: "confirm"; message: string; recipients: string[]; threadMovedOn: boolean }
   | { kind: "busy"; label: string };
 
-function ReplyCardRow({
+export function ReplyCardItem({
   card,
   onGone,
   onRefresh,
+  emphasized = false,
 }: {
   card: ReplyCard;
+  emphasized?: boolean;
   onGone: (id: number, note?: string) => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -158,45 +153,55 @@ function ReplyCardRow({
     }
   };
 
+  const busy = step.kind === "busy";
+  const label = "text-xs font-semibold uppercase tracking-wide text-fg-muted";
   return (
-    <article className="py-3 first:pt-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm text-fg break-words">{senderLine(card)}</div>
-          <div className="text-xs text-fg-muted mt-0.5">
-            {[relation, card.sender_verified ? "" : "Address not verified"].filter(Boolean).join(" · ")}
-          </div>
-        </div>
-        {received && <span className="flex-shrink-0 text-xs text-fg-subtle tabular-nums">{received}</span>}
+    <article
+      className={`rounded-2xl border bg-surface-elevated p-4 sm:p-5 ${
+        emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
+      }`}
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span className="inline-flex items-center rounded-lg bg-accent/10 px-2 py-0.5 text-[13px] font-medium text-accent">
+          Reply waiting
+        </span>
+        {received && <span className="text-sm text-fg-subtle tabular-nums">{received}</span>}
       </div>
-      <div className="mt-1.5 text-sm font-medium text-fg break-words">{card.subject || "(no subject)"}</div>
+      <div className="text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+        {card.subject || "(no subject)"}
+      </div>
+      <div className="mt-1 text-sm text-fg-muted break-words">
+        {senderLine(card)}
+        {[relation, card.sender_verified ? "" : "Address not verified"]
+          .filter(Boolean)
+          .map((part) => ` · ${part}`)
+          .join("")}
+      </div>
 
       {card.they_wrote && (
-        <details className="mt-2 group">
-          <summary className="cursor-pointer list-none text-[10px] font-semibold uppercase tracking-wide text-fg-muted">
+        <details className="mt-3 group">
+          <summary className={`cursor-pointer list-none ${label}`}>
             <span className="inline-block transition-transform group-open:rotate-90">▸</span> They wrote
           </summary>
           {/* Plain text: what a stranger wrote is never rendered as markup. */}
-          <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-fg-muted">
+          <p className="mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg-muted">
             {card.they_wrote}
           </p>
         </details>
       )}
 
-      <div className="mt-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">Your draft</div>
-        <div className="mt-1 rounded-md border border-line bg-surface px-2 py-1.5">
-          <div className="text-[11px] text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
-          <p className="mt-1 whitespace-pre-wrap break-words text-xs text-fg">{card.draft_body}</p>
+      <div className="mt-3">
+        <div className={label}>Your draft</div>
+        <div className="mt-1.5 rounded-xl border border-line bg-surface px-3 py-2">
+          <div className="text-xs text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm text-fg">{card.draft_body}</p>
         </div>
       </div>
 
       {card.open_questions.length > 0 && (
-        <div className="mt-2">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-300">
-            Decide before sending
-          </div>
-          <ul className="mt-1 list-disc pl-4 space-y-0.5 text-xs text-fg">
+        <div className="mt-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
+          <ul className="mt-1 list-disc pl-5 space-y-0.5 text-sm text-fg">
             {card.open_questions.map((q, i) => (
               <li key={i} className="break-words">{q}</li>
             ))}
@@ -205,7 +210,7 @@ function ReplyCardRow({
       )}
 
       {warnings.length > 0 && (
-        <ul className="mt-2 space-y-0.5 text-xs text-amber-300">
+        <ul className="mt-3 space-y-0.5 text-sm text-amber-700 dark:text-amber-300">
           {warnings.map((w) => (
             <li key={w} className="break-words">⚠ {w}</li>
           ))}
@@ -213,17 +218,19 @@ function ReplyCardRow({
       )}
 
       {unconfirmed ? (
-        <p className="mt-2.5 text-xs text-fg-muted">
+        <p className="mt-3 text-sm text-fg-muted">
           {mailbox} hasn&apos;t confirmed this was sent. Check your Sent folder in {mailbox}; this card
           updates on its own within a few minutes.
         </p>
       ) : step.kind === "ask" || step.kind === "confirm" ? (
-        <div className="mt-2.5 rounded-md border border-indigo-500/30 bg-indigo-500/5 px-2.5 py-2">
-          {step.kind === "confirm" && <p className="text-xs text-amber-300">{step.message}</p>}
-          <p className="text-xs text-fg">{sendQuestion(step.recipients, mailbox)}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
+        <div className="mt-4 rounded-xl border border-accent/30 bg-accent/5 px-3.5 py-3">
+          {step.kind === "confirm" && (
+            <p className="text-sm text-amber-700 dark:text-amber-300">{step.message}</p>
+          )}
+          <p className="text-sm text-fg">{sendQuestion(step.recipients, mailbox)}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
               onClick={() =>
                 void send(
                   step.kind === "confirm"
@@ -231,50 +238,35 @@ function ReplyCardRow({
                     : { recipients: step.recipients },
                 )
               }
-              className="rounded-md bg-indigo-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-400"
             >
               {step.kind === "confirm" ? "Send anyway" : "Send now"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setStep({ kind: "idle" })}
-              className="text-xs text-fg-muted hover:text-fg"
-            >
+            </Button>
+            <Button variant="ghost" onClick={() => setStep({ kind: "idle" })}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
-        <div className="mt-2.5 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button
+            variant="primary"
             onClick={() => setStep({ kind: "ask", recipients: card.draft_to })}
-            disabled={step.kind === "busy"}
-            className="rounded-md bg-indigo-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-400 disabled:opacity-50"
+            disabled={busy}
           >
-            {step.kind === "busy" ? step.label : "Send"}
-          </button>
-          {gmailLink && (
-            <a
-              href={gmailLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-indigo-400 hover:text-indigo-300"
-            >
-              Edit in {mailbox} ↗
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={() => void dismiss()}
-            disabled={step.kind === "busy"}
-            className="text-xs text-fg-muted hover:text-rose-300 transition-colors disabled:opacity-50"
-          >
-            Dismiss
-          </button>
+            {busy ? step.label : "Send"}
+          </Button>
+          <OverflowMenu
+            label="More actions for this reply"
+            items={[
+              ...(gmailLink
+                ? [{ label: `Edit in ${mailbox}`, href: gmailLink, external: true }]
+                : []),
+              { label: "Dismiss", onSelect: () => void dismiss(), disabled: busy },
+            ]}
+          />
         </div>
       )}
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </article>
   );
 }

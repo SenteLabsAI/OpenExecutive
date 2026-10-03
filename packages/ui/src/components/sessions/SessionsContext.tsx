@@ -51,14 +51,14 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
     if (status === "authenticated") refresh();
   }, [status, refresh]);
 
+  // Deletes without asking: the caller confirms first (the Chats page asks
+  // in the row) and says so when this returns false.
   const remove = useCallback(
     async (sessionId: string) => {
-      if (!window.confirm("Delete this chat? This cannot be undone.")) return false;
       try {
         await deleteSession(sessionId);
       } catch (err) {
         console.error(err);
-        window.alert("Failed to delete chat.");
         return false;
       }
       refresh();

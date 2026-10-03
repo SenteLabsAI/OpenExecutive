@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import BriefDeliveryNotice from "@/components/BriefDeliveryNotice";
+import BriefDeliveryNotice, { useBriefDeliveryNotice } from "@/components/BriefDeliveryNotice";
 import Briefing from "@/components/Briefing";
 import Chat from "@/components/Chat";
 import DebugPanel from "@/components/DebugPanel";
@@ -13,7 +13,9 @@ import { MobileBottomNav } from "@/components/shell/AppShell";
 import AppSidebar from "@/components/shell/AppSidebar";
 import { profileWording } from "@/components/shell/navConfig";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import PausedBanner from "@/components/executive/PausedBanner";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import { ChatMessage, DebugEvent, getSessionMessages } from "@/lib/api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -207,6 +209,26 @@ export default function HomePage() {
   const companyName = health?.company_name;
   const profileCopy = PROFILE_COPY[profileWording(workspaceMode, role.role_kind)];
 
+  // The briefing's one banner slot shows the most important notice: paused,
+  // then no profile, then a brief that wasn't sent. With none, the briefing
+  // shows its quiet-day note there instead.
+  const { status: execStatus, unknown: execStatusUnknown } = useExecutiveStatus();
+  const deliveryNotice = useBriefDeliveryNotice();
+  const homeBanner = execStatus?.paused && !execStatusUnknown ? (
+    <div className="overflow-hidden rounded-2xl border border-amber-500/30 [&>div]:border-b-0">
+      <PausedBanner />
+    </div>
+  ) : !isOnboarded && health ? (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-accent/25 bg-accent/5 px-4 py-3">
+      <p className="text-[15px] text-fg-muted">{profileCopy.missingBanner}</p>
+      <Link href="/onboard" className="text-sm font-semibold text-accent hover:underline whitespace-nowrap">
+        Set up profile →
+      </Link>
+    </div>
+  ) : deliveryNotice ? (
+    <BriefDeliveryNotice notice={deliveryNotice} />
+  ) : undefined;
+
   return (
     <div className="flex h-full relative">
       {/* Mobile backdrop */}
@@ -251,39 +273,34 @@ export default function HomePage() {
             >
               <Icon name="menu" size="w-5 h-5" />
             </button>
-            <span className="text-xs text-fg-muted font-medium truncate">
+            <span className="text-sm text-fg-muted font-medium truncate">
               {isOnboarded && companyName ? `${companyName} · Executive` : "Executive"}
             </span>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              type="button"
-              onClick={() => setDebugOpen((o) => !o)}
-              className={`flex items-center gap-1.5 text-xs font-medium px-3 py-2 min-h-touch rounded-md transition-colors cursor-pointer ${
-                debugOpen
-                  ? "bg-violet-500/20 text-violet-300 border border-violet-500/30"
-                  : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
-              }`}
-              aria-label={debugOpen ? "Hide agent activity" : "Show agent activity"}
-            >
-              <Icon name="activity" size="w-4 h-4" />
-              <span className="hidden sm:inline">{debugOpen ? "Hide activity" : "Agent activity"}</span>
-            </button>
-          </div>
+          {/* Agent activity (the live trace of the Executive's turn) lives in
+              this ⋯ menu; the panel itself opens on the right as before. */}
+          <OverflowMenu
+            label="Home options"
+            items={[
+              {
+                label: debugOpen ? "Hide agent activity" : "Show agent activity",
+                onSelect: () => setDebugOpen((o) => !o),
+              },
+            ]}
+          />
         </div>
 
-        <PausedBanner />
-
-        {!isOnboarded && health && (
-          <div className="border-b border-line bg-indigo-500/5 px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
-            <p className="text-xs text-fg-muted">{profileCopy.missingBanner}</p>
-            <Link href="/onboard" className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors whitespace-nowrap cursor-pointer">
+        {/* In chat the notices stay as strips above the conversation; on
+            the briefing they share one banner slot (see homeBanner). */}
+        {mode === "chat" && <PausedBanner />}
+        {mode === "chat" && !isOnboarded && health && (
+          <div className="border-b border-line bg-accent/5 px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
+            <p className="text-sm text-fg-muted">{profileCopy.missingBanner}</p>
+            <Link href="/onboard" className="text-sm text-accent hover:underline font-medium whitespace-nowrap cursor-pointer">
               Set up profile →
             </Link>
           </div>
         )}
-
-        {mode === "briefing" && <BriefDeliveryNotice />}
 
         <div className="flex-1 min-h-0">
           {mode === "briefing" ? (
@@ -291,6 +308,7 @@ export default function HomePage() {
               onContinue={handleContinueFromBriefing}
               showHeader
               firstName={firstName ?? undefined}
+              banner={homeBanner}
             />
           ) : (
             // No `key` here — Chat handles undefined→sid session adoption
