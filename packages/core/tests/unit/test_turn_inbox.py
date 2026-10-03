@@ -138,7 +138,7 @@ def _tool_round() -> FinalMsg:
     )
 
 
-def test_message_sent_during_a_tool_round_reaches_the_next_call(_no_audit: list[Any]) -> None:
+def test_message_sent_during_a_tool_round_reaches_the_next_call() -> None:
     inbox = TurnInbox()
     provider = _ArrivingProvider(
         [_tool_round(), FinalMsg([TextBlock("Booked for Friday.")], "end_turn")],
@@ -156,8 +156,6 @@ def test_message_sent_during_a_tool_round_reaches_the_next_call(_no_audit: list[
     assert "actually make it Friday" in blocks[-1]["text"]
     assert {"type": "message_added", "ids": ["msg-000001"]} in items
     assert inbox.taken_texts() == ["actually make it Friday"]
-    # Audited as the person's words, like the turn's own message.
-    assert any("added while working" in a[1] for a, _k in _no_audit)
 
 
 def test_message_sent_during_the_final_answer_is_left_for_the_next_turn() -> None:

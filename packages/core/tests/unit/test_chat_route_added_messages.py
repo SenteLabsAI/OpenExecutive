@@ -58,6 +58,10 @@ def patched_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(_title_mod, "generate_session_title", _no_title)
     monkeypatch.setattr(audit, "log_event", lambda *a, **k: None)
+    monkeypatch.setattr(chat_route, "audit_log", lambda *a, **k: _audited.append((a, k)))
+
+
+_audited: list[tuple[Any, Any]] = []
 
 
 def _fake_executive(monkeypatch: pytest.MonkeyPatch, *, late: bool = False) -> None:
@@ -107,6 +111,8 @@ def test_added_message_is_saved_between_the_turn_and_its_reply(
         ("user", "make it Friday"),
         ("assistant", "Booked for Friday."),
     ]
+    # Audited as the person's words, like the turn's own message.
+    assert any("added while working" in a[1] and k["actor"] == "user" for a, k in _audited)
     # Closed with the turn: nothing more can join it.
     assert chat_route._active_stops == {}
     assert chat_route._add_to_turn(CLIENT_ID, "local", "msg-000002", "x") is None

@@ -1379,6 +1379,19 @@ async def _run_chat_turn(
             if inbox is not None:
                 inbox.close()
                 added_texts.extend(inbox.taken_texts())
+                # Audited like the turn's own "User:" row: private, and the
+                # caller's own, in a conversation that read their mail.
+                with rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext():
+                    for added_text in added_texts:
+                        audit_log(
+                            "chat_turn",
+                            f"User (added while working): {added_text[:200]}",
+                            session_id=session.session_id,
+                            turn_id=turn_id,
+                            actor="user",
+                            details={"direction": "in", "added_mid_turn": True, "msg_len": len(added_text)},
+                            full={"message": added_text},
+                        )
 
             logger.info(
                 "chat.executive_done turn_id=%s chunks=%d duration_s=%.2f timed_out=%s disconnected=%s stopped=%s",

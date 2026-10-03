@@ -2397,14 +2397,8 @@ class Executive:
             added = inbox.take() if inbox is not None else []
             if added:
                 tool_results.append({"type": "text", "text": render_added_messages(added)})
-                for m in added:
-                    audit_log(
-                        "chat_turn",
-                        f"User (added while working): {m.text[:200]}",
-                        actor="user",
-                        details={"direction": "in", "added_mid_turn": True, "msg_len": len(m.text)},
-                        full={"message": m.text},
-                    )
+                # Audited by the inbox's owner (the web chat route), under
+                # the same privacy as the turn's own message.
                 yield {"type": "message_added", "ids": [m.id for m in added]}
             current_messages.append({"role": "user", "content": tool_results})
             # Bounded to the messages this loop appended: current_messages
