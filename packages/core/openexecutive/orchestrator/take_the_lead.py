@@ -435,6 +435,24 @@ def _known(address: str) -> bool:
         return False
 
 
+def _team_only(tool: str, tool_input: dict[str, Any]) -> bool:
+    """Whether everyone the action reaches is on the team. Anyone else (a
+    contact, someone unknown) is the principal's to approve: only their
+    approval opens contact egress, and contacts are private to them."""
+    from openexecutive.people.store import find_person_by_address
+
+    addresses, _ = _targets(tool, tool_input)
+    text = "\n".join(_strings(tool_input))
+    for address in {a.lower() for a in [*_EMAIL_RE.findall(text), *addresses]}:
+        try:
+            person = find_person_by_address(address, include_contacts=True)
+        except Exception:
+            return False
+        if person is None or person.kind != "team":
+            return False
+    return True
+
+
 # Tools that name who they reach by an id rather than an address.
 _TARGET_KEYS: dict[str, tuple[str, str]] = {
     "message_person": ("person_id", "person"),
@@ -794,6 +812,16 @@ def _approver_for(kind: str, text: str, reason: str) -> int | None:
         return None
 
 
+def _principal_id() -> int | None:
+    from openexecutive.people.registry import get_principal
+
+    try:
+        principal = get_principal()
+    except Exception:
+        return None
+    return principal.id if principal is not None else None
+
+
 def _is_principal(person_id: int | None) -> bool:
     from openexecutive.people.store import get_person
 
@@ -836,7 +864,10 @@ def hold(
             idem = key
             break
     summary = summarize(tool, tool_input, mcp=mcp)
-    approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
+    if _team_only(tool, tool_input):
+        approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
+    else:
+        approver = _principal_id()
     private = _is_principal(approver)
     # What it would say quotes the Executive's context: on a card that sits
     # on the team's Today only the plain line shows; the approver reads the

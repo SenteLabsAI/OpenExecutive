@@ -11,7 +11,7 @@ export const RULE_KINDS: { kind: LeadRuleKind; label: string; placeholder: strin
   { kind: "person", label: "A person", placeholder: "Name or email", describe: (v) => `Anything to or about ${v}` },
   { kind: "domain", label: "A company", placeholder: "example.com", describe: (v) => `Anything to someone at ${v}` },
   { kind: "words", label: "Words", placeholder: "acquisition", describe: (v) => `Anything that mentions “${v}”` },
-  { kind: "amount", label: "An amount", placeholder: "500", describe: (v) => `Any amount of ${v} or more` },
+  { kind: "amount", label: "An amount", placeholder: "500", describe: (v) => `Any amount of ${v} or more, written with a currency ($, €, USD…)` },
 ];
 
 export default function LeadRulesEditor({

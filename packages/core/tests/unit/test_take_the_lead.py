@@ -318,6 +318,20 @@ def test_credit_vendors_and_board_reach_their_holders(owner: Any, monkeypatch: p
     assert _approver(owner, "delete_share", "Share the board deck") == owner.id
 
 
+def test_an_action_reaching_a_contact_goes_to_the_principal(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _team(monkeypatch)
+    _holder("Bea Big", "bea@co.example", AuthorityScope.SPEND_GT_10K)
+    client = people_store.upsert_person(full_name="Cleo Client", email="cleo@client.example", kind="contact")
+    people_registry.invalidate()
+    for tool_input in ({"person_id": client, "text": "Pay the $30,000 invoice"},
+                       {"text": "Email cleo@client.example: pay the $30,000 invoice"}):
+        decision_id = ttl.hold("message_person", tool_input, ttl.Hit("money", "held"),
+                               source="reflection", mcp=False)
+        decision = ledger.get_decision_instance(decision_id)
+        assert decision is not None and decision.approver_person_id == owner.id
+        ledger.mark_resolved(decision_id, ledger.STATUS_REJECTED)
+
+
 def test_just_me_routes_to_approval_ranges_too(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.memory import workspace_settings
 
