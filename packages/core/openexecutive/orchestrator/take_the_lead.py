@@ -122,13 +122,14 @@ _BROADCAST_TOOLS = frozenset({"send_company_broadcast", "send_department_message
 _MCP_ACTING_RE = re.compile(
     r"(send|reply|forward|create|update|delete|remove|trash|cancel|share|permission|move|post|invite|draft|"
     r"modify|append|write|insert|batch|clear|rename|copy|add|upload|schedule|set|edit|import|publish|archive|"
-    r"assign|replace|merge|transfer|approve|submit|book|respond|accept|decline)",
+    r"assign|replace|merge|transfer|approve|submit|book|respond|accept|decline|pay|execute|run|dispatch|"
+    r"launch|trigger|enable|disable|grant|revoke|mark|unsubscribe|subscribe|start|stop|label|star|pin|"
+    r"mute|snooze|block|restore|sync)",
     re.IGNORECASE,
 )
-_MCP_READ_RE = re.compile(
-    r"(?:^|[^a-z])(get|list|search|read|fetch|query|find|view|describe|download)(?:[^a-z]|$)",
-    re.IGNORECASE,
-)
+# The verb a tool's own name starts with (after any server prefix).
+_MCP_READ_VERBS = frozenset({"get", "list", "search", "read", "fetch", "query", "find", "view", "describe", "download"})
+_MCP_FIRST_WORD_RE = re.compile(r"[a-z]+|[A-Z][a-z]*")
 _MCP_DELETE_RE = re.compile(r"(delete|remove|trash|cancel|share|permission|clear|archive)", re.IGNORECASE)
 
 _MONEY_RE = re.compile(
@@ -953,9 +954,14 @@ def gated_handlers(handlers: dict[str, Any], *, source: str) -> dict[str, Any]:
 
 
 def mcp_tool_acts(name: str) -> bool:
-    """Whether a connected tool may change something. Fails closed: a name
-    that doesn't plainly read is treated as acting."""
-    return bool(_MCP_ACTING_RE.search(name)) or not _MCP_READ_RE.search(name)
+    """Whether a connected tool may change something. Fails closed: only a
+    name that starts with a read verb (after its server prefix) and says
+    nothing anywhere about acting passes."""
+    if _MCP_ACTING_RE.search(name):
+        return True
+    own = re.split(r"__|\.", name)[-1]
+    first = _MCP_FIRST_WORD_RE.match(own)
+    return first is None or first.group(0).lower() not in _MCP_READ_VERBS
 
 
 def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:
@@ -966,7 +972,12 @@ def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:
         if not mcp_tool_acts(name):
             return await call_tool(tool_input)
         arguments = tool_input.get("arguments")
-        inner_input = arguments if isinstance(arguments, dict) else {"arguments": arguments}
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            # Held as-is it would be approved as a different call.
+            return json.dumps({"error": f"{name} was not done: its arguments must be an object."})
+        inner_input = arguments
 
         async def _inner(_: dict[str, Any]) -> Any:
             return await call_tool(tool_input)

@@ -364,6 +364,12 @@ def test_mcp_reads_pass_and_sends_are_gated(owner: Any) -> None:
     ("google_workspace__insert_doc_elements", True),
     ("some_server__do_the_thing", True),  # not plainly a read, so it's gated
     ("google_workspace__get_and_clear_values", True),
+    ("google_workspace__mark_as_read", True),
+    ("crm__get_and_pay_invoice", True),
+    ("ops__list_and_dispatch", True),
+    ("mail__unsubscribe_from_list", True),
+    ("drive.searchFiles", False),
+    ("ms365__read_mail_message", False),
 ])
 def test_connected_tools_fail_closed(name: str, acts: bool) -> None:
     assert ttl.mcp_tool_acts(name) is acts
@@ -372,6 +378,18 @@ def test_connected_tools_fail_closed(name: str, acts: bool) -> None:
 def test_clearing_a_sheet_counts_as_deleting(owner: Any) -> None:
     hit = ttl.check("google_workspace__clear_sheet_values", {"spreadsheet_id": "abc"}, lead=_lead(), rules=[], mcp=True)
     assert hit is not None and hit.kind == ttl.DELETE_SHARE
+
+
+def test_connected_tool_arguments_must_be_an_object(owner: Any) -> None:
+    seen: list[str] = []
+
+    async def call_tool(tool_input: dict[str, Any]) -> str:
+        seen.append(tool_input["name"])
+        return "{}"
+
+    gated = ttl.gated_call_tool(call_tool, source="scheduled")
+    out = asyncio.run(gated({"name": "google_workspace__send_gmail_message", "arguments": "[1, 2]"}))
+    assert ttl.result_failed(out) and seen == []
 
 
 def test_a_large_amount_rule_holds_only_larger_amounts() -> None:
