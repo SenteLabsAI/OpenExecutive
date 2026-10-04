@@ -623,7 +623,9 @@ def test_as_you_lifts_the_setting(owner: Any) -> None:
     assert _check(owner) == "level"
     ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
     assert _check(owner) is None
-    assert _check(owner, body="Hi Dana, the total is $300 and the deck is at https://x.example/d") is None
+    # Confidence (0.6 here) and amounts give way; a link still waits on a tap.
+    assert _check(owner, body="Hi Dana, the total is $300.") is None
+    assert _check(owner, body="Hi Dana, the deck is at https://x.example/d") == "link"
 
 
 def test_as_you_keeps_what_always_waits_and_adds_the_rules(owner: Any) -> None:

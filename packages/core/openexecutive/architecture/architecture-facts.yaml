@@ -9157,8 +9157,10 @@ delegation:
     every 30 minutes; the pause holds it. "person:<id>" (owner only for
     now, PUT /delegation/take-the-lead): the Handle it for me dial's top
     step; handle_it.refusal drops the mode limits (strangers, confidence,
-    links, amounts, length up to 4000) for the added rules (lead_rule) and
-    keeps everything else Handle it always keeps.
+    amounts, length up to 4000) for the added rules (lead_rule) and
+    keeps everything else Handle it always keeps; a reply with a link
+    still waits on a card (refusal link), since a link sent as the owner
+    is the shape a phish takes (owner's choice).
     The gate (take_the_lead.check, plain code): six kinds, each with an Ask
     first switch (the decision ledger's mode for take_the_lead_action:<kind>,
     propose by default), all on to start: money, contracts, people_decisions,

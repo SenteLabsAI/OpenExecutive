@@ -24,7 +24,7 @@ import { formatAgo } from "@/lib/setupStatus";
 // replies the inbox watcher sends from your mailbox on its own. Plain code
 // decides each one (delegation/handle_it.py). One dial says how much goes
 // without you: Off, Careful, Balanced, Bold, and for the owner Take the lead
-// (PUT /delegation/take-the-lead), where only the topics that always wait and
+// (PUT /delegation/take-the-lead), where links, the topics that always wait and
 // the added rules hold a reply back. Anything it won't send waits on Today as
 // before. Below the dial, what it sent in the last week (GET /delegation/handled).
 export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string; followUps: string }[] = [
@@ -91,7 +91,7 @@ type Step = "off" | HandleItMode | "lead";
 const OFF_STEP = { label: "Off", text: "Every reply waits for you to tap Send." };
 const LEAD_STEP = {
   label: "Take the lead",
-  text: "It decides what to send as you. Only the topics that always wait and your rules hold it back.",
+  text: "It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
 };
 
 export function HandleItSection({

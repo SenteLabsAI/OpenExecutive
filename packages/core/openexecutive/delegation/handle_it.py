@@ -408,6 +408,9 @@ def _refusal(
     if lead:
         if _lead_rule(person_id, texts, going, db_path):
             return "lead_rule"
+        # A link still waits on a tap: sent as them, it's the shape a phish takes.
+        if _LINK_RE.search(body):
+            return "link"
         if len(body) > LEAD_MAX_BODY_CHARS:
             return "long"
         if any(f not in ALLOWED_FLAGS for f in reply.flags):
