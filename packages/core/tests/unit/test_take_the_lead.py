@@ -558,3 +558,56 @@ def test_a_wake_runs_the_reflection_only_while_on(monkeypatch: pytest.MonkeyPatc
     assert ran == (["take_the_lead_wake"] if on else [])
     done = get_scheduled_action(action_id)
     assert done is not None and done.status == "done"
+
+
+# ── the leading pass finds and uses the deployment's tools ───────────────────
+
+
+class _Gateway:
+    def __init__(self) -> None:
+        self.called: list[str] = []
+
+    async def search_tools(self, tool_input: dict[str, Any]) -> str:
+        return json.dumps({"tools": [{"name": "google_workspace__create_spreadsheet"}]})
+
+    async def call_tool(self, tool_input: dict[str, Any]) -> str:
+        self.called.append(tool_input["name"])
+        return json.dumps({"ok": True})
+
+
+def _lead_tools(monkeypatch: pytest.MonkeyPatch, gateway: Any) -> tuple[list[str], dict[str, Any], bool]:
+    from openexecutive.orchestrator import mcp_gateway
+    from openexecutive.workflows import executive_reflection
+
+    monkeypatch.setattr(mcp_gateway, "get_active_gateway", lambda: gateway)
+    tools, handlers, leading = executive_reflection._with_lead_tools([{"name": "message_person"}], {})
+    return [t["name"] for t in tools], handlers, leading
+
+
+def test_the_pass_gets_no_gateway_tools_while_off(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    names, handlers, leading = _lead_tools(monkeypatch, _Gateway())
+    assert names == ["message_person"] and handlers == {} and not leading
+
+
+def test_the_leading_pass_can_discover_and_use_connected_tools(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="test")
+    gateway = _Gateway()
+    names, handlers, leading = _lead_tools(monkeypatch, gateway)
+    assert leading and names == ["call_tool", "message_person", "search_tools"]
+    assert "load_mcp_server" not in handlers  # no new connections unattended
+    found = asyncio.run(handlers["search_tools"]({"query": "spreadsheet"}))
+    assert "create_spreadsheet" in found
+    asyncio.run(handlers["call_tool"]({"name": "google_workspace__create_spreadsheet",
+                                       "arguments": {"title": "Project tracker"}}))
+    assert gateway.called == ["google_workspace__create_spreadsheet"]
+    # Sharing it is held for a yes, like any delete or share.
+    held = asyncio.run(handlers["call_tool"]({"name": "google_workspace__share_drive_file",
+                                              "arguments": {"file_id": "f1"}}))
+    assert json.loads(held)["status"] == "waiting_for_approval"
+    assert gateway.called == ["google_workspace__create_spreadsheet"]
+
+
+def test_the_leading_pass_without_a_gateway_still_leads(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="test")
+    names, handlers, leading = _lead_tools(monkeypatch, None)
+    assert leading and names == ["message_person"]

@@ -9144,7 +9144,13 @@ delegation:
     wrap every acting tool (ACTING_TOOLS, MCP names that send, create,
     update, delete or share) in the gate; UNATTENDED_WITHHELD_TOOLS stay
     withheld and every guard inside a handler still applies, so department
-    approval levels hold. New mail or chat
+    approval levels hold. The reflection pass also gets the MCP gateway's
+    search_tools and call_tool (executive_reflection._with_lead_tools;
+    call_tool behind the gate, load_mcp_server left out) so it can find
+    and use whatever the deployment has connected, with a user-turn note
+    telling it to act (_LEAD_NOTE, never the cached system prompt) and
+    room for it: 10 iterations, 4000 tokens, tool results up to 4000
+    characters (execute_tool_calls result_chars). New mail or chat
     (a turn with origin_channel) wakes the reflection early: one
     take_the_lead_wake action 5 minutes out, none while one waits, at most
     every 30 minutes; the pause holds it. "person:<id>" (owner only for

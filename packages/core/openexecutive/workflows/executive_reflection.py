@@ -72,6 +72,23 @@ _MAX_REFLECTION_ITERATIONS = 4
 # Cap the LLM response size — the reflection prompt is structured so
 # the model emits one summary turn after all tool calls.
 _MAX_REFLECTION_TOKENS = 2000
+# With Take the lead as the Executive on, the pass also gets the deployment's
+# own tools (the MCP gateway's search_tools / call_tool, behind the gate), so
+# it can find a tool, use it and read what came back: more room for that.
+_LEAD_ITERATIONS = 10
+_LEAD_TOKENS = 4000
+_LEAD_RESULT_CHARS = 4000
+# Added to the user turn (never the cached system prompt) while it leads.
+_LEAD_NOTE = (
+    "\n\nTake the lead is on: act on what you find instead of only reporting "
+    "it. Message people, book, start workflows, and when a task needs "
+    "something you don't have here (a spreadsheet to track something, a "
+    "document, a record in another system), call search_tools to find what "
+    "this deployment has connected and call_tool to use it. Anything about "
+    "money, contracts, people decisions, deletes or shares, someone new or "
+    "a big send waits for a yes on its own; say what you did and what is "
+    "waiting."
+)
 
 
 # Per-channel DM tools, in display order. The "single human owns it"
@@ -442,6 +459,36 @@ def _render_reflection_context(
     return "\n".join(parts)
 
 
+def _with_lead_tools(
+    tools: list[dict[str, Any]], handlers: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    """With Take the lead as the Executive on and an MCP gateway running,
+    add the gateway's search_tools and call_tool so this pass can discover
+    and use whatever the deployment has connected (Sheets, Drive, a CRM…).
+    call_tool goes through the Take the lead gate like every other acting
+    tool; load_mcp_server stays out (no new connections unattended)."""
+    try:
+        from openexecutive.orchestrator import take_the_lead
+        from openexecutive.orchestrator.mcp_gateway import MCP_TOOLS, get_active_gateway
+
+        if not take_the_lead.executive_on():
+            return tools, handlers, False
+        gateway = get_active_gateway()
+    except Exception:
+        logger.warning("reflection: couldn't check Take the lead — no gateway tools", exc_info=True)
+        return tools, handlers, False
+    if gateway is None:
+        return tools, handlers, True
+    extra = [t for t in MCP_TOOLS if t["name"] in ("search_tools", "call_tool")]
+    tools = sorted([*tools, *extra], key=lambda t: t["name"])
+    handlers = {
+        **handlers,
+        "search_tools": gateway.search_tools,
+        "call_tool": take_the_lead.gated_call_tool(gateway.call_tool, source="reflection"),
+    }
+    return tools, handlers, True
+
+
 # Re-export the synthesis helpers under the private aliases this module
 # used to define. Both helpers now live in `workflows/_synthesis.py` so
 # `executive_research` can reuse them without an underscore-import
@@ -764,6 +811,9 @@ class ExecutiveReflectionWorkflow(Workflow):
         # anyway is skipped as unknown). Solo also withholds the team tools,
         # meeting booking and run_workflow, and messages only the principal.
         tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode, source="reflection")
+        tools, handlers, leading = _with_lead_tools(tools, handlers)
+        if leading:
+            user_content += _LEAD_NOTE
         # Nobody reads what this pass sends before it goes: an outward tool
         # whose text names a person or figure absent from the input (or a
         # tool result so far) is refused with a reason the model can act on.
@@ -793,11 +843,11 @@ class ExecutiveReflectionWorkflow(Workflow):
         final_text = ""
 
         try:
-            for iteration in range(1, _MAX_REFLECTION_ITERATIONS + 1):
+            for iteration in range(1, (_LEAD_ITERATIONS if leading else _MAX_REFLECTION_ITERATIONS) + 1):
                 try:
                     response = await get_provider(model).messages_create(
                         model=model,
-                        max_tokens=_MAX_REFLECTION_TOKENS,
+                        max_tokens=_LEAD_TOKENS if leading else _MAX_REFLECTION_TOKENS,
                         system=reflection_system,
                         tools=tools,  # type: ignore[arg-type]
                         messages=messages,  # type: ignore[arg-type]
@@ -814,7 +864,9 @@ class ExecutiveReflectionWorkflow(Workflow):
                 from openexecutive.attunement.outcomes import SOURCE_REFLECTION, tag_proactive
 
                 with tag_proactive(SOURCE_REFLECTION):
-                    iter_summaries = await _execute_tool_calls(response, handlers)
+                    iter_summaries = await _execute_tool_calls(
+                        response, handlers, result_chars=_LEAD_RESULT_CHARS if leading else 160,
+                    )
                 tool_call_summaries.extend(iter_summaries)
 
                 text = _extract_artifact_from_response(response)
