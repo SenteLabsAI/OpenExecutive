@@ -1405,10 +1405,14 @@ async def _settle_unconfirmed_send(
     ):
         return 0
     if on_its_own:
-        # Before the rest of the bookkeeping: the limits count these rows.
-        handle_it.record_handled(
-            person.id, str(payload.get("thread_id") or ""), card.id, sent[-1].id or None, now=now,
-        )
+        # Before the rest of the bookkeeping, and on its own: the limits
+        # count these rows, and the card is already finished.
+        try:
+            handle_it.record_handled(
+                person.id, str(payload.get("thread_id") or ""), card.id, sent[-1].id or None, now=now,
+            )
+        except Exception:
+            logger.exception("delegation.inbox: recording a reply sent on its own failed")
     _set_outcome(person.id, message_id, SENT, reason="handled" if on_its_own else "sent")
     drafts.mark_sent(person.id, draft_id, sent[-1].id)
     _audit("delegation_reply_sent", f"Sent a reply as person {person.id}", {
