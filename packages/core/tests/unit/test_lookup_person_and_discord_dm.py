@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from openexecutive.memory import episodic
 from openexecutive.orchestrator.schedule_tools import (
     handle_lookup_person,
     handle_send_discord_dm,
@@ -26,6 +27,13 @@ def isolated_people_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "episodic.db"
     monkeypatch.setattr(people_store, "DB_PATH", db_path)
     people_store.initialize_db()
+    # A send also records itself on the activity rail and in the audit log,
+    # both through the default ./episodic_memory.db. Run from tmp_path with
+    # that schema in place: otherwise the tests write a stray DB into the
+    # working directory (breaking later modules on the same worker) and the
+    # rail's "persist failed" audit row becomes the last audit call.
+    monkeypatch.chdir(tmp_path)
+    episodic.initialize_db(tmp_path / "episodic_memory.db")
     return db_path
 
 
