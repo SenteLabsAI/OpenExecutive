@@ -19,6 +19,7 @@ import {
   type LeadRule,
 } from "@/lib/api";
 import { formatAgo } from "@/lib/setupStatus";
+import FeatureName from "@/components/FeatureName";
 
 // Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
@@ -162,7 +163,7 @@ export function HandleItSection({
 
   return (
     <SettingsCard
-      title="Handle it for me"
+      title={<FeatureName feature="handle_it" />}
       titleId="handle-it-label"
       description={
         !handleIt.available

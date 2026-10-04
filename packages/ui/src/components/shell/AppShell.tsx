@@ -170,7 +170,7 @@ function TopBar({
         </button>
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 min-w-0">
           {crumbs.length === 0 ? (
-            <span className="text-sm text-fg-muted">Open Executive</span>
+            <span className="font-display text-[15px] font-extrabold tracking-tight text-fg">Open Executive</span>
           ) : (
             crumbs.map((c, i) => {
               const isLast = i === crumbs.length - 1;

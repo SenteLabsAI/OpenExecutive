@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { GOOGLE_SIGN_IN, LOCAL_LOGIN, OIDC, auth, sessionStillAllowed, signIn } from "@/auth";
 import { LOCAL_LOGIN_PROVIDER_ID } from "@/lib/localLogin";
 import { OIDC_PROVIDER_ID } from "@/lib/oidc";
+import BrandMark from "@/components/BrandMark";
 
 type SearchParams = Promise<{ callbackUrl?: string; error?: string }>;
 
@@ -35,7 +36,10 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
   return (
     <main className="min-h-screen flex items-center justify-center px-6">
       <div className="w-full max-w-sm rounded-2xl border border-line bg-surface/60 p-8 shadow-xl">
-        <h1 className="text-xl font-semibold tracking-tight text-fg">Open Executive</h1>
+        <h1 className="flex items-center gap-2.5 font-display text-2xl font-extrabold tracking-tight text-fg">
+          <BrandMark size="sm" />
+          Open Executive
+        </h1>
         <p className="mt-2 text-sm text-fg-muted">
           {LOCAL_LOGIN
             ? "This copy runs on your computer, and only you can reach it — so there’s no sign-in."

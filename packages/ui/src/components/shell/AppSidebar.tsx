@@ -92,7 +92,7 @@ export default function AppSidebar({
             <BrandMark size="sm" />
           </span>
           <span className="min-w-0">
-            <span className="block text-[15px] font-semibold truncate">Open Executive</span>
+            <span className="block font-display text-[17px] font-extrabold tracking-tight truncate">Open Executive</span>
             {companyName && (
               <span className="block text-xs text-fg-muted truncate">{companyName}</span>
             )}

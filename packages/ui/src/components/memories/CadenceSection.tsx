@@ -23,6 +23,7 @@ import {
   metaFor,
   showsRhythm,
 } from "./shared";
+import FeatureName from "@/components/FeatureName";
 
 // The "how it runs" half of the Pulse page. The rhythm taxonomy (KIND_META /
 // metaFor / groupByRhythm) now lives in ./shared so the header stat strip and
@@ -287,13 +288,13 @@ export function RecentActivity() {
                     <span className="text-xs text-fg-subtle tabular-nums">{relative}</span>
                   )}
                   {actingAs(it) && (
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                        it.kind === "sent_as_you" ? "bg-accent/10 text-accent" : "bg-surface-overlay text-fg"
-                      }`}
-                    >
-                      {actingAs(it)}
-                    </span>
+                    <>
+                      <FeatureName
+                        feature={it.kind === "sent_as_you" ? "handle_it" : "take_the_lead"}
+                        className="text-xs"
+                      />
+                      <span className="text-xs font-semibold text-fg-muted">{actingAs(it)}</span>
+                    </>
                   )}
                   <span className="text-sm text-fg-muted">{verb}</span>
                   {!subjectIsSummary && (
