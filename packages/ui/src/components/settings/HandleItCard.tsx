@@ -24,26 +24,27 @@ import FeatureName from "@/components/FeatureName";
 // Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
 // decides each one (delegation/handle_it.py). One dial says how much goes
-// without you: Off, Careful, Balanced, Bold, and for the owner Take the lead
+// without you: Off, Easy ones, People I know, Most mail, and for the owner
+// Everything, which uses Take the lead
 // (PUT /delegation/take-the-lead), where links, the topics that always wait and
 // the added rules hold a reply back. Anything it won't send waits on Today as
 // before. Below the dial, what it sent in the last week (GET /delegation/handled).
 export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string; followUps: string }[] = [
   {
     mode: "careful",
-    label: "Careful",
+    label: "Easy ones",
     replies: "Only short replies to people you know, when it's very sure.",
     followUps: "Written for you, and they wait on Today for you to send.",
   },
   {
     mode: "balanced",
-    label: "Balanced",
+    label: "People I know",
     replies: "Replies to people you know. Strangers, links and amounts wait for you.",
     followUps: "Sent to your team and contacts when they haven't answered a question of yours in a few days.",
   },
   {
     mode: "bold",
-    label: "Bold",
+    label: "Most mail",
     replies: "Also strangers and longer replies, and links or amounts when it's very sure.",
     followUps: "Sent to anyone you wrote to who hasn't answered a question of yours in a few days.",
   },
@@ -91,8 +92,8 @@ type Step = "off" | HandleItMode | "lead";
 
 const OFF_STEP = { label: "Off", text: "Every reply waits for you to tap Send." };
 const LEAD_STEP = {
-  label: "Take the lead",
-  text: "It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
+  label: "Everything",
+  text: "Uses Take the lead. It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
 };
 
 export function HandleItSection({

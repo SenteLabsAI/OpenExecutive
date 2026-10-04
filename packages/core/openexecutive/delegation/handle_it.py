@@ -146,7 +146,7 @@ _AMOUNT_RE = re.compile(
 
 # What each refusal tells the person on the card.
 REASONS: dict[str, str] = {
-    "level": "Handle it for me asks you about email from people you don't know yet (Bold sends those).",
+    "level": "Handle it for me asks you about email from people you don't know yet (Most mail sends those).",
     "signing_off": "Sending on its own needs signed sign-ins on this server.",
     "sender_unverified": "Your mail service couldn't confirm who sent it.",
     "unsure": "It wasn't sure enough this needs only a simple reply.",
