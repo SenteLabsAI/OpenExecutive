@@ -4784,7 +4784,7 @@ export async function updateClientMeta(
   return res.json();
 }
 
-// ── Take the lead (Settings → On its own, Today → What I did) ────────────────
+// ── Take the lead (Settings → On its own) ────────────────
 
 export type LeadRuleKind = "person" | "domain" | "words" | "amount";
 
@@ -4800,16 +4800,6 @@ export interface TakeTheLead {
   rules: LeadRule[];
   available: boolean;
   paused: boolean;
-}
-
-export interface WhatIDidItem {
-  at: string;
-  actor: "executive" | "you";
-  title: string;
-  detail: string;
-  why: string;
-  status: "done" | "waiting" | "approved" | "declined" | "failed";
-  link: string;
 }
 
 async function leadError(res: Response, fallback: string): Promise<Error> {
@@ -4890,12 +4880,4 @@ export async function deleteMyLeadRule(id: number): Promise<LeadRule[]> {
   const res = await fetch(`${API_BASE}/delegation/take-the-lead/rules/${id}`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't remove the rule.");
   return ((await res.json()) as { rules: LeadRule[] }).rules;
-}
-
-// Everything done on its own for you this week; [] when the backend predates it.
-export async function getWhatIDid(signal?: AbortSignal): Promise<WhatIDidItem[]> {
-  const res = await fetch(`${API_BASE}/take-the-lead/done`, { signal });
-  if (res.status === 403 || res.status === 404) return [];
-  if (!res.ok) throw await leadError(res, "Couldn't load what it did.");
-  return ((await res.json()) as { items: WhatIDidItem[] }).items;
 }

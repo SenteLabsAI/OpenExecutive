@@ -9151,7 +9151,8 @@ delegation:
     links, amounts, length up to 4000) for the added rules (lead_rule) and
     keeps everything else Handle it always keeps.
     The gate (take_the_lead.check, plain code): six kinds, each with an Ask
-    first switch, all on to start: money, contracts, people_decisions,
+    first switch (the decision ledger's mode for take_the_lead_action:<kind>,
+    propose by default), all on to start: money, contracts, people_decisions,
     delete_share, someone_new (not on the roster or contacts), big_send
     (broadcast, department message, more than 5 people). Added rules
     (take_the_lead_rules, scope company or person:<id>; kinds person,
@@ -9159,10 +9160,13 @@ delegation:
     Structured only: no model reads a rule. A held action is a
     take_the_lead_action decision (principal_and_approver: only the
     principal and its approver see or resolve it) with a Today card,
-    routed by authority scope (money spend_lt_10k, contracts legal_sign,
-    hiring hiring_signoff; team mode) else the principal. Approve claims
+    routed by the authority gate's _route_proposal on the People scope
+    (money spend_lt_10k, contracts legal_sign, hiring hiring_signoff; team
+    mode) else the principal. Approve claims
     the row and runs the exact call once (carry_out); reject drops it.
-    take_the_lead_log feeds What I did (GET /take-the-lead/done).
+    take_the_lead_log feeds Recent activity (kind took_the_lead, named not
+    quoted); /today/activity adds the caller's own Handle it sends
+    (sent_as_you). No separate What I did list.
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,

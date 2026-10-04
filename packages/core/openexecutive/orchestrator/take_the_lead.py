@@ -28,8 +28,8 @@ Pausing the Executive stops all of it: every pass above runs behind the
 scheduler's pause gate. A person approving a held action is their own act,
 so it works while paused.
 
-Everything it does on its own is recorded in ``take_the_lead_log`` for What I
-did on Today (``done``).
+Everything it does on its own is recorded in ``take_the_lead_log``; Recent
+activity on Today names what it did (``api.routes.today._build_activity``).
 """
 from __future__ import annotations
 
@@ -155,7 +155,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {LEAD_TABLE} ("  # noqa: S608 — constant table name
         "scope TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
-        "ask_first TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)"
+        "updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)"
     )
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {RULES_TABLE} ("  # noqa: S608
@@ -187,12 +187,23 @@ class Lead:
         return self.ask_first.get(kind, True)
 
 
-def _clean_ask_first(raw: Any) -> dict[str, bool]:
+def kind_class(kind: str) -> str:
+    """The decision ledger class whose mode is that kind's Ask first:
+    ``propose`` (the ledger's default) asks first, ``auto_execute`` doesn't."""
+    return f"{DECISION_CLASS}:{kind}"
+
+
+def _ask_first(db_path: Path | None) -> dict[str, bool]:
+    """Each kind's Ask first, from the decision ledger's class modes.
+    Unreadable asks first."""
+    from openexecutive.memory.decision_ledger import get_class_mode
+
     out = dict.fromkeys(KINDS, True)
-    if isinstance(raw, dict):
-        for kind in KINDS:
-            if isinstance(raw.get(kind), bool):
-                out[kind] = raw[kind]
+    for kind in KINDS:
+        try:
+            out[kind] = get_class_mode(kind_class(kind), db_path=db_path) != "auto_execute"
+        except Exception:
+            out[kind] = True
     return out
 
 
@@ -202,20 +213,14 @@ def get(scope: str, *, db_path: Path | None = None) -> Lead:
         conn = _connect(db_path)
         try:
             row = conn.execute(
-                f"SELECT enabled, ask_first FROM {LEAD_TABLE} WHERE scope = ?", (scope,),  # noqa: S608
+                f"SELECT enabled FROM {LEAD_TABLE} WHERE scope = ?", (scope,),  # noqa: S608
             ).fetchone()
         finally:
             conn.close()
     except Exception:
         logger.warning("take_the_lead: couldn't read the switch — treating it as off", exc_info=True)
-        return Lead(scope=scope)
-    if row is None:
-        return Lead(scope=scope)
-    try:
-        ask_first = _clean_ask_first(json.loads(row["ask_first"] or "{}"))
-    except (TypeError, ValueError):
-        ask_first = dict.fromkeys(KINDS, True)
-    return Lead(scope=scope, enabled=bool(row["enabled"]), ask_first=ask_first)
+        return Lead(scope=scope, ask_first=_ask_first(db_path))
+    return Lead(scope=scope, enabled=bool(row and row["enabled"]), ask_first=_ask_first(db_path))
 
 
 def set_(
@@ -228,19 +233,20 @@ def set_(
 ) -> Lead:
     """Change ``scope``'s switch and/or its Ask first switches (callers
     authorize first). Unknown kinds are ignored."""
+    from openexecutive.memory.decision_ledger import set_class_mode
+
     current = get(scope, db_path=db_path)
     new_enabled = current.enabled if enabled is None else enabled
-    merged = dict(current.ask_first)
     for kind, value in (ask_first or {}).items():
-        if kind in KINDS and isinstance(value, bool):
-            merged[kind] = value
+        if kind in KINDS and isinstance(value, bool) and value != current.asks_first(kind):
+            set_class_mode(kind_class(kind), "propose" if value else "auto_execute", db_path=db_path)
     conn = _connect(db_path)
     try:
         conn.execute(
-            f"INSERT INTO {LEAD_TABLE} (scope, enabled, ask_first, updated_at, updated_by) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET enabled = excluded.enabled, "
-            "ask_first = excluded.ask_first, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-            (scope, 1 if new_enabled else 0, json.dumps(merged), datetime.now(UTC).isoformat(), updated_by),
+            f"INSERT INTO {LEAD_TABLE} (scope, enabled, updated_at, updated_by) "  # noqa: S608
+            "VALUES (?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET enabled = excluded.enabled, "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (scope, 1 if new_enabled else 0, datetime.now(UTC).isoformat(), updated_by),
         )
         conn.commit()
     finally:
@@ -485,8 +491,9 @@ _TOOL_LABELS: dict[str, str] = {
 }
 
 
-def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> str:
-    """One plain line saying what the action does."""
+def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote: bool = True) -> str:
+    """One plain line saying what the action does; ``quote`` adds the start
+    of what it says (the approval card has it, the activity feed doesn't)."""
     label = _TOOL_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
     if tool == "message_person":
         try:
@@ -507,7 +514,7 @@ def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> st
         if isinstance(value, str) and value.strip():
             snippet = " ".join(value.split())
             break
-    if snippet:
+    if snippet and quote:
         snippet = snippet if len(snippet) <= 120 else snippet[:117] + "…"
         return f"{label}: “{snippet}”"[:240]
     return label[:240]
@@ -517,7 +524,7 @@ def record(
     *, scope: str, source: str, tool: str, summary: str, status: str, why: str = "",
     decision_id: int | None = None, db_path: Path | None = None,
 ) -> None:
-    """Add a What I did line. Best effort."""
+    """Add a log row (Recent activity reads the done ones). Best effort."""
     try:
         conn = _connect(db_path)
         try:
@@ -561,7 +568,9 @@ class Done:
 
 
 def done(scopes: list[str], *, days: int = 7, limit: int = 100, db_path: Path | None = None) -> list[Done]:
-    """What it did on its own for ``scopes`` in the last ``days``, newest first."""
+    """What it did on its own for ``scopes`` in the last ``days``, newest
+    first: the Take the lead rows of Today's Recent activity
+    (``api.routes.today._build_activity``)."""
     if not scopes:
         return []
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -579,11 +588,13 @@ def done(scopes: list[str], *, days: int = 7, limit: int = 100, db_path: Path | 
 
 
 # Area → the authority scope whose holders may approve a held action of
-# that kind (the department approval levels); anything else goes to the
-# principal.
-def _approver_for(kind: str) -> int | None:
+# that kind (the department approval levels' People scopes); anything else
+# is the principal's. The authority gate picks the person
+# (``departments.authority._route_proposal``), as for a department proposal.
+def _approver_for(kind: str, reason: str) -> int | None:
+    from openexecutive.departments.authority import _route_proposal
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
     from openexecutive.people.models import AuthorityScope
-    from openexecutive.people.store import find_approvers, find_principal_person
 
     scope = {
         MONEY: AuthorityScope.SPEND_LT_10K,
@@ -591,14 +602,12 @@ def _approver_for(kind: str) -> int | None:
         PEOPLE_DECISIONS: AuthorityScope.HIRING_SIGNOFF,
     }.get(kind)
     try:
-        from openexecutive.memory.workspace_settings import effective_workspace_mode
-
-        if scope is not None and effective_workspace_mode(None) != "solo":
-            approvers = find_approvers(scope)
-            if approvers and approvers[0].id is not None:
-                return approvers[0].id
-        principal = find_principal_person()
-        return principal.id if principal is not None else None
+        if effective_workspace_mode(None) == "solo":
+            scope = None  # just me: everything goes to the owner
+        decision = _route_proposal(
+            department_slug="", action="propose", required_scope=scope, now=datetime.now(UTC), reason=reason,
+        )
+        return decision.assignee_person_id
     except Exception:
         logger.warning("take_the_lead: couldn't find an approver — leaving it to the principal", exc_info=True)
         return None
@@ -630,7 +639,7 @@ def hold(
     )
 
     summary = summarize(tool, tool_input, mcp=mcp)
-    approver = _approver_for(hit.kind)
+    approver = _approver_for(hit.kind, hit.reason)
     payload = {
         "tool": tool, "input": tool_input, "mcp": mcp, "kind": hit.kind, "rule_id": hit.rule_id,
         "reason": hit.reason, "summary": summary, "source": source,
@@ -668,7 +677,8 @@ def hold(
         )
     except Exception:
         logger.exception("take_the_lead: couldn't put decision %d on Today", decision_id)
-    record(scope=SCOPE_EXECUTIVE, source=source, tool=tool, summary=summary, status="waiting",
+    record(scope=SCOPE_EXECUTIVE, source=source, tool=tool, summary=summarize(tool, tool_input, mcp=mcp, quote=False),
+           status="waiting",
            why=f"It waited because {hit.reason}.", decision_id=decision_id, db_path=db_path)
     return decision_id
 
@@ -701,7 +711,7 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
     result = await inner(tool_input)
     text = result if isinstance(result, str) else json.dumps(result) if isinstance(result, dict) else str(result)
     failed = '"error"' in text[:200]
-    record(scope=SCOPE_EXECUTIVE, source=source, tool=name, summary=summarize(name, tool_input, mcp=mcp),
+    record(scope=SCOPE_EXECUTIVE, source=source, tool=name, summary=summarize(name, tool_input, mcp=mcp, quote=False),
            status="failed" if failed else "done", why=_SOURCE_WHY.get(source, ""))
     return text
 
@@ -776,7 +786,7 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
 
 
 def resolved(decision_id: int, status: str) -> None:
-    """Mirror an approval or decline into What I did."""
+    """Mirror an approval or decline into the log."""
     _set_log_status(decision_id, status)
 
 

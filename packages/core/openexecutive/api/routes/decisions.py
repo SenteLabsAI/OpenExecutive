@@ -501,7 +501,7 @@ async def _carry_out_lead(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
     """Take the lead: do the exact action that waited, once (claimed first),
-    then record it on What I did."""
+    then record it in Recent activity."""
     from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
     from openexecutive.orchestrator import take_the_lead
 

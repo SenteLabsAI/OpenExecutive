@@ -1914,7 +1914,7 @@ def unattended_toolkit(
     With Take the lead as the Executive on (``take_the_lead``), solo keeps
     the booking and workflow tools and its ``message_person`` reaches the
     team, and every acting tool, in either mode, goes through the gate
-    instead (``source`` names the pass on What I did).
+    instead (``source`` names the pass in its log).
     """
     from openexecutive.orchestrator import take_the_lead
 

@@ -1001,6 +1001,9 @@ def _resolve_channel_target(
     return lookup.get((channel, key_ref), channel_ref)
 
 
+# Held Take the lead actions (orchestrator.take_the_lead.DECISION_CLASS).
+TAKE_THE_LEAD_CLASS = "take_the_lead_action"
+
 # Terminal decision-instance status → human verb for the activity rail.
 _DECISION_STATUS_LABEL = {
     "approved_unchanged": "Approved",
@@ -1214,6 +1217,8 @@ def _build_activity(
     for instance in decision_ledger.list_recent_resolved(limit=pool):
         if _payload_is_private(instance.proposed_payload_json):
             continue  # a meeting with one of the principal's contacts
+        if instance.decision_class == TAKE_THE_LEAD_CLASS:
+            continue  # its card quotes the message: the Take the lead rows below say what it did
         label = _DECISION_STATUS_LABEL.get(instance.status, "Resolved")
         detail = (
             _payload_headline(instance.final_payload_json)
@@ -1227,6 +1232,28 @@ def _build_activity(
             target=None,
             department=instance.department or None,
             at=instance.resolved_at or instance.created_at,
+        ))
+
+    # Take the lead as the Executive: what it did on its own, and what it
+    # did once someone approved it (orchestrator.take_the_lead). Named, never
+    # quoted: this feed is the whole team's.
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        led = take_the_lead.done([take_the_lead.SCOPE_EXECUTIVE], days=30, limit=pool)
+    except Exception:
+        logger.warning("activity: couldn't read Take the lead's rows", exc_info=True)
+        led = []
+    for row in led:
+        if row.status not in ("done", "approved"):
+            continue
+        items.append(ActivityItem(
+            kind="took_the_lead",
+            summary=row.summary if row.status == "done" else f"{row.summary} (after a yes)",
+            actor="Executive",
+            target=None,
+            department=None,
+            at=row.at,
         ))
 
     # Operational alerts the Executive raised. For the rail, all statuses are
@@ -1851,18 +1878,55 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
 
 @router.get("/today/activity", response_model=ActivityResponse, tags=["today"])
 def get_today_activity(
+    request: Request,
     limit: int = Query(20, ge=1, le=100),
 ) -> ActivityResponse:
     """Recent self-initiated Executive activity for the briefing rail.
 
     Default limit 20, clamped to [1, 100]. Sources: fired scheduled_actions,
-    decisions, advice. See `_build_activity` for the merge rules.
+    decisions, advice. See `_build_activity` for the merge rules. On top,
+    the caller's own replies and follow-ups Handle it for me sent as them
+    (``actor`` "you"): theirs alone, never in the shared feed.
     """
     # FastAPI's Query(ge=, le=) does the clamping/422 for out-of-range.
     # Defensive secondary check in case the signature changes later.
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
-    return _build_activity(limit)
+    built = _build_activity(limit)
+    mine = _sent_as_caller(request)
+    if not mine:
+        return built
+    merged = sorted([*built.items, *mine], key=lambda i: i.at, reverse=True)
+    return ActivityResponse(items=merged[:limit])
+
+
+def _sent_as_caller(request: Request) -> list[ActivityItem]:
+    """What Handle it for me sent as the caller this week. Best effort."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.delegation import handle_it
+
+    try:
+        person_id = _resolve_caller_person_id(request)
+        if person_id is None:
+            return []
+        found = handle_it.handled(person_id)
+    except Exception:
+        logger.warning("activity: couldn't read what was sent as the caller", exc_info=True)
+        return []
+    return [
+        ActivityItem(
+            kind="sent_as_you",
+            summary=(
+                f"{'Followed up with' if h.source == 'follow_up' else 'Replied to'} "
+                f"{h.to_name or h.to_email}: {h.subject}"
+            ),
+            actor="you",
+            target=h.to_name or h.to_email,
+            department=None,
+            at=h.sent_at,
+        )
+        for h in found
+    ]
 
 
 @router.get(

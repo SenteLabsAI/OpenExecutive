@@ -144,7 +144,7 @@ _BLANK_WIPE_TABLES = (
     # people and conversations, and their switches.
     *HISTORY_TABLES,
     # Take the lead (orchestrator/take_the_lead.py): its switches, rules and
-    # What I did, per company.
+    # log, per company.
     *TAKE_THE_LEAD_TABLES,
     # Legacy talent / staff-onboarding tables. Both features are gone and
     # nothing writes these any more, but the rows may still exist on upgraded

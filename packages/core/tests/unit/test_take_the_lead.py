@@ -357,14 +357,37 @@ def test_turning_it_on_needs_a_provable_owner(client: TestClient, owner: Any, mo
     assert client.put("/take-the-lead", json={"enabled": False}).status_code == 200  # off is always allowed
 
 
-def test_what_i_did_keeps_the_executive_to_the_owner(client: TestClient, owner: Any) -> None:
+def test_recent_activity_names_what_it_did_without_quoting(owner: Any) -> None:
+    from openexecutive.api.routes import today
+
     ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="reflection", tool="message_person",
                summary="Message Dana", status="done")
-    [item] = client.get("/take-the-lead/done").json()["items"]
-    assert item["actor"] == "executive" and item["title"] == "Message Dana"
-    people_store.upsert_person(full_name="Sam Team", email=SAM)
-    people_registry.invalidate()
-    assert client.get("/take-the-lead/done", headers={"x-caller-email": SAM}).json()["items"] == []
+    ttl.record(scope=ttl.SCOPE_EXECUTIVE, source="reflection", tool="message_person",
+               summary="Message Sam", status="waiting")
+    rows = [i for i in today._build_activity(50).items if i.kind == "took_the_lead"]
+    assert [r.summary for r in rows] == ["Message Dana"]
+
+
+def test_ask_first_lives_in_the_decision_ledger() -> None:
+    ttl.set_(ttl.SCOPE_EXECUTIVE, ask_first={"money": False}, updated_by="t")
+    assert ledger.get_class_mode("take_the_lead_action:money") == "auto_execute"
+    assert ledger.get_class_mode("take_the_lead_action:contracts") == "propose"
+
+
+def test_sent_as_you_rows_are_the_callers_own(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.api.routes import chat, today
+    from openexecutive.delegation.handle_it import HandledReply
+
+    reply = HandledReply(
+        decision_id=1, sent_at=NOW.isoformat(), to_name="Dana Park", to_email=DANA, subject="Thursday",
+        body="Works for me", open_questions=[], thread_id="t1", source="reply",
+    )
+    monkeypatch.setattr(handle_it, "handled", lambda pid, **_: [reply] if pid == owner.id else [])
+    monkeypatch.setattr(chat, "_resolve_caller_person_id", lambda request: owner.id)
+    [row] = today._sent_as_caller(object())  # type: ignore[arg-type]
+    assert row.kind == "sent_as_you" and row.actor == "you" and "Dana Park" in row.summary
+    monkeypatch.setattr(chat, "_resolve_caller_person_id", lambda request: owner.id + 99)
+    assert today._sent_as_caller(object()) == []  # type: ignore[arg-type]
 
 
 # ── as you ────────────────────────────────────────────────────────────────────

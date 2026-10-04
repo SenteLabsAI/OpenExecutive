@@ -1,5 +1,6 @@
 """Take the lead (orchestrator.take_the_lead): the switches and rules on
-Settings → On its own, and What I did on Today.
+Settings → On its own. What it did shows in Recent activity
+(``today._build_activity``), with each person's own As you rows.
 
   GET    /take-the-lead              — the As the Executive switch, its Ask
                                        first switches and the company's rules
@@ -7,10 +8,6 @@ Settings → On its own, and What I did on Today.
   PUT    /take-the-lead              — {enabled?, ask_first?}
   POST   /take-the-lead/rules        — {kind, value}: a company rule
   DELETE /take-the-lead/rules/{id}
-  GET    /take-the-lead/done         — What I did: everything done on its own
-                                       for the caller in the last week, As the
-                                       Executive (the principal only) and As
-                                       you (their own replies and follow-ups)
 
 Changing anything that lets more happen on its own needs a request the API
 can tie to the principal (signed sign-ins or local login, as Send does);
@@ -66,22 +63,6 @@ class RuleIn(BaseModel):
 
     kind: str
     value: str
-
-
-class DoneOut(BaseModel):
-    at: str
-    # "executive" or "you"
-    actor: str
-    title: str
-    detail: str = ""
-    why: str = ""
-    # done, waiting, approved, declined, failed
-    status: str
-    link: str = ""
-
-
-class DoneListOut(BaseModel):
-    items: list[DoneOut]
 
 
 def _principal(request: Request) -> Any:
@@ -215,55 +196,3 @@ def delete_company_rule(request: Request, rule_id: int) -> LeadOut:
         raise HTTPException(status_code=404, detail="That rule isn't there.")
     _audit("Removed a Take the lead rule", {"scope": "company", "rule_id": rule_id})
     return _out()
-
-
-@router.get("/take-the-lead/done", response_model=DoneListOut)
-def get_done(request: Request) -> DoneListOut:
-    """What it did on its own for the caller this week, newest first."""
-    from openexecutive.api.routes.chat import _resolve_caller_person_id
-    from openexecutive.api.routes.people import caller_is_principal
-    from openexecutive.orchestrator import take_the_lead
-
-    try:
-        person_id = _resolve_caller_person_id(request)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Couldn't read the People list.") from exc
-    items: list[DoneOut] = []
-    if caller_is_principal(request):
-        for d in take_the_lead.done([take_the_lead.SCOPE_EXECUTIVE]):
-            items.append(DoneOut(at=d.at, actor="executive", title=d.summary, why=d.why, status=d.status))
-    if person_id is not None:
-        items.extend(_handled_as_you(person_id))
-    items.sort(key=lambda i: i.at, reverse=True)
-    return DoneListOut(items=items[:100])
-
-
-def _handled_as_you(person_id: int) -> list[DoneOut]:
-    """Replies and follow-ups Handle it for me sent as the person."""
-    from openexecutive.delegation import handle_it
-    from openexecutive.delegation.gmail import mailbox_link
-    from openexecutive.people.store import get_person
-
-    try:
-        person = get_person(person_id)
-        found = handle_it.handled(person_id)
-    except Exception:
-        logger.warning("take_the_lead: couldn't read what was sent as them", exc_info=True)
-        return []
-    email = ((person.email if person else "") or "").strip().lower()
-    out = []
-    for h in found:
-        follow_up = h.source == "follow_up"
-        out.append(DoneOut(
-            at=h.sent_at,
-            actor="you",
-            title=f"{'Followed up with' if follow_up else 'Replied to'} {h.to_name or h.to_email}",
-            detail=" ".join((h.body or "").split())[:160],
-            why=(
-                "Nobody had answered your question in a few days." if follow_up
-                else f"They wrote to you about {h.subject}." if h.subject else "They wrote to you."
-            ),
-            status="done",
-            link=mailbox_link(email, thread_id=h.thread_id) if email and h.thread_id else "",
-        ))
-    return out

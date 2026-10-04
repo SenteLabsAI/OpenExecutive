@@ -171,6 +171,10 @@ function activityLine(item: ActivityItem): { verb: string; subject: string } {
       return { verb: "resolved decision:", subject: item.summary };
     case "alert_raised":
       return { verb: "raised alert:", subject: item.summary };
+    case "took_the_lead":
+      return { verb: "took the lead:", subject: item.summary };
+    case "sent_as_you":
+      return { verb: "sent as you:", subject: item.summary };
     default:
       return { verb: "acted on", subject: item.summary };
   }
@@ -187,7 +191,16 @@ const SUMMARY_KINDS = new Set([
   "initiative_started",
   "decision_resolved",
   "alert_raised",
+  "took_the_lead",
+  "sent_as_you",
 ]);
+
+// Take the lead and Handle it for me rows say whose name it acted in.
+function actingAs(item: ActivityItem): string | null {
+  if (item.kind === "sent_as_you") return "As you";
+  if (item.kind === "took_the_lead") return "As the Executive";
+  return null;
+}
 
 // Live activity refreshes on this cadence so new events stream into the feed
 // without a reload (mirrors the departments page poll). Kept modest — the feed
@@ -272,6 +285,15 @@ export function RecentActivity() {
                 <div className="flex items-baseline gap-2 flex-wrap">
                   {relative && (
                     <span className="text-xs text-fg-subtle tabular-nums">{relative}</span>
+                  )}
+                  {actingAs(it) && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        it.kind === "sent_as_you" ? "bg-accent/10 text-accent" : "bg-surface-overlay text-fg"
+                      }`}
+                    >
+                      {actingAs(it)}
+                    </span>
                   )}
                   <span className="text-sm text-fg-muted">{verb}</span>
                   {!subjectIsSummary && (

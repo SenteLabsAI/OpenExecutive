@@ -872,7 +872,7 @@ async def reset_all_state(
                                *DELEGATION_TABLES,
                                # Always in the loop: notes and switches.
                                *HISTORY_TABLES,
-                               # Take the lead: switches, rules, What I did.
+                               # Take the lead: switches, rules, its log.
                                *TAKE_THE_LEAD_TABLES):
                     if _conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_table,)
