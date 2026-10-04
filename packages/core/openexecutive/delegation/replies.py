@@ -36,6 +36,8 @@ class ReplyCard:
     open_questions: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
     gmail_link: str = ""
+    # Why Handle it for me left it for them, in plain words ("" when it didn't decide).
+    waited_because: str = ""
 
 
 def _strings(value: Any) -> list[str]:
@@ -45,6 +47,7 @@ def _strings(value: Any) -> list[str]:
 def cards(person: Any) -> list[ReplyCard]:
     """``person``'s open reply cards, newest first."""
     from openexecutive.delegation.gmail import mailbox_link
+    from openexecutive.delegation.handle_it import REASONS
     from openexecutive.delegation.inbox import card_payload, ledger_flags, open_cards
 
     open_ = open_cards(person.id)
@@ -77,6 +80,7 @@ def cards(person: Any) -> list[ReplyCard]:
             open_questions=_strings(payload.get("open_questions")),
             flags=flags,
             gmail_link=mailbox_link(email, thread_id=thread_id, draft_id=draft_id) if email and thread_id else "",
+            waited_because=REASONS.get(str(payload.get("handle_it_reason") or ""), ""),
         ))
     return out
 

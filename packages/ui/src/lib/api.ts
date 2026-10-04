@@ -1689,6 +1689,8 @@ export interface ReplyCard {
   flags: string[];
   // Opens the draft in your own mailbox (the thread, in Gmail).
   gmail_link: string;
+  // Why Handle it for me left it for you; absent or "" when it didn't decide.
+  waited_because?: string;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.

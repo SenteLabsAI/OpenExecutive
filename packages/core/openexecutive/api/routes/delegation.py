@@ -220,6 +220,8 @@ class ReplyCardOut(BaseModel):
     open_questions: list[str]
     flags: list[str]
     gmail_link: str
+    # Why Handle it for me left it for you ("" when it didn't decide).
+    waited_because: str = ""
 
 
 class RepliesOut(BaseModel):

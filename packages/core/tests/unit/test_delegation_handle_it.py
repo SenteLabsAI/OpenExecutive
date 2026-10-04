@@ -134,7 +134,12 @@ def test_the_counted_rules_are_checked_again_just_before_sending(
     mailbox, result = _scan_one(owner)
     assert len(calls) == 2
     assert mailbox.sent == [] and result.handled == 0
-    assert _only_card(owner).status == "proposed"  # it waits for them
+    card = _only_card(owner)
+    assert card.status == "proposed" and card.gate_mode == "propose"  # it waits for them
+    assert inbox.card_payload(card)["handle_it_reason"] == "daily_limit"
+    from openexecutive.delegation import replies
+
+    assert replies.cards(owner)[0].waited_because == handle_it.REASONS["daily_limit"]
 
 
 def test_counted_rules_allow_one_reply_a_thread_a_day() -> None:
@@ -260,7 +265,9 @@ def test_an_edit_in_the_mailbox_stops_the_send(owner: Any, models: dict[str, Any
     monkeypatch.setattr(inbox, "_send_on_its_own", edit_first)
     mailbox, result = _scan_one(owner)
     assert result.handled == 0 and mailbox.sent == []
-    assert inbox.open_cards(owner.id)[0].status == "proposed"
+    card = inbox.open_cards(owner.id)[0]
+    assert card.status == "proposed" and card.gate_mode == "propose"
+    assert inbox.card_payload(card)["handle_it_reason"] == "draft_changed"
 
 
 def test_an_unconfirmed_send_settles_as_sent_on_its_own(db: Path, owner: Any, models: dict[str, Any]) -> None:

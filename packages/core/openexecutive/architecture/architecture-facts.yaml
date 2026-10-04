@@ -9030,7 +9030,10 @@ delegation:
     every send-time check with no caller and adds: gate_mode auto_execute,
     the switch on and the kind still at handle, signing_ok, and the draft
     unedited since saved (draft_changed otherwise: the person took it
-    over). Finishes as executed (no resolver), outcome sent reason handled,
+    over). A refusal hands the card back (decision_ledger.hand_back:
+    auto_execute -> propose, compare-and-set, with handle_it_reason), and
+    GET /delegation/replies carries waited_because (REASONS text). Finishes
+    as executed (no resolver), outcome sent reason handled,
     a delegation_handled row (person_id, thread_id, decision_id,
     sent_message_id, sent_at) and a private delegation_reply_handled audit
     row; no History note (notes come from the person's own words). Any

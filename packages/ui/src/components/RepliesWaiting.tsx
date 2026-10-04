@@ -198,6 +198,10 @@ export function ReplyCardItem({
         </div>
       </div>
 
+      {card.waited_because && (
+        <p className="mt-3 text-xs text-fg-subtle break-words">Why it waited for you: {card.waited_because}</p>
+      )}
+
       {card.open_questions.length > 0 && (
         <div className="mt-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>

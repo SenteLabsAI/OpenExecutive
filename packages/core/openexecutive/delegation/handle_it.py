@@ -131,6 +131,9 @@ REASONS: dict[str, str] = {
     "in_a_row": "Its last message in this conversation was sent on its own too.",
     "daily_limit": "Today's limit of replies sent on its own is reached.",
     "uncountable": "It couldn't count today's replies, so it asked instead.",
+    # Found just before sending (reply_send.send_on_its_own).
+    "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
+    "handle_it_off": "Handle it for me was off by the time it came to send.",
 }
 
 

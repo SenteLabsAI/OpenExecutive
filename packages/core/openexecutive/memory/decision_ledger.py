@@ -293,6 +293,20 @@ def release_claim(instance_id: int, db_path: Path | None = None) -> bool:
         return result.rowcount == 1
 
 
+def hand_back(instance_id: int, proposed_payload: dict[str, Any], db_path: Path | None = None) -> bool:
+    """An ``auto_execute`` row that will not act on its own after all becomes
+    an ordinary ``propose`` row, waiting on its approver, with the payload
+    saying why. Compare-and-set on proposed + auto_execute, so a row that
+    was claimed, acted on or closed meanwhile is left alone."""
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(
+            "UPDATE decision_instances SET gate_mode = 'propose', proposed_payload_json = ? "
+            "WHERE id = ? AND status = ? AND gate_mode = 'auto_execute'",
+            (json.dumps(proposed_payload), instance_id, STATUS_PROPOSED),
+        )
+        return result.rowcount == 1
+
+
 def close_externally(
     instance_id: int,
     *,

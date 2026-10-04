@@ -1191,8 +1191,8 @@ async def _consider(
 
 async def _send_on_its_own(person: Any, client: Any, decision_id: int, result: ScanResult, *, now: datetime) -> None:
     """Send the reply on card ``decision_id`` under Handle it for me. A
-    refusal leaves the card for the person, as if the switch were off; a send
-    Gmail didn't confirm stays ``executing`` for the reconciler."""
+    refusal hands the card back to the person as an ordinary card that says
+    why; a send Gmail didn't confirm stays ``executing`` for the reconciler."""
     from openexecutive.delegation.reply_send import SendRefused, send_on_its_own
     from openexecutive.memory.decision_ledger import get_decision_instance
 
@@ -1203,11 +1203,29 @@ async def _send_on_its_own(person: Any, client: Any, decision_id: int, result: S
         await send_on_its_own(card, gmail=client, now=now)
     except SendRefused as refused:
         logger.info("delegation.inbox: left a reply for the person (%s)", refused.code)
+        _hand_back(card, "signing_off" if refused.code == "caller_signing_required" else refused.code)
         return
     except Exception as exc:
         logger.warning("delegation.inbox: sending on its own failed (%s)", type(exc).__name__)
+        _hand_back(card, None)
         return
     result.handled += 1
+
+
+def _hand_back(card: Any, reason: str | None) -> None:
+    """The card waits for the person after all: ``propose``, with the reason
+    when Handle it for me has words for it. A card already claimed, sent or
+    closed is left as it is."""
+    from openexecutive.delegation import handle_it
+    from openexecutive.memory.decision_ledger import hand_back
+
+    payload = card_payload(card)
+    if reason in handle_it.REASONS:
+        payload["handle_it_reason"] = reason
+    try:
+        hand_back(card.id, payload)
+    except Exception:
+        logger.exception("delegation.inbox: handing a reply back failed")
 
 
 def _create_card(
