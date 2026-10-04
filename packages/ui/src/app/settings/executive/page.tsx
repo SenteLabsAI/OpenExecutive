@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
+
 import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import VoicePicker from "@/components/executive/VoicePicker";
-import HandleItCard from "@/components/settings/HandleItCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import SettingsSubpage from "@/components/settings/SettingsSubpage";
 import TakeTheLeadCard from "@/components/settings/TakeTheLeadCard";
@@ -18,10 +19,10 @@ const ALWAYS_DOES: { title: string; text: string }[] = [
 ];
 
 // Settings → Your Executive: everything the Executive does without asking
-// first, in one place, and the voice it answers in. Pause at the top stops all
-// of it; then what it always does, what it does as itself (Take the lead,
-// booking meetings), and what it does as you, from your own mailbox (Handle it
-// for me, one dial up to Take the lead). /settings/on-its-own lands here.
+// first, and the voice it answers in. Pause at the top stops all of it; then
+// what it always does and what it does as itself (Take the lead, booking
+// meetings). What it sends as you lives on Act as me. /settings/on-its-own
+// lands here.
 export default function ExecutiveSettingsPage() {
   return (
     <SettingsSubpage
@@ -57,13 +58,13 @@ export default function ExecutiveSettingsPage() {
         <MeetingAutonomySwitch />
       </section>
 
-      <section aria-labelledby="exec-as-you" className="space-y-3">
-        <div>
-          <h2 id="exec-as-you" className="text-lg font-semibold text-fg">As you</h2>
-          <p className="mt-1 text-[15px] text-fg-muted">From your own mailbox, in your name.</p>
-        </div>
-        <HandleItCard />
-      </section>
+      <p className="text-[15px] text-fg-muted">
+        Replies it sends as you, from your own mailbox, are under{" "}
+        <Link href="/settings/act-as-me" className="font-medium text-accent underline-offset-2 hover:underline">
+          Act as me
+        </Link>
+        .
+      </p>
 
       <SettingsCard title="Voice" description="How it sounds when it answers you.">
         <VoicePicker variant="card" />

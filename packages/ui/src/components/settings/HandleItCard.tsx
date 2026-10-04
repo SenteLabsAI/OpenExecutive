@@ -21,7 +21,7 @@ import {
 } from "@/lib/api";
 import { formatAgo } from "@/lib/setupStatus";
 
-// Handle it for me (PUT /delegation/handle-it) on Settings → Your Executive:
+// Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
 // decides each one (delegation/handle_it.py). One dial says how much goes
 // without you: Off, Careful, Balanced, Bold, and for the owner Take the lead

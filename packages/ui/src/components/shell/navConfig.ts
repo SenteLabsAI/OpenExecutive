@@ -424,7 +424,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     label: "Act as me",
     href: "/settings/act-as-me",
     icon: "mail",
-    description: "Your mailbox, drafts written as you, and how you write.",
+    description: "Your mailbox, drafts and replies sent as you, and how you write.",
     hashes: ["act-as-me"],
   },
   {

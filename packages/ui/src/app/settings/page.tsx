@@ -202,11 +202,7 @@ function useTileStatuses(): {
     const handleIt = delegation.handle_it;
     if (handleIt?.enabled) {
       const mode = HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On";
-      const base = byPage.executive?.text;
-      byPage.executive = {
-        text: [base, `Handle it for me · ${mode}`].filter(Boolean).join(" · "),
-        tone: byPage.executive?.tone ?? "ok",
-      };
+      byPage["act-as-me"] = { text: `${byPage["act-as-me"]?.text} · Handle it for me · ${mode}`, tone: "ok" };
     }
   }
 
