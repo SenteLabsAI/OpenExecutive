@@ -1,5 +1,5 @@
 """Take the lead (orchestrator.take_the_lead): the switches and rules on
-Settings → On its own. What it did shows in Recent activity
+Settings → Your Executive. What it did shows in Recent activity
 (``today._build_activity``), with each person's own As you rows.
 
   GET    /take-the-lead              — the As the Executive switch, its Ask

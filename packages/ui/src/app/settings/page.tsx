@@ -29,7 +29,7 @@ import { retentionLabel } from "@/lib/history";
 import { versionNotice } from "@/lib/versionNotice";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
-// Act as me, On its own, Memory, Workspace, Advanced and About. Each tile says what's on its page
+// Act as me, Memory, Workspace, Advanced and About. Each tile says what's on its page
 // and, where it's cheap to know, how things stand right now. The one-page
 // Settings this replaces used anchors (`/settings#workspace`); a link that
 // still carries one is sent on to the matching page.
@@ -202,7 +202,11 @@ function useTileStatuses(): {
     const handleIt = delegation.handle_it;
     if (handleIt?.enabled) {
       const mode = HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On";
-      byPage["on-its-own"] = { text: `Handle it for me · ${mode}`, tone: "ok" };
+      const base = byPage.executive?.text;
+      byPage.executive = {
+        text: [base, `Handle it for me · ${mode}`].filter(Boolean).join(" · "),
+        tone: byPage.executive?.tone ?? "ok",
+      };
     }
   }
 

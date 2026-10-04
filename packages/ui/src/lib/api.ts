@@ -4784,7 +4784,7 @@ export async function updateClientMeta(
   return res.json();
 }
 
-// ── Take the lead (Settings → On its own) ────────────────
+// ── Take the lead (Settings → Your Executive) ────────────────
 
 export type LeadRuleKind = "person" | "domain" | "words" | "amount";
 

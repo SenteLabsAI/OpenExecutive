@@ -183,7 +183,6 @@ test("the Settings hub: one tile per page, each with its own route", () => {
     [
       "Your Executive → /settings/executive",
       "Act as me → /settings/act-as-me",
-      "On its own → /settings/on-its-own",
       "Memory → /settings/memory",
       "Workspace → /settings/workspace",
       "Advanced → /settings/advanced",
@@ -202,6 +201,7 @@ test("the Settings hub: one tile per page, each with its own route", () => {
 test("old /settings#anchors land on the matching page", () => {
   const to = (hash) => settingsPageForHash(hash)?.href ?? null;
   assert.equal(to("#executive"), "/settings/executive");
+  assert.equal(to("#on-its-own"), "/settings/executive");
   assert.equal(to("#workspace"), "/settings/workspace");
   assert.equal(to("act-as-me"), "/settings/act-as-me");
   assert.equal(to("#memory"), "/settings/memory");

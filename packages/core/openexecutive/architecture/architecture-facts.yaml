@@ -9045,7 +9045,7 @@ delegation:
     refusal or error leaves the card; the reconciler settles an
     unconfirmed auto-send as executed too. Runs inside the scan, so the
     pause gate stops it. GET /delegation/handled lists the caller's last 7
-    days (theirs alone); Settings → On its own shows the switch, the
+    days (theirs alone); Settings → Your Executive shows the switch, the
     Careful / Balanced / Bold choice, sent_today and that list.
     Follow-ups as you (delegation.follow_ups): while on, inbox._scan calls
     follow_ups.look at most hourly (LOOK_EVERY): own sent mail 3-10 days
@@ -9101,7 +9101,7 @@ delegation:
     habit / never lists in textareas that grow to fit, the signature with
     Refresh from Gmail and Don't add my signature — or Add my Gmail
     signature — and each exemplar quoted, with Remove examples).
-    Settings → On its own (app/settings/on-its-own): the pause, Book
+    Settings → Your Executive (app/settings/executive; /settings/on-its-own redirects there): the pause, Book
     meetings without asking (moved from Workspace) and Handle it for me
     (HandleItCard: switch, Careful / Balanced / Bold, what each sends,
     sent today, the week's list). Setup
