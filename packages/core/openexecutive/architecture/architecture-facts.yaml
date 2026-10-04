@@ -9166,6 +9166,11 @@ delegation:
     (broadcast, department message, more than 5 people). Added rules
     (take_the_lead_rules, scope company or person:<id>; kinds person,
     domain, words, amount) always hold; unreadable rules hold the action.
+    Recipients are the addresses in the input plus, for tools that name a
+    person by id (message_person, assign_open_loop, the Slack / Telegram /
+    Discord DMs), that person's addresses and name (_targets); an id the
+    People list doesn't have counts as someone new. A name rule matches
+    whole words.
     Structured only: no model reads a rule. A held action is a
     take_the_lead_action decision (principal_and_approver: only the
     principal and its approver see or resolve it) with a Today card,

@@ -426,6 +426,46 @@ def _known(address: str) -> bool:
         return False
 
 
+# Tools that name who they reach by an id rather than an address.
+_TARGET_KEYS: dict[str, tuple[str, str]] = {
+    "message_person": ("person_id", "person"),
+    "assign_open_loop": ("person_id", "person"),
+    "archive_person": ("person_id", "person"),
+    "send_slack_dm": ("user_id", "slack"),
+    "send_telegram_message": ("chat_id", "telegram"),
+    "send_discord_dm": ("discord_user_id", "discord"),
+}
+
+
+def _targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The addresses and names of the person an id-addressed tool reaches,
+    so person, domain and Someone new rules see them. Someone the People
+    list doesn't have counts as someone new; an unreadable list too."""
+    spec = _TARGET_KEYS.get(tool)
+    if spec is None:
+        return [], []
+    raw = tool_input.get(spec[0])
+    if raw is None or raw == "":
+        return [], []
+    from openexecutive.people import store
+
+    try:
+        if spec[1] == "person":
+            person = store.get_person(int(raw))
+        elif spec[1] == "slack":
+            person = store.find_person_by_slack_id(str(raw), include_contacts=True)
+        elif spec[1] == "telegram":
+            person = store.find_person_by_telegram_chat_id(str(raw), include_contacts=True)
+        else:
+            person = store.find_person_by_discord_id(str(raw), include_contacts=True)
+    except Exception:
+        person = None
+    if person is None:
+        return [f"unknown-{spec[1]}:{raw}"], []
+    addresses = [a for a in [person.email, *person.email_aliases] if a]
+    return addresses, [person.full_name] if person.full_name else []
+
+
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
     lowered = text.lower()
     for rule in rules:
@@ -433,7 +473,7 @@ def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None
         if rule.kind == RULE_PERSON:
             if "@" in value and value in recipients:
                 return Hit("rule", f"your rule about {value}", rule.id)
-            if "@" not in value and value.lower() in lowered:
+            if "@" not in value and re.search(rf"\b{re.escape(value.lower())}\b", lowered):
                 return Hit("rule", f"your rule about {value}", rule.id)
         elif rule.kind == RULE_DOMAIN:
             if any(r.endswith("@" + value) or r.endswith("." + value) for r in recipients):
@@ -461,7 +501,11 @@ def check(
     Plain code; an added rule always holds, a base kind only while its Ask
     first switch is on."""
     text = "\n".join(_strings(tool_input))
-    recipients = sorted({a.lower() for a in [*_EMAIL_RE.findall(text), *(extra_recipients or [])]})
+    addresses, names = _targets(tool, tool_input)
+    text = "\n".join([text, *names])
+    recipients = sorted({
+        a.lower() for a in [*_EMAIL_RE.findall(text), *addresses, *(extra_recipients or [])]
+    })
     hit = _rule_hit(rules, text, recipients)
     if hit is not None:
         return hit

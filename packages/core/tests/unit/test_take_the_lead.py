@@ -152,6 +152,32 @@ def test_added_rules_always_hold(owner: Any, kind: str, value: str, text: str) -
     assert hit is not None and hit.rule_id == rule.id
 
 
+@pytest.mark.parametrize(("kind", "value"), [("person", "ceo@acme.example"), ("domain", "acme.example"),
+                                            ("person", "Casey Chief")])
+def test_rules_see_who_an_id_addressed_message_reaches(owner: Any, kind: str, value: str) -> None:
+    ceo = people_store.upsert_person(full_name="Casey Chief", email="ceo@acme.example")
+    rule = ttl.add_rule(ttl.SCOPE_COMPANY, kind, value, created_by="t")
+    hit = ttl.check("message_person", {"person_id": ceo, "text": "Quick update"},
+                    lead=_lead(**dict.fromkeys(ttl.KINDS, False)), rules=ttl.list_rules([ttl.SCOPE_COMPANY]))
+    assert hit is not None and hit.rule_id == rule.id
+
+
+def test_a_message_to_an_unknown_id_is_someone_new(owner: Any) -> None:
+    hit = ttl.check("send_slack_dm", {"user_id": "U-NOBODY", "text": "hi"}, lead=_lead(), rules=[])
+    assert hit is not None and hit.kind == "someone_new"
+    assert ttl.check("message_person", {"person_id": owner.id, "text": "hi"}, lead=_lead(), rules=[]) is None
+
+
+def test_a_name_rule_matches_whole_words(owner: Any) -> None:
+    ttl.add_rule(ttl.SCOPE_COMPANY, "person", "Ed", created_by="t")
+    rules = ttl.list_rules([ttl.SCOPE_COMPANY])
+    nothing = _lead(**dict.fromkeys(ttl.KINDS, False))
+    assert ttl.check("message_person", {"person_id": owner.id, "text": "We need the metal schedule"},
+                     lead=nothing, rules=rules) is None
+    assert ttl.check("message_person", {"person_id": owner.id, "text": "Ask Ed first"},
+                     lead=nothing, rules=rules) is not None
+
+
 def test_an_amount_rule_lets_smaller_amounts_through(owner: Any) -> None:
     ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "1000", created_by="t")
     assert ttl.check("message_person", {"person_id": 1, "text": "Lunch was $40"},
