@@ -9,6 +9,19 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.5.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.0...v0.5.1) (2026-10-04)
+
+
+### Added
+
+* **delegation:** send inbox replies on their own under Handle it for me ([#353](https://github.com/SenteLabsAI/OpenExecutive/issues/353)) ([23af959](https://github.com/SenteLabsAI/OpenExecutive/commit/23af959100f7d66b87c9caa54df3370907f4b546))
+* **orchestrator:** let the Executive take the lead behind one approval gate ([#355](https://github.com/SenteLabsAI/OpenExecutive/issues/355)) ([f341051](https://github.com/SenteLabsAI/OpenExecutive/commit/f3410516d10c623eb301276cebf6193d8b9a5553))
+
+
+### Fixed
+
+* **ui:** harden the UI for phones, readability and plain wording ([#357](https://github.com/SenteLabsAI/OpenExecutive/issues/357)) ([d46eee5](https://github.com/SenteLabsAI/OpenExecutive/commit/d46eee56d274823ee90f238de463d812d6244a39))
+
 ## [0.5.0](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.4.6...v0.5.0) (2026-10-03)
 
 
