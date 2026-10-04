@@ -389,6 +389,7 @@ def test_an_unauthenticated_sender_never_gets_one(owner: Any) -> None:
     ({"kind": "pitch"}, "kind"),
     ({"kind": "other"}, "kind"),
     ({"confidence": 0.6}, "unsure"),
+    ({"confidence": 0.79}, "unsure"),
 ])
 def test_unsure_or_odd_verdicts_stay_on_a_card(switched_on: Any, verdict: dict[str, Any], code: str) -> None:
     assert _check(switched_on, verdict=_verdict(**verdict)) == code
@@ -493,6 +494,40 @@ def test_it_can_still_be_turned_off_without_signed_sign_ins(
     resp = client.put("/delegation/handle-it", json={"enabled": False}, headers=HEADERS)
     assert resp.status_code == 200
     assert handle_it.get(owner.id).enabled is False
+
+
+def test_nobody_else_can_change_it(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import verified
+
+    monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: verified.NOT_YOURS)
+    for body in ({"enabled": True}, {"enabled": False}, {"levels": {"reply_stranger": "handle"}}):
+        resp = client.put("/delegation/handle-it", json=body, headers=HEADERS)
+        assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_yours"
+    assert handle_it.get(owner.id).enabled is False
+
+
+@pytest.mark.parametrize(("signing", "local", "kind", "email", "expected"), [
+    (True, False, "user", "olivia@co.example", None),
+    (True, False, "user", "mallory@co.example", "not_yours"),
+    (True, False, "operator", "", "not_yours"),
+    (True, True, "operator", "", None),
+    (False, True, "open", "", None),
+    (False, True, "open", "mallory@co.example", "not_yours"),
+    (False, False, "open", "olivia@co.example", "caller_signing_required"),
+])
+def test_only_a_caller_the_api_knows_is_them(
+    monkeypatch: pytest.MonkeyPatch, signing: bool, local: bool, kind: str, email: str, expected: str | None,
+) -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.api import caller as api_caller
+    from openexecutive.delegation import verified
+    from openexecutive.utils import deployment
+
+    monkeypatch.setattr(api_caller, "signing_on", lambda: signing)
+    monkeypatch.setattr(deployment, "is_local_login", lambda: local)
+    who = SimpleNamespace(kind=kind, email=email)
+    assert verified.caller_refusal(who, "olivia@co.example") == expected
 
 
 def test_turning_the_inbox_watcher_off_turns_it_off(client: TestClient, owner: Any) -> None:
