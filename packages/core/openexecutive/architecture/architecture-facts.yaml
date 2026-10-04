@@ -9162,9 +9162,15 @@ delegation:
     Structured only: no model reads a rule. A held action is a
     take_the_lead_action decision (principal_and_approver: only the
     principal and its approver see or resolve it) with a Today card,
-    routed by the authority gate's _route_proposal on the People scope
-    (money spend_lt_10k, contracts legal_sign, hiring hiring_signoff; team
-    mode) else the principal. Approve claims
+    routed to the first non-principal teammate holding one of its People
+    approval ranges (take_the_lead.approval_ranges, plain code, closest
+    first: money spend_lt_2k / spend_lt_10k / spend_gt_10k by its largest
+    amount, a higher range approving a lower one, no amount = gt_10k, or
+    customer_credit for credit and terms; contracts vendor_onboarding then
+    legal_sign for vendors, else legal_sign; hiring hiring_signoff; anything
+    else about the board or investors board_comms; deletes and shares none;
+    team mode only), else the authority gate's _route_proposal fallback to
+    the principal. Approve claims
     the row and runs the exact call once (carry_out); reject drops it.
     take_the_lead_log feeds Recent activity (kind took_the_lead, named not
     quoted); /today/activity adds the caller's own Handle it sends

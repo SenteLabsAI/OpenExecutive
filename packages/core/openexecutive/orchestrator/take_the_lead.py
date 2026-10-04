@@ -41,7 +41,10 @@ from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openexecutive.people.models import AuthorityScope
 
 logger = logging.getLogger(__name__)
 
@@ -591,21 +594,69 @@ def done(scopes: list[str], *, days: int = 7, limit: int = 100, db_path: Path | 
 # that kind (the department approval levels' People scopes); anything else
 # is the principal's. The authority gate picks the person
 # (``departments.authority._route_proposal``), as for a department proposal.
-def _approver_for(kind: str, reason: str) -> int | None:
-    from openexecutive.departments.authority import _route_proposal
-    from openexecutive.memory.workspace_settings import effective_workspace_mode
+_CREDIT_RE = re.compile(
+    r"\b(credit|loans?|debts?|financing|line of credit|payment terms|net \d+|overdue balance|write[- ]off)\b",
+    re.IGNORECASE,
+)
+_VENDOR_RE = re.compile(
+    r"\b(vendors?|suppliers?|procurement|purchase orders?|msa|sow|statement of work|reseller|onboard\w* (a|the|new) "
+    r"(vendor|supplier))\b",
+    re.IGNORECASE,
+)
+_BOARD_RE = re.compile(r"\b(board|board members?|directors|investors?|shareholders?|stockholders?)\b", re.IGNORECASE)
+SPEND_SMALL = 2_000
+SPEND_LARGE = 10_000
+
+
+def approval_ranges(kind: str, text: str) -> list[AuthorityScope]:
+    """The People approval ranges that can say yes to a held action, the
+    closest fit first. Money picks Credit, or the spend range its largest
+    amount falls in (no amount reads as a large one), and a higher spend
+    range may approve a lower one; a contract with a vendor goes to Vendors,
+    any other to Legal; a people decision to Hiring; anything else that's
+    about the board or investors to Board. Deletes, shares and the rest have
+    no range: they go to the principal."""
     from openexecutive.people.models import AuthorityScope
 
-    scope = {
-        MONEY: AuthorityScope.SPEND_LT_10K,
-        CONTRACTS: AuthorityScope.LEGAL_SIGN,
-        PEOPLE_DECISIONS: AuthorityScope.HIRING_SIGNOFF,
-    }.get(kind)
+    if kind == MONEY:
+        if _CREDIT_RE.search(text):
+            return [AuthorityScope.CUSTOMER_CREDIT]
+        largest = max(amounts(text), default=None)
+        if largest is not None and largest < SPEND_SMALL:
+            return [AuthorityScope.SPEND_LT_2K, AuthorityScope.SPEND_LT_10K, AuthorityScope.SPEND_GT_10K]
+        if largest is not None and largest < SPEND_LARGE:
+            return [AuthorityScope.SPEND_LT_10K, AuthorityScope.SPEND_GT_10K]
+        return [AuthorityScope.SPEND_GT_10K]
+    if kind == CONTRACTS:
+        if _VENDOR_RE.search(text):
+            return [AuthorityScope.VENDOR_ONBOARDING, AuthorityScope.LEGAL_SIGN]
+        return [AuthorityScope.LEGAL_SIGN]
+    if kind == PEOPLE_DECISIONS:
+        return [AuthorityScope.HIRING_SIGNOFF]
+    if kind != DELETE_SHARE and _BOARD_RE.search(text):
+        return [AuthorityScope.BOARD_COMMS]
+    return []
+
+
+def _approver_for(kind: str, text: str, reason: str) -> int | None:
+    """Who approves a held action: the first teammate holding one of its
+    approval ranges (People), else the principal; in Just me, the principal."""
+    from openexecutive.departments.authority import _route_proposal
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
+    from openexecutive.people.store import find_approvers
+
     try:
         if effective_workspace_mode(None) == "solo":
-            scope = None  # just me: everything goes to the owner
+            ranges: list[AuthorityScope] = []  # just me: everything goes to the owner
+        else:
+            ranges = approval_ranges(kind, text)
+        for scope in ranges:
+            delegated = [p for p in find_approvers(scope) if not p.is_principal]
+            if delegated:
+                return delegated[0].id
         decision = _route_proposal(
-            department_slug="", action="propose", required_scope=scope, now=datetime.now(UTC), reason=reason,
+            department_slug="", action="propose", required_scope=ranges[0] if ranges else None,
+            now=datetime.now(UTC), reason=reason,
         )
         return decision.assignee_person_id
     except Exception:
@@ -639,7 +690,7 @@ def hold(
     )
 
     summary = summarize(tool, tool_input, mcp=mcp)
-    approver = _approver_for(hit.kind, hit.reason)
+    approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
     payload = {
         "tool": tool, "input": tool_input, "mcp": mcp, "kind": hit.kind, "rule_id": hit.rule_id,
         "reason": hit.reason, "summary": summary, "source": source,

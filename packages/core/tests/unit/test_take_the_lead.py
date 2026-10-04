@@ -194,12 +194,84 @@ def test_money_goes_to_whoever_holds_spending_authority(owner: Any, monkeypatch:
     cfo = people_store.upsert_person(full_name="Casey Finance", email="casey@co.example")
     people_store.set_authority_scope(cfo, [AuthorityScope.SPEND_LT_10K])
     people_registry.invalidate()
-    decision_id = ttl.hold("message_person", {"person_id": owner.id, "text": "the budget"},
+    decision_id = ttl.hold("message_person", {"person_id": owner.id, "text": "the $5,000 budget"},
                            ttl.Hit("money", "it's about money"), source="research", mcp=False)
     decision = ledger.get_decision_instance(decision_id)
     assert decision is not None and decision.approver_person_id == cfo
     [alert] = alerts_store.list_alerts(limit=10)
     assert "private:principal" not in alert.topic_tags  # a team approval, like a department's
+
+
+@pytest.mark.parametrize(
+    ("kind", "text", "ranges"),
+    [
+        ("money", "Pay the $450 invoice", ["spend_lt_2k", "spend_lt_10k", "spend_gt_10k"]),
+        ("money", "Approve the 8k EUR quote", ["spend_lt_10k", "spend_gt_10k"]),
+        ("money", "Wire $25,000 to the agency", ["spend_gt_10k"]),
+        ("money", "Pay the invoice", ["spend_gt_10k"]),  # no amount reads as a large one
+        ("money", "Extend net 60 payment terms to Acme", ["customer_credit"]),
+        ("contracts", "Sign the MSA with our new supplier", ["vendor_onboarding", "legal_sign"]),
+        ("contracts", "Send the NDA for signature", ["legal_sign"]),
+        ("people_decisions", "Send Jo the offer letter", ["hiring_signoff"]),
+        ("big_send", "Quarterly update to all investors", ["board_comms"]),
+        ("someone_new", "Draft for the board meeting", ["board_comms"]),
+        ("delete_share", "Share the board deck", []),
+        ("big_send", "Office closed Friday", []),
+    ],
+)
+def test_each_held_action_picks_its_approval_range(kind: str, text: str, ranges: list[str]) -> None:
+    assert [r.value for r in ttl.approval_ranges(kind, text)] == ranges
+
+
+def _team(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory import workspace_settings
+
+    monkeypatch.setattr(workspace_settings, "effective_workspace_mode", lambda session=None: "team")
+
+
+def _holder(name: str, email: str, *scopes: AuthorityScope) -> int:
+    person = people_store.upsert_person(full_name=name, email=email)
+    people_store.set_authority_scope(person, list(scopes))
+    people_registry.invalidate()
+    return person
+
+
+def _approver(owner: Any, kind: str, text: str) -> int | None:
+    decision_id = ttl.hold("message_person", {"person_id": owner.id, "text": text},
+                           ttl.Hit(kind, "held"), source="reflection", mcp=False)
+    decision = ledger.get_decision_instance(decision_id)
+    assert decision is not None
+    return decision.approver_person_id
+
+
+def test_a_small_spend_goes_up_to_the_next_range_held(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _team(monkeypatch)
+    big = _holder("Bea Big", "bea@co.example", AuthorityScope.SPEND_GT_10K)
+    assert _approver(owner, "money", "Pay the $300 invoice") == big
+    small = _holder("Sam Small", "sam@co.example", AuthorityScope.SPEND_LT_2K)
+    assert _approver(owner, "money", "Pay the $300 invoice") == small
+    assert _approver(owner, "money", "Pay the $30,000 invoice") == big
+
+
+def test_credit_vendors_and_board_reach_their_holders(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _team(monkeypatch)
+    credit = _holder("Cal Credit", "cal@co.example", AuthorityScope.CUSTOMER_CREDIT)
+    vendors = _holder("Val Vendor", "val@co.example", AuthorityScope.VENDOR_ONBOARDING)
+    board = _holder("Bo Board", "bo@co.example", AuthorityScope.BOARD_COMMS)
+    assert _approver(owner, "money", "Give Acme a line of credit") == credit
+    assert _approver(owner, "contracts", "Sign the supplier agreement") == vendors
+    assert _approver(owner, "big_send", "Note to all investors") == board
+    # Nobody holds Legal or the spend ranges: those come to the principal.
+    assert _approver(owner, "contracts", "Sign the NDA") == owner.id
+    assert _approver(owner, "delete_share", "Share the board deck") == owner.id
+
+
+def test_just_me_sends_every_held_action_to_the_owner(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory import workspace_settings
+
+    monkeypatch.setattr(workspace_settings, "effective_workspace_mode", lambda session=None: "solo")
+    _holder("Cal Credit", "cal@co.example", AuthorityScope.CUSTOMER_CREDIT)
+    assert _approver(owner, "money", "Give Acme a line of credit") == owner.id
 
 
 def test_the_gate_fails_closed(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
