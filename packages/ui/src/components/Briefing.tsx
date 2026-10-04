@@ -504,7 +504,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
       tiles.push({
         key: "inFlight",
         value: String(inFlight.length),
-        label: "In flight",
+        label: "Under way",
         sub: inFlightNext(inFlight),
         subTone: inFlight.some((f) => f.overdue) ? "amber" : undefined,
       });
@@ -829,7 +829,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   )}
                 </div>
               </SidePanel>
-              <SidePanel open={openPanel === "inFlight"} onClose={() => setOpenPanel(null)} title="In flight">
+              <SidePanel open={openPanel === "inFlight"} onClose={() => setOpenPanel(null)} title="Under way">
                 <InFlightPanelBody inFlight={inFlight} />
               </SidePanel>
               <SidePanel open={openPanel === "handled"} onClose={() => setOpenPanel(null)} title="Handled overnight">

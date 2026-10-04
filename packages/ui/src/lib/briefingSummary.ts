@@ -72,7 +72,7 @@ export function briefingSummary(c: SummaryCounts): SummaryPart[] {
       target: { kind: "href", href: "/goals" },
     });
   if (c.inFlight > 0)
-    parts.push({ text: `${c.inFlight} in flight`, target: { kind: "panel", panel: "inFlight" } });
+    parts.push({ text: `${c.inFlight} under way`, target: { kind: "panel", panel: "inFlight" } });
   if (c.monitoring > 0)
     parts.push({
       text: `${c.monitoring} ${plural(c.monitoring, "signal", "signals")} monitored`,

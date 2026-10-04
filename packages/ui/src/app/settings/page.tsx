@@ -203,7 +203,7 @@ function useTileStatuses(): {
     if (handleIt?.enabled) {
       const mode = HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On";
       // Short enough for one line on a phone: the dial step is what matters.
-      byPage["act-as-me"] = { text: `Mailbox connected · Handles: ${mode}`, tone: "ok" };
+      byPage["act-as-me"] = { text: `Handles: ${mode}`, tone: "ok" };
     }
   }
 

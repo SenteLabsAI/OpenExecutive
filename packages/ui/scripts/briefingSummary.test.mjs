@@ -37,7 +37,7 @@ test("the summary leads with what needs you, then what was handled", () => {
   const parts = briefingSummary({ ...zero, needsYou: 3, handledOvernight: 12, inFlight: 7, deptAtRisk: 1 });
   assert.deepEqual(
     parts.map((p) => p.text),
-    ["3 things need you", "The Executive handled 12 overnight", "1 department at risk", "7 in flight"],
+    ["3 things need you", "The Executive handled 12 overnight", "1 department at risk", "7 under way"],
   );
   assert.deepEqual(parts[0].target, { kind: "needsYou" });
   assert.deepEqual(parts[1].target, { kind: "panel", panel: "handled" });
