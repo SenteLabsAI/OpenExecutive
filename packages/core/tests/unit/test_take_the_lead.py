@@ -73,6 +73,10 @@ def test_it_stores_the_switch_and_ask_first() -> None:
     ("domain", "@Acme.COM", "acme.com"),
     ("amount", "$2,500", "2500"),
     ("amount", "5k", "5000"),
+    ("amount", "1000000", "1000000"),
+    ("amount", "1,234,567", "1234567"),
+    ("amount", "2.5m", "2500000"),
+    ("amount", "99.5", "99.5"),
     ("person", "Lee@Elsewhere.example", "lee@elsewhere.example"),
     ("words", "  board   meeting ", "board meeting"),
 ])
@@ -304,6 +308,37 @@ def test_mcp_reads_pass_and_sends_are_gated(owner: Any) -> None:
                               "arguments": {"to": "x@far.example", "body": "Your invoice"}}))
     assert seen == ["google_workspace__search_gmail_messages"]
     assert json.loads(held)["status"] == "waiting_for_approval"
+
+
+@pytest.mark.parametrize(("name", "acts"), [
+    ("google_workspace__search_gmail_messages", False),
+    ("google_workspace__get_doc_content", False),
+    ("ms365__list_calendar_events", False),
+    ("google_workspace__modify_sheet_values", True),
+    ("google_workspace__append_table_rows", True),
+    ("google_workspace__batch_update_doc", True),
+    ("ms365__upload_file", True),
+    ("google_workspace__insert_doc_elements", True),
+    ("some_server__do_the_thing", True),  # not plainly a read, so it's gated
+    ("google_workspace__get_and_clear_values", True),
+])
+def test_connected_tools_fail_closed(name: str, acts: bool) -> None:
+    assert ttl.mcp_tool_acts(name) is acts
+
+
+def test_clearing_a_sheet_counts_as_deleting(owner: Any) -> None:
+    hit = ttl.check("google_workspace__clear_sheet_values", {"spreadsheet_id": "abc"}, lead=_lead(), rules=[], mcp=True)
+    assert hit is not None and hit.kind == ttl.DELETE_SHARE
+
+
+def test_a_large_amount_rule_holds_only_larger_amounts() -> None:
+    rule = ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "1000000", created_by="t")
+    assert rule.value == "1000000"
+    lead = _lead()
+    rules = ttl.list_rules([ttl.SCOPE_COMPANY])
+    assert ttl._rule_hit(rules, "Pay $2,000,000 to Acme", []) is not None
+    assert ttl._rule_hit(rules, "Pay $500 to Acme", []) is None
+    assert lead.enabled
 
 
 # ── what unattended passes get ────────────────────────────────────────────────

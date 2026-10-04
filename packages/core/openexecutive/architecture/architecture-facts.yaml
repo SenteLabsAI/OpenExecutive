@@ -9141,8 +9141,9 @@ delegation:
     take_the_lead keyed by scope. "executive" (principal only, PUT
     /take-the-lead): unattended_toolkit and the chat loop's unattended path
     keep solo's booking / run_workflow / unrestricted message_person and
-    wrap every acting tool (ACTING_TOOLS, MCP names that send, create,
-    update, delete or share) in the gate; UNATTENDED_WITHHELD_TOOLS stay
+    wrap every acting tool (ACTING_TOOLS, and every MCP tool except a name
+    that plainly reads and says nothing about acting: mcp_tool_acts fails
+    closed) in the gate; UNATTENDED_WITHHELD_TOOLS stay
     withheld and every guard inside a handler still applies, so department
     approval levels hold. The reflection pass also gets the MCP gateway's
     search_tools and call_tool (executive_reflection._with_lead_tools;

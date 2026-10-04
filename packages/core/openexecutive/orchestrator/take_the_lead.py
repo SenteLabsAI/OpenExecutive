@@ -116,12 +116,19 @@ ACTING_TOOLS: frozenset[str] = frozenset({
 })
 _DELETE_TOOLS = frozenset({"archive_person", "cancel_calendar_event", "delete_skill"})
 _BROADCAST_TOOLS = frozenset({"send_company_broadcast", "send_department_message"})
-# An MCP tool acts when its name says it does; reads pass.
+# A connected (MCP) tool passes ungated only when its name says it reads and
+# nothing in it says it acts. Any other name goes through the gate.
 _MCP_ACTING_RE = re.compile(
-    r"(send|reply|forward|create|update|delete|remove|trash|cancel|share|permission|move|post|invite|draft)",
+    r"(send|reply|forward|create|update|delete|remove|trash|cancel|share|permission|move|post|invite|draft|"
+    r"modify|append|write|insert|batch|clear|rename|copy|add|upload|schedule|set|edit|import|publish|archive|"
+    r"assign|replace|merge|transfer|approve|submit|book|respond|accept|decline)",
     re.IGNORECASE,
 )
-_MCP_DELETE_RE = re.compile(r"(delete|remove|trash|cancel|share|permission)", re.IGNORECASE)
+_MCP_READ_RE = re.compile(
+    r"(?:^|[^a-z])(get|list|search|read|fetch|query|find|view|describe|download)(?:[^a-z]|$)",
+    re.IGNORECASE,
+)
+_MCP_DELETE_RE = re.compile(r"(delete|remove|trash|cancel|share|permission|clear|archive)", re.IGNORECASE)
 
 _MONEY_RE = re.compile(
     r"\b(invoices?|payments?|pay|paid|refunds?|pricing|price|quotes?|discounts?|budgets?|wire|bank|"
@@ -304,7 +311,8 @@ def clean_rule(kind: str, value: str) -> str:
         number = _number(text.lstrip("$€£¥"))
         if number is None or number <= 0:
             raise RuleError("That isn't an amount, like 500.")
-        text = f"{number:g}"
+        # Plain digits: "{:g}" turns 1000000 into "1e+06", which _number can't read back.
+        text = format(number, "f").rstrip("0").rstrip(".")
     elif kind == RULE_PERSON:
         text = text.lower() if "@" in text else text
     return text
@@ -854,12 +862,18 @@ def gated_handlers(handlers: dict[str, Any], *, source: str) -> dict[str, Any]:
     return out
 
 
+def mcp_tool_acts(name: str) -> bool:
+    """Whether a connected tool may change something. Fails closed: a name
+    that doesn't plainly read is treated as acting."""
+    return bool(_MCP_ACTING_RE.search(name)) or not _MCP_READ_RE.search(name)
+
+
 def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:
     """The MCP gateway's ``call_tool`` with acting tools behind the gate."""
 
     async def _call(tool_input: dict[str, Any]) -> Any:
         name = str(tool_input.get("name") or "")
-        if not _MCP_ACTING_RE.search(name):
+        if not mcp_tool_acts(name):
             return await call_tool(tool_input)
         arguments = tool_input.get("arguments")
         inner_input = arguments if isinstance(arguments, dict) else {"arguments": arguments}
