@@ -102,8 +102,11 @@ export default function TakeTheLeadCard() {
               const id = `ask-first-${item.kind}`;
               return (
                 <li key={item.kind} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
-                  <span id={id} className="text-[15px]">
-                    {item.label}
+                  <span className="min-w-0">
+                    <span id={id} className="block text-[15px]">
+                      {item.label}
+                    </span>
+                    <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">{item.hint}</span>
                   </span>
                   <Switch
                     checked={item.on}

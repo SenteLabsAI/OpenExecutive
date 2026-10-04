@@ -68,6 +68,9 @@ DELETE_SHARE = "delete_share"
 SOMEONE_NEW = "someone_new"
 BIG_SEND = "big_send"
 KINDS: tuple[str, ...] = (MONEY, CONTRACTS, PEOPLE_DECISIONS, DELETE_SHARE, SOMEONE_NEW, BIG_SEND)
+# More people than this on one action is a big send.
+BIG_SEND_RECIPIENTS = 5
+
 KIND_LABELS: dict[str, str] = {
     MONEY: "Money",
     CONTRACTS: "Contracts and legal",
@@ -75,6 +78,15 @@ KIND_LABELS: dict[str, str] = {
     DELETE_SHARE: "Deleting, cancelling or sharing",
     SOMEONE_NEW: "Someone new",
     BIG_SEND: "Big sends",
+}
+# One line under each switch saying what it catches, in the words check() uses.
+KIND_HINTS: dict[str, str] = {
+    MONEY: "Anything about payments, invoices, prices, budgets or an amount of money.",
+    CONTRACTS: "Contracts, agreements, signatures, terms and other legal matters.",
+    PEOPLE_DECISIONS: "Hiring, firing, pay, promotions and performance reviews.",
+    DELETE_SHARE: "Deleting or cancelling something, or sharing a file or access.",
+    SOMEONE_NEW: "Messages to anyone who isn't on your team or in your contacts.",
+    BIG_SEND: f"Company-wide or department-wide messages, or anything going to more than {BIG_SEND_RECIPIENTS} people.",
 }
 
 RULE_PERSON = "person"
@@ -84,9 +96,6 @@ RULE_AMOUNT = "amount"
 RULE_KINDS: tuple[str, ...] = (RULE_PERSON, RULE_DOMAIN, RULE_WORDS, RULE_AMOUNT)
 RULE_VALUE_MAX = 200
 RULES_MAX = 50
-
-# More people than this on one action is a big send.
-BIG_SEND_RECIPIENTS = 5
 
 # The acting skill tools. Everything else an unattended pass may call reads,
 # or records something only for the Executive itself.

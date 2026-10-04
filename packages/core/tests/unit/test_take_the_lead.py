@@ -55,6 +55,11 @@ def test_off_until_turned_on_and_everything_asks_first() -> None:
     assert ttl.executive_on() is False and ttl.as_you_on(1) is False
 
 
+def test_every_kind_has_a_label_and_a_hint() -> None:
+    assert set(ttl.KIND_LABELS) == set(ttl.KIND_HINTS) == set(ttl.KINDS)
+    assert str(ttl.BIG_SEND_RECIPIENTS) in ttl.KIND_HINTS[ttl.BIG_SEND]
+
+
 def test_it_stores_the_switch_and_ask_first() -> None:
     ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, ask_first={"money": False, "nonsense": False}, updated_by="t")
     lead = ttl.get(ttl.SCOPE_EXECUTIVE)
@@ -406,6 +411,7 @@ def test_a_teammate_cant_see_or_approve_someone_elses(client: TestClient, owner:
 def test_the_owner_turns_it_on_and_adds_rules(client: TestClient, owner: Any) -> None:
     body = client.get("/take-the-lead").json()
     assert body["enabled"] is False and body["paused"] is False and len(body["ask_first"]) == 6
+    assert all(a["hint"] for a in body["ask_first"])
     body = client.put("/take-the-lead", json={"enabled": True, "ask_first": {"someone_new": False}}).json()
     assert body["enabled"] is True
     assert {a["kind"]: a["on"] for a in body["ask_first"]}["someone_new"] is False

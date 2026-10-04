@@ -31,6 +31,7 @@ router = APIRouter()
 class AskFirstOut(BaseModel):
     kind: str
     label: str
+    hint: str
     on: bool
 
 
@@ -114,7 +115,12 @@ def _out() -> LeadOut:
     return LeadOut(
         enabled=lead.enabled,
         ask_first=[
-            AskFirstOut(kind=k, label=take_the_lead.KIND_LABELS[k], on=lead.asks_first(k))
+            AskFirstOut(
+                kind=k,
+                label=take_the_lead.KIND_LABELS[k],
+                hint=take_the_lead.KIND_HINTS[k],
+                on=lead.asks_first(k),
+            )
             for k in take_the_lead.KINDS
         ],
         rules=[RuleOut(id=r.id, kind=r.kind, value=r.value) for r in rules],

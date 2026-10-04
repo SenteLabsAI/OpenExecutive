@@ -4796,7 +4796,7 @@ export interface LeadRule {
 
 export interface TakeTheLead {
   enabled: boolean;
-  ask_first: { kind: string; label: string; on: boolean }[];
+  ask_first: { kind: string; label: string; hint: string; on: boolean }[];
   rules: LeadRule[];
   available: boolean;
   paused: boolean;
