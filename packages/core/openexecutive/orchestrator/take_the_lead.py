@@ -837,10 +837,21 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
         })
     result = await inner(tool_input)
     text = result if isinstance(result, str) else json.dumps(result) if isinstance(result, dict) else str(result)
-    failed = '"error"' in text[:200]
+    failed = result_failed(text)
     record(scope=SCOPE_EXECUTIVE, source=source, tool=name, summary=summarize(name, tool_input, mcp=mcp, quote=False),
            status="failed" if failed else "done", why=_SOURCE_WHY.get(source, ""))
     return text
+
+
+def result_failed(text: str) -> bool:
+    """Whether a tool's result says it failed: a JSON object with an
+    ``error`` key. Free text that merely mentions "error" (a subject line,
+    a quoted message) is a success."""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and "error" in parsed
 
 
 _SOURCE_WHY: dict[str, str] = {
@@ -952,14 +963,16 @@ def wake(reason: str, *, now: datetime | None = None) -> int | None:
             return None
         if _has_pending_brief(TAKE_THE_LEAD_WAKE_KIND):
             return None
-        _LAST_WAKE[SCOPE_EXECUTIVE] = current
-        return insert_scheduled_action(
+        action_id = insert_scheduled_action(
             run_at=(current + WAKE_AFTER).isoformat(),
             channel="__internal__",
             channel_ref="principal",
             intent_text=f"Take the lead: look over what's new ({reason[:80]}).",
             kind=TAKE_THE_LEAD_WAKE_KIND,
         )
+        # Only once it's scheduled: a failed insert mustn't hold off the next wake.
+        _LAST_WAKE[SCOPE_EXECUTIVE] = current
+        return action_id
     except Exception:
         logger.warning("take_the_lead: couldn't schedule a wake", exc_info=True)
         return None

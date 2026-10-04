@@ -583,6 +583,35 @@ def test_on_new_messages_wake_the_reflection_once_in_a_while(no_last_wake: None)
     assert row["run_at"] == (NOW + ttl.WAKE_AFTER).isoformat()
 
 
+def test_a_failed_wake_doesnt_hold_off_the_next(monkeypatch: pytest.MonkeyPatch, no_last_wake: None) -> None:
+    from openexecutive.memory import episodic
+
+    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="t")
+    real = episodic.insert_scheduled_action
+    locked = [True]
+
+    def insert(**kwargs: Any) -> int:
+        if locked[0]:
+            raise RuntimeError("database is locked")
+        return real(**kwargs)
+
+    monkeypatch.setattr(episodic, "insert_scheduled_action", insert)
+    assert ttl.wake("a message on email", now=NOW) is None
+    locked[0] = False
+    assert ttl.wake("a message on email", now=NOW) is not None
+
+
+@pytest.mark.parametrize(("text", "failed"), [
+    ('{"error": "not found"}', True),
+    ('{"status": "sent", "subject": "Re: \\"error\\" in invoice"}', False),
+    ('Sent. They wrote: {"error": "x"}', False),
+    ("[]", False),
+    ("", False),
+])
+def test_only_a_json_error_counts_as_failed(text: str, failed: bool) -> None:
+    assert ttl.result_failed(text) is failed
+
+
 @pytest.mark.parametrize("on", [True, False])
 def test_a_wake_runs_the_reflection_only_while_on(monkeypatch: pytest.MonkeyPatch, no_last_wake: None, on: bool) -> None:
     from openexecutive.memory.episodic import get_scheduled_action
