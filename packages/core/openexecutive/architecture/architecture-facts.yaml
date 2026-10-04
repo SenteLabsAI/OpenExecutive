@@ -9011,7 +9011,7 @@ delegation:
     balanced = known senders, <= 1200, >= 0.8; bold = strangers too,
     <= 2000, >= 0.8, links/amounts allowed at >= 0.9. Known = team, contact
     or correspondent. schema._add_handle_it_mode adds the column to an older
-    table (reply_stranger handle -> bold, else balanced). Set only by PUT /delegation/handle-it from a
+    table (reply_known not handle -> turned off, since it sent nothing on its own before; else reply_stranger handle -> bold, else balanced). Set only by PUT /delegation/handle-it from a
     caller delegation.verified.caller_refusal accepts (the rule Send uses:
     403 not_yours, 409 caller_signing_required on shared secret alone);
     enabling needs Act as me and the inbox watcher on (409 act_as_me_off /

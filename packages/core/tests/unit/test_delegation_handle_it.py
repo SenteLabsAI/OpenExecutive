@@ -98,6 +98,11 @@ def test_a_table_from_before_the_setting_keeps_what_was_chosen(tmp_path: Path) -
     conn.execute("INSERT INTO delegation_handle_it VALUES (2, 1, ?, '', 't')",
                  ('{"reply_known": "handle", "reply_stranger": "ask"}',))
     conn.execute("INSERT INTO delegation_handle_it VALUES (3, 0, 'not json', '', 't')")
+    for person_id, levels in ((4, '{"reply_known": "ask", "reply_stranger": "ask"}'),
+                              (5, '{"reply_known": "off"}'),
+                              (6, '{"reply_known": "ask", "reply_stranger": "handle"}'),
+                              (7, '{}')):
+        conn.execute("INSERT INTO delegation_handle_it VALUES (?, 1, ?, '', 't')", (person_id, levels))
     conn.commit()
     ensure_schema(conn)
     ensure_schema(conn)  # idempotent
@@ -105,6 +110,11 @@ def test_a_table_from_before_the_setting_keeps_what_was_chosen(tmp_path: Path) -
     assert handle_it.get(1, db_path=db).mode == "bold"
     assert handle_it.get(2, db_path=db).mode == "balanced"
     assert handle_it.get(3, db_path=db).mode == "balanced"
+    # Nothing went on its own for them before, so nothing does now.
+    for person_id in (4, 5, 6):
+        after = handle_it.get(person_id, db_path=db)
+        assert not after.enabled and after.level(handle_it.KIND_REPLY_KNOWN) == handle_it.LEVEL_ASK
+    assert handle_it.get(7, db_path=db).enabled and handle_it.get(7, db_path=db).mode == "balanced"  # the old default
 
 
 def test_off_it_leaves_a_card_as_before(owner: Any, models: dict[str, Any]) -> None:

@@ -505,9 +505,9 @@ async def _carry_out_lead(
     from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
     from openexecutive.orchestrator import take_the_lead
 
+    payload = _parse_payload(instance)
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
-    payload = _parse_payload(instance)
     try:
         result = await take_the_lead.carry_out(payload, by_principal=_approver_is_principal(request))
     except Exception as exc:

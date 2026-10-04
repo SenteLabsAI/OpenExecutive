@@ -144,19 +144,24 @@ _DDL: tuple[str, ...] = (
 
 
 def _add_handle_it_mode(conn: sqlite3.Connection) -> None:
-    """Give a table made before ``mode`` existed the column. Someone who had
-    set strangers to be handled keeps that as ``bold``; everyone else gets
-    ``balanced``, the rules they had."""
+    """Give a table made before ``mode`` existed the column, never letting
+    more go than before. Replies to people they know on their own (the old
+    default) stay ``balanced``, or ``bold`` if strangers were handled too.
+    Anyone who had known people on ask or off sent nothing on its own, and
+    every mode does, so it is turned off for them to turn back on."""
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({HANDLE_IT_TABLE})")}
     if "mode" in columns:
         return
     conn.execute(f"ALTER TABLE {HANDLE_IT_TABLE} ADD COLUMN mode TEXT NOT NULL DEFAULT 'balanced'")
     for person_id, levels in conn.execute(f"SELECT person_id, levels FROM {HANDLE_IT_TABLE}").fetchall():  # noqa: S608
         try:
-            stranger = json.loads(levels or "{}").get("reply_stranger")
+            chosen = json.loads(levels or "{}")
+            known, stranger = chosen.get("reply_known", "handle"), chosen.get("reply_stranger")
         except (ValueError, AttributeError):
             continue
-        if stranger == "handle":
+        if known != "handle":
+            conn.execute(f"UPDATE {HANDLE_IT_TABLE} SET enabled = 0 WHERE person_id = ?", (person_id,))  # noqa: S608
+        elif stranger == "handle":
             conn.execute(f"UPDATE {HANDLE_IT_TABLE} SET mode = 'bold' WHERE person_id = ?", (person_id,))  # noqa: S608
     conn.commit()
 
