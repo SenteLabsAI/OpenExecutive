@@ -402,6 +402,26 @@ def test_a_large_amount_rule_holds_only_larger_amounts() -> None:
     assert lead.enabled
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("approve a $2 million wire", [2_000_000.0]),
+    ("2 million dollars to Acme", [2_000_000.0]),
+    ("$1.5bn deal", [1_500_000_000.0]),
+    ("$3 thousand", [3_000.0]),
+    ("2k EUR", [2_000.0]),
+    ("$2 more for lunch", [2.0]),
+    ("$5 buys a coffee", [5.0]),
+])
+def test_amounts_read_scale_words(text: str, expected: list[float]) -> None:
+    assert ttl.amounts(text) == expected
+
+
+def test_an_amount_rule_holds_a_wire_written_in_words() -> None:
+    ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "500", created_by="t")
+    rules = ttl.list_rules([ttl.SCOPE_COMPANY])
+    assert ttl._rule_hit(rules, "Approve a $2 million wire to Acme", []) is not None
+    assert ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "2 million", created_by="t").value == "2000000"
+
+
 # ── what unattended passes get ────────────────────────────────────────────────
 
 

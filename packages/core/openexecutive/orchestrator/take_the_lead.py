@@ -147,9 +147,16 @@ _PEOPLE_RE = re.compile(
     re.IGNORECASE,
 )
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# A word after the number that scales it ("$2 million", "2k EUR", "$1.5bn").
+_MULTIPLIERS: dict[str, int] = {
+    "k": 1_000, "thousand": 1_000,
+    "m": 1_000_000, "mn": 1_000_000, "million": 1_000_000,
+    "b": 1_000_000_000, "bn": 1_000_000_000, "billion": 1_000_000_000,
+}
+_MULT = r"(thousand|million|billion|mn|bn|k|m|b)\b"
 _AMOUNT_VALUE_RE = re.compile(
-    r"(?:[$€£¥]\s?)(\d[\d,]*(?:\.\d+)?)\s?([kKmM])?"
-    r"|\b(\d[\d,]*(?:\.\d+)?)\s?([kKmM])?\s?(?:usd|eur|gbp|dollars|euros|pounds)\b",
+    rf"(?:[$€£¥]\s?)(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?"
+    rf"|\b(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?\s?(?:usd|eur|gbp|dollars|euros|pounds)\b",
     re.IGNORECASE,
 )
 _DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}$")
@@ -388,19 +395,18 @@ class Hit:
 
 
 def _number(text: str) -> float | None:
-    match = re.fullmatch(r"\s*(\d[\d,]*(?:\.\d+)?)\s*([kKmM])?\s*", text or "")
+    match = re.fullmatch(rf"\s*(\d[\d,]*(?:\.\d+)?)\s*(?:{_MULT})?\s*", text or "", re.IGNORECASE)
     if not match:
         return None
     value = float(match.group(1).replace(",", ""))
-    suffix = (match.group(2) or "").lower()
-    return value * (1000 if suffix == "k" else 1_000_000 if suffix == "m" else 1)
+    return value * _MULTIPLIERS.get((match.group(2) or "").lower(), 1)
 
 
 def amounts(text: str) -> list[float]:
-    """Money amounts written in ``text`` ($500, 2k EUR, …)."""
+    """Money amounts written in ``text`` ($500, 2k EUR, $2 million, …)."""
     found: list[float] = []
     for m in _AMOUNT_VALUE_RE.finditer(text or ""):
-        number = _number(f"{m.group(1) or m.group(3)}{m.group(2) or m.group(4) or ''}")
+        number = _number(f"{m.group(1) or m.group(3)} {m.group(2) or m.group(4) or ''}")
         if number is not None:
             found.append(number)
     return found
