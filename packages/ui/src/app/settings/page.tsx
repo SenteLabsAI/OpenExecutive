@@ -101,7 +101,7 @@ function SettingsTile({ page, status }: { page: SettingsPageDef; status?: TileSt
       <span className="hidden sm:flex w-11 h-11 items-center justify-center rounded-xl bg-accent/10 text-accent">
         <Icon name={page.icon} size="w-5 h-5" />
       </span>
-      <span className="min-w-0 flex-1 sm:mt-4">
+      <span className="min-w-0 flex-1 sm:mt-4 sm:w-full">
         <span className="block font-display text-lg font-bold tracking-tight text-fg">{page.label}</span>
         <span className="hidden sm:block mt-1 text-[15px] text-fg-muted leading-relaxed">
           {page.description}
@@ -202,7 +202,8 @@ function useTileStatuses(): {
     const handleIt = delegation.handle_it;
     if (handleIt?.enabled) {
       const mode = HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On";
-      byPage["act-as-me"] = { text: `${byPage["act-as-me"]?.text} · Handle it for me · ${mode}`, tone: "ok" };
+      // Short enough for one line on a phone: the dial step is what matters.
+      byPage["act-as-me"] = { text: `Mailbox connected · Handles: ${mode}`, tone: "ok" };
     }
   }
 

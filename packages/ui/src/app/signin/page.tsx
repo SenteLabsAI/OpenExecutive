@@ -97,7 +97,9 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
                 </button>
               </form>
             )}
-            {GOOGLE_SIGN_IN && (
+            {/* Google's button only when Google sign-in is set up: without
+                AUTH_GOOGLE_ID it would lead to an error page. */}
+            {GOOGLE_SIGN_IN && googleConfigured && (
               <form
                 action={async () => {
                   "use server";
@@ -111,10 +113,13 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
               </form>
             )}
             {!googleConfigured && !OIDC && (
-              <p className="mt-4 text-xs text-fg-subtle">
-                Sign-in isn’t set up here yet: set up Google or SSO sign-in (see docs/auth.md). On your own computer,
-                start Open Executive with <code>make dev</code> to use it without signing in.
-              </p>
+              <div className="mt-6 rounded-xl border border-line bg-surface-elevated px-4 py-3">
+                <p className="text-sm font-medium text-fg">Sign-in isn’t set up here yet.</p>
+                <p className="mt-1 text-sm text-fg-muted">
+                  Ask whoever runs Open Executive for you to turn on Google or SSO sign-in.
+                </p>
+                <p className="mt-2 text-xs text-fg-muted">If that’s you: see docs/auth.md.</p>
+              </div>
             )}
           </>
         )}

@@ -119,7 +119,7 @@ function companyTabs(isOnboarded: boolean): NavItem[] {
       href: "/departments",
       label: "Departments",
       icon: "grid",
-      description: "Org units with goals, an authority level, and a specialist behind each.",
+      description: "Your departments, their goals, how much each may decide on its own, and the expert behind each.",
     },
     profileItem("company", isOnboarded),
   ];
@@ -328,7 +328,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     icon: "users",
     group: "configure",
     description:
-      "Configure the agents — models, system prompts, deep-reasoning, and the Executive voice persona.",
+      "Choose how thorough answers are, and change each agent's model, instructions and the Executive's voice.",
   },
   {
     href: "/audit",
@@ -336,7 +336,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     icon: "doc-search",
     group: "diagnose",
     description:
-      "Searchable event log of every chat turn, specialist consult, tool call, and scheduled action.",
+      "A searchable record of everything the Executive did: each chat, each question it passed to an expert, each tool it used and each scheduled job.",
   },
   {
     href: "/audit/usage",
@@ -344,7 +344,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     icon: "activity",
     group: "diagnose",
     description:
-      "Aggregate token usage and cost across all sessions — totals, by day, and by model.",
+      "What the AI has cost: the total, each day, and for each model.",
   },
   {
     href: "/guide",
@@ -367,7 +367,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     icon: "cog",
     group: "configure",
     description:
-      "Load prebuilt company fixtures, snapshot your current data, or generate a new scenario with AI.",
+      "Load a ready-made demo company, save a copy of your current data, or have AI make up a new one.",
   },
   {
     href: "/clients",
@@ -375,7 +375,7 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     icon: "building",
     group: "configure",
     description:
-      "Multi-client mode for fractional work — switch the live company between named client slots.",
+      "For fractional work: switch between the companies you work for.",
   },
 ];
 

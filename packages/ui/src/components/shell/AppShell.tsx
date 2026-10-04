@@ -216,13 +216,12 @@ function AskOEButton() {
       onClick={toggle}
       title="Ask OE about this page (Ctrl/Cmd + .)"
       aria-pressed={open}
-      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-        open
-          ? "bg-indigo-500/15 text-indigo-200"
-          : "text-indigo-300 hover:text-indigo-200 hover:bg-surface-overlay"
+      className={`flex min-h-10 items-center gap-1.5 px-3 rounded-lg text-sm font-semibold text-accent transition-colors cursor-pointer ${
+        open ? "bg-accent/20" : "bg-accent/10 hover:bg-accent/15"
       }`}
     >
-      <Icon name="bolt" size="w-4 h-4" />
+      <Icon name="sparkles" size="w-4 h-4" />
+      <span className="sm:hidden">Ask</span>
       <span className="hidden sm:inline">Ask OE</span>
     </button>
   );

@@ -9,6 +9,8 @@ import {
   sendLeftNothing,
   sendQuestion,
   senderLine,
+  senderShort,
+  draftIsLong,
 } from "../src/lib/replyCards.ts";
 
 test("relationLabel names who the sender is, and nothing for an unknown relation", () => {
@@ -31,6 +33,19 @@ test("replyFlagLines puts the pressing warnings first, once each, and drops unkn
 test("senderLine shows the name and address, or the address alone", () => {
   assert.equal(senderLine({ from_name: "Dana Park", from_email: "dana@x.example" }), "Dana Park <dana@x.example>");
   assert.equal(senderLine({ from_name: "  ", from_email: "dana@x.example" }), "dana@x.example");
+});
+
+test("senderShort shows the name alone only for a verified sender with a name", () => {
+  const card = { from_name: "Dana Park", from_email: "dana@x.example" };
+  assert.equal(senderShort({ ...card, sender_verified: true }), "Dana Park");
+  assert.equal(senderShort({ ...card, sender_verified: false }), "Dana Park <dana@x.example>");
+  assert.equal(senderShort({ from_name: " ", from_email: "dana@x.example", sender_verified: true }), "dana@x.example");
+});
+
+test("draftIsLong clamps drafts past 280 characters or 5 lines", () => {
+  assert.equal(draftIsLong("Thanks, Thursday works."), false);
+  assert.equal(draftIsLong("x".repeat(281)), true);
+  assert.equal(draftIsLong("a\nb\nc\nd\ne\nf"), true);
 });
 
 test("safeGmailLink keeps only a link into Gmail", () => {

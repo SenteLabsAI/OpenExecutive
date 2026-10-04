@@ -616,7 +616,7 @@ export default function CouncilPage() {
                     </span>
                     <span className="block text-sm text-fg-muted mt-1 leading-relaxed">{p.description}</span>
                     {p.model && (
-                      <span className="block text-[11px] text-fg-subtle mt-2 font-mono">{p.model}</span>
+                      <span className="block text-[13px] text-fg-subtle mt-2">Uses {shortModelName(p.model)}</span>
                     )}
                   </button>
                 );

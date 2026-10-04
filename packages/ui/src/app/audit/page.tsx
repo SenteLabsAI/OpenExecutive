@@ -459,7 +459,7 @@ function AuditPageInner() {
             <div className="min-w-0">
               <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Audit log</h1>
               <p className="mt-1 text-[15px] text-fg-muted">
-                Every chat turn, specialist consult, tool call and scheduled action, newest first.
+                Each chat, each question passed to an expert, each tool used and each scheduled job, newest first.
               </p>
             </div>
             <Link href="/audit/usage" className={buttonClass("secondary", "sm")}>

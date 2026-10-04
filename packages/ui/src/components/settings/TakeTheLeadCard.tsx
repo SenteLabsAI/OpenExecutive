@@ -12,7 +12,6 @@ import {
   setTakeTheLead,
   type TakeTheLead,
 } from "@/lib/api";
-import FeatureName from "@/components/FeatureName";
 
 // Take the lead as the Executive (GET/PUT /take-the-lead), the owner's
 // alone: its unattended runs act on what they find, behind the gate. The six
@@ -40,7 +39,7 @@ export default function TakeTheLeadCard() {
   if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
   if (state === "hidden") {
     return (
-      <SettingsCard title={<FeatureName feature="take_the_lead" />}>
+      <SettingsCard title="Take the lead">
         <p className="text-sm text-fg-muted">
           Only the account owner can turn this on. When it&apos;s on, the Executive acts on what it finds without
           asking first.
@@ -70,7 +69,7 @@ export default function TakeTheLeadCard() {
 
   return (
     <SettingsCard
-      title={<FeatureName feature="take_the_lead" />}
+      title="Take the lead"
       titleId="take-the-lead-label"
       description={
         !lead.available

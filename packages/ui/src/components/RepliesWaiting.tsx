@@ -20,6 +20,8 @@ import {
   sendLeftNothing,
   sendQuestion,
   senderLine,
+  senderShort,
+  draftIsLong,
 } from "@/lib/replyCards";
 import FeatureName from "@/components/FeatureName";
 
@@ -104,6 +106,7 @@ export function ReplyCardItem({
 }) {
   const [step, setStep] = useState<Step>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
+  const [fullDraft, setFullDraft] = useState(false);
   // Being settled: Gmail didn't confirm a send. The server says so, and the
   // section reads the cards again until it's settled.
   const unconfirmed = card.status === "executing";
@@ -164,7 +167,7 @@ export function ReplyCardItem({
       }`}
     >
       <div className="mb-2 flex items-center gap-2">
-        <span className="inline-flex items-center rounded-lg bg-accent/10 px-2 py-0.5 text-[13px] font-medium text-accent">
+        <span className="inline-flex items-center rounded-lg bg-surface-overlay px-2 py-0.5 text-[13px] font-medium text-fg-muted">
           {followUp ? "Follow-up waiting" : "Reply waiting"}
         </span>
         <FeatureName feature="act_as_me" className="text-[12px]" />
@@ -174,7 +177,7 @@ export function ReplyCardItem({
         {card.subject || "(no subject)"}
       </div>
       <div className="mt-1 text-sm text-fg-muted break-words">
-        {followUp ? `Nobody answered your email to ${who}` : senderLine(card)}
+        {followUp ? `Nobody answered your email to ${who}` : senderShort(card)}
         {[relation, card.sender_verified ? "" : "Address not verified"]
           .filter(Boolean)
           .map((part) => ` · ${part}`)
@@ -183,10 +186,13 @@ export function ReplyCardItem({
 
       {card.they_wrote && (
         <details className="mt-3 group">
-          <summary className={`cursor-pointer list-none ${label}`}>
-            <span className="inline-block transition-transform group-open:rotate-90">▸</span>{" "}
-            {followUp ? "You wrote" : "They wrote"}
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-fg-muted hover:bg-surface-overlay/60">
+            <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span>
+            {followUp ? "What you wrote" : "What they wrote"}
           </summary>
+          {!followUp && (
+            <p className="mt-1.5 px-1 text-xs text-fg-subtle break-words">From: {senderLine(card)}</p>
+          )}
           {/* Plain text: what a stranger wrote is never rendered as markup. */}
           <p className="mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg-muted">
             {card.they_wrote}
@@ -198,7 +204,23 @@ export function ReplyCardItem({
         <div className={label}>Your draft</div>
         <div className="mt-1.5 rounded-xl border border-line bg-surface px-3 py-2">
           <div className="text-xs text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
-          <p className="mt-1 whitespace-pre-wrap break-words text-sm text-fg">{card.draft_body}</p>
+          <p
+            className={`mt-1 whitespace-pre-wrap break-words text-sm text-fg ${
+              draftIsLong(card.draft_body) && !fullDraft ? "line-clamp-4" : ""
+            }`}
+          >
+            {card.draft_body}
+          </p>
+          {draftIsLong(card.draft_body) && (
+            <button
+              type="button"
+              onClick={() => setFullDraft((v) => !v)}
+              aria-expanded={fullDraft}
+              className="mt-1 min-h-10 text-sm font-medium text-accent cursor-pointer"
+            >
+              {fullDraft ? "Show less" : "Show full draft"}
+            </button>
+          )}
         </div>
       </div>
 

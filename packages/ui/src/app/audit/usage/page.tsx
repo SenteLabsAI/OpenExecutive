@@ -129,7 +129,7 @@ export default function TokenUsagePage() {
             </Link>
           </div>
           <p className="mt-1 text-sm text-fg-muted">
-            Aggregate token usage and cost across all sessions, summed from the
+            What the AI has cost across every conversation, added up from the
             audit log. Days are UTC. Cost is the actual OpenRouter charge captured
             per call — it accrues from when cost tracking went live, so calls
             logged before then count tokens but $0.
