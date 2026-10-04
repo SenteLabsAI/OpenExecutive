@@ -331,6 +331,13 @@ async def _send(
             ) from exc
         # It went: whatever happens to the bookkeeping, say so. A card left
         # executing is settled by the reconciler from the sent message.
+        if on_its_own:
+            # First and on its own: the daily limit and the once-a-thread
+            # rule count these rows, so nothing else failing may skip it.
+            try:
+                handle_it.record_handled(person.id, thread_id, instance.id, sent.id or None, now=now)
+            except Exception:
+                logger.exception("delegation.reply_send: recording a reply sent on its own failed")
         try:
             if on_its_own:
                 final = STATUS_EXECUTED
@@ -349,7 +356,6 @@ async def _send(
             if sent.id:
                 drafts.mark_sent(person.id, draft.draft_id, sent.id)
             if on_its_own:
-                handle_it.record_handled(person.id, thread_id, instance.id, sent.id or None, now=now)
                 _audit("delegation_reply_handled", f"Sent a reply as person {person.id}, on its own", {
                     "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
                     "sent_message_id": sent.id, "recipient_count": len(recipients),

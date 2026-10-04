@@ -103,6 +103,21 @@ def test_on_it_sends_a_reply_to_someone_they_know(db: Path, owner: Any, models: 
     assert rows == [(1,)]
 
 
+def test_a_send_is_counted_even_when_later_bookkeeping_fails(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import drafts
+
+    def broken(*_: Any, **__: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(drafts, "mark_sent", broken)
+    _on(owner)
+    mailbox, _ = _scan_one(owner)
+    assert mailbox.sent == ["d1"]
+    assert handle_it.sent_today(owner.id, NOW) == 1  # the limits still see it
+
+
 def test_handled_lists_it_with_the_questions_left_for_them(owner: Any, models: dict[str, Any]) -> None:
     _on(owner)
     _scan_one(owner)

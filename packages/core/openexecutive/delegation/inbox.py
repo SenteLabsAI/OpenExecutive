@@ -1404,12 +1404,13 @@ async def _settle_unconfirmed_send(
         external_event_id=sent[-1].id or None,
     ):
         return 0
-    _set_outcome(person.id, message_id, SENT, reason="handled" if on_its_own else "sent")
-    drafts.mark_sent(person.id, draft_id, sent[-1].id)
     if on_its_own:
+        # Before the rest of the bookkeeping: the limits count these rows.
         handle_it.record_handled(
             person.id, str(payload.get("thread_id") or ""), card.id, sent[-1].id or None, now=now,
         )
+    _set_outcome(person.id, message_id, SENT, reason="handled" if on_its_own else "sent")
+    drafts.mark_sent(person.id, draft_id, sent[-1].id)
     _audit("delegation_reply_sent", f"Sent a reply as person {person.id}", {
         "person_id": person.id, "decision_id": card.id, "thread_id": str(payload.get("thread_id") or ""),
         "sent_message_id": sent[-1].id, "edited": edited, "confirmed_later": True,
