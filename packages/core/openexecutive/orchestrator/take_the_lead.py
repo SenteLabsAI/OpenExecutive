@@ -521,7 +521,7 @@ def check(
          "it deletes, cancels or shares something"),
         (BIG_SEND, tool in _BROADCAST_TOOLS or len(recipients) > BIG_SEND_RECIPIENTS,
          "it goes to a lot of people"),
-        (MONEY, bool(_MONEY_RE.search(text)), "it's about money"),
+        (MONEY, bool(_MONEY_RE.search(text) or amounts(text)), "it's about money"),
         (CONTRACTS, bool(_CONTRACTS_RE.search(text)), "it's about a contract or legal matter"),
         (PEOPLE_DECISIONS, bool(_PEOPLE_RE.search(text)), "it's about hiring or a people decision"),
         (SOMEONE_NEW, any(not _known(r) for r in recipients), "it goes to someone new"),

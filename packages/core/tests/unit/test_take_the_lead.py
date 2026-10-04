@@ -415,6 +415,12 @@ def test_amounts_read_scale_words(text: str, expected: list[float]) -> None:
     assert ttl.amounts(text) == expected
 
 
+def test_money_holds_a_scaled_amount(owner: Any) -> None:
+    hit = ttl.check("message_person", {"person_id": owner.id, "text": "Please send 2k EUR to Acme today"},
+                    lead=_lead(), rules=[])
+    assert hit is not None and hit.kind == ttl.MONEY
+
+
 def test_an_amount_rule_holds_a_wire_written_in_words() -> None:
     ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "500", created_by="t")
     rules = ttl.list_rules([ttl.SCOPE_COMPANY])
