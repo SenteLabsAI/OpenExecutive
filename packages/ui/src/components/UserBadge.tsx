@@ -4,6 +4,7 @@ import { signOut, useSession } from "next-auth/react";
 
 import { GUIDE_NAV_ITEM } from "@/components/shell/navConfig";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
+import { initials } from "@/lib/initials";
 
 // The account menu at the foot of the sidebar: help, the Executive's
 // pause switch (on Settings → Your Executive) and signing out, kept off
@@ -71,16 +72,12 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
   }
 
   const name = user.name || user.email;
-  const initials =
-    (user.name || user.email)
-      .split(/[\s@]/)[0]
-      .slice(0, 2)
-      .toUpperCase() || "?";
+  const letters = initials(user.name || user.email);
 
   if (variant === "sidebar") {
     return (
       <div className="px-3 py-3 border-t border-line flex items-center gap-2.5 flex-shrink-0">
-        <Avatar name={initials} image={user.image} size="w-8 h-8" />
+        <Avatar name={letters} image={user.image} size="w-8 h-8" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-fg truncate">{name}</p>
           <p className="text-xs text-fg-muted truncate">{user.email}</p>
@@ -101,7 +98,7 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
   // compact (default) — for PageHeader right side
   return (
     <div className="flex items-center gap-2 text-xs text-fg-muted">
-      <Avatar name={initials} image={user.image} size="w-6 h-6" />
+      <Avatar name={letters} image={user.image} size="w-6 h-6" />
       <span className="hidden sm:inline truncate max-w-[160px]">{name}</span>
       <button
         type="button"
