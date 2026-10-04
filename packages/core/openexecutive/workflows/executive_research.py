@@ -894,7 +894,7 @@ async def _executive_synthesis_loop(
     # writes, raw DMs, ack_alert, run_workflow) used to stay runnable here if
     # the model emitted them anyway. Solo also withholds the team tools and
     # meeting booking, and messages only the principal.
-    tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
+    tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode, source="research")
     # Build the system prompt for the SAME configured set, so the routing
     # menu never names a DM channel the model can't actually use.
     synthesis_system = _build_synthesis_system(configured, has_roster, mode=mode)

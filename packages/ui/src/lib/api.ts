@@ -1649,6 +1649,10 @@ export interface HandleIt {
   // login); without it nothing is sent on its own.
   available: boolean;
   sent_today: number;
+  // Take the lead as you: the setting gives way to your rules. Only the
+  // owner can have it for now (lead_available).
+  lead?: boolean;
+  lead_available?: boolean;
 }
 
 // One reply sent on its own, yours alone (GET /delegation/handled).
@@ -4778,4 +4782,120 @@ export async function updateClientMeta(
     throw new Error(err.detail ?? "Failed to update client");
   }
   return res.json();
+}
+
+// ── Take the lead (Settings → On its own, Today → What I did) ────────────────
+
+export type LeadRuleKind = "person" | "domain" | "words" | "amount";
+
+export interface LeadRule {
+  id: number;
+  kind: LeadRuleKind;
+  value: string;
+}
+
+export interface TakeTheLead {
+  enabled: boolean;
+  ask_first: { kind: string; label: string; on: boolean }[];
+  rules: LeadRule[];
+  available: boolean;
+  paused: boolean;
+}
+
+export interface WhatIDidItem {
+  at: string;
+  actor: "executive" | "you";
+  title: string;
+  detail: string;
+  why: string;
+  status: "done" | "waiting" | "approved" | "declined" | "failed";
+  link: string;
+}
+
+async function leadError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") return new Error(body.detail);
+    if (typeof body?.detail?.message === "string") return new Error(body.detail.message);
+  } catch {
+    // fall through
+  }
+  return new Error(fallback);
+}
+
+// null for anyone but the owner (403) or a backend without it (404).
+export async function getTakeTheLead(signal?: AbortSignal): Promise<TakeTheLead | null> {
+  const res = await fetch(`${API_BASE}/take-the-lead`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await leadError(res, "Couldn't load Take the lead.");
+  return res.json();
+}
+
+export async function setTakeTheLead(update: {
+  enabled?: boolean;
+  ask_first?: Record<string, boolean>;
+}): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await leadError(res, "Couldn't change Take the lead.");
+  return res.json();
+}
+
+export async function addCompanyLeadRule(kind: LeadRuleKind, value: string): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead/rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, value }),
+  });
+  if (!res.ok) throw await leadError(res, "Couldn't add the rule.");
+  return res.json();
+}
+
+export async function deleteCompanyLeadRule(id: number): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead/rules/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await leadError(res, "Couldn't remove the rule.");
+  return res.json();
+}
+
+export async function setLeadAsYou(enabled: boolean): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/take-the-lead`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change Take the lead as you.");
+  return res.json();
+}
+
+export async function getMyLeadRules(signal?: AbortSignal): Promise<LeadRule[]> {
+  const res = await fetch(`${API_BASE}/delegation/take-the-lead/rules`, { signal });
+  if (!res.ok) throw await delegationError(res, "Couldn't load your rules.");
+  return ((await res.json()) as { rules: LeadRule[] }).rules;
+}
+
+export async function addMyLeadRule(kind: LeadRuleKind, value: string): Promise<LeadRule[]> {
+  const res = await fetch(`${API_BASE}/delegation/take-the-lead/rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, value }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't add the rule.");
+  return ((await res.json()) as { rules: LeadRule[] }).rules;
+}
+
+export async function deleteMyLeadRule(id: number): Promise<LeadRule[]> {
+  const res = await fetch(`${API_BASE}/delegation/take-the-lead/rules/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await delegationError(res, "Couldn't remove the rule.");
+  return ((await res.json()) as { rules: LeadRule[] }).rules;
+}
+
+// Everything done on its own for you this week; [] when the backend predates it.
+export async function getWhatIDid(signal?: AbortSignal): Promise<WhatIDidItem[]> {
+  const res = await fetch(`${API_BASE}/take-the-lead/done`, { signal });
+  if (res.status === 403 || res.status === 404) return [];
+  if (!res.ok) throw await leadError(res, "Couldn't load what it did.");
+  return ((await res.json()) as { items: WhatIDidItem[] }).items;
 }

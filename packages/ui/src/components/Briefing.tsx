@@ -27,6 +27,7 @@ import {
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import InfoTip from "./InfoTip";
 import { REPLIES_WAITING_TIP, ReplyCardItem, useReplyCards } from "./RepliesWaiting";
+import { useWhatIDid, WhatIDidList } from "./WhatIDid";
 import Icon from "./Icon";
 import {
   HandledPanelBody,
@@ -83,7 +84,8 @@ type PanelKey =
   | "clients"
   | "projects"
   | "dueSoon"
-  | "weeklyReview";
+  | "weeklyReview"
+  | "whatIDid";
 
 interface Tile {
   key: PanelKey;
@@ -130,6 +132,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const [undoneRows, setUndoneRows] = useState<Set<string>>(new Set());
   // Which tile's side panel (or the brief) is open.
   const [openPanel, setOpenPanel] = useState<PanelKey | null>(null);
+  // What I did: everything done on its own this week, As you and As the Executive.
+  const whatIDid = useWhatIDid();
   const [askText, setAskText] = useState("");
 
   // Re-pull /today after a server-side mutation (e.g. a decision approve/reject)
@@ -516,6 +520,14 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
         sub: "by the Executive",
         subTone: "emerald",
       });
+    if (whatIDid.length > 0)
+      tiles.push({
+        key: "whatIDid",
+        value: String(whatIDid.length),
+        label: "What I did",
+        sub: "on its own this week",
+        subTone: "emerald",
+      });
     if (monitoringProposals.length > 0)
       tiles.push({
         key: "monitoring",
@@ -839,6 +851,14 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   undone={undoneRows}
                   onJumpToAlert={jumpToAlert}
                 />
+              </SidePanel>
+              <SidePanel
+                open={openPanel === "whatIDid"}
+                onClose={() => setOpenPanel(null)}
+                title="What I did"
+                subtitle="On its own this week. Tap one to see why."
+              >
+                <WhatIDidList items={whatIDid} />
               </SidePanel>
               <SidePanel open={openPanel === "monitoring"} onClose={() => setOpenPanel(null)} title="Monitoring">
                 <MonitoringPanelBody

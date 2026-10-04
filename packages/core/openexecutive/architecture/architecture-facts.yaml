@@ -4741,6 +4741,7 @@ audit:
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
     - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and mode. Always private.
     - delegation_reply_handled — Handle it for me sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
+    - take_the_lead_changed — a Take the lead switch, Ask first switch or company rule changed (PUT /take-the-lead, its rules, PUT /delegation/take-the-lead). actor "user"; details carry the scope and what changed.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
@@ -9132,6 +9133,36 @@ delegation:
     DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20, within the shared
     limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL),
     DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY (1-500, default 20).
+  take_the_lead: |
+    Take the lead (orchestrator.take_the_lead): the Executive acts on its
+    own behind one gate. Two switches, off by default, rows in
+    take_the_lead keyed by scope. "executive" (principal only, PUT
+    /take-the-lead): unattended_toolkit and the chat loop's unattended path
+    keep solo's booking / run_workflow / unrestricted message_person and
+    wrap every acting tool (ACTING_TOOLS, MCP names that send, create,
+    update, delete or share) in the gate; UNATTENDED_WITHHELD_TOOLS stay
+    withheld and every guard inside a handler still applies, so department
+    approval levels hold. New mail or chat
+    (a turn with origin_channel) wakes the reflection early: one
+    take_the_lead_wake action 5 minutes out, none while one waits, at most
+    every 30 minutes; the pause holds it. "person:<id>" (owner only for
+    now, PUT /delegation/take-the-lead): the Handle it for me dial's top
+    step; handle_it.refusal drops the mode limits (strangers, confidence,
+    links, amounts, length up to 4000) for the added rules (lead_rule) and
+    keeps everything else Handle it always keeps.
+    The gate (take_the_lead.check, plain code): six kinds, each with an Ask
+    first switch, all on to start: money, contracts, people_decisions,
+    delete_share, someone_new (not on the roster or contacts), big_send
+    (broadcast, department message, more than 5 people). Added rules
+    (take_the_lead_rules, scope company or person:<id>; kinds person,
+    domain, words, amount) always hold; unreadable rules hold the action.
+    Structured only: no model reads a rule. A held action is a
+    take_the_lead_action decision (principal_and_approver: only the
+    principal and its approver see or resolve it) with a Today card,
+    routed by authority scope (money spend_lt_10k, contracts legal_sign,
+    hiring hiring_signoff; team mode) else the principal. Approve claims
+    the row and runs the exact call once (carry_out); reject drops it.
+    take_the_lead_log feeds What I did (GET /take-the-lead/done).
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,

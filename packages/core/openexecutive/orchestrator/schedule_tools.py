@@ -1899,7 +1899,7 @@ def handlers_for_offered_tools(
 
 
 def unattended_toolkit(
-    tools: list[dict[str, Any]], handlers: dict[str, Any], mode: str
+    tools: list[dict[str, Any]], handlers: dict[str, Any], mode: str, *, source: str = "unattended"
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """``(tools, handlers)`` for an unattended pass (reflection, research).
 
@@ -1910,12 +1910,22 @@ def unattended_toolkit(
     principal only. Either mode, the handler map is built from the list that
     is returned, so a name the model emits without being offered it is
     skipped as unknown instead of run. Order is preserved.
+
+    With Take the lead as the Executive on (``take_the_lead``), solo keeps
+    the booking and workflow tools and its ``message_person`` reaches the
+    team, and every acting tool, in either mode, goes through the gate
+    instead (``source`` names the pass on What I did).
     """
+    from openexecutive.orchestrator import take_the_lead
+
+    leading = take_the_lead.executive_on()
     tools = filter_tools_for_workspace_mode(tools, mode)
     tools = [t for t in tools if t.get("name", "") not in UNATTENDED_WITHHELD_TOOLS]
-    if mode == "solo":
+    if mode == "solo" and not leading:
         tools = [t for t in tools if t.get("name", "") not in SOLO_UNATTENDED_WITHHELD_TOOLS]
     offered = handlers_for_offered_tools(tools, handlers)
+    if leading:
+        return tools, take_the_lead.gated_handlers(offered, source=source)
     if mode == "solo":
         offered = principal_only_handlers(offered)
     return tools, offered

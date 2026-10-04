@@ -166,7 +166,29 @@ REASONS: dict[str, str] = {
     "handle_it_off": "Handle it for me was off by the time it came to send.",
     # Follow-ups as you (delegation.follow_ups).
     "follow_up_level": "On this setting, a follow-up to this person waits for you to send it.",
+    # Take the lead as you (orchestrator.take_the_lead).
+    "lead_rule": "One of the rules you or your company added says this waits for you.",
 }
+
+# Take the lead as you lifts the setting's limits, but not this ceiling.
+LEAD_MAX_BODY_CHARS = 4000
+
+
+def leading(person_id: int, *, db_path: Path | None = None) -> bool:
+    """Whether Take the lead as you is on for ``person_id``: the setting's
+    limits give way to the added rules. Never raises: unreadable is off."""
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        return take_the_lead.as_you_on(person_id, db_path=db_path)
+    except Exception:
+        return False
+
+
+def _lead_rule(person_id: int, texts: list[str], going: list[str], db_path: Path | None) -> bool:
+    from openexecutive.orchestrator import take_the_lead
+
+    return take_the_lead.reply_hit(person_id, texts, going, db_path=db_path) is not None
 
 
 @dataclass
@@ -358,7 +380,8 @@ def _refusal(
     from openexecutive.integrations.email_poller import sender_new_text
 
     settings = get(person_id, db_path=db_path)
-    if settings.level(kind_for(relation)) != LEVEL_HANDLE:
+    lead = settings.enabled and leading(person_id, db_path=db_path)
+    if not lead and settings.level(kind_for(relation)) != LEVEL_HANDLE:
         return "level"
     if not signing_ok():
         return "signing_off"
@@ -368,7 +391,7 @@ def _refusal(
         return "kind"
     rules = settings.rules
     confidence = float(verdict.confidence)
-    if confidence < rules.min_confidence:
+    if not lead and confidence < rules.min_confidence:
         return "unsure"
 
     # Exactly the people the email already went to, minus the person and the
@@ -379,8 +402,17 @@ def _refusal(
         return "recipients"
 
     body = reply.body or ""
-    if sensitive(message.subject or "", sender_new_text(message.text or ""), reply.subject or "", body):
+    texts = [message.subject or "", sender_new_text(message.text or ""), reply.subject or "", body]
+    if sensitive(*texts):
         return "sensitive"
+    if lead:
+        if _lead_rule(person_id, texts, going, db_path):
+            return "lead_rule"
+        if len(body) > LEAD_MAX_BODY_CHARS:
+            return "long"
+        if any(f not in ALLOWED_FLAGS for f in reply.flags):
+            return "flagged"
+        return _last_checks(person_id, thread, own, now, db_path)
     sure_of_details = rules.details_confidence is not None and confidence >= rules.details_confidence
     if not sure_of_details and (_AMOUNT_RE.search(body) or _AMOUNT_RE.search(reply.subject or "")):
         return "amount"
@@ -390,7 +422,11 @@ def _refusal(
         return "long"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"
+    return _last_checks(person_id, thread, own, now, db_path)
 
+
+def _last_checks(person_id: int, thread: Any, own: set[str], now: datetime, db_path: Path | None) -> str | None:
+    """Never twice in a row in a thread, then the counted rules."""
     thread_id = str(getattr(thread, "id", "") or "")
     handled = _handled_rows(person_id, "AND thread_id = ?", (thread_id,), db_path)
     mine = _own_messages(thread, own)
@@ -431,7 +467,8 @@ def _follow_up_refusal(
     from openexecutive.integrations.email_poller import sender_new_text
 
     settings = get(person_id, db_path=db_path)
-    if not settings.follows_up(relation):
+    lead = settings.enabled and leading(person_id, db_path=db_path)
+    if not lead and not settings.follows_up(relation):
         return "follow_up_level"
     if not signing_ok():
         return "signing_off"
@@ -441,8 +478,11 @@ def _follow_up_refusal(
     if not going or len(going) > MAX_RECIPIENTS or set(going) != allowed:
         return "recipients"
     body = reply.body or ""
-    if sensitive(sent.subject or "", sender_new_text(sent.text or ""), reply.subject or "", body):
+    texts = [sent.subject or "", sender_new_text(sent.text or ""), reply.subject or "", body]
+    if sensitive(*texts):
         return "sensitive"
+    if lead and _lead_rule(person_id, texts, going, db_path):
+        return "lead_rule"
     if _AMOUNT_RE.search(body) or _AMOUNT_RE.search(reply.subject or ""):
         return "amount"
     if _LINK_RE.search(body):

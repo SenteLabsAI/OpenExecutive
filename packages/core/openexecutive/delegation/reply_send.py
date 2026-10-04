@@ -200,7 +200,9 @@ async def _send(
         # it to them.
         handled_as = str(payload.get("handled_as") or "stranger")
         stored = handle_it.get(person.id)
-        allowed = (
+        # Take the lead as you lifts the setting (its added rules were
+        # checked when the card was made).
+        allowed = (stored.enabled and handle_it.leading(person.id)) or (
             stored.follows_up(handled_as) if payload.get("source") == "follow_up"
             else stored.level(handle_it.kind_for(handled_as)) == handle_it.LEVEL_HANDLE
         )

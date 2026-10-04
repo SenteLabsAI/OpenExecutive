@@ -38,6 +38,14 @@ Routes:
                                     turning it on needs Draft replies to my
                                     inbox on (409). Turning the inbox watcher
                                     off turns it off too
+  PUT    /delegation/take-the-lead — {enabled}: Take the lead as you, the
+                                    owner's alone for now: Handle it for
+                                    me's setting gives way to the added rules
+                                    (orchestrator.take_the_lead); turning it
+                                    on turns Handle it for me on
+  GET|POST /delegation/take-the-lead/rules, DELETE …/rules/{id}
+                                  — the caller's own rules for it (removing
+                                    one needs the same provable caller)
   GET    /delegation/handled      — the caller's replies sent on its own in
                                     the last 7 days, with the questions each
                                     left for them
@@ -156,6 +164,33 @@ class HandleItOut(BaseModel):
     # or local login); without it nothing is sent on its own.
     available: bool
     sent_today: int = 0
+    # Take the lead as you: the setting's limits give way to the added rules
+    # (orchestrator.take_the_lead). Only the owner can have it in this build.
+    lead: bool = False
+    lead_available: bool = False
+
+
+class LeadUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class LeadRuleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    value: str
+
+
+class LeadRuleOut(BaseModel):
+    id: int
+    kind: str
+    value: str
+
+
+class LeadRulesOut(BaseModel):
+    rules: list[LeadRuleOut]
 
 
 class HandleItUpdate(BaseModel):
@@ -396,14 +431,21 @@ def _handle_it_out(person_id: int) -> HandleItOut:
     from datetime import UTC, datetime
 
     from openexecutive.delegation import handle_it
+    from openexecutive.people.store import get_person
 
     stored = handle_it.get(person_id)
     try:
         today = handle_it.sent_today(person_id, datetime.now(UTC))
     except Exception:
         today = 0
+    try:
+        found = get_person(person_id)
+        principal = bool(found is not None and found.is_principal)
+    except Exception:
+        principal = False
     return HandleItOut(
         enabled=stored.enabled, mode=stored.mode, available=handle_it.signing_ok(), sent_today=today,
+        lead=principal and stored.enabled and handle_it.leading(person_id), lead_available=principal,
     )
 
 
@@ -612,6 +654,97 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
     _set_handle_it(person_id, enabled=body.enabled, mode=body.mode)
     return await _state(person)
+
+
+def _signed_caller(request: Request, *, narrowing: bool) -> Person:
+    """The caller, when this request is provably theirs; turning something
+    off (``narrowing``) stays possible without signed sign-ins."""
+    from openexecutive.delegation.gmail import normalize_email
+    from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
+
+    person = _caller(request)
+    refused = caller_refusal(api_caller.caller(request), normalize_email(person.email or ""))
+    if refused == NOT_YOURS:
+        raise _refuse(403, "not_yours", "Only you can change this.")
+    if refused is not None and not narrowing:
+        raise _refuse(
+            409, "caller_signing_required",
+            "This needs signed sign-ins on this server, so that nobody else can turn it on for you.",
+        )
+    return person
+
+
+@router.put("/delegation/take-the-lead", response_model=DelegationOut)
+async def update_take_the_lead_as_you(request: Request, body: LeadUpdate) -> DelegationOut:
+    """Take the lead as you: the owner's own switch. Turning it on turns on
+    Handle it for me too; turning it off leaves Handle it as it was."""
+    from openexecutive.delegation import inbox
+    from openexecutive.orchestrator import take_the_lead
+
+    person = _signed_caller(request, narrowing=not body.enabled)
+    person_id = _person_id(person)
+    if not person.is_principal:
+        raise _refuse(403, "owner_only", "Only the account owner can use Take the lead for now.")
+    if body.enabled:
+        if not is_enabled(person_id):
+            raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+        if not inbox.get_watch(person_id).enabled:
+            raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
+        _set_handle_it(person_id, enabled=True, mode=None)
+    scope = take_the_lead.person_scope(person_id)
+    before = take_the_lead.get(scope).enabled
+    take_the_lead.set_(scope, enabled=body.enabled, updated_by=f"person:{person_id}")
+    if before != body.enabled:
+        _audit(
+            "take_the_lead_changed",
+            f"Take the lead as you {'on' if body.enabled else 'off'} for person {person_id}",
+            {"person_id": person_id, "scope": "as_you", "enabled": body.enabled},
+        )
+    return await _state(person)
+
+
+def _rules_out(person_id: int) -> LeadRulesOut:
+    from openexecutive.orchestrator import take_the_lead
+
+    try:
+        rules = take_the_lead.list_rules([take_the_lead.person_scope(person_id)])
+    except Exception as exc:
+        raise _refuse(503, "unavailable", "Couldn't read your rules.") from exc
+    return LeadRulesOut(rules=[LeadRuleOut(id=r.id, kind=r.kind, value=r.value) for r in rules])
+
+
+@router.get("/delegation/take-the-lead/rules", response_model=LeadRulesOut)
+def get_my_lead_rules(request: Request) -> LeadRulesOut:
+    """The caller's own rules for Take the lead as you."""
+    return _rules_out(_person_id(_caller(request)))
+
+
+@router.post("/delegation/take-the-lead/rules", response_model=LeadRulesOut)
+def add_my_lead_rule(request: Request, body: LeadRuleIn) -> LeadRulesOut:
+    from openexecutive.orchestrator import take_the_lead
+
+    # Adding a rule only holds more back, but it is still theirs alone.
+    person = _signed_caller(request, narrowing=True)
+    person_id = _person_id(person)
+    try:
+        take_the_lead.add_rule(
+            take_the_lead.person_scope(person_id), body.kind, body.value, created_by=f"person:{person_id}",
+        )
+    except take_the_lead.RuleError as exc:
+        raise _refuse(422, "bad_rule", str(exc)) from None
+    return _rules_out(person_id)
+
+
+@router.delete("/delegation/take-the-lead/rules/{rule_id}", response_model=LeadRulesOut)
+def delete_my_lead_rule(request: Request, rule_id: int) -> LeadRulesOut:
+    from openexecutive.orchestrator import take_the_lead
+
+    # Removing a rule lets more go, so it needs the request to be provably theirs.
+    person = _signed_caller(request, narrowing=False)
+    person_id = _person_id(person)
+    if not take_the_lead.delete_rule(rule_id, take_the_lead.person_scope(person_id)):
+        raise _refuse(404, "not_found", "That rule isn't there.")
+    return _rules_out(person_id)
 
 
 @router.get("/delegation/handled", response_model=HandledOut)

@@ -763,7 +763,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         # Dispatch only what was offered (a withheld name the model emits
         # anyway is skipped as unknown). Solo also withholds the team tools,
         # meeting booking and run_workflow, and messages only the principal.
-        tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode)
+        tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode, source="reflection")
         # Nobody reads what this pass sends before it goes: an outward tool
         # whose text names a person or figure absent from the input (or a
         # tool result so far) is refused with a reason the model can act on.

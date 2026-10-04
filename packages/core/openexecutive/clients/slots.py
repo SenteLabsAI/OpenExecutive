@@ -50,6 +50,7 @@ from openexecutive.cli.fixture_loader import (
 )
 from openexecutive.delegation.schema import TABLES as DELEGATION_TABLES
 from openexecutive.memory.history_schema import TABLES as HISTORY_TABLES
+from openexecutive.orchestrator.take_the_lead import TABLES as TAKE_THE_LEAD_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,9 @@ _BLANK_WIPE_TABLES = (
     # Always in the loop (memory/history.py): notes about this company's
     # people and conversations, and their switches.
     *HISTORY_TABLES,
+    # Take the lead (orchestrator/take_the_lead.py): its switches, rules and
+    # What I did, per company.
+    *TAKE_THE_LEAD_TABLES,
     # Legacy talent / staff-onboarding tables. Both features are gone and
     # nothing writes these any more, but the rows may still exist on upgraded
     # installs and they carry candidate PII (names, employers, screening

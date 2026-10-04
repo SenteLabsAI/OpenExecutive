@@ -1037,6 +1037,10 @@ async def _execute_action(
         await _run_executive_reflection(action, now)
         return
 
+    if action.kind == TAKE_THE_LEAD_WAKE_KIND:
+        await _run_take_the_lead_wake(action, now)
+        return
+
     # ------------------------------------------------------------------
     # Internal channel — bypass outbound message dispatch entirely.
     # Used by workflow steps (Phase 6) and other internal kinds.
@@ -2223,6 +2227,36 @@ async def _run_executive_reflection(
     the next occurrence + mark done even when the workflow itself
     fails, so a single bad reflection can't kill the daily cadence.
     """
+    assert action.id is not None
+    await _reflect(now, kind="executive_reflection")
+    # Always chain + mark done so a single failed reflection doesn't
+    # kill the recurring rhythm.
+    mark_action_done(action.id)
+    _enqueue_next_principal_brief("executive_reflection", after=_chain_after(action))
+
+
+# Take the lead as the Executive: new mail or chat wakes the reflection early
+# (orchestrator.take_the_lead.wake), batched; one-off, never chained.
+TAKE_THE_LEAD_WAKE_KIND = "take_the_lead_wake"
+
+
+async def _run_take_the_lead_wake(action: ScheduledAction, now: datetime) -> None:
+    """Run the reflection now, if Take the lead as the Executive is still on."""
+    from openexecutive.orchestrator import take_the_lead
+
+    assert action.id is not None
+    try:
+        if take_the_lead.executive_on():
+            await _reflect(now, kind=TAKE_THE_LEAD_WAKE_KIND)
+        else:
+            logger.info("scheduler: Take the lead is off — skipping the wake")
+    finally:
+        mark_action_done(action.id)
+
+
+async def _reflect(now: datetime, *, kind: str) -> None:
+    """One executive_reflection run, stored and audited under ``kind``.
+    Never raises."""
     import contextlib
     import uuid
 
@@ -2236,7 +2270,6 @@ async def _run_executive_reflection(
         fail_run,
     )
 
-    assert action.id is not None
     workflow = WORKFLOW_REGISTRY["executive_reflection"]
     input_cls = workflow.input_model()
     wf_inputs = input_cls()
@@ -2260,34 +2293,27 @@ async def _run_executive_reflection(
         complete_run(run_id, artifact or "(no artifact)")
         audit_log(
             "scheduled_action",
-            f"executive_reflection completed (run_id={run_id})",
+            f"{kind} completed (run_id={run_id})",
             actor="scheduler",
             details={
                 "phase": "completed",
-                "kind": "executive_reflection",
+                "kind": kind,
                 "run_id": run_id,
                 "artifact_chars": len(artifact),
             },
         )
     except Exception as exc:
-        logger.exception(
-            "scheduler: executive_reflection (action %d) failed", action.id
-        )
+        logger.exception("scheduler: %s failed", kind)
         with contextlib.suppress(Exception):
             fail_run(run_id, str(exc))
         audit_log(
             "scheduled_action",
-            f"executive_reflection FAILED: {exc}",
+            f"{kind} FAILED: {exc}",
             actor="scheduler",
             details={
                 "phase": "failed",
-                "kind": "executive_reflection",
+                "kind": kind,
                 "run_id": run_id,
                 "error": str(exc)[:300],
             },
         )
-
-    # Always chain + mark done so a single failed reflection doesn't
-    # kill the recurring rhythm.
-    mark_action_done(action.id)
-    _enqueue_next_principal_brief("executive_reflection", after=_chain_after(action))

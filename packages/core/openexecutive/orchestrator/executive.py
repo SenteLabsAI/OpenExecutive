@@ -38,6 +38,7 @@ from openexecutive.memory.workspace_settings import (
     pin_turn_principal_role,
     pin_turn_workspace_mode,
 )
+from openexecutive.orchestrator import take_the_lead
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -1762,6 +1763,16 @@ class Executive:
         if history_offered:
             delegation_tools = [*delegation_tools, *HISTORY_TOOLS]
             turn_handlers = {**turn_handlers, **HISTORY_TOOL_HANDLERS}
+        # Take the lead as the Executive: an unattended run's acting tools,
+        # its own and the MCP ones, go through the gate (take_the_lead).
+        leading = bool(unattended_withheld) and take_the_lead.executive_on()
+        if leading:
+            turn_handlers = take_the_lead.gated_handlers(turn_handlers, source="scheduled")
+        # Something new came in on a channel (mail, Slack, Telegram, …): with
+        # Take the lead on, the reflection looks at it soon, batched.
+        origin = str(getattr(current_session.get(), "origin_channel", "") or "")
+        if origin and not unattended_withheld:
+            take_the_lead.wake(f"a message on {origin}")
         current_messages = list(messages)
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
@@ -2317,7 +2328,11 @@ class Executive:
             if mcp_tool_uses and self._mcp_gateway is not None:
                 _mcp_dispatch = {
                     "search_tools": self._mcp_gateway.search_tools,
-                    "call_tool": self._mcp_gateway.call_tool,
+                    "call_tool": (
+                        take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
+                        if leading
+                        else self._mcp_gateway.call_tool
+                    ),
                     "load_mcp_server": self._mcp_gateway.load_mcp_server,
                 }
                 for tu in mcp_tool_uses:

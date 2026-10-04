@@ -33,6 +33,7 @@ from openexecutive.memory.decision_ledger import (
     DECISION_ALERT_SOURCE,
     STATUS_APPROVED_UNCHANGED,
     STATUS_APPROVED_WITH_EDIT,
+    STATUS_FAILED,
     STATUS_PROPOSED,
     STATUS_REJECTED,
     DecisionInstance,
@@ -188,6 +189,11 @@ def _approver_only(instance: DecisionInstance) -> bool:
     return spec is not None and spec.approver_only
 
 
+def _principal_and_approver(instance: DecisionInstance) -> bool:
+    spec = DECISION_CLASSES.get(instance.decision_class)
+    return spec is not None and spec.principal_and_approver
+
+
 def _caller_is_approver(instance: DecisionInstance, request: Request) -> bool:
     """Whether the caller is the person ``instance`` went to for approval.
     Fails closed."""
@@ -213,6 +219,10 @@ def _visible_instance(instance_id: int, request: Request) -> DecisionInstance:
         if not _caller_is_approver(instance, request):
             raise HTTPException(status_code=404, detail="Decision instance not found")
         return instance
+    if _principal_and_approver(instance):
+        if not (_approver_is_principal(request) or _caller_is_approver(instance, request)):
+            raise HTTPException(status_code=404, detail="Decision instance not found")
+        return instance
     if _is_private(instance) and not _approver_is_principal(request):
         raise HTTPException(status_code=404, detail="Decision instance not found")
     return instance
@@ -236,7 +246,10 @@ def _resolver(instance: DecisionInstance, request: Request) -> int | None:
             return caller
     elif _approver_is_principal(request):
         return caller
-    if caller is not None and caller == instance.approver_person_id and not _is_private(instance):
+    elif _principal_and_approver(instance):
+        if caller is not None and caller == instance.approver_person_id:
+            return caller
+    elif caller is not None and caller == instance.approver_person_id and not _is_private(instance):
         return caller
     logger.info(
         "decisions: caller may not resolve instance %d (class %s)",
@@ -284,6 +297,9 @@ class DecisionClassSpec:
     # Only the person an instance went to for approval (``approver_person_id``)
     # may see or resolve it — not the principal either, unless it is theirs.
     approver_only: bool = False
+    # Only the principal and the person it went to for approval may see or
+    # resolve it; nobody else on the team, whatever its payload says.
+    principal_and_approver: bool = False
 
 
 def _spec_for(instance: DecisionInstance) -> DecisionClassSpec:
@@ -310,7 +326,7 @@ def get_decisions(
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=400, detail="limit must be 1–500")
     spec = DECISION_CLASSES.get(decision_class)
-    if spec is not None and spec.approver_only:
+    if spec is not None and (spec.approver_only or (spec.principal_and_approver and not _approver_is_principal(request))):
         from openexecutive.api.routes.chat import _resolve_caller_person_id
 
         caller = _resolve_caller_person_id(request)
@@ -481,8 +497,57 @@ _DELEGATED_REPLY = DecisionClassSpec(
     after_reject=_dismiss_reply,
 )
 
+async def _carry_out_lead(
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
+) -> DecisionInstance:
+    """Take the lead: do the exact action that waited, once (claimed first),
+    then record it on What I did."""
+    from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
+    from openexecutive.orchestrator import take_the_lead
+
+    if not claim_for_execution(instance.id, resolver_person_id=resolver):
+        raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
+    payload = _parse_payload(instance)
+    try:
+        result = await take_the_lead.carry_out(payload, by_principal=_approver_is_principal(request))
+    except Exception as exc:
+        logger.exception("decisions/approve: Take the lead action %d failed", instance.id)
+        finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": type(exc).__name__})
+        take_the_lead.resolved(instance.id, "failed")
+        _clear_decision_alert(instance.id, "dismissed")
+        raise HTTPException(status_code=502, detail="It couldn't do that. Nothing was sent.") from None
+    failed = '"error"' in result[:200]
+    finish_execution(
+        instance.id, STATUS_FAILED if failed else STATUS_APPROVED_UNCHANGED,
+        final_payload={**payload, "result": result[:2000]},
+    )
+    take_the_lead.resolved(instance.id, "failed" if failed else "approved")
+    _clear_decision_alert(instance.id, "dismissed" if failed else "ack")
+    if failed:
+        raise HTTPException(status_code=502, detail=f"It couldn't do that: {result[:300]}")
+    return _refresh(instance.id)
+
+
+async def _lead_declined(instance: DecisionInstance) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    take_the_lead.resolved(instance.id, "declined")
+
+
+# Take the lead: an action the gate held (orchestrator.take_the_lead), for
+# the person whose authority covers it or the principal. What it would do
+# quotes the Executive's context, so it is private to them.
+_TAKE_THE_LEAD = DecisionClassSpec(
+    name="take_the_lead_action",
+    principal_only=False,
+    principal_and_approver=True,
+    alert_source=DECISION_ALERT_SOURCE,
+    approve=_carry_out_lead,
+    after_reject=_lead_declined,
+)
+
 DECISION_CLASSES: dict[str, DecisionClassSpec] = {
-    spec.name: spec for spec in (_MEETING_BOOKING, _DELEGATED_REPLY)
+    spec.name: spec for spec in (_MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD)
 }
 
 
