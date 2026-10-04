@@ -180,10 +180,20 @@ function TopBar({
           ) : (
             crumbs.map((c, i) => {
               const isLast = i === crumbs.length - 1;
+              // Phones show only the last two crumbs, so they don't all
+              // truncate to a few letters each.
+              const fromEnd = crumbs.length - i;
               return (
-                <span key={`${i}-${c.label}`} className="flex items-center gap-1.5 min-w-0">
+                <span
+                  key={`${i}-${c.label}`}
+                  className={`${fromEnd > 2 ? "hidden sm:flex" : "flex"} items-center gap-1.5 min-w-0`}
+                >
                   {i > 0 && (
-                    <Icon name="chevron-right" size="w-3 h-3" className="text-fg-subtle flex-shrink-0" />
+                    <Icon
+                      name="chevron-right"
+                      size="w-3 h-3"
+                      className={`text-fg-subtle flex-shrink-0 ${fromEnd === 2 ? "hidden sm:block" : ""}`}
+                    />
                   )}
                   {!isLast && c.href ? (
                     <Link
