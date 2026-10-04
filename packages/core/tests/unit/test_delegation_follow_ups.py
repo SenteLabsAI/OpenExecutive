@@ -88,6 +88,17 @@ def test_someone_they_only_wrote_to_needs_bold(owner: Any, models: dict[str, Any
     assert (mailbox.sent == ["d1"]) is sent
 
 
+def test_a_stranger_on_cc_makes_it_wait(owner: Any, models: dict[str, Any]) -> None:
+    _on(owner, "balanced")
+    mailbox = FakeInbox()
+    mailbox.add(_msg("s1", "t9", sender=OWNER, name="Olivia Owner", to=[DANA], cc=(LEE,), labels=("SENT",),
+                     minutes_ago=4 * DAY, text="Hi Dana, could you send me the slides from Tuesday?"))
+    result = _scan(owner, mailbox)
+    assert result.drafted == 1 and mailbox.sent == []
+    [card] = _cards()
+    assert inbox.card_payload(card)["handle_it_reason"] == "follow_up_level"
+
+
 def test_off_it_never_looks(owner: Any, models: dict[str, Any]) -> None:
     mailbox = FakeInbox()
     mailbox.add(_asked())

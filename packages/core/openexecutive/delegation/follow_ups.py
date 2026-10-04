@@ -34,6 +34,8 @@ LOOK_EVERY = timedelta(hours=1)
 SENT_LOOKED_AT = 40
 PER_LOOK = 2
 
+# How well the person knows someone, lowest first (``inbox.relation_of``).
+_TRUST = {"stranger": 0, "correspondent": 1, "contact": 2, "team": 3}
 FOLLOW_UP_INTENT = (
     "Write a short, friendly follow-up to the writer's own last email in "
     "<thread>, which nobody has answered yet: ask whether they had a chance "
@@ -139,7 +141,9 @@ async def _follow_up(
     cc = [a for a in going if a not in to]
     if not to:
         to, cc = cc[:1], cc[1:]
-    relation = await inbox.relation_of(to[0], client, contacts=bool(person.is_principal))
+    # Weighed by the least-known person it goes to: a stranger on Cc makes it a stranger's.
+    relations = [await inbox.relation_of(a, client, contacts=bool(person.is_principal)) for a in going]
+    relation = min(relations, key=lambda r: _TRUST.get(r, 0), default="stranger")
     if not inbox._claim(person.id, sent, relation=relation, outcome=inbox.PROCESSING, now=now):
         return False
     settings = get_settings()
