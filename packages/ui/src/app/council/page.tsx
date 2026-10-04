@@ -43,7 +43,6 @@ import {
   panelOpensAdvanced,
   shortModelName,
 } from "@/lib/councilCards";
-import FeatureName from "@/components/FeatureName";
 
 interface DraftState {
   role: string;
@@ -566,9 +565,7 @@ export default function CouncilPage() {
     <div className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-surface text-fg">
       <div className="max-w-5xl mx-auto px-4 py-6 sm:px-8 sm:py-10 space-y-6">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">
-            <FeatureName feature="agent_council" />
-          </h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Agent Council</h1>
           <p className="mt-2 text-[15px] text-fg-muted">
             Pick how thorough answers should be and add instructions for any agent. Open an
             agent&apos;s Advanced settings to change its model, prompt and more. Changes apply on
