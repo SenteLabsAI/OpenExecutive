@@ -186,6 +186,30 @@ def test_the_counted_rules_are_checked_again_just_before_sending(
     assert replies.cards(owner)[0].waited_because == handle_it.REASONS["daily_limit"]
 
 
+def test_a_rule_added_before_the_send_holds_it_under_take_the_lead(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    calls: list[list[str]] = []
+    real = take_the_lead.reply_hit
+
+    def rule_added_by_send_time(person_id: int, texts: list[str], recipients: list[str], **kw: Any) -> Any:
+        calls.append(recipients)
+        # The scan's check passes; by the time it sends, a rule holds it.
+        return real(person_id, texts, recipients, **kw) if len(calls) == 1 else take_the_lead.Hit("rule", "a rule")
+
+    monkeypatch.setattr(take_the_lead, "reply_hit", rule_added_by_send_time)
+    _on(owner)
+    take_the_lead.set_(take_the_lead.person_scope(owner.id), enabled=True, updated_by="t")
+    mailbox, result = _scan_one(owner)
+    assert len(calls) == 2 and calls[1] == [DANA]
+    assert mailbox.sent == [] and result.handled == 0
+    card = _only_card(owner)
+    assert card.status == "proposed" and card.gate_mode == "propose"
+    assert inbox.card_payload(card)["handle_it_reason"] == "lead_rule"
+
+
 def test_counted_rules_allow_one_reply_a_thread_a_day() -> None:
     assert handle_it.count_refusal(7, "t1", NOW) is None
     handle_it.record_handled(7, "t1", 1, "s1", now=NOW)

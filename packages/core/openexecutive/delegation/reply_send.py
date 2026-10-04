@@ -183,6 +183,7 @@ async def _send(
         finish_execution,
         release_claim,
     )
+    from openexecutive.orchestrator import take_the_lead
     from openexecutive.people.store import get_person
 
     payload = card_payload(instance)
@@ -200,14 +201,22 @@ async def _send(
         # it to them.
         handled_as = str(payload.get("handled_as") or "stranger")
         stored = handle_it.get(person.id)
-        # Take the lead as you lifts the setting (its added rules were
-        # checked when the card was made).
-        allowed = (stored.enabled and handle_it.leading(person.id)) or (
+        # Take the lead as you lifts the setting; its added rules are read
+        # again here, so one added since the card was made still holds it.
+        by_setting = (
             stored.follows_up(handled_as) if payload.get("source") == "follow_up"
             else stored.level(handle_it.kind_for(handled_as)) == handle_it.LEVEL_HANDLE
         )
-        if getattr(instance, "gate_mode", "") != "auto_execute" or not allowed:
+        lead = stored.enabled and handle_it.leading(person.id)
+        if getattr(instance, "gate_mode", "") != "auto_execute" or not (lead or by_setting):
             raise SendRefused(409, "handle_it_off", "Handle it for me is off for this reply.")
+        if lead and take_the_lead.reply_hit(
+            person.id,
+            [str(payload.get("subject") or ""), str(payload.get("draft_subject") or ""),
+             str(payload.get("draft_body") or "")],
+            _addresses(payload.get("draft_to")) or [],
+        ) is not None:
+            raise SendRefused(409, "lead_rule", handle_it.REASONS["lead_rule"])
         if not handle_it.signing_ok():
             raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
         counted = handle_it.count_refusal(person.id, str(payload.get("thread_id") or ""), now)
