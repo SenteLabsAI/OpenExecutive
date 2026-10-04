@@ -39,6 +39,11 @@ def local_login(monkeypatch: pytest.MonkeyPatch, db: Path) -> Iterator[None]:
     monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
     monkeypatch.setattr(alerts_store, "DB_PATH", db)
     alerts_store.initialize_db(db)
+    # Recent activity also lists workflow runs, whose store binds its own path.
+    from openexecutive.workflows import persistence as wf_persistence
+
+    monkeypatch.setattr(wf_persistence, "DB_PATH", db)
+    wf_persistence.initialize_runs_db(db)
     yield
 
 
