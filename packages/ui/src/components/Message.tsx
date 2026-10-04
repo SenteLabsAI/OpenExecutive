@@ -9,6 +9,7 @@ import BrandMark from "@/components/BrandMark";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
 import { isMailboxLink } from "@/lib/replyCards";
+import FeatureName from "@/components/FeatureName";
 
 interface MessageProps {
   role: "user" | "assistant";
@@ -93,8 +94,9 @@ function ActionChip({ action }: { action: ActionTaken }) {
           href={action.link}
           target="_blank"
           rel="noopener noreferrer"
-          className="hover:opacity-80 transition-opacity"
+          className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity"
         >
+          <FeatureName feature="act_as_me" className="text-[11px]" />
           {inner}
         </a>
       );

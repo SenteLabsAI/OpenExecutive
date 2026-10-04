@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { retentionLabel } from "@/lib/history";
 import { versionNotice } from "@/lib/versionNotice";
+import FeatureName from "@/components/FeatureName";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
 // Act as me, Memory, Workspace, Advanced and About. Each tile says what's on its page
@@ -80,9 +81,9 @@ export default function SettingsPage() {
         <p className="mt-2 text-[15px] text-fg-muted">
           How the Executive runs, who it runs for, and the tools for looking under the hood.
         </p>
-        <ul className="mt-6 sm:mt-8 grid gap-3 sm:gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <ul className="mt-6 sm:mt-8 grid grid-cols-1 gap-3 sm:gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {pages.map((page) => (
-            <li key={page.id}>
+            <li key={page.id} className="min-w-0">
               <SettingsTile page={page} status={statuses.byPage[page.id]} />
             </li>
           ))}
@@ -102,7 +103,13 @@ function SettingsTile({ page, status }: { page: SettingsPageDef; status?: TileSt
         <Icon name={page.icon} size="w-5 h-5" />
       </span>
       <span className="min-w-0 flex-1 sm:mt-4">
-        <span className="block text-lg font-semibold text-fg">{page.label}</span>
+        {page.id === "act-as-me" ? (
+          <span className="block text-lg">
+            <FeatureName feature="act_as_me" />
+          </span>
+        ) : (
+          <span className="block font-display text-lg font-bold tracking-tight text-fg">{page.label}</span>
+        )}
         <span className="hidden sm:block mt-1 text-[15px] text-fg-muted leading-relaxed">
           {page.description}
         </span>

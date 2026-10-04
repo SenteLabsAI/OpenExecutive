@@ -5,6 +5,7 @@ import Link from "next/link";
 import Icon from "@/components/Icon";
 import SettingsSubpage from "@/components/settings/SettingsSubpage";
 import { advancedItemsByGroup } from "@/components/shell/navConfig";
+import FeatureName from "@/components/FeatureName";
 
 // Settings → Advanced: the admin and power-user pages (ADVANCED_ITEMS),
 // grouped by what you'd use them for. Each opens its own screen.
@@ -33,7 +34,13 @@ export default function AdvancedSettingsPage() {
                     <Icon name={item.icon} size="w-5 h-5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-base font-semibold text-fg">{item.label}</span>
+                    {item.href === "/council" ? (
+                      <span className="block text-base">
+                        <FeatureName feature="agent_council" />
+                      </span>
+                    ) : (
+                      <span className="block font-display text-base font-bold tracking-tight text-fg">{item.label}</span>
+                    )}
                     <span className="block text-sm text-fg-muted leading-relaxed">
                       {item.description}
                     </span>

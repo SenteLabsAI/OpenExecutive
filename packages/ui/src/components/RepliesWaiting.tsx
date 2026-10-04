@@ -21,6 +21,7 @@ import {
   sendQuestion,
   senderLine,
 } from "@/lib/replyCards";
+import FeatureName from "@/components/FeatureName";
 
 // Home: the replies the Executive drafted in your own Gmail for mail that
 // needs you (Settings → Act as me → Draft replies to my inbox), shown as
@@ -166,6 +167,7 @@ export function ReplyCardItem({
         <span className="inline-flex items-center rounded-lg bg-accent/10 px-2 py-0.5 text-[13px] font-medium text-accent">
           {followUp ? "Follow-up waiting" : "Reply waiting"}
         </span>
+        <FeatureName feature="act_as_me" className="text-[12px]" />
         {received && <span className="text-sm text-fg-subtle tabular-nums">{received}</span>}
       </div>
       <div className="text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">

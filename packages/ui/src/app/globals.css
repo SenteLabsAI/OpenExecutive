@@ -54,6 +54,14 @@
 }
 
 @layer base {
+  /* Brand: page and card headings in the display face (Bricolage Grotesque,
+   * loaded in app/layout.tsx). Chat answers and other Markdown (.prose) keep
+   * the body face. */
+  :where(h1, h2, h3):not(:where(.prose *)) {
+    font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+    letter-spacing: -0.015em;
+  }
+
   * {
     box-sizing: border-box;
   }
