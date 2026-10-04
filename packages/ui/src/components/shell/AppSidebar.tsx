@@ -10,6 +10,7 @@ import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   buildDestinations,
   isDestinationActive,
+  isAdvancedPath,
   isNavActive,
   NEW_CHAT_DESCRIPTION,
   SETTINGS_NAV_ITEM,
@@ -152,7 +153,7 @@ export default function AppSidebar({
           label={SETTINGS_NAV_ITEM.label}
           icon={SETTINGS_NAV_ITEM.icon}
           description={SETTINGS_NAV_ITEM.description}
-          active={isNavActive(SETTINGS_NAV_ITEM.href, pathname)}
+          active={isNavActive(SETTINGS_NAV_ITEM.href, pathname) || isAdvancedPath(pathname)}
         />
       </div>
 

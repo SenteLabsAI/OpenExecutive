@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Icon from "@/components/Icon";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 
 import {
@@ -565,6 +566,13 @@ export default function CouncilPage() {
     <div className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-surface text-fg">
       <div className="max-w-5xl mx-auto px-4 py-6 sm:px-8 sm:py-10 space-y-6">
         <div>
+          <Link
+            href="/settings/advanced"
+            className="-ml-2 mb-2 inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2 text-[15px] text-fg-muted hover:text-fg hover:bg-surface-overlay transition-colors"
+          >
+            <Icon name="arrow-left" size="w-4 h-4" />
+            Advanced
+          </Link>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Agent Council</h1>
           <p className="mt-2 text-[15px] text-fg-muted">
             Pick how thorough answers should be and add instructions for any agent. Open an
@@ -585,7 +593,7 @@ export default function CouncilPage() {
               <h2 className="text-lg font-semibold text-fg">Quality</h2>
               {presets.active === null && (
                 <span
-                  className="text-[10px] uppercase tracking-widest px-2 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20"
+                  className="text-[10px] uppercase tracking-widest px-2 py-1 rounded bg-accent/10 text-accent border border-accent/20"
                   title={`${presets.custom_agents.length} agent(s) differ from ${basePresetLabel ?? "the preset"}`}
                 >
                   Custom
@@ -676,7 +684,7 @@ export default function CouncilPage() {
                         <span
                           aria-hidden="true"
                           className={`inline-block h-2 w-2 flex-shrink-0 rounded-full ${
-                            status === "default" ? "bg-emerald-500" : "bg-amber-500"
+                            status === "default" ? "bg-emerald-500" : "bg-accent"
                           }`}
                         />
                         {status === "instructions" ? (
@@ -768,7 +776,7 @@ export default function CouncilPage() {
                     : ` · domains: ${detail.domains.join(", ") || "—"}`}
                 </p>
                 {detail.has_override && (
-                  <span className="text-[11px] uppercase tracking-widest px-2 py-1 rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                  <span className="text-[11px] uppercase tracking-widest px-2 py-1 rounded-md bg-accent/10 text-accent border border-accent/20">
                     Customized
                   </span>
                 )}

@@ -54,10 +54,11 @@
 }
 
 @layer base {
-  /* Brand: page and card headings in the display face (Bricolage Grotesque,
-   * loaded in app/layout.tsx). Chat answers and other Markdown (.prose) keep
-   * the body face. */
-  :where(h1, h2, h3):not(:where(.prose *)) {
+  /* Brand: page and section headings in the display face (Bricolage
+   * Grotesque, loaded in app/layout.tsx). Small card titles (an h3, or an h2
+   * set at text-base or smaller) keep the body face, where the display face
+   * looks heavy. Chat answers and other Markdown (.prose) keep it too. */
+  :where(h1, h2):not(:where(.prose *, [class*="text-xs"], [class*="text-sm"], [class*="text-base"])) {
     font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
     letter-spacing: -0.015em;
   }

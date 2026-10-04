@@ -12,6 +12,7 @@ import AppSidebar from "@/components/shell/AppSidebar";
 import {
   buildMobilePrimary,
   hubForPath,
+  isAdvancedPath,
   isDestinationActive,
   PROFILE_NAV,
   profileWording,
@@ -148,7 +149,7 @@ function TopBar({
   // navigable pages, so we render them as plain text to avoid linking
   // to a 404. Dynamic segments (slugs/uuids) also render as-is — pages
   // own their own H1 with the entity name.
-  const crumbs = segments.map((segment, idx) => {
+  const pageCrumbs = segments.map((segment, idx) => {
     const linkable = idx === 0;
     const href = linkable ? "/" + segment : null;
     return {
@@ -156,6 +157,11 @@ function TopBar({
       label: idx === 0 && segment === "company-profile" ? profileLabel : labelFor(segment),
     };
   });
+  // The Advanced pages (Agent Council, Audit log, ...) live at their own
+  // paths but are opened from Settings → Advanced: show that way back.
+  const crumbs: { href: string | null; label: string }[] = isAdvancedPath("/" + segments.join("/"))
+    ? [{ href: "/settings", label: "Settings" }, { href: "/settings/advanced", label: "Advanced" }, ...pageCrumbs]
+    : pageCrumbs;
 
   return (
     <header className="h-14 border-b border-line flex items-center justify-between px-4 sm:px-6 flex-shrink-0 gap-3">

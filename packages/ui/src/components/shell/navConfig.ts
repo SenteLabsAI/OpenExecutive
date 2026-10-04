@@ -496,6 +496,13 @@ export function buildMobilePrimary(opts: BuildOpts = {}): Destination[] {
 
 // Is `href` the active destination for `pathname`? Active on an exact match
 // or anywhere below it (`/jobs` is active on `/jobs/runs/42`).
+/** Whether a page is one of the Advanced items (Agent Council, Audit log,
+ * ...): they live at their own top-level paths but are opened from Settings →
+ * Advanced, so the top bar and sidebar place them under Settings. */
+export function isAdvancedPath(pathname: string): boolean {
+  return ADVANCED_ITEMS.some((item) => isNavActive(item.href, pathname));
+}
+
 export function isNavActive(href: string, pathname: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
