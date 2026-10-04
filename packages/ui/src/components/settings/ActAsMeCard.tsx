@@ -32,7 +32,8 @@ import { formatAgo } from "@/lib/setupStatus";
 
 // Settings → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
-// for mail that needs you, which it sends only when you tap Send on Today.
+// for mail that needs you, which it sends when you tap Send on Today (or on
+// its own, under Handle it for me).
 // Backed by GET/PUT /delegation, /delegation/inbox and /delegation/voice.
 // Not offered to anyone who can't have it (the owner can, and team members
 // once the owner lets them: PUT /delegation/team) or on a backend without
@@ -239,6 +240,7 @@ export default function ActAsMeCard() {
         <InboxSection
           inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
           actAsMeOn={on}
+          handleItOn={!!settings.handle_it?.enabled}
           onSettings={setSettings}
           onInbox={(inbox) => {
             setStoppedWaiting(false);
@@ -332,11 +334,13 @@ function TeamSection({
 function InboxSection({
   inbox,
   actAsMeOn,
+  handleItOn,
   onSettings,
   onInbox,
 }: {
   inbox: InboxWatch;
   actAsMeOn: boolean;
+  handleItOn: boolean;
   onSettings: (next: DelegationSettings) => void;
   onInbox: (next: InboxWatch) => void;
 }) {
@@ -375,7 +379,9 @@ function InboxSection({
       titleId="act-as-me-inbox-label"
       description={
         on
-          ? "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
+          ? handleItOn
+            ? "When mail comes in that needs you, it writes a first reply in your Drafts. Handle it for me, below, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them."
+            : "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
           : actAsMeOn
             ? "Off: it only drafts when you ask it to in chat."
             : "Turn on Write drafts as me first."
