@@ -343,12 +343,15 @@ def test_a_plain_reply_passes(switched_on: Any) -> None:
     ({"body": "Confirm here: https://evil.example/confirm"}, "link"),
     ({"body": "See www.evil.example"}, "link"),
     ({"body": "Please confirm at bit.ly/x9Z"}, "link"),
-    ({"body": "Verify at login.example-corp.com/verify today."}, "link"),
+    ({"body": "Verify at portal.example-corp.com/verify today."}, "link"),
     ({"body": "Details are on evil.io."}, "link"),
     # Commitments on sensitive topics wait, even phrased innocently.
     ({"body": "Yes, I'll sign the contract tomorrow."}, "sensitive"),
     ({"body": "I've approved the refund."}, "sensitive"),
     ({"body": "My password is in the doc."}, "sensitive"),
+    ({"body": "Sure, I'll send the API key over this afternoon."}, "sensitive"),
+    ({"body": "I'll share the login for staging."}, "sensitive"),
+    ({"subject": "Re: term sheet"}, "sensitive"),
     ({"subject": "Re: offer letter"}, "sensitive"),
     # Long replies say more than an acknowledgement should.
     ({"body": "word " * 400}, "long"),

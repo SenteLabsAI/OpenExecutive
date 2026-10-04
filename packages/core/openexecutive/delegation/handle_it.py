@@ -87,13 +87,15 @@ ALLOWED_FLAGS = frozenset({"others_on_thread", "executive_on_thread"})
 # Topics that always wait for the person, matched as whole words in the email,
 # its subject and the reply. Deliberately broad: a false match costs a tap.
 SENSITIVE = (
-    "agreement", "attorney", "bank", "bonus", "board", "budget", "compensation", "compliance",
-    "confidential", "contract", "contracts", "counsel", "court", "credentials", "diagnosis", "discount",
-    "equity", "fire", "fired", "firing", "gdpr", "health", "hire", "hiring", "invoice", "invoices",
-    "journalist", "lawsuit", "lawyer", "legal", "medical", "nda", "offer letter", "password", "pay",
-    "paid", "payment", "payments", "payroll", "press", "price", "prices", "pricing", "quote",
-    "refund", "reporter", "resign", "resignation", "salary", "settlement", "subpoena", "terminate",
-    "termination", "wire",
+    "access token", "acquisition", "agreement", "api key", "attorney", "bank", "board", "bonus",
+    "budget", "compensation", "compliance", "confidential", "contract", "contracts", "counsel",
+    "court", "credentials", "diagnosis", "discount", "equity", "fire", "fired", "firing", "gdpr",
+    "health", "hire", "hiring", "investor", "investors", "invoice", "invoices", "journalist",
+    "lawsuit", "lawyer", "layoff", "layoffs", "legal", "login", "medical", "merger", "nda",
+    "offer letter", "paid", "passcode", "password", "passwords", "pay", "payment", "payments",
+    "payroll", "press", "price", "prices", "pricing", "quote", "refund", "reporter", "resign",
+    "resignation", "salary", "secret", "secrets", "settlement", "social security", "ssn",
+    "subpoena", "term sheet", "terminate", "termination", "token", "tokens", "wire",
 )
 _SENSITIVE_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in SENSITIVE) + r")\b", re.IGNORECASE,
