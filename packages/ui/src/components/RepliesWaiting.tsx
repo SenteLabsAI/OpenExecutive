@@ -159,6 +159,10 @@ export function ReplyCardItem({
   };
 
   const busy = step.kind === "busy";
+  // A long draft is clamped to keep the card short, but never while you are
+  // confirming Send: what goes out is shown in full.
+  const confirming = step.kind === "ask" || step.kind === "confirm";
+  const clampDraft = draftIsLong(card.draft_body) && !fullDraft && !confirming;
   const label = "text-xs font-semibold uppercase tracking-wide text-fg-muted";
   return (
     <article
@@ -206,12 +210,12 @@ export function ReplyCardItem({
           <div className="text-xs text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
           <p
             className={`mt-1 whitespace-pre-wrap break-words text-sm text-fg ${
-              draftIsLong(card.draft_body) && !fullDraft ? "line-clamp-4" : ""
+              clampDraft ? "line-clamp-4" : ""
             }`}
           >
             {card.draft_body}
           </p>
-          {draftIsLong(card.draft_body) && (
+          {draftIsLong(card.draft_body) && !confirming && (
             <button
               type="button"
               onClick={() => setFullDraft((v) => !v)}
