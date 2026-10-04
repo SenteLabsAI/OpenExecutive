@@ -588,7 +588,10 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
     refused = caller_refusal(api_caller.caller(request), normalize_email(person.email or ""))
     if refused == NOT_YOURS:
         raise _refuse(403, "not_yours", "Only you can change Handle it for me.")
-    if refused is not None:
+    # Turning it off only narrows what the watcher does, so it stays
+    # possible after the server loses signed sign-ins.
+    turning_off = body.enabled is False and not body.levels
+    if refused is not None and not turning_off:
         raise _refuse(
             409, "caller_signing_required",
             "Handle it for me needs signed sign-ins on this server, so that nobody else can turn it on for you.",

@@ -482,6 +482,19 @@ def test_it_needs_a_caller_the_api_can_vouch_for(
     assert handle_it.get(owner.id).enabled is False
 
 
+def test_it_can_still_be_turned_off_without_signed_sign_ins(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _on(owner)
+    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
+    resp = client.put("/delegation/handle-it", json={"enabled": False, "levels": {"reply_stranger": "handle"}},
+                      headers=HEADERS)
+    assert resp.status_code == 409  # changing levels still needs it
+    resp = client.put("/delegation/handle-it", json={"enabled": False}, headers=HEADERS)
+    assert resp.status_code == 200
+    assert handle_it.get(owner.id).enabled is False
+
+
 def test_turning_the_inbox_watcher_off_turns_it_off(client: TestClient, owner: Any) -> None:
     _on(owner)
     resp = client.put("/delegation/inbox", json={"enabled": False}, headers=HEADERS)
