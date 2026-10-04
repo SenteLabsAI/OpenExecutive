@@ -9169,7 +9169,7 @@ delegation:
     customer_credit for credit and terms; contracts vendor_onboarding then
     legal_sign for vendors, else legal_sign; hiring hiring_signoff; anything
     else about the board or investors board_comms; deletes and shares none;
-    team mode only), else the authority gate's _route_proposal fallback to
+    Just me too), else the authority gate's _route_proposal fallback to
     the principal. Approve claims
     the row and runs the exact call once (carry_out); reject drops it.
     take_the_lead_log feeds Recent activity (kind took_the_lead, named not
@@ -9407,6 +9407,8 @@ trust_ledger: |
   web chat, their own Slack/Discord, private Telegram with a valid webhook
   secret; fails closed); an inbound email, a contact's turn or an
   unattended run gets a proposal to the principal instead, so injected
-  text cannot book a meeting. propose always proposes to the principal.
-  Team is
+  text cannot book a meeting. A proposal goes to a non-principal team
+  member holding the Meetings range (meeting_scheduling, on People), else
+  the principal; a booking with a contact on it stays the principal's
+  (private). Team is
   unchanged (department gate AND class mode).

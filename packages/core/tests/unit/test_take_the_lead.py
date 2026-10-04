@@ -266,12 +266,13 @@ def test_credit_vendors_and_board_reach_their_holders(owner: Any, monkeypatch: p
     assert _approver(owner, "delete_share", "Share the board deck") == owner.id
 
 
-def test_just_me_sends_every_held_action_to_the_owner(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_just_me_routes_to_approval_ranges_too(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.memory import workspace_settings
 
     monkeypatch.setattr(workspace_settings, "effective_workspace_mode", lambda session=None: "solo")
-    _holder("Cal Credit", "cal@co.example", AuthorityScope.CUSTOMER_CREDIT)
-    assert _approver(owner, "money", "Give Acme a line of credit") == owner.id
+    credit = _holder("Cal Credit", "cal@co.example", AuthorityScope.CUSTOMER_CREDIT)
+    assert _approver(owner, "money", "Give Acme a line of credit") == credit
+    assert _approver(owner, "contracts", "Sign the NDA") == owner.id
 
 
 def test_the_gate_fails_closed(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:

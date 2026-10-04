@@ -493,7 +493,8 @@ def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
     ``people_tools.is_principal_on_verified_surface``). Anything else — an
     inbound email, a contact's message, an unattended run — is proposed to
     the principal on the briefing, so text someone else wrote cannot put a
-    meeting on the principal's calendar."""
+    meeting on the principal's calendar — or to a teammate who holds the
+    Meetings approval range on People, when there is one."""
     from openexecutive.departments.authority import GateDecision
     from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
@@ -501,20 +502,25 @@ def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
         return GateDecision(
             allowed=True, action="execute", reason="solo: meeting_scheduling is auto_execute"
         )
-    principal_id: int | None = None
+    approver_id: int | None = None
     try:
-        from openexecutive.people.store import find_principal_person
+        from openexecutive.people.models import AuthorityScope
+        from openexecutive.people.store import find_approvers, find_principal_person
 
-        principal = find_principal_person()
-        principal_id = principal.id if principal is not None else None
+        delegated = [p for p in find_approvers(AuthorityScope.MEETING_SCHEDULING) if not p.is_principal]
+        if delegated:
+            approver_id = delegated[0].id
+        else:
+            principal = find_principal_person()
+            approver_id = principal.id if principal is not None else None
     except Exception:
-        logger.warning("calendar_tools: principal lookup failed", exc_info=True)
+        logger.warning("calendar_tools: approver lookup failed", exc_info=True)
     return GateDecision(
         allowed=False,
         action="propose",
-        assignee_person_id=principal_id,
+        assignee_person_id=approver_id,
         reason=(
-            "solo: meeting_scheduling proposes to the principal"
+            "solo: meeting_scheduling proposes to its approver"
             if class_mode != "auto_execute"
             else "solo: auto_execute needs the principal on a verified surface — proposing"
         ),

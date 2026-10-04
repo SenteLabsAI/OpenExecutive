@@ -868,15 +868,18 @@ def _calendar_settings() -> Any:
     )
 
 
-def _book(class_mode: str, session: Session | None = None) -> tuple[dict[str, Any], Any]:
+def _book(
+    class_mode: str, session: Session | None = None, guest_id: int | None = None,
+) -> tuple[dict[str, Any], Any]:
     """Run create_calendar_event with ``session`` bound as the turn's session
     (None = no session, like an unattended caller)."""
     from openexecutive.orchestrator.calendar_tools import handle_create_calendar_event
 
-    guest = people_store.find_person_by_email("client@example.com")
-    guest_id = guest.id if guest is not None else people_store.upsert_person(
-        full_name="Client Contact", email="client@example.com"
-    )
+    if guest_id is None:
+        guest = people_store.find_person_by_email("client@example.com")
+        guest_id = guest.id if guest is not None else people_store.upsert_person(
+            full_name="Client Contact", email="client@example.com"
+        )
     start = _next_weekday_at_10()
     gw = MagicMock()
     gw.call_tool = AsyncMock(return_value=json.dumps({"id": "evt-1"}))
@@ -956,6 +959,37 @@ def test_solo_meeting_proposes_to_the_principal_otherwise(_isolated: Path) -> No
     )
     assert alert is not None
     assert alert.routed_to_person_id == pid
+
+
+def test_solo_meeting_goes_to_whoever_holds_the_meetings_range() -> None:
+    from openexecutive.memory.decision_ledger import get_decision_instance
+    from openexecutive.people.models import AuthorityScope
+
+    _solo()
+    _principal()
+    assistant = people_store.upsert_person(full_name="Ana Assistant", email="ana@example.com", kind="team")
+    people_store.set_authority_scope(assistant, [AuthorityScope.MEETING_SCHEDULING])
+    people_registry.invalidate()
+    result, gw = _book("propose")
+    assert result["status"] == "proposed"
+    gw.call_tool.assert_not_awaited()
+    instance = get_decision_instance(result["decision_instance_id"])
+    assert instance is not None and instance.approver_person_id == assistant
+
+
+def test_solo_meeting_with_a_contact_stays_with_the_principal() -> None:
+    from openexecutive.memory.decision_ledger import get_decision_instance
+    from openexecutive.people.models import AuthorityScope
+
+    _solo()
+    pid = _principal()
+    contact = people_store.upsert_person(full_name="Client Contact", email="client@example.com", kind="contact")
+    assistant = people_store.upsert_person(full_name="Ana Assistant", email="ana@example.com", kind="team")
+    people_store.set_authority_scope(assistant, [AuthorityScope.MEETING_SCHEDULING])
+    people_registry.invalidate()
+    result, _ = _book("propose", Session(from_web_chat=True, caller_person_id=pid), guest_id=contact)
+    instance = get_decision_instance(result["decision_instance_id"])
+    assert instance is not None and instance.approver_person_id == pid
 
 
 # --------------------------------------------------------------------------- #

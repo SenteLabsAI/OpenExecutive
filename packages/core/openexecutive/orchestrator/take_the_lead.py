@@ -640,16 +640,13 @@ def approval_ranges(kind: str, text: str) -> list[AuthorityScope]:
 
 def _approver_for(kind: str, text: str, reason: str) -> int | None:
     """Who approves a held action: the first teammate holding one of its
-    approval ranges (People), else the principal; in Just me, the principal."""
+    approval ranges (People), else the principal. Just me works the same:
+    approval ranges belong to people, not departments."""
     from openexecutive.departments.authority import _route_proposal
-    from openexecutive.memory.workspace_settings import effective_workspace_mode
     from openexecutive.people.store import find_approvers
 
     try:
-        if effective_workspace_mode(None) == "solo":
-            ranges: list[AuthorityScope] = []  # just me: everything goes to the owner
-        else:
-            ranges = approval_ranges(kind, text)
+        ranges = approval_ranges(kind, text)
         for scope in ranges:
             delegated = [p for p in find_approvers(scope) if not p.is_principal]
             if delegated:

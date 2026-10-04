@@ -153,6 +153,7 @@ const AUTHORITY_LABELS: Record<string, string> = {
   customer_credit: "credit",
   legal_sign: "legal",
   board_comms: "board",
+  meeting_scheduling: "meetings",
   wildcard: "all",
 };
 
