@@ -27,7 +27,6 @@ import {
 } from "@/lib/api";
 import { retentionLabel } from "@/lib/history";
 import { versionNotice } from "@/lib/versionNotice";
-import FeatureName from "@/components/FeatureName";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
 // Act as me, Memory, Workspace, Advanced and About. Each tile says what's on its page
@@ -103,13 +102,7 @@ function SettingsTile({ page, status }: { page: SettingsPageDef; status?: TileSt
         <Icon name={page.icon} size="w-5 h-5" />
       </span>
       <span className="min-w-0 flex-1 sm:mt-4">
-        {page.id === "act-as-me" ? (
-          <span className="block text-lg">
-            <FeatureName feature="act_as_me" />
-          </span>
-        ) : (
-          <span className="block font-display text-lg font-bold tracking-tight text-fg">{page.label}</span>
-        )}
+        <span className="block font-display text-lg font-bold tracking-tight text-fg">{page.label}</span>
         <span className="hidden sm:block mt-1 text-[15px] text-fg-muted leading-relaxed">
           {page.description}
         </span>
