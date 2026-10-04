@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
@@ -49,9 +48,9 @@ export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: stri
   },
 ];
 
-// The whole As you part of the page: nothing for someone who can't have
-// Act as me (GET /delegation answers null), a pointer to Act as me until the
-// inbox watcher is on, then the card.
+// Under the mailbox card on Settings → Act as me: nothing for someone who
+// can't have Act as me (GET /delegation answers null); until the inbox
+// watcher is on, the card says to turn it on above.
 export default function HandleItCard() {
   const [settings, setSettings] = useState<DelegationSettings | null>(null);
   const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
@@ -81,13 +80,7 @@ export default function HandleItCard() {
       </SettingsCard>
     );
   }
-  if (state === "hidden" || !settings?.handle_it || !settings.inbox) {
-    return (
-      <SettingsCard>
-        <p className="text-[15px] text-fg-muted">Nothing here yet: it needs Act as me, which this account doesn&apos;t have.</p>
-      </SettingsCard>
-    );
-  }
+  if (state === "hidden" || !settings?.handle_it || !settings.inbox) return null;
   return (
     <HandleItSection handleIt={settings.handle_it} inboxOn={settings.inbox.enabled} onSettings={setSettings} />
   );
@@ -176,15 +169,7 @@ export function HandleItSection({
           ? "Needs signed sign-ins on this server before it can send anything as you."
           : inboxOn
             ? "How much it sends from your mailbox on its own. Whatever it doesn't send waits for you on Today."
-            : (
-                <>
-                  Turn on Draft replies to my inbox in{" "}
-                  <Link href="/settings/act-as-me" className="text-accent hover:underline">
-                    Act as me
-                  </Link>{" "}
-                  first.
-                </>
-              )
+            : "Turn on Draft replies to my inbox above first."
       }
     >
       <div className="flex flex-col gap-4">
