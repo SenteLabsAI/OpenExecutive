@@ -709,7 +709,7 @@ def hold(
             source=DECISION_ALERT_SOURCE,
             external_id=external_id,
             severity="medium",
-            headline=f"Take the lead wants to: {summary}"[:160],
+            headline=f"The Executive wants to: {summary}"[:160],
             body=f"{summary}\n\nIt waited because {hit.reason}.",
             suggested_action=summary,
             topic_tags=[
