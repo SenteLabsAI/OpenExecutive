@@ -171,6 +171,8 @@ class ScanResult:
     deferred: int = 0
     failed: int = 0
     closed: int = 0
+    # Replies sent on their own under YOLO mode (delegation.yolo).
+    handled: int = 0
 
     def counts(self) -> dict[str, Any]:
         return asdict(self)
@@ -798,7 +800,7 @@ async def reply_for(
 
 def _card_payload(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, verdict: Any,
-    handled_as: str,
+    handled_as: str, yolo_reason: str | None = None,
 ) -> dict[str, Any]:
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
@@ -829,6 +831,9 @@ def _card_payload(
         "flags": reply.flags,
         "kind": verdict.kind,
         "confidence": verdict.confidence,
+        # Why YOLO mode left this reply for the person (a
+        # yolo.REASONS code); absent when it was off or sent it.
+        **({"yolo_reason": yolo_reason} if yolo_reason else {}),
     }
 
 
@@ -1045,7 +1050,7 @@ async def _consider(
     Once claimed, a message is finished or left for a later scan
     (``_retry_later``); a Gmail failure is raised for the scan to back off."""
     from openexecutive.config import get_settings
-    from openexecutive.delegation import caps, drafts
+    from openexecutive.delegation import caps, drafts, yolo
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
     from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
@@ -1109,6 +1114,14 @@ async def _consider(
                 _set_outcome(person.id, message.id, FAILED, reason=reply)
                 result.failed += 1
             return False
+        # YOLO mode: plain code decides whether this reply may go on
+        # its own. The two model calls above have no tools, so the email's
+        # text can only change their answers, never this.
+        handling = yolo.get(person.id)
+        held = yolo.refusal(
+            person.id, message, thread, reply, verdict, relation=relation, own=own,
+            exec_address=exec_address, now=now,
+        ) if handling.enabled else "level"
         names = (person.full_name or "").split()
         # Write from the address the mail went to: one of their send-as
         # addresses rather than the primary when only that one was used.
@@ -1143,6 +1156,7 @@ async def _consider(
     try:
         decision_id = _create_card(
             person, message, thread, reply, draft, relation=known_as, handled_as=relation, verdict=verdict,
+            on_its_own=held is None, yolo_reason=held if handling.enabled else None,
         )
     except Exception as exc:
         logger.warning("delegation.inbox: couldn't make the card (%s)", type(exc).__name__)
@@ -1168,16 +1182,41 @@ async def _consider(
         "relation": relation,
         "kind": verdict.kind,
         "flags": reply.flags,
+        **({"yolo": held or "send"} if handling.enabled else {}),
     })
+    if held is None and decision_id is not None:
+        await _send_on_its_own(person, client, decision_id, result, now=now)
     return False
+
+
+async def _send_on_its_own(person: Any, client: Any, decision_id: int, result: ScanResult, *, now: datetime) -> None:
+    """Send the reply on card ``decision_id`` under YOLO mode. A
+    refusal leaves the card for the person, as if the switch were off; a send
+    Gmail didn't confirm stays ``executing`` for the reconciler."""
+    from openexecutive.delegation.reply_send import SendRefused, send_on_its_own
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    card = get_decision_instance(decision_id)
+    if card is None:
+        return
+    try:
+        await send_on_its_own(card, gmail=client, now=now)
+    except SendRefused as refused:
+        logger.info("delegation.inbox: left a reply for the person (%s)", refused.code)
+        return
+    except Exception as exc:
+        logger.warning("delegation.inbox: sending on its own failed (%s)", type(exc).__name__)
+        return
+    result.handled += 1
 
 
 def _create_card(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
-    verdict: Any,
+    verdict: Any, on_its_own: bool = False, yolo_reason: str | None = None,
 ) -> int | None:
     """The card for this reply, made once per message (its idempotency key):
-    a second call for the same message finds the one the first made."""
+    a second call for the same message finds the one the first made. A card
+    YOLO mode will send is ``auto_execute``; every other is ``propose``."""
     from openexecutive.memory.decision_ledger import create_decision_instance, get_live_by_idem
 
     key = f"{DECISION_CLASS}:{person.id}:{message.id}"
@@ -1188,9 +1227,10 @@ def _create_card(
             originating_session_id=None,
             proposed_payload=_card_payload(
                 person, message, thread, reply, draft, relation=relation, handled_as=handled_as, verdict=verdict,
+                yolo_reason=yolo_reason,
             ),
             idempotency_key=key,
-            gate_mode="propose",
+            gate_mode="auto_execute" if on_its_own else "propose",
             approver_person_id=person.id,
             confidence=verdict.confidence,
         )
@@ -1318,11 +1358,12 @@ async def _settle_unconfirmed_send(
     card goes back for the person to try again (Gmail deletes a draft it
     sends); the draft gone and nothing sent means it was deleted in Gmail.
     Never sends anything itself."""
-    from openexecutive.delegation import drafts
+    from openexecutive.delegation import drafts, yolo
     from openexecutive.delegation.gmail import GmailNotFound
     from openexecutive.memory.decision_ledger import (
         STATUS_APPROVED_UNCHANGED,
         STATUS_APPROVED_WITH_EDIT,
+        STATUS_EXECUTED,
         finish_execution,
         release_claim,
     )
@@ -1350,14 +1391,25 @@ async def _settle_unconfirmed_send(
             _add_flag(person.id, message_id, "send_failed")
         return 0
     edited = "edited_in_gmail" in flags
-    status = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
+    on_its_own = getattr(card, "gate_mode", "") == "auto_execute" and card.resolver_person_id is None
+    if on_its_own:
+        status = STATUS_EXECUTED
+    else:
+        status = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
     if not finish_execution(
-        card.id, status, final_payload={"sent_message_id": sent[-1].id, "confirmed_later": True},
+        card.id, status, final_payload={
+            "sent_message_id": sent[-1].id, "confirmed_later": True,
+            **({"on_its_own": True} if on_its_own else {}),
+        },
         external_event_id=sent[-1].id or None,
     ):
         return 0
-    _set_outcome(person.id, message_id, SENT, reason="sent")
+    _set_outcome(person.id, message_id, SENT, reason="handled" if on_its_own else "sent")
     drafts.mark_sent(person.id, draft_id, sent[-1].id)
+    if on_its_own:
+        yolo.record_handled(
+            person.id, str(payload.get("thread_id") or ""), card.id, sent[-1].id or None, now=now,
+        )
     _audit("delegation_reply_sent", f"Sent a reply as person {person.id}", {
         "person_id": person.id, "decision_id": card.id, "thread_id": str(payload.get("thread_id") or ""),
         "sent_message_id": sent[-1].id, "edited": edited, "confirmed_later": True,

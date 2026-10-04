@@ -412,10 +412,13 @@ def _importers(module: str) -> set[str]:
     return set(_index()[1].get(module, set()))
 
 
-def test_only_the_send_path_sends_and_only_the_approve_route_reaches_it() -> None:
+def test_only_the_send_path_sends_and_only_the_approve_route_and_the_watcher_reach_it() -> None:
+    """Two doors and no more: the person's tap (the approve route) and Handle
+    it for me (the inbox watcher, under the person's own switch)."""
     assert _uses("send_draft") == {"delegation/reply_send.py"}
     assert _uses("send_approved_reply") == {"api/routes/decisions.py"}
-    assert _importers("openexecutive.delegation.reply_send") == {"api/routes/decisions.py"}
+    assert _uses("send_on_its_own") == {"delegation/inbox.py"}
+    assert _importers("openexecutive.delegation.reply_send") == {"api/routes/decisions.py", "delegation/inbox.py"}
 
 
 def test_only_dismiss_deletes_a_draft() -> None:

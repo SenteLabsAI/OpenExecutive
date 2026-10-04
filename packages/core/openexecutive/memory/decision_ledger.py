@@ -8,6 +8,8 @@ powers the Proposals UI and the promotion evaluator (Build 3).
 Status state-machine (valid transitions only; enforced by compare-and-set):
   proposed → approved_unchanged | approved_with_edit | rejected | auto_no_response | failed
   proposed → executing → approved_unchanged | approved_with_edit | failed
+                       → executed     (an auto_execute row acted on its own:
+                                       YOLO mode's replies)
                        → proposed     (release_claim: nothing was done)
   proposed | executing → closed_externally  (settled outside the app)
   executed  → reversed | failed        (auto-execute path, Build 3)
@@ -244,7 +246,7 @@ def claim_for_execution(
 
 
 _FINISHED_STATUSES = frozenset({
-    STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT, STATUS_FAILED,
+    STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT, STATUS_EXECUTED, STATUS_FAILED,
 })
 
 
@@ -256,8 +258,9 @@ def finish_execution(
     external_event_id: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """executing → approved_unchanged | approved_with_edit | failed,
-    compare-and-set. The resolver was recorded when it was claimed."""
+    """executing → approved_unchanged | approved_with_edit | executed |
+    failed, compare-and-set. The resolver was recorded when it was claimed
+    (none for ``executed``: nobody tapped, the class's mode acted)."""
     if status not in _FINISHED_STATUSES:
         raise ValueError(f"not a status an execution finishes in: {status!r}")
     now = datetime.now(UTC).isoformat()

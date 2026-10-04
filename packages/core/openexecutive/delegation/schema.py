@@ -15,6 +15,8 @@ DRAFTS_TABLE = "delegation_drafts"
 INBOX_WATCH_TABLE = "delegation_inbox_watch"
 INBOX_MESSAGES_TABLE = "delegation_inbox_messages"
 TEAM_TABLE = "delegation_team"
+YOLO_TABLE = "delegation_yolo"
+HANDLED_TABLE = "delegation_handled"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -24,6 +26,8 @@ TABLES: tuple[str, ...] = (
     INBOX_WATCH_TABLE,
     INBOX_MESSAGES_TABLE,
     TEAM_TABLE,
+    YOLO_TABLE,
+    HANDLED_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -113,6 +117,26 @@ _DDL: tuple[str, ...] = (
     f"ON {INBOX_MESSAGES_TABLE}(person_id, thread_id)",
     f"CREATE INDEX IF NOT EXISTS idx_{INBOX_MESSAGES_TABLE}_created "
     f"ON {INBOX_MESSAGES_TABLE}(person_id, created_at)",
+    # YOLO mode, one row per person (absent: off). levels is a JSON
+    # object of kind -> off | ask | handle (delegation.yolo).
+    f"CREATE TABLE IF NOT EXISTS {YOLO_TABLE} ("
+    "  person_id INTEGER PRIMARY KEY,"
+    "  enabled INTEGER NOT NULL DEFAULT 0,"
+    "  levels TEXT NOT NULL DEFAULT '{}',"
+    "  updated_at TEXT,"
+    "  updated_by TEXT"
+    ")",
+    # Every reply the inbox watcher sent on its own: ids and times only.
+    f"CREATE TABLE IF NOT EXISTS {HANDLED_TABLE} ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  person_id INTEGER NOT NULL,"
+    "  thread_id TEXT NOT NULL,"
+    "  decision_id INTEGER,"
+    "  sent_message_id TEXT,"
+    "  sent_at TEXT NOT NULL"
+    ")",
+    f"CREATE INDEX IF NOT EXISTS idx_{HANDLED_TABLE}_person_sent "
+    f"ON {HANDLED_TABLE}(person_id, sent_at)",
 )
 
 

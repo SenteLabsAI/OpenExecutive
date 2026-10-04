@@ -1,14 +1,24 @@
-"""Send a reply the inbox watcher drafted, when the person taps Send.
+"""Send a reply the inbox watcher drafted, when the person taps Send, or
+on its own under YOLO mode.
 
 The one path in Act as me that sends anything, and all it can send is the
 exact draft on a ``delegation_reply`` card, by its id
 (``DelegateGmail.send_draft`` posts ``{"id": ...}`` to ``drafts.send``;
-``DelegateOutlook.send_draft`` posts nothing to that draft's ``send``),
-after the person approved that card (``POST /decisions/{id}/approve``, a
-class only the card's own person sees or resolves). Only that route calls ``send_approved_reply`` (a unit
-test walks the code), so no model, chat turn, workflow, scheduled job or MCP
-call can reach it. Sending is the person's own act: it works while the
-Executive is paused.
+``DelegateOutlook.send_draft`` posts nothing to that draft's ``send``). Two
+callers reach it, and a unit test walks the code to keep it that way:
+
+- ``send_approved_reply``, after the person approved that card
+  (``POST /decisions/{id}/approve``, a class only the card's own person sees
+  or resolves). Only that route calls it. Sending is the person's own act: it
+  works while the Executive is paused.
+- ``send_on_its_own``, called only by the inbox watcher (``inbox._consider``)
+  for a card it made as ``auto_execute`` after ``yolo.refusal`` found
+  nothing against it. The person turned YOLO mode on themselves, from
+  a session the API knows is theirs; this path checks that switch and the
+  rules again, and refuses anything the tap path would ask a second yes for.
+  The watcher runs inside the scheduler's pause gate, so a pause stops it.
+
+No model, chat turn, workflow or MCP call can reach either.
 
 At send time it checks again, in this order:
 
@@ -71,21 +81,14 @@ _CONFIRM_TEXT = {
 
 
 def _check_caller(caller: Any, email: str) -> None:
-    """Raise unless the API knows the caller is the person at ``email``."""
-    from openexecutive.api.caller import signing_on
-    from openexecutive.utils.deployment import is_local_login
+    """Raise unless the API knows the caller is the person at ``email``
+    (``verified.caller_refusal``)."""
+    from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
 
-    if signing_on():
-        if caller.kind == "user" and caller.email == email:
-            return
-        if caller.kind == "operator" and is_local_login():
-            return
-        raise SendRefused(403, "not_yours", _NOT_YOURS)
-    if is_local_login():
-        # The API answers this computer only (api.main), and the web app
-        # sends no caller: the person at the keyboard is the owner.
-        if caller.kind == "open" and caller.email in ("", email):
-            return
+    refused = caller_refusal(caller, email)
+    if refused is None:
+        return
+    if refused == NOT_YOURS:
         raise SendRefused(403, "not_yours", _NOT_YOURS)
     raise SendRefused(
         409,
@@ -116,6 +119,21 @@ async def send_approved_reply(
         )
 
 
+async def send_on_its_own(instance: Any, *, gmail: Any = None, now: datetime | None = None) -> str:
+    """Send the draft on ``instance``, a card the inbox watcher made as
+    ``auto_execute`` under YOLO mode. Returns the sent message's id;
+    raises ``SendRefused`` and then leaves the card for the person, as if the
+    switch were off."""
+    from openexecutive.audit import rows_for_person
+
+    owner = getattr(instance, "approver_person_id", None)
+    with rows_for_person(owner if isinstance(owner, int) else None):
+        return await _send(
+            instance, caller=None, resolver=None, confirm={}, gmail=gmail,
+            now=now or datetime.now(UTC), on_its_own=True,
+        )
+
+
 def _addresses(value: Any) -> list[str] | None:
     from openexecutive.delegation.gmail import normalize_email
 
@@ -125,10 +143,11 @@ def _addresses(value: Any) -> list[str] | None:
 
 
 async def _send(
-    instance: Any, *, caller: Any, resolver: int | None, confirm: dict[str, Any], gmail: Any, now: datetime
+    instance: Any, *, caller: Any, resolver: int | None, confirm: dict[str, Any], gmail: Any, now: datetime,
+    on_its_own: bool = False,
 ) -> str:
     from openexecutive.config import get_settings
-    from openexecutive.delegation import drafts
+    from openexecutive.delegation import drafts, yolo
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
         STATUS_MESSAGES,
@@ -158,6 +177,7 @@ async def _send(
     from openexecutive.memory.decision_ledger import (
         STATUS_APPROVED_UNCHANGED,
         STATUS_APPROVED_WITH_EDIT,
+        STATUS_EXECUTED,
         claim_for_execution,
         finish_execution,
         release_claim,
@@ -168,11 +188,25 @@ async def _send(
     person = get_person(int(payload.get("person_id") or 0))
     if (
         person is None or person.id is None or not person.email or not can_delegate(person)
-        or resolver != person.id or instance.approver_person_id != person.id
+        or instance.approver_person_id != person.id
+        or (resolver != person.id if not on_its_own else resolver is not None)
     ):
         raise SendRefused(403, "not_yours", _NOT_YOURS)
     email = normalize_email(person.email)
-    _check_caller(caller, email)
+    if on_its_own:
+        # The person's own switch stands in for their tap: it must still be
+        # on, for this kind of sender, and the API must still be able to tie
+        # it to them.
+        kind = yolo.kind_for(str(payload.get("handled_as") or "stranger"))
+        if (
+            getattr(instance, "gate_mode", "") != "auto_execute"
+            or yolo.get(person.id).level(kind) != yolo.LEVEL_HANDLE
+        ):
+            raise SendRefused(409, "yolo_off", "YOLO mode is off for this reply.")
+        if not yolo.signing_ok():
+            raise SendRefused(409, "caller_signing_required", yolo.REASONS["signing_off"])
+    else:
+        _check_caller(caller, email)
     if not is_enabled(person.id) or not get_watch(person.id).enabled:
         raise SendRefused(
             409, "inbox_off",
@@ -238,6 +272,10 @@ async def _send(
         )
 
     edited = draft.message.id != str(payload.get("draft_message_id") or "")
+    if on_its_own and edited:
+        # Someone changed it in the mailbox since it was written: that
+        # version was never checked, so the person sends it, not this path.
+        raise SendRefused(409, "draft_changed", "The draft changed in your mailbox, so it waits for you.")
     if instance.id in SENDING:
         # Another tap is sending it right now; its mark is its own to clear.
         raise SendRefused(409, "already_handled", "This reply is being sent already.")
@@ -294,23 +332,39 @@ async def _send(
         # It went: whatever happens to the bookkeeping, say so. A card left
         # executing is settled by the reconciler from the sent message.
         try:
-            final = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
+            if on_its_own:
+                final = STATUS_EXECUTED
+            else:
+                final = STATUS_APPROVED_WITH_EDIT if edited else STATUS_APPROVED_UNCHANGED
             if not finish_execution(
                 instance.id, final,
-                final_payload={"sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited},
+                final_payload={
+                    "sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited,
+                    **({"on_its_own": True} if on_its_own else {}),
+                },
                 external_event_id=sent.id or None,
             ):
                 logger.warning("delegation.reply_send: a sent reply's card changed under it")
-            _set_outcome(person.id, message_id, SENT, reason="sent")
+            _set_outcome(person.id, message_id, SENT, reason="handled" if on_its_own else "sent")
             if sent.id:
                 drafts.mark_sent(person.id, draft.draft_id, sent.id)
-            _audit("delegation_reply_sent", f"Sent a reply as person {person.id}, on their tap", {
-                "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
-                "sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited,
-            })
+            if on_its_own:
+                yolo.record_handled(person.id, thread_id, instance.id, sent.id or None, now=now)
+                _audit("delegation_reply_handled", f"Sent a reply as person {person.id}, on its own", {
+                    "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
+                    "sent_message_id": sent.id, "recipient_count": len(recipients),
+                })
+            else:
+                _audit("delegation_reply_sent", f"Sent a reply as person {person.id}, on their tap", {
+                    "person_id": person.id, "decision_id": instance.id, "thread_id": thread_id,
+                    "sent_message_id": sent.id, "recipient_count": len(recipients), "edited": edited,
+                })
         except Exception as exc:
             logger.warning("delegation.reply_send: recording a sent reply failed (%s)", type(exc).__name__)
-        _note_sent(person.id, current.message, thread, recipients, thread_id, now)
+        if not on_its_own:
+            # History notes come from the person's own words; a reply sent on
+            # its own isn't that.
+            _note_sent(person.id, current.message, thread, recipients, thread_id, now)
         return sent.id
     finally:
         SENDING.discard(instance.id)

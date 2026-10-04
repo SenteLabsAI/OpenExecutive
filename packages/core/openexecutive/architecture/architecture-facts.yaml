@@ -4739,6 +4739,8 @@ audit:
     - delegation_reply_drafted — the inbox watcher saved a reply in someone's own Gmail and made its card. details carry person_id, thread_id, draft_id, decision_id, relation, kind and flags — never the email or the draft. Always private.
     - delegation_reply_dismissed — a reply card was dismissed. details carry person_id, decision_id and what happened to the draft (deleted, kept_edited, already_gone, not_connected, gmail_error). Always private.
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
+    - delegation_yolo_changed — a person changed YOLO mode via PUT /delegation/yolo (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and levels. Always private.
+    - delegation_reply_handled — YOLO mode sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
@@ -8999,6 +9001,44 @@ delegation:
     deleted. Nothing is ever
     retried on its own. Send is the person's act, so it works while the
     Executive is paused.
+  yolo: |
+    YOLO mode (delegation.yolo): a third switch under Act as me,
+    one row per person in delegation_yolo (person_id PK, enabled,
+    levels JSON, updated_at, updated_by; absent = off). Levels per kind,
+    off | ask | handle: reply_known (team, contact or correspondent; handle
+    when first on) and reply_stranger (ask). ask is the card as before; off
+    is the same as ask for now. Set only by PUT /delegation/yolo from a
+    caller delegation.verified.caller_refusal accepts (the rule Send uses:
+    403 not_yours, 409 caller_signing_required on shared secret alone);
+    enabling needs Act as me and the inbox watcher on (409 act_as_me_off /
+    inbox_off); the inbox watcher going off turns it off.
+    After compose, inbox._consider asks yolo.refusal (plain code, any
+    exception = refusal "uncountable"); None makes the card gate_mode
+    auto_execute, else propose with yolo_reason. Refusal codes, in
+    order: level, signing_off (signing_on or local login needed),
+    sender_unverified, kind (question/request/scheduling/introduction/
+    follow_up), unsure (confidence < 0.8), recipients (subset of the
+    email's From/To/Cc less own and Executive addresses, sender included,
+    at most MAX_RECIPIENTS), sensitive (SENSITIVE words in subject, the
+    sender's new words, reply subject or body), amount, link, long (> 1200
+    chars), flagged (any flag but others_on_thread / executive_on_thread),
+    thread_recent (one auto-send per thread per day, delegation_handled),
+    in_a_row (last own message in the thread was an auto-send),
+    daily_limit (DELEGATION_YOLO_MAX_SENDS_PER_DAY, default 20).
+    The watcher then calls reply_send.send_on_its_own — the second door
+    into _send, pinned by an AST test to delegation/inbox.py — which runs
+    every send-time check with no caller and adds: gate_mode auto_execute,
+    the switch on and the kind still at handle, signing_ok, and the draft
+    unedited since saved (draft_changed otherwise: the person took it
+    over). Finishes as executed (no resolver), outcome sent reason handled,
+    a delegation_handled row (person_id, thread_id, decision_id,
+    sent_message_id, sent_at) and a private delegation_reply_handled audit
+    row; no History note (notes come from the person's own words). Any
+    refusal or error leaves the card; the reconciler settles an
+    unconfirmed auto-send as executed too. Runs inside the scan, so the
+    pause gate stops it. GET /delegation/handled lists the caller's last 7
+    days (theirs alone); the Settings card shows the switch, the two
+    levels, sent_today and that list.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -9025,7 +9065,9 @@ delegation:
     second yes; 409 confirm / caller_signing_required / draft_gone /
     you_replied / inbox_off / client_slot / the Gmail codes, 429
     rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST
-    /decisions/{id}/reject.
+    /decisions/{id}/reject. PUT /delegation/yolo {enabled?, levels?}
+    and GET /delegation/handled ({replies: [...]}), see yolo;
+    DelegationOut.yolo is {enabled, levels, available, sent_today}.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
     command and Check again, the Write drafts as me switch, the Draft
@@ -9062,20 +9104,20 @@ delegation:
     DELEGATION_MAX_DRAFTS_PER_DAY (1-1000, default 50),
     DELEGATION_INBOX_POLL_MINUTES (default 5),
     DELEGATION_INBOX_MAX_DRAFTS_PER_DAY (default 20, within the shared
-    limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL).
+    limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL),
+    DELEGATION_YOLO_MAX_SENDS_PER_DAY (1-500, default 20).
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
-    delegation_drafts, delegation_inbox_watch and delegation_inbox_messages
-    (delegation.schema.TABLES) in the episodic DB (created by
+    delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,
+    delegation_yolo and delegation_handled (delegation.schema.TABLES) in the episodic DB (created by
     memory.episodic.initialize_db via delegation.schema.ensure_schema); per
     company — in clients.slots._BLANK_WIPE_TABLES and
     cli.fixture_loader.reset_all_state. A reply card is a decision_instances
     row (see trust_ledger).
   later_phases: |
-    Each is its own change behind its own switch, off by default: act
-    within per-category rules, with a hold and
-    a disclosure footer on unreviewed sends; stand in on positions the person
-    approved; teammates, once audit rows can be private to any person.
+    Each is its own change behind its own switch, off by default: more
+    kinds under YOLO mode (meetings, handing to a teammate, follow-ups,
+    the Executive's own ideas); stand in on positions the person approved.
 
 diagram_style:
   required_classdefs: [entry, compute, storage, cache, external, hot]
@@ -9200,6 +9242,8 @@ trust_ledger: |
         executed → reversed | failed  (auto-execute path, Build 3)
         proposed → executing → approved_unchanged | approved_with_edit | failed,
           or back to proposed (release_claim: nothing was done)
+        proposed → executing → executed: an auto_execute row acted on its
+          own with no resolver (delegation.yolo replies)
         proposed | executing → closed_externally (settled outside the app;
           the reason code goes in reversal_reason)
       All status transitions are compare-and-set — no silent overwrites.

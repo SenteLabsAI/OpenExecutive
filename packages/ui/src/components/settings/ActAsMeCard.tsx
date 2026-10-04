@@ -10,16 +10,21 @@ import Button from "@/components/ui/Button";
 import {
   checkInboxNow,
   getDelegation,
+  getHandledReplies,
   getVoiceProfile,
   learnVoiceProfile,
   refreshVoiceSignature,
   resetVoiceProfile,
   setDelegationEnabled,
   setDelegationTeam,
+  setYolo,
   setInboxWatch,
   updateVoiceProfile,
   type DelegationSettings,
   type DelegationTeam,
+  type HandledReply,
+  type Yolo,
+  type YoloLevel,
   type InboxWatch,
   type VoiceProfile,
 } from "@/lib/api";
@@ -243,6 +248,14 @@ export default function ActAsMeCard() {
         />
       )}
 
+      {settings.yolo && settings.inbox && (
+        <YoloSection
+          yolo={settings.yolo}
+          inboxOn={settings.inbox.enabled}
+          onSettings={setSettings}
+        />
+      )}
+
       <AdvancedFold
         id="act-as-me-advanced"
         summary={settings.team ? "How I write · Let team members use it" : "How I write"}
@@ -385,6 +398,128 @@ function InboxSection({
           <Button size="sm" onClick={() => void checkNow()} disabled={busy || inbox.checking}>
             {inbox.checking ? "Checking…" : "Check now"}
           </Button>
+        </div>
+      )}
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </SettingsCard>
+  );
+}
+
+// YOLO mode (PUT /delegation/yolo): replies the inbox watcher
+// sends on its own. Plain code decides each one (delegation/yolo.py);
+// anything it won't send waits on Today as before. Below the switch, what it
+// sent in the last week (GET /delegation/handled).
+const YOLO_KINDS: { kind: string; label: string }[] = [
+  { kind: "reply_known", label: "People you know" },
+  { kind: "reply_stranger", label: "People you haven't written to" },
+];
+
+function YoloSection({
+  yolo,
+  inboxOn,
+  onSettings,
+}: {
+  yolo: Yolo;
+  inboxOn: boolean;
+  onSettings: (next: DelegationSettings) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [handled, setHandled] = useState<HandledReply[] | null>(null);
+  const on = yolo.enabled;
+
+  useEffect(() => {
+    if (!on) return;
+    const controller = new AbortController();
+    getHandledReplies(controller.signal)
+      .then(setHandled)
+      .catch(() => setHandled(null));
+    return () => controller.abort();
+  }, [on, yolo.sent_today]);
+
+  const save = async (update: { enabled?: boolean; levels?: Record<string, YoloLevel> }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSettings(await setYolo(update));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the setting.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsCard
+      title="YOLO mode"
+      titleId="act-as-me-yolo-label"
+      description={
+        !yolo.available
+          ? "Needs signed sign-ins on this server before it can send anything as you."
+          : on
+            ? "It sends replies on its own when they're simple and safe, and tells you here. Anything about money, contracts, legal, hiring or the press, anything with a link or an amount, and anything going to someone new still waits for you on Today."
+            : inboxOn
+              ? "Off: every reply waits for you to tap Send."
+              : "Turn on Draft replies to my inbox first."
+      }
+      action={
+        <Switch
+          checked={on}
+          onChange={() => void save({ enabled: !on })}
+          disabled={busy || (!on && (!inboxOn || !yolo.available))}
+          labelledBy="act-as-me-yolo-label"
+        />
+      }
+    >
+      {on && (
+        <div className="flex flex-col gap-3">
+          {YOLO_KINDS.map(({ kind, label }) => {
+            const id = `yolo-${kind}`;
+            return (
+              <div key={kind} className="flex flex-wrap items-center justify-between gap-2">
+                <label htmlFor={id} className="text-sm">
+                  {label}
+                </label>
+                <select
+                  id={id}
+                  className="rounded-md border border-border bg-bg px-2 py-1 text-sm"
+                  value={yolo.levels[kind] === "handle" ? "handle" : "ask"}
+                  disabled={busy}
+                  onChange={(e) => void save({ levels: { [kind]: e.target.value as YoloLevel } })}
+                >
+                  <option value="handle">Handle it</option>
+                  <option value="ask">Ask me</option>
+                </select>
+              </div>
+            );
+          })}
+          <p className="text-sm text-fg-muted">
+            {yolo.sent_today === 1
+              ? "Sent 1 reply on its own today."
+              : `Sent ${yolo.sent_today} replies on its own today.`}
+          </p>
+          {handled && handled.length > 0 && (
+            <ul className="flex flex-col gap-2" aria-label="Handled for you this week">
+              {handled.map((h) => (
+                <li key={h.decision_id} className="rounded-md border border-border px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="min-w-0 font-medium">
+                      Replied to {h.to_name || h.to_email}: {h.subject}
+                    </span>
+                    <span className="text-xs text-fg-muted">{formatAgo(h.sent_at)}</span>
+                  </div>
+                  {h.open_questions.length > 0 && (
+                    <p className="mt-1 text-fg-muted">Still yours to answer: {h.open_questions.join(" ")}</p>
+                  )}
+                  {h.gmail_link && (
+                    <a href={h.gmail_link} target="_blank" rel="noreferrer" className="mt-1 inline-block text-accent">
+                      Open in your mailbox
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}

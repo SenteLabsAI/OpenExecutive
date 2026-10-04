@@ -1598,6 +1598,8 @@ export interface DelegationSettings {
   };
   // Absent on a backend that predates the inbox watcher.
   inbox?: InboxWatch;
+  // Absent (or null) on a backend that predates YOLO mode.
+  yolo?: Yolo | null;
   // The owner's "Let team members use Act as me", while the install allows
   // it; null (or absent) for everyone else.
   team?: DelegationTeam | null;
@@ -1632,6 +1634,33 @@ export interface InboxWatch {
   watch_since: string | null;
   last_poll_at: string | null;
   checking: boolean;
+}
+
+// YOLO mode: the inbox watcher sends some replies on its own,
+// decided by plain code (delegation/yolo.py). Each kind of reply has a
+// level; "ask" leaves a card as before.
+export type YoloLevel = "off" | "ask" | "handle";
+
+export interface Yolo {
+  enabled: boolean;
+  // reply_known (people you know), reply_stranger (a holding reply).
+  levels: Record<string, YoloLevel>;
+  // Whether this server can tie the switch to you (signed sign-ins or local
+  // login); without it nothing is sent on its own.
+  available: boolean;
+  sent_today: number;
+}
+
+// One reply sent on its own, yours alone (GET /delegation/handled).
+export interface HandledReply {
+  decision_id: number;
+  sent_at: string;
+  to_name: string;
+  to_email: string;
+  subject: string;
+  body: string;
+  open_questions: string[];
+  gmail_link: string;
 }
 
 // One reply the inbox watcher drafted: a `delegation_reply` decision, yours
@@ -1797,6 +1826,28 @@ export async function setInboxWatch(enabled: boolean): Promise<DelegationSetting
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to my inbox.");
   return res.json();
+}
+
+export async function setYolo(update: {
+  enabled?: boolean;
+  levels?: Record<string, YoloLevel>;
+}): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/yolo`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change YOLO mode.");
+  return res.json();
+}
+
+// null when this viewer has none to see (403) or the backend predates it (404).
+export async function getHandledReplies(signal?: AbortSignal): Promise<HandledReply[] | null> {
+  const res = await fetch(`${API_BASE}/delegation/handled`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load what it handled for you.");
+  const body = (await res.json()) as { replies: HandledReply[] };
+  return body.replies;
 }
 
 // Starts a check of your inbox; GET /delegation says when it is done.
