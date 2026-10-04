@@ -16,7 +16,7 @@ import {
 // Take the lead as the Executive (GET/PUT /take-the-lead), the owner's
 // alone: its unattended runs act on what they find, behind the gate. The six
 // "Always asks first" kinds each have a switch; the company's rules always
-// hold. Nothing for anyone else (the route answers 403).
+// hold. Anyone else (the route answers 403) sees only who can turn it on.
 export default function TakeTheLeadCard() {
   const [lead, setLead] = useState<TakeTheLead | null>(null);
   const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
@@ -37,7 +37,16 @@ export default function TakeTheLeadCard() {
   }, []);
 
   if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
-  if (state === "hidden") return null;
+  if (state === "hidden") {
+    return (
+      <SettingsCard title="Take the lead">
+        <p className="text-sm text-fg-muted">
+          Only the account owner can turn this on. When it&apos;s on, the Executive acts on what it finds without
+          asking first.
+        </p>
+      </SettingsCard>
+    );
+  }
   if (state === "error" || !lead) {
     return (
       <SettingsCard>
