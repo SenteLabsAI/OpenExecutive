@@ -154,9 +154,11 @@ _MULTIPLIERS: dict[str, int] = {
     "b": 1_000_000_000, "bn": 1_000_000_000, "billion": 1_000_000_000,
 }
 _MULT = r"(thousand|million|billion|mn|bn|k|m|b)\b"
+_CURRENCY_CODES = r"usd|eur|gbp|chf|jpy|cad|aud|inr|cny"
 _AMOUNT_VALUE_RE = re.compile(
     rf"(?:[$€£¥]\s?)(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?"
-    rf"|\b(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?\s?(?:usd|eur|gbp|dollars|euros|pounds)\b",
+    rf"|\b(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?\s?(?:{_CURRENCY_CODES}|dollars|euros|pounds)\b"
+    rf"|\b(?:{_CURRENCY_CODES})\s?(\d[\d,]*(?:\.\d+)?)\s?(?:{_MULT})?",
     re.IGNORECASE,
 )
 _DOMAIN_RE = re.compile(r"^[a-z0-9.-]+\.[a-z]{2,}$")
@@ -406,7 +408,7 @@ def amounts(text: str) -> list[float]:
     """Money amounts written in ``text`` ($500, 2k EUR, $2 million, …)."""
     found: list[float] = []
     for m in _AMOUNT_VALUE_RE.finditer(text or ""):
-        number = _number(f"{m.group(1) or m.group(3)} {m.group(2) or m.group(4) or ''}")
+        number = _number(f"{m.group(1) or m.group(3) or m.group(5)} {m.group(2) or m.group(4) or m.group(6) or ''}")
         if number is not None:
             found.append(number)
     return found

@@ -410,6 +410,9 @@ def test_a_large_amount_rule_holds_only_larger_amounts() -> None:
     ("2k EUR", [2_000.0]),
     ("$2 more for lunch", [2.0]),
     ("$5 buys a coffee", [5.0]),
+    ("transfer USD 50,000 Friday", [50_000.0]),
+    ("EUR 20k", [20_000.0]),
+    ("CHF 5000 and 300 chf", [5_000.0, 300.0]),
 ])
 def test_amounts_read_scale_words(text: str, expected: list[float]) -> None:
     assert ttl.amounts(text) == expected
@@ -419,6 +422,14 @@ def test_money_holds_a_scaled_amount(owner: Any) -> None:
     hit = ttl.check("message_person", {"person_id": owner.id, "text": "Please send 2k EUR to Acme today"},
                     lead=_lead(), rules=[])
     assert hit is not None and hit.kind == ttl.MONEY
+
+
+def test_money_and_amount_rules_read_a_code_before_the_number(owner: Any) -> None:
+    text = "Confirm we'll transfer USD 50,000 to them Friday"
+    hit = ttl.check("message_person", {"person_id": owner.id, "text": text}, lead=_lead(), rules=[])
+    assert hit is not None and hit.kind == ttl.MONEY
+    ttl.add_rule(ttl.SCOPE_COMPANY, "amount", "10000", created_by="t")
+    assert ttl._rule_hit(ttl.list_rules([ttl.SCOPE_COMPANY]), text, []) is not None
 
 
 def test_an_amount_rule_holds_a_wire_written_in_words() -> None:
