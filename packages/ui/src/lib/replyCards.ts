@@ -48,12 +48,16 @@ export function senderLine(card: { from_name: string; from_email: string }): str
   return name ? `${name} <${card.from_email}>` : card.from_email;
 }
 
-/** The sender as the card's short line shows it: the name alone when there
- * is one and the address is verified, so the line fits a phone. An unverified
- * address is always shown in full, so a lookalike is visible at a glance. */
+/** The sender as the card's short line shows it: the name with the address's
+ * domain ("Dana Park · @x.example"), so the line fits a phone while the part a
+ * lookalike would change stays in sight. A display name is the sender's own
+ * text, so the domain is never dropped; without a confirmed sender (or a name)
+ * the full address shows. */
 export function senderShort(card: { from_name: string; from_email: string; sender_verified?: boolean }): string {
   const name = card.from_name.trim();
-  return name && card.sender_verified !== false ? name : senderLine(card);
+  const at = card.from_email.lastIndexOf("@");
+  if (!name || card.sender_verified !== true || at < 0) return senderLine(card);
+  return `${name} · @${card.from_email.slice(at + 1)}`;
 }
 
 /** Whether a draft is long enough to show clamped, with a Show full draft toggle. */

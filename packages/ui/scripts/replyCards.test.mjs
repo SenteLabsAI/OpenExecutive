@@ -35,10 +35,11 @@ test("senderLine shows the name and address, or the address alone", () => {
   assert.equal(senderLine({ from_name: "  ", from_email: "dana@x.example" }), "dana@x.example");
 });
 
-test("senderShort shows the name alone only for a verified sender with a name", () => {
-  const card = { from_name: "Dana Park", from_email: "dana@x.example" };
-  assert.equal(senderShort({ ...card, sender_verified: true }), "Dana Park");
-  assert.equal(senderShort({ ...card, sender_verified: false }), "Dana Park <dana@x.example>");
+test("senderShort keeps the domain beside the name, and the full address unless confirmed", () => {
+  const card = { from_name: "Dana Park", from_email: "dana@d4na-park.example" };
+  assert.equal(senderShort({ ...card, sender_verified: true }), "Dana Park · @d4na-park.example");
+  assert.equal(senderShort({ ...card, sender_verified: false }), "Dana Park <dana@d4na-park.example>");
+  assert.equal(senderShort(card), "Dana Park <dana@d4na-park.example>");
   assert.equal(senderShort({ from_name: " ", from_email: "dana@x.example", sender_verified: true }), "dana@x.example");
 });
 
