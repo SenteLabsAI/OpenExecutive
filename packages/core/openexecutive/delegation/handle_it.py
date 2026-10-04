@@ -34,7 +34,9 @@ with the reason recorded.
   hiring, pay, the board, the press, health or credentials (``SENSITIVE``),
   or the reply has an amount, a percentage or a link in it, or is long;
 - the draft carries a flag other than ``ALLOWED_FLAGS`` (they asked whether
-  it's an AI, recipients were trimmed, the Executive was named, ...);
+  it's an AI, recipients were trimmed, the draft names the Executive
+  (``names_the_executive``), ...). The Executive merely being on the email
+  (``executive_on_thread``) is fine: it is never a recipient of the reply;
 - it already sent one in this thread in the last day, or the last thing the
   person "said" in this thread was itself sent on its own;
 - the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached.
