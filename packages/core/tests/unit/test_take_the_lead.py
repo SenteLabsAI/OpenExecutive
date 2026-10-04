@@ -611,3 +611,29 @@ def test_the_leading_pass_without_a_gateway_still_leads(owner: Any, monkeypatch:
     ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="test")
     names, handlers, leading = _lead_tools(monkeypatch, None)
     assert leading and names == ["message_person"]
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "quote", "expected"),
+    [
+        ("google_workspace__modify_sheet_values", {"title": "Supplier deliveries", "range": "A1"}, False,
+         "Update Supplier deliveries (Google Sheets)"),
+        ("google_workspace__create_doc", {"title": "Plant review prep", "content": "secret plan"}, False,
+         "Create Plant review prep (Google Docs)"),
+        ("google_workspace__share_drive_file",
+         {"name": "Plant review prep", "email_address": "plant-team@halcyonmotors.com"}, True,
+         "Share Plant review prep with plant-team@halcyonmotors.com"),
+        # The activity feed never names who it was shared with.
+        ("google_workspace__share_drive_file",
+         {"name": "Plant review prep", "email_address": "plant-team@halcyonmotors.com"}, False,
+         "Share Plant review prep"),
+        ("google_workspace__modify_sheet_values", {"spreadsheet_id": "1abc"}, False,
+         "Update a spreadsheet (Google Sheets)"),
+        ("crm__update_record", {"name": "Acme renewal"}, False, "Update Acme renewal"),
+        ("crm__send_gmail_message", {"to": "x@far.example"}, False, "Send gmail message"),
+    ],
+)
+def test_connected_tools_are_named_by_file_not_content(
+    tool: str, arguments: dict[str, Any], quote: bool, expected: str,
+) -> None:
+    assert ttl.summarize(tool, arguments, mcp=True, quote=quote) == expected

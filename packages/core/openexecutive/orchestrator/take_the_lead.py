@@ -494,10 +494,72 @@ _TOOL_LABELS: dict[str, str] = {
 }
 
 
+# A connected tool, named in plain words: what it does, to which file, in
+# which app. Matched against the tool's name, first match wins.
+_MCP_VERBS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(p, re.IGNORECASE), v) for p, v in (
+        (r"share|permission", "Share"),
+        (r"delete|trash|remove", "Delete"),
+        (r"create|new|copy", "Create"),
+        (r"update|modify|append|write|edit|batch|insert|set_|format|clear", "Update"),
+        (r"move|rename", "Move"),
+    )
+)
+_MCP_APPS: tuple[tuple[re.Pattern[str], str, str], ...] = tuple(
+    (re.compile(p, re.IGNORECASE), app, noun) for p, app, noun in (
+        (r"excel|workbook|worksheet", "Excel", "a workbook"),
+        (r"ms365.*(word|document)|word_document", "Word", "a document"),
+        (r"onedrive|ms365.*(drive|file)", "OneDrive", "a file"),
+        (r"sheet", "Google Sheets", "a spreadsheet"),
+        (r"slide|presentation", "Google Slides", "a presentation"),
+        (r"doc", "Google Docs", "a document"),
+        (r"drive|file|folder", "Google Drive", "a file"),
+    )
+)
+_MCP_NAME_KEYS = ("title", "name", "file_name", "filename", "document_title", "spreadsheet_title", "sheet_title")
+_MCP_RECIPIENT_KEYS = ("email_address", "email", "emails", "share_with", "recipient", "recipients", "user_email")
+
+
+def _first_text(tool_input: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = tool_input.get(key)
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value if isinstance(v, str))
+        if isinstance(value, str) and value.strip():
+            text = " ".join(value.split())
+            return text if len(text) <= 80 else text[:77] + "…"
+    return ""
+
+
+def _connected_label(tool: str, tool_input: dict[str, Any], *, recipient: bool) -> str | None:
+    """"Update Supplier deliveries (Google Sheets)", "Share Plant review prep
+    with plant-team@…": the file or record by name, never its content. The
+    person it's shared with only where ``recipient`` (the approval card,
+    which only the principal and the approver see). None when the tool's
+    name doesn't say what it does."""
+    verb = next((v for rx, v in _MCP_VERBS if rx.search(tool)), None)
+    if verb is None:
+        return None
+    app, noun = next(((a, n) for rx, a, n in _MCP_APPS if rx.search(tool)), (None, None))
+    name = _first_text(tool_input, _MCP_NAME_KEYS)
+    if not name and not app:
+        return None
+    what = name or noun or ""
+    if verb == "Share":
+        label = f"Share {what}"
+        who = _first_text(tool_input, _MCP_RECIPIENT_KEYS) if recipient else ""
+        return f"{label} with {who}" if who else label
+    return f"{verb} {what} ({app})" if app else f"{verb} {what}"
+
+
 def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote: bool = True) -> str:
     """One plain line saying what the action does; ``quote`` adds the start
-    of what it says (the approval card has it, the activity feed doesn't)."""
+    of what it says and, for a share, who it's shared with (the approval
+    card has them, the activity feed doesn't)."""
     label = _TOOL_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
+    if mcp:
+        bare = tool.split("__", 1)[-1]
+        label = _connected_label(tool, tool_input, recipient=quote) or bare.replace("_", " ").strip().capitalize()
     if tool == "message_person":
         try:
             from openexecutive.people.store import get_person
