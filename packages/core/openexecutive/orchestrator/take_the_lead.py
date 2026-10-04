@@ -33,6 +33,7 @@ activity on Today names what it did (``api.routes.today._build_activity``).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -763,10 +764,31 @@ def hold(
         create_decision_instance,
         decision_alert_external_id,
         decision_instance_tag,
+        get_live_by_idem,
     )
 
+    # The same action still waiting from an earlier pass is that card, not a
+    # new one. Keys are unique for good, so once one is answered the next
+    # identical hold takes the next numbered key.
+    base = "take_the_lead:" + hashlib.sha256(
+        json.dumps([tool, tool_input, mcp], sort_keys=True, default=str).encode()
+    ).hexdigest()[:32]
+    idem: str | None = None
+    for attempt in range(_HOLD_KEY_TRIES):
+        key = f"{base}:{attempt}"
+        waiting = get_live_by_idem(key, db_path=db_path)
+        if waiting is not None:
+            return waiting.id
+        if not _idem_used(key, db_path=db_path):
+            idem = key
+            break
     summary = summarize(tool, tool_input, mcp=mcp)
     approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
+    private = _is_principal(approver)
+    # What it would say quotes the Executive's context: on a card that sits
+    # on the team's Today only the plain line shows; the approver reads the
+    # rest through the decision, which only they and the principal can open.
+    shown = summary if private else summarize(tool, tool_input, mcp=mcp, quote=False)
     payload = {
         "tool": tool, "input": tool_input, "mcp": mcp, "kind": hit.kind, "rule_id": hit.rule_id,
         "reason": hit.reason, "summary": summary, "source": source,
@@ -776,7 +798,7 @@ def hold(
         department="executive",
         originating_session_id=None,
         proposed_payload=payload,
-        idempotency_key=None,
+        idempotency_key=idem,
         gate_mode="propose",
         approver_person_id=approver,
         confidence=None,
@@ -788,16 +810,16 @@ def hold(
             source=DECISION_ALERT_SOURCE,
             external_id=external_id,
             severity="medium",
-            headline=f"The Executive wants to: {summary}"[:160],
-            body=f"{summary}\n\nIt waited because {hit.reason}.",
-            suggested_action=summary,
+            headline=f"The Executive wants to: {shown}"[:160],
+            body=f"{shown}\n\nIt waited because {hit.reason}.",
+            suggested_action=shown,
             topic_tags=[
                 decision_instance_tag(decision_id),
                 f"decision_class:{DECISION_CLASS}",
                 # For the principal, theirs alone. One that went to a
                 # teammate for their area is on the team's Today like any
                 # department approval (authority.propose_via_alert).
-                *([PRIVATE_ALERT_TAG] if _is_principal(approver) else []),
+                *([PRIVATE_ALERT_TAG] if private else []),
             ],
             dedup_key=external_id,
             routed_to_person_id=approver,
@@ -808,6 +830,19 @@ def hold(
            status="waiting",
            why=f"It waited because {hit.reason}.", decision_id=decision_id, db_path=db_path)
     return decision_id
+
+
+_HOLD_KEY_TRIES = 50
+
+
+def _idem_used(key: str, *, db_path: Path | None = None) -> bool:
+    from openexecutive.memory.decision_ledger import _db_path
+    from openexecutive.memory.episodic import _get_conn
+
+    with _get_conn(db_path or _db_path()) as conn:
+        return conn.execute(
+            "SELECT 1 FROM decision_instances WHERE idempotency_key = ?", (key,),
+        ).fetchone() is not None
 
 
 _Handler = Callable[[dict[str, Any]], Awaitable[Any]]

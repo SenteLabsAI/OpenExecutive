@@ -214,6 +214,17 @@ def test_money_goes_to_whoever_holds_spending_authority(owner: Any, monkeypatch:
     assert decision is not None and decision.approver_person_id == cfo
     [alert] = alerts_store.list_alerts(limit=10)
     assert "private:principal" not in alert.topic_tags  # a team approval, like a department's
+    # On the team's Today it shows only the plain line, not what it would say.
+    assert "budget" not in alert.headline and "budget" not in (alert.body or "")
+    assert "budget" in json.loads(decision.proposed_payload_json)["summary"]
+
+
+def test_the_same_waiting_action_is_one_card(owner: Any) -> None:
+    first = _held(owner)
+    assert _held(owner) == first
+    assert len(alerts_store.list_alerts(limit=10)) == 1
+    ledger.mark_resolved(first, ledger.STATUS_REJECTED)
+    assert _held(owner) != first  # once answered, a new one is a new card
 
 
 @pytest.mark.parametrize(
@@ -255,6 +266,7 @@ def _approver(owner: Any, kind: str, text: str) -> int | None:
                            ttl.Hit(kind, "held"), source="reflection", mcp=False)
     decision = ledger.get_decision_instance(decision_id)
     assert decision is not None
+    ledger.mark_resolved(decision_id, ledger.STATUS_REJECTED)  # so the next hold is a new card
     return decision.approver_person_id
 
 
@@ -544,6 +556,14 @@ def test_as_you_keeps_what_always_waits_and_adds_the_rules(owner: Any) -> None:
 def test_as_you_does_nothing_while_handle_it_is_off(owner: Any) -> None:
     ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
     assert _check(owner) == "level"
+
+
+def test_turning_handle_it_off_turns_the_lead_as_you_off(owner: Any) -> None:
+    from openexecutive.api.routes import delegation as delegation_route
+
+    ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
+    delegation_route._set_handle_it(owner.id, enabled=False, mode=None)
+    assert not ttl.as_you_on(owner.id)
 
 
 # ── waking on what comes in ───────────────────────────────────────────────────

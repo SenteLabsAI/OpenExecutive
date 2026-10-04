@@ -612,7 +612,14 @@ def get_delegation_replies(request: Request) -> RepliesOut:
 
 def _set_handle_it(person_id: int, *, enabled: bool | None, mode: str | None) -> None:
     from openexecutive.delegation import handle_it
+    from openexecutive.orchestrator import take_the_lead
 
+    if enabled is False:
+        # Take the lead as you rides on Handle it; turning it back on later
+        # starts from the dial, not from the lead.
+        scope = take_the_lead.person_scope(person_id)
+        if take_the_lead.get(scope).enabled:
+            take_the_lead.set_(scope, enabled=False, updated_by=f"person:{person_id}")
     before = handle_it.get(person_id)
     if (enabled is None or enabled == before.enabled) and (mode is None or mode == before.mode):
         return
