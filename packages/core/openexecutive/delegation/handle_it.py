@@ -98,7 +98,13 @@ SENSITIVE = (
 _SENSITIVE_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in SENSITIVE) + r")\b", re.IGNORECASE,
 )
-_LINK_RE = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
+# A scheme, www., a bare host with a path ("bit.ly/x9Z"), or a bare host on
+# a common top-level domain. A false match only costs the person a tap.
+_LINK_RE = re.compile(
+    r"(?:https?://|www\.|\b[\w-]+(?:\.[\w-]+)+/\S*"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|ly|ai|app|dev|me|info|biz|us|uk|link|xyz|gl|to|site|online)\b)",
+    re.IGNORECASE,
+)
 _AMOUNT_RE = re.compile(
     r"[$€£¥₹]\s*\d|\d\s*%|\b\d[\d,.]*\s*(?:usd|eur|gbp|dollars?|euros?|pounds?|percent)\b",
     re.IGNORECASE,
@@ -311,7 +317,6 @@ def _refusal(
     person_id: int, message: Any, thread: Any, reply: Any, verdict: Any, *, relation: str, own: set[str],
     exec_address: str, now: datetime, db_path: Path | None,
 ) -> str | None:
-    from openexecutive.config import get_settings
     from openexecutive.delegation.threads import MAX_RECIPIENTS
     from openexecutive.integrations.email_poller import sender_new_text
 
@@ -348,12 +353,24 @@ def _refusal(
 
     thread_id = str(getattr(thread, "id", "") or "")
     handled = _handled_rows(person_id, "AND thread_id = ?", (thread_id,), db_path)
-    if any((datetime.fromisoformat(r["sent_at"]) > now - THREAD_WINDOW) for r in handled):
-        return "thread_recent"
     mine = _own_messages(thread, own)
     if mine and handled and mine[-1].id in {r["sent_message_id"] for r in handled}:
         return "in_a_row"
+    return count_refusal(person_id, thread_id, now, db_path=db_path)
+
+
+def count_refusal(
+    person_id: int, thread_id: str, now: datetime, *, db_path: Path | None = None,
+) -> str | None:
+    """The counted rules, checked when the card is made and again just
+    before it sends: one reply on its own per thread a day, and the daily
+    limit. Anything it can't count is a refusal."""
+    from openexecutive.config import get_settings
+
     try:
+        handled = _handled_rows(person_id, "AND thread_id = ?", (thread_id,), db_path)
+        if any((datetime.fromisoformat(r["sent_at"]) > now - THREAD_WINDOW) for r in handled):
+            return "thread_recent"
         today = sent_today(person_id, now, db_path=db_path)
     except Exception:
         return "uncountable"

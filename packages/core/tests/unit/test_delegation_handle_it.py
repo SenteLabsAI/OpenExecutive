@@ -118,6 +118,33 @@ def test_a_send_is_counted_even_when_later_bookkeeping_fails(
     assert handle_it.sent_today(owner.id, NOW) == 1  # the limits still see it
 
 
+def test_the_counted_rules_are_checked_again_just_before_sending(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    real = handle_it.count_refusal
+
+    def limit_reached_by_send_time(person_id: int, thread_id: str, now: Any, **kw: Any) -> str | None:
+        calls.append(thread_id)
+        # The scan's check passes; by the time it sends, the limit is reached.
+        return real(person_id, thread_id, now, **kw) if len(calls) == 1 else "daily_limit"
+
+    monkeypatch.setattr(handle_it, "count_refusal", limit_reached_by_send_time)
+    _on(owner)
+    mailbox, result = _scan_one(owner)
+    assert len(calls) == 2
+    assert mailbox.sent == [] and result.handled == 0
+    assert _only_card(owner).status == "proposed"  # it waits for them
+
+
+def test_counted_rules_allow_one_reply_a_thread_a_day() -> None:
+    assert handle_it.count_refusal(7, "t1", NOW) is None
+    handle_it.record_handled(7, "t1", 1, "s1", now=NOW)
+    assert handle_it.count_refusal(7, "t1", NOW) == "thread_recent"
+    assert handle_it.count_refusal(7, "t2", NOW) is None
+    assert handle_it.count_refusal(7, "t1", NOW + timedelta(days=2)) is None
+
+
 def test_handled_lists_it_with_the_questions_left_for_them(owner: Any, models: dict[str, Any]) -> None:
     _on(owner)
     _scan_one(owner)
@@ -315,6 +342,9 @@ def test_a_plain_reply_passes(switched_on: Any) -> None:
     # "Click here to confirm": links wait.
     ({"body": "Confirm here: https://evil.example/confirm"}, "link"),
     ({"body": "See www.evil.example"}, "link"),
+    ({"body": "Please confirm at bit.ly/x9Z"}, "link"),
+    ({"body": "Verify at login.example-corp.com/verify today."}, "link"),
+    ({"body": "Details are on evil.io."}, "link"),
     # Commitments on sensitive topics wait, even phrased innocently.
     ({"body": "Yes, I'll sign the contract tomorrow."}, "sensitive"),
     ({"body": "I've approved the refund."}, "sensitive"),

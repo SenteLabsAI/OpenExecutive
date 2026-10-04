@@ -15,7 +15,8 @@ callers reach it, and a unit test walks the code to keep it that way:
   for a card it made as ``auto_execute`` after ``handle_it.refusal`` found
   nothing against it. The person turned Handle it for me on themselves, from
   a session the API knows is theirs; this path checks that switch and the
-  rules again, and refuses anything the tap path would ask a second yes for.
+  counted rules (one a thread a day, the daily limit) again, and refuses
+  anything the tap path would ask a second yes for.
   The watcher runs inside the scheduler's pause gate, so a pause stops it.
 
 No model, chat turn, workflow or MCP call can reach either.
@@ -205,6 +206,9 @@ async def _send(
             raise SendRefused(409, "handle_it_off", "Handle it for me is off for this reply.")
         if not handle_it.signing_ok():
             raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
+        counted = handle_it.count_refusal(person.id, str(payload.get("thread_id") or ""), now)
+        if counted is not None:
+            raise SendRefused(409, counted, handle_it.REASONS[counted])
     else:
         _check_caller(caller, email)
     if not is_enabled(person.id) or not get_watch(person.id).enabled:
