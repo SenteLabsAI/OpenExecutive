@@ -91,6 +91,9 @@ from openexecutive.delegation.schema import INBOX_MESSAGES_TABLE, INBOX_WATCH_TA
 logger = logging.getLogger(__name__)
 
 DECISION_CLASS = "delegation_reply"
+# A card whose draft follows up the person's own unanswered email
+# (delegation.follow_ups) rather than answering someone else's.
+FOLLOW_UP_SOURCE = "follow_up"
 
 GRACE = timedelta(minutes=10)
 STALE = timedelta(days=3)
@@ -800,11 +803,12 @@ async def reply_for(
 
 def _card_payload(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, verdict: Any,
-    handled_as: str, handle_it_reason: str | None = None,
+    handled_as: str, handle_it_reason: str | None = None, source: str | None = None,
 ) -> dict[str, Any]:
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
 
+    follow_up = source == FOLLOW_UP_SOURCE
     return {
         # A card is its person's alone (DecisionClassSpec.approver_only
         # hides the class from everyone else; this keeps every reader that
@@ -815,8 +819,10 @@ def _card_payload(
         "thread_id": thread.id,
         "draft_id": draft.draft_id,
         "draft_message_id": draft.message_id,
-        "from_name": one_line(message.from_name, 120),
-        "from_email": message.from_addr,
+        # On a follow-up (delegation.follow_ups), "message" is the person's
+        # own email and these name who it went to.
+        "from_name": "" if follow_up else one_line(message.from_name, 120),
+        "from_email": (reply.to[0] if reply.to else "") if follow_up else message.from_addr,
         "relation": relation,
         "handled_as": handled_as,
         "sender_verified": bool(message.sender_authenticated),
@@ -834,6 +840,7 @@ def _card_payload(
         # Why Handle it for me left this reply for the person (a
         # handle_it.REASONS code); absent when it was off or sent it.
         **({"handle_it_reason": handle_it_reason} if handle_it_reason else {}),
+        **({"source": source} if source else {}),
     }
 
 
@@ -1039,6 +1046,16 @@ async def _scan(person: Any, client: Any, watch: InboxWatch, now: datetime) -> S
             continue
         if stop:
             break
+    if result.status == "ok" and len(cards) + result.drafted < OPEN_CARDS_MAX:
+        # Handle it for me's follow-ups to the person's own unanswered email.
+        from openexecutive.delegation import follow_ups
+
+        try:
+            await follow_ups.look(person, client, own=own, exec_address=exec_address, now=now, result=result)
+        except GmailError:
+            raise  # Gmail itself is failing: the whole scan backs off
+        except Exception as exc:
+            logger.warning("delegation.inbox: looking for follow-ups failed (%s)", type(exc).__name__)
     return result
 
 
@@ -1230,7 +1247,7 @@ def _hand_back(card: Any, reason: str | None) -> None:
 
 def _create_card(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
-    verdict: Any, on_its_own: bool = False, handle_it_reason: str | None = None,
+    verdict: Any, on_its_own: bool = False, handle_it_reason: str | None = None, source: str | None = None,
 ) -> int | None:
     """The card for this reply, made once per message (its idempotency key):
     a second call for the same message finds the one the first made. A card
@@ -1245,7 +1262,7 @@ def _create_card(
             originating_session_id=None,
             proposed_payload=_card_payload(
                 person, message, thread, reply, draft, relation=relation, handled_as=handled_as, verdict=verdict,
-                handle_it_reason=handle_it_reason,
+                handle_it_reason=handle_it_reason, source=source,
             ),
             idempotency_key=key,
             gate_mode="auto_execute" if on_its_own else "propose",
@@ -1361,6 +1378,16 @@ async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime,
     if sent_by_them:
         return int(_close_card(person.id, card.id, message_id, "you_replied", CLOSED))
     if any(m.from_addr not in own and "SENT" not in m.labels for m in later):
+        if payload.get("source") == FOLLOW_UP_SOURCE:
+            # They answered: the follow-up isn't needed any more.
+            closed = _close_card(person.id, card.id, message_id, "answered", CLOSED)
+            if closed and draft.message.id == payload.get("draft_message_id"):
+                # Nobody touched the draft: take it out of their Drafts too.
+                try:
+                    await client.delete_draft(draft.draft_id)
+                except Exception:
+                    logger.warning("delegation.inbox: couldn't delete an unneeded follow-up draft", exc_info=True)
+            return int(closed)
         _add_flag(person.id, message_id, "thread_moved_on")
     return 0
 

@@ -91,13 +91,23 @@ class Rules:
     # How sure it must be to send a reply with a link or an amount in it;
     # None: never.
     details_confidence: float | None = None
+    # Who a follow-up to an unanswered email of theirs may go to on its own
+    # (``delegation.follow_ups``), by ``inbox.relation_of``.
+    follow_up_to: frozenset[str] = frozenset()
 
 
 RULES: dict[str, Rules] = {
     MODE_CAREFUL: Rules(strangers=False, max_body_chars=400, min_confidence=0.9),
-    MODE_BALANCED: Rules(strangers=False, max_body_chars=1200, min_confidence=0.8),
-    MODE_BOLD: Rules(strangers=True, max_body_chars=2000, min_confidence=0.8, details_confidence=0.9),
+    MODE_BALANCED: Rules(
+        strangers=False, max_body_chars=1200, min_confidence=0.8, follow_up_to=frozenset({"team", "contact"}),
+    ),
+    MODE_BOLD: Rules(
+        strangers=True, max_body_chars=2000, min_confidence=0.8, details_confidence=0.9,
+        follow_up_to=frozenset({"team", "contact", "correspondent"}),
+    ),
 }
+# A follow-up is a nudge: never longer than this, whatever the setting.
+FOLLOW_UP_MAX_CHARS = 600
 
 KNOWN_RELATIONS = frozenset({"team", "contact", "correspondent"})
 # The classifier kinds a reply may be sent for on its own.
@@ -154,6 +164,8 @@ REASONS: dict[str, str] = {
     # Found just before sending (reply_send.send_on_its_own).
     "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
     "handle_it_off": "Handle it for me was off by the time it came to send.",
+    # Follow-ups as you (delegation.follow_ups).
+    "follow_up_level": "On this setting, a follow-up to this person waits for you to send it.",
 }
 
 
@@ -172,6 +184,11 @@ class HandleIt:
         if not self.enabled or (kind != KIND_REPLY_KNOWN and not self.rules.strangers):
             return LEVEL_ASK
         return LEVEL_HANDLE
+
+    def follows_up(self, relation: str) -> bool:
+        """Whether a follow-up to someone with this ``relation`` may go on
+        its own."""
+        return self.enabled and relation in self.rules.follow_up_to
 
 
 # --------------------------------------------------------------------------- #
@@ -382,6 +399,61 @@ def _refusal(
     return count_refusal(person_id, thread_id, now, db_path=db_path)
 
 
+def follow_up_refusal(
+    person_id: int,
+    sent: Any,
+    reply: Any,
+    *,
+    relation: str,
+    own: set[str],
+    exec_address: str,
+    now: datetime,
+    db_path: Path | None = None,
+) -> str | None:
+    """Why a follow-up to ``sent`` (the person's own unanswered email) may
+    not go on its own (a ``REASONS`` code), or None when it may. Plain code
+    only; never raises (an error refuses)."""
+    try:
+        return _follow_up_refusal(
+            person_id, sent, reply, relation=relation, own=own, exec_address=exec_address, now=now,
+            db_path=db_path,
+        )
+    except Exception:
+        logger.warning("delegation.handle_it: the follow-up rules failed — asking instead", exc_info=True)
+        return "uncountable"
+
+
+def _follow_up_refusal(
+    person_id: int, sent: Any, reply: Any, *, relation: str, own: set[str], exec_address: str, now: datetime,
+    db_path: Path | None,
+) -> str | None:
+    from openexecutive.delegation.threads import MAX_RECIPIENTS
+    from openexecutive.integrations.email_poller import sender_new_text
+
+    settings = get(person_id, db_path=db_path)
+    if not settings.follows_up(relation):
+        return "follow_up_level"
+    if not signing_ok():
+        return "signing_off"
+    # Exactly the people their own email went to: nobody added, nobody left out.
+    allowed = {*sent.to, *sent.cc} - own - ({exec_address} if exec_address else set())
+    going = [*reply.to, *reply.cc]
+    if not going or len(going) > MAX_RECIPIENTS or set(going) != allowed:
+        return "recipients"
+    body = reply.body or ""
+    if sensitive(sent.subject or "", sender_new_text(sent.text or ""), reply.subject or "", body):
+        return "sensitive"
+    if _AMOUNT_RE.search(body) or _AMOUNT_RE.search(reply.subject or ""):
+        return "amount"
+    if _LINK_RE.search(body):
+        return "link"
+    if len(body) > min(settings.rules.max_body_chars, FOLLOW_UP_MAX_CHARS):
+        return "long"
+    if any(f not in ALLOWED_FLAGS for f in reply.flags):
+        return "flagged"
+    return count_refusal(person_id, str(getattr(sent, "thread_id", "") or ""), now, db_path=db_path)
+
+
 def count_refusal(
     person_id: int, thread_id: str, now: datetime, *, db_path: Path | None = None,
 ) -> str | None:
@@ -417,6 +489,7 @@ class HandledReply:
     body: str
     open_questions: list[str]
     thread_id: str
+    source: str = ""
 
 
 def handled(person_id: int, *, days: int = 7, limit: int = 50) -> list[HandledReply]:
@@ -446,6 +519,7 @@ def handled(person_id: int, *, days: int = 7, limit: int = 50) -> list[HandledRe
             body=str(payload.get("draft_body") or ""),
             open_questions=[str(q) for q in payload.get("open_questions") or []],
             thread_id=str(payload.get("thread_id") or ""),
+            source="follow_up" if payload.get("source") == "follow_up" else "",
         ))
     out.sort(key=lambda h: h.sent_at, reverse=True)
     return out[:limit]

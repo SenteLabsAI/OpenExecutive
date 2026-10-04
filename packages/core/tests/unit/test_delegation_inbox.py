@@ -93,6 +93,14 @@ class FakeInbox:
         inbound.sort(key=lambda m: m.received_at, reverse=True)
         return [(m.id, m.thread_id) for m in inbound][:max_results]
 
+    async def list_sent(self, limit: int = 40) -> list[MailMessage]:
+        self.calls.append("list:sent")
+        if self.list_error is not None:
+            raise self.list_error
+        mine = [m for t in self.threads.values() for m in t.messages if "SENT" in m.labels]
+        mine.sort(key=lambda m: m.received_at, reverse=True)
+        return mine[:limit]
+
     async def get_thread(self, thread_id: str) -> MailThread:
         self.calls.append(f"thread:{thread_id}")
         if thread_id not in self.threads:

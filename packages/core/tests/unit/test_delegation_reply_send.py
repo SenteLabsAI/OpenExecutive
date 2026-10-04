@@ -423,8 +423,9 @@ def test_only_the_send_path_sends_and_only_the_approve_route_and_the_watcher_rea
 
 def test_only_dismiss_deletes_a_draft() -> None:
     """Dismiss deletes an unedited draft; the watcher takes back only one it
-    has just made, when that draft's card couldn't be made."""
-    assert _uses("delete_draft") == {"delegation/replies.py", "delegation/inbox.py"}
+    has just made, when that draft's card couldn't be made (a follow-up's
+    too), or an unedited follow-up nobody needs once the thread is answered."""
+    assert _uses("delete_draft") == {"delegation/replies.py", "delegation/inbox.py", "delegation/follow_ups.py"}
     assert _importers("openexecutive.delegation.replies") == {"api/routes/decisions.py", "api/routes/delegation.py"}
 
 

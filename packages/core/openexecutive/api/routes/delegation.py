@@ -174,6 +174,8 @@ class HandledReplyOut(BaseModel):
     body: str
     open_questions: list[str]
     gmail_link: str
+    # "follow_up" for a follow-up to the caller's own unanswered email.
+    source: str = ""
 
 
 class HandledOut(BaseModel):
@@ -223,6 +225,8 @@ class ReplyCardOut(BaseModel):
     gmail_link: str
     # Why Handle it for me left it for you ("" when it didn't decide).
     waited_because: str = ""
+    # "follow_up": the draft chases the caller's own unanswered email.
+    source: str = ""
 
 
 class RepliesOut(BaseModel):
@@ -630,6 +634,7 @@ def get_delegation_handled(request: Request) -> HandledOut:
             decision_id=h.decision_id, sent_at=h.sent_at, to_name=h.to_name, to_email=h.to_email,
             subject=h.subject, body=h.body, open_questions=h.open_questions,
             gmail_link=mailbox_link(email, thread_id=h.thread_id) if email and h.thread_id else "",
+            source=h.source,
         )
         for h in found
     ])

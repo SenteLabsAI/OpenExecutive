@@ -22,21 +22,24 @@ import { formatAgo } from "@/lib/setupStatus";
 // Balanced / Bold, says how much goes without you, the way quality does on
 // the Agent Council. Anything it won't send waits on Today as before. Below
 // the setting, what it sent in the last week (GET /delegation/handled).
-export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string }[] = [
+export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string; followUps: string }[] = [
   {
     mode: "careful",
     label: "Careful",
     replies: "Only short replies to people you know, when it's very sure.",
+    followUps: "Written for you, and they wait on Today for you to send.",
   },
   {
     mode: "balanced",
     label: "Balanced",
     replies: "Replies to people you know. Strangers, links and amounts wait for you.",
+    followUps: "Sent to your team and contacts when they haven't answered a question of yours in a few days.",
   },
   {
     mode: "bold",
     label: "Bold",
     replies: "Also strangers and longer replies, and links or amounts when it's very sure.",
+    followUps: "Sent to anyone you wrote to who hasn't answered a question of yours in a few days.",
   },
 ];
 
@@ -128,7 +131,7 @@ export function HandleItSection({
         !handleIt.available
           ? "Needs signed sign-ins on this server before it can send anything as you."
           : on
-            ? "It sends replies from your mailbox on its own and lists them here. The rest wait for you on Today."
+            ? "It sends replies and follow-ups from your mailbox on its own and lists them here. The rest wait for you on Today."
             : inboxOn
               ? "Off: every reply waits for you to tap Send."
               : (
@@ -179,7 +182,14 @@ export function HandleItSection({
             })}
           </div>
           <div className="rounded-xl bg-surface-overlay/60 px-4 py-3 text-[15px] leading-relaxed">
-            <p>{current.replies}</p>
+            <p>
+              <span className="font-semibold">Replies: </span>
+              {current.replies}
+            </p>
+            <p className="mt-1.5">
+              <span className="font-semibold">Follow-ups as you: </span>
+              {current.followUps}
+            </p>
             <p className="mt-1.5 text-sm text-fg-muted">
               Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to
               anyone the email didn&apos;t go to.
@@ -196,7 +206,8 @@ export function HandleItSection({
                 <li key={h.decision_id} className="rounded-md border border-border px-3 py-2 text-sm">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span className="min-w-0 font-medium">
-                      Replied to {h.to_name || h.to_email}: {h.subject}
+                      {h.source === "follow_up" ? "Followed up with" : "Replied to"} {h.to_name || h.to_email}:{" "}
+                      {h.subject}
                     </span>
                     <span className="text-xs text-fg-muted">{formatAgo(h.sent_at)}</span>
                   </div>

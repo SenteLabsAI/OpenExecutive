@@ -4739,7 +4739,7 @@ audit:
     - delegation_reply_drafted — the inbox watcher saved a reply in someone's own Gmail and made its card. details carry person_id, thread_id, draft_id, decision_id, relation, kind and flags — never the email or the draft. Always private.
     - delegation_reply_dismissed — a reply card was dismissed. details carry person_id, decision_id and what happened to the draft (deleted, kept_edited, already_gone, not_connected, gmail_error). Always private.
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
-    - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and levels. Always private.
+    - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and mode. Always private.
     - delegation_reply_handled — Handle it for me sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
@@ -9004,10 +9004,13 @@ delegation:
   handle_it: |
     Handle it for me (delegation.handle_it): a third switch under Act as me,
     one row per person in delegation_handle_it (person_id PK, enabled,
-    levels JSON, updated_at, updated_by; absent = off). Levels per kind,
-    off | ask | handle: reply_known (team, contact or correspondent; handle
-    when first on) and reply_stranger (ask). ask is the card as before; off
-    is the same as ask for now. Set only by PUT /delegation/handle-it from a
+    mode, levels (legacy), updated_at, updated_by; absent = off). One
+    setting, mode careful | balanced (default) | bold (handle_it.RULES):
+    careful = known senders only, <= 400 chars, confidence >= 0.9;
+    balanced = known senders, <= 1200, >= 0.8; bold = strangers too,
+    <= 2000, >= 0.8, links/amounts allowed at >= 0.9. Known = team, contact
+    or correspondent. schema._add_handle_it_mode adds the column to an older
+    table (reply_stranger handle -> bold, else balanced). Set only by PUT /delegation/handle-it from a
     caller delegation.verified.caller_refusal accepts (the rule Send uses:
     403 not_yours, 409 caller_signing_required on shared secret alone);
     enabling needs Act as me and the inbox watcher on (409 act_as_me_off /
@@ -9015,20 +9018,21 @@ delegation:
     After compose, inbox._consider asks handle_it.refusal (plain code, any
     exception = refusal "uncountable"); None makes the card gate_mode
     auto_execute, else propose with handle_it_reason. Refusal codes, in
-    order: level, signing_off (signing_on or local login needed),
+    order: level (off, or a stranger below bold), signing_off (signing_on or local login needed),
     sender_unverified, kind (question/request/scheduling/introduction/
-    follow_up), unsure (confidence < 0.8), recipients (subset of the
+    follow_up), unsure (below the mode's min_confidence), recipients (subset of the
     email's From/To/Cc less own and Executive addresses, sender included,
     at most MAX_RECIPIENTS), sensitive (SENSITIVE words in subject, the
-    sender's new words, reply subject or body), amount, link, long (> 1200
-    chars), flagged (any flag but others_on_thread / executive_on_thread),
+    sender's new words, reply subject or body), amount, link (both allowed
+    on bold at details_confidence 0.9), long (over the mode's max_body_chars), flagged (any flag but others_on_thread / executive_on_thread),
     thread_recent (one auto-send per thread per day, delegation_handled),
     in_a_row (last own message in the thread was an auto-send),
     daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY, default 20).
     The watcher then calls reply_send.send_on_its_own — the second door
     into _send, pinned by an AST test to delegation/inbox.py — which runs
     every send-time check with no caller and adds: gate_mode auto_execute,
-    the switch on and the kind still at handle, signing_ok, and the draft
+    the switch on and the mode still allowing that sender (follows_up for
+    a follow-up card), signing_ok, and the draft
     unedited since saved (draft_changed otherwise: the person took it
     over). A refusal hands the card back (decision_ledger.hand_back:
     auto_execute -> propose, compare-and-set, with handle_it_reason), and
@@ -9040,8 +9044,22 @@ delegation:
     refusal or error leaves the card; the reconciler settles an
     unconfirmed auto-send as executed too. Runs inside the scan, so the
     pause gate stops it. GET /delegation/handled lists the caller's last 7
-    days (theirs alone); the Settings card shows the switch, the two
-    levels, sent_today and that list.
+    days (theirs alone); Settings → On its own shows the switch, the
+    Careful / Balanced / Bold choice, sent_today and that list.
+    Follow-ups as you (delegation.follow_ups): while on, inbox._scan calls
+    follow_ups.look at most hourly (LOOK_EVERY): own sent mail 3-10 days
+    old (AFTER / WITHIN) asking something ("?" in their new words), to
+    1-MAX_RECIPIENTS people besides the Executive, still last in its
+    thread, never followed up before (its delegation_inbox_messages row);
+    at most PER_LOOK 2 a look, within the drafts cap. Ghostwriter
+    FOLLOW_UP_INTENT, draft to exactly the original To/Cc.
+    handle_it.follow_up_refusal: follow_up_level (Rules.follow_up_to:
+    careful none, balanced team+contact, bold + correspondent),
+    signing_off, recipients (must equal the original), sensitive, amount,
+    link, long (> FOLLOW_UP_MAX_CHARS 600), flagged, then count_refusal.
+    Card payload source follow_up (from_email = first recipient); the
+    reconciler closes it "answered" and deletes its unedited draft when
+    anyone else writes in the thread.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -9068,9 +9086,10 @@ delegation:
     second yes; 409 confirm / caller_signing_required / draft_gone /
     you_replied / inbox_off / client_slot / the Gmail codes, 429
     rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST
-    /decisions/{id}/reject. PUT /delegation/handle-it {enabled?, levels?}
-    and GET /delegation/handled ({replies: [...]}), see handle_it;
-    DelegationOut.handle_it is {enabled, levels, available, sent_today}.
+    /decisions/{id}/reject. PUT /delegation/handle-it {enabled?, mode?}
+    (422 bad_mode) and GET /delegation/handled ({replies: [...]}, each with
+    source), see handle_it; DelegationOut.handle_it is {enabled, mode,
+    available, sent_today}; reply cards carry source ("follow_up" or "").
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
     command and Check again, the Write drafts as me switch, the Draft
@@ -9080,7 +9099,11 @@ delegation:
     (length and tone, a greeting input per audience, the sign-off and the
     habit / never lists in textareas that grow to fit, the signature with
     Refresh from Gmail and Don't add my signature — or Add my Gmail
-    signature — and each exemplar quoted, with Remove examples). Setup
+    signature — and each exemplar quoted, with Remove examples).
+    Settings → On its own (app/settings/on-its-own): the pause, Book
+    meetings without asking (moved from Workspace) and Handle it for me
+    (HandleItCard: switch, Careful / Balanced / Bold, what each sends,
+    sent today, the week's list). Setup
     status light your_gmail (amber while the inbox watcher is erroring,
     rate-limited or has 25 cards waiting); the API protection light says
     Send needs signed callers. The chat chip "Drafted an email as you
@@ -9119,7 +9142,7 @@ delegation:
     row (see trust_ledger).
   later_phases: |
     Each is its own change behind its own switch, off by default: more
-    kinds under Handle it for me (meetings, handing to a teammate, follow-ups,
+    kinds under Handle it for me (meetings, handing to a teammate,
     the Executive's own ideas); stand in on positions the person approved.
 
 diagram_style:

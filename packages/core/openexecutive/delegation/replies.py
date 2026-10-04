@@ -38,6 +38,9 @@ class ReplyCard:
     gmail_link: str = ""
     # Why Handle it for me left it for them, in plain words ("" when it didn't decide).
     waited_because: str = ""
+    # "follow_up" when the draft chases the person's own unanswered email
+    # (delegation.follow_ups); "" for a reply to someone else's.
+    source: str = ""
 
 
 def _strings(value: Any) -> list[str]:
@@ -81,6 +84,7 @@ def cards(person: Any) -> list[ReplyCard]:
             flags=flags,
             gmail_link=mailbox_link(email, thread_id=thread_id, draft_id=draft_id) if email and thread_id else "",
             waited_because=REASONS.get(str(payload.get("handle_it_reason") or ""), ""),
+            source="follow_up" if payload.get("source") == "follow_up" else "",
         ))
     return out
 

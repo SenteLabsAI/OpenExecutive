@@ -1661,6 +1661,8 @@ export interface HandledReply {
   body: string;
   open_questions: string[];
   gmail_link: string;
+  // "follow_up": a follow-up to your own unanswered email.
+  source?: string;
 }
 
 // One reply the inbox watcher drafted: a `delegation_reply` decision, yours
@@ -1691,6 +1693,8 @@ export interface ReplyCard {
   gmail_link: string;
   // Why Handle it for me left it for you; absent or "" when it didn't decide.
   waited_because?: string;
+  // "follow_up": the draft chases your own unanswered email.
+  source?: string;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.

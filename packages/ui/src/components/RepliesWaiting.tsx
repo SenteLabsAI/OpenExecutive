@@ -112,6 +112,7 @@ export function ReplyCardItem({
   const gmailLink = safeGmailLink(card.gmail_link);
   const mailbox = mailboxName(card.gmail_link);
   const who = card.from_name.trim() || card.from_email;
+  const followUp = card.source === "follow_up";
 
   const dismiss = async () => {
     setStep({ kind: "busy", label: "Dismissing…" });
@@ -131,7 +132,7 @@ export function ReplyCardItem({
     try {
       const result = await sendReplyCard(card.decision_id, confirm);
       if (result.status === "sent") {
-        onGone(card.decision_id, `Sent your reply to ${who}.`);
+        onGone(card.decision_id, followUp ? `Sent your follow-up to ${who}.` : `Sent your reply to ${who}.`);
         return;
       }
       setStep({
@@ -163,7 +164,7 @@ export function ReplyCardItem({
     >
       <div className="mb-2 flex items-center gap-2">
         <span className="inline-flex items-center rounded-lg bg-accent/10 px-2 py-0.5 text-[13px] font-medium text-accent">
-          Reply waiting
+          {followUp ? "Follow-up waiting" : "Reply waiting"}
         </span>
         {received && <span className="text-sm text-fg-subtle tabular-nums">{received}</span>}
       </div>
@@ -171,7 +172,7 @@ export function ReplyCardItem({
         {card.subject || "(no subject)"}
       </div>
       <div className="mt-1 text-sm text-fg-muted break-words">
-        {senderLine(card)}
+        {followUp ? `Nobody answered your email to ${who}` : senderLine(card)}
         {[relation, card.sender_verified ? "" : "Address not verified"]
           .filter(Boolean)
           .map((part) => ` · ${part}`)
@@ -181,7 +182,8 @@ export function ReplyCardItem({
       {card.they_wrote && (
         <details className="mt-3 group">
           <summary className={`cursor-pointer list-none ${label}`}>
-            <span className="inline-block transition-transform group-open:rotate-90">▸</span> They wrote
+            <span className="inline-block transition-transform group-open:rotate-90">▸</span>{" "}
+            {followUp ? "You wrote" : "They wrote"}
           </summary>
           {/* Plain text: what a stranger wrote is never rendered as markup. */}
           <p className="mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg-muted">
