@@ -583,6 +583,112 @@ def test_nobody_else_can_change_it(client: TestClient, owner: Any, monkeypatch: 
     assert handle_it.get(owner.id).enabled is False
 
 
+# ── Take the lead as you: /delegation/take-the-lead ──────────────────────────
+
+TEAMMATE = "tess@co.example"
+
+
+def _lead_on(person: Any) -> bool:
+    from openexecutive.orchestrator import take_the_lead
+
+    return take_the_lead.get(take_the_lead.person_scope(person.id)).enabled
+
+
+def _teammate(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from openexecutive.delegation import settings as delegation_settings
+
+    monkeypatch.setattr(delegation_settings, "team_members_enabled", lambda: True)
+    pid = people_store.upsert_person(full_name="Tess Team", email=TEAMMATE)
+    people_registry.invalidate()
+    return people_store.get_person(pid)
+
+
+def test_take_the_lead_turns_handle_it_on_and_off_leaves_it(client: TestClient, owner: Any) -> None:
+    resp = client.put("/delegation/take-the-lead", json={"enabled": True}, headers=HEADERS)
+    assert resp.status_code == 200 and resp.json()["handle_it"]["lead"] is True
+    assert _lead_on(owner) and handle_it.get(owner.id).enabled
+    resp = client.put("/delegation/take-the-lead", json={"enabled": False}, headers=HEADERS)
+    assert resp.status_code == 200 and not _lead_on(owner) and handle_it.get(owner.id).enabled
+
+
+def test_take_the_lead_is_the_owners_only(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    tess = _teammate(monkeypatch)
+    resp = client.put("/delegation/take-the-lead", json={"enabled": True}, headers={"x-caller-email": TEAMMATE})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "owner_only"
+    assert not _lead_on(tess)
+
+
+@pytest.mark.parametrize(("act_as_me", "watch", "code"), [(False, True, "act_as_me_off"), (True, False, "inbox_off")])
+def test_take_the_lead_needs_act_as_me_and_the_inbox(
+    client: TestClient, owner: Any, act_as_me: bool, watch: bool, code: str,
+) -> None:
+    from openexecutive.delegation.settings import set_enabled
+
+    set_enabled(owner.id, act_as_me, updated_by="t")
+    inbox.set_watch(owner.id, watch, updated_by="t")
+    resp = client.put("/delegation/take-the-lead", json={"enabled": True}, headers=HEADERS)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == code
+    assert not _lead_on(owner)
+
+
+def test_take_the_lead_without_signed_sign_ins_only_narrows(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    scope = take_the_lead.person_scope(owner.id)
+    take_the_lead.set_(scope, enabled=True, updated_by="t")
+    rule = take_the_lead.add_rule(scope, "words", "Thursday", created_by="t")
+    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
+    resp = client.put("/delegation/take-the-lead", json={"enabled": True}, headers=HEADERS)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
+    resp = client.delete(f"/delegation/take-the-lead/rules/{rule.id}", headers=HEADERS)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
+    assert [r.id for r in take_the_lead.list_rules([scope])] == [rule.id]
+    # Adding a rule or turning it off holds more back, so both still work.
+    resp = client.post("/delegation/take-the-lead/rules", json={"kind": "words", "value": "Friday"}, headers=HEADERS)
+    assert resp.status_code == 200 and len(resp.json()["rules"]) == 2
+    resp = client.put("/delegation/take-the-lead", json={"enabled": False}, headers=HEADERS)
+    assert resp.status_code == 200 and not _lead_on(owner)
+
+
+def test_take_the_lead_rules_are_the_callers_own(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    _teammate(monkeypatch)
+    resp = client.post("/delegation/take-the-lead/rules", json={"kind": "words", "value": "Thursday"}, headers=HEADERS)
+    assert resp.status_code == 200
+    [mine] = resp.json()["rules"]
+    tess = {"x-caller-email": TEAMMATE}
+    assert client.get("/delegation/take-the-lead/rules", headers=tess).json()["rules"] == []
+    resp = client.delete(f"/delegation/take-the-lead/rules/{mine['id']}", headers=tess)
+    assert resp.status_code == 404
+    assert [r.id for r in take_the_lead.list_rules([take_the_lead.person_scope(owner.id)])] == [mine["id"]]
+    resp = client.post("/delegation/take-the-lead/rules", json={"kind": "amount", "value": "lots"}, headers=HEADERS)
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "bad_rule"
+    resp = client.delete(f"/delegation/take-the-lead/rules/{mine['id']}", headers=HEADERS)
+    assert resp.status_code == 200 and resp.json()["rules"] == []
+
+
+def test_nobody_else_can_change_take_the_lead(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import verified
+
+    monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: verified.NOT_YOURS)
+    for method, path, body in (
+        ("put", "/delegation/take-the-lead", {"enabled": True}),
+        ("put", "/delegation/take-the-lead", {"enabled": False}),
+        ("post", "/delegation/take-the-lead/rules", {"kind": "words", "value": "x"}),
+        ("delete", "/delegation/take-the-lead/rules/1", None),
+    ):
+        resp = client.request(method, path, json=body, headers=HEADERS)
+        assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_yours"
+    assert not _lead_on(owner)
+
+
 @pytest.mark.parametrize(("signing", "local", "kind", "email", "expected"), [
     (True, False, "user", "olivia@co.example", None),
     (True, False, "user", "mallory@co.example", "not_yours"),

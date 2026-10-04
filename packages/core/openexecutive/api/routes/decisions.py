@@ -515,7 +515,7 @@ async def _carry_out_lead(
         finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": type(exc).__name__})
         take_the_lead.resolved(instance.id, "failed")
         _clear_decision_alert(instance.id, "dismissed")
-        raise HTTPException(status_code=502, detail="It couldn't do that. Nothing was sent.") from None
+        raise HTTPException(status_code=502, detail="Something went wrong, so it may not have gone through. Check before trying again.") from None
     failed = take_the_lead.result_failed(result)
     finish_execution(
         instance.id, STATUS_FAILED if failed else STATUS_APPROVED_UNCHANGED,
