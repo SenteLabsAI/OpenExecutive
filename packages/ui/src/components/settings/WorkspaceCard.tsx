@@ -201,8 +201,6 @@ export default function WorkspaceCard() {
         )}
       </SettingsCard>
 
-      <MeetingAutonomySwitch />
-
       <CompanyDomainsSection />
     </>
   );
@@ -367,8 +365,9 @@ function RoleSection() {
 
 // "Book meetings without asking" — the meeting_scheduling decision class
 // between "propose" (each booking waits for approval in the briefing) and
-// "auto_execute". Hidden when this backend has no such setting (404).
-function MeetingAutonomySwitch() {
+// "auto_execute". Hidden when this backend has no such setting (404). Shown
+// on Settings → On its own, with what else the Executive does by itself.
+export function MeetingAutonomySwitch() {
   const [mode, setMode] = useState<DecisionClassMode | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "absent" | "error">("loading");
   const [busy, setBusy] = useState(false);

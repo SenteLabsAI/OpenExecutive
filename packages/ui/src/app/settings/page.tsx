@@ -6,6 +6,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import Icon from "@/components/Icon";
+import { HANDLE_IT_MODES } from "@/components/settings/HandleItCard";
 import { MODE_LABEL } from "@/components/settings/WorkspaceCard";
 import {
   ADVANCED_ITEMS,
@@ -28,7 +29,7 @@ import { retentionLabel } from "@/lib/history";
 import { versionNotice } from "@/lib/versionNotice";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
-// Act as me, Memory, Workspace, Advanced and About. Each tile says what's on its page
+// Act as me, On its own, Memory, Workspace, Advanced and About. Each tile says what's on its page
 // and, where it's cheap to know, how things stand right now. The one-page
 // Settings this replaces used anchors (`/settings#workspace`); a link that
 // still carries one is sent on to the matching page.
@@ -198,6 +199,11 @@ function useTileStatuses(): {
             tone: "ok",
           }
         : { text: "Mailbox not connected", tone: "warn" };
+    const handleIt = delegation.handle_it;
+    if (handleIt?.enabled) {
+      const mode = HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On";
+      byPage["on-its-own"] = { text: `Handle it for me · ${mode}`, tone: "ok" };
+    }
   }
 
   if (history && history !== "error") {

@@ -398,7 +398,7 @@ export function advancedItemsByGroup(): {
 // notes to keep (signed in and on the People list). `hashes` are the anchors the
 // old one-page Settings used (`/settings#workspace`): links that still
 // carry one land on the matching page (see settingsPageForHash).
-export type SettingsPageId = "executive" | "act-as-me" | "memory" | "workspace" | "advanced" | "about";
+export type SettingsPageId = "executive" | "act-as-me" | "on-its-own" | "memory" | "workspace" | "advanced" | "about";
 
 export interface SettingsPageDef {
   id: SettingsPageId;
@@ -428,6 +428,14 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     hashes: ["act-as-me"],
   },
   {
+    id: "on-its-own",
+    label: "On its own",
+    href: "/settings/on-its-own",
+    icon: "bolt",
+    description: "What it does without asking you: meetings it books, replies it sends as you.",
+    hashes: ["on-its-own"],
+  },
+  {
     id: "memory",
     label: "Memory",
     href: "/settings/memory",
@@ -440,7 +448,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     label: "Workspace",
     href: "/settings/workspace",
     icon: "building",
-    description: "Just you or your team, time zone, meeting booking, email domains.",
+    description: "Just you or your team, time zone, email domains.",
     hashes: ["workspace"],
   },
   {

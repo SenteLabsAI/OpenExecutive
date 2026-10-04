@@ -1,17 +1,17 @@
 """Handle it for me: the inbox watcher sends some replies on its own.
 
 **The switch.** A third switch under Act as me, after "Draft replies to my
-inbox" (``delegation_handle_it``, one row per person, absent means off). Each
-kind of reply has a level, ``off``, ``ask`` or ``handle``:
+inbox" (``delegation_handle_it``, one row per person, absent means off), with
+one setting, like the Agent Council's quality (``MODES``, ``RULES``):
 
-- ``reply_known``: a reply to someone on the person's team, one of their
-  contacts, or someone they have written to. ``handle`` when first turned on.
-- ``reply_stranger``: a stranger's short holding reply. ``ask`` when first
-  turned on.
+- ``careful``: short replies to people the person knows (someone on their
+  team, a contact, or someone they have written to), when it's very sure.
+- ``balanced`` (where it starts): replies to people they know.
+- ``bold``: also replies to strangers, longer ones, and replies with a link
+  or an amount when it's very sure.
 
-``ask`` is today's behaviour: a card waits for the person to tap Send.
-``off`` is the same as ``ask`` for now (the watcher never drafts less than it
-did). Only the person turns it on, from a session the API knows is theirs
+Every other email waits on a card for the person to tap Send, as it did
+before. Only the person turns it on, from a session the API knows is theirs
 (``reply_send._check_caller``, the rule Send uses), and nobody else can.
 
 **Who decides.** No model decides whether a reply goes. The inbox watcher's
@@ -24,15 +24,17 @@ with the reason recorded.
 
 **What it refuses.** Every one of these keeps the reply on a card:
 
-- the level for this kind of sender isn't ``handle``, or signed sign-ins are
-  off on a server (nothing would tie the switch to the person);
+- it's off, or the sender is a stranger and the setting isn't ``bold``, or
+  signed sign-ins are off on a server (nothing would tie the switch to the
+  person);
 - Gmail couldn't authenticate the sender;
-- the classifier wasn't sure (``MIN_CONFIDENCE``), or the email isn't one of
-  the kinds that need a reply;
+- the classifier wasn't sure enough for the setting (``Rules``), or the
+  email isn't one of the kinds that need a reply;
 - the reply goes to anyone the email didn't already go to;
 - the reply, the email or its subject touches money, contracts, legal,
   hiring, pay, the board, the press, health or credentials (``SENSITIVE``),
-  or the reply has an amount, a percentage or a link in it, or is long;
+  or the reply is longer than the setting allows, or has an amount, a
+  percentage or a link in it (``bold`` allows those when it's very sure);
 - the draft carries a flag other than ``ALLOWED_FLAGS`` (they asked whether
   it's an AI, recipients were trimmed, the draft names the Executive
   (``names_the_executive``), ...). The Executive merely being on the email
@@ -41,7 +43,7 @@ with the reason recorded.
   person "said" in this thread was itself sent on its own;
 - the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached.
 
-Never sent on its own whatever the level: anything with an attachment (the
+Never sent on its own whatever the setting: anything with an attachment (the
 watcher's drafts have none), a new recipient, or a sensitive topic.
 
 **After.** A reply sent on its own is a ``delegation_reply`` decision in
@@ -56,7 +58,7 @@ import json
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -69,19 +71,37 @@ KIND_REPLY_KNOWN = "reply_known"
 KIND_REPLY_STRANGER = "reply_stranger"
 KINDS: tuple[str, ...] = (KIND_REPLY_KNOWN, KIND_REPLY_STRANGER)
 
-LEVEL_OFF = "off"
 LEVEL_ASK = "ask"
 LEVEL_HANDLE = "handle"
-LEVELS: tuple[str, ...] = (LEVEL_OFF, LEVEL_ASK, LEVEL_HANDLE)
 
-# The levels a person starts with when they first turn it on.
-DEFAULT_LEVELS: dict[str, str] = {KIND_REPLY_KNOWN: LEVEL_HANDLE, KIND_REPLY_STRANGER: LEVEL_ASK}
+MODE_CAREFUL = "careful"
+MODE_BALANCED = "balanced"
+MODE_BOLD = "bold"
+MODES: tuple[str, ...] = (MODE_CAREFUL, MODE_BALANCED, MODE_BOLD)
+DEFAULT_MODE = MODE_BALANCED
+
+
+@dataclass(frozen=True)
+class Rules:
+    """What one setting lets go on its own."""
+
+    strangers: bool
+    max_body_chars: int
+    min_confidence: float
+    # How sure it must be to send a reply with a link or an amount in it;
+    # None: never.
+    details_confidence: float | None = None
+
+
+RULES: dict[str, Rules] = {
+    MODE_CAREFUL: Rules(strangers=False, max_body_chars=400, min_confidence=0.9),
+    MODE_BALANCED: Rules(strangers=False, max_body_chars=1200, min_confidence=0.8),
+    MODE_BOLD: Rules(strangers=True, max_body_chars=2000, min_confidence=0.8, details_confidence=0.9),
+}
 
 KNOWN_RELATIONS = frozenset({"team", "contact", "correspondent"})
 # The classifier kinds a reply may be sent for on its own.
 REPLY_KINDS = frozenset({"question", "request", "scheduling", "introduction", "follow_up"})
-MIN_CONFIDENCE = 0.8
-MAX_BODY_CHARS = 1200
 THREAD_WINDOW = timedelta(days=1)
 # Draft flags a reply may carry and still be sent on its own.
 ALLOWED_FLAGS = frozenset({"others_on_thread", "executive_on_thread"})
@@ -116,7 +136,7 @@ _AMOUNT_RE = re.compile(
 
 # What each refusal tells the person on the card.
 REASONS: dict[str, str] = {
-    "level": "Handle it for me is set to ask for this kind of email.",
+    "level": "Handle it for me asks you about email from people you don't know yet (Bold sends those).",
     "signing_off": "Sending on its own needs signed sign-ins on this server.",
     "sender_unverified": "Your mail service couldn't confirm who sent it.",
     "unsure": "It wasn't sure enough this needs only a simple reply.",
@@ -141,12 +161,17 @@ REASONS: dict[str, str] = {
 class HandleIt:
     person_id: int
     enabled: bool = False
-    levels: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEVELS))
+    mode: str = DEFAULT_MODE
+
+    @property
+    def rules(self) -> Rules:
+        return RULES.get(self.mode, RULES[DEFAULT_MODE])
 
     def level(self, kind: str) -> str:
-        if not self.enabled:
+        """``handle`` when a reply to this kind of sender may go on its own."""
+        if not self.enabled or (kind != KIND_REPLY_KNOWN and not self.rules.strangers):
             return LEVEL_ASK
-        return self.levels.get(kind, LEVEL_ASK)
+        return LEVEL_HANDLE
 
 
 # --------------------------------------------------------------------------- #
@@ -169,22 +194,13 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _clean_levels(raw: Any) -> dict[str, str]:
-    levels = dict(DEFAULT_LEVELS)
-    if isinstance(raw, dict):
-        for kind, level in raw.items():
-            if kind in KINDS and level in LEVELS:
-                levels[kind] = level
-    return levels
-
-
 def get(person_id: int, *, db_path: Path | None = None) -> HandleIt:
-    """``person_id``'s switch and levels. Never raises: unreadable is off."""
+    """``person_id``'s switch and setting. Never raises: unreadable is off."""
     try:
         conn = _connect(db_path)
         try:
             row = conn.execute(
-                f"SELECT enabled, levels FROM {HANDLE_IT_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
+                f"SELECT enabled, mode FROM {HANDLE_IT_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
                 (person_id,),
             ).fetchone()
         finally:
@@ -194,34 +210,31 @@ def get(person_id: int, *, db_path: Path | None = None) -> HandleIt:
         return HandleIt(person_id=person_id)
     if row is None:
         return HandleIt(person_id=person_id)
-    try:
-        levels = _clean_levels(json.loads(row["levels"] or "{}"))
-    except ValueError:
-        levels = dict(DEFAULT_LEVELS)
-    return HandleIt(person_id=person_id, enabled=bool(row["enabled"]), levels=levels)
+    mode = row["mode"] if row["mode"] in MODES else DEFAULT_MODE
+    return HandleIt(person_id=person_id, enabled=bool(row["enabled"]), mode=mode)
 
 
 def set_(
     person_id: int,
     *,
     enabled: bool | None = None,
-    levels: dict[str, str] | None = None,
+    mode: str | None = None,
     updated_by: str,
     db_path: Path | None = None,
 ) -> HandleIt:
-    """Change ``person_id``'s switch and/or levels (callers authorize first).
-    Unknown kinds and levels are ignored."""
+    """Change ``person_id``'s switch and/or setting (callers authorize
+    first). An unknown setting is ignored."""
     current = get(person_id, db_path=db_path)
     new_enabled = current.enabled if enabled is None else enabled
-    new_levels = _clean_levels({**current.levels, **(levels or {})})
+    new_mode = mode if mode in MODES else current.mode
     now = datetime.now(UTC).isoformat()
     conn = _connect(db_path)
     try:
         conn.execute(
-            f"INSERT INTO {HANDLE_IT_TABLE} (person_id, enabled, levels, updated_at, updated_by) "  # noqa: S608
+            f"INSERT INTO {HANDLE_IT_TABLE} (person_id, enabled, mode, updated_at, updated_by) "  # noqa: S608
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET enabled = excluded.enabled, "
-            "levels = excluded.levels, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-            (person_id, 1 if new_enabled else 0, json.dumps(new_levels, sort_keys=True), now, updated_by),
+            "mode = excluded.mode, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (person_id, 1 if new_enabled else 0, new_mode, now, updated_by),
         )
         conn.commit()
     finally:
@@ -336,7 +349,9 @@ def _refusal(
         return "sender_unverified"
     if verdict is None or verdict.kind not in REPLY_KINDS:
         return "kind"
-    if float(verdict.confidence) < MIN_CONFIDENCE:
+    rules = settings.rules
+    confidence = float(verdict.confidence)
+    if confidence < rules.min_confidence:
         return "unsure"
 
     # Exactly the people the email already went to, minus the person and the
@@ -349,11 +364,12 @@ def _refusal(
     body = reply.body or ""
     if sensitive(message.subject or "", sender_new_text(message.text or ""), reply.subject or "", body):
         return "sensitive"
-    if _AMOUNT_RE.search(body) or _AMOUNT_RE.search(reply.subject or ""):
+    sure_of_details = rules.details_confidence is not None and confidence >= rules.details_confidence
+    if not sure_of_details and (_AMOUNT_RE.search(body) or _AMOUNT_RE.search(reply.subject or "")):
         return "amount"
-    if _LINK_RE.search(body):
+    if not sure_of_details and _LINK_RE.search(body):
         return "link"
-    if len(body) > MAX_BODY_CHARS:
+    if len(body) > rules.max_body_chars:
         return "long"
     if any(f not in ALLOWED_FLAGS for f in reply.flags):
         return "flagged"

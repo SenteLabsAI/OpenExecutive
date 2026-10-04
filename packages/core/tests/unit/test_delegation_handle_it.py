@@ -40,8 +40,8 @@ def local_login(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
 
 
-def _on(person: Any, **levels: str) -> None:
-    handle_it.set_(person.id, enabled=True, levels=levels or None, updated_by="test")
+def _on(person: Any, mode: str | None = None) -> None:
+    handle_it.set_(person.id, enabled=True, mode=mode, updated_by="test")
 
 
 def _scan_one(owner: Any, *messages: Any) -> tuple[FakeInbox, inbox.ScanResult]:
@@ -59,18 +59,52 @@ def _only_card(owner: Any) -> Any:
 # ── the switch ────────────────────────────────────────────────────────────────
 
 
-def test_off_by_default_with_the_safe_starting_levels() -> None:
+def test_off_by_default_on_balanced() -> None:
     stored = handle_it.get(7)
     assert stored.enabled is False
-    assert stored.levels == {"reply_known": "handle", "reply_stranger": "ask"}
-    assert stored.level("reply_known") == "ask"  # off means a card, whatever the level
+    assert stored.mode == "balanced"
+    assert stored.level("reply_known") == "ask"  # off means a card, whatever the setting
 
 
-def test_it_stores_levels_and_ignores_unknown_ones() -> None:
-    after = handle_it.set_(7, enabled=True, levels={"reply_stranger": "handle", "wire_money": "handle",
-                                                     "reply_known": "handle_it"}, updated_by="t")
-    assert after.enabled is True
-    assert after.levels == {"reply_known": "handle", "reply_stranger": "handle"}
+def test_it_stores_the_setting_and_ignores_an_unknown_one() -> None:
+    after = handle_it.set_(7, enabled=True, mode="bold", updated_by="t")
+    assert after.enabled is True and after.mode == "bold"
+    after = handle_it.set_(7, mode="reckless", updated_by="t")
+    assert after.mode == "bold"
+
+
+@pytest.mark.parametrize(("mode", "known", "stranger"), [
+    ("careful", "handle", "ask"),
+    ("balanced", "handle", "ask"),
+    ("bold", "handle", "handle"),
+])
+def test_only_bold_answers_strangers(mode: str, known: str, stranger: str) -> None:
+    stored = handle_it.set_(7, enabled=True, mode=mode, updated_by="t")
+    assert stored.level("reply_known") == known
+    assert stored.level("reply_stranger") == stranger
+
+
+def test_a_table_from_before_the_setting_keeps_what_was_chosen(tmp_path: Path) -> None:
+    from openexecutive.delegation.schema import ensure_schema
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE delegation_handle_it (person_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
+        "levels TEXT NOT NULL DEFAULT '{}', updated_at TEXT, updated_by TEXT)"
+    )
+    conn.execute("INSERT INTO delegation_handle_it VALUES (1, 1, ?, '', 't')",
+                 ('{"reply_known": "handle", "reply_stranger": "handle"}',))
+    conn.execute("INSERT INTO delegation_handle_it VALUES (2, 1, ?, '', 't')",
+                 ('{"reply_known": "handle", "reply_stranger": "ask"}',))
+    conn.execute("INSERT INTO delegation_handle_it VALUES (3, 0, 'not json', '', 't')")
+    conn.commit()
+    ensure_schema(conn)
+    ensure_schema(conn)  # idempotent
+    conn.close()
+    assert handle_it.get(1, db_path=db).mode == "bold"
+    assert handle_it.get(2, db_path=db).mode == "balanced"
+    assert handle_it.get(3, db_path=db).mode == "balanced"
 
 
 def test_off_it_leaves_a_card_as_before(owner: Any, models: dict[str, Any]) -> None:
@@ -185,18 +219,42 @@ def test_a_stranger_gets_a_card_until_they_choose_otherwise(owner: Any, models: 
     assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"
 
 
-def test_a_stranger_set_to_handle_gets_the_holding_reply(owner: Any, models: dict[str, Any]) -> None:
-    _on(owner, reply_stranger="handle")
+def test_on_bold_a_stranger_gets_the_reply(owner: Any, models: dict[str, Any]) -> None:
+    _on(owner, "bold")
     stranger = _msg("m1", "t1", sender="sam@unknown.example", name="Sam")
     mailbox, result = _scan_one(owner, stranger)
     assert result.handled == 1 and mailbox.sent == ["d1"]
 
 
-def test_ask_for_people_they_know_leaves_a_card(owner: Any, models: dict[str, Any]) -> None:
-    _on(owner, reply_known="ask")
-    mailbox, result = _scan_one(owner)
-    assert result.handled == 0 and mailbox.sent == []
-    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"
+def test_on_careful_a_long_reply_leaves_a_card(switched_on: Any) -> None:
+    handle_it.set_(switched_on.id, mode="careful", updated_by="t")
+    assert _check(switched_on, reply=_reply(body="Thanks, " + "that works for me. " * 25)) == "long"
+    handle_it.set_(switched_on.id, mode="balanced", updated_by="t")
+    assert _check(switched_on, reply=_reply(body="Thanks, " + "that works for me. " * 25)) is None
+
+
+def test_on_careful_it_must_be_very_sure(switched_on: Any) -> None:
+    handle_it.set_(switched_on.id, mode="careful", updated_by="t")
+    assert _check(switched_on, verdict=_verdict(confidence=0.85)) == "unsure"
+    assert _check(switched_on, verdict=_verdict(confidence=0.95)) is None
+
+
+def test_on_bold_a_link_or_amount_goes_only_when_very_sure(switched_on: Any) -> None:
+    handle_it.set_(switched_on.id, mode="bold", updated_by="t")
+    link = _reply(body="The agenda is at https://docs.example.com/agenda.")
+    amount = _reply(body="We're about 40% through the agenda.")
+    assert _check(switched_on, reply=link, verdict=_verdict(confidence=0.85)) == "link"
+    assert _check(switched_on, reply=amount, verdict=_verdict(confidence=0.85)) == "amount"
+    assert _check(switched_on, reply=link, verdict=_verdict(confidence=0.95)) is None
+    assert _check(switched_on, reply=amount, verdict=_verdict(confidence=0.95)) is None
+    handle_it.set_(switched_on.id, mode="balanced", updated_by="t")
+    assert _check(switched_on, reply=link, verdict=_verdict(confidence=0.95)) == "link"
+
+
+def test_on_bold_sensitive_topics_still_wait(switched_on: Any) -> None:
+    handle_it.set_(switched_on.id, mode="bold", updated_by="t")
+    reply = _reply(body="Sure, the invoice is attached to the thread.")
+    assert _check(switched_on, reply=reply, verdict=_verdict(confidence=0.99)) == "sensitive"
 
 
 def test_without_signed_sign_ins_on_a_server_nothing_goes(
@@ -385,9 +443,9 @@ def test_emails_on_sensitive_topics_stay_on_a_card(switched_on: Any, text: str, 
 
 
 def test_an_unauthenticated_sender_never_gets_one(owner: Any) -> None:
-    _on(owner, reply_stranger="handle")
+    _on(owner, "bold")
     message = _msg("m1", "t1", sender_authenticated=False)
-    # The watcher handles such a sender as a stranger; even at handle, no.
+    # The watcher handles such a sender as a stranger; even on bold, no.
     assert _check(owner, message=message, relation="stranger") == "sender_unverified"
 
 
@@ -459,7 +517,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_get_shows_the_switch(client: TestClient, owner: Any) -> None:
     body = client.get("/delegation", headers=HEADERS).json()
     assert body["handle_it"] == {
-        "enabled": False, "levels": {"reply_known": "handle", "reply_stranger": "ask"},
+        "enabled": False, "mode": "balanced",
         "available": True, "sent_today": 0,
     }
 
@@ -473,12 +531,14 @@ def test_turning_it_on_needs_the_inbox_watcher(client: TestClient, owner: Any) -
     assert resp.status_code == 200 and resp.json()["handle_it"]["enabled"] is True
 
 
-def test_levels_are_checked(client: TestClient, owner: Any) -> None:
-    resp = client.put("/delegation/handle-it", json={"levels": {"reply_known": "always"}}, headers=HEADERS)
-    assert resp.status_code == 422
+def test_the_setting_is_checked(client: TestClient, owner: Any) -> None:
+    resp = client.put("/delegation/handle-it", json={"mode": "reckless"}, headers=HEADERS)
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "bad_mode"
     resp = client.put("/delegation/handle-it", json={"levels": {"reply_stranger": "handle"}}, headers=HEADERS)
+    assert resp.status_code == 422  # the old per-kind body is gone
+    resp = client.put("/delegation/handle-it", json={"mode": "bold"}, headers=HEADERS)
     assert resp.status_code == 200
-    assert resp.json()["handle_it"]["levels"]["reply_stranger"] == "handle"
+    assert resp.json()["handle_it"]["mode"] == "bold"
 
 
 def test_it_needs_a_caller_the_api_can_vouch_for(
@@ -495,9 +555,8 @@ def test_it_can_still_be_turned_off_without_signed_sign_ins(
 ) -> None:
     _on(owner)
     monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
-    resp = client.put("/delegation/handle-it", json={"enabled": False, "levels": {"reply_stranger": "handle"}},
-                      headers=HEADERS)
-    assert resp.status_code == 409  # changing levels still needs it
+    resp = client.put("/delegation/handle-it", json={"enabled": False, "mode": "bold"}, headers=HEADERS)
+    assert resp.status_code == 409  # changing the setting still needs it
     resp = client.put("/delegation/handle-it", json={"enabled": False}, headers=HEADERS)
     assert resp.status_code == 200
     assert handle_it.get(owner.id).enabled is False
@@ -507,7 +566,7 @@ def test_nobody_else_can_change_it(client: TestClient, owner: Any, monkeypatch: 
     from openexecutive.delegation import verified
 
     monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: verified.NOT_YOURS)
-    for body in ({"enabled": True}, {"enabled": False}, {"levels": {"reply_stranger": "handle"}}):
+    for body in ({"enabled": True}, {"enabled": False}, {"mode": "bold"}):
         resp = client.put("/delegation/handle-it", json=body, headers=HEADERS)
         assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_yours"
     assert handle_it.get(owner.id).enabled is False

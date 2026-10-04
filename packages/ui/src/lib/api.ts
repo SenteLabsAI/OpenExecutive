@@ -1639,12 +1639,12 @@ export interface InboxWatch {
 // Handle it for me: the inbox watcher sends some replies on its own,
 // decided by plain code (delegation/handle_it.py). Each kind of reply has a
 // level; "ask" leaves a card as before.
-export type HandleItLevel = "off" | "ask" | "handle";
+// How much Handle it for me sends on its own (delegation/handle_it.py RULES).
+export type HandleItMode = "careful" | "balanced" | "bold";
 
 export interface HandleIt {
   enabled: boolean;
-  // reply_known (people you know), reply_stranger (a holding reply).
-  levels: Record<string, HandleItLevel>;
+  mode: HandleItMode;
   // Whether this server can tie the switch to you (signed sign-ins or local
   // login); without it nothing is sent on its own.
   available: boolean;
@@ -1832,7 +1832,7 @@ export async function setInboxWatch(enabled: boolean): Promise<DelegationSetting
 
 export async function setHandleIt(update: {
   enabled?: boolean;
-  levels?: Record<string, HandleItLevel>;
+  mode?: HandleItMode;
 }): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/handle-it`, {
     method: "PUT",

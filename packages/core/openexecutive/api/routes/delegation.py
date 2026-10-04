@@ -28,9 +28,10 @@ Routes:
                                     switch is off or a check is running)
   GET    /delegation/replies      — the reply cards waiting for the caller
                                     (from the database; no Gmail call)
-  PUT    /delegation/handle-it    — {enabled?, levels?}: Handle it for me,
+  PUT    /delegation/handle-it    — {enabled?, mode?}: Handle it for me,
                                     the inbox watcher sending some replies on
-                                    its own (delegation.handle_it). Needs a
+                                    its own, mode careful | balanced | bold
+                                    (delegation.handle_it). Needs a
                                     caller the API knows is that person
                                     (signed sign-ins, or local login: 403 /
                                     409 ``caller_signing_required``), and
@@ -147,10 +148,10 @@ class TeamOut(BaseModel):
 
 
 class HandleItOut(BaseModel):
-    """Handle it for me: the switch and each kind's level (off, ask, handle)."""
+    """Handle it for me: the switch and its setting (careful, balanced, bold)."""
 
     enabled: bool
-    levels: dict[str, str]
+    mode: str
     # Whether this server can tie the switch to the person (signed sign-ins
     # or local login); without it nothing is sent on its own.
     available: bool
@@ -161,7 +162,7 @@ class HandleItUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool | None = None
-    levels: dict[str, str] | None = None
+    mode: str | None = None
 
 
 class HandledReplyOut(BaseModel):
@@ -398,7 +399,7 @@ def _handle_it_out(person_id: int) -> HandleItOut:
     except Exception:
         today = 0
     return HandleItOut(
-        enabled=stored.enabled, levels=dict(stored.levels), available=handle_it.signing_ok(), sent_today=today,
+        enabled=stored.enabled, mode=stored.mode, available=handle_it.signing_ok(), sent_today=today,
     )
 
 
@@ -491,7 +492,7 @@ def _set_inbox(person_id: int, enabled: bool) -> None:
 
     if not enabled:
         # Handle it for me sends what the watcher drafts: it goes with it.
-        _set_handle_it(person_id, enabled=False, levels=None)
+        _set_handle_it(person_id, enabled=False, mode=None)
     before = inbox.get_watch(person_id).enabled
     if before == enabled:
         return
@@ -563,19 +564,19 @@ def get_delegation_replies(request: Request) -> RepliesOut:
     ])
 
 
-def _set_handle_it(person_id: int, *, enabled: bool | None, levels: dict[str, str] | None) -> None:
+def _set_handle_it(person_id: int, *, enabled: bool | None, mode: str | None) -> None:
     from openexecutive.delegation import handle_it
 
     before = handle_it.get(person_id)
-    if (enabled is None or enabled == before.enabled) and not levels:
+    if (enabled is None or enabled == before.enabled) and (mode is None or mode == before.mode):
         return
-    after = handle_it.set_(person_id, enabled=enabled, levels=levels, updated_by=f"person:{person_id}")
-    if after.enabled == before.enabled and after.levels == before.levels:
+    after = handle_it.set_(person_id, enabled=enabled, mode=mode, updated_by=f"person:{person_id}")
+    if after.enabled == before.enabled and after.mode == before.mode:
         return
     _audit(
         "delegation_handle_it_changed",
         f"Handle it for me {'on' if after.enabled else 'off'} for person {person_id}",
-        {"person_id": person_id, "enabled": after.enabled, "levels": after.levels},
+        {"person_id": person_id, "enabled": after.enabled, "mode": after.mode},
     )
 
 
@@ -592,22 +593,20 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
         raise _refuse(403, "not_yours", "Only you can change Handle it for me.")
     # Turning it off only narrows what the watcher does, so it stays
     # possible after the server loses signed sign-ins.
-    turning_off = body.enabled is False and not body.levels
+    turning_off = body.enabled is False and body.mode is None
     if refused is not None and not turning_off:
         raise _refuse(
             409, "caller_signing_required",
             "Handle it for me needs signed sign-ins on this server, so that nobody else can turn it on for you.",
         )
-    levels = body.levels or {}
-    for kind, level in levels.items():
-        if kind not in handle_it.KINDS or level not in handle_it.LEVELS:
-            raise _refuse(422, "bad_level", f"Unknown kind or level: {kind}={level}.")
+    if body.mode is not None and body.mode not in handle_it.MODES:
+        raise _refuse(422, "bad_mode", f"Unknown setting: {body.mode}.")
     if body.enabled:
         if not is_enabled(person_id):
             raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
         if not inbox.get_watch(person_id).enabled:
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
-    _set_handle_it(person_id, enabled=body.enabled, levels=levels or None)
+    _set_handle_it(person_id, enabled=body.enabled, mode=body.mode)
     return await _state(person)
 
 
