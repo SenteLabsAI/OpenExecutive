@@ -1,4 +1,4 @@
-"""YOLO mode (delegation/yolo.py): the inbox watcher sends some
+"""Handle it for me (delegation/handle_it.py): the inbox watcher sends some
 replies on its own, decided by plain code, and leaves everything else on a
 card. Includes the attack suite: email that tries to steer it never ends in a
 send it shouldn't."""
@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import delegation as route
-from openexecutive.delegation import inbox, yolo
+from openexecutive.delegation import handle_it, inbox
 from openexecutive.delegation.gmail import GmailError
 from openexecutive.delegation.inbox_classifier import Verdict
 from openexecutive.delegation.reply_send import SendRefused, send_on_its_own
@@ -41,7 +41,7 @@ def local_login(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _on(person: Any, **levels: str) -> None:
-    yolo.set_(person.id, enabled=True, levels=levels or None, updated_by="test")
+    handle_it.set_(person.id, enabled=True, levels=levels or None, updated_by="test")
 
 
 def _scan_one(owner: Any, *messages: Any) -> tuple[FakeInbox, inbox.ScanResult]:
@@ -60,15 +60,15 @@ def _only_card(owner: Any) -> Any:
 
 
 def test_off_by_default_with_the_safe_starting_levels() -> None:
-    stored = yolo.get(7)
+    stored = handle_it.get(7)
     assert stored.enabled is False
     assert stored.levels == {"reply_known": "handle", "reply_stranger": "ask"}
     assert stored.level("reply_known") == "ask"  # off means a card, whatever the level
 
 
 def test_it_stores_levels_and_ignores_unknown_ones() -> None:
-    after = yolo.set_(7, enabled=True, levels={"reply_stranger": "handle", "wire_money": "handle",
-                                                     "reply_known": "yolo"}, updated_by="t")
+    after = handle_it.set_(7, enabled=True, levels={"reply_stranger": "handle", "wire_money": "handle",
+                                                     "reply_known": "handle_it"}, updated_by="t")
     assert after.enabled is True
     assert after.levels == {"reply_known": "handle", "reply_stranger": "handle"}
 
@@ -79,7 +79,7 @@ def test_off_it_leaves_a_card_as_before(owner: Any, models: dict[str, Any]) -> N
     assert mailbox.sent == []
     card = _only_card(owner)
     assert card.status == "proposed" and card.gate_mode == "propose"
-    assert "yolo_reason" not in inbox.card_payload(card)
+    assert "handle_it_reason" not in inbox.card_payload(card)
 
 
 # ── sending on its own ────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ def test_on_it_sends_a_reply_to_someone_they_know(db: Path, owner: Any, models: 
     assert card.resolver_person_id is None
     assert _ledger(db)["m1"] == ("sent", "handled")
     assert inbox.open_cards(owner.id) == []
-    assert yolo.sent_today(owner.id, NOW) == 1
+    assert handle_it.sent_today(owner.id, NOW) == 1
     with sqlite3.connect(db) as conn:
         rows = conn.execute(
             "SELECT private_to_principal FROM audit_log WHERE event_type = 'delegation_reply_handled'"
@@ -106,11 +106,28 @@ def test_on_it_sends_a_reply_to_someone_they_know(db: Path, owner: Any, models: 
 def test_handled_lists_it_with_the_questions_left_for_them(owner: Any, models: dict[str, Any]) -> None:
     _on(owner)
     _scan_one(owner)
-    found = yolo.handled(owner.id)
+    found = handle_it.handled(owner.id)
     assert len(found) == 1
     assert found[0].to_email == DANA
     assert found[0].open_questions == ["Can the call move to Friday at 10?"]
-    assert yolo.handled(owner.id + 1) == []  # nobody else's
+    assert handle_it.handled(owner.id + 1) == []  # nobody else's
+
+
+def test_handled_is_not_crowded_out_by_other_peoples_sends(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.memory import decision_ledger
+
+    _on(owner)
+    _scan_one(owner)
+    other = owner.id + 1
+    for n in range(3):  # newer sends of someone else's
+        row = decision_ledger.create_decision_instance(
+            decision_class="delegation_reply", department="general", originating_session_id=None,
+            proposed_payload={"person_id": other}, idempotency_key=f"other-{n}", gate_mode="auto_execute",
+            approver_person_id=other, confidence=None,
+        )
+        assert decision_ledger.claim_for_execution(row, resolver_person_id=None)
+        assert decision_ledger.finish_execution(row, status=decision_ledger.STATUS_EXECUTED)
+    assert len(handle_it.handled(owner.id, limit=1)) == 1
 
 
 def test_a_stranger_gets_a_card_until_they_choose_otherwise(owner: Any, models: dict[str, Any]) -> None:
@@ -118,7 +135,7 @@ def test_a_stranger_gets_a_card_until_they_choose_otherwise(owner: Any, models: 
     stranger = _msg("m1", "t1", sender="sam@unknown.example", name="Sam")
     mailbox, result = _scan_one(owner, stranger)
     assert result.handled == 0 and mailbox.sent == []
-    assert inbox.card_payload(_only_card(owner))["yolo_reason"] == "level"
+    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"
 
 
 def test_a_stranger_set_to_handle_gets_the_holding_reply(owner: Any, models: dict[str, Any]) -> None:
@@ -132,7 +149,7 @@ def test_ask_for_people_they_know_leaves_a_card(owner: Any, models: dict[str, An
     _on(owner, reply_known="ask")
     mailbox, result = _scan_one(owner)
     assert result.handled == 0 and mailbox.sent == []
-    assert inbox.card_payload(_only_card(owner))["yolo_reason"] == "level"
+    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "level"
 
 
 def test_without_signed_sign_ins_on_a_server_nothing_goes(
@@ -142,7 +159,7 @@ def test_without_signed_sign_ins_on_a_server_nothing_goes(
     monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
     mailbox, result = _scan_one(owner)
     assert result.handled == 0 and mailbox.sent == []
-    assert inbox.card_payload(_only_card(owner))["yolo_reason"] == "signing_off"
+    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "signing_off"
 
 
 def test_one_reply_on_its_own_per_conversation_a_day(owner: Any, models: dict[str, Any]) -> None:
@@ -160,7 +177,7 @@ def test_one_reply_on_its_own_per_conversation_a_day(owner: Any, models: dict[st
 
 def test_the_daily_limit_holds(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     _on(owner)
-    monkeypatch.setenv("DELEGATION_YOLO_MAX_SENDS_PER_DAY", "1")
+    monkeypatch.setenv("DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", "1")
     mailbox = FakeInbox()
     mailbox.add(_msg("m1", "t1"), _msg("m2", "t2", sender="lee@co.example", name="Lee", minutes_ago=40))
     people_store.upsert_person(full_name="Lee", email="lee@co.example", kind="contact")
@@ -179,7 +196,7 @@ def test_turning_it_off_before_the_send_leaves_the_card(owner: Any, models: dict
     fresh = ledger.get_decision_instance(card.id)
     with pytest.raises(SendRefused) as err:
         asyncio.run(send_on_its_own(fresh, gmail=mailbox, now=NOW))
-    assert err.value.code == "yolo_off" and mailbox.sent == []
+    assert err.value.code == "handle_it_off" and mailbox.sent == []
 
 
 def test_a_card_made_to_ask_is_never_sent_on_its_own(owner: Any, models: dict[str, Any]) -> None:
@@ -187,7 +204,7 @@ def test_a_card_made_to_ask_is_never_sent_on_its_own(owner: Any, models: dict[st
     _on(owner)
     with pytest.raises(SendRefused) as err:
         asyncio.run(send_on_its_own(_only_card(owner), gmail=mailbox, now=NOW))
-    assert err.value.code == "yolo_off" and mailbox.sent == []
+    assert err.value.code == "handle_it_off" and mailbox.sent == []
 
 
 def test_an_edit_in_the_mailbox_stops_the_send(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,7 +234,7 @@ def test_an_unconfirmed_send_settles_as_sent_on_its_own(db: Path, owner: Any, mo
     asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=10), own={OWNER}))
     settled = ledger.get_decision_instance(card.id)
     assert settled is not None and settled.status == "executed"
-    assert yolo.sent_today(owner.id, NOW) == 1
+    assert handle_it.sent_today(owner.id, NOW) == 1
     assert _ledger(db)["m1"] == ("sent", "handled")
 
 
@@ -259,7 +276,7 @@ def _thread(message: Any) -> Any:
 def _check(owner: Any, *, message: Any = None, reply: Any = None, verdict: Any = None,
            relation: str = "contact") -> str | None:
     message = message or _msg("m1", "t1")
-    return yolo.refusal(
+    return handle_it.refusal(
         owner.id, message, _thread(message), reply or _reply(), verdict or _verdict(),
         relation=relation, own={OWNER}, exec_address="exec@co.example", now=NOW,
     )
@@ -338,12 +355,12 @@ def test_never_twice_in_a_row_in_one_conversation(switched_on: Any) -> None:
     from openexecutive.delegation.gmail import MailMessage, MailThread
 
     first = _msg("m1", "t1")
-    yolo.record_handled(switched_on.id, "t1", 1, "sent-1", now=NOW - timedelta(days=3))
+    handle_it.record_handled(switched_on.id, "t1", 1, "sent-1", now=NOW - timedelta(days=3))
     sent = MailMessage(id="sent-1", thread_id="t1", from_addr=OWNER, to=[DANA], labels=["SENT"],
                        received_at=(NOW - timedelta(days=3)).isoformat())
     later = _msg("m2", "t1", text="And Friday?")
     thread = MailThread(id="t1", messages=[first, sent, later])
-    why = yolo.refusal(
+    why = handle_it.refusal(
         switched_on.id, later, thread, _reply(), _verdict(), relation="contact", own={OWNER},
         exec_address="", now=NOW,
     )
@@ -354,7 +371,7 @@ def test_the_rules_fail_closed(switched_on: Any, monkeypatch: pytest.MonkeyPatch
     def boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("db gone")
 
-    monkeypatch.setattr(yolo, "_handled_rows", boom)
+    monkeypatch.setattr(handle_it, "_handled_rows", boom)
     assert _check(switched_on) == "uncountable"
 
 
@@ -362,9 +379,9 @@ def test_every_refusal_has_words_for_the_person() -> None:
     import inspect
     import re
 
-    source = inspect.getsource(yolo._refusal) + inspect.getsource(yolo.refusal)
+    source = inspect.getsource(handle_it._refusal) + inspect.getsource(handle_it.refusal)
     codes = set(re.findall(r'return "([a-z_]+)"', source))
-    assert codes <= set(yolo.REASONS)
+    assert codes <= set(handle_it.REASONS)
 
 
 # ── the routes ────────────────────────────────────────────────────────────────
@@ -385,7 +402,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 def test_get_shows_the_switch(client: TestClient, owner: Any) -> None:
     body = client.get("/delegation", headers=HEADERS).json()
-    assert body["yolo"] == {
+    assert body["handle_it"] == {
         "enabled": False, "levels": {"reply_known": "handle", "reply_stranger": "ask"},
         "available": True, "sent_today": 0,
     }
@@ -393,35 +410,35 @@ def test_get_shows_the_switch(client: TestClient, owner: Any) -> None:
 
 def test_turning_it_on_needs_the_inbox_watcher(client: TestClient, owner: Any) -> None:
     inbox.set_watch(owner.id, False, updated_by="t")
-    resp = client.put("/delegation/yolo", json={"enabled": True}, headers=HEADERS)
+    resp = client.put("/delegation/handle-it", json={"enabled": True}, headers=HEADERS)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "inbox_off"
     inbox.set_watch(owner.id, True, updated_by="t")
-    resp = client.put("/delegation/yolo", json={"enabled": True}, headers=HEADERS)
-    assert resp.status_code == 200 and resp.json()["yolo"]["enabled"] is True
+    resp = client.put("/delegation/handle-it", json={"enabled": True}, headers=HEADERS)
+    assert resp.status_code == 200 and resp.json()["handle_it"]["enabled"] is True
 
 
 def test_levels_are_checked(client: TestClient, owner: Any) -> None:
-    resp = client.put("/delegation/yolo", json={"levels": {"reply_known": "always"}}, headers=HEADERS)
+    resp = client.put("/delegation/handle-it", json={"levels": {"reply_known": "always"}}, headers=HEADERS)
     assert resp.status_code == 422
-    resp = client.put("/delegation/yolo", json={"levels": {"reply_stranger": "handle"}}, headers=HEADERS)
+    resp = client.put("/delegation/handle-it", json={"levels": {"reply_stranger": "handle"}}, headers=HEADERS)
     assert resp.status_code == 200
-    assert resp.json()["yolo"]["levels"]["reply_stranger"] == "handle"
+    assert resp.json()["handle_it"]["levels"]["reply_stranger"] == "handle"
 
 
 def test_it_needs_a_caller_the_api_can_vouch_for(
     client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
-    resp = client.put("/delegation/yolo", json={"enabled": True}, headers=HEADERS)
+    resp = client.put("/delegation/handle-it", json={"enabled": True}, headers=HEADERS)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
-    assert yolo.get(owner.id).enabled is False
+    assert handle_it.get(owner.id).enabled is False
 
 
 def test_turning_the_inbox_watcher_off_turns_it_off(client: TestClient, owner: Any) -> None:
     _on(owner)
     resp = client.put("/delegation/inbox", json={"enabled": False}, headers=HEADERS)
     assert resp.status_code == 200
-    assert yolo.get(owner.id).enabled is False
+    assert handle_it.get(owner.id).enabled is False
 
 
 def test_handled_route_lists_the_callers_own(client: TestClient, owner: Any, models: dict[str, Any]) -> None:

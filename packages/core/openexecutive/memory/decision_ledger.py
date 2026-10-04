@@ -9,7 +9,7 @@ Status state-machine (valid transitions only; enforced by compare-and-set):
   proposed → approved_unchanged | approved_with_edit | rejected | auto_no_response | failed
   proposed → executing → approved_unchanged | approved_with_edit | failed
                        → executed     (an auto_execute row acted on its own:
-                                       YOLO mode's replies)
+                                       Handle it for me's replies)
                        → proposed     (release_claim: nothing was done)
   proposed | executing → closed_externally  (settled outside the app)
   executed  → reversed | failed        (auto-execute path, Build 3)
@@ -388,6 +388,8 @@ def list_instances(
     decision_class: str,
     *,
     status: str | None = None,
+    approver_person_id: int | None = None,
+    resolved_since: str | None = None,
     limit: int = 100,
     db_path: Path | None = None,
 ) -> list[DecisionInstance]:
@@ -396,6 +398,12 @@ def list_instances(
     if status is not None:
         sql += " AND status = ?"
         params.append(status)
+    if approver_person_id is not None:
+        sql += " AND approver_person_id = ?"
+        params.append(approver_person_id)
+    if resolved_since is not None:
+        sql += " AND resolved_at >= ?"
+        params.append(resolved_since)
     sql += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     with _get_conn(db_path or _db_path()) as conn:

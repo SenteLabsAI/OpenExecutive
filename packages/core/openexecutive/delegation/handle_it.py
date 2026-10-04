@@ -1,7 +1,7 @@
-"""YOLO mode: the inbox watcher sends some replies on its own.
+"""Handle it for me: the inbox watcher sends some replies on its own.
 
 **The switch.** A third switch under Act as me, after "Draft replies to my
-inbox" (``delegation_yolo``, one row per person, absent means off). Each
+inbox" (``delegation_handle_it``, one row per person, absent means off). Each
 kind of reply has a level, ``off``, ``ask`` or ``handle``:
 
 - ``reply_known``: a reply to someone on the person's team, one of their
@@ -37,7 +37,7 @@ with the reason recorded.
   it's an AI, recipients were trimmed, the Executive was named, ...);
 - it already sent one in this thread in the last day, or the last thing the
   person "said" in this thread was itself sent on its own;
-- the day's limit (``DELEGATION_YOLO_MAX_SENDS_PER_DAY``) is reached.
+- the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached.
 
 Never sent on its own whatever the level: anything with an attachment (the
 watcher's drafts have none), a new recipient, or a sensitive topic.
@@ -59,7 +59,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from openexecutive.delegation.schema import HANDLED_TABLE, YOLO_TABLE, ensure_schema
+from openexecutive.delegation.schema import HANDLE_IT_TABLE, HANDLED_TABLE, ensure_schema
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ _AMOUNT_RE = re.compile(
 
 # What each refusal tells the person on the card.
 REASONS: dict[str, str] = {
-    "level": "YOLO mode is set to ask for this kind of email.",
+    "level": "Handle it for me is set to ask for this kind of email.",
     "signing_off": "Sending on its own needs signed sign-ins on this server.",
     "sender_unverified": "Your mail service couldn't confirm who sent it.",
     "unsure": "It wasn't sure enough this needs only a simple reply.",
@@ -125,7 +125,7 @@ REASONS: dict[str, str] = {
 
 
 @dataclass
-class Yolo:
+class HandleIt:
     person_id: int
     enabled: bool = False
     levels: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_LEVELS))
@@ -165,27 +165,27 @@ def _clean_levels(raw: Any) -> dict[str, str]:
     return levels
 
 
-def get(person_id: int, *, db_path: Path | None = None) -> Yolo:
+def get(person_id: int, *, db_path: Path | None = None) -> HandleIt:
     """``person_id``'s switch and levels. Never raises: unreadable is off."""
     try:
         conn = _connect(db_path)
         try:
             row = conn.execute(
-                f"SELECT enabled, levels FROM {YOLO_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
+                f"SELECT enabled, levels FROM {HANDLE_IT_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
                 (person_id,),
             ).fetchone()
         finally:
             conn.close()
     except Exception:
-        logger.warning("delegation.yolo: couldn't read the switch — treating it as off", exc_info=True)
-        return Yolo(person_id=person_id)
+        logger.warning("delegation.handle_it: couldn't read the switch — treating it as off", exc_info=True)
+        return HandleIt(person_id=person_id)
     if row is None:
-        return Yolo(person_id=person_id)
+        return HandleIt(person_id=person_id)
     try:
         levels = _clean_levels(json.loads(row["levels"] or "{}"))
     except ValueError:
         levels = dict(DEFAULT_LEVELS)
-    return Yolo(person_id=person_id, enabled=bool(row["enabled"]), levels=levels)
+    return HandleIt(person_id=person_id, enabled=bool(row["enabled"]), levels=levels)
 
 
 def set_(
@@ -195,7 +195,7 @@ def set_(
     levels: dict[str, str] | None = None,
     updated_by: str,
     db_path: Path | None = None,
-) -> Yolo:
+) -> HandleIt:
     """Change ``person_id``'s switch and/or levels (callers authorize first).
     Unknown kinds and levels are ignored."""
     current = get(person_id, db_path=db_path)
@@ -205,7 +205,7 @@ def set_(
     conn = _connect(db_path)
     try:
         conn.execute(
-            f"INSERT INTO {YOLO_TABLE} (person_id, enabled, levels, updated_at, updated_by) "  # noqa: S608
+            f"INSERT INTO {HANDLE_IT_TABLE} (person_id, enabled, levels, updated_at, updated_by) "  # noqa: S608
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET enabled = excluded.enabled, "
             "levels = excluded.levels, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
             (person_id, 1 if new_enabled else 0, json.dumps(new_levels, sort_keys=True), now, updated_by),
@@ -303,7 +303,7 @@ def refusal(
             exec_address=exec_address, now=now, db_path=db_path,
         )
     except Exception:
-        logger.warning("delegation.yolo: the rules failed — asking instead", exc_info=True)
+        logger.warning("delegation.handle_it: the rules failed — asking instead", exc_info=True)
         return "uncountable"
 
 
@@ -357,7 +357,7 @@ def _refusal(
         today = sent_today(person_id, now, db_path=db_path)
     except Exception:
         return "uncountable"
-    if today >= get_settings().delegation_yolo_max_sends_per_day:
+    if today >= get_settings().delegation_handle_it_max_sends_per_day:
         return "daily_limit"
     return None
 
@@ -386,9 +386,11 @@ def handled(person_id: int, *, days: int = 7, limit: int = 50) -> list[HandledRe
 
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     out: list[HandledReply] = []
-    for card in list_instances("delegation_reply", status=STATUS_EXECUTED, limit=1000):
-        if card.approver_person_id != person_id or (card.resolved_at or "") < since:
-            continue
+    cards = list_instances(
+        "delegation_reply", status=STATUS_EXECUTED, approver_person_id=person_id,
+        resolved_since=since, limit=limit,
+    )
+    for card in cards:
         try:
             payload = json.loads(card.proposed_payload_json or "{}")
         except ValueError:

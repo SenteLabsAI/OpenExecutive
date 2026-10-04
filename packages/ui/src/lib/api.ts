@@ -1598,8 +1598,8 @@ export interface DelegationSettings {
   };
   // Absent on a backend that predates the inbox watcher.
   inbox?: InboxWatch;
-  // Absent (or null) on a backend that predates YOLO mode.
-  yolo?: Yolo | null;
+  // Absent (or null) on a backend that predates Handle it for me.
+  handle_it?: HandleIt | null;
   // The owner's "Let team members use Act as me", while the install allows
   // it; null (or absent) for everyone else.
   team?: DelegationTeam | null;
@@ -1636,15 +1636,15 @@ export interface InboxWatch {
   checking: boolean;
 }
 
-// YOLO mode: the inbox watcher sends some replies on its own,
-// decided by plain code (delegation/yolo.py). Each kind of reply has a
+// Handle it for me: the inbox watcher sends some replies on its own,
+// decided by plain code (delegation/handle_it.py). Each kind of reply has a
 // level; "ask" leaves a card as before.
-export type YoloLevel = "off" | "ask" | "handle";
+export type HandleItLevel = "off" | "ask" | "handle";
 
-export interface Yolo {
+export interface HandleIt {
   enabled: boolean;
   // reply_known (people you know), reply_stranger (a holding reply).
-  levels: Record<string, YoloLevel>;
+  levels: Record<string, HandleItLevel>;
   // Whether this server can tie the switch to you (signed sign-ins or local
   // login); without it nothing is sent on its own.
   available: boolean;
@@ -1828,16 +1828,16 @@ export async function setInboxWatch(enabled: boolean): Promise<DelegationSetting
   return res.json();
 }
 
-export async function setYolo(update: {
+export async function setHandleIt(update: {
   enabled?: boolean;
-  levels?: Record<string, YoloLevel>;
+  levels?: Record<string, HandleItLevel>;
 }): Promise<DelegationSettings> {
-  const res = await fetch(`${API_BASE}/delegation/yolo`, {
+  const res = await fetch(`${API_BASE}/delegation/handle-it`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
-  if (!res.ok) throw await delegationError(res, "Couldn't change YOLO mode.");
+  if (!res.ok) throw await delegationError(res, "Couldn't change Handle it for me.");
   return res.json();
 }
 

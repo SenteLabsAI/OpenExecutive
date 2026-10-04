@@ -15,7 +15,7 @@ DRAFTS_TABLE = "delegation_drafts"
 INBOX_WATCH_TABLE = "delegation_inbox_watch"
 INBOX_MESSAGES_TABLE = "delegation_inbox_messages"
 TEAM_TABLE = "delegation_team"
-YOLO_TABLE = "delegation_yolo"
+HANDLE_IT_TABLE = "delegation_handle_it"
 HANDLED_TABLE = "delegation_handled"
 
 TABLES: tuple[str, ...] = (
@@ -26,7 +26,7 @@ TABLES: tuple[str, ...] = (
     INBOX_WATCH_TABLE,
     INBOX_MESSAGES_TABLE,
     TEAM_TABLE,
-    YOLO_TABLE,
+    HANDLE_IT_TABLE,
     HANDLED_TABLE,
 )
 
@@ -117,9 +117,9 @@ _DDL: tuple[str, ...] = (
     f"ON {INBOX_MESSAGES_TABLE}(person_id, thread_id)",
     f"CREATE INDEX IF NOT EXISTS idx_{INBOX_MESSAGES_TABLE}_created "
     f"ON {INBOX_MESSAGES_TABLE}(person_id, created_at)",
-    # YOLO mode, one row per person (absent: off). levels is a JSON
-    # object of kind -> off | ask | handle (delegation.yolo).
-    f"CREATE TABLE IF NOT EXISTS {YOLO_TABLE} ("
+    # Handle it for me, one row per person (absent: off). levels is a JSON
+    # object of kind -> off | ask | handle (delegation.handle_it).
+    f"CREATE TABLE IF NOT EXISTS {HANDLE_IT_TABLE} ("
     "  person_id INTEGER PRIMARY KEY,"
     "  enabled INTEGER NOT NULL DEFAULT 0,"
     "  levels TEXT NOT NULL DEFAULT '{}',"

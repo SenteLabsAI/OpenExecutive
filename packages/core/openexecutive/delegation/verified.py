@@ -1,6 +1,6 @@
 """Whether the API knows a caller is the person at an address: the rule for
 anything done as that person on their own say-so (Send on a reply card,
-turning YOLO mode on), kept apart so routes can check it without
+turning Handle it for me on), kept apart so routes can check it without
 importing the send path (``reply_send``)."""
 from __future__ import annotations
 

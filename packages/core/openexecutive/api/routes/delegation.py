@@ -28,9 +28,9 @@ Routes:
                                     switch is off or a check is running)
   GET    /delegation/replies      — the reply cards waiting for the caller
                                     (from the database; no Gmail call)
-  PUT    /delegation/yolo    — {enabled?, levels?}: YOLO mode,
+  PUT    /delegation/handle-it    — {enabled?, levels?}: Handle it for me,
                                     the inbox watcher sending some replies on
-                                    its own (delegation.yolo). Needs a
+                                    its own (delegation.handle_it). Needs a
                                     caller the API knows is that person
                                     (signed sign-ins, or local login: 403 /
                                     409 ``caller_signing_required``), and
@@ -146,8 +146,8 @@ class TeamOut(BaseModel):
     members: list[TeamMemberUse]
 
 
-class YoloOut(BaseModel):
-    """YOLO mode: the switch and each kind's level (off, ask, handle)."""
+class HandleItOut(BaseModel):
+    """Handle it for me: the switch and each kind's level (off, ask, handle)."""
 
     enabled: bool
     levels: dict[str, str]
@@ -157,7 +157,7 @@ class YoloOut(BaseModel):
     sent_today: int = 0
 
 
-class YoloUpdate(BaseModel):
+class HandleItUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool | None = None
@@ -183,8 +183,8 @@ class DelegationOut(BaseModel):
     enabled: bool
     gmail: GmailConnection
     inbox: InboxOut
-    # Absent on a backend that predates YOLO mode.
-    yolo: YoloOut | None = None
+    # Absent on a backend that predates Handle it for me.
+    handle_it: HandleItOut | None = None
     # The principal's "Let team members use Act as me", while the install
     # allows it; None for anyone else.
     team: TeamOut | None = None
@@ -380,23 +380,23 @@ async def _state(person: Person) -> DelegationOut:
             provider=credential_provider(person.email or ""),
         ),
         inbox=_inbox_out(_person_id(person)),
-        yolo=_yolo_out(_person_id(person)),
+        handle_it=_handle_it_out(_person_id(person)),
         team=_team_out(person),
     )
 
 
-def _yolo_out(person_id: int) -> YoloOut:
+def _handle_it_out(person_id: int) -> HandleItOut:
     from datetime import UTC, datetime
 
-    from openexecutive.delegation import yolo
+    from openexecutive.delegation import handle_it
 
-    stored = yolo.get(person_id)
+    stored = handle_it.get(person_id)
     try:
-        today = yolo.sent_today(person_id, datetime.now(UTC))
+        today = handle_it.sent_today(person_id, datetime.now(UTC))
     except Exception:
         today = 0
-    return YoloOut(
-        enabled=stored.enabled, levels=dict(stored.levels), available=yolo.signing_ok(), sent_today=today,
+    return HandleItOut(
+        enabled=stored.enabled, levels=dict(stored.levels), available=handle_it.signing_ok(), sent_today=today,
     )
 
 
@@ -488,8 +488,8 @@ def _set_inbox(person_id: int, enabled: bool) -> None:
     from openexecutive.delegation import inbox
 
     if not enabled:
-        # YOLO mode sends what the watcher drafts: it goes with it.
-        _set_yolo(person_id, enabled=False, levels=None)
+        # Handle it for me sends what the watcher drafts: it goes with it.
+        _set_handle_it(person_id, enabled=False, levels=None)
     before = inbox.get_watch(person_id).enabled
     if before == enabled:
         return
@@ -561,25 +561,25 @@ def get_delegation_replies(request: Request) -> RepliesOut:
     ])
 
 
-def _set_yolo(person_id: int, *, enabled: bool | None, levels: dict[str, str] | None) -> None:
-    from openexecutive.delegation import yolo
+def _set_handle_it(person_id: int, *, enabled: bool | None, levels: dict[str, str] | None) -> None:
+    from openexecutive.delegation import handle_it
 
-    before = yolo.get(person_id)
+    before = handle_it.get(person_id)
     if (enabled is None or enabled == before.enabled) and not levels:
         return
-    after = yolo.set_(person_id, enabled=enabled, levels=levels, updated_by=f"person:{person_id}")
+    after = handle_it.set_(person_id, enabled=enabled, levels=levels, updated_by=f"person:{person_id}")
     if after.enabled == before.enabled and after.levels == before.levels:
         return
     _audit(
-        "delegation_yolo_changed",
-        f"YOLO mode {'on' if after.enabled else 'off'} for person {person_id}",
+        "delegation_handle_it_changed",
+        f"Handle it for me {'on' if after.enabled else 'off'} for person {person_id}",
         {"person_id": person_id, "enabled": after.enabled, "levels": after.levels},
     )
 
 
-@router.put("/delegation/yolo", response_model=DelegationOut)
-async def update_delegation_yolo(request: Request, body: YoloUpdate) -> DelegationOut:
-    from openexecutive.delegation import inbox, yolo
+@router.put("/delegation/handle-it", response_model=DelegationOut)
+async def update_delegation_handle_it(request: Request, body: HandleItUpdate) -> DelegationOut:
+    from openexecutive.delegation import handle_it, inbox
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
 
@@ -587,37 +587,37 @@ async def update_delegation_yolo(request: Request, body: YoloUpdate) -> Delegati
     person_id = _person_id(person)
     refused = caller_refusal(api_caller.caller(request), normalize_email(person.email or ""))
     if refused == NOT_YOURS:
-        raise _refuse(403, "not_yours", "Only you can change YOLO mode.")
+        raise _refuse(403, "not_yours", "Only you can change Handle it for me.")
     if refused is not None:
         raise _refuse(
             409, "caller_signing_required",
-            "YOLO mode needs signed sign-ins on this server, so that nobody else can turn it on for you.",
+            "Handle it for me needs signed sign-ins on this server, so that nobody else can turn it on for you.",
         )
     levels = body.levels or {}
     for kind, level in levels.items():
-        if kind not in yolo.KINDS or level not in yolo.LEVELS:
+        if kind not in handle_it.KINDS or level not in handle_it.LEVELS:
             raise _refuse(422, "bad_level", f"Unknown kind or level: {kind}={level}.")
     if body.enabled:
         if not is_enabled(person_id):
             raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
         if not inbox.get_watch(person_id).enabled:
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
-    _set_yolo(person_id, enabled=body.enabled, levels=levels or None)
+    _set_handle_it(person_id, enabled=body.enabled, levels=levels or None)
     return await _state(person)
 
 
 @router.get("/delegation/handled", response_model=HandledOut)
 def get_delegation_handled(request: Request) -> HandledOut:
-    """What YOLO mode sent for the caller in the last 7 days. Their
+    """What Handle it for me sent for the caller in the last 7 days. Their
     own only: everyone else gets the 403 every route here gives."""
-    from openexecutive.delegation import yolo
+    from openexecutive.delegation import handle_it
     from openexecutive.delegation.gmail import mailbox_link
 
     person = _caller(request)
     person_id = _person_id(person)
     email = (person.email or "").strip().lower()
     try:
-        found = yolo.handled(person_id)
+        found = handle_it.handled(person_id)
     except Exception as exc:
         logger.exception("delegation: reading what was sent on its own failed")
         raise _refuse(503, "unavailable", "Couldn't read what it handled for you.") from exc

@@ -932,11 +932,11 @@ class Settings(BaseSettings):
         20, alias="DELEGATION_INBOX_MAX_DRAFTS_PER_DAY", ge=1, le=1000
     )
     delegation_classifier_model: str | None = Field(None, alias="DELEGATION_CLASSIFIER_MODEL")
-    # YOLO mode (delegation.yolo): the most replies the inbox
+    # Handle it for me (delegation.handle_it): the most replies the inbox
     # watcher may send on its own as one person per UTC day, within its
     # drafts limit above. Past it, replies wait on cards as before.
-    delegation_yolo_max_sends_per_day: int = Field(
-        20, alias="DELEGATION_YOLO_MAX_SENDS_PER_DAY", ge=1, le=500
+    delegation_handle_it_max_sends_per_day: int = Field(
+        20, alias="DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", ge=1, le=500
     )
     # Whether the owner may let team members use Act as me for themselves
     # (Settings → Act as me → "Let team members use it", off until they turn
