@@ -1,6 +1,6 @@
 """GET /memories/people — what peer memory knows about each rostered person.
 
-The Pulse page's People tab reads this. It must never create peers (a
+Settings → About you reads this. It must never create peers (a
 read-only page minting Honcho peers for people who have never talked would be
 a side effect nobody asked for), must skip the non-person peers that share
 the workspace, and must keep one person's failure from hiding the others.

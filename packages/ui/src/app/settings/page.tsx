@@ -29,7 +29,7 @@ import { retentionLabel } from "@/lib/history";
 import { versionNotice } from "@/lib/versionNotice";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
-// Act as me, Memory, Workspace, Advanced and About. Each tile says what's on its page
+// Act as me, About you, Workspace, Advanced and About. Each tile says what's on its page
 // and, where it's cheap to know, how things stand right now. The one-page
 // Settings this replaces used anchors (`/settings#workspace`); a link that
 // still carries one is sent on to the matching page.
@@ -64,7 +64,7 @@ export default function SettingsPage() {
   const statuses = useTileStatuses();
   // Act as me has a tile only for someone who can have it (GET /delegation
   // answers null for everyone else).
-  // Memory, only for someone with notes to keep (GET /memories/history
+  // About you, only for someone with notes to keep (GET /memories/history
   // answers null for anyone not signed in or not on the People list).
   const pages = SETTINGS_PAGES.filter(
     (p) =>
@@ -212,8 +212,8 @@ function useTileStatuses(): {
   if (history && history !== "error") {
     const days = history.company_retention_days;
     byPage.memory = {
-      text: `${history.reply_notes ? "On" : "Off"} · ${
-        days === null ? "notes kept until forgotten" : `notes last ${retentionLabel(days)}`
+      text: `Notes ${history.reply_notes ? "on" : "off"} · ${
+        days === null ? "kept until forgotten" : `last ${retentionLabel(days)}`
       }`,
       tone: "none",
     };

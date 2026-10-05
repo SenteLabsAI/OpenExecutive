@@ -429,10 +429,10 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
   },
   {
     id: "memory",
-    label: "Memory",
+    label: "About you",
     href: "/settings/memory",
-    icon: "archive",
-    description: "Private notes of what you said, and how long they last.",
+    icon: "user",
+    description: "What the Executive has learned about you, and the private notes it keeps.",
     hashes: ["memory"],
   },
   {

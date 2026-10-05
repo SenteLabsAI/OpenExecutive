@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   deleteAdvice,
   deleteDecision,
@@ -8,17 +8,12 @@ import {
   listAdvice,
   listDecisions,
   listInitiatives,
-  listPeopleMemory,
-  listPersonConclusions,
   updateAdvice,
   updateDecision,
   updateInitiative,
   type Advice,
   type Decision,
   type Initiative,
-  type PeopleMemory,
-  type PersonConclusion,
-  type PersonMemory,
 } from "@/lib/api";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
@@ -27,21 +22,17 @@ import CorrectionsTab from "./CorrectionsTab";
 import HistoryTab from "./HistoryTab";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
-type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "people" | "history";
+type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "history";
 
 export const MEMORY_TABS: readonly MemoryTab[] = [
   "decisions",
   "initiatives",
   "advice",
   "corrections",
-  "people",
   "history",
 ];
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
-const PEOPLE_EMPTY =
-  "Nothing learned about you yet. Peer memory fills in as you talk with the Executive. Only you see it.";
-const PEOPLE_UNAVAILABLE = "Peer memory is unavailable right now.";
 
 // ---------------------------------------------------------------------------
 // Section shell — the "what it knows" half of the Pulse page.
@@ -58,13 +49,8 @@ export default function MemorySection() {
     initiatives: null,
     advice: null,
     corrections: null,
-    people: null,
     history: null,
   });
-  // Peer memory is optional: until its status is known the People tab shows
-  // (so the bar does not jump on installs that have it); once the backend says
-  // "disabled" the tab goes away for good.
-  const [peopleEnabled, setPeopleEnabled] = useState<boolean | null>(null);
   // History (Always in the loop) is the signed-in person's own notes: it goes
   // away for anyone with none to see (not signed in, not on the roster).
   const [historyEnabled, setHistoryEnabled] = useState<boolean | null>(null);
@@ -80,24 +66,15 @@ export default function MemorySection() {
     (n: number) => setCounts((c) => ({ ...c, corrections: n })),
     [],
   );
-  const onCountPeople = useCallback(
-    (n: number | null) => setCounts((c) => ({ ...c, people: n })),
-    [],
-  );
   const onCountHistory = useCallback(
     (n: number | null) => setCounts((c) => ({ ...c, history: n })),
     [],
   );
   const onHistoryAvailable = useCallback((available: boolean) => setHistoryEnabled(available), []);
-  const onPeopleStatus = useCallback(
-    (s: PeopleMemory["status"]) => setPeopleEnabled(s !== "disabled"),
-    [],
-  );
 
   useEffect(() => {
-    if (peopleEnabled === false && tab === "people") setTab("decisions");
     if (historyEnabled === false && tab === "history") setTab("decisions");
-  }, [peopleEnabled, historyEnabled, tab]);
+  }, [historyEnabled, tab]);
 
   // `/memories?tab=corrections` (the chat chip after remember_fact) opens
   // that tab. Read once on mount from the URL, so the page needs no Suspense
@@ -107,9 +84,7 @@ export default function MemorySection() {
     if (wanted && (MEMORY_TABS as readonly string[]).includes(wanted)) setTab(wanted as MemoryTab);
   }, []);
 
-  const tabs: MemoryTab[] = MEMORY_TABS.filter(
-    (t) => !(t === "people" && peopleEnabled === false) && !(t === "history" && historyEnabled === false),
-  );
+  const tabs: MemoryTab[] = MEMORY_TABS.filter((t) => !(t === "history" && historyEnabled === false));
 
   return (
     <div>
@@ -138,9 +113,6 @@ export default function MemorySection() {
         </div>
         <div className={tab === "corrections" ? "" : "hidden"}>
           <CorrectionsTab onCount={onCountCorrections} />
-        </div>
-        <div className={tab === "people" ? "" : "hidden"}>
-          <PeopleTab onCount={onCountPeople} onStatus={onPeopleStatus} />
         </div>
         <div className={tab === "history" ? "" : "hidden"}>
           <HistoryTab onCount={onCountHistory} onAvailable={onHistoryAvailable} />
@@ -613,212 +585,6 @@ function AdviceRow({
           <div className="text-[15px] text-fg line-clamp-2" title={advice.advice_summary}>{advice.advice_summary}</div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// People — peer memory. What the Executive has learned about the signed-in
-// person, derived server-side from their conversations. Only their own entry
-// comes back (GET /memories/people), the principal's included. Read-only: unlike the three
-// lists above this is not the Executive's own record to edit, and the header
-// counts its notes alongside them.
-// ---------------------------------------------------------------------------
-
-function PeopleTab({
-  onCount,
-  onStatus,
-}: {
-  onCount: (n: number | null) => void;
-  onStatus: (s: PeopleMemory["status"]) => void;
-}) {
-  const [data, setData] = useState<PeopleMemory | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setFailed(false);
-    try {
-      const res = await listPeopleMemory();
-      setData(res);
-      onStatus(res.status);
-      // The badge counts people, not notes (the header carries the notes).
-      // Unavailable is not zero: leave the badge blank rather than claim 0.
-      onCount(res.status === "ok" ? res.people.length : null);
-    } catch {
-      // Unlike the other tabs, an error here must not masquerade as "nothing
-      // known": the read crosses to another service.
-      setFailed(true);
-      onCount(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [onCount, onStatus]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
-  if (failed || !data || data.status === "error") {
-    return <div className="text-fg-muted text-sm">{PEOPLE_UNAVAILABLE}</div>;
-  }
-  if (data.status === "disabled") return null;
-  if (data.people.length === 0) return <EmptyState message={PEOPLE_EMPTY} />;
-
-  return (
-    <div className="space-y-3 py-3">
-      {data.people.map((p) => (
-        <PersonMemoryRow key={p.person_id} item={p} />
-      ))}
-    </div>
-  );
-}
-
-// Card lines past this many fold behind a toggle so one talkative card
-// doesn't push everyone else off the screen.
-const CARD_PREVIEW_LINES = 4;
-// Load the next page once the notes pane is scrolled within this many pixels
-// of its bottom.
-const NOTES_SCROLL_SLACK_PX = 48;
-
-function PersonMemoryRow({ item }: { item: PersonMemory }) {
-  const notes = `${item.conclusion_count} ${item.conclusion_count === 1 ? "note" : "notes"}`;
-  const learned = item.last_observed_at ? ` · learned ${formatDate(item.last_observed_at)}` : "";
-  const nothingYet = !item.error && item.conclusion_count === 0 && item.card.length === 0;
-  return (
-    <div className="rounded-xl border border-line bg-surface-overlay/30 p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-base font-semibold text-fg truncate">{item.full_name}</span>
-          {item.is_principal && (
-            <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/15 text-violet-500 border-violet-500/30">
-              Principal
-            </span>
-          )}
-          {/* The notes below name people by their bare peer id; this is the key. */}
-          <span className="text-[10px] text-fg-subtle shrink-0">peer {item.person_id}</span>
-        </div>
-        <div className="text-xs text-fg-muted tabular-nums shrink-0">
-          {item.error ? "couldn't read" : `${notes}${learned}`}
-        </div>
-      </div>
-      {item.card.length > 0 && <PersonCard lines={item.card} />}
-      {item.recent.length > 0 && <PersonNotes item={item} />}
-      {nothingYet && <div className="mt-2 text-xs text-fg-subtle">Nothing learned yet.</div>}
-    </div>
-  );
-}
-
-function PersonCard({ lines }: { lines: string[] }) {
-  const [open, setOpen] = useState(false);
-  const hidden = lines.length - CARD_PREVIEW_LINES;
-  const shown = open || hidden <= 0 ? lines : lines.slice(0, CARD_PREVIEW_LINES);
-  return (
-    <div className="mt-3">
-      <div className="text-[10px] uppercase tracking-wide text-fg-subtle mb-1">Profile</div>
-      <ul className="space-y-0.5 text-sm text-fg-muted list-disc pl-4 marker:text-fg-subtle">
-        {shown.map((line, i) => (
-          <li key={i} className="break-words">{line}</li>
-        ))}
-      </ul>
-      {hidden > 0 && (
-        <button onClick={() => setOpen((o) => !o)} className="mt-1 h-9 text-sm font-medium text-accent hover:underline">
-          {open ? "Show less" : `Show ${hidden} more`}
-        </button>
-      )}
-    </div>
-  );
-}
-
-/** Newest first. Seeds from the overview's few; "Show all" then reads the
- * full list page by page as the pane scrolls. */
-function PersonNotes({ item }: { item: PersonMemory }) {
-  const [notes, setNotes] = useState<PersonConclusion[]>(item.recent);
-  const [nextPage, setNextPage] = useState<number | null>(null); // null until "Show all"
-  const [hasMore, setHasMore] = useState(item.conclusion_count > item.recent.length);
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const loadingRef = useRef(false);
-  const paneRef = useRef<HTMLDivElement>(null);
-
-  const load = useCallback(
-    async (page: number) => {
-      if (loadingRef.current) return;
-      loadingRef.current = true;
-      setLoading(true);
-      setFailed(false);
-      try {
-        const res = await listPersonConclusions(item.person_id, page);
-        if (res.status !== "ok") throw new Error(res.status);
-        setNotes((prev) => {
-          // Page 1 already holds the seeded few; later pages append. New notes
-          // landing between reads shift the pages, so drop repeats.
-          const base = page === 1 ? [] : prev;
-          const seen = new Set(base.map((c) => `${c.created_at}|${c.content}`));
-          return [...base, ...res.items.filter((c) => !seen.has(`${c.created_at}|${c.content}`))];
-        });
-        setHasMore(res.has_more);
-        setNextPage(page + 1);
-      } catch {
-        setFailed(true);
-      } finally {
-        loadingRef.current = false;
-        setLoading(false);
-      }
-    },
-    [item.person_id],
-  );
-
-  const onScroll = () => {
-    const el = paneRef.current;
-    if (!el || nextPage === null || !hasMore || failed) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < NOTES_SCROLL_SLACK_PX) void load(nextPage);
-  };
-
-  // A page too short to scroll can never fire onScroll: keep filling until it can.
-  useEffect(() => {
-    const el = paneRef.current;
-    if (!el || nextPage === null || !hasMore || loading || failed) return;
-    if (el.scrollHeight <= el.clientHeight) void load(nextPage);
-  }, [notes, nextPage, hasMore, loading, failed, load]);
-
-  const remaining = Math.max(item.conclusion_count - notes.length, 0);
-  return (
-    <div className="mt-3">
-      <div className="text-[10px] uppercase tracking-wide text-fg-subtle mb-1">
-        Notes{nextPage !== null && ` · ${notes.length} of ${Math.max(item.conclusion_count, notes.length)}`}
-      </div>
-      <div
-        ref={paneRef}
-        onScroll={onScroll}
-        className="max-h-80 overflow-y-auto rounded-md border border-line/60 bg-surface-elevated/40"
-      >
-        <ul className="divide-y divide-line/60">
-          {notes.map((c, i) => (
-            <li key={`${c.created_at}-${i}`} className="grid grid-cols-[5.5rem_1fr] gap-3 px-3 py-2">
-              <span className="text-[11px] text-fg-subtle tabular-nums pt-0.5">{formatDate(c.created_at)}</span>
-              <span className="text-sm text-fg leading-relaxed break-words">{c.content}</span>
-            </li>
-          ))}
-        </ul>
-        {(loading || failed || (hasMore && nextPage === null)) && (
-          <div className="px-3 py-2 text-sm text-fg-muted border-t border-line/60">
-            {loading ? (
-              "Loading…"
-            ) : failed ? (
-              <button onClick={() => void load(nextPage ?? 1)} className="hover:text-fg">
-                Couldn&apos;t load more — retry
-              </button>
-            ) : (
-              <button onClick={() => void load(1)} className="hover:text-fg">
-                Show all {item.conclusion_count} notes ({remaining} more)
-              </button>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

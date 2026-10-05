@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import SectionTabs from "@/components/ui/SectionTabs";
 import RhythmSection, { FollowUpsCard, RecentActivity } from "./CadenceSection";
@@ -17,13 +17,15 @@ import { HeartbeatCard, PulseSummary, usePulseData } from "./PulseHeader";
 // Layout: three headline numbers (the rest under "More stats"), then two
 // tabs. Heartbeat holds the heatmap and Activity · Rhythm · Follow-ups;
 // Memory holds what it knows (decisions, initiatives, advice, corrections,
-// people).
+// history). What it has learned about the signed-in person is theirs alone,
+// so it lives in Settings → About you, not here.
 
 type PulseTab = "heartbeat" | "memory";
 type BeatView = "activity" | "rhythm" | "followups";
 
 export default function PulsePage() {
   const pulse = usePulseData();
+  const router = useRouter();
   // `/memories?tab=corrections` (the chat chip after remember_fact) and the
   // other memory tab names open the Memory tab; MemorySection picks the
   // inner tab from the same parameter.
@@ -34,6 +36,10 @@ export default function PulsePage() {
       : "heartbeat",
   );
   const [beatView, setBeatView] = useState<BeatView>("activity");
+  // The People tab moved to Settings → About you; old links follow it there.
+  useEffect(() => {
+    if (wanted === "people") router.replace("/settings/memory");
+  }, [router, wanted]);
 
   const pending = pulse.data?.pending;
   const followups = pending ? pending.filter((a) => a.kind === "ad_hoc").length : null;

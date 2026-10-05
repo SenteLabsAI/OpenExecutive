@@ -58,7 +58,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   status: "Setup status",
   executive: "Your Executive",
   "act-as-me": "Act as me",
-  memory: "Memory",
+  memory: "About you",
   workspace: "Workspace",
   advanced: "Advanced",
   about: "About",

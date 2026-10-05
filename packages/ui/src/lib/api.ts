@@ -1319,9 +1319,9 @@ export async function deleteAdvice(id: number): Promise<void> {
   if (!res.ok) throw new Error("Failed to delete advice");
 }
 
-// The Pulse header and the People tab both mount on page load and both need
-// this; behind it are one Honcho listing plus two reads per person, so the
-// two mounts share one in-flight request instead of doubling that fan-out.
+// Settings → About you reads this on mount; behind it are one Honcho listing
+// plus two reads per person, so mounts close together (a remount, a quick
+// revisit) share one in-flight request instead of repeating that fan-out.
 const PEOPLE_MEMORY_SHARE_MS = 5_000;
 // `settledAt` is null while the request is still running: a pending request is
 // always shared, however long it has run (the backend bounds it, not us), and a
@@ -1371,7 +1371,7 @@ export interface PersonConclusionsPage {
 }
 
 // Every conclusion about one person, newest first, one page at a time — the
-// People tab's "show all" pane. The overview above carries only the newest few.
+// "show all" notes pane in Settings → About you. The overview above carries only the newest few.
 export async function listPersonConclusions(
   personId: number,
   page: number,

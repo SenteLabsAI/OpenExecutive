@@ -2461,7 +2461,7 @@ class PersonConclusionsPage(BaseModel):
 
 async def person_conclusions(person_id: int, *, page: int, size: int) -> PersonConclusionsPage | None:
     """One page of everything peer memory has concluded about one person,
-    newest first — the People tab's "show all" reads it page by page.
+    newest first — the About you card's "show all" reads it page by page.
 
     ``None`` when the person is not an active rostered person or has no peer
     yet (the route answers 404). The peer is found through the workspace

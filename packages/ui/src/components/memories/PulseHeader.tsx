@@ -6,7 +6,6 @@ import {
   listAdvice,
   listDecisions,
   listInitiatives,
-  listPeopleMemory,
   listScheduledActions,
   type DailyActivityCount,
   type ScheduledAction,
@@ -39,9 +38,8 @@ import {
 // metric is derived from data the page already needs (pending scheduled
 // actions + the three memory lists); only the per-day heatmap requires its own
 // endpoint, since /today/activity returns the last-N items, not a daily
-// timeline. Peer memory is optional and remote, so it is fetched apart from
-// the gating batch: the numbers render from local data and the Memories tile
-// folds the peer notes in when (and only if) they arrive.
+// timeline. What peer memory learned about the signed-in person is theirs
+// alone (Settings → About you), so it is not counted here.
 
 const HEATMAP_DAYS = 90;
 
@@ -65,23 +63,6 @@ export function usePulseData(): PulseData {
   const { mode } = useWorkspace();
   const [data, setData] = useState<HeaderData | null>(null);
   const [loading, setLoading] = useState(true);
-  // null until peer memory answers (or fails / is disabled): the tile then
-  // shows the local counts alone, which is not the same as "zero peer notes".
-  const [peerNotes, setPeerNotes] = useState<number | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    listPeopleMemory()
-      .then((people) => {
-        if (!cancelled && people.status === "ok") setPeerNotes(people.conclusion_total);
-      })
-      .catch(() => {
-        /* the tile simply shows the local counts */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -118,8 +99,8 @@ export function usePulseData(): PulseData {
   }, []);
 
   const stats = useMemo(
-    () => (data ? deriveStats(data, peerNotes, mode) : null),
-    [data, peerNotes, mode],
+    () => (data ? deriveStats(data, mode) : null),
+    [data, mode],
   );
   return { data, loading, stats };
 }
@@ -225,7 +206,6 @@ export interface Stat {
 
 function deriveStats(
   { pending, memoriesTotal, activeProjects, heatmap }: HeaderData,
-  peerNotes: number | null,
   mode: WorkspaceMode,
 ): { headline: Stat[]; more: Stat[] } {
   const groups = groupByRhythm(pending);
@@ -244,19 +224,8 @@ function deriveStats(
   // The heatmap is oldest → newest, so the last entry is today.
   const beatsToday = heatmap.length > 0 ? heatmap[heatmap.length - 1].count : 0;
 
-  // Three episodic lists plus what peer memory has learned about people;
-  // the hint says how much of the number is peer notes so it reconciles
-  // with the tabs (the People tab badge counts people, not notes).
-  const memories: Stat = {
-    label: "Memories",
-    value: memoriesTotal + (peerNotes ?? 0),
-    hint:
-      peerNotes === null
-        ? undefined
-        : peerNotes > 0
-          ? `incl. ${peerNotes} peer notes`
-          : "no peer notes yet",
-  };
+  // The three episodic lists the Memory tabs show.
+  const memories: Stat = { label: "Memories", value: memoriesTotal, hint: "decisions, initiatives, advice" };
 
   return {
     headline: [

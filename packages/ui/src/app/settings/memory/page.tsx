@@ -1,17 +1,21 @@
 "use client";
 
+import AboutYouCard from "@/components/settings/AboutYouCard";
 import { CompanyRetentionCard, KeepTrackCard } from "@/components/settings/HistorySettings";
 import SettingsSubpage from "@/components/settings/SettingsSubpage";
 
-// Settings → Memory: Always in the loop. Each person's own "Keep track of what
-// happens" switch, and how long notes last for everyone.
+// Settings → About you: everything the Executive keeps about the signed-in
+// person, which only they see. What peer memory has learned about them
+// (their profile and notes), then Always in the loop: their own "Keep track
+// of what happens" switch, and how long notes last for everyone.
 export default function MemorySettingsPage() {
   return (
     <SettingsSubpage
-      title="Memory"
-      description="The Executive can keep private notes of what you tell it in chat and in replies you send, so it can remind you later. Each person sees only their own."
+      title="What the Executive knows about you"
+      description="What it has learned from talking with you, and the private notes it keeps of what you tell it. Each person sees only their own."
     >
       <div className="space-y-4">
+        <AboutYouCard />
         <KeepTrackCard />
         <CompanyRetentionCard />
       </div>

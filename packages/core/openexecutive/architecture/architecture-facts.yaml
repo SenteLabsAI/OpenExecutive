@@ -2924,8 +2924,8 @@ peer_memory:
       per probe).
     people_overview: |
       ``GET /memories/people?recent=N`` (``honcho_client.people_overview``)
-      — what peer memory knows about the caller, for the Pulse page's
-      People tab: only the caller's own entry, the principal included (a
+      — what peer memory knows about the caller, for the Your profile
+      card on Settings → About you (/settings/memory): only the caller's own entry, the principal included (a
       caller off the roster sees none; /conclusions 404s for anyone else). Read-only, no LLM call: one ``peers()`` listing
       (every page, under one 15 s clock — the SDK walk is otherwise bounded
       only per request), then per matched person (at most 8 in flight, each
@@ -2938,18 +2938,20 @@ peer_memory:
       get-or-create POST and a read must not mint peers for people who
       have never talked; the ``executive`` and ``department_*`` peers and
       archived people are skipped. Every line, timestamps included, passes
-      ``_block_safe_line``. The UI shares one in-flight request between the
-      header and the tab.
+      ``_block_safe_line``. Reads close together in the UI share one
+      in-flight request.
       Response ``{status: ok|disabled|error, people: [{person_id,
       full_name, is_principal, card, conclusion_count, last_observed_at,
       recent: [{content, created_at}], error}], conclusion_total}``; one
       person's failure or timeout sets that entry's ``error`` and leaves
       the rest intact. One ``peer_memory`` row per call, ``op=overview``,
-      ``person_id`` null, ``details.people / conclusions / errors``. The
-      Pulse header adds ``conclusion_total`` to its Memories tile (hint
-      names the peer-note share; fetched apart from the gating batch so
-      the strip never waits on Honcho); the UI hides the tab when
-      ``status`` is ``disabled``. Peers match only an id spelled exactly
+      ``person_id`` null, ``details.people / conclusions / errors``. Pulse
+      neither shows nor counts peer notes (each person sees only their
+      own, so it is a page about them, not a list of people); the UI hides
+      the card when ``status`` is ``disabled``. The card drops the
+      memory service's category tags (``ATTRIBUTE:`` …) from card lines and
+      shows the person's first name in place of their bare peer id in
+      notes, display-only (ui ``lib/aboutYou.ts``). Peers match only an id spelled exactly
       as OE writes it, once per person; within the newest page the
       conclusions are ordered by instant (never by the rendered string,
       which is not chronological across offsets); card elements and
@@ -2962,7 +2964,7 @@ peer_memory:
       ``GET /memories/people/{person_id}/conclusions?page=&size=``
       (``honcho_client.person_conclusions``) — every self-conclusion about
       one person, newest first, one page at a time (``size`` 1–100, default
-      50). The People tab renders each person as a card whose notes pane is
+      50). The About you card's notes pane is
       seeded from the overview's ``recent`` and, on "Show all", reads this
       page by page as the pane scrolls. The peer is found through the same
       ``peers()`` listing as the overview (shared ``_matched_peers``), never

@@ -183,7 +183,7 @@ test("the Settings hub: one tile per page, each with its own route", () => {
     [
       "Your Executive → /settings/executive",
       "Act as me → /settings/act-as-me",
-      "Memory → /settings/memory",
+      "About you → /settings/memory",
       "Workspace → /settings/workspace",
       "Advanced → /settings/advanced",
       "About → /settings/about",
