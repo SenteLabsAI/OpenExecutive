@@ -195,12 +195,9 @@ class GoogleMail:
                 "body_format": "text",
             },
         })
-        if raw:
-            preview = raw[:200]
-            suffix = f"…[truncated {len(raw) - 200} chars]" if len(raw) > 200 else ""
-            logger.debug("get_content raw=%r%s", preview, suffix)
-        else:
-            logger.debug("get_content raw=<empty>")
+        # Length only: the body is someone's mail, and debug logs are often
+        # kept and shared far more widely than the mailbox itself.
+        logger.debug("get_content: %d chars", len(raw) if isinstance(raw, str) else 0)
         if not isinstance(raw, str) or not raw.strip():
             return None
         # Use stdlib parseaddr so adversarial From headers like
