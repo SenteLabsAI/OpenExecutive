@@ -107,8 +107,8 @@ from openexecutive.delegation.settings import (
     team_members_switch,
 )
 from openexecutive.delegation.voice import (
-    StoredVoice,
     DESCRIPTION_MAX_CHARS,
+    StoredVoice,
     VoiceError,
     describe_voice,
     get_voice,
