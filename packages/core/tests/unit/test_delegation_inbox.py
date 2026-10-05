@@ -525,12 +525,14 @@ def test_a_name_the_email_greets_decides_over_the_models_judgement() -> None:
     assert ic.wants_draft(greets_priya, "contact", alone) is True
 
 
-def test_names_them_matches_parts_and_short_forms() -> None:
+def test_names_them_matches_whole_name_parts_only() -> None:
     assert ic.names_them("Olivia Owner", ("olivia",))
     assert ic.names_them("Olivia Owner", ("Ms. Owner",))
-    assert ic.names_them("Rob Lane", ("Robert",))
-    assert ic.names_them("Olivia Owner", ("Liv",)) is False
-    assert ic.names_them("Al Owens", ("Alice",)) is False  # too short to stand for a longer name
+    # A colleague whose name starts with theirs is someone else.
+    assert ic.names_them("Alex Owner", ("Alexis",)) is False
+    assert ic.names_them("Alexis Owner", ("Alex",)) is False
+    # A nickname misses, which means no draft: the safe side.
+    assert ic.names_them("Robert Lane", ("Rob",)) is False
     assert ic.names_them("Olivia Owner", ("Priya",)) is False
     assert ic.names_them("", ("Olivia",)) is False
 

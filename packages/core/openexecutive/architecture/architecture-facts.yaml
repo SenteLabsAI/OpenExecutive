@@ -8926,7 +8926,8 @@ delegation:
     Executive) is drafted for only when the person is in To and the email
     asks them themselves. The classifier lists the names the email greets or
     asks by name (asked_names) and code matches them against the person's
-    name (inbox_classifier.names_them), so mail that greets someone else is
+    name (inbox_classifier.names_them, whole name parts only, so "Alexis"
+    never counts for "Alex" and a nickname misses), so mail that greets someone else is
     never theirs even when the model's overall asked_of_them says it is (a
     real miss: "Good morning, <colleague>, could you sign ..." to the person
     and that colleague). Only when it names nobody does asked_of_them decide,

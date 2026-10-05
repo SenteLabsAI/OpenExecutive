@@ -146,17 +146,12 @@ def _name_parts(name: str) -> set[str]:
 
 
 def names_them(name: str, asked_names: tuple[str, ...]) -> bool:
-    """Whether any of ``asked_names`` is the person called ``name``: a part
-    of one equals a part of their name, or one starts the other ("Jo" is too
-    short to count; "Johnny" counts for "John")."""
+    """Whether any of ``asked_names`` is the person called ``name``: a part of
+    one equals a part of their name. Only exact parts count, so "Alexis" never
+    stands for "Alex"; a nickname the email uses ("Rob" for Robert) misses, and
+    a miss means no draft, the safe side."""
     theirs = _name_parts(name)
-    for asked in asked_names:
-        for part in _name_parts(asked):
-            for own in theirs:
-                short, long = sorted((part, own), key=len)
-                if part == own or (len(short) >= 3 and long.startswith(short)):
-                    return True
-    return False
+    return any(_name_parts(asked) & theirs for asked in asked_names)
 
 
 def wants_draft(verdict: Verdict, relation: str, addressed: Addressing | None = None) -> bool:
