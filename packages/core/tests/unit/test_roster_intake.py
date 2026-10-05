@@ -434,7 +434,7 @@ def test_the_principal_adds_them_by_email(pending: tuple[rr.RosterRequest, str])
     assert seen == ["That's Annamarie Chen, add her"]
     assert sent.await_args.args[1]["arguments"]["to"] == OWNER
     # The confirmation names who it is about, not an internal record number.
-    assert sent.await_args.args[1]["arguments"]["subject"] == "Re: Who is Annamarie?"
+    assert sent.await_args.args[1]["arguments"]["subject"] == f"Re: Who is {req.display_name}?"
 
 
 def test_this_is_someone_on_the_list_links_them(pending: tuple[rr.RosterRequest, str], roster: SimpleNamespace) -> None:
