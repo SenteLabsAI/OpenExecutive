@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import Button from "@/components/ui/Button";
-import OverflowMenu from "@/components/ui/OverflowMenu";
+import Button, { buttonClass } from "@/components/ui/Button";
 import {
   dismissReplyCard,
   getReplyCards,
@@ -31,7 +30,7 @@ import FeatureName from "@/components/FeatureName";
 // draft, what it leaves you to decide and anything to check. Send (the
 // card's primary) sends that draft from your Gmail exactly as it is there,
 // after you confirm who it goes to; Edit in Gmail and Dismiss (deletes it
-// unless you edited it) are in its ⋯ menu. GET /delegation/replies answers
+// unless you edited it) are their own buttons beside it. GET /delegation/replies answers
 // only the owner, so nothing shows for everyone else, on a backend without
 // it, and when nothing is waiting.
 
@@ -289,15 +288,21 @@ export function ReplyCardItem({
           >
             {busy ? step.label : "Send"}
           </Button>
-          <OverflowMenu
-            label="More actions for this reply"
-            items={[
-              ...(gmailLink
-                ? [{ label: `Edit in ${mailbox}`, href: gmailLink, external: true }]
-                : []),
-              { label: "Dismiss", onSelect: () => void dismiss(), disabled: busy },
-            ]}
-          />
+          {gmailLink && (
+            <a
+              href={gmailLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonClass("secondary")}
+            >
+              Edit in {mailbox}
+            </a>
+          )}
+          {/* Dismiss is its own button, set apart on the right, so it's never
+              hunted for in a menu next to Send. */}
+          <Button variant="ghost" className="ml-auto" onClick={() => void dismiss()} disabled={busy}>
+            Dismiss
+          </Button>
         </div>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
