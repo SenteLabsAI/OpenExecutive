@@ -33,6 +33,7 @@ async def execute_tool_calls(
     budget_remaining: int | None = None,
     free_tools: frozenset[str] | None = None,
     result_chars: int = 160,
+    wide_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Invoke any tool_use blocks in the LLM response.
 
@@ -58,6 +59,8 @@ async def execute_tool_calls(
     ``result_chars`` caps each result the model sees back: short for a
     pass that only routes, longer for one that must read what a tool found
     (Take the lead's search_tools results, a created file's id).
+    ``wide_results`` raises that cap for the named tools whose result is
+    the point of calling them (``search_knowledge``'s passages).
     """
     free_tools = free_tools or frozenset()
     summaries: list[dict[str, Any]] = []
@@ -114,7 +117,7 @@ async def execute_tool_calls(
         summaries.append({
             "tool": name,
             "input_preview": str(tool_input)[:120],
-            "result_preview": str(result)[:result_chars],
+            "result_preview": str(result)[: max(result_chars, (wide_results or {}).get(name, 0))],
             "ok": ok,
         })
         if budget_remaining is not None and not is_free:

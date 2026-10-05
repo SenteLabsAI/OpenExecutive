@@ -1232,7 +1232,8 @@ routing:
     to ACT on, not just what to summarise. The reflection workflow
     invokes a single LLM call against the routing_model with the
     Executive's full outbound toolkit (the same `_ALL_SKILL_TOOLS` /
-    `_ALL_SKILL_HANDLERS` registries used by chat). Up to 4 iterations
+    `_ALL_SKILL_HANDLERS` registries used by chat), plus its own
+    `search_knowledge`. Up to 5 iterations
     of tool-use loop; each tool call hits the real handler — DMs go
     out, follow-ups get scheduled, alerts are flagged, broadcasts post
     to channels. DMs to a person go through `message_person(person_id,
@@ -1284,6 +1285,18 @@ routing:
     send_*_dm tools (send_slack_dm has no roster check), ack_alert and
     close_open_loop in reflection; the watchlist writes, run_workflow,
     send_company_broadcast and ack_alert in research.
+
+    Knowledge: chat looks the knowledge base up before each turn and each
+    consulted specialist looks up its own domain; the reflection has
+    neither, so it gets `search_knowledge` (orchestrator/knowledge_tools.py),
+    the same `knowledge.retriever.retrieve` as chat, read-only and never
+    gated. The prompt (`_KNOWLEDGE_RULE`, both modes) asks for a search
+    before acting on or flagging something that turns on a customer's or
+    supplier's terms, a price, a policy, a plan or a past decision. Its
+    passages return up to 4,000 characters (execute_tool_calls
+    wide_results) while other tools keep the short preview; the run's tool
+    log trims every line to 160. The pass runs with no viewer, so no
+    published artifact that is someone's own comes back.
 
     Audit trail: every tool the reflection model invokes flows through
     the existing handler audit rows (`tool_invocation` with actor=

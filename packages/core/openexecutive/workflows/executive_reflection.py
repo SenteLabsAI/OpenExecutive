@@ -67,8 +67,9 @@ _PREVIOUS_REFLECTION_CHARS = 1500
 # The reflection model can call a few tools, see the results, then
 # emit a final summary. 4 iterations is enough for "DM Sara + schedule
 # follow-up + flag an alert + summarize" without spiralling into a
-# multi-turn agentic loop.
-_MAX_REFLECTION_ITERATIONS = 4
+# multi-turn agentic loop. The fifth leaves room for a search_knowledge
+# lookup before acting.
+_MAX_REFLECTION_ITERATIONS = 5
 # Cap the LLM response size — the reflection prompt is structured so
 # the model emits one summary turn after all tool calls.
 _MAX_REFLECTION_TOKENS = 2000
@@ -127,6 +128,17 @@ def _reflection_dm_rule(configured: set[str], has_roster: bool = True) -> str:
     )
 
 
+# The pass reads the org's state, not a question, so nothing looks the
+# knowledge base up for it: it asks (``orchestrator/knowledge_tools.py``).
+_KNOWLEDGE_RULE = (
+    "Company knowledge: before you act on or flag something that turns on "
+    "what the company has written down (a customer's or supplier's terms, a "
+    "price, a policy, a plan, a past decision), call `search_knowledge` with "
+    "a few words and use what it returns. Don't search for every signal, "
+    "only those where the documents could change what you do.\n\n"
+)
+
+
 # briefing/grounding.py enforces this on the outward tools and the flags.
 _GROUNDING_RULE = (
     "Grounding: name only people and figures that appear in the input or in "
@@ -172,6 +184,7 @@ def _build_reflection_system(configured: set[str], has_roster: bool = True) -> s
         "include the source's provenance_url in the message so the "
         "principal can verify in one click.\n\n"
         + _GROUNDING_RULE
+        + _KNOWLEDGE_RULE
         + "Memory: the block YESTERDAY'S STANDUP lists what you already did "
         "on the previous run. Do NOT re-act on or re-notify anyone about a "
         "signal listed there unless the input shows it changed since — "
@@ -248,6 +261,7 @@ def _build_reflection_system_solo() -> str:
         "include the source's provenance_url so the principal can verify "
         "in one click.\n\n"
         + _GROUNDING_RULE
+        + _KNOWLEDGE_RULE
         + "Memory: the block YESTERDAY'S STANDUP lists what you already did "
         "on the previous run. Do NOT re-act on or re-raise a signal listed "
         "there unless the input shows it changed since — repeating an alert "
@@ -697,6 +711,13 @@ class ExecutiveReflectionWorkflow(Workflow):
             _ALL_SKILL_HANDLERS,
             _ALL_SKILL_TOOLS,
         )
+        from openexecutive.orchestrator.knowledge_tools import (
+            KNOWLEDGE_TOOL_HANDLERS,
+            KNOWLEDGE_TOOLS,
+        )
+        from openexecutive.orchestrator.knowledge_tools import (
+            RESULT_CHARS as KNOWLEDGE_RESULT_CHARS,
+        )
         from openexecutive.orchestrator.schedule_tools import (
             configured_integrations,
             current_session,
@@ -797,8 +818,13 @@ class ExecutiveReflectionWorkflow(Workflow):
             # what people wrote, and nobody is watching this pass.
             "close_open_loop",
         }
+        # search_knowledge is this pass's own: chat looks knowledge up
+        # before the turn, so it isn't in the shared skill tools.
         tools = sorted(
-            (t for t in _ALL_SKILL_TOOLS if t["name"] not in _excluded_dm),
+            (
+                t for t in [*_ALL_SKILL_TOOLS, *KNOWLEDGE_TOOLS]
+                if t["name"] not in _excluded_dm
+            ),
             key=lambda t: t["name"],
         )
 
@@ -810,7 +836,9 @@ class ExecutiveReflectionWorkflow(Workflow):
         # Dispatch only what was offered (a withheld name the model emits
         # anyway is skipped as unknown). Solo also withholds the team tools,
         # meeting booking and run_workflow, and messages only the principal.
-        tools, handlers = unattended_toolkit(tools, _ALL_SKILL_HANDLERS, mode, source="reflection")
+        tools, handlers = unattended_toolkit(
+            tools, {**_ALL_SKILL_HANDLERS, **KNOWLEDGE_TOOL_HANDLERS}, mode, source="reflection"
+        )
         tools, handlers, leading = _with_lead_tools(tools, handlers)
         if leading:
             user_content += _LEAD_NOTE
@@ -866,6 +894,7 @@ class ExecutiveReflectionWorkflow(Workflow):
                 with tag_proactive(SOURCE_REFLECTION):
                     iter_summaries = await _execute_tool_calls(
                         response, handlers, result_chars=_LEAD_RESULT_CHARS if leading else 160,
+                        wide_results={"search_knowledge": KNOWLEDGE_RESULT_CHARS},
                     )
                 tool_call_summaries.extend(iter_summaries)
 
@@ -962,8 +991,9 @@ class ExecutiveReflectionWorkflow(Workflow):
             log_lines = ["", "---", "_Tool calls this run:_"]
             for s in tool_call_summaries:
                 mark = "✓" if s["ok"] else "✗"
+                # One line each: a search_knowledge result runs to pages.
                 log_lines.append(
-                    f"- {mark} `{s['tool']}` — {s['result_preview']}"
+                    f"- {mark} `{s['tool']}` — {str(s['result_preview'])[:160]}"
                 )
             final_text = final_text + "\n".join(log_lines) if final_text.endswith("\n") else final_text + "\n" + "\n".join(log_lines)
         if held_flags:
