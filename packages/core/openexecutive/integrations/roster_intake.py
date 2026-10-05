@@ -256,11 +256,16 @@ def _chat_prompt(request: rr.RosterRequest, acknowledged: bool = True) -> str:
     )
 
 
+def _subject_who(request: rr.RosterRequest) -> str:
+    """Who a request is about, safe for a Subject line: the name comes from the
+    unknown sender, so line breaks are collapsed and its length capped."""
+    return " ".join((request.display_name or request.channel_ref).split())[:80]
+
+
 def _email_prompt(
     request: rr.RosterRequest, token: str, acknowledged: bool = True,
 ) -> tuple[str, str]:
-    subject_who = request.display_name or request.channel_ref
-    subject = f"Who is {subject_who}? [{token}]"
+    subject = f"Who is {_subject_who(request)}? [{token}]"
     body = (
         f"{rr.describe(request)}.\n\n"
         f"{_told(acknowledged)}. I haven't replied to what they said.\n\n"
@@ -690,7 +695,7 @@ async def _reply_to_principal(gateway: Any, to: str, request: rr.RosterRequest, 
     try:
         with set_session(None):
             await send_from_executive(
-                gateway, to=to, subject=f"Re: Who is {request.display_name or request.channel_ref}?", body=text,
+                gateway, to=to, subject=f"Re: Who is {_subject_who(request)}?", body=text,
             )
     except Exception:
         logger.warning("roster_intake: replying to the principal failed", exc_info=True)

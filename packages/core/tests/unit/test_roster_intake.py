@@ -437,6 +437,14 @@ def test_the_principal_adds_them_by_email(pending: tuple[rr.RosterRequest, str])
     assert sent.await_args.args[1]["arguments"]["subject"] == f"Re: Who is {req.display_name}?"
 
 
+def test_the_subject_names_who_safely_even_without_a_display_name() -> None:
+    no_name = SimpleNamespace(display_name="", channel_ref="new@example.com")
+    assert roster_intake._subject_who(no_name) == "new@example.com"  # type: ignore[arg-type]
+    hostile = SimpleNamespace(display_name="Bob\r\nBcc: x@example.com" + "y" * 200, channel_ref="r")
+    who = roster_intake._subject_who(hostile)  # type: ignore[arg-type]
+    assert "\r" not in who and "\n" not in who and len(who) == 80
+
+
 def test_this_is_someone_on_the_list_links_them(pending: tuple[rr.RosterRequest, str], roster: SimpleNamespace) -> None:
     req, token = pending
     handled, _sent, _seen = _answer(
