@@ -1715,6 +1715,20 @@ export interface VoiceProfile {
   learned_at: string | null;
   sample_count: number;
   updated_at: string | null;
+  // "learn" when the last change was a learn pass, else who changed it.
+  updated_by?: string | null;
+}
+
+// A style written from the person's own words (POST /delegation/voice/describe):
+// not saved until they save it with updateVoiceProfile.
+export interface DescribedVoice {
+  greetings: Record<string, string>;
+  sign_off: string;
+  length: string;
+  formality: string;
+  habits: string[];
+  avoid: string[];
+  sample_reply: string;
 }
 
 export interface VoiceUpdate {
@@ -1951,6 +1965,16 @@ export async function updateVoiceProfile(update: VoiceUpdate): Promise<VoiceProf
     body: JSON.stringify(update),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't save how you write.");
+  return res.json();
+}
+
+export async function describeVoiceProfile(description: string): Promise<DescribedVoice> {
+  const res = await fetch(`${API_BASE}/delegation/voice/describe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't write your style. Try again.");
   return res.json();
 }
 

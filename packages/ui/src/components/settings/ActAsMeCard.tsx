@@ -9,6 +9,7 @@ import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
 import {
   checkInboxNow,
+  describeVoiceProfile,
   getDelegation,
   getVoiceProfile,
   learnVoiceProfile,
@@ -20,10 +21,12 @@ import {
   updateVoiceProfile,
   type DelegationSettings,
   type DelegationTeam,
+  type DescribedVoice,
   type InboxWatch,
   type VoiceProfile,
 } from "@/lib/api";
 import { formatAgo } from "@/lib/setupStatus";
+import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceStyle";
 
 // Settings → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
@@ -51,6 +54,9 @@ const AUDIENCE_LABEL: Record<string, string> = {
   other: "To anyone else",
 };
 const GREETING_MAX_CHARS = 60;
+// The longest description POST /delegation/voice/describe takes
+// (delegation/voice.py DESCRIPTION_MAX_CHARS).
+const DESCRIPTION_MAX_CHARS = 2000;
 // While Check now runs, how often the card looks again, and for how long.
 const CHECK_POLL_MS = 3000;
 const MAX_CHECK_POLLS = 40;
@@ -398,10 +404,15 @@ function InboxSection({
   );
 }
 
-// "How I write": learned from your sent mail, editable, lockable. The
-// summary line and the Learn button are always in view; the fields sit
-// behind "Edit how I write", and stay open while an edit is unsaved.
+// "How I write": the style drafts written as you follow, shown as a few plain
+// sentences. Two ways to set it: describe it in your own words (a model turns
+// that into the style, shown with what's new marked and a sample reply,
+// saved only with Save), or learn it from your sent mail. The fields sit
+// behind "Fine-tune details", and stay open while an edit is unsaved.
 function VoiceSection({ connected, outlook = false }: { connected: boolean; outlook?: boolean }) {
+  const [mode, setMode] = useState<"view" | "describe" | "review">("view");
+  const [description, setDescription] = useState("");
+  const [proposed, setProposed] = useState<DescribedVoice | null>(null);
   const [editing, setEditing] = useState(false);
   const [profile, setProfile] = useState<VoiceProfile | null>(null);
   const [greetings, setGreetings] = useState<Record<string, string>>({});
@@ -477,6 +488,38 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
     }
   };
 
+  const writeStyle = async () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setProposed(await describeVoiceProfile(description));
+      setMode("review");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't write your style. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveProposed = async () => {
+    if (!proposed) return;
+    await run(() =>
+      updateVoiceProfile({
+        greetings: proposed.greetings,
+        sign_off: proposed.sign_off,
+        length: proposed.length,
+        formality: proposed.formality,
+        habits: proposed.habits,
+        avoid: proposed.avoid,
+      }),
+    );
+    setMode("view");
+    setProposed(null);
+    setDescription("");
+    setNotice("Saved. Drafts written as you now follow this.");
+  };
+
   const takeGmailSignature = () =>
     void run(async () => {
       const next = await refreshVoiceSignature();
@@ -491,6 +534,8 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
     }, true);
 
   const learned = profile.learned_at !== null;
+  const sentences = styleSentences(profile);
+  const hasStyle = sentences.length > 0;
   const savedGreetings = greetingFields(profile);
   const dirty =
     AUDIENCES.some((a) => greetings[a] !== savedGreetings[a]) ||
@@ -504,46 +549,156 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
   const field =
     "rounded-xl border border-line bg-surface px-3 text-[15px] text-fg focus:outline-none focus:border-line-strong";
   const showForm = editing || dirty;
+  const source =
+    profile.updated_by === "learn"
+      ? `Learned from ${profile.sample_count} of your sent emails`
+      : learned
+        ? "Learned from your sent mail, then changed by you"
+        : "Set by you";
+  const feedback = (
+    <>
+      {notice && <p className="mt-2 text-sm text-fg-muted">{notice}</p>}
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </>
+  );
+
+  if (mode === "describe") {
+    return (
+      <SettingsCard
+        title="Describe how you write"
+        description={
+          hasStyle
+            ? "Write it the way you'd tell a new assistant. It changes your current style rather than starting over."
+            : "Write it the way you'd tell a new assistant."
+        }
+      >
+        <label htmlFor="voice-description" className="text-sm font-medium text-fg">
+          In your own words
+        </label>
+        <GrowingTextarea
+          id="voice-description"
+          value={description}
+          onChange={setDescription}
+          minRows={5}
+          maxLength={DESCRIPTION_MAX_CHARS}
+          placeholder={`For example: I keep emails short, usually three or four lines. First names only. I sign off "Thanks, Sam".`}
+        />
+        <div className="mt-3 flex flex-wrap gap-2" aria-label="Add a phrase">
+          {STYLE_PHRASES.map((phrase) => (
+            <button
+              key={phrase}
+              type="button"
+              onClick={() => setDescription((d) => addPhrase(d, phrase))}
+              className="min-h-touch rounded-full border border-line bg-surface-overlay px-3 text-sm font-medium text-fg hover:bg-surface-hover"
+            >
+              <span className="text-accent">+</span> {phrase}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button variant="primary" disabled={busy || !description.trim()} onClick={() => void writeStyle()}>
+            {busy ? "Writing your style…" : "Write my style"}
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={() => setMode("view")}>
+            Cancel
+          </Button>
+        </div>
+        <p className="mt-2 text-[13px] text-fg-subtle">Nothing changes until you save.</p>
+        {feedback}
+      </SettingsCard>
+    );
+  }
+
+  if (mode === "review" && proposed) {
+    return (
+      <SettingsCard title="Here's your new style" description="Check it, then save. New lines are marked.">
+        <ul className="space-y-2">
+          {markNew(profile, proposed).map(({ text, isNew }) => (
+            <StyleLine key={text} text={text} isNew={isNew} />
+          ))}
+        </ul>
+        {proposed.sample_reply && (
+          <div className="mt-5 text-sm">
+            <div className="font-medium text-fg">A reply would read like</div>
+            <div className="mt-2 whitespace-pre-wrap break-words border-l-2 border-accent pl-3 leading-relaxed text-fg">
+              {proposed.sample_reply}
+            </div>
+          </div>
+        )}
+        <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+          <Button variant="primary" disabled={busy} onClick={() => void saveProposed()}>
+            {busy ? "Saving…" : "Save"}
+          </Button>
+          <Button disabled={busy} onClick={() => setMode("describe")}>
+            Change it
+          </Button>
+        </div>
+        {feedback}
+      </SettingsCard>
+    );
+  }
 
   return (
     <SettingsCard
       title="How I write"
       description={
-        learned
-          ? `Learned from ${profile.sample_count} of your sent emails${profile.locked ? " — locked, so it won't be relearned" : ""}. Drafts follow it; edit anything that isn't you.`
-          : "Not learned yet. It reads your recent sent mail once, keeps only what you wrote, and describes your style — you can edit or lock it."
+        hasStyle
+          ? "Drafts written as you follow this."
+          : "Tell the Executive how you write, or let it learn from your sent mail. Drafts written as you follow it."
       }
     >
-      <div className="flex flex-wrap items-center gap-2">
+      {hasStyle && (
+        <div className="mb-4 rounded-2xl border border-line bg-surface px-4 py-3">
+          <ul className="space-y-2">
+            {sentences.map((text) => (
+              <StyleLine key={text} text={text} />
+            ))}
+          </ul>
+          <p className="mt-2 text-[13px] text-fg-subtle">
+            {source}
+            {profile.locked ? " · locked, so it won't be relearned" : ""}
+          </p>
+        </div>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <Button
+          variant="primary"
+          disabled={busy}
+          onClick={() => {
+            setError(null);
+            setNotice(null);
+            setMode("describe");
+          }}
+        >
+          Describe it in your own words
+        </Button>
         {!profile.locked && (
-          <Button
-            variant={learned ? "secondary" : "primary"}
-            size="sm"
-            disabled={busy || !connected}
-            onClick={() => void run(learnVoiceProfile)}
-          >
+          <Button disabled={busy || !connected} onClick={() => void run(learnVoiceProfile)}>
             {busy ? "Working…" : learned ? "Learn again from my sent mail" : "Learn from my sent mail"}
           </Button>
         )}
-        {learned && !dirty && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setEditing((v) => !v)}
-            aria-expanded={showForm}
-            aria-controls="voice-editor"
-          >
-            {showForm ? "Done editing" : "Edit how I write"}
+      </div>
+      {!dirty && (
+        <button
+          type="button"
+          onClick={() => setEditing((v) => !v)}
+          aria-expanded={showForm}
+          aria-controls="voice-editor"
+          className="mt-4 flex w-full min-h-touch items-center justify-between gap-3 border-t border-line pt-3 text-left text-sm"
+        >
+          <span className="font-medium text-accent">{showForm ? "Done fine-tuning" : "Fine-tune details"}</span>
+          <span className="flex items-center gap-1 text-fg-subtle">
+            <span className="hidden sm:inline">Greetings, sign-off, signature</span>
             <Icon
               name="chevron-right"
               size="w-4 h-4"
               className={`transition-transform ${showForm ? "rotate-90" : ""}`}
             />
-          </Button>
-        )}
-      </div>
+          </span>
+        </button>
+      )}
 
-      {learned && showForm && (
+      {showForm && (
         <div id="voice-editor" className="mt-5 space-y-5">
           <div className="flex flex-wrap gap-4">
             <label className="flex items-center gap-2 text-sm text-fg-muted">
@@ -726,9 +881,23 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
           </div>
         </div>
       )}
-      {notice && <p className="mt-2 text-sm text-fg-muted">{notice}</p>}
-      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+      {feedback}
     </SettingsCard>
+  );
+}
+
+// One sentence of the style, marked when a described style adds it.
+function StyleLine({ text, isNew = false }: { text: string; isNew?: boolean }) {
+  return (
+    <li className="flex items-baseline gap-2.5 text-[15px] leading-relaxed text-fg">
+      <span aria-hidden className="h-1.5 w-1.5 flex-shrink-0 -translate-y-0.5 rounded-full bg-accent" />
+      <span className="min-w-0 flex-1">{text}</span>
+      {isNew && (
+        <span className="flex-shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
+          New
+        </span>
+      )}
+    </li>
   );
 }
 
@@ -736,13 +905,19 @@ function VoiceSection({ connected, outlook = false }: { connected: boolean; outl
 // scrollbar; it refits when the text changes (typed or loaded) and when the
 // window's width does.
 function GrowingTextarea({
+  id,
   value,
   onChange,
   minRows,
+  maxLength,
+  placeholder,
 }: {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   minRows: number;
+  maxLength?: number;
+  placeholder?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fit = useCallback(() => {
@@ -760,7 +935,10 @@ function GrowingTextarea({
   return (
     <textarea
       ref={ref}
+      id={id}
       value={value}
+      maxLength={maxLength}
+      placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
       rows={minRows}
       className="mt-1.5 block w-full resize-none overflow-hidden rounded-xl border border-line bg-surface px-3 py-2 text-[15px] font-normal leading-relaxed text-fg focus:outline-none focus:border-line-strong"

@@ -332,3 +332,39 @@ def test_only_the_owner_takes_their_signature(
     resp = client.post("/delegation/voice/signature")
     assert resp.status_code == 403 and resp.json()["detail"]["code"] == "sign_in_required"
     assert mailbox.asked == 0
+
+
+def test_a_style_is_written_from_their_words_without_saving(
+    client: TestClient, ids: dict[str, int], audit: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[int, str]] = []
+
+    async def fake_describe(person_id: int, description: str) -> dvoice.DescribedVoice:
+        seen.append((person_id, description))
+        return dvoice.DescribedVoice(
+            profile=VoiceProfile(sign_off="Cheers,\nSam", habits=["Keeps emails short"], signature="Sam"),
+            sample_reply="Hi Alex,\nThursday works.",
+            dropped=[],
+        )
+
+    monkeypatch.setattr(route, "describe_voice", fake_describe)
+    resp = client.post("/delegation/voice/describe", json={"description": "Short. Cheers, Sam."}, headers=OWNER)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sign_off"] == "Cheers,\nSam" and body["habits"] == ["Keeps emails short"]
+    assert body["sample_reply"] == "Hi Alex,\nThursday works."
+    assert "signature" not in body
+    assert seen == [(ids["principal"], "Short. Cheers, Sam.")]
+    assert get_voice(ids["principal"]).profile.is_empty()
+    event, kw = audit[-1]
+    assert event == "delegation_voice_described" and kw["private_to_person"] == ids["principal"]
+
+    async def refused(person_id: int, description: str) -> dvoice.DescribedVoice:
+        raise dvoice.VoiceError("too_many", "That's a lot of tries in an hour.")
+
+    monkeypatch.setattr(route, "describe_voice", refused)
+    resp = client.post("/delegation/voice/describe", json={"description": "Short."}, headers=OWNER)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "too_many"
+    assert client.post("/delegation/voice/describe", json={"description": "x"}, headers=TEAMMATE).status_code == 403
+    assert client.post("/delegation/voice/describe", json={"nope": 1}, headers=OWNER).status_code == 422

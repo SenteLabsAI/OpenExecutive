@@ -82,6 +82,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_settings_changed",  # a person turned Act as me on or off (PUT /delegation)
     "delegation_gmail_verified",    # a person's own Gmail was checked and found usable when turning it on
     "delegation_voice_changed",     # "How I write" learned, edited, locked, reset or its signature re-read
+    "delegation_voice_described",   # a person had their style written from their own words (nothing saved yet)
     "delegation_drafted",           # ghostwrite_email saved a draft in a person's own Gmail
     "delegation_inbox_changed",     # a person turned "Draft replies to my inbox" on or off (PUT /delegation/inbox)
     "delegation_inbox_scanned",     # the inbox watcher checked a person's inbox (counts only)

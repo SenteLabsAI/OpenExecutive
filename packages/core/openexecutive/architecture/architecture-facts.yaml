@@ -8632,7 +8632,13 @@ delegation:
   voice: |
     delegation.voice — "How I write", learned from the person's OWN sent
     mail on request (POST /delegation/voice/learn), unlike attunement.style,
-    which learns how to write TO someone. Up to 40 sent messages; quoted
+    which learns how to write TO someone. It can also be written from the person's
+    own words (POST /delegation/voice/describe, describe_voice): one forced
+    record_voice_profile call with its own system prompt and no exemplars
+    applies the description to the current profile, validate_profile cleans
+    it, signature and exemplars are kept, and the result comes back with a
+    short sample reply, unsaved; the person saves it with PUT. No mailbox
+    needed; one at a time per person and at most 10 an hour (in-process). Up to 40 sent messages; quoted
     text stripped (sender_new_text); automatic mail, the package's own
     X-OE-Ghostwritten drafts, every thread chat drafted into (delegation_drafts
     source chat, plus the delegation_drafted audit rows from before that
@@ -9074,7 +9080,9 @@ delegation:
     lock), DELETE (reset); POST /delegation/voice/learn (409 in_progress /
     locked / too_soon / not_enough_mail / no_profile / changed); POST
     /delegation/voice/signature (the Gmail sendAs signature again; 409 with
-    the Gmail codes, 502 gmail_error). The
+    the Gmail codes, 502 gmail_error); POST /delegation/voice/describe
+    {description} (an unsaved profile + sample_reply; 409 empty / too_long /
+    in_progress / too_many / no_profile). The
     caller's OWN delegation only. 403 not_available_yet for a caller can_delegate
     refuses (the Settings card hides); 403 sign_in_required with no
     x-caller-email unless local login; turning it on needs gmail_status

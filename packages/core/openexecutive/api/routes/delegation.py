@@ -56,6 +56,12 @@ Routes:
   POST   /delegation/voice/signature — take the signature from the caller's
                                     Gmail settings again (a locked profile
                                     stays locked; nothing else changes)
+  POST   /delegation/voice/describe — {description}: write the style from
+                                    the caller's own words, applied to what
+                                    they have, plus a sample reply; saves
+                                    nothing (they save it with PUT). 409
+                                    empty / too_long / in_progress /
+                                    too_many / no_profile
   PUT    /delegation/voice        — edit fields, lock / unlock
   DELETE /delegation/voice        — forget it (history kept)
   PUT    /delegation/team         — {enabled}: the owner's "Let team members
@@ -78,7 +84,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from openexecutive.api import caller as api_caller
 from openexecutive.delegation.gmail import (
@@ -102,7 +108,9 @@ from openexecutive.delegation.settings import (
 )
 from openexecutive.delegation.voice import (
     StoredVoice,
+    DESCRIPTION_MAX_CHARS,
     VoiceError,
+    describe_voice,
     get_voice,
     learn_from_sent_mail,
     reset_voice,
@@ -287,6 +295,8 @@ class VoiceOut(BaseModel):
     learned_at: str | None
     sample_count: int
     updated_at: str | None
+    # "learn" when a learn pass made the last change, else "person:<id>".
+    updated_by: str | None = None
 
 
 class VoiceUpdate(BaseModel):
@@ -303,6 +313,25 @@ class VoiceUpdate(BaseModel):
     locked: bool | None = None
     clear_exemplars: bool = False
     clear_signature: bool = False
+
+
+class VoiceDescribeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # A little over the limit, so a long paste gets the plain 409 message.
+    description: str = Field(max_length=DESCRIPTION_MAX_CHARS * 2)
+
+
+class VoiceDescribedOut(BaseModel):
+    """A style written from the caller's words, not saved yet."""
+
+    greetings: dict[str, str]
+    sign_off: str
+    length: str
+    formality: str
+    habits: list[str]
+    avoid: list[str]
+    sample_reply: str
 
 
 # What a refused field must be, for the message an edit gets back.
@@ -474,6 +503,7 @@ def _voice_out(stored: StoredVoice) -> VoiceOut:
         learned_at=stored.learned_at,
         sample_count=stored.sample_count,
         updated_at=stored.updated_at,
+        updated_by=stored.updated_by,
     )
 
 
@@ -839,6 +869,28 @@ async def refresh_delegation_signature(request: Request) -> VoiceOut:
         {"op": "signature", "person_id": person_id, "has_signature": bool(profile.signature)},
     )
     return _voice_out(saved)
+
+
+@router.post("/delegation/voice/describe", response_model=VoiceDescribedOut)
+async def describe_delegation_voice(request: Request, body: VoiceDescribeIn) -> VoiceDescribedOut:
+    """The caller's style from their own description, for them to review.
+    Needs no mailbox: nothing is read or saved."""
+    person = _caller(request)
+    person_id = _person_id(person)
+    try:
+        described = await describe_voice(person_id, body.description)
+    except VoiceError as exc:
+        raise _refuse(409, exc.code, exc.message) from exc
+    p = described.profile
+    _audit(
+        "delegation_voice_described",
+        f"Writing style drafted from person {person_id}'s description",
+        {"op": "describe", "person_id": person_id, "habits": len(p.habits), "dropped": described.dropped[:10]},
+    )
+    return VoiceDescribedOut(
+        greetings=dict(p.greetings), sign_off=p.sign_off, length=p.length, formality=p.formality,
+        habits=list(p.habits), avoid=list(p.avoid), sample_reply=described.sample_reply,
+    )
 
 
 @router.put("/delegation/voice", response_model=VoiceOut)
