@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CouncilMark } from "./BrandMark";
 import CommitteePhaseIndicator from "./CommitteePhaseIndicator";
 import type { CommitteePhase } from "@/lib/api";
 import type { TurnStatus } from "@/lib/turnStatus";
@@ -39,24 +40,20 @@ export function useTurnClock(isLoading: boolean) {
   };
 }
 
+// `showMark` is off where the Executive's avatar beside the row already plays
+// the Consult animation, so the turn doesn't show it twice.
 export default function TurnStatusRow({
   status,
   committeePhase,
+  showMark = true,
 }: {
   status: TurnStatus;
   committeePhase: CommitteePhase | null;
+  showMark?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <div className="flex gap-1.5" aria-label="Thinking">
-        {[0, 1, 2].map((i) => (
-          <div
-            key={i}
-            className="w-1.5 h-1.5 bg-fg-muted rounded-full animate-bounce motion-reduce:animate-none"
-            style={{ animationDelay: `${i * 0.15}s` }}
-          />
-        ))}
-      </div>
+    <div className="flex items-center gap-2 flex-wrap" aria-label="Thinking">
+      {showMark && <CouncilMark consulting className="w-4 h-4 text-accent" />}
       {committeePhase ? (
         <CommitteePhaseIndicator phase={committeePhase} />
       ) : status.label ? (

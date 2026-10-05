@@ -12,28 +12,75 @@ const MARK_CLASSES: Record<BrandMarkSize, string> = {
   lg: "w-8 h-8 text-white",
 };
 
-/** The Council mark alone: the Executive in the middle, five specialists around it. */
-export function CouncilMark({ className = "" }: { className?: string }) {
+// The five specialists' seats around the Executive at (24, 24).
+const SEATS: ReadonlyArray<readonly [number, number]> = [
+  [24, 6.5],
+  [40.6, 18.6],
+  [34.3, 38.2],
+  [13.7, 38.2],
+  [7.4, 18.6],
+];
+
+/**
+ * The Council mark alone: the Executive in the middle, five specialists around it.
+ *
+ * `consulting` plays the Consult animation (globals.css): a line reaches from
+ * the Executive to each specialist in turn and lights it up, then lets go.
+ * Used while the Executive is working on a reply; with reduced motion it is
+ * the still mark.
+ */
+export function CouncilMark({
+  className = "",
+  consulting = false,
+}: {
+  className?: string;
+  consulting?: boolean;
+}) {
   return (
-    <svg viewBox="0 0 48 48" fill="currentColor" className={className} aria-hidden>
-      <circle cx="24" cy="24" r="7.5" />
-      <circle cx="24" cy="6.5" r="4" />
-      <circle cx="40.6" cy="18.6" r="4" />
-      <circle cx="34.3" cy="38.2" r="4" />
-      <circle cx="13.7" cy="38.2" r="4" />
-      <circle cx="7.4" cy="18.6" r="4" />
+    <svg
+      viewBox="0 0 48 48"
+      fill="currentColor"
+      className={`${consulting ? "council-consult overflow-visible " : ""}${className}`}
+      aria-hidden
+    >
+      {consulting &&
+        SEATS.map(([x, y], i) => (
+          <line
+            key={`l${i}`}
+            className="council-spoke"
+            x1="24"
+            y1="24"
+            x2={x}
+            y2={y}
+            stroke="currentColor"
+            style={{ animationDelay: `${i * 0.18}s` }}
+          />
+        ))}
+      {SEATS.map(([x, y], i) => (
+        <circle
+          key={`s${i}`}
+          className={consulting ? "council-seat" : undefined}
+          cx={x}
+          cy={y}
+          r="4"
+          style={consulting ? { animationDelay: `${i * 0.18 + 0.25}s` } : undefined}
+        />
+      ))}
+      <circle className={consulting ? "council-core" : undefined} cx="24" cy="24" r="7.5" />
     </svg>
   );
 }
 
 interface BrandMarkProps {
   size?: BrandMarkSize;
+  /** Play the Consult animation, while the Executive is working on a reply. */
+  consulting?: boolean;
 }
 
-export default function BrandMark({ size = "sm" }: BrandMarkProps) {
+export default function BrandMark({ size = "sm", consulting = false }: BrandMarkProps) {
   return (
     <div className={BOX_CLASSES[size]} aria-hidden>
-      <CouncilMark className={MARK_CLASSES[size]} />
+      <CouncilMark className={MARK_CLASSES[size]} consulting={consulting} />
     </div>
   );
 }

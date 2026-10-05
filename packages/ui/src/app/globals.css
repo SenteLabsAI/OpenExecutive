@@ -103,6 +103,51 @@
   }
 }
 
+/* Consult: the Council mark while the Executive works on a reply (CouncilMark
+ * with `consulting`). A line reaches from the Executive to each specialist in
+ * turn and lights it up, then lets go; the loop starts again from the still
+ * mark. The base styles below are that still mark, so with reduced motion
+ * (animation: none) nothing is dimmed and no line shows. */
+.council-consult circle {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.council-consult .council-spoke {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 18;
+  stroke-dashoffset: 18;
+  opacity: 0;
+  animation: council-spoke 3.6s ease-out infinite both;
+}
+.council-consult .council-seat {
+  animation: council-seat 3.6s ease-out infinite both;
+}
+.council-consult .council-core {
+  animation: council-core 3.6s ease-in-out infinite both;
+}
+@keyframes council-spoke {
+  0% { stroke-dashoffset: 18; opacity: 0.85; }
+  14%, 62% { stroke-dashoffset: 0; opacity: 0.85; }
+  80%, 100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes council-seat {
+  0% { opacity: 0.45; transform: scale(1); }
+  8% { opacity: 1; transform: scale(1.28); }
+  20%, 62% { opacity: 1; transform: scale(1); }
+  80%, 100% { opacity: 0.45; transform: scale(1); }
+}
+@keyframes council-core {
+  0%, 100% { transform: scale(1); }
+  70% { transform: scale(1.14); }
+  78% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .council-consult * {
+    animation: none !important;
+  }
+}
+
 /* Respect user motion preferences. */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -667,11 +667,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               {status.show && !streamingContent && (
                 <div className="flex gap-4 mb-8">
                   <div className="flex-shrink-0 mt-1">
-                    <BrandMark size="md" />
+                    <BrandMark size="md" consulting />
                   </div>
                   <div className="flex-1 pt-1.5">
                     <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">Executive</div>
-                    <TurnStatusRow status={status} committeePhase={committeePhase} />
+                    <TurnStatusRow status={status} committeePhase={committeePhase} showMark={false} />
                   </div>
                 </div>
               )}
