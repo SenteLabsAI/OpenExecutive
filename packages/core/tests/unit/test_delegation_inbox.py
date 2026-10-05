@@ -508,6 +508,52 @@ def test_someone_only_copied_never_gets_a_draft() -> None:
     assert ic.wants_draft(verdict, "team", ic.Addressing(name="Olivia", position="", others=0)) is False
 
 
+def test_a_name_the_email_greets_decides_over_the_models_judgement() -> None:
+    # The model said "asks them" for mail that greets a colleague: code goes
+    # by the names.
+    to_them = ic.Addressing(name="Olivia Owner", position="to", others=3)
+    greets_priya = ic.Verdict(True, "request", 0.95, asked_of_them=True, asked_names=("Priya",))
+    assert ic.wants_draft(greets_priya, "contact", to_them) is False
+    greets_both = ic.Verdict(True, "request", 0.95, asked_of_them=False, asked_names=("Priya", "Olivia"))
+    assert ic.wants_draft(greets_both, "contact", to_them) is True
+    # Names nobody: the model's judgement stands.
+    nobody = ic.Verdict(True, "request", 0.95, asked_of_them=True)
+    assert ic.wants_draft(nobody, "contact", to_them) is True
+    assert ic.wants_draft(ic.Verdict(True, "request", 0.95), "contact", to_them) is False
+    # Mail to them alone needs no name.
+    alone = ic.Addressing(name="Olivia Owner", position="to", others=0)
+    assert ic.wants_draft(greets_priya, "contact", alone) is True
+
+
+def test_names_them_matches_parts_and_short_forms() -> None:
+    assert ic.names_them("Olivia Owner", ("olivia",))
+    assert ic.names_them("Olivia Owner", ("Ms. Owner",))
+    assert ic.names_them("Rob Lane", ("Robert",))
+    assert ic.names_them("Olivia Owner", ("Liv",)) is False
+    assert ic.names_them("Al Owens", ("Alice",)) is False  # too short to stand for a longer name
+    assert ic.names_them("Olivia Owner", ("Priya",)) is False
+    assert ic.names_them("", ("Olivia",)) is False
+
+
+def test_asked_names_are_read_defensively(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def says(model: str, turn: str) -> dict[str, Any]:
+        return {
+            "needs_reply": True, "kind": "question", "asked_of_them": True, "confidence": 0.9,
+            "asked_names": ["Priya", 7, "  ", "x" * 200],
+        }
+
+    monkeypatch.setattr(ic, "_call_model", says)
+    verdict = asyncio.run(ic.classify(_msg("m1", "t1"), relation="team"))
+    assert verdict is not None and verdict.asked_names == ("Priya", "x" * 80)
+
+    async def malformed(model: str, turn: str) -> dict[str, Any]:
+        return {"needs_reply": True, "kind": "question", "confidence": 0.9, "asked_names": "Priya"}
+
+    monkeypatch.setattr(ic, "_call_model", malformed)
+    verdict = asyncio.run(ic.classify(_msg("m1", "t1"), relation="team"))
+    assert verdict is not None and verdict.asked_names == ()
+
+
 def test_mail_to_the_executive_that_copies_them_gets_no_draft(
     db: Path, owner: Any, models: dict[str, Any]
 ) -> None:

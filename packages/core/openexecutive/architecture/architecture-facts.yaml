@@ -8923,9 +8923,14 @@ delegation:
     fyi, thanks, pitch, notification, newsletter, phishing and other never
     get one, and any failure or malformed answer means none.
     A group email (anyone else in To or Cc besides the sender and the
-    Executive) is drafted for only when the person is in To and the
-    classifier's asked_of_them is true: it names or greets them, not someone
-    else by name or the group at large. The classifier is told the person's
+    Executive) is drafted for only when the person is in To and the email
+    asks them themselves. The classifier lists the names the email greets or
+    asks by name (asked_names) and code matches them against the person's
+    name (inbox_classifier.names_them), so mail that greets someone else is
+    never theirs even when the model's overall asked_of_them says it is (a
+    real miss: "Good morning, <colleague>, could you sign ..." to the person
+    and that colleague). Only when it names nobody does asked_of_them decide,
+    false for the group at large. The classifier is told the person's
     name, To or Cc, and how many others; a Cc-only person never gets a
     draft. Recorded not_needed / asks_someone_else.
   inbox_drafting: |

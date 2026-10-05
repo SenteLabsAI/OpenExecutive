@@ -2,7 +2,7 @@
 model call (``delegation.inbox``).
 
 One forced tool call (``classify_email``) returns ``{needs_reply, kind,
-confidence}``, and code decides: a draft is written only when the email needs
+asked_names, asked_of_them, confidence}``, and code decides: a draft is written only when the email needs
 a reply, is a kind worth answering (a question, a request, scheduling, an
 introduction, a follow-up), and the confidence clears a bar that rises the
 less the sender is known: 0.6 for the team or a contact, 0.7 for someone the
@@ -11,10 +11,12 @@ address Gmail couldn't authenticate: ``inbox.handling_relation``). Anything
 else, and any failure, means no draft.
 
 An email that also went to other people is drafted for only when it asks
-this person themselves (``asked_of_them``): it names or greets them, or they
-are its only addressee. One that greets someone else by name ("Brennan: ...")
-or puts a question to the group in general is theirs to answer, and one that
-merely copies the person is never drafted for.
+this person themselves. The model lists who the email asks or greets by name
+(``asked_names``) and code matches that against the person's name, so one
+that greets someone else ("Good morning, Brennan, could you sign ...") is
+never theirs, whatever the model makes of it as a whole. When it names nobody,
+the model's ``asked_of_them`` decides: a question to the group in general is
+not theirs. One that merely copies the person is never drafted for.
 
 The model sees a few header lines and the sender's own new words (quoted
 replies stripped, at most 3000 characters), as data in a labelled block. It
@@ -25,6 +27,7 @@ constant, and short enough that it is not cached.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,6 +78,10 @@ needs no answer.
 reply), or fyi, thanks, pitch (a cold sales or partnership email), \
 notification, newsletter, phishing (it asks for credentials, payment or a \
 click with urgency or a disguised sender), other.
+- asked_names: the first names of the people the email greets or asks \
+something of by name, exactly as written ("Good morning, Brennan" gives \
+["Brennan"]). Empty when it names nobody. Never include the sender's own \
+name or names that only appear in the signature or a quoted message.
 - asked_of_them: true only when the email asks this person themselves: it \
 names or greets them, or they are its only addressee. False when it is \
 addressed to someone else by name ("Brennan: ..."), when it asks a group \
@@ -91,10 +98,11 @@ _CLASSIFY_TOOL: dict[str, Any] = {
         "properties": {
             "needs_reply": {"type": "boolean"},
             "kind": {"type": "string", "enum": list(KINDS)},
+            "asked_names": {"type": "array", "items": {"type": "string"}},
             "asked_of_them": {"type": "boolean"},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         },
-        "required": ["needs_reply", "kind", "asked_of_them", "confidence"],
+        "required": ["needs_reply", "kind", "asked_names", "asked_of_them", "confidence"],
     },
 }
 
@@ -105,6 +113,8 @@ class Verdict:
     kind: str
     confidence: float
     asked_of_them: bool = False
+    # Who the email greets or asks by name, as the model read them.
+    asked_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -128,12 +138,34 @@ def addressing(message: Any, *, name: str, own: set[str], exec_address: str = ""
     return Addressing(name=name, position=position, others=len((to | cc) - skip))
 
 
+_NAME_PART = re.compile(r"[^\W\d_]+")
+
+
+def _name_parts(name: str) -> set[str]:
+    return {part.casefold() for part in _NAME_PART.findall(name)}
+
+
+def names_them(name: str, asked_names: tuple[str, ...]) -> bool:
+    """Whether any of ``asked_names`` is the person called ``name``: a part
+    of one equals a part of their name, or one starts the other ("Jo" is too
+    short to count; "Johnny" counts for "John")."""
+    theirs = _name_parts(name)
+    for asked in asked_names:
+        for part in _name_parts(asked):
+            for own in theirs:
+                short, long = sorted((part, own), key=len)
+                if part == own or (len(short) >= 3 and long.startswith(short)):
+                    return True
+    return False
+
+
 def wants_draft(verdict: Verdict, relation: str, addressed: Addressing | None = None) -> bool:
     """Whether code drafts a reply for ``verdict`` from a sender of this
     ``relation`` (unknown relations get the stranger's bar). With
     ``addressed``, the person must be in To (only copied, it is never theirs
     to answer), and an email that also went to others must ask them
-    themselves."""
+    themselves: it names them, or it names nobody and the model judged it
+    theirs."""
     bar = THRESHOLDS.get(relation, THRESHOLDS["stranger"])
     if not (verdict.needs_reply and verdict.kind in DRAFT_KINDS and verdict.confidence >= bar):
         return False
@@ -141,7 +173,11 @@ def wants_draft(verdict: Verdict, relation: str, addressed: Addressing | None = 
         return True
     if addressed.position != "to":
         return False
-    return addressed.others == 0 or verdict.asked_of_them
+    if addressed.others == 0:
+        return True
+    if verdict.asked_names:
+        return names_them(addressed.name, verdict.asked_names)
+    return verdict.asked_of_them
 
 
 def render_email(message: Any, *, relation: str, addressed: Addressing | None = None) -> str:
@@ -223,4 +259,11 @@ async def classify(
     return Verdict(
         needs_reply=needs_reply, kind=str(kind), confidence=max(0.0, min(1.0, float(confidence))),
         asked_of_them=payload.get("asked_of_them") is True,
+        asked_names=_asked_names(payload.get("asked_names")),
     )
+
+
+def _asked_names(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(v)[:80] for v in value[:10] if isinstance(v, str) and v.strip())
