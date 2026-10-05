@@ -207,7 +207,7 @@ function WatchCard({
           {isResearch && " · added by the Executive"}
         </div>
       </Link>
-      <div className="flex flex-shrink-0 items-center gap-1 pt-1">
+      <div className="relative flex flex-shrink-0 items-center gap-1 pt-1">
         <span className="sr-only">{item.enabled ? "On" : "Off"}</span>
         {/* The label pads the small switch out to a 40px tap target. */}
         <label className="inline-flex h-10 w-12 cursor-pointer items-center justify-center">
