@@ -433,6 +433,8 @@ def test_the_principal_adds_them_by_email(pending: tuple[rr.RosterRequest, str])
     # The parser reads the principal's own words, not the quoted request.
     assert seen == ["That's Annamarie Chen, add her"]
     assert sent.await_args.args[1]["arguments"]["to"] == OWNER
+    # The confirmation names who it is about, not an internal record number.
+    assert sent.await_args.args[1]["arguments"]["subject"] == "Re: Who is Annamarie?"
 
 
 def test_this_is_someone_on_the_list_links_them(pending: tuple[rr.RosterRequest, str], roster: SimpleNamespace) -> None:
