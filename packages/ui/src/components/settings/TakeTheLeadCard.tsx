@@ -15,8 +15,10 @@ import {
 
 // Take the lead as the Executive (GET/PUT /take-the-lead), the owner's
 // alone: its unattended runs act on what they find, behind the gate. The six
-// "Always asks first" kinds each have a switch; the company's rules always
-// hold. Anyone else (the route answers 403) sees only who can turn it on.
+// "Always asks first" kinds each have a switch, shown only while it's on (they
+// gate nothing else). The company's rules always hold, for everyone's Take the
+// lead as you too, so they stay. Anyone else (the route answers 403) sees only
+// who can turn it on.
 export default function TakeTheLeadCard() {
   const [lead, setLead] = useState<TakeTheLead | null>(null);
   const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
@@ -88,37 +90,41 @@ export default function TakeTheLeadCard() {
       }
     >
       <div className="flex flex-col gap-5">
-        <p className="rounded-xl bg-surface-overlay/60 px-4 py-3 text-sm leading-relaxed text-fg-muted">
-          Department approval levels still apply. A department on Proposes still sends its meetings to its head for a
-          yes. Set a department to Acts on its own to let it book without asking.
-        </p>
-        <div>
-          <h3 className="text-[15px] font-semibold text-fg">Always asks first</h3>
-          <p className="mt-1 text-sm text-fg-muted">
-            These wait for you, or for whoever approves that area (like spending or hiring), with a card on Today.
-          </p>
-          <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
-            {lead.ask_first.map((item) => {
-              const id = `ask-first-${item.kind}`;
-              return (
-                <li key={item.kind} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
-                  <span className="min-w-0">
-                    <span id={id} className="block text-[15px]">
-                      {item.label}
-                    </span>
-                    <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">{item.hint}</span>
-                  </span>
-                  <Switch
-                    checked={item.on}
-                    onChange={() => void save({ ask_first: { [item.kind]: !item.on } })}
-                    disabled={busy}
-                    labelledBy={id}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+        {lead.enabled && (
+          <>
+            <p className="rounded-xl bg-surface-overlay/60 px-4 py-3 text-sm leading-relaxed text-fg-muted">
+              Department approval levels still apply. A department on Proposes still sends its meetings to its head for
+              a yes. Set a department to Acts on its own to let it book without asking.
+            </p>
+            <div>
+              <h3 className="text-[15px] font-semibold text-fg">Always asks first</h3>
+              <p className="mt-1 text-sm text-fg-muted">
+                These wait for you, or for whoever approves that area (like spending or hiring), with a card on Today.
+              </p>
+              <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
+                {lead.ask_first.map((item) => {
+                  const id = `ask-first-${item.kind}`;
+                  return (
+                    <li key={item.kind} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
+                      <span className="min-w-0">
+                        <span id={id} className="block text-[15px]">
+                          {item.label}
+                        </span>
+                        <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">{item.hint}</span>
+                      </span>
+                      <Switch
+                        checked={item.on}
+                        onChange={() => void save({ ask_first: { [item.kind]: !item.on } })}
+                        disabled={busy}
+                        labelledBy={id}
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </>
+        )}
         <div>
           <h3 className="text-[15px] font-semibold text-fg">Company rules</h3>
           <p className="mt-1 mb-3 text-sm text-fg-muted">
