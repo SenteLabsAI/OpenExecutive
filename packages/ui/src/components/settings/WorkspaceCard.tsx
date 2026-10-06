@@ -20,7 +20,7 @@ import {
 } from "@/lib/api";
 import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/principalRole";
 
-// Settings → Workspace: who Open Executive is for (just you, or you and your
+// Settings → Workspace: who Open Executive is for (personal, or for your
 // team), your role when it's just you, the time zone its briefs run in, and
 // whether it books meetings without asking, as one card each, with company
 // email domains under Advanced. Mode, role and zone go through PUT
@@ -28,8 +28,8 @@ import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/p
 // and pages follow. The page supplies the title; this is the body.
 
 export const MODE_LABEL: Record<WorkspaceMode, string> = {
-  solo: "Just me",
-  team: "With your team",
+  solo: "Personal",
+  team: "Team",
 };
 
 // What changes, shown before the switch is made.
