@@ -252,7 +252,15 @@ def test_fetch_never_logs_the_body(caplog: Any) -> None:
     import logging
 
     raw = "Subject: Offer\nFrom: a@example.com\n\nThe salary we discussed is 123456\n"
-    with caplog.at_level(logging.DEBUG, logger="openexecutive.integrations.workspace.google"):
-        asyncio.run(GoogleMail().fetch(_gateway(raw), MessageRef("m1", "t1"), MAILBOX))
+    # Attach caplog's handler to the module logger itself: once any test has
+    # built the app, `openexecutive` stops propagating to root, where caplog
+    # listens by default.
+    module_logger = logging.getLogger("openexecutive.integrations.workspace.google")
+    module_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.DEBUG, logger=module_logger.name):
+            asyncio.run(GoogleMail().fetch(_gateway(raw), MessageRef("m1", "t1"), MAILBOX))
+    finally:
+        module_logger.removeHandler(caplog.handler)
     assert "123456" not in caplog.text and "Offer" not in caplog.text
     assert f"{len(raw)} chars" in caplog.text
