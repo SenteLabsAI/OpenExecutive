@@ -16,10 +16,10 @@ import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/p
 // Onboarding is a focused full-screen flow — exempt from the AppShell chrome
 // (see AppShell.tsx EXEMPT_PREFIXES) so it owns the whole viewport.
 //
-// First run starts with one question: is this just for you, or for you and
-// your team? The answer is saved as the workspace mode (PUT /workspace, with
+// First run starts with one question: is this personal, or for the whole
+// team? The answer is saved as the workspace mode (PUT /workspace, with
 // the browser's time zone) before anything else, because the conversation
-// and the form ask different things in each mode. "Just me" then asks what
+// and the form ask different things in each mode. "Personal" then asks what
 // your role is — owner, an executive inside an organisation, independent —
 // saved with the workspace settings too (skippable; editable in Settings),
 // so setup asks the right questions and the Executive advises for that role.
@@ -156,19 +156,39 @@ function OnboardFlow() {
   );
 }
 
-// Solo is for anyone using Open Executive just for themselves, whatever
-// their role — not only someone running a business. The two bodies are kept
-// the same shape and about the same length, so they read as a pair.
-const CHOICES: { mode: WorkspaceMode; title: string; body: string }[] = [
+// Personal is for anyone using Open Executive just for themselves, whatever
+// their role — not only someone running a business. Each card is a one-line
+// lead, three "Good for" examples and a footnote saying teammates can be
+// added later (from People, not from setup), so neither choice reads as a
+// dead end. The two cards are kept the same shape so they read as a pair.
+const CHOICES: {
+  mode: WorkspaceMode;
+  title: string;
+  lead: string;
+  examples: string[];
+  foot: string;
+}[] = [
   {
     mode: "solo",
-    title: "Just me",
-    body: "An executive that works for you, whatever your role: your own business, a team you lead, or clients you advise. It keeps track of your goals and promises, briefs you each morning and reviews your week with you. The people you work with stay your private contacts.",
+    title: "Personal",
+    lead: "Your own executive: your goals, your inbox, your mornings.",
+    examples: [
+      "A founder running their own business",
+      "A manager tracking promises and follow-ups",
+      "An advisor juggling several clients",
+    ],
+    foot: "Add teammates anytime",
   },
   {
     mode: "team",
-    title: "Me and my team",
-    body: "An executive that works for you and your team. It organises your company into departments, each with its own goals and a lead, checks in with every department daily and briefs you each morning. Your teammates can sign in and message it too.",
+    title: "Team",
+    lead: "An executive for the whole company, with a lead and goals for each department.",
+    examples: [
+      "A startup with sales, product and ops leads",
+      "A department head who wants daily check-ins",
+      "Teammates who sign in and message it too",
+    ],
+    foot: "Invite teammates from People after setup",
   },
 ];
 
@@ -185,7 +205,7 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
   const { refresh } = useWorkspace();
   const [saving, setSaving] = useState<WorkspaceMode | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // "Just me" was saved: ask the role before moving on.
+  // "Personal" was saved: ask the role before moving on.
   const [askRole, setAskRole] = useState(false);
   // The mode (and role) are saved: ask for the voice, then move on.
   const [askVoice, setAskVoice] = useState<WorkspaceMode | null>(null);
@@ -233,23 +253,38 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
       <h1 className="text-xl font-semibold text-fg">Who is Open Executive for?</h1>
       <p className="text-sm text-fg-muted mt-1">
-        Your answer decides what setup asks and what you see afterwards. You can change it
-        later in Settings.
+        This sets your starting point. You can switch in Settings or add teammates anytime.
       </p>
 
-      <div className="mt-8 grid gap-3 sm:grid-cols-2">
+      <div className="mt-8 grid gap-4 sm:grid-cols-2">
         {CHOICES.map((c) => (
           <button
             key={c.mode}
             type="button"
             onClick={() => void choose(c.mode)}
             disabled={saving !== null}
-            className="flex flex-col justify-start text-left rounded-xl border border-line bg-surface-elevated p-5 hover:border-indigo-500/60 hover:bg-surface-overlay transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            className="flex flex-col text-left rounded-xl border border-line bg-surface-elevated p-5 hover:border-line-strong hover:bg-surface-overlay transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
           >
-            <span className="block text-sm font-semibold text-fg">
+            <span className="block text-base font-semibold text-fg">
               {saving === c.mode ? "Saving…" : c.title}
             </span>
-            <span className="block text-xs text-fg-muted mt-1.5 leading-relaxed">{c.body}</span>
+            <span className="block text-sm text-fg mt-2 leading-relaxed">{c.lead}</span>
+            <span className="block text-[11px] uppercase tracking-wider text-fg-subtle mt-4">
+              Good for
+            </span>
+            <span className="mt-2 flex flex-col gap-2">
+              {c.examples.map((e) => (
+                <span
+                  key={e}
+                  className="block rounded-lg bg-surface-overlay px-3 py-2 text-xs text-fg-muted"
+                >
+                  {e}
+                </span>
+              ))}
+            </span>
+            <span className="block mt-auto pt-4 text-xs text-fg-subtle">
+              <span className="block border-t border-line pt-3">{c.foot}</span>
+            </span>
           </button>
         ))}
       </div>
@@ -270,7 +305,7 @@ function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void
   );
 }
 
-// "Just me" → what is your role? Saved with the workspace settings; skipping
+// "Personal" → what is your role? Saved with the workspace settings; skipping
 // saves nothing, and Settings → Workspace edits it later.
 function RoleStep({ onDone }: { onDone: () => void }) {
   const { role, refresh } = useWorkspace();

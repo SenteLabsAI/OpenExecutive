@@ -8173,13 +8173,14 @@ company_onboarding:
     sentence, and the draft turn is a forced tool call whose partial JSON
     cannot be usefully streamed.
   solo_mode: |
-    First run opens on a choice screen in app/onboard/page.tsx — "Just me" or
-    "Me and my team" — that writes PUT /workspace ({mode, timezone} with the
+    First run opens on a choice screen in app/onboard/page.tsx — "Personal" or
+    "Team" (each a one-line lead, three "Good for" examples and a note that
+    teammates can be added later, from People) — that writes PUT /workspace ({mode, timezone} with the
     browser's IANA zone; the mode alone if the server rejects the zone) and
     refreshes the app-wide WorkspaceProvider before the conversation or the
     form starts, because the two modes ask different things. `?for=me|team`
     marks the choice as made so moving between the conversation and the form
-    does not ask again. Choosing "Just me" then shows a role step (RoleStep,
+    does not ask again. Choosing "Personal" then shows a role step (RoleStep,
     sharing components/workspace/RoleFields.tsx with Settings): kind (Owner /
     founder, Executive inside an organisation, Independent or fractional,
     Other), title, who they report to (optional), what they are responsible
@@ -8187,8 +8188,8 @@ company_onboarding:
     (lib/principalRole.ts roleUpdate: trimmed, blank as null, only changed
     fields). "Skip for now" saves nothing. A re-run (GET /health says a
     profile is loaded) skips both screens; they are changed in Settings, and
-    the flow follows them. The solo choice copy is role-neutral ("Only you
-    use Open Executive…"), and the conversation's opening prompt and example
+    the flow follows them. The Personal card copy is role-neutral ("Your own
+    executive…"), and the conversation's opening prompt and example
     follow the role kind (owner: the business; in_house: the organisation,
     function, remit and manager; independent: the practice and clients; none:
     role-neutral).
