@@ -735,11 +735,16 @@ async def advance(
                     },
                 ]
                 continue
-            if prose and not must_draft and len(prose) <= _MAX_PROSE_QUESTION_CHARS:
+            if (
+                prose
+                and not must_draft
+                and len(prose) <= _MAX_PROSE_QUESTION_CHARS
+                and "?" in prose
+            ):
                 # The model asked in plain words twice running: the person can
                 # still answer it, so show it rather than a dead end. A long
                 # reply is reasoning or a half-made draft, not a question, and
-                # is never cut off and shown.
+                # is never cut off and shown, and a reply that asks nothing is not one.
                 return Question(question=prose)
             raise
 

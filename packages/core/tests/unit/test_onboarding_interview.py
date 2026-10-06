@@ -789,3 +789,14 @@ async def test_prose_twice_while_drafting_still_errors(monkeypatch: pytest.Monke
     _install(monkeypatch, provider)
     with pytest.raises(iv.InterviewError):
         await iv.advance(_opening(), questions_asked=0, force_draft=True)
+
+
+@pytest.mark.asyncio
+async def test_short_prose_that_asks_nothing_is_not_a_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = SimpleNamespace(content=[SimpleNamespace(type="text", text="I have enough to draft.")])
+    provider = _ScriptedProvider([note, note])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)
