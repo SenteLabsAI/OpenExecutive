@@ -107,16 +107,16 @@ class Settings(BaseSettings):
     # workspace-scoped key needs no value here.
     anthropic_workspace_id: str | None = Field(None, alias="ANTHROPIC_WORKSPACE_ID")
 
-    default_model: str = Field("claude-sonnet-5", alias="DEFAULT_MODEL")
-    deep_reasoning_model: str = Field("claude-opus-5", alias="DEEP_REASONING_MODEL")
+    default_model: str = Field("claude-sonnet-5-5", alias="DEFAULT_MODEL")
+    deep_reasoning_model: str = Field("claude-opus-5-5", alias="DEEP_REASONING_MODEL")
     routing_model: str = Field("claude-haiku-4-5", alias="ROUTING_MODEL")
     # Model for the executive_research specialist fan-out (research-mode turn
     # only — the chat path still uses each agent's deep_reasoning_model). The
     # research turn is retrieve-from-web-search + summarize, which does not
     # need Opus-tier reasoning; running 7 specialists on Sonnet (deep reasoning
     # off) instead of Opus is the dominant cost lever for the workflow.
-    # Set RESEARCH_MODEL=claude-opus-5 to restore the prior behavior.
-    research_model: str = Field("claude-sonnet-5", alias="RESEARCH_MODEL")
+    # Set RESEARCH_MODEL=claude-opus-5-5 to restore the prior behavior.
+    research_model: str = Field("claude-sonnet-5-5", alias="RESEARCH_MODEL")
 
     vector_store_path: Path = Field(_ROOT / "chroma_db", alias="VECTOR_STORE_PATH")
     company_profile_path: Path = Field(

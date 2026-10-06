@@ -1408,3 +1408,19 @@ def test_scheduled_solo_brief_is_written_for_and_delivered_to_the_principal(
     assert (outcome.kind, outcome.reason, outcome.channel) == (
         "principal_brief_morning", "delivered", "telegram",
     )
+
+
+def test_judge_reads_the_verdict_after_a_thinking_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.evals import judges
+
+    class _P:
+        async def messages_create(self, **kw: Any) -> Any:
+            return SimpleNamespace(content=[
+                SimpleNamespace(type="thinking", thinking=""),
+                SimpleNamespace(type="text", text='{"overall": 4}'),
+            ])
+
+    monkeypatch.setattr(judges, "get_provider", lambda _m: _P())
+    assert asyncio.run(judges.judge_chat({"query": "q"}, "r"))["overall"] == 4

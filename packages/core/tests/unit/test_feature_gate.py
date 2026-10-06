@@ -7,9 +7,18 @@ fields get removed for each combination of flags.
 """
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 
-from openexecutive.providers.feature_gate import FeatureSpec, apply_feature_gates
+import pytest
+
+from openexecutive.providers.anthropic_provider import AnthropicProvider
+from openexecutive.providers.feature_gate import (
+    FeatureSpec,
+    apply_feature_gates,
+    rejects_forced_tool_choice,
+    relax_forced_tool_choice,
+)
 
 
 def _claude_spec() -> FeatureSpec:
@@ -172,3 +181,74 @@ def test_strips_cache_control_from_tool_result_blocks() -> None:
     assert "cache_control" not in out["messages"][0]["content"][0]
     # Never mutates the caller's dict — the loop reuses it next iteration.
     assert "cache_control" in kwargs["messages"][0]["content"][0]
+
+
+# ── Forced tool_choice on models that reject it ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-opus-5-5-20260801",
+        "anthropic/claude-opus-5.5",
+        "anthropic/claude-sonnet-5.5",
+    ],
+)
+def test_newest_claude_models_reject_forced_tool_choice(model: str) -> None:
+    assert rejects_forced_tool_choice(model)
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-7",
+     "anthropic/claude-opus-5", "openai/gpt-5", "llama3.3", "claude-opus-5-50"],
+)
+def test_other_models_keep_forced_tool_choice(model: str) -> None:
+    assert not rejects_forced_tool_choice(model)
+
+
+def test_relax_turns_a_named_tool_into_auto_without_mutating() -> None:
+    kwargs = {
+        "tool_choice": {"type": "tool", "name": "emit", "disable_parallel_tool_use": True},
+        "tools": [{"name": "emit"}],
+    }
+    out = relax_forced_tool_choice("claude-sonnet-5-5", kwargs)
+    assert out["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+    assert out["tools"] == [{"name": "emit"}]
+    assert kwargs["tool_choice"]["type"] == "tool"
+
+
+def test_relax_turns_any_into_auto() -> None:
+    out = relax_forced_tool_choice("claude-opus-5-5", {"tool_choice": {"type": "any"}})
+    assert out["tool_choice"] == {"type": "auto"}
+
+
+@pytest.mark.parametrize("choice", [{"type": "auto"}, {"type": "none"}, None])
+def test_relax_leaves_unforced_choices_alone(choice: object) -> None:
+    kwargs = {} if choice is None else {"tool_choice": choice}
+    assert relax_forced_tool_choice("claude-opus-5-5", kwargs) is kwargs
+
+
+def test_relax_leaves_older_models_forced() -> None:
+    kwargs = {"tool_choice": {"type": "tool", "name": "emit"}}
+    assert relax_forced_tool_choice("claude-sonnet-5", kwargs) is kwargs
+
+
+def test_anthropic_provider_relaxes_before_calling_the_sdk() -> None:
+    seen: dict[str, object] = {}
+
+    class _Messages:
+        async def create(self, **kw: object) -> object:
+            seen.update(kw)
+            return None
+
+    provider = AnthropicProvider(api_key="test")
+    provider._client = type("C", (), {"messages": _Messages()})()  # type: ignore[assignment]
+    asyncio.run(provider.messages_create(
+        model="claude-opus-5-5", tool_choice={"type": "tool", "name": "emit"},
+    ))
+    assert seen["tool_choice"] == {"type": "auto"}

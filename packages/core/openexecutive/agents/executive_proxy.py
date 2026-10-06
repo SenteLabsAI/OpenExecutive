@@ -17,7 +17,7 @@ class ExecutiveProxy(BaseAgent):
     name = "executive"
     domain = "orchestration"
     visibility = "core"
-    model = "claude-sonnet-5"  # matches DEFAULT_MODEL default
+    model = "claude-sonnet-5-5"  # matches DEFAULT_MODEL default
     use_deep_reasoning = False
 
     def get_system_prompt(self) -> str:

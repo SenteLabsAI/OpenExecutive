@@ -8,7 +8,19 @@ from openexecutive.providers import get_provider
 
 # The judge routes through the provider abstraction (like every other LLM call),
 # so when OPENROUTER_ENABLED is on, judging bills the OpenRouter account too.
-_JUDGE_MODEL = "claude-opus-4-7"
+_JUDGE_MODEL = "claude-opus-5-5"
+# Room for the judge's adaptive thinking (always on for Opus 5.5) before the
+# JSON verdict; 500 tokens could be spent thinking with nothing left to answer.
+_JUDGE_MAX_TOKENS = 4096
+
+
+def _response_text(message: Any) -> str:
+    """The reply's text, skipping thinking blocks that may come first."""
+    return "".join(
+        getattr(block, "text", "")
+        for block in getattr(message, "content", []) or []
+        if getattr(block, "type", "text") == "text"
+    )
 
 
 def _peer_memory_section(scenario: dict[str, Any]) -> str:
@@ -179,10 +191,10 @@ Respond in JSON format:
 
     message = await get_provider(_JUDGE_MODEL).messages_create(
         model=_JUDGE_MODEL,
-        max_tokens=500,
+        max_tokens=_JUDGE_MAX_TOKENS,
         messages=[{"role": "user", "content": judge_prompt}],
     )
-    text = message.content[0].text  # type: ignore[union-attr]
+    text = _response_text(message)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -228,10 +240,10 @@ Respond in JSON:
 
     message = await get_provider(_JUDGE_MODEL).messages_create(
         model=_JUDGE_MODEL,
-        max_tokens=500,
+        max_tokens=_JUDGE_MAX_TOKENS,
         messages=[{"role": "user", "content": judge_prompt}],
     )
-    text = message.content[0].text  # type: ignore[union-attr]
+    text = _response_text(message)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -290,10 +302,10 @@ Respond in JSON:
 
     message = await get_provider(_JUDGE_MODEL).messages_create(
         model=_JUDGE_MODEL,
-        max_tokens=500,
+        max_tokens=_JUDGE_MAX_TOKENS,
         messages=[{"role": "user", "content": judge_prompt}],
     )
-    text = message.content[0].text  # type: ignore[union-attr]
+    text = _response_text(message)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -369,10 +381,10 @@ Respond in JSON:
 
     message = await get_provider(_JUDGE_MODEL).messages_create(
         model=_JUDGE_MODEL,
-        max_tokens=500,
+        max_tokens=_JUDGE_MAX_TOKENS,
         messages=[{"role": "user", "content": judge_prompt}],
     )
-    text = message.content[0].text  # type: ignore[union-attr]
+    text = _response_text(message)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1

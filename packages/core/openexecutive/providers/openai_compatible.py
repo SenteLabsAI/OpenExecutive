@@ -37,7 +37,11 @@ from typing import Any
 
 import httpx
 
-from openexecutive.providers.feature_gate import FeatureSpec, apply_feature_gates
+from openexecutive.providers.feature_gate import (
+    FeatureSpec,
+    apply_feature_gates,
+    relax_forced_tool_choice,
+)
 from openexecutive.providers.translator import (
     StreamAccumulator,
     from_openai_response,
@@ -187,7 +191,7 @@ class OpenAICompatibleProvider:
         request_timeout = kwargs.pop("timeout", None)
         model = kwargs.pop("model", "")
         slug, spec = self._resolve(model)
-        gated = apply_feature_gates(spec, kwargs)
+        gated = relax_forced_tool_choice(slug, apply_feature_gates(spec, kwargs))
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
@@ -216,7 +220,7 @@ class OpenAICompatibleProvider:
         request_timeout = kwargs.pop("timeout", None)
         model = kwargs.pop("model", "")
         slug, spec = self._resolve(model)
-        gated = apply_feature_gates(spec, kwargs)
+        gated = relax_forced_tool_choice(slug, apply_feature_gates(spec, kwargs))
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )

@@ -17,8 +17,8 @@ system:
     backend: Python 3.11+ · FastAPI · Anthropic Claude SDK · ChromaDB · SQLite
     frontend: Next.js 15 · React 19 · TailwindCSS · Mermaid.js
   models:
-    default: claude-sonnet-5
-    deep_reasoning: claude-opus-5
+    default: claude-sonnet-5-5
+    deep_reasoning: claude-opus-5-5
     routing: claude-haiku-4-5
     provider_routing: |
       All LLM calls go through openexecutive.providers.get_provider(model).
@@ -427,7 +427,7 @@ providers:
   council_ui_dropdown_source: |
     openexecutive.providers.allowed_models_for(agent_id) — returns
     ANTHROPIC_DIRECT_MODELS (claude-fable-5-1, claude-opus-5-5, claude-opus-5,
-    claude-sonnet-5, claude-haiku-4-5) plus registry.openrouter_models() (live
+    claude-sonnet-5-5, claude-sonnet-5, claude-haiku-4-5) plus registry.openrouter_models() (live
     catalog, else the OPENROUTER_MODELS fallback snapshot) when the toggle is
     on; catalog slugs that duplicate a direct id are dropped.
     Every agent (including utility_fast) gets the same list; the
@@ -5356,9 +5356,9 @@ external_monitoring:
          The research turn's model + deep-reasoning are controlled by the
          `research` virtual Council agent (get_research_model() /
          get_research_use_deep_reasoning(): Council override → `RESEARCH_MODEL`
-         env, default claude-sonnet-5 with deep reasoning OFF) — pinned
+         env, default claude-sonnet-5-5 with deep reasoning OFF) — pinned
          per-call via analyze_with_tools' overrides, NOT the agent's chat-time
-         deep_reasoning_model (Opus 4.7). The research turn is
+         deep_reasoning_model (Opus 5.5). The research turn is
          retrieve-from-web-search + summarize, so the cheaper tier is the
          dominant cost lever for the 7x fan-out; the chat path is unchanged.
          The addendum's per-domain focus tail is Council-editable per
