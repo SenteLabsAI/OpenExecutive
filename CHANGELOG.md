@@ -9,6 +9,30 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.5.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.1...v0.5.2) (2026-10-06)
+
+
+### Added
+
+* **delegation:** let people describe how they write in their own words ([#362](https://github.com/SenteLabsAI/OpenExecutive/issues/362)) ([593741e](https://github.com/SenteLabsAI/OpenExecutive/commit/593741ee2b24ba3ced6294683a8e09f1fd05909a))
+* **onboarding:** describe your work first, then ask what's missing ([#377](https://github.com/SenteLabsAI/OpenExecutive/issues/377)) ([8e112dc](https://github.com/SenteLabsAI/OpenExecutive/commit/8e112dcf3e82901c78d9a3677a119217768ca51e))
+* **providers:** default to Claude Sonnet 5.5 and Opus 5.5 ([#371](https://github.com/SenteLabsAI/OpenExecutive/issues/371)) ([12b89ce](https://github.com/SenteLabsAI/OpenExecutive/commit/12b89cec4aef884b88cebe9e8522c0731608224e))
+* **ui:** move your own memory card to Settings as About you ([#359](https://github.com/SenteLabsAI/OpenExecutive/issues/359)) ([dad7384](https://github.com/SenteLabsAI/OpenExecutive/commit/dad7384202a14657f287b8c1dff8e16ba29f9582))
+* **ui:** play the Council Consult animation while the Executive works ([#368](https://github.com/SenteLabsAI/OpenExecutive/issues/368)) ([639f968](https://github.com/SenteLabsAI/OpenExecutive/commit/639f968d2eaa784054202f38a1e74280996511e4))
+* **ui:** reword the who-is-it-for setup choice as Personal and Team ([#375](https://github.com/SenteLabsAI/OpenExecutive/issues/375)) ([892e96b](https://github.com/SenteLabsAI/OpenExecutive/commit/892e96b07aad98a0cc448ee0d926c0ad80b03250))
+* **workflows:** let the morning reflection search the knowledge base ([#364](https://github.com/SenteLabsAI/OpenExecutive/issues/364)) ([e7106ab](https://github.com/SenteLabsAI/OpenExecutive/commit/e7106ab6d298dd719c830e06247d9298db0f2176))
+
+
+### Fixed
+
+* **delegation:** let the email's own greeting decide who a group email asks ([#365](https://github.com/SenteLabsAI/OpenExecutive/issues/365)) ([8145855](https://github.com/SenteLabsAI/OpenExecutive/commit/814585594ab802e3f5c714d3a7c5af311cae832b))
+* **integrations:** stop logging the start of each email body ([#367](https://github.com/SenteLabsAI/OpenExecutive/issues/367)) ([35a1e6c](https://github.com/SenteLabsAI/OpenExecutive/commit/35a1e6c6158d9f3033ca3970a4cc6b22eaaf9937))
+* **onboarding:** keep going when a setup turn returns prose or a null hint ([#378](https://github.com/SenteLabsAI/OpenExecutive/issues/378)) ([fd3e7bb](https://github.com/SenteLabsAI/OpenExecutive/commit/fd3e7bb7dbd8f540cae0d112f9c22a8a1550d7b8))
+* **people:** point roster emails at Home and name who a reply is about ([#366](https://github.com/SenteLabsAI/OpenExecutive/issues/366)) ([8c15b9d](https://github.com/SenteLabsAI/OpenExecutive/commit/8c15b9d8b7376671bed6997331dd626eee56415b))
+* **ui:** hide the Always asks first switches while Take the lead is off ([#360](https://github.com/SenteLabsAI/OpenExecutive/issues/360)) ([f1988d6](https://github.com/SenteLabsAI/OpenExecutive/commit/f1988d657a34a9919c07afb17922ae6ad4f0dc50))
+* **ui:** keep the watch list page from scrolling the whole screen on phones ([#363](https://github.com/SenteLabsAI/OpenExecutive/issues/363)) ([4cd1136](https://github.com/SenteLabsAI/OpenExecutive/commit/4cd1136e3672ac5e3f4de6fe8abc8017f7e16edb))
+* **ui:** put Dismiss and Edit in Gmail beside Send on reply cards ([#358](https://github.com/SenteLabsAI/OpenExecutive/issues/358)) ([7a278fa](https://github.com/SenteLabsAI/OpenExecutive/commit/7a278fae8e022283f0eb3985b737afd0eb4e9799))
+
 ## [0.5.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.0...v0.5.1) (2026-10-04)
 
 
