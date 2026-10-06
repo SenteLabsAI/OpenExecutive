@@ -7999,6 +7999,7 @@ company_onboarding:
     Deliberately shaped like the /demo and /clients/generate draft-then-review
     flows rather than like a form.
   api: |
+    POST /onboard/interview/understand (multipart: description + files[]; one model call, no session, returns mode/role/company/focus where the text says so),
     POST /onboard/interview/start (multipart: description + files[]),
     POST /onboard/interview/message, POST /onboard/interview/draft,
     GET /onboard/interview/{session_id}, POST /onboard/interview/commit.
@@ -8173,26 +8174,28 @@ company_onboarding:
     sentence, and the draft turn is a forced tool call whose partial JSON
     cannot be usefully streamed.
   solo_mode: |
-    First run opens on a choice screen in app/onboard/page.tsx — "Personal" or
-    "Team" (each a one-line lead, three "Good for" examples and a note that
-    teammates can be added later, from People) — that writes PUT /workspace ({mode, timezone} with the
-    browser's IANA zone; the mode alone if the server rejects the zone) and
-    refreshes the app-wide WorkspaceProvider before the conversation or the
-    form starts, because the two modes ask different things. `?for=me|team`
-    marks the choice as made so moving between the conversation and the form
-    does not ask again. Choosing "Personal" then shows a role step (RoleStep,
-    sharing components/workspace/RoleFields.tsx with Settings): kind (Owner /
-    founder, Executive inside an organisation, Independent or fractional,
-    Other), title, who they report to (optional), what they are responsible
-    for, what they are measured on (optional) — saved with PUT /workspace
-    (lib/principalRole.ts roleUpdate: trimmed, blank as null, only changed
-    fields). "Skip for now" saves nothing. A re-run (GET /health says a
-    profile is loaded) skips both screens; they are changed in Settings, and
-    the flow follows them. The Personal card copy is role-neutral ("Your own
-    executive…"), and the conversation's opening prompt and example
-    follow the role kind (owner: the business; in_house: the organisation,
-    function, remit and manager; independent: the practice and clients; none:
-    role-neutral).
+    First run opens on a free-text box (components/onboard/OnboardDescribe.tsx).
+    POST /onboard/interview/understand (onboarding/understand.py, forced
+    report_understanding tool, uncached system text) reads the description plus
+    extracted attachments once and returns mode, role_kind, role_title,
+    reports_to, company and focus, each null when the text does not say. The
+    confirm screen shows them; Personal / Team is required, the role fields
+    (components/workspace/RoleFields.tsx, shared with Settings) are editable.
+    Continue writes PUT /workspace ({mode, timezone}; the mode alone if the
+    server rejects the zone, then the role via lib/principalRole.ts
+    roleUpdate), refreshes the WorkspaceProvider, then calls
+    /onboard/interview/start with the same text, so the interview already sees
+    the saved mode and role and asks only about what is missing
+    (MAX_QUESTIONS = 5). A failed read keeps the text and falls back to the
+    Personal / Team choice. "Skip, I'll answer questions instead" goes
+    straight to the confirm screen empty. `?for=me|team` marks the choice as
+    made so moving between the conversation and the form does not ask again.
+    The voice step (VoicePicker) comes last, after the draft is saved. A
+    re-run (GET /health says a profile is loaded) skips the describe and
+    confirm screens; they are changed in Settings, and the flow follows them.
+    The conversation's opening prompt and example follow the role kind (owner:
+    the business; in_house: the organisation, function, remit and manager;
+    independent: the practice and clients; none: role-neutral).
     Interview: when get_workspace().mode == "solo", advance() passes solo=True
     and the workspace's role_kind to _build_messages, which prepends
     interview.solo_hint(role_kind) to the FIRST user turn (before the re-run

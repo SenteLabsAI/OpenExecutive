@@ -6,33 +6,27 @@ import OnboardWizard from "@/components/OnboardWizard";
 import OnboardConversation, {
   type Bubble,
 } from "@/components/onboard/OnboardConversation";
+import OnboardDescribe from "@/components/onboard/OnboardDescribe";
 import OnboardDraftReview from "@/components/onboard/OnboardDraftReview";
 import VoicePicker from "@/components/executive/VoicePicker";
-import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { updateWorkspace, type OnboardTurn, type WorkspaceMode } from "@/lib/api";
-import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/principalRole";
+import type { OnboardTurn, WorkspaceMode } from "@/lib/api";
 
 // Onboarding is a focused full-screen flow — exempt from the AppShell chrome
 // (see AppShell.tsx EXEMPT_PREFIXES) so it owns the whole viewport.
 //
-// First run starts with one question: is this personal, or for the whole
-// team? The answer is saved as the workspace mode (PUT /workspace, with
-// the browser's time zone) before anything else, because the conversation
-// and the form ask different things in each mode. "Personal" then asks what
-// your role is — owner, an executive inside an organisation, independent —
-// saved with the workspace settings too (skippable; editable in Settings),
-// so setup asks the right questions and the Executive advises for that role.
-// Either way it then asks how the Executive should sound: Direct, Supportive
-// or Analytical (skippable; changeable in Settings).
-// A re-run — a company profile already exists — skips both: they are changed
-// in Settings, and the flow below follows whatever they currently are.
+// First run starts with the free-text box: describe your work (and attach a
+// one-pager if you like). The Executive reads it, shows what it understood —
+// personal or team, role, company, focus — for a quick confirm, saves the
+// workspace mode and role, and then asks only about what is still missing
+// (up to five questions, each skippable). Then the drafted profile is
+// reviewed and, last, how the Executive should sound (skippable; changeable
+// in Settings). A re-run — a company profile already exists — skips the
+// first two: they are changed in Settings.
 //
-// Then the conversational flow: describe the business, answer a few
-// clarifying questions, then review and edit a drafted profile. The original
-// step-by-step wizard stays reachable at /onboard?mode=form — it needs no API
-// key beyond the profile save, so it is also the fallback when the
-// conversation cannot run.
+// The original step-by-step wizard stays reachable at /onboard?mode=form — it
+// needs no API key beyond the profile save, so it is also the fallback when
+// the conversation cannot run.
 //
 // `?for=me|team` records that the choice was made, so moving between the
 // conversation and the form does not ask again.
@@ -56,6 +50,9 @@ function OnboardFlow() {
   const [conversationTurn, setConversationTurn] = useState<OnboardTurn | null>(null);
   // null while we find out whether a profile exists (a re-run skips the choice).
   const [hasProfile, setHasProfile] = useState<boolean | null>(null);
+  // Set once the describe-first step is done, in place of the `?for=` param.
+  const [chosenHere, setChosenHere] = useState<WorkspaceMode | null>(null);
+  const [askVoice, setAskVoice] = useState(false);
 
   const formMode = params.get("mode") === "form";
   const chosenFor = params.get("for");
@@ -77,21 +74,30 @@ function OnboardFlow() {
   }, []);
 
   function finish() {
-    router.push("/");
+    // Only a first setup asks the voice; a re-run keeps what it has.
+    if (chosenHere) setAskVoice(true);
+    else router.push("/");
   }
 
   if (hasProfile === null) return null;
 
-  if (!hasProfile && !chosenFor) {
+  if (askVoice) return <VoiceStep onDone={() => router.push("/")} />;
+
+  if (!hasProfile && !chosenFor && !chosenHere) {
     return (
-      <WorkspaceChoice
-        onChosen={(chosen) => router.replace(onboardHref(formMode, FOR_PARAM[chosen]))}
+      <OnboardDescribe
+        onReady={({ mode: picked, turn: first, turns }) => {
+          setResumeTurns(turns);
+          if (first.phase === "draft") setTurn(first);
+          else setConversationTurn(first);
+          setChosenHere(picked);
+        }}
       />
     );
   }
 
   // Carried on the links between the conversation and the form.
-  const forParam = chosenFor ?? FOR_PARAM[mode];
+  const forParam = chosenFor ?? (chosenHere ? FOR_PARAM[chosenHere] : FOR_PARAM[mode]);
 
   if (formMode) {
     return (
@@ -152,228 +158,6 @@ function OnboardFlow() {
           Prefer a form? Use the step-by-step version
         </a>
       </p>
-    </div>
-  );
-}
-
-// Personal is for anyone using Open Executive just for themselves, whatever
-// their role — not only someone running a business. Each card is a one-line
-// lead, three "Good for" examples and a footnote saying teammates can be
-// added later (from People, not from setup), so neither choice reads as a
-// dead end. The two cards are kept the same shape so they read as a pair.
-const CHOICES: {
-  mode: WorkspaceMode;
-  title: string;
-  lead: string;
-  examples: string[];
-  foot: string;
-}[] = [
-  {
-    mode: "solo",
-    title: "Personal",
-    lead: "Your own executive: your goals, your inbox, your mornings.",
-    examples: [
-      "A founder running their own business",
-      "A manager tracking promises and follow-ups",
-      "An advisor juggling several clients",
-    ],
-    foot: "Add teammates later from People",
-  },
-  {
-    mode: "team",
-    title: "Team",
-    lead: "An executive for the whole company, with a lead and goals for each department.",
-    examples: [
-      "A startup with sales, product and ops leads",
-      "A department head who wants daily check-ins",
-      "Teammates who sign in and message it too",
-    ],
-    foot: "Add teammates from People after setup",
-  },
-];
-
-// The browser's IANA zone, or undefined when it cannot say.
-function browserTimeZone(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function WorkspaceChoice({ onChosen }: { onChosen: (mode: WorkspaceMode) => void }) {
-  const { refresh } = useWorkspace();
-  const [saving, setSaving] = useState<WorkspaceMode | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // "Personal" was saved: ask the role before moving on.
-  const [askRole, setAskRole] = useState(false);
-  // The mode (and role) are saved: ask for the voice, then move on.
-  const [askVoice, setAskVoice] = useState<WorkspaceMode | null>(null);
-
-  async function choose(mode: WorkspaceMode) {
-    if (saving) return;
-    setSaving(mode);
-    setError(null);
-    try {
-      const timezone = browserTimeZone();
-      try {
-        await updateWorkspace(timezone ? { mode, timezone } : { mode });
-      } catch (err) {
-        // A zone the server does not know must not block setup: save the
-        // mode alone and leave the zone to Settings.
-        if (!timezone || (err instanceof Error && /principal/i.test(err.message))) throw err;
-        await updateWorkspace({ mode });
-      }
-      await refresh();
-      if (mode === "solo") {
-        setAskRole(true);
-        setSaving(null);
-        return;
-      }
-      setAskVoice(mode);
-      setSaving(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save your choice.");
-      setSaving(null);
-    }
-  }
-
-  if (askVoice) return <VoiceStep onDone={() => onChosen(askVoice)} />;
-  if (askRole)
-    return (
-      <RoleStep
-        onDone={() => {
-          setAskRole(false);
-          setAskVoice("solo");
-        }}
-      />
-    );
-
-  return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
-      <h1 className="text-xl font-semibold text-fg">Who is Open Executive for?</h1>
-      <p className="text-sm text-fg-muted mt-1">
-        This sets your starting point. You can switch in Settings or add teammates anytime.
-      </p>
-
-      <div className="mt-8 grid gap-4 sm:grid-cols-2">
-        {CHOICES.map((c) => (
-          <button
-            key={c.mode}
-            type="button"
-            onClick={() => void choose(c.mode)}
-            disabled={saving !== null}
-            className="flex flex-col text-left rounded-xl border border-line bg-surface-elevated p-5 hover:border-line-strong hover:bg-surface-overlay transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-          >
-            <span className="block text-base font-semibold text-fg">
-              {saving === c.mode ? "Saving…" : c.title}
-            </span>
-            <span className="block text-sm text-fg mt-2 leading-relaxed">{c.lead}</span>
-            <span className="block text-[11px] uppercase tracking-wider text-fg-subtle mt-4">
-              Good for
-            </span>
-            <span className="mt-2 flex flex-col gap-2">
-              {c.examples.map((e) => (
-                <span
-                  key={e}
-                  className="block rounded-lg bg-surface-overlay px-3 py-2 text-xs text-fg-muted"
-                >
-                  {e}
-                </span>
-              ))}
-            </span>
-            <span className="block mt-auto pt-4 text-xs text-fg-subtle">
-              <span className="block border-t border-line pt-3">{c.foot}</span>
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {error && (
-        <div className="mt-4 text-xs">
-          <p className="text-red-400">{error}</p>
-          <button
-            type="button"
-            onClick={() => onChosen("team")}
-            className="mt-1 text-fg-muted hover:text-fg underline underline-offset-2 cursor-pointer"
-          >
-            Continue without saving a choice
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// "Personal" → what is your role? Saved with the workspace settings; skipping
-// saves nothing, and Settings → Workspace edits it later.
-function RoleStep({ onDone }: { onDone: () => void }) {
-  const { role, refresh } = useWorkspace();
-  // Mounted right after the mode was saved and re-read, so `role` is current.
-  const [form, setForm] = useState<RoleForm>(() => roleFormFrom(role));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const problems = roleFormErrors(form);
-
-  async function save() {
-    if (saving || problems.length > 0) return;
-    const update = roleUpdate(form, role);
-    if (Object.keys(update).length === 0) {
-      onDone();
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      await updateWorkspace(update);
-      await refresh();
-      onDone();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save your role.");
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
-      <h1 className="text-xl font-semibold text-fg">What&apos;s your role?</h1>
-      <p className="text-sm text-fg-muted mt-1">
-        So setup asks the right questions and the advice fits your job — a case to put to your
-        boss, or a call that&apos;s yours alone to make. You can change it later in Settings.
-      </p>
-
-      <div className="mt-8 rounded-xl border border-line bg-surface-elevated p-5">
-        <RoleFields value={form} onChange={setForm} disabled={saving} idPrefix="onboard-role" />
-      </div>
-
-      {(problems.length > 0 || error) && (
-        <div className="mt-3 space-y-1 text-xs text-red-400">
-          {problems.map((p) => (
-            <p key={p}>{p}</p>
-          ))}
-          {error && <p>{error}</p>}
-        </div>
-      )}
-
-      <div className="mt-6 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={saving || problems.length > 0}
-          className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-500 hover:bg-indigo-600 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {saving ? "Saving…" : "Continue"}
-        </button>
-        <button
-          type="button"
-          onClick={onDone}
-          disabled={saving}
-          className="px-3 py-2 rounded-lg text-sm text-fg-muted hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
-        >
-          Skip for now
-        </button>
-      </div>
     </div>
   );
 }

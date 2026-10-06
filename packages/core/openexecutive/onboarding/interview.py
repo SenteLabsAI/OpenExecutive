@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Budgets. The user can always short-circuit with force_draft, so these only
 # bound a runaway model.
-MAX_QUESTIONS = 8
+MAX_QUESTIONS = 5
 # Must stay above what a single legal /start can produce — a 20k description
 # plus 8 attachments at 15k extracted chars each is ~140k. A lower ceiling
 # locked the user out of the conversation on turn one for doing exactly what

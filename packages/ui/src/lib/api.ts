@@ -395,6 +395,32 @@ export async function startOnboardInterview(
   return res.json();
 }
 
+// What the first free-text description already says. Every field is null when
+// the text does not say; the confirm step asks for those.
+export interface OnboardUnderstanding {
+  mode: WorkspaceMode | null;
+  role_kind: RoleKind | null;
+  role_title: string | null;
+  reports_to: string | null;
+  company: string | null;
+  focus: string | null;
+}
+
+export async function understandOnboarding(
+  description: string,
+  files: File[] = []
+): Promise<OnboardUnderstanding> {
+  const form = new FormData();
+  form.append("description", description);
+  for (const file of files) form.append("files", file);
+  const res = await fetch(`${API_BASE}/onboard/interview/understand`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw await onboardError(res, "Could not read that");
+  return res.json();
+}
+
 export async function sendOnboardMessage(
   sessionId: string,
   message: string

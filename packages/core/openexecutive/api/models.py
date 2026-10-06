@@ -437,6 +437,17 @@ class OnboardMessageRequest(BaseModel):
     message: str
 
 
+class OnboardUnderstandingResponse(BaseModel):
+    """What the free-text description already says (see onboarding/understand.py)."""
+
+    mode: str | None = None
+    role_kind: str | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    company: str | None = None
+    focus: str | None = None
+
+
 class OnboardSessionRequest(BaseModel):
     session_id: str
 

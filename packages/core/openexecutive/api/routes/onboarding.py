@@ -30,6 +30,7 @@ from openexecutive.api.models import (
     OnboardStatusResponse,
     OnboardTranscriptTurn,
     OnboardTurnResponse,
+    OnboardUnderstandingResponse,
 )
 from openexecutive.config import get_settings
 from openexecutive.memory.company_profile import CompanyProfile
@@ -463,6 +464,42 @@ async def start_interview(
         # a burst of failures during a provider blip would evict live sessions.
         _interview_sessions.pop(session_id, None)
         raise
+
+
+@router.post("/onboard/interview/understand", response_model=OnboardUnderstandingResponse)
+async def understand_description(
+    description: str = Form(""),
+    files: list[UploadFile] = File(  # noqa: B008 — FastAPI multipart marker, as in start_interview
+        default_factory=list
+    ),
+) -> OnboardUnderstandingResponse:
+    """Read the first free-text description (plus files) once, before any session.
+
+    Reports personal-or-team, role and company where the text says so, so the
+    UI can confirm them and the interview asks only for what is missing. It
+    stores nothing; a failure here is not fatal, the UI just asks instead.
+    """
+    from openexecutive.onboarding.interview import InterviewError, InterviewTimeout
+    from openexecutive.onboarding.understand import understand
+
+    if len(description) > ONBOARD_MESSAGE_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Description is too long (limit {ONBOARD_MESSAGE_MAX_CHARS:,} characters).",
+        )
+    extracted = await _gather_intake_attachments(files or [])
+    text = description.strip()
+    for name, body in extracted:
+        text += f"\n\n=== Attached: {name} ===\n{body[:_INTAKE_GEN_CHARS_PER_FILE]}"
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="Tell me a little about your work first.")
+    try:
+        result = await understand(text.strip())
+    except InterviewTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except InterviewError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return OnboardUnderstandingResponse(**result.model_dump())
 
 
 @router.post("/onboard/interview/message", response_model=OnboardTurnResponse)
