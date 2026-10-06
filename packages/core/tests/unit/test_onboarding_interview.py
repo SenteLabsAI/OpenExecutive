@@ -771,3 +771,21 @@ async def test_no_tool_and_no_text_still_errors(monkeypatch: pytest.MonkeyPatch)
     _install(monkeypatch, provider)
     with pytest.raises(iv.InterviewError):
         await iv.advance(_opening(), questions_asked=0)
+
+
+@pytest.mark.asyncio
+async def test_long_prose_is_not_shown_as_a_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    long = SimpleNamespace(content=[SimpleNamespace(type="text", text="x" * 1001)])
+    provider = _ScriptedProvider([long, long])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)
+
+
+@pytest.mark.asyncio
+async def test_prose_twice_while_drafting_still_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    prose = SimpleNamespace(content=[SimpleNamespace(type="text", text="Who runs ops?")])
+    provider = _ScriptedProvider([prose, prose])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0, force_draft=True)

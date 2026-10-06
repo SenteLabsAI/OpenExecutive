@@ -78,6 +78,8 @@ _MAX_TOKENS = 8000
 # changing this one does not change that one.
 _REPAIR_ECHO_CHARS = 2000
 
+_MAX_PROSE_QUESTION_CHARS = 1000
+
 ASK_TOOL_NAME = "ask_clarifying_question"
 EMIT_TOOL_NAME = "emit_company_draft"
 
@@ -733,10 +735,12 @@ async def advance(
                     },
                 ]
                 continue
-            if prose and not must_draft:
+            if prose and not must_draft and len(prose) <= _MAX_PROSE_QUESTION_CHARS:
                 # The model asked in plain words twice running: the person can
-                # still answer it, so show it rather than a dead end.
-                return Question(question=prose[:1000])
+                # still answer it, so show it rather than a dead end. A long
+                # reply is reasoning or a half-made draft, not a question, and
+                # is never cut off and shown.
+                return Question(question=prose)
             raise
 
         if name == ASK_TOOL_NAME:
