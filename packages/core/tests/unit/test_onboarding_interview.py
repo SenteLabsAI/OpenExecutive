@@ -725,3 +725,49 @@ async def test_transcript_never_ends_on_an_assistant_turn(
     roles = [m["role"] for m in provider.calls[0]["messages"]]
     assert roles[-1] == "user", f"trailing assistant prefill: {roles}"
     assert all(a != b for a, b in zip(roles, roles[1:]))
+
+
+@pytest.mark.asyncio
+async def test_null_hint_keeps_the_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _ScriptedProvider(
+        [_tool_response(iv.ASK_TOOL_NAME, {"question": "Who runs ops?", "hint": None})]
+    )
+    _install(monkeypatch, provider)
+    got = await iv.advance(_opening(), questions_asked=0)
+    assert isinstance(got, iv.Question) and got.question == "Who runs ops?" and got.hint == ""
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_prose_reply_is_retried_once_then_still_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prose = SimpleNamespace(content=[SimpleNamespace(type="text", text="Who runs ops?")])
+    provider = _ScriptedProvider(
+        [prose, _tool_response(iv.ASK_TOOL_NAME, {"question": "Who runs ops?"})]
+    )
+    _install(monkeypatch, provider)
+    got = await iv.advance(_opening(), questions_asked=0)
+    assert isinstance(got, iv.Question)
+    assert len(provider.calls) == 2
+    # The retry nudges the model and keeps roles alternating.
+    roles = [m["role"] for m in provider.calls[1]["messages"]]
+    assert roles == ["user", "assistant", "user"]
+
+
+@pytest.mark.asyncio
+async def test_prose_twice_becomes_the_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    prose = SimpleNamespace(content=[SimpleNamespace(type="text", text="Who are your customers?")])
+    provider = _ScriptedProvider([prose, prose])
+    _install(monkeypatch, provider)
+    got = await iv.advance(_opening(), questions_asked=0)
+    assert isinstance(got, iv.Question) and got.question == "Who are your customers?"
+
+
+@pytest.mark.asyncio
+async def test_no_tool_and_no_text_still_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    empty = SimpleNamespace(content=[])
+    provider = _ScriptedProvider([empty, empty])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)

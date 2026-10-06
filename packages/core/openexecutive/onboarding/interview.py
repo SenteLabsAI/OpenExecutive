@@ -39,7 +39,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from openexecutive.agents.onboarding_interviewer import (
     ONBOARDING_INTERVIEWER_AGENT_ID,
@@ -152,6 +152,13 @@ class CompanyDraft(BaseModel):
 class Question(BaseModel):
     question: str
     hint: str = ""
+
+    @field_validator("hint", mode="before")
+    @classmethod
+    def _no_null_hint(cls, value: Any) -> Any:
+        # Models sometimes send "hint": null for "no example"; that is not a
+        # reason to throw the whole question away.
+        return "" if value is None else value
 
 
 @dataclass(frozen=True)
@@ -468,6 +475,16 @@ def _extract_tool_call(response: Any) -> tuple[str, dict[str, Any]]:
     raise InterviewError("The setup assistant did not return a usable response.")
 
 
+def _prose(response: Any) -> str:
+    """The text blocks of a response, joined; empty when there are none."""
+    parts = [
+        str(getattr(b, "text", "") or "").strip()
+        for b in getattr(response, "content", []) or []
+        if getattr(b, "type", None) == "text"
+    ]
+    return "\n\n".join(p for p in parts if p)
+
+
 def replay_transcript(
     transcript: list[Turn], continue_prompt: str
 ) -> list[dict[str, Any]]:
@@ -690,7 +707,37 @@ async def advance(
             iteration=attempt,
         )
 
-        name, raw = _extract_tool_call(response)
+        try:
+            name, raw = _extract_tool_call(response)
+        except InterviewError:
+            # No usable tool call (the model answered in prose, or named another
+            # tool). Block types only in the log: the text can hold the user's
+            # financials.
+            logger.error(
+                "onboarding interview: no tool call (stop_reason=%s, blocks=%s)",
+                getattr(response, "stop_reason", None),
+                [getattr(b, "type", None) for b in getattr(response, "content", []) or []],
+            )
+            prose = _prose(response)
+            if attempt == 0:
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": prose or "(no answer)"},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Call exactly one tool: "
+                            + (EMIT_TOOL_NAME if must_draft else f"{ASK_TOOL_NAME} or {EMIT_TOOL_NAME}")
+                            + ", now."
+                        ),
+                    },
+                ]
+                continue
+            if prose and not must_draft:
+                # The model asked in plain words twice running: the person can
+                # still answer it, so show it rather than a dead end.
+                return Question(question=prose[:1000])
+            raise
 
         if name == ASK_TOOL_NAME:
             if must_draft:
@@ -724,7 +771,11 @@ async def advance(
                 return question
             except (ValidationError, ValueError) as exc:
                 logger.error(
-                    "onboarding interview: malformed question (%s)", type(exc).__name__
+                    "onboarding interview: malformed question (%s, fields=%s)",
+                    type(exc).__name__,
+                    [".".join(map(str, e["loc"])) for e in exc.errors()]
+                    if isinstance(exc, ValidationError)
+                    else [],
                 )
                 if attempt == 0:
                     continue
