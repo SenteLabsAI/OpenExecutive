@@ -9213,7 +9213,7 @@ delegation:
     customer_credit for credit and terms; contracts vendor_onboarding then
     legal_sign for vendors, else legal_sign; hiring hiring_signoff; anything
     else about the board or investors board_comms; deletes and shares none;
-    Just me too), else the authority gate's _route_proposal fallback to
+    Personal mode too), else the authority gate's _route_proposal fallback to
     the principal. An action that reaches anyone off the team (a contact,
     someone unknown) always goes to the principal (_team_only): only their
     approval opens contact egress, and contacts are theirs alone. Approve

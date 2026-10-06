@@ -791,7 +791,7 @@ def approval_ranges(kind: str, text: str) -> list[AuthorityScope]:
 
 def _approver_for(kind: str, text: str, reason: str) -> int | None:
     """Who approves a held action: the first teammate holding one of its
-    approval ranges (People), else the principal. Just me works the same:
+    approval ranges (People), else the principal. Personal mode works the same:
     approval ranges belong to people, not departments."""
     from openexecutive.departments.authority import _route_proposal
     from openexecutive.people.store import find_approvers
