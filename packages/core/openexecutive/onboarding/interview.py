@@ -739,12 +739,12 @@ async def advance(
                 prose
                 and not must_draft
                 and len(prose) <= _MAX_PROSE_QUESTION_CHARS
-                and "?" in prose
+                and prose.endswith("?")
             ):
                 # The model asked in plain words twice running: the person can
                 # still answer it, so show it rather than a dead end. A long
-                # reply is reasoning or a half-made draft, not a question, and
-                # is never cut off and shown, and a reply that asks nothing is not one.
+                # reply, or one that does not end in a question mark, is
+                # reasoning or a half-made draft: it is never shown.
                 return Question(question=prose)
             raise
 

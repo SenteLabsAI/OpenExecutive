@@ -800,3 +800,15 @@ async def test_short_prose_that_asks_nothing_is_not_a_question(
     _install(monkeypatch, provider)
     with pytest.raises(iv.InterviewError):
         await iv.advance(_opening(), questions_asked=0)
+
+
+@pytest.mark.asyncio
+async def test_prose_with_a_mid_text_question_mark_is_not_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Is that right? Anyway, I would draft: Northwind, 12 staff."
+    note = SimpleNamespace(content=[SimpleNamespace(type="text", text=text)])
+    provider = _ScriptedProvider([note, note])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)
