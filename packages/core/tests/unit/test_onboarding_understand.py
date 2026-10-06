@@ -76,8 +76,17 @@ async def test_understand_leaves_unknowns_null(provider: _Provider) -> None:
     assert got == un.Understanding()
 
 
-async def test_understand_rejects_a_bad_enum(provider: _Provider) -> None:
-    provider.response = _tool_response({"mode": "everyone"})
+async def test_understand_keeps_valid_fields_beside_a_bad_enum(provider: _Provider) -> None:
+    provider.response = _tool_response(
+        {"mode": "company", "role_kind": "cfo", "company": "Northwind", "role_title": "CFO"}
+    )
+    got = await un.understand("hello")
+    assert got.mode is None and got.role_kind is None
+    assert got.company == "Northwind" and got.role_title == "CFO"
+
+
+async def test_understand_rejects_a_non_string_field(provider: _Provider) -> None:
+    provider.response = _tool_response({"company": ["a"]})
     with pytest.raises(iv.InterviewError):
         await un.understand("hello")
 

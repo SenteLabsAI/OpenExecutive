@@ -104,6 +104,21 @@ def _tidy(raw: Understanding) -> Understanding:
     )
 
 
+_MODES = {"solo", "team"}
+_ROLE_KINDS = {"owner", "in_house", "independent", "other"}
+
+
+def _coerce(data: dict[str, Any]) -> dict[str, Any]:
+    """Null an out-of-enum mode or role_kind so one bad value cannot discard
+    the valid fields beside it (the tool schema's enum is not enforced)."""
+    out = dict(data)
+    if out.get("mode") not in _MODES:
+        out["mode"] = None
+    if out.get("role_kind") not in _ROLE_KINDS:
+        out["role_kind"] = None
+    return out
+
+
 def _extract(response: Any) -> dict[str, Any]:
     for block in getattr(response, "content", []) or []:
         if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == TOOL_NAME:
@@ -142,7 +157,7 @@ async def understand(text: str) -> Understanding:
 
     log_model_usage(response, model=model, actor=ONBOARDING_INTERVIEWER_AGENT_ID)
     try:
-        return _tidy(Understanding.model_validate(_extract(response)))
+        return _tidy(Understanding.model_validate(_coerce(_extract(response))))
     except ValidationError as exc:
         logger.error("onboarding understand: malformed result (%s)", type(exc).__name__)
         raise InterviewError("The setup assistant did not return a usable response.") from exc
