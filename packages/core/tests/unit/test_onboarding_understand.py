@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openexecutive.api.models import ONBOARD_MESSAGE_MAX_CHARS
 from openexecutive.api.routes import onboarding as route
 from openexecutive.onboarding import interview as iv
 from openexecutive.onboarding import understand as un
@@ -123,6 +124,19 @@ def test_route_includes_attached_text(
     )
     assert resp.status_code == 200, resp.text
     assert "=== Attached: one-pager.txt ===" in seen[0] and "We sell tools" in seen[0]
+
+
+def test_route_rejects_an_over_long_description_without_a_model_call(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _never(text: str) -> un.Understanding:
+        raise AssertionError("must not reach the model")
+
+    monkeypatch.setattr(un, "understand", _never)
+    too_long = SECRET + "x" * ONBOARD_MESSAGE_MAX_CHARS
+    resp = client.post("/onboard/interview/understand", data={"description": too_long})
+    assert resp.status_code == 422
+    assert SECRET not in resp.text
 
 
 def test_route_empty_is_422(client: TestClient) -> None:
