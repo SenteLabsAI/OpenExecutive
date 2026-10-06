@@ -177,7 +177,7 @@ const CHOICES: {
       "A manager tracking promises and follow-ups",
       "An advisor juggling several clients",
     ],
-    foot: "Add teammates anytime",
+    foot: "Add teammates later from People",
   },
   {
     mode: "team",
@@ -188,7 +188,7 @@ const CHOICES: {
       "A department head who wants daily check-ins",
       "Teammates who sign in and message it too",
     ],
-    foot: "Invite teammates from People after setup",
+    foot: "Add teammates from People after setup",
   },
 ];
 
