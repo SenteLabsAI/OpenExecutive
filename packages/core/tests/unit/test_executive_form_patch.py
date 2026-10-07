@@ -185,10 +185,11 @@ def test_tool_list_is_cache_stable_and_includes_form_tool() -> None:
 
     from openexecutive.workflows import python_job
 
-    # run_python_job is offered only where its sandbox is installed.
+    # run_python_job is offered only on the principal's own turns where its
+    # sandbox is installed; this turn isn't the principal's.
     expected = sorted(
         t["name"] for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS]
-        if t["name"] != python_job.TOOL_NAME or python_job.available()
+        if t["name"] != python_job.TOOL_NAME
     )
     assert PROPOSE_FORM_VALUES in sent_names
     # Anthropic server-side tools (web_search) are appended AFTER the cached
