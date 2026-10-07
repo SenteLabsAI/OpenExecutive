@@ -76,8 +76,10 @@ class ToolUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool | None = None
-    # True turns the current version on for workflows; False turns them off.
+    # True turns `version` (the one the owner looked at) on for workflows;
+    # False turns workflows off.
     workflows: bool | None = None
+    version: int | None = Field(default=None, ge=1, le=2**31)
 
 
 class RollbackIn(BaseModel):
@@ -157,6 +159,8 @@ def update_saved_tool(name: str, body: ToolUpdate, request: Request) -> SavedToo
     _require_principal(request)
     if body.enabled is None and body.workflows is None:
         raise HTTPException(status_code=422, detail="Nothing to change.")
+    if body.workflows and body.version is None:
+        raise HTTPException(status_code=422, detail="Say which version to turn on for workflows.")
     if body.workflows and not _tied_to_the_owner(request):
         raise HTTPException(
             status_code=409,
@@ -171,14 +175,14 @@ def update_saved_tool(name: str, body: ToolUpdate, request: Request) -> SavedToo
                 {"name": tool.name, "enabled": tool.enabled},
             )
         if body.workflows is not None:
-            tool = saved_tools.set_workflows(name, body.workflows)
+            tool = saved_tools.set_workflows(name, body.version if body.workflows else None)
             _audit(
                 f"Custom tool {tool.name} "
                 + (f"version {tool.workflow_version} on for workflows" if body.workflows else "off for workflows"),
                 {"name": tool.name, "workflow_version": tool.workflow_version},
             )
-    except saved_tools.SavedToolError:
-        raise HTTPException(status_code=404, detail="No custom tool by that name.") from None
+    except saved_tools.SavedToolError as exc:
+        raise HTTPException(status_code=404, detail=f"{str(exc).capitalize()}.") from None
     return _detail(name)
 
 

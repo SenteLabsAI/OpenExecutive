@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -118,7 +119,12 @@ def initialize(db_path: Path | None = None) -> None:
         )
         columns = {r[1] for r in conn.execute("PRAGMA table_info(saved_tools)").fetchall()}
         if "workflow_version" not in columns:
-            conn.execute("ALTER TABLE saved_tools ADD COLUMN workflow_version INTEGER")
+            try:
+                conn.execute("ALTER TABLE saved_tools ADD COLUMN workflow_version INTEGER")
+            except sqlite3.OperationalError as exc:
+                # Another process added it between the check and the ALTER.
+                if "duplicate column" not in str(exc):
+                    raise
 
 
 def _now() -> str:
@@ -179,18 +185,26 @@ def list_for_workflows(db_path: Path | None = None) -> list[SavedTool]:
     return [_row_to_tool(r) for r in rows]
 
 
-def set_workflows(name: str, on: bool, db_path: Path | None = None) -> SavedTool:
-    """Turn the current version on for workflows, or turn workflows off."""
+def set_workflows(name: str, version: int | None, db_path: Path | None = None) -> SavedTool:
+    """Turn ``version`` on for workflows — the exact version the owner looked
+    at, never "whatever is current now" — or workflows off (None)."""
     initialize(db_path)
     with _get_conn(_resolve(db_path)) as conn:
-        cur = conn.execute(
-            "UPDATE saved_tools SET workflow_version = "
-            + ("current_version" if on else "NULL")
-            + ", updated_at = ? WHERE name = ?",
-            (_now(), name),
-        )
-        if cur.rowcount == 0:
-            raise SavedToolError("no saved tool by that name")
+        if version is None:
+            cur = conn.execute(
+                "UPDATE saved_tools SET workflow_version = NULL, updated_at = ? WHERE name = ?",
+                (_now(), name),
+            )
+            if cur.rowcount == 0:
+                raise SavedToolError("no saved tool by that name")
+        else:
+            cur = conn.execute(
+                "UPDATE saved_tools SET workflow_version = ?, updated_at = ? WHERE name = ?"
+                " AND EXISTS (SELECT 1 FROM saved_tool_versions WHERE name = ? AND version = ?)",
+                (version, _now(), name, name, version),
+            )
+            if cur.rowcount == 0:
+                raise SavedToolError("no such version of that saved tool")
     tool = get(name, db_path)
     assert tool is not None
     return tool
@@ -315,10 +329,14 @@ def versions(name: str, db_path: Path | None = None) -> list[dict[str, Any]]:
 
 
 def set_enabled(name: str, enabled: bool, db_path: Path | None = None) -> SavedTool:
+    """Turning a tool off also turns it off for workflows: turning it back on
+    must not re-arm unattended runs without the owner's workflow switch."""
     initialize(db_path)
     with _get_conn(_resolve(db_path)) as conn:
         cur = conn.execute(
-            "UPDATE saved_tools SET enabled = ?, updated_at = ? WHERE name = ?",
+            "UPDATE saved_tools SET enabled = ?, updated_at = ?"
+            + ("" if enabled else ", workflow_version = NULL")
+            + " WHERE name = ?",
             (1 if enabled else 0, _now(), name),
         )
         if cur.rowcount == 0:

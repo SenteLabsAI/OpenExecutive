@@ -5051,14 +5051,16 @@ export async function setSavedToolEnabled(name: string, enabled: boolean): Promi
   return updateSavedTool(name, { enabled });
 }
 
-/** Turn the current version on for workflows (true), or workflows off. */
-export async function setSavedToolWorkflows(name: string, workflows: boolean): Promise<SavedToolDetail> {
-  return updateSavedTool(name, { workflows });
+/** Turn `version` (the one shown to the owner) on for workflows, or
+ * workflows off (null). Naming the version means a newer one the Executive
+ * saved meanwhile is never approved by accident. */
+export async function setSavedToolWorkflows(name: string, version: number | null): Promise<SavedToolDetail> {
+  return updateSavedTool(name, version == null ? { workflows: false } : { workflows: true, version });
 }
 
 async function updateSavedTool(
   name: string,
-  update: { enabled?: boolean; workflows?: boolean },
+  update: { enabled?: boolean; workflows?: boolean; version?: number },
 ): Promise<SavedToolDetail> {
   const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, {
     method: "PUT",

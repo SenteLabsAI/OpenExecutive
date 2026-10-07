@@ -6013,7 +6013,9 @@ workflows:
     a worker is ~8 MB RSS, exists only while its script runs, and none are
     left after timeouts, memory-cap kills or cancellation.
     Workflow approval of kept tools: saved_tools.workflow_version (NULL
-    until the owner turns it on; set_workflows copies current_version).
+    until the owner turns it on; set_workflows(name, version) sets the version
+    the owner named, which must exist, so a version saved while they were
+    reviewing is never approved by accident; set_enabled(False) clears it).
     Workflow steps use get_for_workflows / list_for_workflows (that version,
     enabled only); chat uses the current version. A newer save never moves
     workflow_version; pruning keeps it. PUT /saved-tools/{name}

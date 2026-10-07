@@ -178,7 +178,7 @@ async def test_a_turned_off_tool_does_not_run() -> None:
 async def test_a_step_runs_a_saved_tool_only_with_every_tool_it_used() -> None:
     saved_tools.save("file_all", "File everything.", "drive__move_file(file_id='a')", [LIST, MOVE],
                      origin="chat")
-    saved_tools.set_workflows("file_all", True)
+    saved_tools.set_workflows("file_all", 1)
     calls = _Calls()
     body, is_error = await _tool({"tool": "file_all"}, tools=[LIST], call=calls)
     assert is_error and body["missing_tools"] == [MOVE] and calls.made == []
@@ -363,7 +363,7 @@ async def test_workflows_run_only_the_version_the_owner_turned_on() -> None:
     assert is_error and "not turned on for workflows" in body["error"] and calls.made == []
     assert step_script.usable_saved_tools([LIST]) == []
 
-    on = saved_tools.set_workflows("file_all", True)
+    on = saved_tools.set_workflows("file_all", 1)
     assert on.workflow_version == 1
     # The model keeps a new version: chat runs it, workflows keep version 1.
     body, _ = await _tool({"script": "drive__list_items(folder='two')", "save_as": "file_all",
@@ -376,7 +376,7 @@ async def test_workflows_run_only_the_version_the_owner_turned_on() -> None:
     await _tool({"tool": "file_all"}, call=calls)
     assert calls.made[-1] == (LIST, {"folder": "two"})
 
-    saved_tools.set_workflows("file_all", False)
+    saved_tools.set_workflows("file_all", None)
     body, is_error = await _tool({"tool": "file_all"}, tools=[LIST], call=calls)
     assert is_error and "not turned on for workflows" in body["error"]
 
@@ -384,8 +384,45 @@ async def test_workflows_run_only_the_version_the_owner_turned_on() -> None:
 def test_pruning_keeps_the_version_workflows_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(saved_tools, "_MAX_VERSIONS_KEPT_PER_TOOL", 2)
     saved_tools.save("count_files", "v1", "1", [], origin="chat")
-    saved_tools.set_workflows("count_files", True)
+    saved_tools.set_workflows("count_files", 1)
     for i in range(2, 6):
         saved_tools.save("count_files", f"v{i}", str(i), [], origin="chat")
     assert [v["version"] for v in saved_tools.versions("count_files")] == [5, 4, 1]
     assert saved_tools.get_for_workflows("count_files").script == "1"  # type: ignore[union-attr]
+
+
+def test_approval_names_a_version_and_turning_off_clears_it() -> None:
+    saved_tools.save("count_files", "v1", "1", [], origin="chat")
+    saved_tools.save("count_files", "v2", "2", [], origin="chat")
+    # The owner approves the version they looked at, even if newer exists.
+    assert saved_tools.set_workflows("count_files", 1).workflow_version == 1
+    with pytest.raises(saved_tools.SavedToolError):
+        saved_tools.set_workflows("count_files", 9)
+    # Off and on again doesn't re-arm workflows.
+    saved_tools.set_enabled("count_files", False)
+    assert saved_tools.set_enabled("count_files", True).workflow_version is None
+
+
+def test_the_column_migration_tolerates_a_race(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Another process added the column between our check and our ALTER."""
+    import contextlib
+
+    saved_tools.initialize()  # the column exists now
+    real = saved_tools._get_conn
+
+    class _StaleCheck:
+        def __init__(self, conn: Any) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, *args: Any) -> Any:
+            if sql.startswith("PRAGMA table_info(saved_tools)"):
+                return self._conn.execute("SELECT 0, 'name' WHERE 0")  # no columns seen
+            return self._conn.execute(sql, *args)
+
+    @contextlib.contextmanager
+    def stale(path: Any) -> Any:
+        with real(path) as conn:
+            yield _StaleCheck(conn)
+
+    monkeypatch.setattr(saved_tools, "_get_conn", stale)
+    saved_tools.initialize()  # ALTER hits "duplicate column", which is fine

@@ -85,15 +85,24 @@ def test_the_switch_shows(client: TestClient, monkeypatch: pytest.MonkeyPatch) -
 def test_turning_workflows_on_needs_a_request_tied_to_the_owner(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
 ) -> None:
+    from openexecutive.api.routes import take_the_lead
+
+    # The real gate, with take_the_lead's own helpers stood in (setattr fails
+    # if a rename there would break this route).
+    owner = object()
+    monkeypatch.setattr(take_the_lead, "_principal", lambda _r: owner)
     tied = {"is": False}
-    monkeypatch.setattr(route, "_tied_to_the_owner", lambda _r: tied["is"])
-    assert client.put("/saved-tools/count_files", json={"workflows": True}).status_code == 409
+    monkeypatch.setattr(take_the_lead, "_provably_theirs", lambda _r, p: tied["is"] and p is owner)
+    on = {"workflows": True, "version": 1}
+    assert client.put("/saved-tools/count_files", json=on).status_code == 409
     assert saved_tools.get("count_files").workflow_version is None  # type: ignore[union-attr]
     tied["is"] = True
-    body = client.put("/saved-tools/count_files", json={"workflows": True}).json()
-    assert body["workflow_version"] == 2
+    # The version the owner looked at, not whatever is current (2).
+    assert client.put("/saved-tools/count_files", json=on).json()["workflow_version"] == 1
+    assert client.put("/saved-tools/count_files", json={"workflows": True}).status_code == 422
+    assert client.put("/saved-tools/count_files", json={"workflows": True, "version": 7}).status_code == 404
     # Turning it off never needs more than the owner.
     tied["is"] = False
     assert client.put("/saved-tools/count_files", json={"workflows": False}).json()["workflow_version"] is None
     assert client.put("/saved-tools/count_files", json={}).status_code == 422
-    assert [r["details"].get("workflow_version") for r in audit] == [2, None]
+    assert [r["details"].get("workflow_version") for r in audit] == [1, None]

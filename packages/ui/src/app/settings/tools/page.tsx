@@ -170,7 +170,7 @@ function ToolCard({
               size="sm"
               className="mt-2"
               disabled={busy || !tool.enabled}
-              onClick={() => run(() => setSavedToolWorkflows(tool.name, true))}
+              onClick={() => run(() => setSavedToolWorkflows(tool.name, tool.version))}
             >
               Use version {tool.version} in workflows
             </Button>
@@ -180,7 +180,7 @@ function ToolCard({
           checked={tool.workflow_version != null}
           disabled={busy || !tool.enabled}
           labelledBy={`${titleId}-workflows`}
-          onChange={(on) => run(() => setSavedToolWorkflows(tool.name, on))}
+          onChange={(on) => run(() => setSavedToolWorkflows(tool.name, on ? tool.version : null))}
         />
       </div>
       <div className="mt-3">
