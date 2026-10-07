@@ -625,6 +625,7 @@ async def run_action_step(
     )
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
+    fanout_hinted = False
     for turn in range(max_turns):
         kwargs: dict[str, Any] = {
             "model": resolved_model,
@@ -694,6 +695,16 @@ async def run_action_step(
                     "is_error": is_error,
                 }
             )
+        # A tool came back with a list: nudge toward one script for the
+        # per-item work, once a step (step_script.FANOUT_HINT).
+        if (
+            scripts
+            and not fanout_hinted
+            and not any(str(u["name"]) == step_script.RUN_SCRIPT_TOOL for u in tool_uses)
+            and any(step_script.lists_many(str(r["content"])) for r in results)
+        ):
+            results.append({"type": "text", "text": step_script.FANOUT_HINT})
+            fanout_hinted = True
         messages.append({"role": "user", "content": results})
 
     # Out of turns without a final report: the goal may be half done, so this

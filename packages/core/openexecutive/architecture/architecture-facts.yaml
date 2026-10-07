@@ -6007,6 +6007,13 @@ workflows:
     upsert_person 25, create_alert 50). A CancelledError mid-call writes a
     cancelled audit row before re-raising. TOOL_BUILDING_ADDENDUM is gated
     on cache_manager._chat_scripts_on (setting + step_script.available()).
+    Fan-out nudge: after a round whose results hold a list of >= 5 items
+    (step_script.lists_many: top level or up to two levels into a JSON
+    object, not an error), with run_script offered and unused that round
+    (chat: not withheld, not mail-touched), the constant FANOUT_HINT is added
+    as a text block to that round's user message — once a turn in chat, once
+    a step in workflows. The addendum and run_script description state the
+    cost: every round re-reads the whole conversation.
 
     Chat scripts: the Executive's chat is offered the same `run_script` tool
     (step_script.CHAT_TOOL_DEFINITION, a constant so the cached tool prefix is

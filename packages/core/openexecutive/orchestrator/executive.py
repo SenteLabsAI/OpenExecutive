@@ -1791,6 +1791,8 @@ class Executive:
         # Tool calls this turn's scripts have made, in all and per own tool
         # (settings.chat_script_max_calls, step_script.CHAT_OWN_TOOL_CAPS).
         script_counts: dict[str, int] = {}
+        # The fan-out hint (step_script.FANOUT_HINT) goes out once a turn.
+        fanout_hinted = False
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
         last_full_text = ""
@@ -2752,6 +2754,19 @@ class Executive:
             # round's user message, after the tool results (which must come
             # first). Only this loop's own, newest message changes, so the
             # cached prefix is untouched.
+            # A tool came back with a list and this turn may build a tool:
+            # nudge toward one run_script for the per-item work, once a
+            # turn, in this user message (never a cached block).
+            if (
+                not fanout_hinted
+                and self._script_tools
+                and step_script.RUN_SCRIPT_TOOL not in not_offered
+                and not (pinned_delegation is not None and pinned_delegation.touched_mail)
+                and not any(tu["name"] == step_script.RUN_SCRIPT_TOOL for tu in tool_uses)
+                and any(step_script.lists_many(str(results_by_id.get(tu["id"], ""))) for tu in tool_uses)
+            ):
+                tool_results.append({"type": "text", "text": step_script.FANOUT_HINT})
+                fanout_hinted = True
             added = inbox.take() if inbox is not None else []
             if added:
                 tool_results.append({"type": "text", "text": render_added_messages(added)})

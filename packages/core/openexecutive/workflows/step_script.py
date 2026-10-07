@@ -232,17 +232,50 @@ CHAT_OWN_TOOL_CAPS: dict[str, int] = {
     "upsert_person": 25,
 }
 
+# Added to a chat round's results (the user turn, never a cached block) when
+# a tool came back with a list and run_script is on offer: the moment the
+# model decides between one call per item and one built tool.
+FANOUT_THRESHOLD = 5
+FANOUT_HINT = (
+    "A tool above returned a list of items. If your next step checks, looks "
+    "up or acts on each of them, do the rest of the job (the per-item calls "
+    "and anything after them) in one run_script call instead of a round of "
+    "separate calls: every extra round re-reads this whole conversation, so "
+    "one script is much cheaper and faster."
+)
+
+
+def lists_many(text: str, threshold: int = FANOUT_THRESHOLD) -> bool:
+    """Whether a tool result holds a list of at least ``threshold`` items:
+    the result itself, or a list one or two levels into a JSON object."""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+
+    def many(value: Any, depth: int) -> bool:
+        if isinstance(value, list):
+            return len(value) >= threshold
+        if isinstance(value, dict) and depth < 2 and "error" not in value:
+            return any(many(v, depth + 1) for v in value.values())
+        return False
+
+    return many(parsed, 0)
+
+
 # The chat version is a constant: chat's tool list is cached, so it can't
 # name the tools a conversation happens to use.
 CHAT_TOOL_DEFINITION: dict[str, Any] = {
     "name": RUN_SCRIPT_TOOL,
     "description": (
-        "Run a short Python script that calls tools, when a job looks something "
-        "up and then checks or acts on each result (list people, look each one "
-        "up, raise one alert; list a folder, move each file), when results come "
-        "in pages, or when it covers more than about ten items. One script does "
-        "the lookup, the per-item calls and the final action in one step; for a "
-        "handful of items already named, call the tools directly.\n\n"
+        "Run a short Python script that calls tools. Use it instead of a round "
+        "of per-item calls whenever a job looks something up and then checks or "
+        "acts on each result (list people, look each one up, raise one alert; "
+        "list a folder, move each file), when results come in pages, or when it "
+        "covers more than about ten items: every round of separate calls "
+        "re-reads the whole conversation, and one script does the lookup, the "
+        "per-item calls and the final action in one step. Only a handful of "
+        "items already named in the request go as direct calls.\n\n"
         "Call a tool as a function named exactly like it, with its arguments as "
         "keywords (google_workspace__list_drive_items(folder_id=...)), or "
         "call_tool(name, arguments) by exact name (needed for a name with a "

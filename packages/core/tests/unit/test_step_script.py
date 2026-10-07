@@ -464,3 +464,22 @@ async def test_a_call_waiting_for_approval_is_marked() -> None:
     body = json.loads(content)
     assert not is_error and body["result"] == "waiting_for_approval"
     assert body["calls"] == [{"tool": MOVE, "ok": True, "waiting_for_approval": True}]
+
+
+@pytest.mark.asyncio
+async def test_a_list_result_nudges_the_step_toward_one_script(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    many = [{"id": f"f{i}", "kind": "invoice"} for i in range(6)]
+
+    async def call_tool(tool_input: dict[str, Any]) -> str:
+        gateway.calls.append(tool_input)
+        return json.dumps(many)
+
+    monkeypatch.setattr(gateway, "call_tool", call_tool)
+    _, provider = await _run(
+        monkeypatch,
+        [_resp(_use(LIST, {"folder": "Inbox"})), _resp(_text("Done."))],
+    )
+    turn = provider.calls[1]["messages"][-1]["content"]
+    assert {"type": "text", "text": step_script.FANOUT_HINT} in turn

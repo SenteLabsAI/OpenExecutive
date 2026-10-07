@@ -475,3 +475,58 @@ def test_agent_activity_shows_the_built_tool_as_one_card() -> None:
     [card] = [i for i in items if isinstance(i, dict) and i.get("kind") == "script_run"]
     assert card["data"]["ok"] is True and card["data"]["calls_made"] == 4
     assert {c["tool"] for c in card["data"]["calls"]} == {"drive__list_items", "drive__move_file"}
+
+
+def _people_turn(people: int) -> tuple[_ScriptedProvider, Any]:
+    from openexecutive.orchestrator import executive as executive_module
+
+    async def list_people(_input: dict[str, Any]) -> str:
+        return json.dumps({"people": [{"id": i, "name": f"P{i}"} for i in range(people)]})
+
+    provider = _ScriptedProvider([
+        _FinalMsg([_ToolUseBlock("tu-l", "list_people", {})], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+    return provider, patch.dict(executive_module._ALL_SKILL_HANDLERS, {"list_people": list_people})
+
+
+def _hinted(provider: _ScriptedProvider) -> bool:
+    return any(
+        isinstance(b, dict) and b.get("type") == "text" and b.get("text") == step_script.FANOUT_HINT
+        for m in provider.calls[-1]["messages"] if isinstance(m["content"], list)
+        for b in m["content"]
+    )
+
+
+def test_a_list_result_nudges_toward_one_built_tool() -> None:
+    provider, handlers = _people_turn(6)
+    with handlers:
+        _run(provider, _Gateway())
+    assert _hinted(provider)
+
+
+def test_no_nudge_for_a_short_list_or_without_scripts(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider, handlers = _people_turn(3)
+    with handlers:
+        _run(provider, _Gateway())
+    assert not _hinted(provider)
+    monkeypatch.setenv("CHAT_SCRIPTS", "false")
+    provider, handlers = _people_turn(8)
+    with handlers:
+        _run(provider, _Gateway())
+    assert not _hinted(provider)
+
+
+@pytest.mark.parametrize(
+    ("text", "many"),
+    [
+        (json.dumps([1, 2, 3, 4, 5]), True),
+        (json.dumps({"people": [{}] * 5}), True),
+        (json.dumps({"result": {"files": list(range(7))}}), True),
+        (json.dumps({"people": [{}] * 4}), False),
+        (json.dumps({"error": "x", "items": list(range(9))}), False),
+        ("plain text", False),
+    ],
+)
+def test_lists_many(text: str, many: bool) -> None:
+    assert step_script.lists_many(text) is many
