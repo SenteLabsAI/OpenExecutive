@@ -101,6 +101,7 @@ _LABELS: dict[str, str] = {
     # Research, alerts, artifacts
     "run_executive_research": "Researching…",
     "create_alert": "Flagging something for review…",
+    "run_python_job": "Working on the files…",
     "draft_artifact": "Writing that up…",
     "list_artifacts": "Looking through earlier work…",
     "get_artifact": "Rereading that document…",

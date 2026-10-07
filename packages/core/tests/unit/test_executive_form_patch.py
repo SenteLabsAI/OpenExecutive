@@ -183,7 +183,13 @@ def test_tool_list_is_cache_stable_and_includes_form_tool() -> None:
     _run_loop(provider)
     sent_names = [t["name"] for t in provider.calls[0]["tools"]]
 
-    expected = sorted(t["name"] for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS])
+    from openexecutive.workflows import python_job
+
+    # run_python_job is offered only where its sandbox is installed.
+    expected = sorted(
+        t["name"] for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS]
+        if t["name"] != python_job.TOOL_NAME or python_job.available()
+    )
     assert PROPOSE_FORM_VALUES in sent_names
     # Anthropic server-side tools (web_search) are appended AFTER the cached
     # client prefix — only the prefix participates in the cache key.

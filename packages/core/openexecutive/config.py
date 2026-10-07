@@ -595,6 +595,12 @@ class Settings(BaseSettings):
     # core while computing) may run at once across the whole server, chat and
     # workflows together. More wait their turn, within their own time limit.
     script_max_workers: int = Field(2, alias="SCRIPT_MAX_WORKERS", ge=1, le=32)
+    # Python jobs (workflows/python_job.py): Python with real libraries on
+    # files, in a WebAssembly sandbox run by Deno. Offered only when the
+    # sandbox is installed at PYTHON_SANDBOX_DIR (the API image does that).
+    python_jobs_enabled: bool = Field(True, alias="PYTHON_JOBS_ENABLED")
+    python_sandbox_dir: Path = Field(Path("/opt/pysandbox"), alias="PYTHON_SANDBOX_DIR")
+    python_job_timeout_s: float = Field(120.0, alias="PYTHON_JOB_TIMEOUT_S", ge=5, le=900)
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.

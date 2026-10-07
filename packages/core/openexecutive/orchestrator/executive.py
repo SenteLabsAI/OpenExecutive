@@ -166,8 +166,9 @@ from openexecutive.orchestrator.workflow_run_tools import (
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
 from openexecutive.providers.translator import reasoning_replay_block
-from openexecutive.workflows import step_script
+from openexecutive.workflows import python_job, step_script
 from openexecutive.workflows.action_step import looks_like_error
+from openexecutive.workflows.python_job import PYTHON_JOB_TOOL_HANDLERS, PYTHON_JOB_TOOLS
 from openexecutive.workflows.tool_catalog import filter_search_results
 
 logger = logging.getLogger(__name__)
@@ -454,6 +455,7 @@ _ALL_SKILL_TOOLS = [
     *WORKFLOW_AUTHORING_TOOLS,
     *WORKFLOW_RUN_TOOLS,
     *FORM_TOOLS,
+    *PYTHON_JOB_TOOLS,
 ]
 _ALL_SKILL_HANDLERS = {
     **SKILL_TOOL_HANDLERS,
@@ -473,6 +475,7 @@ _ALL_SKILL_HANDLERS = {
     **WORKFLOW_AUTHORING_TOOL_HANDLERS,
     **WORKFLOW_RUN_TOOL_HANDLERS,
     **FORM_TOOL_HANDLERS,
+    **PYTHON_JOB_TOOL_HANDLERS,
 }
 
 
@@ -1756,7 +1759,10 @@ class Executive:
         # an inbound email, a teammate's turn or Google Chat
         # (`content_trust.principal_only_withheld`).
         principal_withheld = principal_only_withheld(current_session.get())
-        not_offered = unattended_withheld | private_withheld | principal_withheld
+        # Python jobs need the sandbox the API image installs: without it the
+        # tool is not offered (fixed per process, so the prefix stays stable).
+        sandbox_missing = frozenset() if python_job.available() else frozenset({python_job.TOOL_NAME})
+        not_offered = unattended_withheld | private_withheld | principal_withheld | sandbox_missing
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         # Act as me: ghostwrite_email joins the toolkit only on a turn
         # pin_turn_delegation offered it to. Its own registry, never

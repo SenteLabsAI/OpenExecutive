@@ -6023,6 +6023,20 @@ workflows:
     turning off doesn't. Prompted by the automated review: a principal turn
     that read an injected email could keep an attacker-shaped tool that a
     workflow then ran unattended.
+    Python jobs (workflows/python_job.py, run_python_job): Pyodide 314 in Deno,
+    one process per job (asyncio.Semaphore(1)), deno run --no-prompt --quiet
+    --no-remote --allow-read=<PYTHON_SANDBOX_DIR>,<worker>, env stripped to
+    PATH/HOME/DENO_DIR. Spike: under plain Node a job read all env vars, host
+    files and the network; Node --permission can't load Pyodide; Deno denied
+    env, fs, writes, run and net (incl. 127.0.0.1 and 169.254.169.254).
+    Job JSON on stdin {code, files b64, pyodide dir, wheels}; result on
+    stdout. Inputs: Knowledge files by plain name (company/docs) and
+    text_files; outputs kept 7 days in company/python_jobs/<uuid>/ and served
+    by GET /python-jobs/{id}/{name} (principal only). Image: npm pyodide +
+    deno, compiled wheels from cdn.jsdelivr.net/pyodide/v<ver>/full verified
+    by lock sha256 (docker/pysandbox-fetch.mjs), pip-pinned pypdf/openpyxl,
+    build smoke runs a job. Measured: ~2.2 s start, 4 s PDF split (214 MB),
+    11 s pandas+matplotlib (446 MB); image +~130 MB.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

@@ -1801,6 +1801,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # A sandboxed script over the gateway tools (workflows/step_script.py):
     # each of its calls would be checked, but the turn is simply not offered it.
     "run_script",
+    "run_python_job",
     "list_saved_tools",
     "run_workflow",
     "save_workflow",
