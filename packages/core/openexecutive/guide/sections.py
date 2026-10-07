@@ -91,6 +91,11 @@ GUIDE_SECTIONS: list[GuideSection] = [
         sub="How the Executive does a piece of work — methods, templates, checklists. A tab on Workflows.",
     ),
     GuideSection(
+        id="custom_tools",
+        title="Custom Tools",
+        sub="When the Executive lacks a tool, it builds one — and keeps the ones it will need again.",
+    ),
+    GuideSection(
         id="council",
         title="Agent Council",
         sub="Configure the specialists — models, prompts, reasoning depth, and the Executive's voice.",

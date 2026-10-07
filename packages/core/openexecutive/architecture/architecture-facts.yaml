@@ -5988,6 +5988,20 @@ workflows:
     goal) and never lists run_script; validate_definition rejects a step that
     lists it, so the designer's repair turn removes it.
 
+    Chat scripts may also call the Executive's own tools in
+    step_script.CHAT_OWN_TOOLS (reads; create/ack alerts; open loops; goals;
+    watch list; schedule_followup; message_person; upsert_person) when the
+    turn is offered each (turn_handlers minus withheld_tools), via the
+    turn's handler (Take the lead gated_handlers on a leading run), with the
+    usual chip and a kind: skill, via: run_script audit row. Excluded:
+    broadcasts, calendar, memory/skill edits, workflows, research, documents,
+    Act as me. The cached persona gets the constant TOOL_BUILDING_ADDENDUM
+    (mcp_enabled and CHAT_SCRIPTS): build a tool rather than say there is
+    none, check list_saved_tools first, keep what recurs, and never say
+    "script"/"code" to people. People see saved tools as "Custom tools"
+    (Settings -> Advanced -> Custom tools, guide section custom_tools) and
+    the usage summary as "Done in one go".
+
     Chat scripts: the Executive's chat is offered the same `run_script` tool
     (step_script.CHAT_TOOL_DEFINITION, a constant so the cached tool prefix is
     stable) whenever the gateway runs, unless CHAT_SCRIPTS=false. With no

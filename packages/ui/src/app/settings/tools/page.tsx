@@ -39,7 +39,7 @@ function ToolDetail({
   return (
     <div className="mt-4 space-y-5 border-t border-line pt-4">
       <div>
-        <h3 className="text-sm font-semibold text-fg">Script (version {detail.version})</h3>
+        <h3 className="text-sm font-semibold text-fg">How it works (version {detail.version})</h3>
         <pre className="mt-2 max-h-80 overflow-auto rounded-xl bg-surface p-3 text-xs leading-relaxed text-fg whitespace-pre-wrap break-words">
           {detail.script}
         </pre>
@@ -154,7 +154,7 @@ function ToolCard({
       </p>
       <div className="mt-3">
         <Button size="sm" variant="ghost" onClick={toggleOpen} aria-expanded={open}>
-          {open ? "Hide details" : "Script, versions and runs"}
+          {open ? "Hide details" : "Details, versions and runs"}
         </Button>
       </div>
       {error && <p className="mt-2 text-sm text-rose-500">{error}</p>}
@@ -169,8 +169,9 @@ function ToolCard({
   );
 }
 
-// Settings → Advanced → Saved tools: the scripts the Executive kept to run
-// again, with a switch for each, their versions and their recent runs.
+// Settings → Advanced → Custom tools: the tools the Executive built and kept
+// (saved tools, run_script save_as), with a switch for each, their versions
+// and their recent runs.
 export default function SavedToolsSettingsPage() {
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -202,13 +203,13 @@ export default function SavedToolsSettingsPage() {
 
   return (
     <SettingsSubpage
-      title="Saved tools"
-      description="When the Executive writes a script that works, it can save it to run again by name. A saved tool can only do what the chat or workflow step running it is already allowed to do. Turn one off to stop it running, or switch it back to an earlier version."
+      title="Custom tools"
+      description="When the Executive needs a tool it doesn't have, it builds one, and keeps the ones it will need again. A custom tool can only do what the conversation or workflow using it is already allowed to do. Turn one off to stop it running, or switch it back to an earlier version."
     >
       {state.kind === "loading" && <p className="text-sm text-fg-muted">Loading…</p>}
       {state.kind === "forbidden" && (
         <SettingsCard>
-          <p className="text-sm text-fg-muted">Only the account owner can see saved tools.</p>
+          <p className="text-sm text-fg-muted">Only the account owner can see custom tools.</p>
         </SettingsCard>
       )}
       {state.kind === "error" && (
@@ -221,16 +222,16 @@ export default function SavedToolsSettingsPage() {
           {!state.enabled && (
             <SettingsCard>
               <p className="text-sm text-fg-muted">
-                Saved tools are turned off on this server (SAVED_TOOLS_ENABLED=false): nothing new
-                is saved and none of these run.
+                Custom tools are turned off on this server (SAVED_TOOLS_ENABLED=false): nothing new
+                is kept and none of these run.
               </p>
             </SettingsCard>
           )}
           {state.tools.length === 0 ? (
             <SettingsCard>
               <p className="text-sm text-fg-muted">
-                No saved tools yet. They appear here when the Executive saves a script it may need
-                again.
+                No custom tools yet. They appear here when the Executive builds a tool for a job it
+                is likely to do again.
               </p>
             </SettingsCard>
           ) : (

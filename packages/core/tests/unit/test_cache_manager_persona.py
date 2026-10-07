@@ -185,3 +185,17 @@ def test_blank_persona_instructions_keep_block_zero_byte_identical() -> None:
     a = build_system_blocks(persona_instructions="X")[0]["text"]
     b = build_system_blocks(persona_instructions="X")[0]["text"]
     assert a == b
+
+
+def test_tool_building_guidance_follows_the_chat_scripts_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.prompts.executive_persona import TOOL_BUILDING_ADDENDUM
+
+    on = build_system_blocks(mcp_enabled=True)[0]["text"]
+    assert TOOL_BUILDING_ADDENDUM in on
+    # The same text on every build: block 0 stays cacheable.
+    assert build_system_blocks(mcp_enabled=True)[0]["text"] == on
+    assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=False)[0]["text"]
+    monkeypatch.setenv("CHAT_SCRIPTS", "false")
+    assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=True)[0]["text"]

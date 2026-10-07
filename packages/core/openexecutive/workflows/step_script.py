@@ -196,6 +196,34 @@ def tool_definition(
     }
 
 
+# The Executive's own tools a chat script may call as functions, besides the
+# gateway's: reads, and actions that are useful item by item and keep their
+# own checks (recipients, roster, approvals). Each call goes through the same
+# handler (and Take the lead's gate) as a direct call, only when this turn is
+# offered that tool. Not here: broadcasts, calendar changes, memory, skill,
+# workflow and research tools, documents, and anything Act as me.
+CHAT_OWN_TOOLS: tuple[str, ...] = (
+    "ack_alert",
+    "add_watchlist_entry",
+    "assign_open_loop",
+    "close_open_loop",
+    "create_alert",
+    "create_goal",
+    "find_alerts",
+    "list_department_goals",
+    "list_open_loops",
+    "list_people",
+    "list_watchlist",
+    "list_workflows",
+    "lookup_person",
+    "message_person",
+    "remove_watchlist_entry",
+    "schedule_followup",
+    "tune_watchlist_entry",
+    "update_department_goal",
+    "upsert_person",
+)
+
 # The chat version is a constant: chat's tool list is cached, so it can't
 # name the tools a conversation happens to use.
 CHAT_TOOL_DEFINITION: dict[str, Any] = {
@@ -211,7 +239,9 @@ CHAT_TOOL_DEFINITION: dict[str, Any] = {
         "call_tool(name, arguments) by exact name (needed for a name with a "
         "hyphen). Only tools the gateway would let call_tool reach (ones "
         "search_tools has returned) can be called, and every call is checked and "
-        f"recorded exactly as a call_tool would be. {_CALL_TEXT}\n\n"
+        "recorded exactly as a call_tool would be. These of your own tools are "
+        "functions too, with the same arguments and checks as calling them "
+        f"directly: {', '.join(CHAT_OWN_TOOLS)}. {_CALL_TEXT}\n\n"
         f"{_SANDBOX_TEXT}\n\n{_SAVED_TEXT} list_saved_tools shows the saved tools."
     ),
     "input_schema": _INPUT_SCHEMA,
@@ -283,13 +313,15 @@ async def run_script(
     *,
     wall_clock_s: float = _WALL_CLOCK_S,
     inputs: dict[str, Any] | None = None,
+    own: frozenset[str] = frozenset(),
 ) -> AsyncGenerator[ScriptYield, None]:
     """Run a script, yielding after each tool call and then its result.
 
     ``tools`` is a workflow step's allowlist: its tools are the script's
     functions. ``None`` (chat) makes any tool-shaped function name a call by
-    that exact name; ``call`` decides what may run. Never raises (cancellation
-    aside, which stops the worker with it).
+    that exact name, and each name in ``own`` (the Executive's own tools this
+    turn may use) too; ``call`` decides what may run. Never raises
+    (cancellation aside, which stops the worker with it).
     """
     from pydantic_monty import (
         AsyncFunctionSnapshot,
@@ -308,7 +340,7 @@ async def run_script(
         ))
         return
 
-    names = function_names(tools) if tools is not None else {}
+    names = function_names(tools) if tools is not None else {n: n for n in own}
     loop = asyncio.get_running_loop()
     deadline = loop.time() + wall_clock_s
 
@@ -484,6 +516,7 @@ async def run_script_tool(
     may_save: bool,
     may_run_saved: bool = True,
     wall_clock_s: float = _WALL_CLOCK_S,
+    own_tools: frozenset[str] = frozenset(),
 ) -> AsyncGenerator[ScriptYield, None]:
     """Answer one ``run_script`` tool use: a new script, or a saved tool.
     A script that ran yields ``("stats", {calls, duration_ms})`` just before
@@ -574,7 +607,7 @@ async def run_script_tool(
     started = time.monotonic()
     final: tuple[str, bool] | None = None
     async for kind, payload in run_script(
-        str(script), tools, tracked, wall_clock_s=wall_clock_s, inputs=inputs
+        str(script), tools, tracked, wall_clock_s=wall_clock_s, inputs=inputs, own=own_tools
     ):
         if kind == "done":
             final = payload
@@ -640,7 +673,7 @@ def _audit_save(kept: Any, origin: str) -> None:
     try:
         log_event(
             "saved_tool_changed",
-            f"Saved tool {kept.name} saved (version {kept.version})",
+            f"Custom tool {kept.name} kept (version {kept.version})",
             actor="executive",
             details={"name": kept.name, "version": kept.version, "uses_tools": kept.tools,
                      "origin": origin},

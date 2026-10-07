@@ -363,11 +363,11 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
   },
   {
     href: "/settings/tools",
-    label: "Saved tools",
+    label: "Custom tools",
     icon: "bolt",
     group: "configure",
     description:
-      "Scripts the Executive saved to run again: turn each on or off, see its runs, or go back a version.",
+      "Tools the Executive built when it didn't have the one it needed: turn each on or off, see its runs, or go back a version.",
   },
   {
     href: "/demo",

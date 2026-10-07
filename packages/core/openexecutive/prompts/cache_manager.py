@@ -7,6 +7,7 @@ from openexecutive.prompts.connected_systems import render_connected_systems
 from openexecutive.prompts.executive_persona import (
     DELEGATION_ADDENDUM,
     MCP_ADDENDUM,
+    TOOL_BUILDING_ADDENDUM,
     WEB_SEARCH_ADDENDUM,
     default_persona,
 )
@@ -143,6 +144,9 @@ def build_system_blocks(
         base_persona
         + (WEB_SEARCH_ADDENDUM if settings.enable_web_search else "")
         + (MCP_ADDENDUM if mcp_enabled else "")
+        # The chat offers run_script with a gateway unless CHAT_SCRIPTS=false
+        # (Executive._script_tools): a setting, so constant per deployment.
+        + (TOOL_BUILDING_ADDENDUM if mcp_enabled and settings.chat_scripts else "")
         + identity_addendum
         + render_connected_systems(mcp_servers=mcp_servers, settings=settings)
         + (DELEGATION_ADDENDUM if delegation else "")

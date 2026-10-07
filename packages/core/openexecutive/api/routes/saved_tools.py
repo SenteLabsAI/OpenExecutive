@@ -1,5 +1,6 @@
 """Saved tools (workflows.saved_tools): the scripts the Executive kept to run
-again by name, on the Tools page. The principal's alone, scripts included.
+again by name, shown to people as "Custom tools" (Settings → Advanced).
+The principal's alone, scripts included.
 
   GET  /saved-tools                     — every saved tool and whether saving is on
   GET  /saved-tools/{name}              — one tool: its script, versions and recent runs
@@ -80,7 +81,7 @@ def _require_principal(request: Request) -> None:
     from openexecutive.api.routes.people import caller_is_principal
 
     if not caller_is_principal(request):
-        raise HTTPException(status_code=403, detail="Only the account owner can see saved tools.")
+        raise HTTPException(status_code=403, detail="Only the account owner can see custom tools.")
 
 
 def _out(tool: Any) -> SavedToolOut:
@@ -96,7 +97,7 @@ def _detail(name: str) -> SavedToolDetail:
 
     tool = saved_tools.get(name)
     if tool is None:
-        raise HTTPException(status_code=404, detail="No saved tool by that name.")
+        raise HTTPException(status_code=404, detail="No custom tool by that name.")
     return SavedToolDetail(
         **_out(tool).model_dump(),
         script=tool.script,
@@ -140,9 +141,9 @@ def set_saved_tool_enabled(name: str, body: EnabledIn, request: Request) -> Save
     try:
         tool = saved_tools.set_enabled(name, body.enabled)
     except saved_tools.SavedToolError:
-        raise HTTPException(status_code=404, detail="No saved tool by that name.") from None
+        raise HTTPException(status_code=404, detail="No custom tool by that name.") from None
     _audit(
-        f"Saved tool {tool.name} turned {'on' if tool.enabled else 'off'}",
+        f"Custom tool {tool.name} turned {'on' if tool.enabled else 'off'}",
         {"name": tool.name, "enabled": tool.enabled},
     )
     return _detail(name)
@@ -156,9 +157,9 @@ def rollback_saved_tool(name: str, body: RollbackIn, request: Request) -> SavedT
     try:
         tool = saved_tools.rollback(name, body.version)
     except saved_tools.SavedToolError:
-        raise HTTPException(status_code=404, detail="No such version of that saved tool.") from None
+        raise HTTPException(status_code=404, detail="No such version of that tool.") from None
     _audit(
-        f"Saved tool {tool.name} switched to version {tool.version}",
+        f"Custom tool {tool.name} switched to version {tool.version}",
         {"name": tool.name, "version": tool.version},
     )
     return _detail(name)

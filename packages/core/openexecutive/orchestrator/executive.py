@@ -2455,7 +2455,15 @@ class Executive:
                     if leading
                     else self._mcp_gateway.call_tool
                 )
-                # (call_tool input, result text, the exception if the call raised)
+                # The Executive's own tools a script may call this turn: the
+                # fixed list, less any this turn is not offered. Each runs
+                # through the turn's handler (Take the lead's gate included).
+                script_own = frozenset(
+                    n for n in step_script.CHAT_OWN_TOOLS
+                    if n in turn_handlers and n not in withheld_tools
+                )
+                # (call_tool input, result text, the exception if the call
+                # raised); an own tool's input is {"name", "arguments", "own": True}.
                 made: list[tuple[dict[str, Any], str, BaseException | None]] = []
 
                 async def _script_call(
@@ -2463,10 +2471,18 @@ class Executive:
                     arguments: dict[str, Any],
                     _call: Any = script_call,
                     _made: list[tuple[dict[str, Any], str, BaseException | None]] = made,
+                    _own: frozenset[str] = script_own,
+                    _handlers: dict[str, Any] = turn_handlers,
                 ) -> tuple[str, bool]:
-                    call_input = {"name": tool, "arguments": arguments}
+                    own = tool in _own
+                    call_input: dict[str, Any] = {"name": tool, "arguments": arguments}
+                    if own:
+                        call_input["own"] = True
                     try:
-                        text = str(await _call(call_input))
+                        if own:
+                            text = str(await _handlers[tool](arguments))
+                        else:
+                            text = str(await _call({"name": tool, "arguments": arguments}))
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -2513,11 +2529,60 @@ class Executive:
                             # the principal's recipe with inputs they chose.
                             may_run_saved=not principal_withheld and not unattended_withheld,
                             wall_clock_s=script_clock,
+                            own_tools=script_own,
                         )
                     ) as script_steps:
                         async for kind, payload in script_steps:
                             for call_input, text, raised in made:
                                 label = str(call_input["name"])[:200]
+                                if call_input.get("own"):
+                                    # One of the Executive's own tools: the
+                                    # same chip and row as a direct call.
+                                    own_input = call_input["arguments"]
+                                    if raised is None:
+                                        chip = summarize_action(
+                                            tool_name=label,
+                                            tool_input=own_input,
+                                            tool_result=text,
+                                            iteration=iteration,
+                                            workspace_mode=workspace_mode,
+                                        )
+                                        if chip is not None:
+                                            yield chip
+                                    audit_log(
+                                        "tool_invocation",
+                                        (
+                                            f"skill:{label} input={audit_tool_input(label, own_input)} (run_script)"
+                                            if raised is None
+                                            else f"skill:{label} FAILED: {type(raised).__name__} (run_script)"
+                                        ),
+                                        session_id=session_id,
+                                        turn_id=turn_id,
+                                        actor="executive",
+                                        details={
+                                            "tool": label,
+                                            "kind": "skill",
+                                            "via": "run_script",
+                                            "iteration": iteration,
+                                            **(
+                                                {"result_preview": audit_tool_result(label, text)}
+                                                if raised is None
+                                                else {"ok": False, "error": repr(raised)[:ERROR_DETAIL_LEN]}
+                                            ),
+                                        },
+                                        full=(
+                                            {
+                                                "input": audit_tool_input_full(label, own_input),
+                                                "result": audit_tool_result_full(label, text),
+                                                "active_prompt_blocks": _system_block_names(system_blocks),
+                                            }
+                                            if raised is None
+                                            else None
+                                        ),
+                                        private=_private_tool_row(label),
+                                        private_to_person=_artifact_row_owner(label),
+                                    )
+                                    continue
                                 if raised is None:
                                     chip = summarize_action(
                                         tool_name="call_tool",

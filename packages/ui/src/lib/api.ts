@@ -4980,7 +4980,7 @@ export async function deleteMyLeadRule(id: number): Promise<LeadRule[]> {
   return ((await res.json()) as { rules: LeadRule[] }).rules;
 }
 
-// ── Saved tools (Settings → Advanced → Saved tools) ─────────────────────────
+// ── Custom tools (Settings → Advanced → Custom tools) ───────────────────────
 // Scripts the Executive kept to run again by name. The owner's alone.
 
 export interface SavedTool {
@@ -5034,13 +5034,13 @@ export async function listSavedTools(
 ): Promise<{ enabled: boolean; tools: SavedTool[] } | null> {
   const res = await fetch(`${API_BASE}/saved-tools`, { signal });
   if (res.status === 403) return null;
-  if (!res.ok) throw await savedToolError(res, "Couldn't load the saved tools.");
+  if (!res.ok) throw await savedToolError(res, "Couldn't load the custom tools.");
   return res.json();
 }
 
 export async function getSavedTool(name: string, signal?: AbortSignal): Promise<SavedToolDetail> {
   const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, { signal });
-  if (!res.ok) throw await savedToolError(res, "Couldn't load that saved tool.");
+  if (!res.ok) throw await savedToolError(res, "Couldn't load that tool.");
   return res.json();
 }
 
@@ -5050,7 +5050,7 @@ export async function setSavedToolEnabled(name: string, enabled: boolean): Promi
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
-  if (!res.ok) throw await savedToolError(res, "Couldn't change that saved tool.");
+  if (!res.ok) throw await savedToolError(res, "Couldn't change that tool.");
   return res.json();
 }
 

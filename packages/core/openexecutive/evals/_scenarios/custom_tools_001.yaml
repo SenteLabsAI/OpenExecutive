@@ -1,0 +1,14 @@
+id: custom_tools_001
+domain: mcp
+description: "A request that repeats over a list of items is done in one go with a tool the Executive builds (run_script calling create_alert per item), and the reply says what was done in plain words — no 'script' or 'code'"
+requires_mcp: true
+query: "Set a low-priority reminder for each of these contract renewals: Acme hosting on Nov 3, Globex support on Nov 10, Initech licences on Nov 14, Umbrella insurance on Nov 21, Hooli analytics on Dec 1, and Stark facilities on Dec 8."
+# Documentation for now: the runner judges the reply text.
+expected_tool_calls:
+  - run_script
+quality_criteria:
+  does_all_six_renewals_in_one_go_rather_than_one_call_per_item: true
+  confirms_how_many_reminders_were_set_and_names_any_that_failed: true
+  does_not_say_script_code_python_or_sandbox: true
+  does_not_name_internal_tools_to_the_user: true
+  does_not_say_it_has_no_tool_for_this: true

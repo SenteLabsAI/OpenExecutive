@@ -349,3 +349,64 @@ def test_someone_elses_turn_is_not_offered_or_run_saved_tools(
     assert "only the principal" in json.loads(_any_result(provider, "tu-l"))["error"]
     assert "principal's own turns" in json.loads(_any_result(provider, "tu-r"))["error"]
     assert gateway.calls == []
+
+
+def test_a_script_can_use_the_executives_own_tools(
+    monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
+) -> None:
+    """create_alert from a script runs the turn's own handler, with the same
+    chip and audit row as a direct call — no gateway involved."""
+    from openexecutive.orchestrator import executive as executive_module
+
+    made: list[dict[str, Any]] = []
+
+    async def create_alert(tool_input: dict[str, Any]) -> str:
+        made.append(tool_input)
+        return json.dumps({"ok": True, "alert_id": len(made)})
+
+    monkeypatch.setitem(executive_module._ALL_SKILL_HANDLERS, "create_alert", create_alert)
+    gateway = _Gateway()
+    provider = _script_turn(
+        "for t in ['Renew lease', 'Pay invoice', 'Call bank']:\n"
+        "    create_alert(title=t, severity='low')\n"
+        "len(inputs)"
+    )
+    _run(provider, gateway)
+    assert [m["title"] for m in made] == ["Renew lease", "Pay invoice", "Call bank"]
+    assert gateway.calls == []
+    rows = [r for r in audit if r["details"].get("via") == "run_script"]
+    assert [(r["details"]["tool"], r["details"]["kind"]) for r in rows] == [("create_alert", "skill")] * 3
+    assert json.loads(_any_result(provider, "tu-s"))["result"] == 0
+
+
+def test_an_own_tool_the_turn_is_not_offered_is_not_a_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import executive as executive_module
+
+    called: list[Any] = []
+
+    async def create_alert(tool_input: dict[str, Any]) -> str:
+        called.append(tool_input)
+        return "{}"
+
+    monkeypatch.setitem(executive_module._ALL_SKILL_HANDLERS, "create_alert", create_alert)
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.executive.tools_withheld_in_mode", lambda _m: frozenset({"create_alert"})
+    )
+    provider = _script_turn("create_alert(title='x', severity='low')")
+    _run(provider, _Gateway())
+    body = json.loads(_any_result(provider, "tu-s"))
+    assert body["error"] == "the script failed" and "NameError" in body["detail"]
+    assert called == []
+
+
+def test_every_own_tool_is_a_real_tool() -> None:
+    from openexecutive.delegation.lockdown import MAIL_TOUCHED_WITHHELD_TOOLS
+    from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
+
+    assert set(step_script.CHAT_OWN_TOOLS) <= set(_ALL_SKILL_HANDLERS)
+    # The whole script is withheld under the Act as me lockdown already, but
+    # nothing mail-specific belongs on the list.
+    assert "ghostwrite_email" not in step_script.CHAT_OWN_TOOLS
+    assert "run_script" in MAIL_TOUCHED_WITHHELD_TOOLS

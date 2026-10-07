@@ -194,25 +194,25 @@ export default function TokenUsagePage() {
           {/* By source */}
           {data?.scripts && data.scripts.scripts > 0 ? (
             <section className="mt-8">
-              <h2 className="text-sm font-medium text-fg mb-2">Scripts</h2>
+              <h2 className="text-sm font-medium text-fg mb-2">Done in one go</h2>
               <p className="text-xs text-fg-muted mb-3">
-                When work repeats over many items, the Executive runs one short script that makes the
-                tool calls itself, instead of a model turn per call.
+                When work repeats over many items, the Executive builds a tool for the job and runs it
+                once, instead of spending a model turn on each item.
               </p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <StatCard
-                  label="Scripts run"
+                  label="Jobs done in one go"
                   value={fmtInt(data.scripts.scripts)}
                   hint={`${fmtInt(data.scripts.ok)} worked · ${fmtInt(data.scripts.in_workflows)} in workflows`}
                 />
-                <StatCard label="Tool calls in scripts" value={fmtInt(data.scripts.calls)} />
+                <StatCard label="Actions taken" value={fmtInt(data.scripts.calls)} />
                 <StatCard
                   label="Model turns avoided"
                   value={`up to ${fmtInt(data.scripts.turns_avoided)}`}
-                  hint="calls that needed no model turn of their own"
+                  hint="actions that needed no model turn of their own"
                 />
                 <StatCard
-                  label="Time in scripts"
+                  label="Time taken"
                   value={`${(data.scripts.duration_ms / 1000).toFixed(1)}s`}
                   hint="mostly the tools' own time"
                 />
