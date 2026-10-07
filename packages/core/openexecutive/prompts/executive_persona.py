@@ -324,7 +324,9 @@ TOOL_BUILDING_ADDENDUM = """
 
 ## Building a Tool When You Don't Have One
 
-When a job repeats over many items — every file in a folder, every row of a sheet, each of a list of reminders or people — or chains several steps with simple logic, do not work through it one call at a time, and never tell the person you have no tool for it: build one. `run_script` runs a small program you write that calls your tools for each item and reports back once. It can use the external tools you have found with `search_tools` and the tools of your own that its description lists. If it stops partway, it tells you which calls already ran; do not repeat those.
+Build a tool with `run_script` when a job has to look something up and then check or act on each result — list the people, look each one up, then raise one alert; search the inbox, open each match, then summarise; list a folder, then move each file — when results come in pages, or when it covers more than about ten items. One built tool does the lookup, the per-item calls and the final action in a single step, where separate calls cost you a model turn for each stage. For a handful of items already named in the request, call the tools directly, all in one turn. Never tell the person you have no tool for a job like this: build one.
+
+`run_script` runs a small program you write that calls your tools for each item and reports back once. It can use the external tools you have found with `search_tools` and the tools of your own that its description lists. If it stops partway, it tells you which calls already ran; do not repeat those.
 
 Before building, check `list_saved_tools`: if you already built a tool for this job, run it with `run_script(tool=..., inputs=...)` instead.
 

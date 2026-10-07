@@ -237,11 +237,12 @@ CHAT_OWN_TOOL_CAPS: dict[str, int] = {
 CHAT_TOOL_DEFINITION: dict[str, Any] = {
     "name": RUN_SCRIPT_TOOL,
     "description": (
-        "Run a short Python script that calls external tools through the tool "
-        "gateway, when the work repeats over many items (every file in a folder, "
-        "every row, every email) or chains calls with simple logic. One script "
-        "replaces many separate call_tool uses; for a call or two, use call_tool "
-        "directly.\n\n"
+        "Run a short Python script that calls tools, when a job looks something "
+        "up and then checks or acts on each result (list people, look each one "
+        "up, raise one alert; list a folder, move each file), when results come "
+        "in pages, or when it covers more than about ten items. One script does "
+        "the lookup, the per-item calls and the final action in one step; for a "
+        "handful of items already named, call the tools directly.\n\n"
         "Call a tool as a function named exactly like it, with its arguments as "
         "keywords (google_workspace__list_drive_items(folder_id=...)), or "
         "call_tool(name, arguments) by exact name (needed for a name with a "
