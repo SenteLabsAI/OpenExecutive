@@ -29,9 +29,11 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 import resource
 import shutil
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -56,6 +58,9 @@ _MAX_STDOUT_BYTES = _MAX_OUTPUT_BYTES * 4 // 3 + 2**20
 # (PYTHON_JOB_MEMORY_MB, set in _limit_memory).
 _V8_FLAGS = "--max-old-space-size=256,--wasm-max-mem-pages=12288"
 _KEEP_DAYS = 7
+# All kept result files together; the oldest jobs go first past it. The
+# company volume also holds the database and the knowledge base.
+_KEEP_TOTAL_BYTES = 200 * 2**20
 # One job at a time per process: each takes 200-450 MB while it runs.
 _slot = asyncio.Semaphore(1)
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,120}$")
@@ -129,11 +134,19 @@ def _err(message: str) -> str:
 
 def _limit_memory(limit_mb: int) -> Any:
     """For the sandbox process, before it runs: a data limit (RLIMIT_DATA),
-    which also bounds memory the V8 flags don't (JavaScript buffers)."""
+    which also bounds memory the V8 flags don't (JavaScript buffers); first in
+    line if the machine runs out of memory, so the job dies and not the API;
+    and a lower CPU priority, so chat and the scheduler stay responsive."""
 
     def apply() -> None:
         size = limit_mb * 2**20
         resource.setrlimit(resource.RLIMIT_DATA, (size, size))
+        try:
+            with open("/proc/self/oom_score_adj", "w") as f:
+                f.write("1000")
+        except OSError:
+            pass
+        os.nice(10)
 
     return apply
 
@@ -148,6 +161,16 @@ async def _read_capped(stream: asyncio.StreamReader, limit: int) -> bytes | None
             return None
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def _read_head(stream: asyncio.StreamReader, limit: int) -> bytes:
+    """Read a stream to its end, keeping its first ``limit`` bytes: draining
+    the rest keeps the process from blocking on a full pipe."""
+    kept = b""
+    while chunk := await stream.read(2**16):
+        if len(kept) < limit:
+            kept += chunk[: limit - len(kept)]
+    return kept
 
 
 async def run_job(
@@ -167,43 +190,57 @@ async def run_job(
         "max_files": _MAX_OUTPUT_FILES,
     }).encode()
     async with _slot:
-        proc = await asyncio.create_subprocess_exec(
-            str(base / "deno"), "run", "--no-prompt", "--quiet", "--no-remote",
-            f"--v8-flags={_V8_FLAGS}", f"--allow-read={base},{_WORKER}", str(_WORKER),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Nothing of the server's environment: no keys, no proxies.
-            env={"PATH": "/usr/bin:/bin", "HOME": str(base), "DENO_NO_UPDATE_CHECK": "1",
-                 "DENO_DIR": str(jobs_dir() / ".deno")},
-            preexec_fn=_limit_memory(memory_mb),
-        )
-        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-
-        async def exchange() -> tuple[bytes | None, bytes | None]:
-            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-            proc.stdin.write(job)
-            await proc.stdin.drain()
-            proc.stdin.close()
-            out, err = await asyncio.gather(
-                _read_capped(proc.stdout, _MAX_STDOUT_BYTES), _read_capped(proc.stderr, 2**16)
-            )
-            await proc.wait()
-            return out, err
-
+        # Deno writes its own caches there whatever the job's permissions,
+        # and a job can feed them: a folder of the job's own, off the company
+        # volume, gone when the job ends (--no-code-cache keeps it small).
+        deno_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="pyjob-")
         try:
-            out, err = await asyncio.wait_for(exchange(), timeout=timeout_s)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return {"error": f"the job ran past its {int(timeout_s)} s limit"}
-        except BaseException:
-            proc.kill()
-            await proc.wait()
-            raise
+            return await _run_in(base, job, deno_dir, timeout_s=timeout_s, memory_mb=memory_mb)
+        finally:
+            await asyncio.to_thread(shutil.rmtree, deno_dir, True)
+
+
+async def _run_in(
+    base: Path, job: bytes, deno_dir: str, *, timeout_s: float, memory_mb: int
+) -> dict[str, Any]:
+    proc = await asyncio.create_subprocess_exec(
+        str(base / "deno"), "run", "--no-prompt", "--quiet", "--no-remote", "--no-code-cache",
+        f"--v8-flags={_V8_FLAGS}", f"--allow-read={base},{_WORKER}", str(_WORKER),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        # Nothing of the server's environment: no keys, no proxies.
+        env={"PATH": "/usr/bin:/bin", "HOME": str(base), "DENO_NO_UPDATE_CHECK": "1",
+             "DENO_DIR": deno_dir},
+        preexec_fn=_limit_memory(memory_mb),
+    )
+    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+
+    async def exchange() -> tuple[bytes | None, bytes]:
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+        proc.stdin.write(job)
+        await proc.stdin.drain()
+        proc.stdin.close()
+        err_task = asyncio.create_task(_read_head(proc.stderr, 2**16))
+        out = await _read_capped(proc.stdout, _MAX_STDOUT_BYTES)
         if out is None:
+            # Past the cap: stop it now rather than wait out the timeout.
             proc.kill()
-            await proc.wait()
-            return {"error": "the job's output was too large; nothing was kept"}
+        err = await err_task
+        await proc.wait()
+        return out, err
+
+    try:
+        out, err = await asyncio.wait_for(exchange(), timeout=timeout_s)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return {"error": f"the job ran past its {int(timeout_s)} s limit"}
+    except BaseException:
+        proc.kill()
+        await proc.wait()
+        raise
+    if out is None:
+        return {"error": "the job's output was too large; nothing was kept"}
     if proc.returncode != 0:
         detail = (err or b"").decode(errors="replace")[-400:]
         logger.warning("python job: sandbox exited %s: %s", proc.returncode, detail)
@@ -226,10 +263,29 @@ def _knowledge_file(name: str) -> Path | None:
 
 
 def _prune(root: Path) -> None:
+    """Drop jobs past their days, then the oldest while all kept files pass
+    _KEEP_TOTAL_BYTES."""
+    if not root.is_dir():
+        return
+    # Deno's cache from before jobs had a folder of their own.
+    shutil.rmtree(root / ".deno", ignore_errors=True)
     cutoff = time.time() - _KEEP_DAYS * 86400
-    for child in root.iterdir() if root.is_dir() else []:
-        if _JOB_ID.match(child.name) and child.stat().st_mtime < cutoff:
+    jobs: list[tuple[float, int, Path]] = []
+    for child in root.iterdir():
+        if not _JOB_ID.match(child.name):
+            continue
+        mtime = child.stat().st_mtime
+        if mtime < cutoff:
             shutil.rmtree(child, ignore_errors=True)
+            continue
+        size = sum(f.stat().st_size for f in child.iterdir() if f.is_file())
+        jobs.append((mtime, size, child))
+    total = sum(size for _, size, _ in jobs)
+    for _, size, child in sorted(jobs, key=lambda j: j[0]):
+        if total <= _KEEP_TOTAL_BYTES:
+            break
+        shutil.rmtree(child, ignore_errors=True)
+        total -= size
 
 
 async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
@@ -259,7 +315,6 @@ async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
 
     started = time.monotonic()
     settings = get_settings()
-    await asyncio.to_thread(_prune, jobs_dir())
     body = await run_job(
         code, files, timeout_s=settings.python_job_timeout_s, memory_mb=settings.python_job_memory_mb
     )
@@ -278,6 +333,8 @@ async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
             reply["files_error"] = "the result files are too many or too large; none kept"
         else:
             reply.update(await _keep({n: base64.b64decode(b) for n, b in encoded.items()}))
+    # After keeping, so the new files count toward the total.
+    await asyncio.to_thread(_prune, jobs_dir())
     reply["seconds"] = round(time.monotonic() - started, 1)
     return json.dumps(reply, ensure_ascii=False)
 

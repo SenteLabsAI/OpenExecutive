@@ -6050,6 +6050,15 @@ workflows:
     loadPackagesFromImports can't infer for non-Pyodide packages, so the
     worker's NEEDS map loads them per import (find_imports). One job writing
     a docx, a pptx with a chart, a PDF table and an xlsxwriter chart: 7 s.
+    Second review: Deno writes v8/dep-analysis caches to DENO_DIR regardless
+    of job permissions and a job could feed it data: modules (330 MB in one
+    job, never pruned) -> per-job tempfile.mkdtemp DENO_DIR removed after the
+    job, --no-code-cache, _prune drops the old company/python_jobs/.deno.
+    stdout past the cap now kills at once (gather used to wait on stderr EOF
+    while Deno blocked on the full pipe); worker Deno.exit(0) after its result
+    so a leftover Worker can't hold the slot. Resources: preexec sets
+    oom_score_adj=1000 and nice 10 (2 GB shared-cpu machines: a ~900 MB worst
+    job plus the API); kept results capped at 200 MB total, oldest first.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

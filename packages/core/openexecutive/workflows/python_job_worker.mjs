@@ -81,3 +81,6 @@ console.log(JSON.stringify({
   skipped,
   ms: { load: Math.round(tLoad - t0), packages: Math.round(tPkgs - tLoad), job: Math.round(t1 - tPkgs) },
 }));
+// Exit now: a Worker or timer the job left running would otherwise hold the
+// process (and the API's one job slot) until the timeout.
+Deno.exit(0);

@@ -194,7 +194,7 @@ RUN W=/app/openexecutive/workflows/python_job_worker.mjs \
     && WHEELS=$(ls /opt/pysandbox/wheels/*.whl | sed 's/.*/"&"/' | paste -sd, -) \
     && printf '{"code":"import pypdf, openpyxl, pandas, matplotlib, docx, pptx, fpdf\\nstr(len(pypdf.__version__) > 0)","pyodide":"/opt/pysandbox/pyodide","wheels":[%s],"files":{}}' "$WHEELS" \
        | env -i PATH=/usr/bin:/bin HOME=/tmp DENO_DIR=/tmp/deno-smoke DENO_NO_UPDATE_CHECK=1 \
-         /opt/pysandbox/deno run --no-prompt --quiet --no-remote \
+         /opt/pysandbox/deno run --no-prompt --quiet --no-remote --no-code-cache \
          --v8-flags=--max-old-space-size=256,--wasm-max-mem-pages=12288 \
          --allow-read=/opt/pysandbox,$W $W | grep -q '"result":"True"' \
     && rm -rf /tmp/deno-smoke

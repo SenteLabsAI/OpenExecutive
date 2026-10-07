@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -183,3 +184,50 @@ def test_the_real_sandbox_makes_documents_from_scratch() -> None:
     files = {name: base64.b64decode(data) for name, data in body["files"].items()}
     assert files["plan.docx"][:2] == b"PK" and files["deck.pptx"][:2] == b"PK"
     assert files["r.pdf"].startswith(b"%PDF")
+
+
+def test_kept_results_are_capped_oldest_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(python_job, "_KEEP_TOTAL_BYTES", 250)
+    now = time.time()
+    for i, age_days in enumerate((8, 3, 2, 1)):
+        job = tmp_path / f"{i:032x}"
+        job.mkdir()
+        (job / "r.bin").write_bytes(b"x" * 100)
+        os.utime(job, (now - age_days * 86400,) * 2)
+    (tmp_path / ".deno").mkdir()
+    python_job._prune(tmp_path)
+    # Past its days, then the oldest until the rest fit; Deno's old cache too.
+    assert sorted(p.name[-1] for p in tmp_path.iterdir()) == ["2", "3"]
+
+
+_REAL = pytest.mark.skipif(
+    not (Path(os.environ.get("PYTHON_SANDBOX_DIR", "/opt/pysandbox")) / "deno").is_file(),
+    reason="the sandbox is installed by the API image",
+)
+
+
+@_REAL
+def test_the_real_sandbox_leaves_nothing_behind_and_stops_early(company: Path) -> None:
+    # Modules a job imports fed Deno's cache on the company volume, which was
+    # never cleaned up.
+    feed = (
+        "from pyodide.code import run_js\n"
+        "run_js(\"(async()=>{for(let i=0;i<3;i++) await import('data:text/javascript,export const x=\\\"'"
+        "+'B'.repeat(2**20)+Math.random()+'\\\"')})()\")\n'ok'"
+    )
+    assert asyncio.run(python_job.run_job(feed, {}, timeout_s=60))["result"] == "ok"
+    assert not python_job.jobs_dir().exists()
+    # A flood is stopped as soon as it passes the cap, not at the timeout.
+    flood = "from pyodide.code import run_js\nrun_js(\"console.log('o'.repeat(40*2**20))\")"
+    started = time.monotonic()
+    body = asyncio.run(python_job.run_job(flood, {}, timeout_s=60))
+    assert body["error"] == "the job's output was too large; nothing was kept"
+    assert time.monotonic() - started < 30
+    # A Worker left running doesn't hold the job open after its result.
+    worker = (
+        "from pyodide.code import run_js\n"
+        "run_js(\"new Worker('data:text/javascript,for(;;){}', {type: 'module'})\")\n'ok'"
+    )
+    started = time.monotonic()
+    assert asyncio.run(python_job.run_job(worker, {}, timeout_s=60))["result"] == "ok"
+    assert time.monotonic() - started < 30
