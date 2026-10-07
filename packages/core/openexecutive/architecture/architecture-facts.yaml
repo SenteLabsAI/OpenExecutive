@@ -6007,7 +6007,15 @@ workflows:
     sorted set of tools it actually called (a failed one never is), and
     run_script(tool=<name>, inputs={...}) runs the saved script with
     `inputs` bound as a dict (exactly one of script/tool; save_as with tool
-    is refused). Saving is auto-approved by design: a saved tool runs through
+    is refused). Only the principal's own turns save (run_script_tool
+    may_save): chat passes may_save when principal_only_withheld(session) is
+    empty (principal speaking on a verified interactive surface, not email)
+    and the run is attended; workflow steps pass False and their run_script
+    schema has no save_as/description. A saved tool runs with the authority
+    of whoever runs it, so its author must be at least as trusted as any
+    runner (an inbound email or teammate could otherwise plant or re-version
+    a tool the principal's turns and workflows then run). Beyond that,
+    saving is auto-approved by design: a saved tool runs through
     whatever context calls it (step: _StepCalls.call; chat: gateway
     call_tool and its gates), and a workflow step runs one only when
     saved.tools is a subset of step.tools (else an error naming
