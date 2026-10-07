@@ -199,3 +199,10 @@ def test_tool_building_guidance_follows_the_chat_scripts_setting(
     assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=False)[0]["text"]
     monkeypatch.setenv("CHAT_SCRIPTS", "false")
     assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=True)[0]["text"]
+
+
+def test_no_tool_building_guidance_without_the_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.prompts.executive_persona import TOOL_BUILDING_ADDENDUM
+
+    monkeypatch.setattr("openexecutive.workflows.step_script.available", lambda: False)
+    assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=True)[0]["text"]

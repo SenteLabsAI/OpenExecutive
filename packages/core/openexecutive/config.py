@@ -587,6 +587,10 @@ class Settings(BaseSettings):
     # gateway tools a conversation has found, each call checked exactly as a
     # call_tool. Never offered on a turn private to the principal.
     chat_scripts: bool = Field(True, alias="CHAT_SCRIPTS")
+    # The most tool calls a chat turn's scripts may make in all (gateway and
+    # the Executive's own tools); message_person and upsert_person have
+    # tighter caps of their own (step_script.CHAT_OWN_TOOL_CAPS).
+    chat_script_max_calls: int = Field(200, alias="CHAT_SCRIPT_MAX_CALLS", ge=1, le=5_000)
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.

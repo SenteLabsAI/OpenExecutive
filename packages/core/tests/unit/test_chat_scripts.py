@@ -410,3 +410,45 @@ def test_every_own_tool_is_a_real_tool() -> None:
     # nothing mail-specific belongs on the list.
     assert "ghostwrite_email" not in step_script.CHAT_OWN_TOOLS
     assert "run_script" in MAIL_TOUCHED_WITHHELD_TOOLS
+
+
+def test_own_tools_in_bulk_stop_at_their_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Messaging everyone on the roster is a broadcast, which scripts don't get."""
+    from openexecutive.orchestrator import executive as executive_module
+
+    sent: list[Any] = []
+
+    async def message_person(tool_input: dict[str, Any]) -> str:
+        sent.append(tool_input)
+        return json.dumps({"ok": True})
+
+    monkeypatch.setitem(executive_module._ALL_SKILL_HANDLERS, "message_person", message_person)
+    provider = _script_turn(
+        "n = 0\n"
+        "for i in range(30):\n"
+        "    try:\n"
+        "        message_person(person_id=i, text='hi')\n"
+        "        n += 1\n"
+        "    except RuntimeError:\n"
+        "        pass\n"
+        "n"
+    )
+    _run(provider, _Gateway())
+    cap = step_script.CHAT_OWN_TOOL_CAPS["message_person"]
+    assert len(sent) == cap
+    assert json.loads(_any_result(provider, "tu-s"))["result"] == cap
+
+
+def test_a_turns_scripts_share_one_call_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_SCRIPT_MAX_CALLS", "4")
+    gateway = _Gateway()
+    provider = _ScriptedProvider([
+        _FinalMsg([_ToolUseBlock("tu-a", "run_script", {"script": "drive__list_items(folder='a')\n1"})], "tool_use"),
+        _FinalMsg([_ToolUseBlock("tu-s", "run_script", {"script": SCRIPT})], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+    _run(provider, gateway)
+    # One call in the first script, three in the second, then the budget is spent.
+    assert len(gateway.calls) == 4
+    body = json.loads(_any_result(provider, "tu-s"))
+    assert body["error"] == "the script failed" and "at most 4" in body["detail"]

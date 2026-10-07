@@ -224,6 +224,14 @@ CHAT_OWN_TOOLS: tuple[str, ...] = (
     "upsert_person",
 )
 
+# Per-turn caps on own tools a chat script could otherwise call in bulk:
+# messaging everyone on the roster is a broadcast, which scripts don't get.
+CHAT_OWN_TOOL_CAPS: dict[str, int] = {
+    "create_alert": 50,
+    "message_person": 10,
+    "upsert_person": 25,
+}
+
 # The chat version is a constant: chat's tool list is cached, so it can't
 # name the tools a conversation happens to use.
 CHAT_TOOL_DEFINITION: dict[str, Any] = {

@@ -1788,6 +1788,9 @@ class Executive:
         if origin and not unattended_withheld:
             take_the_lead.wake(f"a message on {origin}")
         current_messages = list(messages)
+        # Tool calls this turn's scripts have made, in all and per own tool
+        # (settings.chat_script_max_calls, step_script.CHAT_OWN_TOOL_CAPS).
+        script_counts: dict[str, int] = {}
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
         last_full_text = ""
@@ -2473,17 +2476,54 @@ class Executive:
                     _made: list[tuple[dict[str, Any], str, BaseException | None]] = made,
                     _own: frozenset[str] = script_own,
                     _handlers: dict[str, Any] = turn_handlers,
+                    _counts: dict[str, int] = script_counts,
+                    _iteration: int = iteration,
+                    _session_id: str | None = session_id,
+                    _turn_id: str | None = turn_id,
                 ) -> tuple[str, bool]:
                     own = tool in _own
                     call_input: dict[str, Any] = {"name": tool, "arguments": arguments}
                     if own:
                         call_input["own"] = True
+                    # Budgets for the whole turn: a direct call needs a
+                    # tool_use each, a script could otherwise make thousands.
+                    cap = step_script.CHAT_OWN_TOOL_CAPS.get(tool) if own else None
+                    if _counts.get("", 0) >= self._settings.chat_script_max_calls or (
+                        cap is not None and _counts.get(tool, 0) >= cap
+                    ):
+                        limit = cap if cap is not None and _counts.get(tool, 0) >= cap else (
+                            self._settings.chat_script_max_calls
+                        )
+                        text = json.dumps({
+                            "error": f"{tool} was not run: this turn's tools may make at most "
+                            f"{limit} such calls. Say what is left and offer to continue."
+                        })
+                        return text, True
+                    _counts[""] = _counts.get("", 0) + 1
+                    _counts[tool] = _counts.get(tool, 0) + 1
                     try:
                         if own:
                             text = str(await _handlers[tool](arguments))
                         else:
                             text = str(await _call({"name": tool, "arguments": arguments}))
                     except asyncio.CancelledError:
+                        # Stopped mid-call (the script's clock, or the turn):
+                        # it may have run, and the drain below won't see it.
+                        audit_log(
+                            "tool_invocation",
+                            f"{'skill' if own else 'mcp'}:{_loggable_tool(tool)} CANCELLED (run_script)",
+                            session_id=_session_id,
+                            turn_id=_turn_id,
+                            actor="executive",
+                            details={
+                                "tool": tool[:200],
+                                "kind": "skill" if own else "mcp",
+                                "via": "run_script",
+                                "iteration": _iteration,
+                                "ok": False,
+                                "cancelled": True,
+                            },
+                        )
                         raise
                     except Exception as exc:
                         logger.warning(

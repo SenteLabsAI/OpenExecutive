@@ -6001,6 +6001,12 @@ workflows:
     "script"/"code" to people. People see saved tools as "Custom tools"
     (Settings -> Advanced -> Custom tools, guide section custom_tools) and
     the usage summary as "Done in one go".
+    A turn's chat scripts share CHAT_SCRIPT_MAX_CALLS (default 200) calls,
+    counted in Executive._stream_agent_loop's script_counts, plus per-turn
+    caps on own tools (step_script.CHAT_OWN_TOOL_CAPS: message_person 10,
+    upsert_person 25, create_alert 50). A CancelledError mid-call writes a
+    cancelled audit row before re-raising. TOOL_BUILDING_ADDENDUM is gated
+    on cache_manager._chat_scripts_on (setting + step_script.available()).
 
     Chat scripts: the Executive's chat is offered the same `run_script` tool
     (step_script.CHAT_TOOL_DEFINITION, a constant so the cached tool prefix is

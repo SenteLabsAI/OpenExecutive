@@ -21,6 +21,14 @@ KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base coverin
 _VOICE_PERSONA_PLACEHOLDER = "{VOICE_PERSONA}"
 
 
+def _chat_scripts_on(settings: Any) -> bool:
+    """The same test as Executive._script_tools: the setting, and Monty
+    installed. Both are fixed per process, so block 0 stays warm."""
+    from openexecutive.workflows.step_script import available
+
+    return bool(settings.chat_scripts) and available()
+
+
 def build_system_blocks(
     company_profile: CompanyProfile | None = None,
     mcp_enabled: bool = False,
@@ -146,7 +154,7 @@ def build_system_blocks(
         + (MCP_ADDENDUM if mcp_enabled else "")
         # The chat offers run_script with a gateway unless CHAT_SCRIPTS=false
         # (Executive._script_tools): a setting, so constant per deployment.
-        + (TOOL_BUILDING_ADDENDUM if mcp_enabled and settings.chat_scripts else "")
+        + (TOOL_BUILDING_ADDENDUM if mcp_enabled and _chat_scripts_on(settings) else "")
         + identity_addendum
         + render_connected_systems(mcp_servers=mcp_servers, settings=settings)
         + (DELEGATION_ADDENDUM if delegation else "")
