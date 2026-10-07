@@ -624,9 +624,15 @@ async def run_action_step(
             arguments = use["input"] if isinstance(use["input"], dict) else {}
             if scripts and name == step_script.RUN_SCRIPT_TOOL:
                 yield ("progress", "Running a script…")
-                content, is_error = await step_script.run_script(
+                content, is_error = json.dumps({"error": "the script did not finish"}), True
+                async for kind, payload in step_script.run_script(
                     str(arguments.get("script") or ""), list(step.tools), calls.call
-                )
+                ):
+                    # Each call's events (progress, held) as it happens.
+                    for event in calls.drain():
+                        yield event
+                    if kind == "done":
+                        content, is_error = payload
                 outcome = "error" if is_error else "ok"
                 # The script's own calls were audited one by one as they ran.
                 _audit(workflow_name, step.id, step_script.RUN_SCRIPT_TOOL, outcome)

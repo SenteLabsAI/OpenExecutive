@@ -6,21 +6,26 @@ and seconds — per file. ``run_script`` lets the agent write that loop once, in
 Python, and get back only what the script returns.
 
 The script runs in Monty (``pydantic-monty``), a sandboxed Python interpreter
-for code a model wrote, in a worker process the pool spawns per script:
+for code a model wrote, in a worker process spawned per script (so no state
+survives from one script to the next):
 
-* **Nothing but the step's own tools.** Each tool in the step's allowlist is a
-  function the script can call; there are no files, network, environment
-  variables, subprocesses or imports beyond Monty's small standard library.
-  Every call goes back through the action step's own per-call path
-  (``action_step._StepCalls.call``): the allowlist, the call budget, the
-  first-write target check (a held write comes back to the script as the
-  usual ``{"status": "held", …}`` result) and the audit row — exactly as if
-  the model had made the call itself. A script is a faster way to make the
-  same calls, never a way around them.
-* **Bounded.** Execution time (not counting time waiting on tools), memory,
-  recursion and the number of tool calls are capped inside the worker, the
-  whole run has a wall-clock limit, and the script's text and printed output
-  are size-capped.
+* **Nothing but the step's own tools.** A call to any function the script did
+  not define pauses the worker and comes back here, where it is answered
+  through the action step's own per-call path (``action_step._StepCalls.call``):
+  the allowlist (a name outside it is refused and audited, like a direct
+  ``tool_use``), the call budget, the first-write target check (a held write
+  comes back to the script as the usual ``{"status": "held", …}`` result) and
+  the audit row. A script is a faster way to make the same calls, never a way
+  around them. There are no files, network, environment variables,
+  subprocesses or third-party imports; OS calls get Monty's refusal.
+* **Driven from the event loop.** The worker is stepped with ``feed_start`` /
+  ``resume``, so each call is awaited in the step's own task: cancelling the
+  run, or the wall clock below, stops the script and its in-flight call
+  together, and the engine sees each call's events as it happens.
+* **Bounded.** Execution time (not counting time waiting on tools), memory and
+  recursion are capped inside the worker, the whole script has a wall-clock
+  limit, and the script's text and printed output are size-capped (printing
+  past the cap is dropped, not fatal).
 * **Not stored.** The script lives only in this step's model turns, like any
   other tool call's arguments; a workflow definition still holds no code.
 
@@ -34,8 +39,7 @@ import asyncio
 import json
 import logging
 import re
-import threading
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -44,21 +48,27 @@ RUN_SCRIPT_TOOL = "run_script"
 
 MAX_SCRIPT_CHARS = 20_000
 _MAX_PRINTED_CHARS = 8_000
+# Calls listed back to the model when a script fails partway (so it does not
+# repeat writes that already ran).
+_MAX_LISTED_CALLS = 200
 # Worker-enforced limits. Execution time excludes time spent waiting on the
-# host (tool calls), so a script that makes many slow calls is bounded by the
-# step's call budget and the wall clock below, not by this.
+# host (tool calls). The number of tool calls is bounded by the step's own
+# budget (``_StepCalls``); `max_suspensions` is only a backstop well above any
+# step's budget, since name lookups and OS calls count towards it too.
 _LIMITS = {
     "max_feed_duration_secs": 20.0,
     "max_memory": 128 * 1024 * 1024,
     "max_recursion_depth": 200,
-    # Tool calls are also counted (and refused past the step's budget) by the
-    # action step; this caps the round trips a refused-call loop could make.
-    "max_suspensions": 500,
+    "max_suspensions": 5_000,
 }
 _WALL_CLOCK_S = 600.0
 _POOL_REQUEST_TIMEOUT_S = 180.0
 
 CallFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, tuple[str, bool]]]
+# What ``run_script`` yields: ("call", None) after each tool call (so the
+# caller can hand that call's events to the engine), then exactly one
+# ("done", (result text, is_error)).
+ScriptYield = tuple[str, Any]
 
 _IDENT_RE = re.compile(r"[^A-Za-z0-9_]")
 
@@ -94,15 +104,17 @@ def tool_definition(tools: list[str]) -> dict[str, Any]:
             f"{listing}\n"
             "call_tool(name, arguments) also reaches any of them by exact name.\n"
             "A call returns the tool's result, parsed from JSON when it is JSON "
-            "(else the text); a failed call raises RuntimeError with the tool's "
-            "error. A write held for the owner's approval returns "
+            "(else the text); a failed or refused call raises RuntimeError with "
+            "the reason. A write held for the owner's approval returns "
             '{"status": "held", ...}: do not retry it.\n\n'
             "The script runs in a sandbox with a subset of Python: no imports "
             "beyond json, re, math, datetime, collections, itertools and similar "
             "standard modules; no files, network or classes with inheritance. "
             "The value of the last expression is returned to you, along with "
-            "anything printed. Every call counts against this step's tool budget "
-            "and follows the same rules as calling the tool directly."
+            "anything printed and the calls the script made. If it fails partway, "
+            "the calls that already ran are listed: do not repeat them. Every call "
+            "counts against this step's tool budget and follows the same rules as "
+            "calling the tool directly."
         ),
         "input_schema": {
             "type": "object",
@@ -124,99 +136,160 @@ def _parse_result(content: str) -> Any:
         return content
 
 
-class _ScriptError(Exception):
-    """A fixed-message failure to report to the model."""
+class _Printed:
+    """Collects the script's printed output up to a cap, then drops the rest."""
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+        self.size = 0
+        self.dropped = False
+
+    def __call__(self, stream: str, text: str) -> None:
+        room = _MAX_PRINTED_CHARS - self.size
+        if room <= 0:
+            self.dropped = True
+            return
+        piece = text[:room]
+        self.parts.append(piece)
+        self.size += len(piece)
+        if len(piece) < len(text):
+            self.dropped = True
+
+    def text(self) -> str:
+        out = "".join(self.parts)
+        return out + "\n…[more output not shown]" if self.dropped else out
 
 
-def _run_sync(
-    script: str,
-    tools: list[str],
-    call: CallFn,
-    loop: asyncio.AbstractEventLoop,
-    stop: threading.Event,
-) -> tuple[Any, str]:
-    """Run ``script`` in a fresh Monty worker. Called in a worker thread; each
-    tool call is handed back to ``loop`` (where the gateway lives) and waited
-    on here, so the script sees ordinary function calls."""
-    from pydantic_monty import CollectString, Monty
+def _call_arguments(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """(tool name, arguments) for a call the script made to ``name``.
 
-    allowed = set(tools)
-
-    def invoke(name: str, arguments: dict[str, Any]) -> Any:
-        # Set when the run gave up on this script (wall clock): no call may
-        # start after the step has moved on.
-        if stop.is_set():
-            raise RuntimeError("the script was stopped")
-        if name not in allowed:
-            raise ValueError(f"{name} is not one of this step's tools")
-        future = asyncio.run_coroutine_threadsafe(call(name, arguments), loop)
-        content, is_error = future.result()
-        if is_error:
-            raise RuntimeError(f"{name} failed: {content}")
-        return _parse_result(content)
-
-    def bind(name: str) -> Callable[..., Any]:
-        def fn(*args: Any, **kwargs: Any) -> Any:
-            if args:
-                if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
-                    return invoke(name, args[0])
-                raise TypeError(f"{name}: pass the tool's arguments by name")
-            return invoke(name, kwargs)
-
-        return fn
-
-    def call_tool(name: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> Any:
-        return invoke(str(name), {**(arguments or {}), **kwargs})
-
-    external: dict[str, Any] = {fn: bind(name) for fn, name in function_names(tools).items()}
-    external["call_tool"] = call_tool
-    printed = CollectString(max_bytes=_MAX_PRINTED_CHARS * 4)
-    with (
-        Monty(min_processes=1, max_processes=1, request_timeout=_POOL_REQUEST_TIMEOUT_S) as pool,
-        pool.checkout(
-            script_name="step_script.py",
-            limits=_LIMITS,  # type: ignore[arg-type]
-            os_policy={"sleep": "zero"},
-        ) as session,
-    ):
-        result = session.feed_run(script, external_lookup=external, print_callback=printed)
-    return result, printed.output
+    ``call_tool(name, arguments=None, **more)`` names the tool itself; any other
+    function takes the tool's arguments as keywords, or one positional dict.
+    Raises TypeError for a call shape the tool can't take.
+    """
+    if name == "call_tool":
+        if not args or not isinstance(args[0], str):
+            raise TypeError("call_tool(name, arguments): name must be a string")
+        extra = args[1] if len(args) > 1 else kwargs.pop("arguments", None)
+        if len(args) > 2 or (extra is not None and not isinstance(extra, dict)):
+            raise TypeError("call_tool(name, arguments): arguments must be a dict")
+        return args[0], {**(extra or {}), **kwargs}
+    if args:
+        if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+            return name, dict(args[0])
+        raise TypeError(f"{name}: pass the tool's arguments by name")
+    return name, dict(kwargs)
 
 
-async def run_script(script: str, tools: list[str], call: CallFn) -> tuple[str, bool]:
-    """Run a step script. Returns (result text for the model, is_error); never raises."""
-    from pydantic_monty import MontyError
+async def run_script(script: str, tools: list[str], call: CallFn) -> AsyncIterator[ScriptYield]:
+    """Run a step script, yielding after each tool call and then its result.
+
+    Never raises (cancellation aside, which stops the worker with it).
+    """
+    from pydantic_monty import (
+        AsyncFunctionSnapshot,
+        AsyncMonty,
+        AsyncNameLookupSnapshot,
+        MontyComplete,
+        MontyError,
+    )
 
     if not script.strip():
-        return json.dumps({"error": "the script is empty"}), True
+        yield ("done", (json.dumps({"error": "the script is empty"}), True))
+        return
     if len(script) > MAX_SCRIPT_CHARS:
-        return json.dumps({"error": f"the script is longer than {MAX_SCRIPT_CHARS} characters"}), True
-    loop = asyncio.get_running_loop()
-    stop = threading.Event()
+        yield ("done", (
+            json.dumps({"error": f"the script is longer than {MAX_SCRIPT_CHARS} characters"}), True
+        ))
+        return
+
+    names = function_names(tools)
+    printed = _Printed()
+    made: list[dict[str, Any]] = []
+
+    def payload(**fields: Any) -> str:
+        if made:
+            fields["calls"] = made[:_MAX_LISTED_CALLS]
+            if len(made) > _MAX_LISTED_CALLS:
+                fields["calls_not_listed"] = len(made) - _MAX_LISTED_CALLS
+        if printed.size or printed.dropped:
+            fields["printed"] = printed.text()
+        return json.dumps(fields, default=str, ensure_ascii=False)
+
     try:
-        result, printed = await asyncio.wait_for(
-            asyncio.to_thread(_run_sync, script, tools, call, loop, stop), timeout=_WALL_CLOCK_S
-        )
+        async with asyncio.timeout(_WALL_CLOCK_S):
+            async with (
+                AsyncMonty(
+                    min_processes=1, max_processes=1, request_timeout=_POOL_REQUEST_TIMEOUT_S
+                ) as pool,
+                pool.checkout(
+                    script_name="step_script.py",
+                    limits=_LIMITS,  # type: ignore[arg-type]
+                    os_policy={"sleep": "zero"},
+                ) as session,
+            ):
+                snapshot: Any = await session.feed_start(script, print_callback=printed)
+                while not isinstance(snapshot, MontyComplete):
+                    if isinstance(snapshot, AsyncFunctionSnapshot):
+                        if snapshot.is_os_function:
+                            # open(), os.environ … — Monty's own refusal.
+                            snapshot = await snapshot.resume_not_handled()
+                            continue
+                        fn = str(snapshot.function_name)
+                        if fn != "call_tool" and fn not in names:
+                            snapshot = await snapshot.resume(
+                                {"exception": NameError(f"name {fn!r} is not defined")}
+                            )
+                            continue
+                        try:
+                            tool, arguments = _call_arguments(
+                                names.get(fn, fn), tuple(snapshot.args), dict(snapshot.kwargs)
+                            )
+                        except TypeError as exc:
+                            snapshot = await snapshot.resume({"exception": exc})
+                            continue
+                        content, is_error = await call(tool, arguments)
+                        made.append({"tool": tool, "ok": not is_error})
+                        yield ("call", None)
+                        if is_error:
+                            snapshot = await snapshot.resume(
+                                {"exception": RuntimeError(f"{tool} failed: {content}")}
+                            )
+                        else:
+                            snapshot = await snapshot.resume({"return_value": _parse_result(content)})
+                    elif isinstance(snapshot, AsyncNameLookupSnapshot):
+                        # An undefined name used as a value: leave it undefined.
+                        snapshot = await snapshot.resume()
+                    else:
+                        # A future: the script awaited something it started
+                        # without awaiting. Tools are plain calls here.
+                        raise MontyScriptShape()
+                result = snapshot.output
     except TimeoutError:
-        stop.set()
-        return json.dumps({"error": "the script ran past its time limit"}), True
+        yield ("done", (payload(error="the script ran past its time limit"), True))
+        return
+    except MontyScriptShape:
+        yield ("done", (payload(error="call tools as plain functions, without async or await"), True))
+        return
     except MontyError as exc:
-        # What the script did wrong (its own traceback), so the model can fix
-        # it. It names only the script's code and values it handled — data the
-        # model already saw.
+        # The script's own traceback, so the model can fix it. It names only
+        # the script's code and values it handled — data the model already saw.
         try:
             display = getattr(exc, "display", None)
             detail = str(display()) if callable(display) else f"{type(exc).__name__}: {exc}"
         except Exception:  # noqa: BLE001
             detail = type(exc).__name__
-        return json.dumps({"error": "the script failed", "detail": detail[-4_000:]}), True
+        yield ("done", (payload(error="the script failed", detail=detail[-4_000:]), True))
+        return
     except Exception as exc:
         logger.warning("step script: runner failed (%s)", type(exc).__name__)
-        return json.dumps({"error": "the script could not be run"}), True
-    payload: dict[str, Any] = {"result": result}
-    if printed:
-        payload["printed"] = printed[-_MAX_PRINTED_CHARS:]
-    return json.dumps(payload, default=str, ensure_ascii=False), False
+        yield ("done", (payload(error="the script could not be run"), True))
+        return
+    yield ("done", (payload(result=result), False))
+
+
+class MontyScriptShape(Exception):
+    """The script awaited a future, which tools here never are."""
 
 
 def available() -> bool:

@@ -147,7 +147,8 @@ async def test_one_script_makes_every_call_through_the_step(
     ])
 
     result = _script_result(provider)
-    assert result == {"is_error": False, "result": {"Finance": 2, "Legal": 1}}
+    assert result["is_error"] is False and result["result"] == {"Finance": 2, "Legal": 1}
+    assert [c["tool"] for c in result["calls"]] == [LIST, MOVE, MOVE, MOVE]
     # One list and three moves, all through the gateway, in order.
     assert [c["name"] for c in gateway.calls] == [LIST, MOVE, MOVE, MOVE]
     assert gateway.calls[1]["arguments"] == {"file_id": "f1", "folder_id": "Finance"}
@@ -169,6 +170,10 @@ async def test_script_cannot_call_a_tool_outside_the_step(
     result = _script_result(provider)
     assert result["is_error"] and "not one of this step's tools" in result["detail"]
     assert gateway.calls == []
+    # Refused and audited exactly as a direct tool_use would be.
+    assert [(r["details"]["tool"], r["details"]["outcome"]) for r in audit][0] == (
+        "gmail__send_email", "refused: not allowed"
+    )
 
 
 @pytest.mark.asyncio
@@ -226,13 +231,21 @@ async def test_a_write_to_a_new_target_is_held_not_run(
 async def test_the_sandbox_reaches_nothing_else(
     script: str, monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
 ) -> None:
-    content, is_error = await step_script.run_script(script, [LIST], _never_called)
+    content, is_error = await _script(script, [LIST])
     assert is_error, content
     assert "sk-test" not in content and "root:" not in content
 
 
 async def _never_called(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
     raise AssertionError("no tool call expected")
+
+
+async def _script(script: str, tools: list[str], call: Any = _never_called) -> tuple[str, bool]:
+    done: tuple[str, bool] = ("", True)
+    async for kind, payload in step_script.run_script(script, tools, call):
+        if kind == "done":
+            done = payload
+    return done
 
 
 @pytest.mark.asyncio
@@ -253,7 +266,7 @@ async def test_a_broken_script_is_an_error_the_model_can_fix(
 @pytest.mark.asyncio
 async def test_a_runaway_script_is_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(step_script._LIMITS, "max_feed_duration_secs", 0.5)
-    content, is_error = await step_script.run_script("while True:\n    pass", [LIST], _never_called)
+    content, is_error = await _script("while True:\n    pass", [LIST])
     assert is_error and "TimeoutError" in json.loads(content)["detail"]
 
 
@@ -291,3 +304,75 @@ async def test_hyphenated_tool_is_callable_and_text_results_pass_through(
     )
     assert _script_result(provider)["result"] == "plain text result"
     assert [c["name"] for c in gateway.calls] == [ODD]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_partway_lists_the_calls_that_already_ran() -> None:
+    async def call(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        if arguments["n"] == 3:
+            return json.dumps({"error": "sheet is locked"}), True
+        return json.dumps({"ok": True}), False
+
+    script = "for n in range(5):\n    sheets__append_rows(n=n)"
+    content, is_error = await _script(script, ["sheets__append_rows"], call)
+    body = json.loads(content)
+    assert is_error and "sheet is locked" in body["detail"]
+    # The model is told rows 0-2 went in, so a fixed re-run doesn't repeat them.
+    assert body["calls"] == [{"tool": "sheets__append_rows", "ok": True}] * 3 + [
+        {"tool": "sheets__append_rows", "ok": False}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_printing_past_the_cap_is_dropped_not_fatal() -> None:
+    content, is_error = await _script("for i in range(2000):\n    print('row', i)\n'done'", [LIST])
+    body = json.loads(content)
+    assert not is_error and body["result"] == "done"
+    assert body["printed"].endswith("[more output not shown]")
+    assert len(body["printed"]) < step_script._MAX_PRINTED_CHARS + 100
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_run_stops_the_script_and_its_calls() -> None:
+    import asyncio
+
+    started: list[int] = []
+    gate = asyncio.Event()
+
+    async def call(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        started.append(arguments["n"])
+        if len(started) == 2:
+            gate.set()
+            await asyncio.sleep(30)  # the in-flight call the cancel interrupts
+        return json.dumps({"ok": True}), False
+
+    task = asyncio.create_task(
+        _script("for n in range(10):\n    drive__move_file(n=n)", [MOVE], call)
+    )
+    await gate.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.2)
+    assert started == [0, 1]  # nothing ran after the cancel
+
+
+@pytest.mark.asyncio
+async def test_each_call_reports_progress_as_it_happens(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    out, _ = await _run(monkeypatch, [
+        _resp(_use("run_script", {"script": FILE_SCRIPT})), _resp(_text("Done.")),
+    ])
+    kinds = [(k, v) for k, v in out if k == "progress"]
+    assert kinds[0] == ("progress", "Running a script…")
+    assert [v for _, v in kinds[1:]] == [f"Using {LIST}…"] + [f"Using {MOVE}…"] * 3
+
+
+@pytest.mark.asyncio
+async def test_awaiting_a_tool_is_explained() -> None:
+    async def call(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        return json.dumps({"ok": True}), False
+
+    content, is_error = await _script("await drive__list_items(folder='x')", [LIST], call)
+    assert is_error, content
