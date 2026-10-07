@@ -171,8 +171,9 @@ async def test_prompt_shape_is_cache_friendly(
     assert call["system"] == [
         {"type": "text", "text": WORKFLOW_ACTOR_SYSTEM, "cache_control": {"type": "ephemeral"}}
     ]
-    # Only the step's tools, sorted by name — never the gateway meta-tools.
-    assert [t["name"] for t in call["tools"]] == sorted([APPEND, READ])
+    # Only the step's tools (plus run_script, which reaches nothing else),
+    # sorted by name — never the gateway meta-tools.
+    assert [t["name"] for t in call["tools"]] == sorted([APPEND, READ, "run_script"])
     user = call["messages"][0]["content"]
     assert "Add today's bills to the tracker." in user
     assert "sheet: Bill tracker" in user

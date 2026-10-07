@@ -5954,6 +5954,24 @@ workflows:
     from an edit conversation opens `?edit=<name>&designer=<id>`, takes the
     current is_active from the stored workflow, and saves with PUT.
 
+    Step scripts (`run_script`, workflows/step_script.py): an action step is
+    also offered `run_script` (unless WORKFLOW_STEP_SCRIPTS=false) so the
+    agent can write one short Python script for repetitive work instead of a
+    model turn per call. It runs in Monty (pydantic-monty, a sandboxed
+    interpreter for model-written code) in a worker process per script; the
+    step's tools are its only external functions (identifier-mapped, plus
+    call_tool(name, arguments)); no files, network, env, subprocess or
+    third-party imports. Every call goes through action_step._StepCalls.call,
+    the same path as a direct tool_use: allowlist, shared budget, TargetPolicy
+    (held writes return {"status": "held"} to the script), one
+    workflow_tool_call audit row per call, plus a `run_script` row. Limits:
+    execution time (excludes waiting on tools), memory, recursion, host round
+    trips; wall clock with a stop flag so no call starts after it; script and
+    printed output size caps. Errors return as is_error with the script's own
+    traceback. Monty runs on a worker thread; each call is handed back to the
+    event loop (run_coroutine_threadsafe) so scripts use plain calls, no
+    await. Scripts are never stored; definitions stay data, not code.
+
     Action steps (workflows that act): `ActionStepSpec` {goal, tools,
     max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
     of exact names — MCP gateway tools (`server__tool`) and built-ins

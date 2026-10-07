@@ -43,7 +43,7 @@ from typing import Any
 
 from openexecutive.agents.workflow_actor import WORKFLOW_ACTOR_AGENT_ID, WorkflowActorAgent
 from openexecutive.config import get_settings
-from openexecutive.workflows import tool_catalog
+from openexecutive.workflows import step_script, tool_catalog
 from openexecutive.workflows.approved_targets import approved_values, normalize_value
 from openexecutive.workflows.dynamic_models import ActionStepSpec, DynamicWorkflowDef
 from openexecutive.workflows.wait_for_human import HeldCall
@@ -424,6 +424,78 @@ def _refusal(reason: str) -> tuple[str, bool]:
     return json.dumps({"error": reason}), True
 
 
+class _StepCalls:
+    """Every tool call a step makes, whether the model makes it directly or a
+    step script (``step_script``) makes it: the allowlist, the call budget,
+    the first-write target check and the audit row, in one place.
+
+    Events for the engine (``progress``, ``held``) are queued and handed over
+    by ``drain`` after each call, so a script's calls report the same way.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_name: str,
+        step_id: str,
+        allowed: set[str],
+        resolved: dict[str, tool_catalog.ToolInfo],
+        budget: _Budget,
+        policy: TargetPolicy | None,
+        actions: list[tuple[str, str]],
+    ) -> None:
+        self._workflow_name = workflow_name
+        self._step_id = step_id
+        self._allowed = allowed
+        self._resolved = resolved
+        self._budget = budget
+        self._policy = policy
+        self._actions = actions
+        self._holds = _Holds()
+        self._events: list[StepYield] = []
+
+    def drain(self) -> list[StepYield]:
+        events, self._events = self._events, []
+        return events
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        """Run (or refuse, or hold) one call. Returns (result text, is_error); never raises."""
+        targets: dict[str, str] | None = None
+        if name not in self._allowed:
+            (content, is_error), outcome = _refusal(
+                f"{name} is not one of this step's tools"
+            ), "refused: not allowed"
+        elif self._budget.spent:
+            (content, is_error), outcome = _refusal(
+                "this step's tool-call budget is used up"
+            ), "refused: budget"
+        else:
+            info = self._resolved[name]
+            writes = info.read_only is not True
+            if writes:
+                targets = _target_digest(arguments)
+            decision = self._holds.decide(name, arguments, self._policy if writes else None)
+            if isinstance(decision, str):
+                (content, is_error), outcome = _refusal(decision), "refused: target check"
+            elif decision is not None:
+                # Not run and not counted against the budget: it runs later,
+                # exactly as given, only if the owner approves. A repeat of
+                # a call already held is answered the same way, not held twice.
+                if decision is not _ALREADY_HELD:
+                    self._events.append(("held", decision))
+                content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
+            else:
+                self._budget.used += 1
+                self._events.append(("progress", f"Using {name}…"))
+                content, is_error = await _call_tool(name, arguments, info)
+                outcome = "error" if is_error else "ok"
+                if writes and not is_error and self._policy is not None:
+                    self._policy.note_written(content, info)
+        _audit(self._workflow_name, self._step_id, name, outcome, targets)
+        self._actions.append((name, outcome))
+        return content, is_error
+
+
 class _Budget:
     """Tool calls left for this step. Only calls that actually run count."""
 
@@ -485,9 +557,11 @@ async def run_action_step(
     agent = WorkflowActorAgent()
     resolved_model = model if model is not None else agent.effective_model()
     provider = get_provider(resolved_model)
-    tools = sorted(
-        (resolved[name].as_anthropic_tool() for name in step.tools), key=lambda t: t["name"]
-    )
+    scripts = settings.workflow_step_scripts and step_script.available()
+    tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools]
+    if scripts:
+        tool_defs.append(step_script.tool_definition(list(step.tools)))
+    tools = sorted(tool_defs, key=lambda t: t["name"])
     system = [
         {"type": "text", "text": agent.effective_system_prompt(), "cache_control": {"type": "ephemeral"}}
     ]
@@ -504,10 +578,17 @@ async def run_action_step(
             ),
         }
     ]
-    allowed = set(step.tools)
     budget = _Budget(step.max_tool_calls)
     actions: list[tuple[str, str]] = []
-    holds = _Holds()
+    calls = _StepCalls(
+        workflow_name=workflow_name,
+        step_id=step.id,
+        allowed=set(step.tools),
+        resolved=resolved,
+        budget=budget,
+        policy=policy,
+        actions=actions,
+    )
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
     for turn in range(max_turns):
@@ -541,38 +622,19 @@ async def run_action_step(
         for use in tool_uses:
             name = str(use["name"])
             arguments = use["input"] if isinstance(use["input"], dict) else {}
-            targets: dict[str, str] | None = None
-            if name not in allowed:
-                (content, is_error), outcome = _refusal(
-                    f"{name} is not one of this step's tools"
-                ), "refused: not allowed"
-            elif budget.spent:
-                (content, is_error), outcome = _refusal(
-                    "this step's tool-call budget is used up"
-                ), "refused: budget"
+            if scripts and name == step_script.RUN_SCRIPT_TOOL:
+                yield ("progress", "Running a script…")
+                content, is_error = await step_script.run_script(
+                    str(arguments.get("script") or ""), list(step.tools), calls.call
+                )
+                outcome = "error" if is_error else "ok"
+                # The script's own calls were audited one by one as they ran.
+                _audit(workflow_name, step.id, step_script.RUN_SCRIPT_TOOL, outcome)
+                actions.append((step_script.RUN_SCRIPT_TOOL, outcome))
             else:
-                writes = resolved[name].read_only is not True
-                if writes:
-                    targets = _target_digest(arguments)
-                decision = holds.decide(name, arguments, policy if writes else None)
-                if isinstance(decision, str):
-                    (content, is_error), outcome = _refusal(decision), "refused: target check"
-                elif decision is not None:
-                    # Not run and not counted against the budget: it runs later,
-                    # exactly as given, only if the owner approves. A repeat of
-                    # a call already held is answered the same way, not held twice.
-                    if decision is not _ALREADY_HELD:
-                        yield ("held", decision)
-                    content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
-                else:
-                    budget.used += 1
-                    yield ("progress", f"Using {name}…")
-                    content, is_error = await _call_tool(name, arguments, resolved[name])
-                    outcome = "error" if is_error else "ok"
-                    if writes and not is_error and policy is not None:
-                        policy.note_written(content, resolved[name])
-            _audit(workflow_name, step.id, name, outcome, targets)
-            actions.append((name, outcome))
+                content, is_error = await calls.call(name, arguments)
+            for event in calls.drain():
+                yield event
             results.append(
                 {
                     "type": "tool_result",

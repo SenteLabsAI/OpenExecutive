@@ -571,6 +571,11 @@ class Settings(BaseSettings):
     tool_result_max_chars: int = Field(
         50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
     )
+    # Workflow action steps may also act through one short sandboxed script
+    # (`run_script`, workflows/step_script.py) that calls the step's own tools
+    # — each call through the same allowlist, budget, target check and audit.
+    # Off: the step only calls its tools one by one, as before.
+    workflow_step_scripts: bool = Field(True, alias="WORKFLOW_STEP_SCRIPTS")
 
     # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
     # A PDF with no text layer (a scan, or one printed to PDF as images) is
