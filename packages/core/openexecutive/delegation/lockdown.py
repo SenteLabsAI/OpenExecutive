@@ -1,7 +1,8 @@
 """Act as me: what a turn may still do once it has read the owner's own mail.
 
 ``ghostwrite_email`` and the reads of the owner's mailbox
-(``search_my_email``, ``read_my_email``, ``my_email_awaiting_reply``) read
+(``search_my_email``, ``read_my_email``, ``read_my_email_attachment``,
+``my_email_awaiting_reply``) read
 mail other people wrote to the owner. From the
 round it runs in until the turn ends, nothing that reaches anyone else runs:
 no message, post, broadcast or invite, no queued or started work, no fetch of
@@ -52,6 +53,7 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # Reads of the owner's own mailbox (mail_read_tools).
     "my_email_awaiting_reply",
     "read_my_email",
+    "read_my_email_attachment",
     "search_my_email",
     "propose_form_values",
     # The speaker's own notes (Always in the loop): a read, kept to the turn.

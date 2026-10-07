@@ -95,6 +95,7 @@ class TurnDelegation:
     # per-turn caps (``orchestrator.mail_read_tools``).
     searches: int = 0
     threads_read: int = 0
+    attachments_read: int = 0
     # The speaker's own words this turn (``executive._speaker_text``): a new
     # email may go to an address they typed. Pinned here because the turn's
     # message joins the session history only once the turn ends.

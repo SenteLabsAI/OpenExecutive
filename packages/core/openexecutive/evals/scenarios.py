@@ -165,7 +165,8 @@ def scenario_delegation(scenario: dict[str, Any]) -> Any:
             subject: Brand refresh pilot
             messages:
               - {from: "Dana <dana@northpeak.example>", text: "...", date: "...",
-                 reply_to: "...", cc: ["..."]}
+                 reply_to: "...", cc: ["..."],
+                 attachments: [{name: scope.txt, text: "..."}]}
 
     Raises ValueError on a malformed block, so a typo fails the scenario."""
     from openexecutive.delegation.settings import DelegationOverride
@@ -189,9 +190,31 @@ def scenario_delegation(scenario: dict[str, Any]) -> Any:
     threads = [_scenario_thread(t, email, "delegation") for t in threads_raw]
     return DelegationOverride(
         enabled=raw.get("enabled", True) is not False,
-        gmail=ScenarioMailbox(email, threads),
+        gmail=ScenarioMailbox(email, threads, _scenario_files(threads_raw)),
         person=Person(id=0, full_name=str(person_raw["full_name"]), email=email, is_principal=True),
     )
+
+
+def _scenario_files(threads_raw: list[Any]) -> dict[tuple[str, int], bytes]:
+    """The text files attached to a ``delegation`` block's messages, by
+    (message id, 1-based index) as ``_scenario_thread`` numbers them."""
+    files: dict[tuple[str, int], bytes] = {}
+    for t in threads_raw:
+        for i, m in enumerate(t["messages"], 1):
+            for n, a in enumerate(m.get("attachments") or [], 1):
+                files[(f"{t['id']}-{i}", n)] = str(a.get("text") or "").encode()
+    return files
+
+
+def _scenario_attachments(raw: Any, block: str) -> list[Any]:
+    from openexecutive.delegation.gmail import MailAttachment
+
+    if not isinstance(raw, list) or not all(isinstance(a, dict) and a.get("name") and isinstance(a.get("text"), str) for a in raw):
+        raise ValueError(f"each {block} attachment needs a name and text")
+    return [
+        MailAttachment(index=n, name=str(a["name"]), mime_type="text/plain", size=len(a["text"].encode()))
+        for n, a in enumerate(raw, 1)
+    ]
 
 
 def _scenario_thread(t: Any, email: str, block: str) -> Any:
@@ -211,6 +234,7 @@ def _scenario_thread(t: Any, email: str, block: str) -> Any:
         sender = getaddresses([str(m["from"])])
         name, addr = sender[0] if sender else ("", "")
         mine = addr.strip().lower() == email
+        attached = _scenario_attachments(m.get("attachments") or [], block)
         messages.append(MailMessage(
             id=f"{t['id']}-{i}",
             thread_id=str(t["id"]),
@@ -225,6 +249,8 @@ def _scenario_thread(t: Any, email: str, block: str) -> Any:
             labels=["SENT"] if mine else ["INBOX"],
             text=m["text"],
             sender_authenticated=m.get("verified", True) is not False,
+            attachments=attached,
+            has_attachments=bool(attached),
         ))
     return MailThread(id=str(t["id"]), messages=messages)
 

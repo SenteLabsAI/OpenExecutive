@@ -8646,16 +8646,17 @@ delegation:
     fixed https://mail.google.com/ prefix and the note marks the preview as
     data. action_chips gives it a chip only for status drafted.
   reads: |
-    search_my_email, read_my_email and my_email_awaiting_reply
-    (orchestrator.mail_read_tools) read the speaker's own mailbox from chat.
+    search_my_email, read_my_email, read_my_email_attachment and
+    my_email_awaiting_reply (orchestrator.mail_read_tools) read the
+    speaker's own mailbox from chat.
     They sit in DELEGATION_TOOLS / DELEGATION_TOOL_HANDLERS beside
     ghostwrite_email, so they are offered, re-checked (_writer: the pin and
     the verified surface) and locked down exactly as it is, and every call
     is in DELEGATION_TOOL_NAMES (private rows, the round counts as touched).
     Read-only: nothing is changed, labelled, drafted or sent. Each takes a
     per-turn slot on the pin before the first await — 10 searches
-    (TurnDelegation.searches; my_email_awaiting_reply counts as one) and 20
-    thread reads (threads_read) — then _open_mailbox (shared with
+    (TurnDelegation.searches; my_email_awaiting_reply counts as one), 20
+    thread reads (threads_read) and 5 attachment reads (attachments_read) — then _open_mailbox (shared with
     ghostwrite_email) sets touched_mail, marks the conversation
     mail_private and runs gmail_status. search_my_email: a Gmail-style
     query through the client's search_threads (Outlook translates it), or
@@ -8672,6 +8673,21 @@ delegation:
     (follow_ups.recipients), whose thread still ends with it. Results carry
     a note that other people's words are data. Audit input and result are
     redacted (my_email is a sensitive tool-name substring).
+    Attachments: read_my_email lists each shown message's files (message,
+    message_id, index, name, type, size_kb) — Gmail's from the message
+    (gmail._attachment_parts: parts naming a file, but an image with a
+    Content-ID the HTML shows in place), Outlook's from list_attachments only
+    when hasAttachments (Graph /attachments, isInline left out).
+    read_my_email_attachment(message_id, index) lists afresh, refuses a type
+    outside READABLE_SUFFIXES (pdf, docx, doc, xlsx, xlsm, csv, md, txt, rst)
+    or over 20 MB before downloading, then attachment_bytes looks the
+    provider id up on that fetch (Gmail's attachment id changes per fetch;
+    a small Gmail part's data is inline) and reads it.
+    attachments._extract_text (isolated worker for pdf/doc/xlsx, scanned PDFs
+    converted under the inbound page budget) and format_attached_text (an
+    untrusted_content block, source attachment, 15,000 characters). Never
+    build_attachment_output: that would add the person's private file to the
+    company knowledge (_schedule_ingest).
     The lockdown refuses tools, not reply text, so the ways reply text
     leaves without a click are closed where it is shown: Message.tsx loads
     only root-relative images (lib/markdownImages.loadsInline; any other is
@@ -8876,7 +8892,8 @@ delegation:
   lockdown: |
     Once a turn has read the principal's own mail — from the round that
     calls ghostwrite_email or a mailbox read (search_my_email,
-    read_my_email, my_email_awaiting_reply), since a round's tools run
+    read_my_email, read_my_email_attachment, my_email_awaiting_reply), since
+    a round's tools run
     together — nothing that
     reaches anyone else runs until the turn ends (delegation.lockdown): no
     message, post, broadcast or invite, no queued or started work

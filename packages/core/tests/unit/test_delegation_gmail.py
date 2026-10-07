@@ -336,6 +336,8 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
         # The inbox watcher: reads, and deleting a draft it wrote.
         "list_message_ids", "inbox_message_ids", "has_written_to", "get_message", "send_as_addresses",
         "get_draft", "delete_draft",
+        # Chat's reads of their own mailbox (orchestrator.mail_read_tools).
+        "list_attachments", "attachment_bytes",
         # Send on the person's tap (delegation.reply_send).
         "send_draft",
         # Checks an id's shape (Gmail's and Outlook's differ); no call.
