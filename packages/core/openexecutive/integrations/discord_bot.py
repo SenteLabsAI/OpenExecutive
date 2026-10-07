@@ -1364,7 +1364,7 @@ def create_discord_bot():
             # executive.chat raised); the router replaces it before any
             # successful reply chunks are sent.
             async def send_fn(text: str) -> None:
-                await message.reply(text)
+                await message.reply(text, suppress_embeds=True)
 
             threshold_chars = settings.discord_mention_thread_threshold_chars
             reply_mode = settings.discord_mention_reply_mode
@@ -1395,7 +1395,7 @@ def create_discord_bot():
 
                 if not promote:
                     async def inline_send(text: str) -> None:
-                        await message.reply(text)
+                        await message.reply(text, suppress_embeds=True)
                     return MentionRouteResult(send_fn=inline_send)
 
                 # Promote: create a brand-new bot-owned thread and route
@@ -1413,7 +1413,7 @@ def create_discord_bot():
                         discord_channel,
                     )
                     async def inline_fallback(text: str) -> None:
-                        await message.reply(text)
+                        await message.reply(text, suppress_embeds=True)
                     return MentionRouteResult(send_fn=inline_fallback)
 
                 # Post a one-line pointer in the channel so people not
@@ -1453,7 +1453,7 @@ def create_discord_bot():
             # Defensive — _classify_inbound returned an unknown mode. Reply
             # inline so the user still gets an answer; no thread.
             async def send_fn(text: str) -> None:
-                await message.reply(text)
+                await message.reply(text, suppress_embeds=True)
 
         session_id = _compute_session_id(
             mode=mode,

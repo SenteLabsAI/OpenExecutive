@@ -42,6 +42,8 @@ def test_discord_replies_suppress_embeds() -> None:
         "interaction.followup.send(text, suppress_embeds=True)",
         "message.channel.send(text, suppress_embeds=True)",
         "new_thread.send(text, suppress_embeds=True)",
+        "message.reply(text, suppress_embeds=True)",
     ):
         assert send in source
     assert "message.channel.send(text)\n" not in source
+    assert "message.reply(text)\n" not in source
