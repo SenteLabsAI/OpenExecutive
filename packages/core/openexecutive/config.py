@@ -580,6 +580,10 @@ class Settings(BaseSettings):
     # gateway tools a conversation has found, each call checked exactly as a
     # call_tool. Never offered on a turn private to the principal.
     chat_scripts: bool = Field(True, alias="CHAT_SCRIPTS")
+    # A script that worked may be saved and run again by name (saved tools,
+    # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
+    # list_saved_tools lists nothing; saved tools stay stored.
+    saved_tools_enabled: bool = Field(True, alias="SAVED_TOOLS_ENABLED")
 
     # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
     # A PDF with no text layer (a scan, or one printed to PDF as images) is

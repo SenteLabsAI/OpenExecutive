@@ -561,7 +561,11 @@ async def run_action_step(
     scripts = settings.workflow_step_scripts and step_script.available()
     tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools]
     if scripts:
-        tool_defs.append(step_script.tool_definition(list(step.tools)))
+        tool_defs.append(
+            step_script.tool_definition(
+                list(step.tools), step_script.usable_saved_tools(list(step.tools))
+            )
+        )
     tools = sorted(tool_defs, key=lambda t: t["name"])
     system = [
         {"type": "text", "text": agent.effective_system_prompt(), "cache_control": {"type": "ephemeral"}}
@@ -627,8 +631,11 @@ async def run_action_step(
                 yield ("progress", "Running a script…")
                 content, is_error = json.dumps({"error": "the script did not finish"}), True
                 async with contextlib.aclosing(
-                    step_script.run_script(
-                        str(arguments.get("script") or ""), list(step.tools), calls.call
+                    step_script.run_script_tool(
+                        arguments,
+                        tools=list(step.tools),
+                        call=calls.call,
+                        origin=f"workflow:{workflow_name}/{step.id}",
                     )
                 ) as script_steps:
                     async for kind, payload in script_steps:

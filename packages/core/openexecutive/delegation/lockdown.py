@@ -52,6 +52,8 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "recall_history",
     "search_skills",
     "search_tools",
+    # Names and descriptions of the saved tools: a local read.
+    "list_saved_tools",
     # Only the reads in MAIL_TOUCHED_MCP_READS (see mail_touched_withholds).
     "call_tool",
 })

@@ -99,9 +99,24 @@ _INPUT_SCHEMA: dict[str, Any] = {
         "script": {
             "type": "string",
             "description": "Python source. End with an expression whose value you want back.",
-        }
+        },
+        "save_as": {
+            "type": "string",
+            "description": "Optional, with script: keep it as a saved tool under this snake_case name if the run succeeds.",
+        },
+        "description": {
+            "type": "string",
+            "description": "With save_as: one sentence on what the tool does and which inputs it takes.",
+        },
+        "tool": {
+            "type": "string",
+            "description": "Instead of script: the name of a saved tool to run.",
+        },
+        "inputs": {
+            "type": "object",
+            "description": "Values for this run, read by the script as the dict `inputs`.",
+        },
     },
-    "required": ["script"],
 }
 _CALL_TEXT = (
     "A call returns the tool's result, parsed from JSON when it is JSON (else "
@@ -109,6 +124,15 @@ _CALL_TEXT = (
     'A call that comes back {"status": "held", ...} or {"status": '
     '"waiting_for_approval", ...} is waiting for a person: do not retry it, '
     "stop the loop if the rest depends on it, and say what is waiting."
+)
+_SAVED_TEXT = (
+    "To keep a script that worked for next time, also pass save_as (a "
+    "snake_case name) and description (one sentence on what it does and which "
+    "inputs it takes); it is saved only if this run succeeds. Write a script "
+    "you mean to reuse so it reads its per-run values (a folder, a date) from "
+    "the dict `inputs` rather than hard-coding them. Saving again under the same "
+    "name keeps a new version. To run a saved tool, pass tool (its name) and "
+    "inputs instead of script."
 )
 _SANDBOX_TEXT = (
     "The script runs in a sandbox with a subset of Python: no imports beyond "
@@ -120,10 +144,19 @@ _SANDBOX_TEXT = (
 )
 
 
-def tool_definition(tools: list[str]) -> dict[str, Any]:
-    """The ``run_script`` tool for a workflow step with these tools."""
+def tool_definition(tools: list[str], saved: list[Any] | None = None) -> dict[str, Any]:
+    """The ``run_script`` tool for a workflow step with these tools.
+
+    ``saved`` is the saved tools this step may run (every tool each uses is
+    one of the step's), listed by name and description.
+    """
     funcs = function_names(tools)
     listing = "\n".join(f"- {fn}(...)  # calls {name}" for fn, name in sorted(funcs.items()))
+    saved_listing = ""
+    if saved:
+        saved_listing = "\n\nSaved tools this step can run (pass tool=<name>):\n" + "\n".join(
+            f"- {t.name}: {t.description}" for t in saved
+        )
     return {
         "name": RUN_SCRIPT_TOOL,
         "description": (
@@ -136,7 +169,7 @@ def tool_definition(tools: list[str]) -> dict[str, Any]:
             "call_tool(name, arguments) also reaches any of them by exact name. "
             f"{_CALL_TEXT} Every call counts against this step's tool budget and "
             "follows the same rules as calling the tool directly.\n\n"
-            f"{_SANDBOX_TEXT}"
+            f"{_SANDBOX_TEXT}\n\n{_SAVED_TEXT}{saved_listing}"
         ),
         "input_schema": _INPUT_SCHEMA,
     }
@@ -158,7 +191,7 @@ CHAT_TOOL_DEFINITION: dict[str, Any] = {
         "hyphen). Only tools the gateway would let call_tool reach (ones "
         "search_tools has returned) can be called, and every call is checked and "
         f"recorded exactly as a call_tool would be. {_CALL_TEXT}\n\n"
-        f"{_SANDBOX_TEXT}"
+        f"{_SANDBOX_TEXT}\n\n{_SAVED_TEXT} list_saved_tools shows the saved tools."
     ),
     "input_schema": _INPUT_SCHEMA,
 }
@@ -228,6 +261,7 @@ async def run_script(
     call: CallFn,
     *,
     wall_clock_s: float = _WALL_CLOCK_S,
+    inputs: dict[str, Any] | None = None,
 ) -> AsyncGenerator[ScriptYield, None]:
     """Run a script, yielding after each tool call and then its result.
 
@@ -290,7 +324,9 @@ async def run_script(
                 os_policy={"sleep": "zero"},
             ) as session,
         ):
-            snapshot: Any = await bounded(session.feed_start(script, print_callback=printed))
+            snapshot: Any = await bounded(
+                session.feed_start(script, inputs={"inputs": dict(inputs or {})}, print_callback=printed)
+            )
             while not isinstance(snapshot, MontyComplete):
                 if isinstance(snapshot, AsyncFunctionSnapshot):
                     if snapshot.is_os_function:
@@ -359,6 +395,154 @@ async def run_script(
         yield ("done", (payload(error="the script could not be run"), True))
         return
     yield ("done", (payload(result=result), False))
+
+
+LIST_SAVED_TOOLS_TOOL = "list_saved_tools"
+# Chat's view of the saved tools (constant definition, so the cached tool
+# prefix is stable). Workflow steps get theirs in run_script's description.
+LIST_SAVED_TOOLS_DEFINITION: dict[str, Any] = {
+    "name": LIST_SAVED_TOOLS_TOOL,
+    "description": (
+        "List the saved tools: scripts kept earlier with run_script(save_as=...) "
+        "that run_script(tool=<name>, inputs={...}) can run again. Each entry has "
+        "its name, what it does and the tools it calls. Check here before writing "
+        "a script for a job you have done before."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+_MAX_INPUTS_CHARS = 20_000
+
+
+def list_saved_tools_result() -> str:
+    """The list_saved_tools answer: the enabled saved tools, never their scripts."""
+    from openexecutive.config import get_settings
+    from openexecutive.workflows import saved_tools
+
+    if not get_settings().saved_tools_enabled:
+        return json.dumps({"saved_tools": [], "note": "saved tools are turned off"})
+    return json.dumps({"saved_tools": [t.summary() for t in saved_tools.list_tools(enabled_only=True)]})
+
+
+def usable_saved_tools(step_tools: list[str]) -> list[Any]:
+    """The enabled saved tools a workflow step with these tools may run."""
+    from openexecutive.config import get_settings
+    from openexecutive.workflows import saved_tools
+
+    if not get_settings().saved_tools_enabled:
+        return []
+    allowed = set(step_tools)
+    return [t for t in saved_tools.list_tools(enabled_only=True) if set(t.tools) <= allowed]
+
+
+def _done(fields: dict[str, Any], is_error: bool) -> ScriptYield:
+    return ("done", (json.dumps(fields, default=str, ensure_ascii=False), is_error))
+
+
+async def run_script_tool(
+    arguments: dict[str, Any],
+    *,
+    tools: list[str] | None,
+    call: CallFn,
+    origin: str,
+    wall_clock_s: float = _WALL_CLOCK_S,
+) -> AsyncGenerator[ScriptYield, None]:
+    """Answer one ``run_script`` tool use: a new script, or a saved tool.
+
+    ``tools`` is a workflow step's allowlist (None in chat). A saved tool runs
+    in a step only when every tool it used is one of the step's; in chat the
+    gateway checks each call as usual. With ``save_as``, a script that
+    succeeds is saved (approved automatically — it can only ever act through
+    whatever context runs it) with the tools it called. Yields like
+    ``run_script``; never raises (cancellation aside).
+    """
+    import time
+
+    from openexecutive.config import get_settings
+    from openexecutive.workflows import saved_tools
+
+    saving_on = get_settings().saved_tools_enabled
+    script = arguments.get("script")
+    tool_name = arguments.get("tool")
+    save_as = arguments.get("save_as")
+    description = arguments.get("description")
+    inputs = arguments.get("inputs")
+    if inputs is None:
+        inputs = {}
+    if not isinstance(inputs, dict):
+        yield _done({"error": "inputs must be an object"}, True)
+        return
+    if len(json.dumps(inputs, default=str)) > _MAX_INPUTS_CHARS:
+        yield _done({"error": "inputs are too large"}, True)
+        return
+    if (script is None) == (tool_name is None):
+        yield _done({"error": "pass either script or tool (a saved tool's name), not both"}, True)
+        return
+
+    saved: Any = None
+    if tool_name is not None:
+        if not saving_on:
+            yield _done({"error": "saved tools are turned off"}, True)
+            return
+        if save_as is not None:
+            yield _done({"error": "save_as goes with a new script, not a saved tool"}, True)
+            return
+        saved = saved_tools.get(str(tool_name))
+        if saved is None or not saved.enabled:
+            yield _done({"error": f"no saved tool named {str(tool_name)[:60]!r} is turned on"}, True)
+            return
+        if tools is not None and not set(saved.tools) <= set(tools):
+            missing = sorted(set(saved.tools) - set(tools))
+            yield _done({
+                "error": "this saved tool uses tools this step doesn't have",
+                "missing_tools": missing,
+            }, True)
+            return
+        script = saved.script
+
+    started = time.monotonic()
+    final: tuple[str, bool] | None = None
+    async for kind, payload in run_script(
+        str(script), tools, call, wall_clock_s=wall_clock_s, inputs=inputs
+    ):
+        if kind == "done":
+            final = payload
+            continue
+        yield (kind, payload)
+    if final is None:  # run_script always ends with done; defensive
+        final = (json.dumps({"error": "the script did not finish"}), True)
+    content, is_error = final
+    try:
+        body = json.loads(content)
+    except ValueError:
+        body = {"result": content}
+    calls_made = body.get("calls") if isinstance(body, dict) else None
+    used = sorted({c["tool"] for c in calls_made or [] if isinstance(c, dict) and "tool" in c})
+
+    if saved is not None:
+        try:
+            saved_tools.record_run(
+                saved.name, saved.version, ok=not is_error, calls=len(calls_made or []),
+                duration_ms=int((time.monotonic() - started) * 1000), origin=origin,
+            )
+        except Exception:
+            logger.warning("saved tool: run not recorded", exc_info=True)
+        if isinstance(body, dict):
+            body["saved_tool"] = {"name": saved.name, "version": saved.version}
+    elif save_as is not None:
+        if not saving_on:
+            body["save_error"] = "saved tools are turned off"
+        elif is_error:
+            body["save_error"] = "not saved: the script failed"
+        else:
+            try:
+                kept = saved_tools.save(
+                    str(save_as), str(description or ""), str(script), used, origin=origin
+                )
+                body["saved"] = {"name": kept.name, "version": kept.version, "uses_tools": kept.tools}
+            except saved_tools.SavedToolError as exc:
+                body["save_error"] = str(exc)
+    yield ("done", (json.dumps(body, default=str, ensure_ascii=False), is_error))
 
 
 class MontyScriptShape(Exception):

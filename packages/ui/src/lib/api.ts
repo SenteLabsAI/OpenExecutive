@@ -4966,3 +4966,87 @@ export async function deleteMyLeadRule(id: number): Promise<LeadRule[]> {
   if (!res.ok) throw await delegationError(res, "Couldn't remove the rule.");
   return ((await res.json()) as { rules: LeadRule[] }).rules;
 }
+
+// ── Saved tools (Settings → Advanced → Saved tools) ─────────────────────────
+// Scripts the Executive kept to run again by name. The owner's alone.
+
+export interface SavedTool {
+  name: string;
+  description: string;
+  enabled: boolean;
+  version: number;
+  uses_tools: string[];
+  origin: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedToolVersion {
+  version: number;
+  description: string;
+  script: string;
+  uses_tools: string[];
+  origin: string;
+  created_at: string;
+}
+
+export interface SavedToolRun {
+  version: number;
+  ok: boolean;
+  calls: number;
+  duration_ms: number;
+  origin: string;
+  at: string;
+}
+
+export interface SavedToolDetail extends SavedTool {
+  script: string;
+  versions: SavedToolVersion[];
+  runs: SavedToolRun[];
+}
+
+async function savedToolError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") return new Error(body.detail);
+  } catch {
+    // not JSON
+  }
+  return new Error(fallback);
+}
+
+/** Null when the caller isn't the owner (403). */
+export async function listSavedTools(
+  signal?: AbortSignal,
+): Promise<{ enabled: boolean; tools: SavedTool[] } | null> {
+  const res = await fetch(`${API_BASE}/saved-tools`, { signal });
+  if (res.status === 403) return null;
+  if (!res.ok) throw await savedToolError(res, "Couldn't load the saved tools.");
+  return res.json();
+}
+
+export async function getSavedTool(name: string, signal?: AbortSignal): Promise<SavedToolDetail> {
+  const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, { signal });
+  if (!res.ok) throw await savedToolError(res, "Couldn't load that saved tool.");
+  return res.json();
+}
+
+export async function setSavedToolEnabled(name: string, enabled: boolean): Promise<SavedToolDetail> {
+  const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await savedToolError(res, "Couldn't change that saved tool.");
+  return res.json();
+}
+
+export async function rollbackSavedTool(name: string, version: number): Promise<SavedToolDetail> {
+  const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) throw await savedToolError(res, "Couldn't switch the version.");
+  return res.json();
+}

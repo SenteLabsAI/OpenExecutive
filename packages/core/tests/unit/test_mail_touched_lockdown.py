@@ -128,7 +128,7 @@ def test_every_tool_is_classified_once() -> None:
         t["name"]
         for t in [
             *ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS,
-            step_script.CHAT_TOOL_DEFINITION,
+            step_script.CHAT_TOOL_DEFINITION, step_script.LIST_SAVED_TOOLS_DEFINITION,
         ]
     }
     allowed, withheld = lockdown.MAIL_TOUCHED_ALLOWED_TOOLS, lockdown.MAIL_TOUCHED_WITHHELD_TOOLS

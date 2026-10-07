@@ -693,7 +693,7 @@ class Executive:
         # call_tool. Only with a gateway, and a constant definition so the
         # cached tool prefix is stable.
         self._script_tools = (
-            [step_script.CHAT_TOOL_DEFINITION]
+            [step_script.CHAT_TOOL_DEFINITION, step_script.LIST_SAVED_TOOLS_DEFINITION]
             if mcp_gateway is not None
             and self._settings.chat_scripts
             and step_script.available()
@@ -1942,7 +1942,8 @@ class Executive:
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
             script_tool_uses = [
                 tu for tu in tool_uses
-                if self._script_tools and tu["name"] == step_script.RUN_SCRIPT_TOOL
+                if self._script_tools
+                and tu["name"] in (step_script.RUN_SCRIPT_TOOL, step_script.LIST_SAVED_TOOLS_TOOL)
             ]
             # A turn private to the principal is not offered run_script
             # (PRIVATE_TURN_WITHHELD_TOOLS); the same guard refuses it.
@@ -2478,16 +2479,27 @@ class Executive:
                 # being cut off with the turn and leaving the model no record.
                 script_clock = max(30.0, min(600.0, self._settings.chat_stream_timeout_s / 2))
                 for tu in script_tool_uses:
-                    script = tu["input"].get("script") if isinstance(tu["input"], dict) else None
+                    if tu["name"] == step_script.LIST_SAVED_TOOLS_TOOL:
+                        results_by_id[tu["id"]] = step_script.list_saved_tools_result()
+                        continue
+                    script_args = tu["input"] if isinstance(tu["input"], dict) else {}
+                    script = script_args.get("script")
                     script_text = str(script or "")
-                    logger.info("→ run_script  chars=%d", len(script_text))
+                    logger.info(
+                        "→ run_script  chars=%d saved_tool=%s",
+                        len(script_text), _loggable_tool(str(script_args.get("tool") or "-")),
+                    )
                     script_result = json.dumps({"error": "the script did not finish"})
                     script_failed = True
                     # aclosing: a stopped turn closes the script, and with it
                     # the Monty worker, instead of leaving it to the GC.
                     async with contextlib.aclosing(
-                        step_script.run_script(
-                            script_text, None, _script_call, wall_clock_s=script_clock
+                        step_script.run_script_tool(
+                            script_args,
+                            tools=None,
+                            call=_script_call,
+                            origin="chat",
+                            wall_clock_s=script_clock,
                         )
                     ) as script_steps:
                         async for kind, payload in script_steps:
@@ -2559,7 +2571,11 @@ class Executive:
                             "result_preview": audit_tool_result(step_script.RUN_SCRIPT_TOOL, script_result),
                         },
                         full={
-                            "input": {"script": script_text},
+                            "input": {
+                                k: script_args.get(k)
+                                for k in ("script", "tool", "inputs", "save_as", "description")
+                                if script_args.get(k) is not None
+                            },
                             "result": audit_tool_result_full(step_script.RUN_SCRIPT_TOOL, script_result),
                             "active_prompt_blocks": _system_block_names(system_blocks),
                         },

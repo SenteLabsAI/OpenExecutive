@@ -6002,6 +6002,29 @@ workflows:
     (in PRIVATE_TURN_WITHHELD_TOOLS; refused there if emitted anyway), and
     withheld whole by the Act as me lockdown (MAIL_TOUCHED_WITHHELD_TOOLS).
 
+    Saved tools (workflows/saved_tools.py): run_script takes save_as +
+    description with a new script; a script that SUCCEEDS is saved with the
+    sorted set of tools it actually called (a failed one never is), and
+    run_script(tool=<name>, inputs={...}) runs the saved script with
+    `inputs` bound as a dict (exactly one of script/tool; save_as with tool
+    is refused). Saving is auto-approved by design: a saved tool runs through
+    whatever context calls it (step: _StepCalls.call; chat: gateway
+    call_tool and its gates), and a workflow step runs one only when
+    saved.tools is a subset of step.tools (else an error naming
+    missing_tools). Steps see usable saved tools in their run_script
+    description (step_script.tool_definition(tools, saved)); chat gets the
+    constant list_saved_tools tool (summaries, never scripts). Tables
+    saved_tools / saved_tool_versions / saved_tool_runs in the episodic DB:
+    a save with changed description, script or tools is a new version that
+    becomes current; an identical save changes nothing; a turned-off tool
+    stays off when the model saves a new version; runs keep the newest 200
+    per tool; at most 200 tools. Owner-only routes /saved-tools (list,
+    detail with script/versions/last 20 runs, PUT enabled, POST rollback;
+    audited saved_tool_changed) back Settings -> Advanced -> Saved tools.
+    SAVED_TOOLS_ENABLED=false stops saving and running everywhere.
+    list_saved_tools is allowed under the Act as me lockdown (local read)
+    and withheld on a turn private to the principal, like run_script.
+
     Action steps (workflows that act): `ActionStepSpec` {goal, tools,
     max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
     of exact names — MCP gateway tools (`server__tool`) and built-ins

@@ -150,7 +150,7 @@ def test_each_script_call_is_a_gateway_call_with_its_own_audit_row(
     provider = _script_turn()
     _run(provider, gateway)
 
-    assert json.loads(_result(provider, 1, "tu-s"))["result"] == 3
+    assert json.loads(_any_result(provider, "tu-s"))["result"] == 3
     assert [c["name"] for c in gateway.calls] == [
         "drive__list_items", "drive__move_file", "drive__move_file", "drive__move_file"
     ]
@@ -164,7 +164,7 @@ def test_the_gateway_still_refuses_what_it_would_refuse(audit: list[dict[str, An
     gateway = _Gateway()
     provider = _script_turn("slack__post_message(channel='#all', text='hi')")
     _run(provider, gateway)
-    body = json.loads(_result(provider, 1, "tu-s"))
+    body = json.loads(_any_result(provider, "tu-s"))
     assert body["error"] == "the script failed" and "has not been discovered" in body["detail"]
     assert body["calls"] == [{"tool": "slack__post_message", "ok": False}]
 
@@ -209,7 +209,7 @@ def test_a_private_turn_is_not_offered_it_and_is_refused(
     provider = _script_turn()
     _run(provider, gateway)
     assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
-    assert "not available on this turn" in json.loads(_result(provider, 1, "tu-s"))["error"]
+    assert "not available on this turn" in json.loads(_any_result(provider, "tu-s"))["error"]
     assert gateway.calls == []
     assert any(r["details"].get("refused") == "private_turn" for r in audit)
 
@@ -224,7 +224,7 @@ def test_a_turn_that_read_the_owners_mail_refuses_the_whole_script(
     gateway = _Gateway()
     provider = _script_turn()
     _run(provider, gateway)
-    assert "read the user's own mail" in json.loads(_result(provider, 1, "tu-s"))["error"]
+    assert "read the user's own mail" in json.loads(_any_result(provider, "tu-s"))["error"]
     assert gateway.calls == []
     assert any(r["details"].get("refused") == "mail_touched" for r in audit)
 
@@ -246,7 +246,55 @@ def test_a_raising_call_is_audited_as_failed(audit: list[dict[str, Any]]) -> Non
     _run(provider, _BrokenGateway())
     failed = [r for r in audit if r["details"].get("via") == "run_script" and r["details"].get("ok") is False]
     assert len(failed) == 1 and "FAILED: ConnectionError" in failed[0]["summary"]
-    body = json.loads(_result(provider, 1, "tu-s"))
+    body = json.loads(_any_result(provider, "tu-s"))
     assert body["error"] == "the script failed"
     script_row = [r for r in audit if r["details"].get("kind") == "script"][0]
     assert script_row["details"]["ok"] is False
+
+
+@pytest.fixture()
+def saved_db(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.workflows import saved_tools
+
+    monkeypatch.setattr(saved_tools, "DB_PATH", tmp_path / "saved.db")
+
+
+def _any_result(provider: _ScriptedProvider, use_id: str) -> str:
+    for message in provider.calls[-1]["messages"]:
+        for block in message["content"] if isinstance(message["content"], list) else []:
+            if isinstance(block, dict) and block.get("tool_use_id") == use_id:
+                return str(block["content"])
+    raise KeyError(use_id)
+
+
+def test_chat_saves_a_script_and_lists_then_runs_it(
+    saved_db: None, audit: list[dict[str, Any]]
+) -> None:
+    gateway = _Gateway()
+    provider = _ScriptedProvider([
+        _FinalMsg([_ToolUseBlock("tu-s", "run_script", {
+            "script": SCRIPT, "save_as": "file_scans", "description": "File the inbox scans.",
+        })], "tool_use"),
+        _FinalMsg([_ToolUseBlock("tu-l", "list_saved_tools", {})], "tool_use"),
+        _FinalMsg([_ToolUseBlock("tu-r", "run_script", {"tool": "file_scans"})], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+    _run(provider, gateway)
+    saved = json.loads(_any_result(provider, "tu-s"))["saved"]
+    assert saved == {"name": "file_scans", "version": 1,
+                     "uses_tools": ["drive__list_items", "drive__move_file"]}
+    listed = json.loads(_any_result(provider, "tu-l"))["saved_tools"]
+    assert [t["name"] for t in listed] == ["file_scans"]
+    again = json.loads(_any_result(provider, "tu-r"))
+    assert again["result"] == 3 and again["saved_tool"] == {"name": "file_scans", "version": 1}
+    # Both runs went through the gateway, one call at a time.
+    assert len(gateway.calls) == 8
+    script_rows = [r for r in audit if r["details"].get("kind") == "script"]
+    assert script_rows[1]["full"]["input"] == {"tool": "file_scans"}
+
+
+def test_list_saved_tools_is_offered_beside_run_script() -> None:
+    provider = _ScriptedProvider([_FinalMsg([_TextBlock("Hi.")], "end_turn")])
+    _run(provider, _Gateway())
+    [listed] = [t for t in provider.calls[0]["tools"] if t.get("name") == "list_saved_tools"]
+    assert {k: v for k, v in listed.items() if k != "cache_control"} == step_script.LIST_SAVED_TOOLS_DEFINITION
