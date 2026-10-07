@@ -21,6 +21,7 @@ docker/                 Dockerfile + docker-compose.yml
 make dev          # Start FastAPI (port 8000) + Next.js (port 3000)
 make test         # Run pytest
 make lint         # ruff check + mypy
+make test-changed # fast loop: only the tests that cover what this branch changed
 make check        # everything CI checks: lint, unit tests, UI build (if touched), PR rules
 make eval         # Run eval suite against localhost
 make docker       # docker compose up --build
@@ -274,6 +275,12 @@ make eval   # runs packages/core/openexecutive/evals/_scenarios/*.yaml, writes e
   review thread. Keep the body short enough to read in one screen.
 
 ## Definition of Done
+
+While iterating, run `make test-changed` (the tests that cover what the branch
+changed) plus `ruff` on the files you touched, not the full suite. Run
+`make check` **once**, before the first push, then batch fixes: later pushes
+rely on CI and rerun only what failed, unless the fix touched shared code
+(`tests/conftest.py`, `pyproject.toml`, a base class).
 
 Before calling a code change done or opening a PR:
 

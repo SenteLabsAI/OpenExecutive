@@ -9,9 +9,51 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR supersedes the run in flight: agents often push several
+# times in a row, and each superseded run would otherwise burn a full suite.
+# Never cancel main, so every merge keeps its own result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Decides which suites a PR can affect. Skipped jobs count as passing for
+  # required checks. Pushes to main run everything.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Filter by changed paths
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          python=true; ui=true
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only "origin/$BASE_REF"...HEAD)
+            # Python suites only skip when every change is inside the web app.
+            if ! echo "$files" | grep -qv '^packages/ui/'; then python=false; fi
+            # The web app's checks only run when it changed, or when something
+            # they read changed: this workflow, and the Python files its
+            # parity tests parse (see CLAUDE.md -> UI lint).
+            if ! echo "$files" | grep -qE '^(packages/ui/|\.github/workflows/ci\.yml$|packages/core/openexecutive/api/main\.py$|packages/core/openexecutive/utils/deployment\.py$)'; then ui=false; fi
+          fi
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+          echo "ui=$ui" >> "$GITHUB_OUTPUT"
+
   python-lint:
     name: Python lint & type check
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -22,7 +64,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: packages/core/uv.lock
 
       # docker/Dockerfile installs from uv.lock with `uv sync --locked`, which
       # fails the image build if the lock is stale. `uv sync` below would
@@ -65,6 +110,8 @@ jobs:
 
   python-test:
     name: Python tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -75,7 +122,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: packages/core/uv.lock
 
       - name: Install dependencies
         run: cd packages/core && uv sync --extra dev
@@ -101,6 +151,8 @@ jobs:
 
   ui-typecheck:
     name: UI type check
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -111,6 +163,8 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/ui/package-lock.json
 
       - name: Install dependencies
         run: cd packages/ui && npm ci

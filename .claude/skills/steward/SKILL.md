@@ -8,7 +8,12 @@ description: Repo rules for driving an Open Executive pull request to green - CI
 Only what is specific to this repo. `CLAUDE.md` covers the code rules.
 
 ## Before every push
-- Run `make check`. It runs what CI runs (lint, unit and integration tests,
+- First push: run `make check` once. Later pushes in the same round: run
+  `make test-changed` (the tests covering your change) and `ruff` on the
+  files you touched; CI runs the rest. Rerun the full `make check` only if
+  the fix touched shared code (`tests/conftest.py`, `pyproject.toml`, a base
+  class). CI cancels a superseded run, so don't push piecemeal.
+- `make check` It runs what CI runs (lint, unit and integration tests,
   the UI build if `packages/ui` changed, `scripts/pr_checks.py`) with the
   `BACKEND_SHARED_SECRET` / `OE_PUBLIC_DEPLOYMENT` traps handled.
 - If a test fails only in the full run, rerun it serially (no `-n`). The

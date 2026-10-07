@@ -1,4 +1,4 @@
-.PHONY: dev stop test lint check eval docker clean install discord
+.PHONY: dev stop test test-changed lint check eval docker clean install discord
 
 install:
 	cd packages/core && uv sync
@@ -48,6 +48,16 @@ stop:
 
 test:
 	cd packages/core && uv run pytest tests/ -v --tb=short
+
+# The fast inner loop: only the test files that cover what this branch changed
+# (scripts/changed_tests.py), with the same env handling as `check`. Run
+# `make check` once before the first push; CI covers the rest.
+test-changed:
+	@files=$$(python3 scripts/changed_tests.py --base $(BASE)); \
+	if [ -z "$$files" ]; then echo "No changed code under packages/core maps to a test file."; exit 0; fi; \
+	echo "$$files"; \
+	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT -u SAAS_MODE \
+		uv run pytest $$files -n auto --dist loadfile -q
 
 lint:
 	cd packages/core && uv run ruff check openexecutive/ && uv run mypy openexecutive/

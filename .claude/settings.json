@@ -4,6 +4,7 @@
       "mcp__github__pull_request_read",
       "Bash(make lint)",
       "Bash(make test)",
+      "Bash(make test-changed)",
       "Bash(make check)",
       "Bash(python3 scripts/pr_checks.py:*)",
       "Bash(uv run pytest:*)",
