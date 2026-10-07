@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class EnabledIn(BaseModel):
 class RollbackIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: int
+    version: int = Field(ge=1, le=2**31)
 
 
 def _require_principal(request: Request) -> None:

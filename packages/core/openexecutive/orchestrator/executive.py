@@ -2569,6 +2569,8 @@ class Executive:
                             "iteration": iteration,
                             "ok": not script_failed,
                             "result_preview": audit_tool_result(step_script.RUN_SCRIPT_TOOL, script_result),
+                            **({"saved_tool": str(script_args["tool"])[:60]} if script_args.get("tool") else {}),
+                            **({"save_as": str(script_args["save_as"])[:60]} if script_args.get("save_as") else {}),
                         },
                         full={
                             "input": {

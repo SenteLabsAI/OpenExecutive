@@ -123,7 +123,8 @@ function ToolCard({
   const toggleOpen = async () => {
     const next = !open;
     setOpen(next);
-    if (next && !detail) await run(() => getSavedTool(tool.name));
+    // Fetched on every open: the Executive may have saved a new version since.
+    if (next) await run(() => getSavedTool(tool.name));
   };
 
   return (

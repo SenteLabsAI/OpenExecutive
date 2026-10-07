@@ -120,7 +120,7 @@ async def test_a_script_that_works_is_saved_with_the_tools_it_called() -> None:
         "save_as": "count_files", "description": "Count the files in a folder.",
     })
     assert not is_error and body["result"] == 3
-    assert body["saved"] == {"name": "count_files", "version": 1, "uses_tools": [LIST]}
+    assert body["saved"] == {"name": "count_files", "version": 1, "uses_tools": [LIST], "enabled": True}
     kept = saved_tools.get("count_files")
     assert kept is not None and kept.script == COUNT_SCRIPT and kept.origin == "chat"
 
@@ -219,3 +219,64 @@ def test_a_step_definition_lists_the_saved_tools_it_may_run() -> None:
     definition = step_script.tool_definition([LIST], [kept])
     assert "count_files" in definition["description"] and "Count files." in definition["description"]
     assert COUNT_SCRIPT not in definition["description"]
+
+
+def test_a_name_with_a_trailing_newline_is_refused() -> None:
+    with pytest.raises(saved_tools.SavedToolError):
+        saved_tools.save("count_files\n", "Count.", "1", [], origin="chat")
+
+
+@pytest.mark.asyncio
+async def test_storage_errors_never_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+
+    def locked(*_a: Any, **_k: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(saved_tools, "get", locked)
+    monkeypatch.setattr(saved_tools, "save", locked)
+    monkeypatch.setattr(saved_tools, "list_tools", locked)
+    calls = _Calls()
+    body, is_error = await _tool({"tool": "count_files"}, call=calls)
+    assert is_error and "couldn't be read" in body["error"] and calls.made == []
+    # The script ran (its writes happened), so its result comes back.
+    body, is_error = await _tool(
+        {"script": COUNT_SCRIPT, "inputs": {"folder": "x"}, "save_as": "count_files", "description": "C."},
+        call=calls,
+    )
+    assert not is_error and body["result"] == 3 and "storage error" in body["save_error"]
+    assert step_script.usable_saved_tools([LIST]) == []
+    assert "error" in json.loads(step_script.list_saved_tools_result())
+
+
+@pytest.mark.asyncio
+async def test_uses_tools_counts_every_call_but_not_refused_ones() -> None:
+    script = """
+for i in range(250):
+    drive__list_items(folder="x")
+drive__move_file(file_id="late")
+try:
+    call_tool("drive__delete_all", {})
+except Exception:
+    pass
+"""
+
+    async def refuse_outside(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        if name not in (LIST, MOVE):
+            return json.dumps({"error": "not one of this step's tools"}), True
+        return json.dumps([]), False
+
+    body, is_error = await _tool(
+        {"script": script, "save_as": "late_mover", "description": "Moves late."},
+        tools=[LIST, MOVE], call=refuse_outside,
+    )
+    assert not is_error, body
+    assert body["saved"]["uses_tools"] == [LIST, MOVE]
+
+
+@pytest.mark.asyncio
+async def test_saving_a_turned_off_tool_says_so() -> None:
+    saved_tools.save("count_files", "Count files.", "1", [], origin="chat")
+    saved_tools.set_enabled("count_files", False)
+    body, _ = await _tool({"script": "2", "save_as": "count_files", "description": "Count."})
+    assert body["saved"]["enabled"] is False and "turned this tool off" in body["saved"]["note"]

@@ -282,7 +282,7 @@ def test_chat_saves_a_script_and_lists_then_runs_it(
     _run(provider, gateway)
     saved = json.loads(_any_result(provider, "tu-s"))["saved"]
     assert saved == {"name": "file_scans", "version": 1,
-                     "uses_tools": ["drive__list_items", "drive__move_file"]}
+                     "uses_tools": ["drive__list_items", "drive__move_file"], "enabled": True}
     listed = json.loads(_any_result(provider, "tu-l"))["saved_tools"]
     assert [t["name"] for t in listed] == ["file_scans"]
     again = json.loads(_any_result(provider, "tu-r"))

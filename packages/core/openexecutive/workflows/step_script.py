@@ -412,6 +412,7 @@ LIST_SAVED_TOOLS_DEFINITION: dict[str, Any] = {
 }
 
 _MAX_INPUTS_CHARS = 20_000
+_MAX_LISTED_SAVED_TOOLS = 30
 
 
 def list_saved_tools_result() -> str:
@@ -421,7 +422,12 @@ def list_saved_tools_result() -> str:
 
     if not get_settings().saved_tools_enabled:
         return json.dumps({"saved_tools": [], "note": "saved tools are turned off"})
-    return json.dumps({"saved_tools": [t.summary() for t in saved_tools.list_tools(enabled_only=True)]})
+    try:
+        listed = saved_tools.list_tools(enabled_only=True)
+    except Exception:
+        logger.warning("saved tools: couldn't list them", exc_info=True)
+        return json.dumps({"error": "the saved tools couldn't be read just now"})
+    return json.dumps({"saved_tools": [t.summary() for t in listed]})
 
 
 def usable_saved_tools(step_tools: list[str]) -> list[Any]:
@@ -432,7 +438,16 @@ def usable_saved_tools(step_tools: list[str]) -> list[Any]:
     if not get_settings().saved_tools_enabled:
         return []
     allowed = set(step_tools)
-    return [t for t in saved_tools.list_tools(enabled_only=True) if set(t.tools) <= allowed]
+    try:
+        listed = saved_tools.list_tools(enabled_only=True)
+    except Exception:
+        logger.warning("saved tools: couldn't list them for a step", exc_info=True)
+        return []
+    # Most recently changed first, capped: the list rides in the step's tool
+    # definition. A tool past the cap still runs by name.
+    usable = [t for t in listed if set(t.tools) <= allowed]
+    usable.sort(key=lambda t: t.updated_at, reverse=True)
+    return usable[:_MAX_LISTED_SAVED_TOOLS]
 
 
 def _done(fields: dict[str, Any], is_error: bool) -> ScriptYield:
@@ -487,7 +502,12 @@ async def run_script_tool(
         if save_as is not None:
             yield _done({"error": "save_as goes with a new script, not a saved tool"}, True)
             return
-        saved = saved_tools.get(str(tool_name))
+        try:
+            saved = saved_tools.get(str(tool_name))
+        except Exception:
+            logger.warning("saved tool: couldn't read %r", str(tool_name)[:60], exc_info=True)
+            yield _done({"error": "the saved tool couldn't be read just now; nothing ran"}, True)
+            return
         if saved is None or not saved.enabled:
             yield _done({"error": f"no saved tool named {str(tool_name)[:60]!r} is turned on"}, True)
             return
@@ -500,10 +520,25 @@ async def run_script_tool(
             return
         script = saved.script
 
+    # The tools the script really reached, from every call (the result's
+    # calls list is capped). A step's refused names are not its tools; in
+    # chat a refused call (the gateway's error) is not counted either.
+    allowed = set(tools) if tools is not None else None
+    reached: set[str] = set()
+    call_count = 0
+
+    async def tracked(name: str, args: dict[str, Any]) -> tuple[str, bool]:
+        nonlocal call_count
+        call_count += 1
+        text, failed = await call(name, args)
+        if (name in allowed) if allowed is not None else not failed:
+            reached.add(name)
+        return text, failed
+
     started = time.monotonic()
     final: tuple[str, bool] | None = None
     async for kind, payload in run_script(
-        str(script), tools, call, wall_clock_s=wall_clock_s, inputs=inputs
+        str(script), tools, tracked, wall_clock_s=wall_clock_s, inputs=inputs
     ):
         if kind == "done":
             final = payload
@@ -516,13 +551,12 @@ async def run_script_tool(
         body = json.loads(content)
     except ValueError:
         body = {"result": content}
-    calls_made = body.get("calls") if isinstance(body, dict) else None
-    used = sorted({c["tool"] for c in calls_made or [] if isinstance(c, dict) and "tool" in c})
+    used = sorted(reached)
 
     if saved is not None:
         try:
             saved_tools.record_run(
-                saved.name, saved.version, ok=not is_error, calls=len(calls_made or []),
+                saved.name, saved.version, ok=not is_error, calls=call_count,
                 duration_ms=int((time.monotonic() - started) * 1000), origin=origin,
             )
         except Exception:
@@ -539,9 +573,17 @@ async def run_script_tool(
                 kept = saved_tools.save(
                     str(save_as), str(description or ""), str(script), used, origin=origin
                 )
-                body["saved"] = {"name": kept.name, "version": kept.version, "uses_tools": kept.tools}
+                body["saved"] = {
+                    "name": kept.name, "version": kept.version, "uses_tools": kept.tools,
+                    "enabled": kept.enabled,
+                }
+                if not kept.enabled:
+                    body["saved"]["note"] = "the owner turned this tool off; it won't run until they turn it on"
             except saved_tools.SavedToolError as exc:
                 body["save_error"] = str(exc)
+            except Exception:
+                logger.warning("saved tool: couldn't save %r", str(save_as)[:60], exc_info=True)
+                body["save_error"] = "not saved: storage error (the script itself ran)"
     yield ("done", (json.dumps(body, default=str, ensure_ascii=False), is_error))
 
 

@@ -152,7 +152,7 @@ def validate_save(name: str, description: str, script: str, tools: list[str]) ->
     """Raise SavedToolError if this can't be saved."""
     from openexecutive.workflows.step_script import MAX_SCRIPT_CHARS
 
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         raise SavedToolError(
             "save_as must be snake_case: 3-49 lowercase letters, digits or underscores, "
             "starting with a letter"
@@ -188,6 +188,9 @@ def save(
     initialize(db_path)
     now = _now()
     with _get_conn(_resolve(db_path)) as conn:
+        # Hold the write lock from the read, so concurrent saves (another
+        # process on the same file) can't pick the same version number.
+        conn.execute("BEGIN IMMEDIATE")
         current = conn.execute(_SELECT + " WHERE t.name = ?", (name,)).fetchone()
         if current is None:
             count = conn.execute("SELECT COUNT(*) FROM saved_tools").fetchone()[0]
