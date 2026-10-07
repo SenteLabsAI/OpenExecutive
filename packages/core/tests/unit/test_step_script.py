@@ -483,3 +483,40 @@ async def test_a_list_result_nudges_the_step_toward_one_script(
     )
     turn = provider.calls[1]["messages"][-1]["content"]
     assert {"type": "text", "text": step_script.FANOUT_HINT} in turn
+
+
+@pytest.mark.asyncio
+async def test_scripts_take_turns_for_the_worker_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SCRIPT_MAX_WORKERS caps the Monty workers running at once; a script
+    that can't get a slot within its own clock says the server is busy."""
+    import asyncio
+
+    monkeypatch.setenv("SCRIPT_MAX_WORKERS", "1")
+    running = 0
+    peak = 0
+
+    async def slow(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.3)
+        running -= 1
+        return "[]", False
+
+    async def one(wall_clock_s: float = 30.0) -> tuple[str, bool]:
+        done: tuple[str, bool] = ("", True)
+        async for kind, payload in step_script.run_script(
+            "drive__list_items(folder='x')\n1", [LIST], slow, wall_clock_s=wall_clock_s
+        ):
+            if kind == "done":
+                done = payload
+        return done
+
+    results = await asyncio.gather(one(), one(), one())
+    assert all(not failed for _, failed in results) and peak == 1
+
+    first = asyncio.create_task(one())
+    await asyncio.sleep(0.05)
+    content, failed = await one(wall_clock_s=0.1)
+    assert failed and "busy" in json.loads(content)["error"]
+    assert not (await first)[1]

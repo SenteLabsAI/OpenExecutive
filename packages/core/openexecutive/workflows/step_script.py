@@ -68,6 +68,21 @@ _POOL_REQUEST_TIMEOUT_S = 180.0
 # (action_step.HELD_TOOL_RESULT, take_the_lead's gate).
 _WAITING = frozenset({"held", "waiting_for_approval"})
 
+# One per event loop (tests run several): SCRIPT_MAX_WORKERS scripts at once.
+_worker_slots: dict[int, tuple[int, asyncio.Semaphore]] = {}
+
+
+def _slots() -> asyncio.Semaphore:
+    from openexecutive.config import get_settings
+
+    limit = get_settings().script_max_workers
+    key = id(asyncio.get_running_loop())
+    held = _worker_slots.get(key)
+    if held is None or held[0] != limit:
+        held = (limit, asyncio.Semaphore(limit))
+        _worker_slots[key] = held
+    return held[1]
+
 CallFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, tuple[str, bool]]]
 # What ``run_script`` yields: ("call", None) after each tool call (so the
 # caller can hand that call's events to the engine), then exactly one
@@ -398,6 +413,7 @@ async def run_script(
         return await asyncio.wait_for(awaitable, timeout=left)
     printed = _Printed()
     made: list[dict[str, Any]] = []
+    slots = _slots()
 
     def payload(**fields: Any) -> str:
         if made:
@@ -408,6 +424,12 @@ async def run_script(
             fields["printed"] = printed.text()
         return json.dumps(fields, default=str, ensure_ascii=False)
 
+    try:
+        # A free worker slot first (SCRIPT_MAX_WORKERS), within the clock.
+        await bounded(slots.acquire())
+    except TimeoutError:
+        yield ("done", (payload(error="the server was busy running other scripts; try again shortly"), True))
+        return
     try:
         async with (
             AsyncMonty(
@@ -489,6 +511,8 @@ async def run_script(
         logger.warning("step script: runner failed (%s)", type(exc).__name__)
         yield ("done", (payload(error="the script could not be run"), True))
         return
+    finally:
+        slots.release()
     yield ("done", (payload(result=result), False))
 
 

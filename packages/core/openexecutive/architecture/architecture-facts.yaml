@@ -6007,6 +6007,11 @@ workflows:
     upsert_person 25, create_alert 50). A CancelledError mid-call writes a
     cancelled audit row before re-raising. TOOL_BUILDING_ADDENDUM is gated
     on cache_manager._chat_scripts_on (setting + step_script.available()).
+    Worker slots: run_script acquires a per-event-loop asyncio.Semaphore of
+    SCRIPT_MAX_WORKERS (default 2) inside the wall clock before starting
+    AsyncMonty, released in a finally (also on aclosing/cancel). Measured:
+    a worker is ~8 MB RSS, exists only while its script runs, and none are
+    left after timeouts, memory-cap kills or cancellation.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

@@ -591,6 +591,10 @@ class Settings(BaseSettings):
     # the Executive's own tools); message_person and upsert_person have
     # tighter caps of their own (step_script.CHAT_OWN_TOOL_CAPS).
     chat_script_max_calls: int = Field(200, alias="CHAT_SCRIPT_MAX_CALLS", ge=1, le=5_000)
+    # How many scripts (each a Monty worker process, up to 128 MB and one CPU
+    # core while computing) may run at once across the whole server, chat and
+    # workflows together. More wait their turn, within their own time limit.
+    script_max_workers: int = Field(2, alias="SCRIPT_MAX_WORKERS", ge=1, le=32)
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.
