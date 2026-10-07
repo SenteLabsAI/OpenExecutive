@@ -39,7 +39,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,10 @@ _LIMITS = {
 }
 _WALL_CLOCK_S = 600.0
 _POOL_REQUEST_TIMEOUT_S = 180.0
+
+# Statuses a call answers with when it is held for a person's approval
+# (action_step.HELD_TOOL_RESULT, take_the_lead's gate).
+_WAITING = frozenset({"held", "waiting_for_approval"})
 
 CallFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, tuple[str, bool]]]
 # What ``run_script`` yields: ("call", None) after each tool call (so the
@@ -89,8 +93,35 @@ def function_names(tools: list[str]) -> dict[str, str]:
     return {fn: names[0] for fn, names in mapped.items() if len(names) == 1 and fn != "call_tool"}
 
 
+_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "script": {
+            "type": "string",
+            "description": "Python source. End with an expression whose value you want back.",
+        }
+    },
+    "required": ["script"],
+}
+_CALL_TEXT = (
+    "A call returns the tool's result, parsed from JSON when it is JSON (else "
+    "the text); a failed or refused call raises RuntimeError with the reason. "
+    'A call that comes back {"status": "held", ...} or {"status": '
+    '"waiting_for_approval", ...} is waiting for a person: do not retry it, '
+    "stop the loop if the rest depends on it, and say what is waiting."
+)
+_SANDBOX_TEXT = (
+    "The script runs in a sandbox with a subset of Python: no imports beyond "
+    "json, re, math, datetime, collections, itertools and similar standard "
+    "modules; no files, network or classes with inheritance. The value of the "
+    "last expression is returned to you, along with anything printed and the "
+    "calls the script made. If it fails partway, the calls that already ran are "
+    "listed: do not repeat them."
+)
+
+
 def tool_definition(tools: list[str]) -> dict[str, Any]:
-    """The ``run_script`` tool for a step with these tools."""
+    """The ``run_script`` tool for a workflow step with these tools."""
     funcs = function_names(tools)
     listing = "\n".join(f"- {fn}(...)  # calls {name}" for fn, name in sorted(funcs.items()))
     return {
@@ -102,31 +133,35 @@ def tool_definition(tools: list[str]) -> dict[str, Any]:
             "separate tool calls; use the tools directly for a call or two.\n\n"
             "Each tool is a function taking the tool's arguments as keywords:\n"
             f"{listing}\n"
-            "call_tool(name, arguments) also reaches any of them by exact name.\n"
-            "A call returns the tool's result, parsed from JSON when it is JSON "
-            "(else the text); a failed or refused call raises RuntimeError with "
-            "the reason. A write held for the owner's approval returns "
-            '{"status": "held", ...}: do not retry it.\n\n'
-            "The script runs in a sandbox with a subset of Python: no imports "
-            "beyond json, re, math, datetime, collections, itertools and similar "
-            "standard modules; no files, network or classes with inheritance. "
-            "The value of the last expression is returned to you, along with "
-            "anything printed and the calls the script made. If it fails partway, "
-            "the calls that already ran are listed: do not repeat them. Every call "
-            "counts against this step's tool budget and follows the same rules as "
-            "calling the tool directly."
+            "call_tool(name, arguments) also reaches any of them by exact name. "
+            f"{_CALL_TEXT} Every call counts against this step's tool budget and "
+            "follows the same rules as calling the tool directly.\n\n"
+            f"{_SANDBOX_TEXT}"
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "script": {
-                    "type": "string",
-                    "description": "Python source. End with an expression whose value you want back.",
-                }
-            },
-            "required": ["script"],
-        },
+        "input_schema": _INPUT_SCHEMA,
     }
+
+
+# The chat version is a constant: chat's tool list is cached, so it can't
+# name the tools a conversation happens to use.
+CHAT_TOOL_DEFINITION: dict[str, Any] = {
+    "name": RUN_SCRIPT_TOOL,
+    "description": (
+        "Run a short Python script that calls external tools through the tool "
+        "gateway, when the work repeats over many items (every file in a folder, "
+        "every row, every email) or chains calls with simple logic. One script "
+        "replaces many separate call_tool uses; for a call or two, use call_tool "
+        "directly.\n\n"
+        "Call a tool as a function named exactly like it, with its arguments as "
+        "keywords (google_workspace__list_drive_items(folder_id=...)), or "
+        "call_tool(name, arguments) by exact name (needed for a name with a "
+        "hyphen). Only tools the gateway would let call_tool reach (ones "
+        "search_tools has returned) can be called, and every call is checked and "
+        f"recorded exactly as a call_tool would be. {_CALL_TEXT}\n\n"
+        f"{_SANDBOX_TEXT}"
+    ),
+    "input_schema": _INPUT_SCHEMA,
+}
 
 
 def _parse_result(content: str) -> Any:
@@ -181,10 +216,25 @@ def _call_arguments(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) ->
     return name, dict(kwargs)
 
 
-async def run_script(script: str, tools: list[str], call: CallFn) -> AsyncIterator[ScriptYield]:
-    """Run a step script, yielding after each tool call and then its result.
+# A gateway tool name (server__tool) used as a function in a chat script:
+# non-empty on both sides of `__`, so dunders and stray underscores never
+# become gateway calls.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]*__[A-Za-z0-9][A-Za-z0-9_]*$")
 
-    Never raises (cancellation aside, which stops the worker with it).
+
+async def run_script(
+    script: str,
+    tools: list[str] | None,
+    call: CallFn,
+    *,
+    wall_clock_s: float = _WALL_CLOCK_S,
+) -> AsyncGenerator[ScriptYield, None]:
+    """Run a script, yielding after each tool call and then its result.
+
+    ``tools`` is a workflow step's allowlist: its tools are the script's
+    functions. ``None`` (chat) makes any tool-shaped function name a call by
+    that exact name; ``call`` decides what may run. Never raises (cancellation
+    aside, which stops the worker with it).
     """
     from pydantic_monty import (
         AsyncFunctionSnapshot,
@@ -203,7 +253,20 @@ async def run_script(script: str, tools: list[str], call: CallFn) -> AsyncIterat
         ))
         return
 
-    names = function_names(tools)
+    names = function_names(tools) if tools is not None else {}
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wall_clock_s
+
+    async def bounded(awaitable: Any) -> Any:
+        # Not asyncio.timeout: a consumer may drive this generator one step
+        # per task (the chat route does), and a timeout scope only cancels the
+        # task that entered it. Each await gets what is left instead.
+        left = deadline - loop.time()
+        if left <= 0:
+            if asyncio.iscoroutine(awaitable):
+                awaitable.close()
+            raise TimeoutError
+        return await asyncio.wait_for(awaitable, timeout=left)
     printed = _Printed()
     made: list[dict[str, Any]] = []
 
@@ -217,54 +280,64 @@ async def run_script(script: str, tools: list[str], call: CallFn) -> AsyncIterat
         return json.dumps(fields, default=str, ensure_ascii=False)
 
     try:
-        async with asyncio.timeout(_WALL_CLOCK_S):
-            async with (
-                AsyncMonty(
-                    min_processes=1, max_processes=1, request_timeout=_POOL_REQUEST_TIMEOUT_S
-                ) as pool,
-                pool.checkout(
-                    script_name="step_script.py",
-                    limits=_LIMITS,  # type: ignore[arg-type]
-                    os_policy={"sleep": "zero"},
-                ) as session,
-            ):
-                snapshot: Any = await session.feed_start(script, print_callback=printed)
-                while not isinstance(snapshot, MontyComplete):
-                    if isinstance(snapshot, AsyncFunctionSnapshot):
-                        if snapshot.is_os_function:
-                            # open(), os.environ … — Monty's own refusal.
-                            snapshot = await snapshot.resume_not_handled()
-                            continue
-                        fn = str(snapshot.function_name)
-                        if fn != "call_tool" and fn not in names:
-                            snapshot = await snapshot.resume(
-                                {"exception": NameError(f"name {fn!r} is not defined")}
-                            )
-                            continue
-                        try:
-                            tool, arguments = _call_arguments(
-                                names.get(fn, fn), tuple(snapshot.args), dict(snapshot.kwargs)
-                            )
-                        except TypeError as exc:
-                            snapshot = await snapshot.resume({"exception": exc})
-                            continue
-                        content, is_error = await call(tool, arguments)
-                        made.append({"tool": tool, "ok": not is_error})
-                        yield ("call", None)
-                        if is_error:
-                            snapshot = await snapshot.resume(
-                                {"exception": RuntimeError(f"{tool} failed: {content}")}
-                            )
-                        else:
-                            snapshot = await snapshot.resume({"return_value": _parse_result(content)})
-                    elif isinstance(snapshot, AsyncNameLookupSnapshot):
-                        # An undefined name used as a value: leave it undefined.
-                        snapshot = await snapshot.resume()
+        async with (
+            AsyncMonty(
+                min_processes=1, max_processes=1, request_timeout=_POOL_REQUEST_TIMEOUT_S
+            ) as pool,
+            pool.checkout(
+                script_name="step_script.py",
+                limits=_LIMITS,  # type: ignore[arg-type]
+                os_policy={"sleep": "zero"},
+            ) as session,
+        ):
+            snapshot: Any = await bounded(session.feed_start(script, print_callback=printed))
+            while not isinstance(snapshot, MontyComplete):
+                if isinstance(snapshot, AsyncFunctionSnapshot):
+                    if snapshot.is_os_function:
+                        # open(), os.environ … — Monty's own refusal.
+                        snapshot = await bounded(snapshot.resume_not_handled())
+                        continue
+                    fn = str(snapshot.function_name)
+                    if (
+                        tools is None
+                        and fn != "call_tool"
+                        and len(fn) <= 64
+                        and _TOOL_NAME_RE.match(fn)
+                    ):
+                        names[fn] = fn  # chat: an MCP-shaped name is the tool's own name
+                    if fn != "call_tool" and fn not in names:
+                        snapshot = await bounded(snapshot.resume(
+                            {"exception": NameError(f"name {fn!r} is not defined")}
+                        ))
+                        continue
+                    try:
+                        tool, arguments = _call_arguments(
+                            names.get(fn, fn), tuple(snapshot.args), dict(snapshot.kwargs)
+                        )
+                    except TypeError as exc:
+                        snapshot = await bounded(snapshot.resume({"exception": exc}))
+                        continue
+                    content, is_error = await bounded(call(tool, arguments))
+                    entry: dict[str, Any] = {"tool": tool, "ok": not is_error}
+                    parsed = _parse_result(content)
+                    if isinstance(parsed, dict) and parsed.get("status") in _WAITING:
+                        entry["waiting_for_approval"] = True
+                    made.append(entry)
+                    yield ("call", None)
+                    if is_error:
+                        snapshot = await bounded(snapshot.resume(
+                            {"exception": RuntimeError(f"{tool} failed: {content}")}
+                        ))
                     else:
-                        # A future: the script awaited something it started
-                        # without awaiting. Tools are plain calls here.
-                        raise MontyScriptShape()
-                result = snapshot.output
+                        snapshot = await bounded(snapshot.resume({"return_value": parsed}))
+                elif isinstance(snapshot, AsyncNameLookupSnapshot):
+                    # An undefined name used as a value: leave it undefined.
+                    snapshot = await bounded(snapshot.resume())
+                else:
+                    # A future: the script awaited something it started
+                    # without awaiting. Tools are plain calls here.
+                    raise MontyScriptShape()
+            result = snapshot.output
     except TimeoutError:
         yield ("done", (payload(error="the script ran past its time limit"), True))
         return

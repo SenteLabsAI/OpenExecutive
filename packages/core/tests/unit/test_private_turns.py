@@ -1026,10 +1026,13 @@ def test_every_withheld_name_is_a_real_tool() -> None:
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
+    from openexecutive.workflows.step_script import RUN_SCRIPT_TOOL
 
-    names = {t["name"] for t in _ALL_SKILL_TOOLS} | MCP_TOOL_NAMES
+    # run_script is dispatched beside the gateway's meta-tools (step_script).
+    gateway_side = MCP_TOOL_NAMES | {RUN_SCRIPT_TOOL}
+    names = {t["name"] for t in _ALL_SKILL_TOOLS} | gateway_side
     assert names >= PRIVATE_TURN_WITHHELD_TOOLS
-    assert set(_ALL_SKILL_HANDLERS) | MCP_TOOL_NAMES >= PRIVATE_TURN_WITHHELD_TOOLS
+    assert set(_ALL_SKILL_HANDLERS) | gateway_side >= PRIVATE_TURN_WITHHELD_TOOLS
 
 
 @pytest.mark.parametrize("mode", ["team", "solo"])
@@ -1368,8 +1371,10 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
     offered = _offered(provider)
     # A teammate's turn: everything but the principal-only tools.
     assert set(offered) >= PRIVATE_TURN_WITHHELD_TOOLS - PRINCIPAL_ONLY_TOOLS
+    from openexecutive.workflows.step_script import CHAT_TOOL_DEFINITION
+
     assert offered == sorted(
-        t["name"] for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *MCP_TOOLS]
+        t["name"] for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *MCP_TOOLS, CHAT_TOOL_DEFINITION]
         if t["name"] not in PRINCIPAL_ONLY_TOOLS
     )
     assert not any(e.private for e in _audit().query(limit=1000))

@@ -1,0 +1,252 @@
+"""The Executive's chat may act through one sandboxed script (``run_script``).
+
+Pins that a chat script is only a faster way to make the same ``call_tool``
+uses: every call goes through the gateway (which keeps its own discovery,
+deny-list and recipient gates), gets the same chip and audit row, and is
+recorded as made via run_script; a turn private to the principal is never
+offered it and is refused if it asks anyway; and the tool list stays
+constant, so the cached prefix does not move.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from openexecutive.orchestrator.executive import Executive
+from openexecutive.workflows import step_script
+
+
+class _TextBlock:
+    type = "text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _ToolUseBlock:
+    type = "tool_use"
+
+    def __init__(self, id_: str, name: str, input_: dict[str, Any]) -> None:
+        self.id = id_
+        self.name = name
+        self.input = input_
+
+
+class _FinalMsg:
+    usage = None
+
+    def __init__(self, content: list[Any], stop_reason: str) -> None:
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+class _FakeStream:
+    def __init__(self, final_msg: _FinalMsg) -> None:
+        self._final_msg = final_msg
+
+    async def __aenter__(self) -> _FakeStream:
+        return self
+
+    async def __aexit__(self, *_a: Any) -> None:
+        return None
+
+    def __aiter__(self) -> _FakeStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        raise StopAsyncIteration
+
+    async def get_final_message(self) -> _FinalMsg:
+        return self._final_msg
+
+
+class _ScriptedProvider:
+    def __init__(self, final_msgs: list[_FinalMsg]) -> None:
+        self._final_msgs = list(final_msgs)
+        self.calls: list[dict[str, Any]] = []
+
+    def messages_stream(self, **kwargs: Any) -> _FakeStream:
+        self.calls.append(kwargs)
+        return _FakeStream(self._final_msgs.pop(0))
+
+
+class _Gateway:
+    """Stands in for MCPGateway: it, not the script, decides what may run."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def search_tools(self, _input: dict[str, Any]) -> str:
+        return json.dumps({"tools": []})
+
+    async def call_tool(self, tool_input: dict[str, Any]) -> str:
+        self.calls.append(tool_input)
+        if tool_input["name"] == "drive__list_items":
+            return json.dumps([{"id": "f1"}, {"id": "f2"}, {"id": "f3"}])
+        if tool_input["name"] == "slack__post_message":
+            return "Error: tool slack__post_message has not been discovered in this session"
+        return json.dumps({"ok": True})
+
+    async def load_mcp_server(self, _input: dict[str, Any]) -> str:
+        return json.dumps({"ok": True})
+
+
+@pytest.fixture(autouse=True)
+def audit(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.executive.audit_log",
+        lambda event_type, summary, **kw: rows.append({"event_type": event_type, "summary": summary, **kw}),
+    )
+    return rows
+
+
+def _run(provider: _ScriptedProvider, gateway: _Gateway) -> list[Any]:
+    exec_ = Executive(mcp_gateway=gateway)  # type: ignore[arg-type]
+
+    async def go() -> list[Any]:
+        items: list[Any] = []
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            async for item in exec_._stream_agent_loop(
+                system_blocks=[],
+                messages=[{"role": "user", "content": "file the scans"}],
+                model="claude-test",
+            ):
+                items.append(item)
+        return items
+
+    return asyncio.run(go())
+
+
+def _result(provider: _ScriptedProvider, call_index: int, use_id: str) -> str:
+    turn = provider.calls[call_index]["messages"][-1]
+    return {b["tool_use_id"]: b["content"] for b in turn["content"]}[use_id]
+
+
+SCRIPT = """
+moved = 0
+for f in drive__list_items(folder="Inbox scans"):
+    drive__move_file(file_id=f["id"], folder_id="Finance")
+    moved += 1
+moved
+"""
+
+
+def _script_turn(script: str = SCRIPT) -> _ScriptedProvider:
+    return _ScriptedProvider([
+        _FinalMsg([_ToolUseBlock("tu-s", "run_script", {"script": script})], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+
+
+def test_each_script_call_is_a_gateway_call_with_its_own_audit_row(
+    audit: list[dict[str, Any]],
+) -> None:
+    gateway = _Gateway()
+    provider = _script_turn()
+    _run(provider, gateway)
+
+    assert json.loads(_result(provider, 1, "tu-s"))["result"] == 3
+    assert [c["name"] for c in gateway.calls] == [
+        "drive__list_items", "drive__move_file", "drive__move_file", "drive__move_file"
+    ]
+    assert gateway.calls[1] == {"name": "drive__move_file", "arguments": {"file_id": "f1", "folder_id": "Finance"}}
+    rows = [r for r in audit if r["details"].get("via") == "run_script"]
+    assert [r["details"]["tool"] for r in rows] == [c["name"] for c in gateway.calls]
+    assert all(r["details"]["kind"] == "mcp" for r in rows)
+
+
+def test_the_gateway_still_refuses_what_it_would_refuse(audit: list[dict[str, Any]]) -> None:
+    gateway = _Gateway()
+    provider = _script_turn("slack__post_message(channel='#all', text='hi')")
+    _run(provider, gateway)
+    body = json.loads(_result(provider, 1, "tu-s"))
+    assert body["error"] == "the script failed" and "has not been discovered" in body["detail"]
+    assert body["calls"] == [{"tool": "slack__post_message", "ok": False}]
+
+
+def test_the_tool_is_offered_with_a_gateway_and_is_constant() -> None:
+    gateway = _Gateway()
+    provider = _ScriptedProvider([_FinalMsg([_TextBlock("Hi.")], "end_turn")])
+    _run(provider, gateway)
+    tools = [t for t in provider.calls[0]["tools"] if t.get("name") == "run_script"]
+    assert len(tools) == 1
+    assert {k: v for k, v in tools[0].items() if k != "cache_control"} == step_script.CHAT_TOOL_DEFINITION
+
+
+def test_no_gateway_no_script_tool() -> None:
+    provider = _ScriptedProvider([_FinalMsg([_TextBlock("Hi.")], "end_turn")])
+    exec_ = Executive()
+
+    async def go() -> None:
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            async for _ in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "hi"}], model="claude-test",
+            ):
+                pass
+
+    asyncio.run(go())
+    assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
+
+
+def test_off_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_SCRIPTS", "false")
+    gateway = _Gateway()
+    provider = _ScriptedProvider([_FinalMsg([_TextBlock("Hi.")], "end_turn")])
+    _run(provider, gateway)
+    assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
+
+
+def test_a_private_turn_is_not_offered_it_and_is_refused(
+    monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
+) -> None:
+    monkeypatch.setattr("openexecutive.orchestrator.executive.turn_is_private_to_principal", lambda: True)
+    gateway = _Gateway()
+    provider = _script_turn()
+    _run(provider, gateway)
+    assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
+    assert "not available on this turn" in json.loads(_result(provider, 1, "tu-s"))["error"]
+    assert gateway.calls == []
+    assert any(r["details"].get("refused") == "private_turn" for r in audit)
+
+
+def test_a_turn_that_read_the_owners_mail_refuses_the_whole_script(
+    monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
+) -> None:
+    from types import SimpleNamespace
+
+    pinned = SimpleNamespace(offered=False, touched_mail=True)
+    monkeypatch.setattr("openexecutive.orchestrator.executive.turn_delegation", lambda _s: pinned)
+    gateway = _Gateway()
+    provider = _script_turn()
+    _run(provider, gateway)
+    assert "read the user's own mail" in json.loads(_result(provider, 1, "tu-s"))["error"]
+    assert gateway.calls == []
+    assert any(r["details"].get("refused") == "mail_touched" for r in audit)
+
+
+def test_the_script_itself_is_audited_with_its_source(audit: list[dict[str, Any]]) -> None:
+    _run(_script_turn(), _Gateway())
+    rows = [r for r in audit if r["details"].get("kind") == "script"]
+    assert len(rows) == 1 and rows[0]["details"]["ok"] is True
+    assert rows[0]["full"]["input"] == {"script": SCRIPT}
+
+
+class _BrokenGateway(_Gateway):
+    async def call_tool(self, tool_input: dict[str, Any]) -> str:
+        raise ConnectionError("stdio pipe closed")
+
+
+def test_a_raising_call_is_audited_as_failed(audit: list[dict[str, Any]]) -> None:
+    provider = _script_turn("drive__list_items(folder='x')")
+    _run(provider, _BrokenGateway())
+    failed = [r for r in audit if r["details"].get("via") == "run_script" and r["details"].get("ok") is False]
+    assert len(failed) == 1 and "FAILED: ConnectionError" in failed[0]["summary"]
+    body = json.loads(_result(provider, 1, "tu-s"))
+    assert body["error"] == "the script failed"
+    script_row = [r for r in audit if r["details"].get("kind") == "script"][0]
+    assert script_row["details"]["ok"] is False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -165,6 +166,8 @@ from openexecutive.orchestrator.workflow_run_tools import (
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
 from openexecutive.providers.translator import reasoning_replay_block
+from openexecutive.workflows import step_script
+from openexecutive.workflows.action_step import looks_like_error
 from openexecutive.workflows.tool_catalog import filter_search_results
 
 logger = logging.getLogger(__name__)
@@ -685,6 +688,17 @@ class Executive:
         self._settings = get_settings()
         self._mcp_gateway = mcp_gateway
         self._mcp_tools = MCP_TOOLS if mcp_gateway is not None else []
+        # run_script (workflows/step_script.py): one sandboxed script over the
+        # gateway tools a conversation has found, each call checked as a
+        # call_tool. Only with a gateway, and a constant definition so the
+        # cached tool prefix is stable.
+        self._script_tools = (
+            [step_script.CHAT_TOOL_DEFINITION]
+            if mcp_gateway is not None
+            and self._settings.chat_scripts
+            and step_script.available()
+            else []
+        )
 
     def _build_messages(
         self,
@@ -1807,7 +1821,10 @@ class Executive:
             client_tools = sorted(
                 (
                     t for t in filter_tools_for_workspace_mode(
-                        [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools, *delegation_tools],
+                        [
+                            *SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools,
+                            *self._script_tools, *delegation_tools,
+                        ],
                         workspace_mode,
                     )
                     if t["name"] not in not_offered
@@ -1923,6 +1940,15 @@ class Executive:
                     tu for tu in skill_tool_uses if tu["name"] not in withheld_tools
                 ]
             mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
+            script_tool_uses = [
+                tu for tu in tool_uses
+                if self._script_tools and tu["name"] == step_script.RUN_SCRIPT_TOOL
+            ]
+            # A turn private to the principal is not offered run_script
+            # (PRIVATE_TURN_WITHHELD_TOOLS); the same guard refuses it.
+            if private_turn and script_tool_uses:
+                withheld_uses = [*withheld_uses, *script_tool_uses]
+                script_tool_uses = []
             # A private turn is not offered load_mcp_server either (it
             # reaches any URL), nor any MCP tool through call_tool but those
             # in PRIVATE_TURN_MCP_TOOLS (Google Workspace reads, and the Gmail
@@ -1950,12 +1976,13 @@ class Executive:
                 or any(tu["name"] in DELEGATION_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
             ):
                 mail_touched_uses = [
-                    tu for tu in [*skill_tool_uses, *mcp_tool_uses]
+                    tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
                     if mail_touched_withholds(tu["name"], tu["input"])
                 ]
                 if mail_touched_uses:
                     skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
                     mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
+                    script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
 
             specialist_calls = [
                 {
@@ -2408,6 +2435,132 @@ class Executive:
                         full={
                             "input": audit_tool_input_full(tool_label, tu["input"]),
                             "result": audit_tool_result_full(tool_label, result),
+                            "active_prompt_blocks": _system_block_names(system_blocks),
+                        },
+                    )
+
+            if script_tool_uses and self._mcp_gateway is not None:
+                # Each call a script makes is a call_tool in every way that
+                # matters: the gateway's own gates (discovery, deny-list,
+                # recipients), Take the lead's gate on an unattended run, and
+                # the same chip and audit row, as each call happens.
+                script_call = (
+                    take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
+                    if leading
+                    else self._mcp_gateway.call_tool
+                )
+                # (call_tool input, result text, the exception if the call raised)
+                made: list[tuple[dict[str, Any], str, BaseException | None]] = []
+
+                async def _script_call(
+                    tool: str,
+                    arguments: dict[str, Any],
+                    _call: Any = script_call,
+                    _made: list[tuple[dict[str, Any], str, BaseException | None]] = made,
+                ) -> tuple[str, bool]:
+                    call_input = {"name": tool, "arguments": arguments}
+                    try:
+                        text = str(await _call(call_input))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "script call_tool:%s raised %s", _loggable_tool(tool), type(exc).__name__
+                        )
+                        text = _tool_error_result(tool, exc)
+                        _made.append((call_input, text, exc))
+                        return text, True
+                    _made.append((call_input, text, None))
+                    return text, looks_like_error(text)
+
+                # Well inside the turn's own deadline, so a long script ends
+                # here, with the list of calls it already made, rather than
+                # being cut off with the turn and leaving the model no record.
+                script_clock = max(30.0, min(600.0, self._settings.chat_stream_timeout_s / 2))
+                for tu in script_tool_uses:
+                    script = tu["input"].get("script") if isinstance(tu["input"], dict) else None
+                    script_text = str(script or "")
+                    logger.info("→ run_script  chars=%d", len(script_text))
+                    script_result = json.dumps({"error": "the script did not finish"})
+                    script_failed = True
+                    # aclosing: a stopped turn closes the script, and with it
+                    # the Monty worker, instead of leaving it to the GC.
+                    async with contextlib.aclosing(
+                        step_script.run_script(
+                            script_text, None, _script_call, wall_clock_s=script_clock
+                        )
+                    ) as script_steps:
+                        async for kind, payload in script_steps:
+                            for call_input, text, raised in made:
+                                label = str(call_input["name"])[:200]
+                                if raised is None:
+                                    chip = summarize_action(
+                                        tool_name="call_tool",
+                                        tool_input=call_input,
+                                        tool_result=text,
+                                        iteration=iteration,
+                                    )
+                                    if chip is not None:
+                                        yield chip
+                                    audit_log(
+                                        "tool_invocation",
+                                        f"mcp:{label} input={audit_tool_input(label, call_input)} (run_script)",
+                                        session_id=session_id,
+                                        turn_id=turn_id,
+                                        actor="executive",
+                                        details={
+                                            "tool": label,
+                                            "kind": "mcp",
+                                            "via": "run_script",
+                                            "iteration": iteration,
+                                            "result_preview": audit_tool_result(label, text),
+                                        },
+                                        full={
+                                            "input": audit_tool_input_full(label, call_input),
+                                            "result": audit_tool_result_full(label, text),
+                                            "active_prompt_blocks": _system_block_names(system_blocks),
+                                        },
+                                    )
+                                else:
+                                    # Same shape as a direct call_tool that raised.
+                                    audit_log(
+                                        "tool_invocation",
+                                        f"mcp:{label} FAILED: {type(raised).__name__} (run_script)",
+                                        session_id=session_id,
+                                        turn_id=turn_id,
+                                        actor="executive",
+                                        details={
+                                            "tool": label,
+                                            "kind": "mcp",
+                                            "via": "run_script",
+                                            "iteration": iteration,
+                                            "ok": False,
+                                            "error": repr(raised)[:ERROR_DETAIL_LEN],
+                                        },
+                                    )
+                            made.clear()
+                            if kind == "done":
+                                script_result, script_failed = payload
+                    logger.info("← run_script  result=%s", _trunc(script_result))
+                    results_by_id[tu["id"]] = script_result
+                    # The script itself: its source and what it returned, so
+                    # the per-call rows above can be traced back to it.
+                    audit_log(
+                        "tool_invocation",
+                        f"script:run_script ({'failed' if script_failed else 'ok'})",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor="executive",
+                        details={
+                            "tool": step_script.RUN_SCRIPT_TOOL,
+                            "kind": "script",
+                            "iteration": iteration,
+                            "ok": not script_failed,
+                            "result_preview": audit_tool_result(step_script.RUN_SCRIPT_TOOL, script_result),
+                        },
+                        full={
+                            "input": {"script": script_text},
+                            "result": audit_tool_result_full(step_script.RUN_SCRIPT_TOOL, script_result),
                             "active_prompt_blocks": _system_block_names(system_blocks),
                         },
                     )

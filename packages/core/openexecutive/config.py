@@ -576,6 +576,10 @@ class Settings(BaseSettings):
     # — each call through the same allowlist, budget, target check and audit.
     # Off: the step only calls its tools one by one, as before.
     workflow_step_scripts: bool = Field(True, alias="WORKFLOW_STEP_SCRIPTS")
+    # The same in chat: the Executive may run one sandboxed script over the
+    # gateway tools a conversation has found, each call checked exactly as a
+    # call_tool. Never offered on a turn private to the principal.
+    chat_scripts: bool = Field(True, alias="CHAT_SCRIPTS")
 
     # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
     # A PDF with no text layer (a scan, or one printed to PDF as images) is

@@ -27,6 +27,7 @@ from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS, cu
 from openexecutive.orchestrator.session import Session
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
+from openexecutive.workflows import step_script
 
 from ._agent_loop_fakes import FinalMsg, TextBlock, ToolUseBlock
 from .test_delegation_tools import FakeMailbox
@@ -125,7 +126,10 @@ def _tool_results(call: dict[str, Any]) -> dict[str, str]:
 def test_every_tool_is_classified_once() -> None:
     names = {
         t["name"]
-        for t in [*ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS]
+        for t in [
+            *ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS,
+            step_script.CHAT_TOOL_DEFINITION,
+        ]
     }
     allowed, withheld = lockdown.MAIL_TOUCHED_ALLOWED_TOOLS, lockdown.MAIL_TOUCHED_WITHHELD_TOOLS
     assert not allowed & withheld

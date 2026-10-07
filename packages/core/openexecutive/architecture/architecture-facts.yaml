@@ -5978,6 +5978,27 @@ workflows:
     that failed partway does not repeat writes that already ran. Scripts are
     never stored; definitions stay data, not code.
 
+    Chat scripts: the Executive's chat is offered the same `run_script` tool
+    (step_script.CHAT_TOOL_DEFINITION, a constant so the cached tool prefix is
+    stable) whenever the gateway runs, unless CHAT_SCRIPTS=false. With no
+    allowlist (tools=None), any MCP-shaped function name (server__tool) or
+    call_tool(name, arguments) is a call by that exact name; the gateway
+    decides what may run (its discovered set — search_tools results, kept for
+    the gateway's process-wide session, not per conversation — its deny-list
+    and recipient gates). Dunder or one-sided names never become calls. Each
+    call is dispatched as a call_tool —
+    through take_the_lead.gated_call_tool on an unattended leading run — and
+    gets the same action chip and tool_invocation row (details.via =
+    run_script; ok: false + FAILED when it raised) as it happens, plus one
+    kind: script row with the source and result. Wall clock = half of
+    CHAT_STREAM_TIMEOUT_S (30-600 s), enforced per await so it holds although
+    the chat route drives the stream one task per step; contextlib.aclosing
+    closes the script and its worker when a turn stops. Held results
+    ({status: held | waiting_for_approval}) are marked in the returned calls
+    list. Not offered on a turn private to the principal
+    (in PRIVATE_TURN_WITHHELD_TOOLS; refused there if emitted anyway), and
+    withheld whole by the Act as me lockdown (MAIL_TOUCHED_WITHHELD_TOOLS).
+
     Action steps (workflows that act): `ActionStepSpec` {goal, tools,
     max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
     of exact names — MCP gateway tools (`server__tool`) and built-ins

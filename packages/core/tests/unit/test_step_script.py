@@ -240,7 +240,7 @@ async def _never_called(name: str, arguments: dict[str, Any]) -> tuple[str, bool
     raise AssertionError("no tool call expected")
 
 
-async def _script(script: str, tools: list[str], call: Any = _never_called) -> tuple[str, bool]:
+async def _script(script: str, tools: list[str] | None, call: Any = _never_called) -> tuple[str, bool]:
     done: tuple[str, bool] = ("", True)
     async for kind, payload in step_script.run_script(script, tools, call):
         if kind == "done":
@@ -376,3 +376,55 @@ async def test_awaiting_a_tool_is_explained() -> None:
 
     content, is_error = await _script("await drive__list_items(folder='x')", [LIST], call)
     assert is_error, content
+
+
+@pytest.mark.asyncio
+async def test_the_wall_clock_holds_when_each_step_runs_in_its_own_task() -> None:
+    """The chat route drives its stream one task per step; a timeout scope
+    would only cancel the task that entered it."""
+    import asyncio
+
+    async def slow(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        await asyncio.sleep(0.1)
+        return json.dumps({"ok": True}), False
+
+    gen = step_script.run_script(
+        "for n in range(50):\n    drive__move_file(n=n)", [MOVE], slow, wall_clock_s=0.35
+    )
+    done: Any = None
+    while True:
+        try:
+            kind, payload = await asyncio.ensure_future(gen.__anext__())
+        except StopAsyncIteration:
+            break
+        if kind == "done":
+            done = payload
+    body = json.loads(done[0])
+    assert done[1] and body["error"] == "the script ran past its time limit"
+    assert 1 <= len(body["calls"]) < 10
+
+
+@pytest.mark.asyncio
+async def test_chat_mode_only_treats_server_tool_names_as_tools() -> None:
+    seen: list[str] = []
+
+    async def call(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        seen.append(name)
+        return json.dumps({"ok": True}), False
+
+    for script in ("__import__('os')", "my__(1)", "__x__()", "_a__b()"):
+        _, is_error = await _script(script, None, call)
+        assert is_error
+    content, is_error = await _script("drive__list_items(folder='x')", None, call)
+    assert not is_error and seen == ["drive__list_items"]
+
+
+@pytest.mark.asyncio
+async def test_a_call_waiting_for_approval_is_marked() -> None:
+    async def call(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        return json.dumps({"status": "waiting_for_approval", "message": "held"}), False
+
+    content, is_error = await _script("drive__move_file(n=1)['status']", [MOVE], call)
+    body = json.loads(content)
+    assert not is_error and body["result"] == "waiting_for_approval"
+    assert body["calls"] == [{"tool": MOVE, "ok": True, "waiting_for_approval": True}]
