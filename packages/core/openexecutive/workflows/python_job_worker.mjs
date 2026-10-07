@@ -23,8 +23,19 @@ const py = await loadPyodide({ indexURL: job.pyodide + "/", stdout: keep, stderr
 const tLoad = performance.now();
 // The bundled pure-Python libraries, then any compiled ones the code imports
 // (numpy, pandas, matplotlib, pillow, lxml), all from the local folder.
-await py.loadPackage(job.wheels.map((p) => "file://" + p), { messageCallback: () => {} });
-await py.loadPackagesFromImports(job.code, { messageCallback: () => {} });
+// Pyodide doesn't know the bundled libraries' own dependencies, so NEEDS
+// names the Pyodide packages each one imports.
+const NEEDS = {
+  docx: ["lxml", "typing-extensions"],
+  pptx: ["lxml", "pillow", "typing-extensions"],
+  fpdf: ["pillow", "fonttools"],
+};
+const quiet = { messageCallback: () => {} };
+await py.loadPackage(job.wheels.map((p) => "file://" + p), quiet);
+const imports = py.pyodide_py.code.find_imports(job.code).toJs();
+const needed = [...new Set(imports.flatMap((name) => NEEDS[name] || []))];
+if (needed.length) await py.loadPackage(needed, quiet);
+await py.loadPackagesFromImports(job.code, quiet);
 const tPkgs = performance.now();
 py.FS.mkdirTree("/in");
 py.FS.mkdirTree("/out");

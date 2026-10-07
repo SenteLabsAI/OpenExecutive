@@ -163,3 +163,23 @@ def test_the_real_sandbox_runs_a_job_and_keeps_the_server_out(monkeypatch: pytes
     # Memory past the caps fails the job, not the server.
     hog = "from pyodide.code import run_js\nrun_js('let a=[]; for(let i=0;i<8;i++){const b=new Uint8Array(2**30); b.fill(1); a.push(b);} a.length')"
     assert "allocation failed" in asyncio.run(python_job.run_job(hog, {}, timeout_s=120))["error"]
+
+
+@pytest.mark.skipif(
+    not (Path(os.environ.get("PYTHON_SANDBOX_DIR", "/opt/pysandbox")) / "deno").is_file(),
+    reason="the sandbox is installed by the API image",
+)
+def test_the_real_sandbox_makes_documents_from_scratch() -> None:
+    # docx, pptx and fpdf need Pyodide packages (lxml, Pillow, fonttools)
+    # that Pyodide can't infer from these imports; the worker's NEEDS loads them.
+    code = (
+        "from docx import Document\nd = Document(); d.add_heading('Plan', 0); d.save('/out/plan.docx')\n"
+        "from pptx import Presentation\np = Presentation(); p.slides.add_slide(p.slide_layouts[0]); p.save('/out/deck.pptx')\n"
+        "from fpdf import FPDF\nf = FPDF(); f.add_page(); f.set_font('Helvetica', size=12); f.cell(text='Hi'); f.output('/out/r.pdf')\n"
+        "'ok'"
+    )
+    body = asyncio.run(python_job.run_job(code, {}, timeout_s=120))
+    assert body["error"] is None and body["result"] == "ok"
+    files = {name: base64.b64decode(data) for name, data in body["files"].items()}
+    assert files["plan.docx"][:2] == b"PK" and files["deck.pptx"][:2] == b"PK"
+    assert files["r.pdf"].startswith(b"%PDF")

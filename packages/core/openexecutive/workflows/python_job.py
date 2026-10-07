@@ -4,8 +4,8 @@ draw a chart) in a WebAssembly sandbox.
 ``run_script`` (Monty) decides what to do and calls the Executive's tools;
 it can't run libraries. ``run_python_job`` is the workshop for that: Python
 in Pyodide (WebAssembly) with a fixed, bundled set of libraries (pypdf,
-openpyxl, pandas, numpy, matplotlib, Pillow, lxml), run by Deno in a process
-of its own per job.
+openpyxl, pandas, numpy, matplotlib, Pillow, lxml, python-docx, python-pptx,
+fpdf2, XlsxWriter), run by Deno in a process of its own per job.
 
 **The sandbox is Deno, not Pyodide.** Pyodide's Python can call into its
 JavaScript runtime, so under plain Node a job could read the server's
@@ -67,7 +67,10 @@ TOOL_DEFINITION: dict[str, Any] = {
         "Run Python with real libraries on files, when a job needs more than your "
         "tools: split or merge PDFs and read their pages (pypdf), read or build "
         "spreadsheets (openpyxl, pandas), analyse data (pandas, numpy), draw charts "
-        "(matplotlib), work with images (Pillow). Input files are under /in, named "
+        "(matplotlib), work with images (Pillow), and make documents, from scratch "
+        "or from files: Word (python-docx, imported as docx), PowerPoint "
+        "(python-pptx, as pptx), laid-out PDFs (fpdf2, as fpdf), Excel with charts "
+        "(openpyxl, xlsxwriter). Input files are under /in, named "
         "as given; write result files to /out and the person gets a download link "
         "for each. The value of the last expression and anything printed come back "
         "to you. The sandbox has no network and no other files; only the libraries "

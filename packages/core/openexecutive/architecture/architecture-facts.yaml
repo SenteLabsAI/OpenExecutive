@@ -6044,6 +6044,12 @@ workflows:
     withheld on unattended passes (UNATTENDED_WITHHELD_TOOLS); downloads are
     no-store; npm deps via package-lock + npm ci, pip wheels --require-hashes;
     links URL-encode the file name.
+    Documents: python-docx, python-pptx, fpdf2 (2.8.8; 2.8.9 was a week old),
+    XlsxWriter and defusedxml are pip-pinned with hashes; their compiled deps
+    come from Pyodide (lxml, pillow, fonttools, typing-extensions), which
+    loadPackagesFromImports can't infer for non-Pyodide packages, so the
+    worker's NEEDS map loads them per import (find_imports). One job writing
+    a docx, a pptx with a chart, a PDF table and an xlsxwriter chart: 7 s.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

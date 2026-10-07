@@ -29,7 +29,7 @@ RUN npm ci --no-audit --no-fund \
     && cp -r node_modules/pyodide /opt/pysandbox/pyodide \
     && node pysandbox-fetch.mjs /opt/pysandbox/pyodide \
        "https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full" \
-       numpy pandas matplotlib pillow lxml
+       numpy pandas matplotlib pillow lxml fonttools typing-extensions
 
 FROM python:3.11-slim AS api
 
@@ -192,7 +192,7 @@ RUN uv pip install --system --no-deps .
 
 RUN W=/app/openexecutive/workflows/python_job_worker.mjs \
     && WHEELS=$(ls /opt/pysandbox/wheels/*.whl | sed 's/.*/"&"/' | paste -sd, -) \
-    && printf '{"code":"import pypdf, openpyxl, pandas, matplotlib\\nstr(len(pypdf.__version__) > 0)","pyodide":"/opt/pysandbox/pyodide","wheels":[%s],"files":{}}' "$WHEELS" \
+    && printf '{"code":"import pypdf, openpyxl, pandas, matplotlib, docx, pptx, fpdf\\nstr(len(pypdf.__version__) > 0)","pyodide":"/opt/pysandbox/pyodide","wheels":[%s],"files":{}}' "$WHEELS" \
        | env -i PATH=/usr/bin:/bin HOME=/tmp DENO_DIR=/tmp/deno-smoke DENO_NO_UPDATE_CHECK=1 \
          /opt/pysandbox/deno run --no-prompt --quiet --no-remote \
          --v8-flags=--max-old-space-size=256,--wasm-max-mem-pages=12288 \
