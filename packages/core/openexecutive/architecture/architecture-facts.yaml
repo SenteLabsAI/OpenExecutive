@@ -9063,14 +9063,18 @@ delegation:
     tool's result, so a later turn sees the mail only as the Executive's own
     reply; the send paths' recipient checks still apply (_roster_allow_set
     for email, calendar and Drive; the roster for DMs and message_person).
-    What has no recipient check stays off for the whole conversation
-    (lockdown.CARRIED_WITHHELD_TOOLS: read_document, add/tune watchlist
-    entry, run_script, run_executive_research, load_mcp_server, and queued
-    work — schedule_followup, suggest_workflow, run_workflow, save_workflow,
-    since an unattended run can fetch and research; call_tool
-    only within PRIVATE_TURN_MCP_TOOLS), refused at dispatch
-    (carried_withholds, when touched_mail and not read_mail) and in each
-    handler (lockdown.outside_reach_refusal): a reply can repeat text the
+    A later turn releases only lockdown.CARRIED_RELEASED_TOOLS (send_slack_dm,
+    send_discord_dm, send_telegram_message, message_person — roster-gated —
+    and create/cancel_calendar_event, create_instant_meeting — attendees by
+    person id) and, through call_tool, PRIVATE_TURN_MCP_TOOLS; everything
+    else the reading turn refuses stays off for the whole conversation, an
+    unclassified tool too (fail closed): fetches and scripts, broadcasts and
+    channel posts, queued work (follow-ups and workflows run later
+    unattended), and writes others or later turns read (facts, skills, the
+    profile, the roster, documents). Refused at dispatch (carried_withholds,
+    when touched_mail and not read_mail) and, for the tools that reach
+    outside or post to everyone, in the handler too
+    (lockdown.outside_reach_refusal): a reply can repeat text the
     mail planted, and a URL could carry it anywhere. The process log
     names a refused call_tool's inner tool only when it is shaped like a
     tool name (executive._loggable_tool, [a-z0-9_]{1,64}), else

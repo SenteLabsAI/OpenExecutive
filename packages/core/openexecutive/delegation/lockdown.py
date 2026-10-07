@@ -22,9 +22,9 @@ because a round's tools run concurrently. The send paths check again
 (``mail_touched_refusal``) so nothing that reaches them in such a turn runs.
 The server-side ``web_search`` stays, as on a turn private to the owner: it
 cannot be refused at dispatch without a cache miss. A later turn of that
-conversation still refuses ``CARRIED_WITHHELD_TOOLS`` (reaching an outside
-address with no recipient check) and any ``call_tool`` outside
-``PRIVATE_TURN_MCP_TOOLS``. The lockdown lasts for
+conversation releases only ``CARRIED_RELEASED_TOOLS`` (messages and invites
+to people on the roster) and refuses the rest of what the reading turn
+refuses, and any ``call_tool`` outside ``PRIVATE_TURN_MCP_TOOLS``. The lockdown lasts for
 the turn (``TurnDelegation.read_mail``); the owner's next message starts
 afresh, even in a conversation that read their mail: it stays private to
 them (``touched_mail``), but history carries only their words and the
@@ -137,30 +137,37 @@ MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "microsoft_365__list-mail-messages",
 })
 
-# What stays off for the rest of a conversation that once read the owner's
-# mail, not just its reading turn: the tools that reach an outside address
-# with no recipient check, and work queued to run later unattended (a
-# follow-up or workflow run can fetch and research with nobody watching). A later turn holds the mail only as the
-# Executive's own replies, but a reply can repeat text the mail planted, and
-# a URL or a script could carry it anywhere. Messages, invites and email
-# stay on: each reaches only people the roster allows (``_roster_allow_set``,
-# the handlers' own roster checks). Through ``call_tool``, only the tools a
-# private turn may call (``PRIVATE_TURN_MCP_TOOLS``: reads, and the sends
-# whose every recipient the gateway checks).
-CARRIED_WITHHELD_TOOLS: frozenset[str] = frozenset({
-    "add_watchlist_entry",
-    "load_mcp_server",
-    "read_document",
-    "run_executive_research",
-    "run_script",
-    "run_workflow",
-    "save_workflow",
-    "schedule_followup",
-    "suggest_workflow",
-    "tune_watchlist_entry",
+# What a later turn of a conversation that once read the owner's mail may do
+# again: only what reaches people the roster allows, each checked in its
+# handler (the DMs and message_person by the roster, calendar invites by
+# their attendees' person ids). The turn holds the mail only as the
+# Executive's own replies, but a reply can repeat text the mail planted, so
+# everything else the reading turn refuses stays refused for the whole
+# conversation: outside fetches and scripts (a URL could carry it anywhere),
+# broadcasts and channel posts (no named recipient), queued work (it runs
+# later unattended, where it may fetch and research) and writes to state
+# others or later turns read (facts, skills, the profile, the roster,
+# documents), which would keep the planted text. Through ``call_tool``, only
+# ``PRIVATE_TURN_MCP_TOOLS``: reads, and sends whose every recipient the
+# gateway checks.
+CARRIED_RELEASED_TOOLS: frozenset[str] = frozenset({
+    "cancel_calendar_event",
+    "create_calendar_event",
+    "create_instant_meeting",
+    "message_person",
+    "send_discord_dm",
+    "send_slack_dm",
+    "send_telegram_message",
 })
 
 CARRIED_REFUSAL = (
+    "This conversation read the user's own mail, so the only actions that run "
+    "in it are messages and invites to people on their roster: anything else "
+    "could carry what the mail said elsewhere, or keep it. Tell the user to "
+    "ask for it in a new conversation. Do not retry it here."
+)
+
+REFUSAL = (
     "This conversation read the user's own mail, so nothing in it fetches an "
     "outside address, runs a script, connects a tool server or queues work "
     "to run later: any of those could carry what the mail said. Tell the "
@@ -192,7 +199,8 @@ def carried_withholds(tool_name: str, tool_input: Any) -> bool:
 
         inner = tool_input.get("name") if isinstance(tool_input, dict) else None
         return not (isinstance(inner, str) and inner in PRIVATE_TURN_MCP_TOOLS)
-    return tool_name in CARRIED_WITHHELD_TOOLS
+    # Fail closed: anything neither a read nor released stays refused.
+    return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS and tool_name not in CARRIED_RELEASED_TOOLS
 
 
 def carried_withheld_error(label: str) -> str:

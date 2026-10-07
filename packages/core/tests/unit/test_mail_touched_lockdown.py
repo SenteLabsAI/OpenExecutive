@@ -347,11 +347,18 @@ def test_a_later_turn_still_refuses_what_reaches_an_outside_address(
     ])
     assert sent == [SLACK]
     refusal = json.loads(_tool_results(calls[1])["tu1"])["error"]
-    assert "fetches an outside address" in refusal and "new conversation" in refusal
+    assert "people on their roster" in refusal and "new conversation" in refusal
 
 
 def test_the_carried_set_stays_inside_the_reading_turns_lockdown() -> None:
-    assert lockdown.CARRIED_WITHHELD_TOOLS <= lockdown.MAIL_TOUCHED_WITHHELD_TOOLS
+    # Only roster-checked messages and invites come back; the rest of what
+    # the reading turn refuses stays refused, and anything unclassified too.
+    assert lockdown.CARRIED_RELEASED_TOOLS <= lockdown.MAIL_TOUCHED_WITHHELD_TOOLS
+    for tool in lockdown.MAIL_TOUCHED_WITHHELD_TOOLS - lockdown.CARRIED_RELEASED_TOOLS:
+        assert lockdown.carried_withholds(tool, {}), tool
+    for tool in lockdown.CARRIED_RELEASED_TOOLS | lockdown.MAIL_TOUCHED_ALLOWED_TOOLS - {"call_tool"}:
+        assert not lockdown.carried_withholds(tool, {}), tool
+    assert lockdown.carried_withholds("some_future_tool", {})
     # Through the gateway, only reads and the sends whose recipients it checks.
     assert not lockdown.carried_withholds("call_tool", {"name": "google_workspace__send_gmail_message"})
     assert not lockdown.carried_withholds("call_tool", {"name": "google_workspace__get_events"})
@@ -369,7 +376,7 @@ def test_the_handlers_refuse_on_their_own(kept_private: list[Any]) -> None:
         session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
             offered=True, touched_mail=True, session_id=session.session_id,
         )
-        assert "outside address" in lockdown.outside_reach_refusal("read_document")
+        assert "new conversation" in (lockdown.outside_reach_refusal("read_document") or "")
         assert lockdown.outside_reach_refusal("send_slack_dm") is None
         assert lockdown.outside_reach_refusal(
             "google_workspace__send_gmail_message",
@@ -377,14 +384,14 @@ def test_the_handlers_refuse_on_their_own(kept_private: list[Any]) -> None:
             tool_name="call_tool",
         ) is None
         session.turn_delegation.read_mail = True  # type: ignore[attr-defined]
-        assert "read the user's own mail" in lockdown.outside_reach_refusal("read_document")
+        assert "read the user's own mail" in (lockdown.outside_reach_refusal("read_document") or "")
         session.turn_delegation.touched_mail = session.turn_delegation.read_mail = False  # type: ignore[attr-defined]
         assert lockdown.outside_reach_refusal("read_document") is None
     finally:
         current_session.reset(token)
 
 
-@pytest.mark.parametrize("tool", sorted(lockdown.CARRIED_WITHHELD_TOOLS))
+@pytest.mark.parametrize("tool", sorted(lockdown.MAIL_TOUCHED_WITHHELD_TOOLS - lockdown.CARRIED_RELEASED_TOOLS))
 def test_every_carried_tool_is_refused_on_a_later_turn(tool: str, kept_private: list[Any]) -> None:
     from openexecutive.delegation.settings import TurnDelegation
 
@@ -409,6 +416,8 @@ def test_every_carried_tool_is_refused_on_a_later_turn(tool: str, kept_private: 
     ("openexecutive.orchestrator.watchlist_tools:handle_add_watchlist_entry", "add_watchlist_entry"),
     ("openexecutive.orchestrator.watchlist_tools:handle_tune_watchlist_entry", "tune_watchlist_entry"),
     ("openexecutive.orchestrator.research_tools:handle_run_executive_research", "run_executive_research"),
+    ("openexecutive.orchestrator.broadcast_tools:handle_send_department_message", "send_department_message"),
+    ("openexecutive.orchestrator.broadcast_tools:handle_send_company_broadcast", "send_company_broadcast"),
 ])
 def test_queued_work_and_fetch_handlers_refuse_on_their_own(handler: str, tool: str) -> None:
     import importlib

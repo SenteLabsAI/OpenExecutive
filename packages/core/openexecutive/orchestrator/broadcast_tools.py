@@ -288,9 +288,9 @@ def _audit(
 
 
 async def handle_send_department_message(tool_input: dict[str, Any]) -> str:
-    from openexecutive.delegation.lockdown import mail_touched_refusal
+    from openexecutive.delegation.lockdown import outside_reach_refusal
 
-    if (refused := mail_touched_refusal('send_department_message')) is not None:
+    if (refused := outside_reach_refusal('send_department_message')) is not None:
         return refused
 
     from openexecutive.departments.store import get_department
@@ -347,9 +347,9 @@ async def handle_send_department_message(tool_input: dict[str, Any]) -> str:
 
 
 async def handle_send_company_broadcast(tool_input: dict[str, Any]) -> str:
-    from openexecutive.delegation.lockdown import mail_touched_refusal
+    from openexecutive.delegation.lockdown import outside_reach_refusal
 
-    if (refused := mail_touched_refusal('send_company_broadcast')) is not None:
+    if (refused := outside_reach_refusal('send_company_broadcast')) is not None:
         return refused
 
     from openexecutive.config import get_settings
