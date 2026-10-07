@@ -9061,7 +9061,15 @@ delegation:
     not locked. History (session.conversation_history, chat_messages) keeps
     only the speaker's words and the Executive's final replies, never a
     tool's result, so a later turn sees the mail only as the Executive's own
-    reply; the send paths' recipient checks still apply. The process log
+    reply; the send paths' recipient checks still apply (_roster_allow_set
+    for email, calendar and Drive; the roster for DMs and message_person).
+    What has no recipient check stays off for the whole conversation
+    (lockdown.CARRIED_WITHHELD_TOOLS: read_document, add/tune watchlist
+    entry, run_script, run_executive_research, load_mcp_server; call_tool
+    only within PRIVATE_TURN_MCP_TOOLS), refused at dispatch
+    (carried_withholds, when touched_mail and not read_mail) and in each
+    handler (lockdown.outside_reach_refusal): a reply can repeat text the
+    mail planted, and a URL could carry it anywhere. The process log
     names a refused call_tool's inner tool only when it is shaped like a
     tool name (executive._loggable_tool, [a-z0-9_]{1,64}), else
     "call_tool:<unlisted>": that name is the model's own text, which mail

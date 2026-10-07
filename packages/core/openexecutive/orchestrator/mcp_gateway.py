@@ -2803,11 +2803,12 @@ class MCPGateway:
     async def call_tool(self, tool_input: dict[str, Any]) -> str:
         # Act as me: once the turn has read the principal's own mail, only
         # the Google Workspace reads run (delegation.lockdown).
-        from openexecutive.delegation.lockdown import mail_touched_refusal, mail_touched_withholds
+        from openexecutive.delegation.lockdown import outside_reach_refusal
 
-        if mail_touched_withholds("call_tool", tool_input) and (
-            refused := mail_touched_refusal(str(tool_input.get("name") or "call_tool")[:200])
-        ) is not None:
+        refused = outside_reach_refusal(
+            str(tool_input.get("name") or "call_tool")[:200], tool_input, tool_name="call_tool"
+        )
+        if refused is not None:
             return refused
         session = self._require_session()
         arguments = tool_input.get("arguments", {})
@@ -2993,9 +2994,9 @@ class MCPGateway:
         return result_text
 
     async def load_mcp_server(self, tool_input: dict[str, Any]) -> str:
-        from openexecutive.delegation.lockdown import mail_touched_refusal
+        from openexecutive.delegation.lockdown import outside_reach_refusal
 
-        if (refused := mail_touched_refusal("load_mcp_server")) is not None:
+        if (refused := outside_reach_refusal("load_mcp_server")) is not None:
             return refused
         session = self._require_session()
         url: str = tool_input["url"]

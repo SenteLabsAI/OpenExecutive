@@ -464,7 +464,11 @@ async def _validated_target(
 
 
 async def handle_add_watchlist_entry(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
     tool = "add_watchlist_entry"
+    if (refused := outside_reach_refusal(tool)) is not None:
+        return refused
     validated = await _validated_target(tool, tool_input)
     if isinstance(validated, str):
         return validated
@@ -680,7 +684,11 @@ async def handle_remove_watchlist_entry(tool_input: dict[str, Any]) -> str:
 
 
 async def handle_tune_watchlist_entry(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
     tool = "tune_watchlist_entry"
+    if (refused := outside_reach_refusal(tool)) is not None:
+        return refused
     try:
         slug = str(tool_input["slug"]).strip()
     except (KeyError, TypeError) as exc:

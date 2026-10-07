@@ -21,7 +21,10 @@ turn), and treats a round that calls any of them as already touched,
 because a round's tools run concurrently. The send paths check again
 (``mail_touched_refusal``) so nothing that reaches them in such a turn runs.
 The server-side ``web_search`` stays, as on a turn private to the owner: it
-cannot be refused at dispatch without a cache miss. The lockdown lasts for
+cannot be refused at dispatch without a cache miss. A later turn of that
+conversation still refuses ``CARRIED_WITHHELD_TOOLS`` (reaching an outside
+address with no recipient check) and any ``call_tool`` outside
+``PRIVATE_TURN_MCP_TOOLS``. The lockdown lasts for
 the turn (``TurnDelegation.read_mail``); the owner's next message starts
 afresh, even in a conversation that read their mail: it stays private to
 them (``touched_mail``), but history carries only their words and the
@@ -134,6 +137,31 @@ MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "microsoft_365__list-mail-messages",
 })
 
+# What stays off for the rest of a conversation that once read the owner's
+# mail, not just its reading turn: the tools that reach an outside address
+# with no recipient check. A later turn holds the mail only as the
+# Executive's own replies, but a reply can repeat text the mail planted, and
+# a URL or a script could carry it anywhere. Messages, invites and email
+# stay on: each reaches only people the roster allows (``_roster_allow_set``,
+# the handlers' own roster checks). Through ``call_tool``, only the tools a
+# private turn may call (``PRIVATE_TURN_MCP_TOOLS``: reads, and the sends
+# whose every recipient the gateway checks).
+CARRIED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "add_watchlist_entry",
+    "load_mcp_server",
+    "read_document",
+    "run_executive_research",
+    "run_script",
+    "tune_watchlist_entry",
+})
+
+CARRIED_REFUSAL = (
+    "This conversation read the user's own mail, so nothing in it fetches an "
+    "outside address, runs a script or connects a tool server: the address "
+    "could carry what the mail said. Tell the user to ask for it in a new "
+    "conversation. Do not retry it here."
+)
+
 REFUSAL = (
     "This turn read the user's own mail, so nothing that reaches anyone else "
     "runs until it ends: no message, post, invite, queued work, outside fetch "
@@ -149,6 +177,43 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
         inner = tool_input.get("name") if isinstance(tool_input, dict) else None
         return not (isinstance(inner, str) and inner in MAIL_TOUCHED_MCP_READS)
     return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS
+
+
+def carried_withholds(tool_name: str, tool_input: Any) -> bool:
+    """Whether a call to ``tool_name`` is refused in a conversation that once
+    read the owner's mail (every later turn, not only the reading one)."""
+    if tool_name == "call_tool":
+        from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS
+
+        inner = tool_input.get("name") if isinstance(tool_input, dict) else None
+        return not (isinstance(inner, str) and inner in PRIVATE_TURN_MCP_TOOLS)
+    return tool_name in CARRIED_WITHHELD_TOOLS
+
+
+def carried_withheld_error(label: str) -> str:
+    return json.dumps({"error": f"{label} was not run. {CARRIED_REFUSAL}"})
+
+
+def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:
+    """For a handler that can reach an outside address: the refusal when this
+    turn read the owner's mail, or runs in a conversation that did, else
+    None. ``tool_name`` and ``tool_input`` (for ``call_tool``) narrow it to
+    what ``mail_touched_withholds`` / ``carried_withholds`` refuse; by
+    default ``label`` is the tool. Never raises; fails closed."""
+    from openexecutive.delegation.settings import (
+        turn_read_delegate_mail,
+        turn_touched_delegate_mail,
+    )
+
+    name = tool_name or label
+    try:
+        if turn_read_delegate_mail():
+            return mail_touched_withheld_error(label) if mail_touched_withholds(name, tool_input) else None
+        if turn_touched_delegate_mail():
+            return carried_withheld_error(label) if carried_withholds(name, tool_input) else None
+        return None
+    except Exception:
+        return mail_touched_withheld_error(label)
 
 
 def mail_touched_withheld_error(label: str) -> str:

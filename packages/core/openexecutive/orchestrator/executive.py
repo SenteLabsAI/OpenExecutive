@@ -8,7 +8,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from openexecutive.audit import bind_turn, clear_turn, private_rows, set_turn
@@ -23,6 +23,8 @@ from openexecutive.audit.redaction import (
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.delegation.lockdown import (
+    carried_withheld_error,
+    carried_withholds,
     mail_touched_withheld_error,
     mail_touched_withholds,
 )
@@ -1992,10 +1994,13 @@ class Executive:
             # an earlier round, or with a ghostwrite_email, a mailbox read or
             # recall_history in this one — a round's tools run together),
             # nothing that reaches anyone else runs for the rest of the turn
-            # (delegation.lockdown). A later turn starts unlocked
-            # (TurnDelegation.read_mail). The offered list stays as it is, so
-            # the cached prefix never changes mid-turn.
+            # (delegation.lockdown). A later turn of that conversation
+            # (touched_mail, not read_mail) refuses only what reaches an
+            # outside address with no recipient check (carried_withholds).
+            # The offered list stays as it is, so the cached prefix never
+            # changes mid-turn.
             mail_touched_uses: list[dict[str, Any]] = []
+            refusal_for: Callable[[str], str] = mail_touched_withheld_error
             if pinned_delegation is not None and (
                 pinned_delegation.read_mail
                 or any(tu["name"] in DELEGATION_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
@@ -2004,10 +2009,16 @@ class Executive:
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
                     if mail_touched_withholds(tu["name"], tu["input"])
                 ]
-                if mail_touched_uses:
-                    skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
-                    mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
-                    script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
+            elif pinned_delegation is not None and pinned_delegation.touched_mail:
+                refusal_for = carried_withheld_error
+                mail_touched_uses = [
+                    tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
+                    if carried_withholds(tu["name"], tu["input"])
+                ]
+            if mail_touched_uses:
+                skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
+                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
+                script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
 
             specialist_calls = [
                 {
@@ -2119,7 +2130,7 @@ class Executive:
                     },
                     private=True,
                 )
-                results_by_id[tu["id"]] = mail_touched_withheld_error(label)
+                results_by_id[tu["id"]] = refusal_for(label)
             for tu in withheld_uses:
                 if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to
