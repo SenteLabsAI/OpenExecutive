@@ -206,6 +206,18 @@ def _loggable_tool(label: str) -> str:
     return label if _LOGGABLE_TOOL_RE.fullmatch(label) else "call_tool:<unlisted>"
 
 
+def _log_value(tool_name: str, value: Any) -> str:
+    """A tool's input or result for the process log, which is not private to
+    anyone: withheld for the tools that read the speaker's own mailbox or
+    notes, and for every tool once the turn has read their mail (the private
+    audit row keeps it)."""
+    from openexecutive.delegation.settings import turn_touched_delegate_mail
+
+    if tool_name in DELEGATION_TOOL_NAMES or tool_name in HISTORY_TOOL_NAMES or turn_touched_delegate_mail():
+        return "<private>"
+    return _trunc(value)
+
+
 def _trunc(value: Any, limit: int = 200) -> str:
     """Render *value* for a log line, capped at *limit* chars.
 
@@ -2222,7 +2234,7 @@ class Executive:
 
             if skill_tool_uses:
                 for tu in skill_tool_uses:
-                    logger.info("→ skill:%s  input=%s", tu["name"], _trunc(tu["input"]))
+                    logger.info("→ skill:%s  input=%s", tu["name"], _log_value(tu["name"], tu["input"]))
                 # return_exceptions=True: one crashing handler must not abort
                 # the whole turn. See `_tool_error_result`.
                 skill_results = await asyncio.gather(
@@ -2268,7 +2280,7 @@ class Executive:
                         results_by_id[tu["id"]] = _tool_error_result(tu["name"], raw)
                         continue
                     result = raw
-                    logger.info("← skill:%s  result=%s", tu["name"], _trunc(result))
+                    logger.info("← skill:%s  result=%s", tu["name"], _log_value(tu["name"], result))
                     results_by_id[tu["id"]] = result
                     # Inline action chip for side-effecting tools. None
                     # when the tool is read-only (search_skills, load_skill,
@@ -2340,10 +2352,10 @@ class Executive:
                         logger.info(
                             "→ %s  args=%s",
                             tu["input"].get("name", "call_tool"),
-                            _trunc(tu["input"].get("arguments", "")),
+                            _log_value(tu["name"], tu["input"].get("arguments", "")),
                         )
                     else:
-                        logger.info("→ %s  input=%s", tu["name"], _trunc(tu["input"]))
+                        logger.info("→ %s  input=%s", tu["name"], _log_value(tu["name"], tu["input"]))
                 # Same isolation as the skill gather above: a gateway crash on
                 # one tool must not take the turn down with it.
                 mcp_results = await asyncio.gather(
@@ -2380,7 +2392,7 @@ class Executive:
                     if private_turn and tu["name"] == "search_tools":
                         # Offer a private turn PRIVATE_TURN_MCP_TOOLS only.
                         result = filter_search_results(result, private_turn_allows_mcp_tool)
-                    logger.info("← %s  result=%s", tool_label, _trunc(result))
+                    logger.info("← %s  result=%s", tool_label, _log_value(tool_label, result))
                     results_by_id[tu["id"]] = result
                     # MCP chip emission. search_tools is read-only (gets
                     # filtered out by summarize_action's allowlist);
