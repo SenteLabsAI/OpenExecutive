@@ -220,6 +220,38 @@ export default function TokenUsagePage() {
             </section>
           ) : null}
 
+          {data?.python_jobs && data.python_jobs.jobs > 0 ? (
+            <section className="mt-8">
+              <h2 className="text-sm font-medium text-fg mb-2">Work on files</h2>
+              <p className="text-xs text-fg-muted mb-3">
+                Jobs the Executive ran with Python on files: splitting PDFs, building spreadsheets,
+                documents and charts. Tokens and charges are for the whole turns that ran one.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard
+                  label="File jobs"
+                  value={fmtInt(data.python_jobs.jobs)}
+                  hint={`${fmtInt(data.python_jobs.ok)} worked · ${fmtInt(data.python_jobs.saved_runs)} with a custom tool`}
+                />
+                <StatCard
+                  label="Charged for those turns"
+                  value={fmtCost(data.python_jobs.cost_usd)}
+                  hint={`${fmtInt(data.python_jobs.output_tokens)} output tokens over ${fmtInt(data.python_jobs.turns)} turns`}
+                />
+                <StatCard
+                  label="CPU time"
+                  value={`${(data.python_jobs.cpu_ms / 1000).toFixed(1)}s`}
+                  hint={`${(data.python_jobs.duration_ms / 1000).toFixed(1)}s from start to finish`}
+                />
+                <StatCard
+                  label="Largest job"
+                  value={`${fmtInt(data.python_jobs.peak_mb_max)} MB`}
+                  hint="peak memory of one job"
+                />
+              </div>
+            </section>
+          ) : null}
+
           {data && data.by_source && data.by_source.length > 0 ? (
             <section className="mt-8">
               <h2 className="text-sm font-medium text-fg mb-2">By source</h2>

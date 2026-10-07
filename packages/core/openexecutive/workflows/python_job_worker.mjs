@@ -5,13 +5,27 @@
 // Pyodide alone is not a sandbox (its Python can call into the JavaScript
 // runtime), so those Deno limits are what keep a job away from the server.
 //
-// stdin:  {"code": str, "files": {name: base64}, "pyodide": dir, "wheels": [path, ...]}
-// stdout: {"result", "error", "printed", "files": {name: base64}, "ms": {...}}
+// stdin:  {"code": str, "files": {name: base64}, "inputs": {...}, "pyodide": dir,
+//          "wheels": [path, ...], "max_files", "max_file_bytes", "max_total_bytes"}
+// stdout: one line of JSON: {"result", "error", "printed", "files": {name: base64},
+//          "skipped", "ms": {...}, "rss_mb"}
 const MAX_PRINTED = 8000;
 const t0 = performance.now();
-const job = JSON.parse(
-  new TextDecoder().decode(await new Response(Deno.stdin.readable).arrayBuffer()),
-);
+// The job is one line of JSON. stdin then stays open until the API has
+// measured this process (peak memory, CPU) and stops it.
+const stdin = Deno.stdin.readable.getReader();
+const chunks = [];
+for (;;) {
+  const { value, done } = await stdin.read();
+  if (done) break;
+  const end = value.indexOf(10);
+  if (end >= 0) {
+    chunks.push(value.subarray(0, end));
+    break;
+  }
+  chunks.push(value);
+}
+const job = JSON.parse(new TextDecoder().decode(await new Blob(chunks).arrayBuffer()));
 const { loadPyodide } = await import("file://" + job.pyodide + "/pyodide.mjs");
 let printed = "";
 const keep = (line) => {
@@ -37,6 +51,8 @@ const needed = [...new Set(imports.flatMap((name) => NEEDS[name] || []))];
 if (needed.length) await py.loadPackage(needed, quiet);
 await py.loadPackagesFromImports(job.code, quiet);
 const tPkgs = performance.now();
+// A saved tool's per-run values, read by the code as the dict `inputs`.
+py.globals.set("inputs", py.toPy(job.inputs || {}));
 py.FS.mkdirTree("/in");
 py.FS.mkdirTree("/out");
 for (const [name, b64] of Object.entries(job.files || {})) {
@@ -80,7 +96,10 @@ console.log(JSON.stringify({
   files,
   skipped,
   ms: { load: Math.round(tLoad - t0), packages: Math.round(tPkgs - tLoad), job: Math.round(t1 - tPkgs) },
+  // WebAssembly memory never shrinks, so this is close to the job's peak.
+  rss_mb: Math.round(Deno.memoryUsage().rss / 2 ** 20),
 }));
-// Exit now: a Worker or timer the job left running would otherwise hold the
-// process (and the API's one job slot) until the timeout.
+// Wait for the API to stop this process (it reads the line above, measures,
+// then kills it), or exit once it closes stdin.
+await stdin.read().catch(() => {});
 Deno.exit(0);

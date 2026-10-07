@@ -106,3 +106,15 @@ def test_turning_workflows_on_needs_a_request_tied_to_the_owner(
     assert client.put("/saved-tools/count_files", json={"workflows": False}).json()["workflow_version"] is None
     assert client.put("/saved-tools/count_files", json={}).status_code == 422
     assert [r["details"].get("workflow_version") for r in audit] == [1, None]
+
+
+def test_python_tools_show_their_kind_and_never_turn_on_for_workflows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(route, "_tied_to_the_owner", lambda _r: True)
+    saved_tools.save("split_bundle", "Splits a bundle.", "1", [], origin="chat", kind="python")
+    kinds = {t["name"]: t["kind"] for t in client.get("/saved-tools").json()["tools"]}
+    assert kinds == {"count_files": "script", "split_bundle": "python"}
+    resp = client.put("/saved-tools/split_bundle", json={"workflows": True, "version": 1})
+    assert resp.status_code == 409 and "only in chat" in resp.json()["detail"]
+    assert saved_tools.get("split_bundle").workflow_version is None  # type: ignore[union-attr]

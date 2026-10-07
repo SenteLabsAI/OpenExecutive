@@ -6064,6 +6064,21 @@ workflows:
     and kills the process then; the exit code no longer counts once a result
     parsed. _prune runs under a lock and treats a vanished folder as gone
     (concurrent prunes raised FileNotFoundError and lost the reply's links).
+    Kept jobs, attachments, metering: run_python_job takes save_as +
+    description (kept as saved_tools kind 'python', tools [], code as the
+    script; only when the job worked) and tool + inputs to run one again
+    (record_run with calls 0). Python tools are chat-only: _SELECT_WORKFLOW
+    filters kind 'script', set_workflows raises, PUT /saved-tools 409s,
+    run_script refuses them. attachment_files: POST /chat/upload binds the
+    uploads as sent (workflows/turn_files.py ContextVar, safe names, '(2)' on
+    repeats) for the whole SSE turn, so the model no longer retypes an
+    attachment (~$0.30 per 100 KB of output tokens) and can split an attached
+    PDF. inputs reach the code as a Python dict global. Each job logs a
+    python_job audit row (ok, duration_ms, cpu_ms and peak_mb from
+    /proc/<pid> just before the kill, bytes, attachments, saved_tool); the
+    worker now reads its job as one stdin line and waits on stdin after its
+    result so the API can measure it. GET /audit/usage python_jobs sums them
+    plus the cache_event usage of the turns that ran a job.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

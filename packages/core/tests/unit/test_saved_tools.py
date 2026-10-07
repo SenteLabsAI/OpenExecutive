@@ -228,6 +228,8 @@ def test_listing_shows_enabled_tools_without_their_scripts() -> None:
     assert listed == [{
         "name": "count_files", "description": "Count files.", "version": 1, "uses_tools": [LIST],
         "in_workflows": False,
+        "kind": "script",
+        "run_with": "run_script",
     }]
 
 

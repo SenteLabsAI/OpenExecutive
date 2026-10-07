@@ -63,7 +63,11 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             pass
 
         async def stream_chat(self, **kwargs: Any) -> AsyncIterator[str]:
+            from openexecutive.workflows import turn_files
+
             calls["stream_chat"] = kwargs
+            # What a Python job could take by name during this turn.
+            calls["turn_files"] = {n: turn_files.get(n) for n in turn_files.names()}
             yield "ok"
 
         async def stream_chat_with_committee(self, **kwargs: Any) -> AsyncIterator[str]:
@@ -151,3 +155,26 @@ def test_memory_text_is_kept_in_the_chat_turn_audit_row(
     _ = resp.text
     turn = next(r for r in rows if r["event_type"] == "chat_turn")
     assert turn["full"] == {"message": SEED, "memory_text": LINE}
+
+
+def test_upload_binds_the_files_as_sent_for_that_turn_only(
+    client: TestClient, captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows import turn_files
+
+    async def _fake_output(filename, data, content_type, **_kw):
+        return f"[{filename}] text", []
+
+    monkeypatch.setattr(chat_route, "build_attachment_output", _fake_output)
+    resp = client.post(
+        "/chat/upload",
+        data={"message": "Split this"},
+        files=[("files", ("Q1 bundle.pdf", b"%PDF-1.7 whole file", "application/pdf"))],
+    )
+    assert resp.status_code == 200
+    _ = resp.text
+    assert captured["turn_files"] == {"Q1 bundle.pdf": b"%PDF-1.7 whole file"}
+    assert turn_files.names() == []
+    # A plain chat turn carries none.
+    client.post("/chat", json={"message": "and again?"}).text
+    assert captured["turn_files"] == {}

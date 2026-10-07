@@ -258,6 +258,17 @@ def _zero_scripts() -> dict[str, int]:
     return {"scripts": 0, "ok": 0, "calls": 0, "turns_avoided": 0, "duration_ms": 0, "in_workflows": 0}
 
 
+_PYTHON_JOB_FIELDS = (
+    "jobs", "ok", "saved_runs", "attachments", "duration_ms", "cpu_ms", "peak_mb_max",
+    "bytes_in", "bytes_out", "turns", "input_tokens", "output_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _zero_python_jobs() -> dict[str, float | int]:
+    return {**{k: 0 for k in _PYTHON_JOB_FIELDS}, "cost_usd": 0.0}
+
+
 def _zero_usage() -> dict[str, float | int]:
     return {**{k: 0 for k in _USAGE_INT_FIELDS}, "cost_usd": 0.0}
 
@@ -602,6 +613,44 @@ class AuditLogger:
             ).fetchone()
         return {k: int(row[k] or 0) for k in _zero_scripts()}
 
+    def _python_job_summary(self, where: str, params: list[Any]) -> dict[str, float | int]:
+        """Totals over the ``python_job`` rows a window holds, plus the model
+        usage of the turns that ran one (the whole turn: writing the job's
+        code, reading its result and anything else that turn did)."""
+
+        def num(field: str) -> str:
+            return f"COALESCE(CAST(json_extract(details_json,'$.{field}') AS INTEGER),0)"
+
+        jobs_where = where.replace("event_type = 'cache_event'", "event_type = 'python_job'")
+        with _get_conn(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS jobs, "
+                "SUM(CASE WHEN json_extract(details_json,'$.ok') THEN 1 ELSE 0 END) AS ok, "
+                "SUM(CASE WHEN json_extract(details_json,'$.saved_tool') IS NOT NULL"
+                " THEN 1 ELSE 0 END) AS saved_runs, "
+                f"SUM(CASE WHEN {num('attachments')} > 0 THEN 1 ELSE 0 END) AS attachments, "
+                f"COALESCE(SUM({num('duration_ms')}),0) AS duration_ms, "
+                f"COALESCE(SUM({num('cpu_ms')}),0) AS cpu_ms, "
+                f"COALESCE(MAX({num('peak_mb')}),0) AS peak_mb_max, "
+                f"COALESCE(SUM({num('bytes_in')}),0) AS bytes_in, "
+                f"COALESCE(SUM({num('bytes_out')}),0) AS bytes_out "
+                f"FROM audit_log {jobs_where}",
+                params,
+            ).fetchone()
+            turns = conn.execute(
+                f"SELECT COUNT(DISTINCT turn_id) AS turns, {_USAGE_SUM_COLS} FROM audit_log "
+                f"{where} AND turn_id IN (SELECT turn_id FROM audit_log {jobs_where}"
+                " AND turn_id IS NOT NULL)",
+                params + params,
+            ).fetchone()
+        totals: dict[str, float | int] = {k: int(row[k] or 0) for k in _PYTHON_JOB_FIELDS[:9]}
+        model = _row_to_usage(turns)
+        totals["turns"] = int(turns["turns"] or 0)
+        for k in ("input_tokens", "output_tokens", "cache_read_input_tokens"):
+            totals[k] = int(model[k])
+        totals["cost_usd"] = float(model["cost_usd"])
+        return totals
+
     def usage_summary(
         self,
         *,
@@ -625,7 +674,7 @@ class AuditLogger:
         """
         empty: dict[str, Any] = {
             "totals": _zero_usage(), "by_day": [], "by_model": [], "by_source": [],
-            "scripts": _zero_scripts(),
+            "scripts": _zero_scripts(), "python_jobs": _zero_python_jobs(),
         }
         if not self._db_path.exists():
             return empty
@@ -668,6 +717,7 @@ class AuditLogger:
             "scripts": self._script_summary(where.replace(
                 "event_type = 'cache_event'", _SCRIPT_ROWS
             ), params),
+            "python_jobs": self._python_job_summary(where, params),
             "totals": _row_to_usage(totals_row),
             "by_day": [{"day": r["day"], **_row_to_usage(r)} for r in by_day_rows],
             "by_model": [{"model": r["model"], **_row_to_usage(r)} for r in by_model_rows],

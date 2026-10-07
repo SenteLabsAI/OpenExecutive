@@ -8,6 +8,9 @@ The principal's alone, scripts included.
                                           and on or off for workflows
   POST /saved-tools/{name}/rollback     — {version}: make that version the one that runs
 
+A tool is a script (run_script) or a Python job (run_python_job, ``kind``
+"python"); Python tools run only in chat, so they never turn on for workflows.
+
 The Executive saves tools on its own (approved automatically: a saved tool
 can do no more than the chat turn or workflow step that runs it); these
 routes are how the owner looks at them and stops or reverts one. Workflows
@@ -40,6 +43,8 @@ class SavedToolOut(BaseModel):
     updated_at: str
     # The version workflows may run, or None: not on for workflows.
     workflow_version: int | None = None
+    # "script" (run_script) or "python" (run_python_job, chat only).
+    kind: str = "script"
 
 
 class SavedToolsOut(BaseModel):
@@ -99,7 +104,7 @@ def _out(tool: Any) -> SavedToolOut:
     return SavedToolOut(
         name=tool.name, description=tool.description, enabled=tool.enabled, version=tool.version,
         uses_tools=tool.tools, origin=tool.origin, created_at=tool.created_at,
-        updated_at=tool.updated_at, workflow_version=tool.workflow_version,
+        updated_at=tool.updated_at, workflow_version=tool.workflow_version, kind=tool.kind,
     )
 
 
@@ -161,6 +166,8 @@ def update_saved_tool(name: str, body: ToolUpdate, request: Request) -> SavedToo
         raise HTTPException(status_code=422, detail="Nothing to change.")
     if body.workflows and body.version is None:
         raise HTTPException(status_code=422, detail="Say which version to turn on for workflows.")
+    if body.workflows and (current := saved_tools.get(name)) is not None and current.kind != "script":
+        raise HTTPException(status_code=409, detail="Python tools run only in chat, never in workflows.")
     if body.workflows and not _tied_to_the_owner(request):
         raise HTTPException(
             status_code=409,

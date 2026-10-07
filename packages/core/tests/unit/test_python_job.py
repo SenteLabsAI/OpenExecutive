@@ -20,7 +20,20 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-not-used")
 
 from openexecutive.api.routes import python_jobs as route  # noqa: E402
-from openexecutive.workflows import python_job  # noqa: E402
+from openexecutive.workflows import python_job, saved_tools, turn_files  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def metered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every job's usage row, kept here instead of in ./episodic_memory.db;
+    Custom tools in a database of the test's own."""
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: rows.append({"type": event_type, **kw}),
+    )
+    monkeypatch.setattr(saved_tools, "DB_PATH", tmp_path / "tools.db")
+    return rows
 
 
 @pytest.fixture()
@@ -37,9 +50,14 @@ def sandbox(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Stands in for the Deno process: records each job, writes one file."""
     jobs: list[dict[str, Any]] = []
 
-    async def fake(code: str, files: dict[str, bytes], *, timeout_s: float, **_: Any) -> dict[str, Any]:
-        jobs.append({"code": code, "files": files})
-        return {"result": "ok", "files": {"out.txt": base64.b64encode(b"done").decode()}}
+    async def fake(
+        code: str, files: dict[str, bytes], *, timeout_s: float, inputs: Any = None, **_: Any
+    ) -> dict[str, Any]:
+        jobs.append({"code": code, "files": files, "inputs": inputs})
+        return {
+            "result": "ok", "files": {"out.txt": base64.b64encode(b"done").decode()},
+            "_usage": {"peak_mb": 300, "cpu_ms": 4200},
+        }
 
     monkeypatch.setattr(python_job, "run_job", fake)
     return jobs
@@ -268,3 +286,115 @@ def test_concurrent_prunes_dont_fail(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for t in threads:
         t.join()
     assert errors == [] and list(tmp_path.iterdir()) == []
+
+
+def test_attached_files_go_in_as_sent(company: Path, sandbox: list) -> None:
+    files = turn_files.collect([("C:\\scans\\Q1 bundle.pdf", b"%PDF-1.7 a"), ("notes.txt", b"hi")])
+    with turn_files.bind(files):
+        out = _run({"code": "1", "attachment_files": ["Q1 bundle.pdf"]})
+        missing = _run({"code": "1", "attachment_files": ["other.pdf"]})
+    assert sandbox[0]["files"] == {"Q1 bundle.pdf": b"%PDF-1.7 a"}
+    assert "files" in out
+    assert "attached: Q1 bundle.pdf, notes.txt" in missing["error"]
+    # Only the turn that carried them.
+    assert "nothing is attached" in _run({"code": "1", "attachment_files": ["notes.txt"]})["error"]
+
+
+def test_attachment_names_are_safe_and_distinct() -> None:
+    files = turn_files.collect([("../a/b.pdf", b"1"), ("b.pdf", b"2"), ("..", b"3"), ("x?y.csv", b"4")])
+    assert list(files) == ["b.pdf", "b (2).pdf", "attachment", "x_y.csv"]
+
+
+def test_a_job_that_worked_is_kept_and_runs_again_by_name(company: Path, sandbox: list) -> None:
+    out = _run({
+        "code": "print(inputs)", "save_as": "split_bundle",
+        "description": "Splits a scanned bundle into its documents.",
+    })
+    assert out["saved"] == {"name": "split_bundle", "version": 1, "enabled": True}
+    tool = saved_tools.get("split_bundle")
+    assert tool is not None and tool.kind == "python" and tool.script == "print(inputs)"
+    assert tool.summary()["run_with"] == "run_python_job"
+
+    again = _run({"tool": "split_bundle", "inputs": {"pages": 3}, "knowledge_files": ["bundle.pdf"]})
+    assert sandbox[1]["code"] == "print(inputs)" and sandbox[1]["inputs"] == {"pages": 3}
+    assert again["saved_tool"] == {"name": "split_bundle", "version": 1}
+    [run] = saved_tools.runs("split_bundle")
+    assert run["ok"] and run["calls"] == 0
+    assert _run({"tool": "split_bundel"})["error"].endswith("kept Python jobs: split_bundle")
+
+
+def test_kept_python_tools_stay_out_of_workflows_and_run_script(company: Path, sandbox: list) -> None:
+    from openexecutive.workflows import step_script
+
+    _run({"code": "1", "save_as": "make_deck", "description": "Makes a deck."})
+    with pytest.raises(saved_tools.SavedToolError, match="only in chat"):
+        saved_tools.set_workflows("make_deck", 1)
+    assert saved_tools.list_for_workflows() == []
+    assert saved_tools.get_for_workflows("make_deck") is None
+
+    async def call(name: str, args: dict[str, Any]) -> tuple[str, bool]:
+        raise AssertionError("nothing should run")
+
+    async def run_script() -> str:
+        async for kind, payload in step_script.run_script_tool(
+            {"tool": "make_deck"}, tools=None, call=call, origin="chat", may_save=True
+        ):
+            if kind == "done":
+                return payload[0]
+        return ""
+
+    assert "run_python_job" in json.loads(asyncio.run(run_script()))["error"]
+    # And the other way round, and no switching kinds under one name.
+    saved_tools.save("tidy_inbox", "Tidies.", "1", ["list_alerts"], origin="chat")
+    assert "run_script" in _run({"tool": "tidy_inbox"})["error"]
+    assert "already a script tool" in _run({"code": "1", "save_as": "tidy_inbox", "description": "x"})["save_error"]
+
+
+def test_a_failed_job_is_not_kept(company: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fail(*_: Any, **__: Any) -> dict[str, Any]:
+        return {"error": "ZeroDivisionError"}
+
+    monkeypatch.setattr(python_job, "run_job", fail)
+    out = _run({"code": "1/0", "save_as": "broken_tool", "description": "Fails."})
+    assert out["save_error"] == "not saved: the job failed"
+    assert saved_tools.get("broken_tool") is None
+
+
+def test_every_job_is_metered(company: Path, sandbox: list, metered: list) -> None:
+    with turn_files.bind({"a.pdf": b"12345"}):
+        _run({"code": "abc", "attachment_files": ["a.pdf"], "text_files": {"t.txt": "xy"}})
+    [row] = [r for r in metered if r["type"] == "python_job"]
+    d = row["details"]
+    assert d["ok"] is True and d["peak_mb"] == 300 and d["cpu_ms"] == 4200
+    assert (d["files_in"], d["bytes_in"], d["attachments"]) == (2, 7, 1)
+    assert (d["files_out"], d["bytes_out"], d["code_chars"]) == (1, 4, 3)
+    assert d["saved_tool"] is None and d["saved_as"] is None
+
+
+def test_the_usage_summary_counts_jobs_and_their_turns(tmp_path: Path) -> None:
+    from openexecutive.audit.logger import AuditLogger
+
+    log = AuditLogger(tmp_path / "audit.db")
+    log.log("cache_event", "call", turn_id="t-1", details={"input_tokens": 100, "output_tokens": 40, "cost_usd": 0.02})
+    log.log("cache_event", "call", turn_id="t-1", details={"input_tokens": 50, "output_tokens": 10, "cost_usd": 0.01})
+    log.log("cache_event", "call", turn_id="t-2", details={"input_tokens": 999, "output_tokens": 999})
+    for ok, peak, saved in ((True, 300, "split_bundle"), (False, 650, None)):
+        log.log("python_job", "job", turn_id="t-1", details={
+            "ok": ok, "duration_ms": 4000, "cpu_ms": 3000, "peak_mb": peak, "bytes_in": 10,
+            "bytes_out": 20, "attachments": 1, "saved_tool": saved,
+        })
+    jobs = log.usage_summary()["python_jobs"]
+    assert (jobs["jobs"], jobs["ok"], jobs["saved_runs"], jobs["attachments"]) == (2, 1, 1, 2)
+    assert (jobs["duration_ms"], jobs["cpu_ms"], jobs["peak_mb_max"]) == (8000, 6000, 650)
+    # Only the turn that ran jobs, counted once.
+    assert (jobs["turns"], jobs["input_tokens"], jobs["output_tokens"]) == (1, 150, 50)
+    assert jobs["cost_usd"] == pytest.approx(0.03)
+
+
+@_REAL
+def test_the_real_sandbox_reads_inputs_and_reports_its_usage(company: Path) -> None:
+    body = asyncio.run(python_job.run_job(
+        "inputs['n'] * 2", {}, timeout_s=60, inputs={"n": 21}
+    ))
+    assert body["result"] == "42"
+    assert body["_usage"]["peak_mb"] > 50 and body["_usage"]["cpu_ms"] > 0
