@@ -5927,6 +5927,19 @@ workflows:
     own user turn by identity), and NEVER write — the UI saves through
     `POST /workflows/custom`, which re-validates. "Edit details" hands the
     draft to the advanced editor via `/jobs/new?designer=<id>`.
+    Editing a saved workflow is the same conversation: "Edit"
+    (`/jobs/new?edit=<name>`) calls `POST /workflows/designer/edit` {name},
+    which seeds the session's draft with the stored definition (no model
+    call) and appends `build_edit_note` to the context block (user turn, not
+    the cached system block). `advance(editing=<name>)` makes `_check_draft`
+    overwrite the draft's name with the saved one and skip the taken-name
+    check; the route copies the saved is_active onto every draft, so an edit
+    never forks a copy or switches on a workflow awaiting approval. Responses
+    carry `editing` + `original`; the UI lists the differences in plain
+    words (`packages/ui/src/lib/workflowChanges.ts`), flags only newly added
+    write tools, and saves via `PUT /workflows/custom/{name}`. The form
+    editor is `/jobs/new?edit=<name>&mode=advanced`; "Edit details" from an
+    edit conversation opens `?edit=<name>&designer=<id>` and saves with PUT.
 
     Action steps (workflows that act): `ActionStepSpec` {goal, tools,
     max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist

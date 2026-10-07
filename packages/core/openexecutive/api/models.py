@@ -527,6 +527,11 @@ class WorkflowDesignerStartRequest(BaseModel):
     message: str
 
 
+class WorkflowDesignerEditRequest(BaseModel):
+    # A saved custom workflow's name (the same bound the definition enforces).
+    name: str = Field(max_length=64)
+
+
 class WorkflowDesignerMessageRequest(BaseModel):
     session_id: str
     message: str
@@ -559,3 +564,8 @@ class WorkflowDesignerTurnResponse(BaseModel):
     options: list[str] = Field(default_factory=list)
     draft: WorkflowDesignerDraftResponse | None = None
     transcript: list[WorkflowDesignerTranscriptTurn] = Field(default_factory=list)
+    # Set when the session changes a saved workflow: its name, and the stored
+    # definition as it was when the session opened (what the draft is compared
+    # with). The draft is then saved with PUT /workflows/custom/{editing}.
+    editing: str | None = None
+    original: dict[str, Any] | None = None

@@ -402,22 +402,48 @@ def _parse_question(raw: dict[str, Any]) -> DesignerQuestion:
     return question
 
 
-async def _check_draft(raw: dict[str, Any]) -> tuple[WorkflowDraft | None, list[str]]:
-    """Parse and validate an emitted draft. Returns (draft, []) or (None, errors)."""
+def build_edit_note(name: str) -> str:
+    """The context note for a session that changes a SAVED workflow.
+
+    Appended to the context block (a user turn, never the cached system
+    block). ``name`` is a stored definition's name, so it already matches the
+    snake_case rule and is safe to quote here.
+    """
+    return (
+        "The user is CHANGING a workflow they already saved, not creating a "
+        "new one. Its current definition is given with their latest message. "
+        "Apply only the change they ask for and keep everything else as it "
+        f"is. Keep `name` exactly {name!r} — it is in the taken-names list "
+        "because it is this workflow. Draft the revised workflow straight "
+        "away; ask a question only when the change is genuinely ambiguous. "
+        "In the draft's summary, say in a sentence or two what you changed."
+    )
+
+
+async def _check_draft(
+    raw: dict[str, Any], editing: str | None = None
+) -> tuple[WorkflowDraft | None, list[str]]:
+    """Parse and validate an emitted draft. Returns (draft, []) or (None, errors).
+
+    ``editing`` is the name of the saved workflow being changed: the draft
+    keeps that name whatever the model wrote, so an edit can never fork a copy
+    or overwrite a different workflow.
+    """
     try:
         draft = WorkflowDraft.model_validate(raw)
     except ValidationError as exc:
         logger.info("workflow designer: draft failed schema validation (%s)", type(exc).__name__)
         return None, [str(exc)]
     # The server owns these; whatever the model put there is meaningless.
-    draft.definition = draft.definition.model_copy(
-        update={"is_active": True, "created_at": "", "updated_at": ""}
-    )
+    server_owned: dict[str, Any] = {"is_active": True, "created_at": "", "updated_at": ""}
+    if editing is not None:
+        server_owned["name"] = editing
+    draft.definition = draft.definition.model_copy(update=server_owned)
     errors = validate_definition(draft.definition)
     if not errors:
         # Catches a hallucinated or misspelled tool before the user sees it.
         errors = await tool_catalog.validate_tools_available(draft.definition)
-    if _name_taken(draft.definition.name):
+    if editing is None and _name_taken(draft.definition.name):
         errors.append(
             f"name {draft.definition.name!r} is already used by a saved custom "
             "workflow — pick a different name"
@@ -437,11 +463,13 @@ async def advance(
     force_draft: bool = False,
     questions_asked: int = 0,
     model: str | None = None,
+    editing: str | None = None,
 ) -> DesignerQuestion | WorkflowDraft:
     """Run one designer turn.
 
     Returns a ``DesignerQuestion`` for the user, or a validated
-    ``WorkflowDraft`` to review. Raises ``WorkflowDesignerError`` /
+    ``WorkflowDraft`` to review. ``editing`` names the saved workflow this
+    session changes (see ``_check_draft``). Raises ``WorkflowDesignerError`` /
     ``WorkflowDesignerTimeout`` — both with fixed, input-free messages.
     """
     from openexecutive.audit.usage import log_model_usage
@@ -580,7 +608,7 @@ async def advance(
                     "The workflow assistant did not return a usable response."
                 ) from exc
 
-        draft, errors = await _check_draft(raw)
+        draft, errors = await _check_draft(raw, editing)
         if draft is not None:
             return draft
 

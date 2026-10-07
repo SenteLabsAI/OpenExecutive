@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Person,
   WorkflowDesignerTurn,
+  editWorkflowWithDesigner,
   forceWorkflowDesignerDraft,
   getWorkflowDesignerSession,
   listPeople,
@@ -19,12 +20,22 @@ import WorkflowDraftReview from "./WorkflowDraftReview";
 // Same cap chat applies to its `?draft=` prefill.
 const MAX_DESCRIBE_PARAM_CHARS = 2000;
 
+// Ideas offered when changing a saved workflow; a click fills the composer.
+const EDIT_STARTERS = [
+  "Have someone else sign off",
+  "Run it on a different day",
+  "Add a step that…",
+  "Drop a step I don’t need",
+];
+
 /**
- * Conversational "New workflow": describe the job, answer a few clarifying
- * questions, review the draft, create it. The thread scrolls inside a
- * fixed-height panel with the composer pinned, so the page never grows.
+ * Conversational workflow design. "New workflow": describe the job, answer a
+ * few clarifying questions, review the draft, create it. With `editName`:
+ * the saved workflow is the starting draft — say what to change, review what
+ * changes, save. The thread scrolls inside a fixed-height panel with the
+ * composer pinned, so the page never grows.
  */
-export default function WorkflowWizard() {
+export default function WorkflowWizard({ editName }: { editName?: string } = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -66,9 +77,14 @@ export default function WorkflowWizard() {
         heldSessionRef.current = t.session_id;
         setTurn(t);
       })
-      .catch(() => router.replace(pathname, { scroll: false }))
+      .catch(() =>
+        router.replace(
+          editName ? `${pathname}?edit=${encodeURIComponent(editName)}` : pathname,
+          { scroll: false }
+        )
+      )
       .finally(() => setResuming(false));
-  }, [resumeId, pathname, router]);
+  }, [resumeId, pathname, router, editName]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -85,9 +101,11 @@ export default function WorkflowWizard() {
         setInput("");
         if (mountedRef.current && next.session_id !== heldSessionRef.current) {
           heldSessionRef.current = next.session_id;
-          router.replace(`${pathname}?session=${encodeURIComponent(next.session_id)}`, {
-            scroll: false,
-          });
+          const edit = next.editing ? `edit=${encodeURIComponent(next.editing)}&` : "";
+          router.replace(
+            `${pathname}?${edit}session=${encodeURIComponent(next.session_id)}`,
+            { scroll: false }
+          );
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -111,6 +129,11 @@ export default function WorkflowWizard() {
     // Always consumed, so a leftover never fires on a later visit.
     const handedOff = takeWorkflowDescription()?.trim();
     if (resumeId) return;
+    if (editName) {
+      // Opening an edit makes no model call: the saved workflow is the draft.
+      void run(() => editWorkflowWithDesigner(editName), null);
+      return;
+    }
     if (handedOff) {
       // Kept in the composer until the first turn succeeds, so a failed
       // start leaves the text ready to retry.
@@ -122,7 +145,7 @@ export default function WorkflowWizard() {
       setInput(describeParam.slice(0, MAX_DESCRIBE_PARAM_CHARS));
       router.replace(pathname, { scroll: false });
     }
-  }, [resumeId, describeParam, run, router, pathname]);
+  }, [resumeId, describeParam, run, router, pathname, editName]);
 
   const send = (text: string) => {
     const message = text.trim();
@@ -141,12 +164,18 @@ export default function WorkflowWizard() {
     void run(() => forceWorkflowDesignerDraft(turn.session_id), null);
   };
 
-  if (resuming) {
+  // Opening an edit: wait for the saved workflow rather than flash the
+  // new-workflow intro.
+  if (resuming || (editName && !turn && !error)) {
     return <div className="p-6 text-sm text-fg-muted">Loading…</div>;
   }
 
   const started = turn !== null;
+  const original = turn?.editing ? turn.original ?? null : null;
+  // Changing a saved workflow, before the user has said what to change.
+  const editOpening = !!original && turn!.transcript.length === 0;
   const isDraft = turn?.phase === "draft" && turn.draft !== null;
+  const editTarget = editName ?? turn?.editing ?? null;
   // In the draft phase the last assistant turn is the draft's summary; the
   // review card renders it, so the thread stops one turn short.
   const thread = turn
@@ -169,6 +198,38 @@ export default function WorkflowWizard() {
               </p>
               <div className="flex flex-wrap gap-2">
                 {WORKFLOW_STARTERS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setInput(s);
+                      inputRef.current?.focus();
+                    }}
+                    className="min-h-10 rounded-full border border-line bg-surface-elevated px-4 py-2 text-left text-sm text-fg-muted hover:text-fg hover:border-line-strong hover:bg-surface-overlay transition"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {editOpening && original && (
+            <div className="space-y-3">
+              <div className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl px-4 py-3 text-[15px] bg-surface-elevated border border-line text-fg">
+                  What would you like to change about &ldquo;{original.title}&rdquo;? Say it
+                  in your own words &mdash; who signs off, when it runs, what a step should
+                  do. I&rsquo;ll show you exactly what changes before anything is saved.
+                </div>
+              </div>
+              <WorkflowDraftReview
+                draft={{ definition: original, summary: "", assumptions: [] }}
+                people={people}
+                readOnly
+              />
+              <div className="flex flex-wrap gap-2">
+                {EDIT_STARTERS.map((s) => (
                   <button
                     key={s}
                     type="button"
@@ -227,6 +288,7 @@ export default function WorkflowWizard() {
               people={people}
               busy={busy}
               onRefine={() => inputRef.current?.focus()}
+              edit={original ? { original } : undefined}
             />
           )}
 
@@ -261,6 +323,8 @@ export default function WorkflowWizard() {
             placeholder={
               isDraft
                 ? "Tell me what to change… (Enter to send)"
+                : editOpening
+                ? "e.g. Have Mark sign off instead, and run it on Fridays."
                 : started
                 ? "Your answer… (Enter to send, Shift+Enter for a new line)"
                 : "e.g. Every Monday, pull together what our top three competitors shipped and send it to me."
@@ -276,18 +340,25 @@ export default function WorkflowWizard() {
             >
               {busy ? "Thinking…" : started ? "Send" : "Start"}
             </Button>
-            {started && !isDraft && (
+            {started && !isDraft && !editOpening && (
               <Button variant="ghost" onClick={draftNow} disabled={busy}>
                 Draft it now
               </Button>
             )}
             <span className="ml-auto flex items-center gap-3 text-sm text-fg-subtle">
-              {started && (
+              {started && !original && (
                 <span>
                   {turn!.questions_asked} of {turn!.max_questions} questions
                 </span>
               )}
-              <Link href="/jobs/new?mode=advanced" className="hover:text-fg transition-colors">
+              <Link
+                href={
+                  editTarget
+                    ? `/jobs/new?edit=${encodeURIComponent(editTarget)}&mode=advanced`
+                    : "/jobs/new?mode=advanced"
+                }
+                className="hover:text-fg transition-colors"
+              >
                 Use the advanced editor
               </Link>
             </span>

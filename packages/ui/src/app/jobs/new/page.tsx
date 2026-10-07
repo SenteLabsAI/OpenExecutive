@@ -150,9 +150,10 @@ function BuilderInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editName = searchParams.get("edit");
-  // A wizard session whose draft seeds this form ("Edit details"). Create
-  // mode — the draft has not been saved yet.
-  const designerId = editName ? null : searchParams.get("designer");
+  // A wizard session whose draft seeds this form ("Edit details"). Without
+  // `edit` it is create mode — the draft has not been saved yet; with it, the
+  // draft is a revision of that saved workflow.
+  const designerId = searchParams.get("designer");
 
   const [people, setPeople] = useState<Person[]>([]);
   const [playbooks, setPlaybooks] = useState<SkillMeta[]>([]);
@@ -188,13 +189,15 @@ function BuilderInner() {
   }, []);
 
   useEffect(() => {
-    const load: Promise<DynamicWorkflowDef> | null = editName
-      ? getCustomWorkflow(editName)
-      : designerId
+    const load: Promise<DynamicWorkflowDef> | null = designerId
       ? getWorkflowDesignerSession(designerId).then((t) => {
           if (!t.draft) throw new Error("That conversation has no draft yet.");
+          if ((t.editing ?? null) !== editName)
+            throw new Error("That conversation is about a different workflow.");
           return t.draft.definition;
         })
+      : editName
+      ? getCustomWorkflow(editName)
       : null;
     if (!load) return;
     load
@@ -434,7 +437,7 @@ function BuilderInner() {
   const last = STAGES.length - 1;
   const saveLabel = saving ? "Saving…" : editName ? "Save changes" : "Create workflow";
   const cancelHref = designerId
-    ? `/jobs/new?session=${encodeURIComponent(designerId)}`
+    ? `/jobs/new?${editName ? `edit=${encodeURIComponent(editName)}&` : ""}session=${encodeURIComponent(designerId)}`
     : "/jobs";
 
   return (
@@ -989,7 +992,8 @@ function StepEditor({
 
 function AdvancedBuilderPage() {
   const searchParams = useSearchParams();
-  const editing = !!searchParams.get("edit");
+  const editName = searchParams.get("edit");
+  const editing = !!editName;
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
@@ -1004,7 +1008,18 @@ function AdvancedBuilderPage() {
             <p className="text-[15px] text-fg-muted">
               Build a reusable workflow from specialist steps, optional
               approval gates, and a final synthesis step.
-              {!editing && (
+              {editName ? (
+                <>
+                  {" "}
+                  <Link
+                    href={`/jobs/new?edit=${encodeURIComponent(editName)}`}
+                    className="text-accent hover:underline"
+                  >
+                    Describe the change instead
+                  </Link>{" "}
+                  and let the assistant make it.
+                </>
+              ) : (
                 <>
                   {" "}
                   <Link href="/jobs/new" className="text-accent hover:underline">
@@ -1023,6 +1038,7 @@ function AdvancedBuilderPage() {
 }
 
 function WizardPage() {
+  const editName = useSearchParams().get("edit");
   return (
     <div className="flex flex-col h-full min-h-0 bg-surface text-fg">
       <div className="border-b border-line px-4 sm:px-6 py-4">
@@ -1030,11 +1046,13 @@ function WizardPage() {
           <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
             ← Back to workflows
           </Link>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mt-1">New workflow</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mt-1">
+            {editName ? "Edit workflow" : "New workflow"}
+          </h1>
         </div>
       </div>
       <div className="flex-1 min-h-0">
-        <WorkflowWizard />
+        <WorkflowWizard key={editName ?? ""} editName={editName ?? undefined} />
       </div>
     </div>
   );
@@ -1042,12 +1060,11 @@ function WizardPage() {
 
 function NewWorkflowRouter() {
   const searchParams = useSearchParams();
-  // The step-by-step form is the advanced editor: editing a saved workflow,
-  // refining a wizard draft ("Edit details"), or opting in explicitly.
+  // The step-by-step form is the advanced editor: refining a wizard draft
+  // ("Edit details") or opting in explicitly. Editing a saved workflow is a
+  // conversation by default (`?edit=` alone).
   const advanced =
-    !!searchParams.get("edit") ||
-    !!searchParams.get("designer") ||
-    searchParams.get("mode") === "advanced";
+    !!searchParams.get("designer") || searchParams.get("mode") === "advanced";
   return advanced ? <AdvancedBuilderPage /> : <WizardPage />;
 }
 

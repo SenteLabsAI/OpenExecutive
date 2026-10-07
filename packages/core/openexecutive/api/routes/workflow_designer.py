@@ -7,6 +7,12 @@ user reviews. Nothing here writes — the UI saves the reviewed draft through
 cadence scheduling. The step-by-step builder stays reachable as the advanced
 editor.
 
+``POST /workflows/designer/edit`` opens the same conversation on a SAVED
+workflow: the stored definition is the starting draft, the user says what to
+change, and the UI saves the revision through ``PUT /workflows/custom/{name}``.
+The session keeps the workflow's name and on/off state whatever the model
+drafts.
+
 Mounted BEFORE ``workflows.router`` in ``api/main.py`` so no
 ``/workflows/{name}/...`` pattern can shadow these literal paths (the same
 rule ``workflows.py`` follows for ``/workflows/custom`` and ``/workflows/runs``).
@@ -29,6 +35,7 @@ from fastapi import APIRouter, HTTPException
 from openexecutive.api.models import (
     WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS,
     WorkflowDesignerDraftResponse,
+    WorkflowDesignerEditRequest,
     WorkflowDesignerMessageRequest,
     WorkflowDesignerSessionRequest,
     WorkflowDesignerStartRequest,
@@ -44,7 +51,10 @@ from openexecutive.workflows.designer import (
     WorkflowDraft,
     advance,
     build_context_block,
+    build_edit_note,
 )
+from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+from openexecutive.workflows.dynamic_store import get_definition
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +78,11 @@ class DesignerSession:
     # Tools the designer's searches found, replayed into later turns (see
     # workflows/designer.py) so a forced draft can still use exact names.
     discovered_tools: dict[str, str] = field(default_factory=dict)
+    # Set when the session changes a saved workflow: its name (kept on every
+    # draft) and the stored definition as it was when the session opened (the
+    # "before" of the changes the UI lists, and the on/off state to keep).
+    editing: str | None = None
+    original: DynamicWorkflowDef | None = None
     last_touched: float = field(default_factory=time.monotonic)
     # One model turn at a time. Two tabs on the same ?session=, or a retry
     # while a slow turn is still running, would otherwise interleave appends
@@ -161,6 +176,9 @@ def _turn_response(session_id: str, session: DesignerSession) -> WorkflowDesigne
     transcript = [
         WorkflowDesignerTranscriptTurn(role=t.role, text=t.text) for t in session.transcript
     ]
+    original = (
+        session.original.model_dump(mode="json") if session.original is not None else None
+    )
     if session.phase == "draft" and session.draft is not None:
         d = session.draft
         return WorkflowDesignerTurnResponse(
@@ -174,6 +192,8 @@ def _turn_response(session_id: str, session: DesignerSession) -> WorkflowDesigne
                 assumptions=list(d.assumptions),
             ),
             transcript=transcript,
+            editing=session.editing,
+            original=original,
         )
     question = next(
         (t.text for t in reversed(session.transcript) if t.role == "assistant"), None
@@ -187,6 +207,8 @@ def _turn_response(session_id: str, session: DesignerSession) -> WorkflowDesigne
         hint=session.last_hint or None,
         options=list(session.last_options),
         transcript=transcript,
+        editing=session.editing,
+        original=original,
     )
 
 
@@ -202,6 +224,7 @@ async def _advance(
             discovered_tools=session.discovered_tools,
             force_draft=force_draft,
             questions_asked=session.questions_asked,
+            editing=session.editing,
         )
     except WorkflowDesignerTimeout as exc:
         logger.warning("workflow designer: timed out (%s)", type(exc).__name__)
@@ -212,6 +235,12 @@ async def _advance(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if isinstance(result, WorkflowDraft):
+        if session.original is not None:
+            # An edit never switches a workflow on or off: a tool workflow
+            # chat saved switched off is turned on from its review card.
+            result.definition = result.definition.model_copy(
+                update={"is_active": session.original.is_active}
+            )
         session.draft = result
         session.phase = "draft"
         session.last_hint = ""
@@ -255,6 +284,32 @@ async def start_designer(body: WorkflowDesignerStartRequest) -> WorkflowDesigner
         # this one — drop it rather than let failures evict live sessions.
         _designer_sessions.pop(session_id, None)
         raise
+
+
+@router.post("/workflows/designer/edit", response_model=WorkflowDesignerTurnResponse)
+async def edit_designer(body: WorkflowDesignerEditRequest) -> WorkflowDesignerTurnResponse:
+    """Open a design session on a saved workflow, to change it by conversation.
+
+    No model call: the session starts with the stored definition as its draft
+    and waits for the user to say what to change.
+    """
+    try:
+        original = get_definition(body.name)
+    except Exception as exc:
+        logger.error("workflow designer: could not load workflow (%s)", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Could not load that workflow.") from exc
+    if original is None:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+
+    session_id = uuid.uuid4().hex
+    _designer_sessions[session_id] = DesignerSession(
+        context_block=f"{build_context_block()}\n\n{build_edit_note(original.name)}",
+        draft=WorkflowDraft(definition=original),
+        editing=original.name,
+        original=original,
+    )
+    _sweep_designer_sessions()
+    return _turn_response(session_id, _designer_sessions[session_id])
 
 
 @router.post("/workflows/designer/message", response_model=WorkflowDesignerTurnResponse)

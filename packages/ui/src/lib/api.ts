@@ -2354,6 +2354,10 @@ export interface WorkflowDesignerTurn {
   options: string[];
   draft: WorkflowDesignerDraft | null;
   transcript: { role: "user" | "assistant"; text: string }[];
+  // Set when the session changes a saved workflow: its name, and the saved
+  // version the draft is compared with. Save with updateCustomWorkflow.
+  editing?: string | null;
+  original?: DynamicWorkflowDef | null;
 }
 
 async function _designerPost(
@@ -2372,6 +2376,11 @@ async function _designerPost(
 
 export function startWorkflowDesigner(message: string): Promise<WorkflowDesignerTurn> {
   return _designerPost("start", { message }, "Could not start the workflow assistant");
+}
+
+/** Open the designer on a saved workflow, to change it by conversation. */
+export function editWorkflowWithDesigner(name: string): Promise<WorkflowDesignerTurn> {
+  return _designerPost("edit", { name }, "Could not open that workflow");
 }
 
 export function sendWorkflowDesignerMessage(

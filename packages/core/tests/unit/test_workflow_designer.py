@@ -295,6 +295,38 @@ async def test_saved_custom_name_triggers_repair(
 
 
 @pytest.mark.asyncio
+async def test_editing_keeps_the_saved_name_without_a_repair(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Changing a saved workflow: its own name is not "taken", and a renamed
+    draft is put back to it rather than forking a copy."""
+    db_path = tmp_path / "episodic.db"
+    dynamic_store.initialize_dynamic_workflows_db(db_path)
+    monkeypatch.setattr(dynamic_store, "DB_PATH", db_path)
+    dynamic_store.upsert_definition(DynamicWorkflowDef.model_validate(_definition()))
+    monkeypatch.setattr(wd, "_name_taken", _REAL_NAME_TAKEN)
+
+    provider = _ScriptedProvider(
+        [_tool_response(wd.EMIT_TOOL_NAME, _emit(name="competitor_digest_friday"))]
+    )
+    _install(monkeypatch, provider)
+    result = await wd.advance(
+        _opening("Run it on Fridays instead."),
+        previous_draft=DynamicWorkflowDef.model_validate(_definition()),
+        editing="weekly_competitor_digest",
+    )
+    assert isinstance(result, wd.WorkflowDraft)
+    assert result.definition.name == "weekly_competitor_digest"
+    assert len(provider.calls) == 1
+
+
+def test_edit_note_names_the_workflow() -> None:
+    note = wd.build_edit_note("weekly_competitor_digest")
+    assert "'weekly_competitor_digest'" in note
+    assert "CHANGING" in note
+
+
+@pytest.mark.asyncio
 async def test_two_bad_drafts_raise_fixed_error(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = "zz_secret_goal_zz"
     bad = _emit(steps=[{"kind": "specialist", "id": "scan", "title": "S", "specialist": "cso", "goal": secret}])

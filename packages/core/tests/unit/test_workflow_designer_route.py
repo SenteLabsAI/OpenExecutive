@@ -383,3 +383,90 @@ def test_session_keeps_discovered_tools_between_turns(client: TestClient, seeded
     first["sheets__append_rows"] = "Append rows."  # what a search would record
     client.post("/workflows/designer/message", json={"session_id": sid, "message": "Bill tracker"})
     assert seeded.calls[1]["discovered_tools"] is first
+
+
+# ---- Editing a saved workflow by conversation --------------------------------
+
+
+def _save(client: TestClient, **overrides: Any) -> dict[str, Any]:
+    body = _draft(**overrides).definition.model_dump(mode="json")
+    resp = client.post("/workflows/custom", json=body)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_edit_unknown_workflow_is_404(client: TestClient, seeded: _Queue) -> None:
+    resp = client.post("/workflows/designer/edit", json={"name": "no_such_workflow"})
+    assert resp.status_code == 404
+    assert "no_such_workflow" not in resp.text
+
+
+def test_edit_opens_on_the_saved_workflow_without_a_model_call(
+    client: TestClient, seeded: _Queue
+) -> None:
+    _save(client)
+    resp = client.post("/workflows/designer/edit", json={"name": "weekly_competitor_digest"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["editing"] == "weekly_competitor_digest"
+    assert body["original"]["title"] == "Weekly competitor digest"
+    assert body["phase"] == "question"
+    assert body["question"] is None
+    assert body["transcript"] == []
+    assert seeded.calls == []
+
+    # A refresh resumes it as an edit.
+    resumed = client.get(f"/workflows/designer/{body['session_id']}").json()
+    assert resumed["editing"] == "weekly_competitor_digest"
+    assert resumed["original"]["title"] == "Weekly competitor digest"
+
+
+def test_edit_refines_the_saved_definition_and_saves_with_put(
+    client: TestClient, seeded: _Queue
+) -> None:
+    _save(client)
+    seeded.append(_draft(title="Friday competitor digest", cadence=None))
+    sid = client.post(
+        "/workflows/designer/edit", json={"name": "weekly_competitor_digest"}
+    ).json()["session_id"]
+
+    resp = client.post(
+        "/workflows/designer/message",
+        json={"session_id": sid, "message": "Call it the Friday competitor digest."},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["phase"] == "draft"
+    assert body["editing"] == "weekly_competitor_digest"
+    # Still compared with the version the session opened on.
+    assert body["original"]["title"] == "Weekly competitor digest"
+
+    call = seeded.calls[0]
+    assert call["editing"] == "weekly_competitor_digest"
+    assert call["previous_draft"].title == "Weekly competitor digest"
+    assert call["context_block"].startswith("CTX")
+    assert "CHANGING" in call["context_block"]
+
+    put = client.put(
+        "/workflows/custom/weekly_competitor_digest", json=body["draft"]["definition"]
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["title"] == "Friday competitor digest"
+
+
+def test_edit_keeps_a_switched_off_workflow_off(client: TestClient, seeded: _Queue) -> None:
+    """The model's draft says is_active=True; an edit must not turn it on."""
+    _save(client, is_active=False)
+    seeded.append(_draft(title="Renamed"))
+    sid = client.post(
+        "/workflows/designer/edit", json={"name": "weekly_competitor_digest"}
+    ).json()["session_id"]
+    body = client.post(
+        "/workflows/designer/message", json={"session_id": sid, "message": "Rename it."}
+    ).json()
+    assert body["draft"]["definition"]["is_active"] is False
+
+
+def test_edit_rejects_an_overlong_name(client: TestClient, seeded: _Queue) -> None:
+    resp = client.post("/workflows/designer/edit", json={"name": "x" * 500})
+    assert resp.status_code == 422

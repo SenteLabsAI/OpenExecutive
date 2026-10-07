@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation";
 import {
   DYNAMIC_SPECIALISTS,
   DynamicStep,
+  DynamicWorkflowDef,
   Person,
   CustomWorkflowError,
   WorkflowDesignerDraft,
   activateCustomWorkflow,
   createCustomWorkflow,
+  updateCustomWorkflow,
 } from "@/lib/api";
+import { addedTools, describeCadence, describeChanges } from "@/lib/workflowChanges";
 import ToolChips, { mayWrite, toolLabel, useToolInfo } from "./ToolChips";
 
 // Keyed by DYNAMIC_SPECIALISTS so adding a specialist there without a label
@@ -27,35 +30,9 @@ const SPECIALIST_LABELS: Record<(typeof DYNAMIC_SPECIALISTS)[number], string> = 
   board_comms: "Board comms",
 };
 
-const DAYS: Record<string, string> = {
-  mon: "Monday",
-  tue: "Tuesday",
-  wed: "Wednesday",
-  thu: "Thursday",
-  fri: "Friday",
-  sat: "Saturday",
-  sun: "Sunday",
-};
-
 function specialistLabel(key: string | undefined): string {
   if (!key) return "Strategy";
   return (SPECIALIST_LABELS as Record<string, string>)[key] ?? key;
-}
-
-/** Plain-words rendering of the cadence DSL (daily@HH:MM, weekly@DOW@HH:MM, quarterly@DD-HH:MM). */
-export function describeCadence(cadence: string | null | undefined): string {
-  if (!cadence) return "Only when you run it";
-  const parts = cadence.split("@");
-  if (parts[0] === "daily" && parts[1]) return `Every day at ${parts[1]} UTC`;
-  if (parts[0] === "weekly" && parts[1] && parts[2]) {
-    const day = DAYS[parts[1].toLowerCase()] ?? parts[1];
-    return `Every ${day} at ${parts[2]} UTC`;
-  }
-  if (parts[0] === "quarterly" && parts[1]) {
-    const [dd, time] = parts[1].split("-");
-    return `Quarterly on day ${Number(dd)} at ${time} UTC`;
-  }
-  return cadence;
 }
 
 function personName(people: Person[], id: number | null | undefined): string {
@@ -83,10 +60,13 @@ function stepLine(step: DynamicStep, people: Person[]): { who: string; what: str
 }
 
 /**
- * The human check on a workflow before it can act. Two modes:
+ * The human check on a workflow before it can act. Modes:
  * - wizard draft (sessionId + onRefine): "Create workflow" saves it;
+ * - `edit`: a revision of a saved workflow — lists what changes and
+ *   "Save changes" updates it;
  * - `pending`: a workflow chat saved switched off — "Turn on workflow"
- *   activates it, and that click is the approval of its tools.
+ *   activates it, and that click is the approval of its tools;
+ * - `readOnly`: the saved workflow as it is, with no actions.
  */
 export default function WorkflowDraftReview({
   draft,
@@ -95,6 +75,8 @@ export default function WorkflowDraftReview({
   sessionId,
   onRefine,
   pending,
+  edit,
+  readOnly = false,
 }: {
   draft: WorkflowDesignerDraft;
   people: Person[];
@@ -102,6 +84,8 @@ export default function WorkflowDraftReview({
   sessionId?: string;
   onRefine?: () => void;
   pending?: { onActivated: () => void };
+  edit?: { original: DynamicWorkflowDef };
+  readOnly?: boolean;
 }) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -113,7 +97,16 @@ export default function WorkflowDraftReview({
   const def = draft.definition;
   const stepTools = def.steps.flatMap((s) => (s.kind === "action" ? s.tools : []));
   const toolInfo = useToolInfo(stepTools);
-  const writeTools = Array.from(new Set(stepTools)).filter((t) => mayWrite(t, toolInfo));
+  // Editing: only the tools this revision adds need a fresh look.
+  const reviewTools = edit ? addedTools(edit.original, def) : Array.from(new Set(stepTools));
+  const writeTools = reviewTools.filter((t) => mayWrite(t, toolInfo));
+  const changes = edit
+    ? describeChanges(edit.original, def, {
+        person: (id) => personName(people, id),
+        specialist: specialistLabel,
+        tool: (t) => toolLabel(t).label,
+      })
+    : [];
 
   async function confirm() {
     setError(null);
@@ -122,6 +115,9 @@ export default function WorkflowDraftReview({
       if (pending) {
         await activateCustomWorkflow(def);
         pending.onActivated();
+      } else if (edit) {
+        const saved = await updateCustomWorkflow(def.name, def);
+        router.push(`/jobs/${encodeURIComponent(saved.name)}`);
       } else {
         const saved = await createCustomWorkflow(def);
         router.push(`/jobs/${encodeURIComponent(saved.name)}`);
@@ -133,9 +129,13 @@ export default function WorkflowDraftReview({
     }
   }
 
-  const editHref = pending
-    ? `/jobs/new?edit=${encodeURIComponent(def.name)}`
-    : sessionId
+  const editHref = readOnly
+    ? null
+    : pending
+    ? `/jobs/new?edit=${encodeURIComponent(def.name)}&mode=advanced`
+    : edit && sessionId
+      ? `/jobs/new?edit=${encodeURIComponent(def.name)}&designer=${encodeURIComponent(sessionId)}`
+      : sessionId
       ? `/jobs/new?designer=${encodeURIComponent(sessionId)}`
       : null;
 
@@ -143,7 +143,13 @@ export default function WorkflowDraftReview({
     <div className="rounded-xl border border-indigo-500/30 bg-surface-elevated/60 p-4 space-y-4">
       <div>
         <p className="text-[10px] uppercase tracking-wide text-indigo-300 mb-1">
-          {pending ? "Waiting for your approval · off" : "Draft workflow"}
+          {pending
+            ? "Waiting for your approval · off"
+            : readOnly
+              ? "How it works now"
+              : edit
+                ? "Proposed changes"
+                : "Draft workflow"}
         </p>
         <h3 className="text-base font-semibold text-fg">{def.title}</h3>
         {def.owner_person_id != null && (
@@ -158,6 +164,23 @@ export default function WorkflowDraftReview({
           <p className="text-sm text-fg mt-2 whitespace-pre-wrap">{draft.summary}</p>
         )}
       </div>
+
+      {edit && (
+        <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2">
+          <p className="text-xs text-indigo-300 mb-1">What changes</p>
+          {changes.length === 0 ? (
+            <p className="text-sm text-fg-muted">
+              Nothing has changed yet — tell me what you&rsquo;d like different.
+            </p>
+          ) : (
+            <ul className="list-disc pl-4 space-y-0.5 text-sm text-fg">
+              {changes.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
         <div>
@@ -216,7 +239,7 @@ export default function WorkflowDraftReview({
         })}
       </ol>
 
-      {draft.assumptions.length > 0 && (
+      {!readOnly && draft.assumptions.length > 0 && (
         <div className="rounded-md bg-amber-500/5 border border-amber-500/20 px-3 py-2">
           <p className="text-xs text-amber-300 mb-1">Assumptions — tell me if any are wrong</p>
           <ul className="list-disc pl-4 space-y-0.5 text-xs text-fg-muted">
@@ -227,11 +250,15 @@ export default function WorkflowDraftReview({
         </div>
       )}
 
-      {writeTools.length > 0 && (
+      {!readOnly && writeTools.length > 0 && (
         <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 text-xs">
           <p className="text-fg">
-            {pending ? "Turning this workflow on" : "Creating this workflow"} lets
-            it use these tools on every run without asking again:
+            {pending
+              ? "Turning this workflow on lets it use these tools"
+              : edit
+                ? "Saving these changes lets it use these new tools"
+                : "Creating this workflow lets it use these tools"}{" "}
+            on every run without asking again:
           </p>
           <p className="mt-1 text-fg-muted">
             {writeTools.map((t) => toolLabel(t).label).join(" · ")}
@@ -251,20 +278,25 @@ export default function WorkflowDraftReview({
         </p>
       )}
 
+      {!readOnly && (
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={() => void confirm()}
-          disabled={saving || busy}
+          disabled={saving || busy || (!!edit && changes.length === 0)}
           className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition"
         >
           {pending
             ? saving
               ? "Turning on…"
               : "Turn on workflow"
-            : saving
-              ? "Creating…"
-              : "Create workflow"}
+            : edit
+              ? saving
+                ? "Saving…"
+                : "Save changes"
+              : saving
+                ? "Creating…"
+                : "Create workflow"}
         </button>
         {onRefine && (
           <button
@@ -287,6 +319,7 @@ export default function WorkflowDraftReview({
           </button>
         )}
       </div>
+      )}
     </div>
   );
 }
