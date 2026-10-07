@@ -5976,7 +5976,10 @@ workflows:
     script size; printed output past its cap is dropped, not fatal. Results
     and errors list the calls the script made, so a model fixing a script
     that failed partway does not repeat writes that already ran. Scripts are
-    never stored; definitions stay data, not code.
+    never stored; definitions stay data, not code. The workflow designer's
+    prompt keeps per-item work in ONE action step (items spelled out in its
+    goal) and never lists run_script; validate_definition rejects a step that
+    lists it, so the designer's repair turn removes it.
 
     Chat scripts: the Executive's chat is offered the same `run_script` tool
     (step_script.CHAT_TOOL_DEFINITION, a constant so the cached tool prefix is

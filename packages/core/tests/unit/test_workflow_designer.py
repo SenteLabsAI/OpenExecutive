@@ -635,3 +635,11 @@ def test_discovered_tools_are_bounded() -> None:
     )
     assert len(discovered) == wd.MAX_DISCOVERED_TOOLS
     assert "srv__t0" not in discovered and f"srv__t{wd.MAX_DISCOVERED_TOOLS + 4}" in discovered
+
+
+def test_the_designer_knows_action_steps_can_script() -> None:
+    # The run-time script is built in: the designer keeps per-item work in one
+    # step and never lists run_script as a tool.
+    text = WORKFLOW_DESIGNER_SYSTEM
+    assert "ONE action step, not a step per item" in text
+    assert "run_script) is built in" in text and "run_script as a step tool" in text
