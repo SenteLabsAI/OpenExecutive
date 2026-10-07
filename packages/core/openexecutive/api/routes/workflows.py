@@ -330,6 +330,57 @@ def _reviewed_matches(stored: DynamicWorkflowDef, reviewed: Any) -> bool:
     return seen.model_dump(exclude=_REVIEW_EXCLUDE) == stored.model_dump(exclude=_REVIEW_EXCLUDE)
 
 
+@router.post("/workflows/custom/{name}/save-edit")
+async def save_designer_edit(name: str, request: Request) -> dict[str, Any]:
+    """Save the draft of a conversation that edits ``name``.
+
+    The conversation is opened by ``POST /workflows/designer/edit``. This saves
+    that session's own draft, never a definition the client sends, and only if
+    the stored workflow is still the version the conversation opened on: an
+    edit started before someone changed it or switched it off is a 409, not a
+    silent overwrite. The stored on/off state is kept. Declared under
+    ``/workflows/custom`` so whatever limits writes to custom workflows covers
+    it too.
+    """
+    from openexecutive.api.routes import workflow_designer as designer_routes
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        body = {}
+    session_id = body.get("session_id") if isinstance(body, dict) else None
+    if not isinstance(session_id, str) or not session_id:
+        raise HTTPException(status_code=422, detail="session_id is required")
+    session = designer_routes._get_session(session_id)
+    with designer_routes._one_turn(session):
+        original = session.original
+        if session.editing != name or original is None:
+            raise HTTPException(
+                status_code=409, detail="That conversation is about a different workflow."
+            )
+        if session.phase != "draft" or session.draft is None:
+            raise HTTPException(status_code=409, detail="There are no changes to save yet.")
+        defn = session.draft.definition.model_copy(
+            update={"name": name, "is_active": original.is_active}
+        )
+        errors = await validate_definition_and_tools(defn)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
+        stored = save_if_unchanged(defn, original)
+        if stored is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This workflow changed since you started editing it — open it "
+                    "again to see the current version."
+                ),
+            )
+        # Later saves in the same conversation compare with what is stored now.
+        session.original = stored
+    _sync_cadence(stored)
+    return _with_owner(stored)
+
+
 @router.post("/workflows/custom/{name}/activate")
 async def activate_custom_workflow(name: str, request: Request) -> dict[str, Any]:
     """Turn a custom workflow on or off.

@@ -566,6 +566,6 @@ class WorkflowDesignerTurnResponse(BaseModel):
     transcript: list[WorkflowDesignerTranscriptTurn] = Field(default_factory=list)
     # Set when the session changes a saved workflow: its name, and the stored
     # definition as it was when the session opened (what the draft is compared
-    # with). The draft is then saved with PUT /workflows/custom/{editing}.
+    # with). The draft is then saved with POST /workflows/custom/{editing}/save-edit.
     editing: str | None = None
     original: dict[str, Any] | None = None

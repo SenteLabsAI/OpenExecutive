@@ -61,38 +61,114 @@ function stepText(step: DynamicStep): string {
   return step.goal;
 }
 
+// What a sign-off asks for. Anything but approve/reject is a question, not
+// permission: the run carries on whatever the answer, so say so.
+const REPLY_SHAPE: Record<string, string> = {
+  approve_reject: "an approve/reject decision (the run stops unless approved)",
+  free_text: "a written reply (the run continues whatever the answer)",
+  numeric: "a number (the run continues whatever the answer)",
+  document: "a document (the run continues whatever the answer)",
+};
+const REPLY_SHAPE_SHORT: Record<string, string> = {
+  approve_reject: "an approve/reject decision",
+  free_text: "a written reply",
+  numeric: "a number",
+  document: "a document",
+};
+
+// Fields each step kind's sentences cover, and the defaults the server fills
+// in, so a field the model left out reads the same as its default. Any other
+// field that differs still gets a line (see `otherFieldsDiffer`).
+const STEP_DEFAULTS: Record<string, Record<string, unknown>> = {
+  common: { kind: undefined, id: undefined, title: undefined, description: "" },
+  specialist: { specialist: undefined, goal: undefined, rag_query: "", playbook: "" },
+  approval_gate: {
+    person_id: undefined,
+    question: undefined,
+    timeout_hours: 48,
+    on_timeout: "escalate",
+    expected_reply_shape: "approve_reject",
+  },
+  synthesis: { instructions: "", specialist: "cso" },
+  action: { goal: undefined, tools: undefined, max_tool_calls: 20 },
+};
+
+function field(obj: object, key: string, defaults: Record<string, unknown>): unknown {
+  const v = (obj as Record<string, unknown>)[key];
+  return v === undefined || v === null ? defaults[key] : v;
+}
+
+/** True when a field not in `covered` differs (a field this file doesn't know yet). */
+function otherFieldsDiffer(a: object, b: object, covered: string[]): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (covered.includes(k)) continue;
+    const va = (a as Record<string, unknown>)[k];
+    const vb = (b as Record<string, unknown>)[k];
+    if (JSON.stringify(va ?? null) !== JSON.stringify(vb ?? null)) return true;
+  }
+  return false;
+}
+
 function stepChanges(a: DynamicStep, b: DynamicStep, labels: ChangeLabels): string[] {
   const out: string[] = [];
   const name = `“${b.title}”`;
+  const defaults = { ...STEP_DEFAULTS.common, ...STEP_DEFAULTS[b.kind] };
+  const get = (s: DynamicStep, k: string) => field(s, k, defaults);
   if (a.title !== b.title) out.push(`Renamed step “${a.title}” to ${name}`);
   if (a.kind === "specialist" && b.kind === "specialist" && a.specialist !== b.specialist)
     out.push(`${name} is now handled by ${labels.specialist(b.specialist)} instead of ${labels.specialist(a.specialist)}`);
-  if (a.kind === "synthesis" && b.kind === "synthesis" && a.specialist !== b.specialist)
+  if (a.kind === "synthesis" && b.kind === "synthesis" && get(a, "specialist") !== get(b, "specialist"))
     out.push(`${name} is now written by ${labels.specialist(b.specialist)} instead of ${labels.specialist(a.specialist)}`);
   if (a.kind === "approval_gate" && b.kind === "approval_gate") {
     if (a.person_id !== b.person_id)
       out.push(`${name}: sign-off from ${labels.person(b.person_id)} instead of ${labels.person(a.person_id)}`);
-    const ha = a.timeout_hours ?? 48;
-    const hb = b.timeout_hours ?? 48;
+    const sa = String(get(a, "expected_reply_shape"));
+    const sb = String(get(b, "expected_reply_shape"));
+    if (sa !== sb)
+      out.push(`${name} now asks for ${REPLY_SHAPE[sb] ?? sb}, not ${REPLY_SHAPE_SHORT[sa] ?? sa}`);
+    const ha = get(a, "timeout_hours");
+    const hb = get(b, "timeout_hours");
     if (ha !== hb) out.push(`${name}: waits up to ${hb} hours for an answer (was ${ha})`);
-    const ta = a.on_timeout ?? "escalate";
-    const tb = b.on_timeout ?? "escalate";
-    if (ta !== tb) out.push(`${name}: if nobody answers, it now ${ON_TIMEOUT[tb] ?? tb}`);
+    const tb = String(get(b, "on_timeout"));
+    if (get(a, "on_timeout") !== tb) out.push(`${name}: if nobody answers, it now ${ON_TIMEOUT[tb] ?? tb}`);
   }
   if (a.kind === "action" && b.kind === "action") {
     const added = b.tools.filter((t) => !a.tools.includes(t));
     const removed = a.tools.filter((t) => !b.tools.includes(t));
     if (added.length) out.push(`${name} can now use ${list(added.map(labels.tool))}`);
     if (removed.length) out.push(`${name} no longer uses ${list(removed.map(labels.tool))}`);
+    const ma = get(a, "max_tool_calls");
+    const mb = get(b, "max_tool_calls");
+    if (ma !== mb) out.push(`${name} may now use tools up to ${mb} times a run (was ${ma})`);
   }
-  if (a.kind === "specialist" && b.kind === "specialist" && (a.playbook ?? "") !== (b.playbook ?? ""))
-    out.push(
-      b.playbook
-        ? `${name} now follows the “${b.playbook}” playbook`
-        : `${name} no longer follows a playbook`
-    );
+  if (a.kind === "specialist" && b.kind === "specialist") {
+    if (get(a, "playbook") !== get(b, "playbook"))
+      out.push(
+        b.playbook
+          ? `${name} now follows the “${b.playbook}” playbook`
+          : `${name} no longer follows a playbook`
+      );
+    if (get(a, "rag_query") !== get(b, "rag_query"))
+      out.push(`${name} looks up different things in your documents`);
+  }
   if (stepText(a).trim() !== stepText(b).trim()) out.push(`New instructions for ${name}`);
+  if (String(get(a, "description")).trim() !== String(get(b, "description")).trim())
+    out.push(`Updated the description of ${name}`);
+  if (otherFieldsDiffer(a, b, Object.keys(defaults))) out.push(`Changed other settings of ${name}`);
   return out;
+}
+
+// Top-level fields covered above, plus ones the server owns (not changes).
+const TOP_LEVEL_FIELDS = [
+  "name", "title", "description", "section", "estimated_minutes", "input_fields", "steps",
+  "cadence", "cadence_person_id", "is_active", "created_at", "updated_at", "owner_person_id",
+];
+
+/** Plain words for what a sign-off asks for (shown on the review card). */
+export function replyShapeLabel(shape: string | undefined): string | null {
+  if (!shape || shape === "approve_reject") return null;
+  return REPLY_SHAPE_SHORT[shape] ?? shape;
 }
 
 /**
@@ -110,6 +186,8 @@ export function describeChanges(
   if ((before.description ?? "").trim() !== (after.description ?? "").trim())
     out.push("Updated the description");
   if (before.section !== after.section) out.push(`Moved from ${before.section} to ${after.section}`);
+  if (before.estimated_minutes !== after.estimated_minutes)
+    out.push(`Expected to take about ${after.estimated_minutes} min (was ${before.estimated_minutes})`);
 
   // Schedule.
   const ca = before.cadence || null;
@@ -138,6 +216,12 @@ export function describeChanges(
     if (old.label !== f.label) out.push(`Input “${old.label}” is now called “${f.label}”`);
     if ((old.required !== false) !== (f.required !== false))
       out.push(`“${f.label}” is now ${f.required === false ? "optional" : "required"}`);
+    if (
+      (old.description ?? "").trim() !== (f.description ?? "").trim() ||
+      !!old.multiline !== !!f.multiline ||
+      otherFieldsDiffer(old, f, ["name", "label", "required", "description", "multiline"])
+    )
+      out.push(`Changed how the form asks for “${f.label}”`);
   }
   for (const f of before.input_fields)
     if (!fieldsAfter.has(f.name)) out.push(`No longer asks for “${f.label}”`);
@@ -172,6 +256,8 @@ export function describeChanges(
   const kept = pairs.flatMap(([old]) => (old ? [old.id] : []));
   const keptBefore = before.steps.map((s) => s.id).filter((id) => kept.includes(id));
   if (kept.join("\n") !== keptBefore.join("\n")) out.push("Changed the order of the steps");
+
+  if (otherFieldsDiffer(before, after, TOP_LEVEL_FIELDS)) out.push("Changed other settings");
 
   return out;
 }

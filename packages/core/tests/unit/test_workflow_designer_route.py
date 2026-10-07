@@ -447,11 +447,13 @@ def test_edit_refines_the_saved_definition_and_saves_with_put(
     assert call["context_block"].startswith("CTX")
     assert "CHANGING" in call["context_block"]
 
-    put = client.put(
-        "/workflows/custom/weekly_competitor_digest", json=body["draft"]["definition"]
+    saved = client.post(
+        "/workflows/custom/weekly_competitor_digest/save-edit", json={"session_id": sid}
     )
-    assert put.status_code == 200, put.text
-    assert put.json()["title"] == "Friday competitor digest"
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["title"] == "Friday competitor digest"
+    stored = client.get("/workflows/custom/weekly_competitor_digest").json()
+    assert stored["title"] == "Friday competitor digest"
 
 
 def test_edit_keeps_a_switched_off_workflow_off(client: TestClient, seeded: _Queue) -> None:
@@ -470,3 +472,84 @@ def test_edit_keeps_a_switched_off_workflow_off(client: TestClient, seeded: _Que
 def test_edit_rejects_an_overlong_name(client: TestClient, seeded: _Queue) -> None:
     resp = client.post("/workflows/designer/edit", json={"name": "x" * 500})
     assert resp.status_code == 422
+
+
+def _edit_to_draft(client: TestClient, seeded: _Queue, **overrides: Any) -> str:
+    seeded.append(_draft(**overrides))
+    sid = client.post(
+        "/workflows/designer/edit", json={"name": "weekly_competitor_digest"}
+    ).json()["session_id"]
+    resp = client.post(
+        "/workflows/designer/message", json={"session_id": sid, "message": "Change it."}
+    )
+    assert resp.json()["phase"] == "draft", resp.text
+    return sid
+
+
+def test_save_edit_refuses_a_workflow_switched_off_since(
+    client: TestClient, seeded: _Queue
+) -> None:
+    """Switched off mid-edit: saving must not turn it back on (or overwrite it)."""
+    _save(client)
+    sid = _edit_to_draft(client, seeded, title="Renamed")
+    off = client.post(
+        "/workflows/custom/weekly_competitor_digest/activate", json={"is_active": False}
+    )
+    assert off.status_code == 200, off.text
+
+    resp = client.post(
+        "/workflows/custom/weekly_competitor_digest/save-edit", json={"session_id": sid}
+    )
+    assert resp.status_code == 409
+    stored = client.get("/workflows/custom/weekly_competitor_digest").json()
+    assert stored["is_active"] is False
+    assert stored["title"] == "Weekly competitor digest"
+
+
+def test_save_edit_saves_the_session_draft_not_a_client_body(
+    client: TestClient, seeded: _Queue
+) -> None:
+    _save(client, is_active=False)
+    sid = _edit_to_draft(client, seeded, title="Renamed")
+    resp = client.post(
+        "/workflows/custom/weekly_competitor_digest/save-edit",
+        json={"session_id": sid, "definition": {"title": "Injected", "is_active": True}},
+    )
+    assert resp.status_code == 200, resp.text
+    stored = client.get("/workflows/custom/weekly_competitor_digest").json()
+    assert stored["title"] == "Renamed"
+    assert stored["is_active"] is False
+
+
+def test_save_edit_twice_in_one_conversation(client: TestClient, seeded: _Queue) -> None:
+    _save(client)
+    sid = _edit_to_draft(client, seeded, title="First")
+    url = "/workflows/custom/weekly_competitor_digest/save-edit"
+    assert client.post(url, json={"session_id": sid}).status_code == 200
+    seeded.append(_draft(title="Second"))
+    client.post("/workflows/designer/message", json={"session_id": sid, "message": "Again."})
+    assert client.post(url, json={"session_id": sid}).status_code == 200
+    assert client.get("/workflows/custom/weekly_competitor_digest").json()["title"] == "Second"
+
+
+def test_save_edit_refusals(client: TestClient, seeded: _Queue) -> None:
+    _save(client)
+    _save(client, name="other_workflow_name")
+    url = "/workflows/custom/weekly_competitor_digest/save-edit"
+    assert client.post(url, json={}).status_code == 422
+    assert client.post(url, json={"session_id": "nope"}).status_code == 404
+
+    # Opened but nothing drafted yet.
+    sid = client.post(
+        "/workflows/designer/edit", json={"name": "weekly_competitor_digest"}
+    ).json()["session_id"]
+    assert client.post(url, json={"session_id": sid}).status_code == 409
+
+    # A session about another workflow, or a create session, cannot save here.
+    other = client.post(
+        "/workflows/designer/edit", json={"name": "other_workflow_name"}
+    ).json()["session_id"]
+    assert client.post(url, json={"session_id": other}).status_code == 409
+    seeded.append(_draft(name="brand_new_workflow"))
+    create_sid = _start(client)["session_id"]
+    assert client.post(url, json={"session_id": create_sid}).status_code == 409

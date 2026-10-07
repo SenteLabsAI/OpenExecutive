@@ -2146,6 +2146,9 @@ export type DynamicStep =
       question: string;
       timeout_hours?: number;
       on_timeout?: "escalate" | "auto_proceed" | "fail";
+      // Anything but approve_reject is a question, not permission: the run
+      // continues whatever the answer.
+      expected_reply_shape?: "approve_reject" | "free_text" | "numeric" | "document";
     }
   | {
       kind: "synthesis";
@@ -2271,6 +2274,27 @@ export async function activateCustomWorkflow(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_active: true, definition: reviewed }),
+    }
+  );
+  if (!res.ok) throw await _customError(res);
+  return res.json();
+}
+
+/**
+ * Save the draft of a conversation that edits a saved workflow. The server
+ * saves its own copy of the draft, and only if the workflow has not changed
+ * since the conversation opened (409 otherwise).
+ */
+export async function saveWorkflowDesignerEdit(
+  name: string,
+  sessionId: string
+): Promise<DynamicWorkflowDef> {
+  const res = await fetch(
+    `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/save-edit`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
     }
   );
   if (!res.ok) throw await _customError(res);

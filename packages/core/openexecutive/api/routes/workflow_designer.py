@@ -9,7 +9,9 @@ editor.
 
 ``POST /workflows/designer/edit`` opens the same conversation on a SAVED
 workflow: the stored definition is the starting draft, the user says what to
-change, and the UI saves the revision through ``PUT /workflows/custom/{name}``.
+change, and the UI saves the revision through
+``POST /workflows/custom/{name}/save-edit`` (the session's own draft, and only
+if the stored workflow has not changed since).
 The session keeps the workflow's name and on/off state whatever the model
 drafts.
 

@@ -74,6 +74,9 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
     if (!resumeId || resumeId === heldSessionRef.current) return;
     getWorkflowDesignerSession(resumeId)
       .then((t) => {
+        // `?edit=A&session=<a conversation about B>` would save to B under an
+        // "Edit A" heading: drop the session and open A afresh instead.
+        if (editName && t.editing !== editName) throw new Error("different workflow");
         heldSessionRef.current = t.session_id;
         setTurn(t);
       })
@@ -128,12 +131,7 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
     handoffRef.current = true;
     // Always consumed, so a leftover never fires on a later visit.
     const handedOff = takeWorkflowDescription()?.trim();
-    if (resumeId) return;
-    if (editName) {
-      // Opening an edit makes no model call: the saved workflow is the draft.
-      void run(() => editWorkflowWithDesigner(editName), null);
-      return;
-    }
+    if (resumeId || editName) return;
     if (handedOff) {
       // Kept in the composer until the first turn succeeds, so a failed
       // start leaves the text ready to retry.
@@ -146,6 +144,16 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
       router.replace(pathname, { scroll: false });
     }
   }, [resumeId, describeParam, run, router, pathname, editName]);
+
+  // Changing a saved workflow: open a conversation on it (no model call — the
+  // saved workflow is the draft) unless the URL already resumes one. Keyed on
+  // resumeId too, so a dropped mismatched session opens the right one.
+  const openedEditRef = useRef(false);
+  useEffect(() => {
+    if (!editName || resumeId || openedEditRef.current) return;
+    openedEditRef.current = true;
+    void run(() => editWorkflowWithDesigner(editName), null);
+  }, [editName, resumeId, run]);
 
   const send = (text: string) => {
     const message = text.trim();

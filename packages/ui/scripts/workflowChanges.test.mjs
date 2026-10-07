@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addedTools, describeCadence, describeChanges } from "../src/lib/workflowChanges.ts";
+import { addedTools, describeCadence, describeChanges, replyShapeLabel } from "../src/lib/workflowChanges.ts";
 
 const people = { 1: "Sarah", 2: "Mark" };
 const labels = {
@@ -36,7 +36,7 @@ test("no changes reads as an empty list", () => {
 });
 
 test("server-owned fields are not changes", () => {
-  const after = { ...base(), is_active: false, updated_at: "2026-01-01", estimated_minutes: 9 };
+  const after = { ...base(), is_active: false, updated_at: "2026-01-01", owner_person_id: 3 };
   assert.deepEqual(describeChanges(base(), after, labels), []);
 });
 
@@ -134,4 +134,49 @@ test("describeCadence", () => {
   assert.equal(describeCadence(null), "Only when you run it");
   assert.equal(describeCadence("daily@07:30"), "Every day at 07:30 UTC");
   assert.equal(describeCadence("quarterly@05-10:00"), "Quarterly on day 5 at 10:00 UTC");
+});
+
+test("a sign-off that stops failing closed is called out", () => {
+  const after = clone(base());
+  after.steps[1].expected_reply_shape = "free_text";
+  assert.deepEqual(describeChanges(base(), after, labels), [
+    "“Sign-off” now asks for a written reply (the run continues whatever the answer), not an approve/reject decision",
+  ]);
+  // Spelling out the default is not a change.
+  const explicit = clone(base());
+  explicit.steps[1].expected_reply_shape = "approve_reject";
+  explicit.steps[1].timeout_hours = 48;
+  assert.deepEqual(describeChanges(base(), explicit, labels), []);
+});
+
+test("tool-call budget, lookups, descriptions and time are listed", () => {
+  const after = clone(base());
+  after.steps[2].max_tool_calls = 50;
+  after.steps[0].rag_query = "fleet pricing";
+  after.steps[0].description = "New words.";
+  after.estimated_minutes = 9;
+  assert.deepEqual(describeChanges(base(), after, labels), [
+    "Expected to take about 9 min (was 5)",
+    "“Scan” looks up different things in your documents",
+    "Updated the description of “Scan”",
+    "“Send” may now use tools up to 50 times a run (was 20)",
+  ]);
+});
+
+test("any field the list does not know yet still shows up", () => {
+  const after = clone(base());
+  after.steps[0].future_setting = true;
+  after.input_fields[0].multiline = true;
+  after.something_new = 1;
+  assert.deepEqual(describeChanges(base(), after, labels), [
+    "Changed how the form asks for “Competitors”",
+    "Changed other settings of “Scan”",
+    "Changed other settings",
+  ]);
+});
+
+test("replyShapeLabel names only non-default shapes", () => {
+  assert.equal(replyShapeLabel(undefined), null);
+  assert.equal(replyShapeLabel("approve_reject"), null);
+  assert.equal(replyShapeLabel("numeric"), "a number");
 });

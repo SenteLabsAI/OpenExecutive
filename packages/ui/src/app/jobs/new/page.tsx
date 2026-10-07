@@ -194,7 +194,15 @@ function BuilderInner() {
           if (!t.draft) throw new Error("That conversation has no draft yet.");
           if ((t.editing ?? null) !== editName)
             throw new Error("That conversation is about a different workflow.");
-          return t.draft.definition;
+          const draft = t.draft.definition;
+          // Keep the workflow's on/off state as it is now, not as it was
+          // when the conversation opened.
+          return editName
+            ? getCustomWorkflow(editName).then((cur) => ({
+                ...draft,
+                is_active: cur.is_active,
+              }))
+            : draft;
         })
       : editName
       ? getCustomWorkflow(editName)

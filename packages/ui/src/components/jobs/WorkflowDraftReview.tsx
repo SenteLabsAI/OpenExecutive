@@ -11,9 +11,14 @@ import {
   WorkflowDesignerDraft,
   activateCustomWorkflow,
   createCustomWorkflow,
-  updateCustomWorkflow,
+  saveWorkflowDesignerEdit,
 } from "@/lib/api";
-import { addedTools, describeCadence, describeChanges } from "@/lib/workflowChanges";
+import {
+  addedTools,
+  describeCadence,
+  describeChanges,
+  replyShapeLabel,
+} from "@/lib/workflowChanges";
 import ToolChips, { mayWrite, toolLabel, useToolInfo } from "./ToolChips";
 
 // Keyed by DYNAMIC_SPECIALISTS so adding a specialist there without a label
@@ -43,11 +48,16 @@ function personName(people: Person[], id: number | null | undefined): string {
 function stepLine(step: DynamicStep, people: Person[]): { who: string; what: string } {
   if (step.kind === "specialist")
     return { who: specialistLabel(step.specialist), what: step.goal };
-  if (step.kind === "approval_gate")
+  if (step.kind === "approval_gate") {
+    // A question rather than a yes/no: the run continues whatever the answer.
+    const shape = replyShapeLabel(step.expected_reply_shape);
     return {
-      who: `Sign-off · ${personName(people, step.person_id)}`,
+      who:
+        `Sign-off · ${personName(people, step.person_id)}` +
+        (shape ? ` · asks for ${shape}, continues whatever the answer` : ""),
       what: step.question,
     };
+  }
   if (step.kind === "action")
     return {
       who: `Action · ${step.tools.length} ${step.tools.length === 1 ? "tool" : "tools"}`,
@@ -115,8 +125,8 @@ export default function WorkflowDraftReview({
       if (pending) {
         await activateCustomWorkflow(def);
         pending.onActivated();
-      } else if (edit) {
-        const saved = await updateCustomWorkflow(def.name, def);
+      } else if (edit && sessionId) {
+        const saved = await saveWorkflowDesignerEdit(def.name, sessionId);
         router.push(`/jobs/${encodeURIComponent(saved.name)}`);
       } else {
         const saved = await createCustomWorkflow(def);
@@ -269,7 +279,9 @@ export default function WorkflowDraftReview({
       {error && (
         <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
           {!pending
-            ? `${error} — adjust it in the details editor, or tell me what to change.`
+            ? edit && errorStatus === 409
+              ? error
+              : `${error} — adjust it in the details editor, or tell me what to change.`
             : errorStatus === 409
               ? error
               : errorStatus === 404
