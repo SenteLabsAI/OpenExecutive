@@ -39,11 +39,21 @@ try {
 } catch (e) {
   error = String(e.message).split("\n").filter(Boolean).slice(-6).join("\n");
 }
+// Result files within the caps the API set; anything past them is named in
+// `skipped` and not read, so a job can't flood the API with output.
 const files = {};
+const skipped = [];
+let total = 0;
 for (const name of py.FS.readdir("/out")) {
   if (name === "." || name === "..") continue;
   const stat = py.FS.stat(`/out/${name}`);
   if (!py.FS.isFile(stat.mode)) continue;
+  if (Object.keys(files).length >= job.max_files || stat.size > job.max_file_bytes
+      || total + stat.size > job.max_total_bytes) {
+    skipped.push(name);
+    continue;
+  }
+  total += stat.size;
   const bytes = py.FS.readFile(`/out/${name}`);
   let bin = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -57,5 +67,6 @@ console.log(JSON.stringify({
   error,
   printed: printed.slice(0, MAX_PRINTED),
   files,
+  skipped,
   ms: { load: Math.round(tLoad - t0), packages: Math.round(tPkgs - tLoad), job: Math.round(t1 - tPkgs) },
 }));

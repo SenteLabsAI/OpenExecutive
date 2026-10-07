@@ -1718,6 +1718,9 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # person's own request, never something stored text talks an unattended run
 # into (its handler refuses an unattended session too).
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    # Library work on files (workflows/python_job.py): the principal's own
+    # turns only; research synthesis and reflection build from the full list.
+    "run_python_job",
     "assign_open_loop",
     "create_goal",
     "forget_fact",

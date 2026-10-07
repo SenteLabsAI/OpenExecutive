@@ -6037,6 +6037,13 @@ workflows:
     by lock sha256 (docker/pysandbox-fetch.mjs), pip-pinned pypdf/openpyxl,
     build smoke runs a job. Measured: ~2.2 s start, 4 s PDF split (214 MB),
     11 s pandas+matplotlib (446 MB); image +~130 MB.
+    Security review fixes: memory capped by RLIMIT_DATA (PYTHON_JOB_MEMORY_MB,
+    default 1536; 1 GB broke pandas) plus --max-old-space-size=256 and
+    --wasm-max-mem-pages=12288; worker caps output at 20 files / 25 MB and
+    the API's stdout read is capped, sizes checked before base64 decoding;
+    withheld on unattended passes (UNATTENDED_WITHHELD_TOOLS); downloads are
+    no-store; npm deps via package-lock + npm ci, pip wheels --require-hashes;
+    links URL-encode the file name.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

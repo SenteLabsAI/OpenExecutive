@@ -28,5 +28,8 @@ def download_job_file(job_id: str, name: str, request: Request) -> FileResponse:
         path,
         filename=path.name,
         media_type="application/octet-stream",
-        headers={"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"},
+        # no-store: a result can quote Knowledge documents; keep it out of the
+        # browser's disk cache, as confidential artifact downloads do.
+        headers={"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff",
+                 "Cache-Control": "no-store"},
     )

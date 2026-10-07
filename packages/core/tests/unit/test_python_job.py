@@ -35,7 +35,7 @@ def sandbox(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Stands in for the Deno process: records each job, writes one file."""
     jobs: list[dict[str, Any]] = []
 
-    async def fake(code: str, files: dict[str, bytes], *, timeout_s: float) -> dict[str, Any]:
+    async def fake(code: str, files: dict[str, bytes], *, timeout_s: float, **_: Any) -> dict[str, Any]:
         jobs.append({"code": code, "files": files})
         return {"result": "ok", "files": {"out.txt": base64.b64encode(b"done").decode()}}
 
@@ -99,10 +99,49 @@ def test_the_download_route_is_the_principals(company: Path, sandbox: list, monk
 def test_the_tool_is_principal_only_and_withheld_where_scripts_are() -> None:
     from openexecutive.delegation.lockdown import MAIL_TOUCHED_WITHHELD_TOOLS
     from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS
-    from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
+    from openexecutive.orchestrator.schedule_tools import (
+        PRIVATE_TURN_WITHHELD_TOOLS,
+        UNATTENDED_WITHHELD_TOOLS,
+    )
 
-    for group in (PRINCIPAL_ONLY_TOOLS, MAIL_TOUCHED_WITHHELD_TOOLS, PRIVATE_TURN_WITHHELD_TOOLS):
+    for group in (
+        PRINCIPAL_ONLY_TOOLS, MAIL_TOUCHED_WITHHELD_TOOLS, PRIVATE_TURN_WITHHELD_TOOLS,
+        UNATTENDED_WITHHELD_TOOLS,
+    ):
         assert python_job.TOOL_NAME in group
+
+
+def test_oversized_results_are_refused_before_decoding(company: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    big = "A" * (python_job._MAX_OUTPUT_BYTES * 4 // 3 + 100)
+
+    async def fake(code: str, files: dict[str, bytes], **_: Any) -> dict[str, Any]:
+        return {"result": "ok", "files": {"big.bin": big}}
+
+    monkeypatch.setattr(python_job, "run_job", fake)
+    decoded: list[Any] = []
+    monkeypatch.setattr(python_job.base64, "b64decode", lambda *a, **k: decoded.append(a) or b"")
+    out = _run({"code": "1"})
+    assert "too many or too large" in out["files_error"] and decoded == []
+
+
+def test_links_are_url_encoded(company: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake(code: str, files: dict[str, bytes], **_: Any) -> dict[str, Any]:
+        return {"files": {"My report (v2).pdf": base64.b64encode(b"x").decode()}}
+
+    monkeypatch.setattr(python_job, "run_job", fake)
+    [f] = _run({"code": "1"})["files"]
+    assert f["link"].endswith("/My%20report%20%28v2%29.pdf")
+
+
+async def test_the_api_stops_reading_a_flood(monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"x" * 300)
+    reader.feed_eof()
+    assert await python_job._read_capped(reader, 100) is None
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"ok")
+    reader.feed_eof()
+    assert await python_job._read_capped(reader, 100) == b"ok"
 
 
 @pytest.mark.skipif(
@@ -117,3 +156,10 @@ def test_the_real_sandbox_runs_a_job_and_keeps_the_server_out(monkeypatch: pytes
     assert "ANTHROPIC_API_KEY" not in base64.b64decode(body["files"]["r.txt"]).decode()
     escape = "from pyodide.code import run_js\nrun_js(\"Deno.env.get('PATH')\")"
     assert "NotCapable" in asyncio.run(python_job.run_job(escape, {}, timeout_s=120))["error"]
+    # A result file past the cap is named, not sent.
+    huge = f"open('/out/huge.bin','wb').write(b'x' * {python_job._MAX_OUTPUT_BYTES + 1})\n'ok'"
+    body = asyncio.run(python_job.run_job(huge, {}, timeout_s=120))
+    assert body["skipped"] == ["huge.bin"] and body["files"] == {}
+    # Memory past the caps fails the job, not the server.
+    hog = "from pyodide.code import run_js\nrun_js('let a=[]; for(let i=0;i<8;i++){const b=new Uint8Array(2**30); b.fill(1); a.push(b);} a.length')"
+    assert "allocation failed" in asyncio.run(python_job.run_job(hog, {}, timeout_s=120))["error"]

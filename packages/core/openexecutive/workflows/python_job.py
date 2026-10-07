@@ -30,8 +30,10 @@ import base64
 import json
 import logging
 import re
+import resource
 import shutil
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,14 @@ _MAX_INPUT_FILES = 10
 _MAX_INPUT_BYTES = 25 * 2**20
 _MAX_OUTPUT_FILES = 20
 _MAX_OUTPUT_BYTES = 25 * 2**20
+# What the API reads back from a job: the output files base64'd (4/3) plus
+# result and printed text. Anything bigger is refused unread, so a job can't
+# make the API itself run out of memory.
+_MAX_STDOUT_BYTES = _MAX_OUTPUT_BYTES * 4 // 3 + 2**20
+# V8's own heap, and the WebAssembly memory Python lives in (pages of 64 KiB:
+# 768 MB). Buffers outside both are held by the process data limit
+# (PYTHON_JOB_MEMORY_MB, set in _limit_memory).
+_V8_FLAGS = "--max-old-space-size=256,--wasm-max-mem-pages=12288"
 _KEEP_DAYS = 7
 # One job at a time per process: each takes 200-450 MB while it runs.
 _slot = asyncio.Semaphore(1)
@@ -112,9 +122,34 @@ def _err(message: str) -> str:
     return json.dumps({"error": message})
 
 
-async def run_job(code: str, files: dict[str, bytes], *, timeout_s: float) -> dict[str, Any]:
-    """Run one job in a fresh sandbox process. Never raises (cancellation
-    aside, which kills the process)."""
+def _limit_memory(limit_mb: int) -> Any:
+    """For the sandbox process, before it runs: a data limit (RLIMIT_DATA),
+    which also bounds memory the V8 flags don't (JavaScript buffers)."""
+
+    def apply() -> None:
+        size = limit_mb * 2**20
+        resource.setrlimit(resource.RLIMIT_DATA, (size, size))
+
+    return apply
+
+
+async def _read_capped(stream: asyncio.StreamReader, limit: int) -> bytes | None:
+    """Read a stream to its end, or None as soon as it passes ``limit``."""
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await stream.read(2**16):
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def run_job(
+    code: str, files: dict[str, bytes], *, timeout_s: float, memory_mb: int = 1536
+) -> dict[str, Any]:
+    """Run one job in a fresh sandbox process, which exits when the job ends.
+    Never raises (cancellation aside, which kills the process)."""
     base = _sandbox_dir()
     wheels = sorted(str(p) for p in (base / "wheels").glob("*.whl"))
     job = json.dumps({
@@ -122,19 +157,36 @@ async def run_job(code: str, files: dict[str, bytes], *, timeout_s: float) -> di
         "pyodide": str(base / "pyodide"),
         "wheels": wheels,
         "files": {n: base64.b64encode(b).decode() for n, b in files.items()},
+        "max_file_bytes": _MAX_OUTPUT_BYTES,
+        "max_total_bytes": _MAX_OUTPUT_BYTES,
+        "max_files": _MAX_OUTPUT_FILES,
     }).encode()
     async with _slot:
         proc = await asyncio.create_subprocess_exec(
             str(base / "deno"), "run", "--no-prompt", "--quiet", "--no-remote",
-            f"--allow-read={base},{_WORKER}", str(_WORKER),
+            f"--v8-flags={_V8_FLAGS}", f"--allow-read={base},{_WORKER}", str(_WORKER),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # Nothing of the server's environment: no keys, no proxies.
             env={"PATH": "/usr/bin:/bin", "HOME": str(base), "DENO_NO_UPDATE_CHECK": "1",
                  "DENO_DIR": str(jobs_dir() / ".deno")},
+            preexec_fn=_limit_memory(memory_mb),
         )
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+
+        async def exchange() -> tuple[bytes | None, bytes | None]:
+            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+            proc.stdin.write(job)
+            await proc.stdin.drain()
+            proc.stdin.close()
+            out, err = await asyncio.gather(
+                _read_capped(proc.stdout, _MAX_STDOUT_BYTES), _read_capped(proc.stderr, 2**16)
+            )
+            await proc.wait()
+            return out, err
+
         try:
-            out, err = await asyncio.wait_for(proc.communicate(job), timeout=timeout_s)
+            out, err = await asyncio.wait_for(exchange(), timeout=timeout_s)
         except TimeoutError:
             proc.kill()
             await proc.wait()
@@ -143,9 +195,14 @@ async def run_job(code: str, files: dict[str, bytes], *, timeout_s: float) -> di
             proc.kill()
             await proc.wait()
             raise
+        if out is None:
+            proc.kill()
+            await proc.wait()
+            return {"error": "the job's output was too large; nothing was kept"}
     if proc.returncode != 0:
-        logger.warning("python job: sandbox exited %s: %s", proc.returncode, err.decode()[-400:])
-        return {"error": "the sandbox failed to run the job"}
+        detail = (err or b"").decode(errors="replace")[-400:]
+        logger.warning("python job: sandbox exited %s: %s", proc.returncode, detail)
+        return {"error": "the job stopped: it may have run out of memory or crashed"}
     try:
         body = json.loads(out)
     except ValueError:
@@ -196,33 +253,45 @@ async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
         return _err("too many or too large input files")
 
     started = time.monotonic()
-    body = await run_job(code, files, timeout_s=get_settings().python_job_timeout_s)
+    settings = get_settings()
+    await asyncio.to_thread(_prune, jobs_dir())
+    body = await run_job(
+        code, files, timeout_s=settings.python_job_timeout_s, memory_mb=settings.python_job_memory_mb
+    )
     out_files = body.pop("files", None) or {}
     reply: dict[str, Any] = {
-        k: v for k, v in body.items() if k in ("result", "error", "printed") and v
+        k: v for k, v in body.items() if k in ("result", "error", "printed", "skipped") and v
     }
     if out_files:
-        if len(out_files) > _MAX_OUTPUT_FILES:
-            reply["files_error"] = f"the job wrote more than {_MAX_OUTPUT_FILES} files; none kept"
+        encoded = {
+            n: b for n, b in out_files.items()
+            if isinstance(n, str) and isinstance(b, str) and _SAFE_NAME.match(n)
+        }
+        # Sizes checked on the encoded text, before anything is decoded.
+        too_big = sum(len(b) for b in encoded.values()) * 3 // 4 > _MAX_OUTPUT_BYTES
+        if len(encoded) > _MAX_OUTPUT_FILES or too_big:
+            reply["files_error"] = "the result files are too many or too large; none kept"
         else:
-            decoded = {n: base64.b64decode(b) for n, b in out_files.items() if _SAFE_NAME.match(n)}
-            if sum(map(len, decoded.values())) > _MAX_OUTPUT_BYTES:
-                reply["files_error"] = "the result files are too large to keep"
-            else:
-                root = jobs_dir()
-                job_id = uuid.uuid4().hex
-                folder = root / job_id
-                await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
-                for name, data in decoded.items():
-                    await asyncio.to_thread((folder / name).write_bytes, data)
-                await asyncio.to_thread(_prune, root)
-                reply["files"] = [
-                    {"name": n, "bytes": len(d), "link": f"/api/backend/python-jobs/{job_id}/{n}"}
-                    for n, d in sorted(decoded.items())
-                ]
-                reply["note"] = "Give the person each file's link as a markdown link."
+            reply.update(await _keep({n: base64.b64decode(b) for n, b in encoded.items()}))
     reply["seconds"] = round(time.monotonic() - started, 1)
     return json.dumps(reply, ensure_ascii=False)
+
+
+async def _keep(files: dict[str, bytes]) -> dict[str, Any]:
+    """Store a job's result files and return their links for the reply."""
+    job_id = uuid.uuid4().hex
+    folder = jobs_dir() / job_id
+    await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
+    for name, data in files.items():
+        await asyncio.to_thread((folder / name).write_bytes, data)
+    return {
+        "files": [
+            {"name": n, "bytes": len(d),
+             "link": f"/api/backend/python-jobs/{job_id}/{urllib.parse.quote(n)}"}
+            for n, d in sorted(files.items())
+        ],
+        "note": "Give the person each file's link as a markdown link.",
+    }
 
 
 def result_file(job_id: str, name: str) -> Path | None:

@@ -14,16 +14,16 @@ RUN npm install -g --omit=optional --no-audit --no-fund \
 
 # Python job sandbox (workflows/python_job.py): Pyodide (Python in
 # WebAssembly) run by Deno, which grants it read access to /opt/pysandbox only:
-# no network, environment, writes or processes. Both come from npm; the
-# compiled libraries jobs may import come from Pyodide's CDN, each checked
-# against the sha256 in Pyodide's pyodide-lock.json. Pinned together: the lock
-# names the wheels this exact Pyodide can load.
+# no network, environment, writes or processes. Both come from npm, pinned with
+# integrity hashes in docker/pysandbox/package-lock.json; the compiled libraries
+# jobs may import come from Pyodide's CDN, each checked against the sha256 in
+# Pyodide's pyodide-lock.json. PYODIDE_VERSION must match the lock's pyodide:
+# its pyodide-lock.json names the wheels this exact Pyodide can load.
 FROM node:20-bookworm-slim AS pysandbox-build
 ARG PYODIDE_VERSION=314.0.7
-ARG DENO_VERSION=2.9.6
 WORKDIR /build
-COPY docker/pysandbox-fetch.mjs ./
-RUN npm install --no-audit --no-fund "pyodide@${PYODIDE_VERSION}" "deno@${DENO_VERSION}" \
+COPY docker/pysandbox/package.json docker/pysandbox/package-lock.json docker/pysandbox-fetch.mjs ./
+RUN npm ci --no-audit --no-fund \
     && mkdir -p /opt/pysandbox/wheels \
     && cp -L node_modules/deno/deno /opt/pysandbox/deno \
     && cp -r node_modules/pyodide /opt/pysandbox/pyodide \
@@ -167,12 +167,14 @@ RUN printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/@sof
     && node --input-type=module -e "const m = await import('/usr/local/bin/ms365-access-token.mjs'); const A = await m.loadAuthManager(); for (const f of ['loadTokenCache', 'getCurrentAccount']) if (typeof A.prototype[f] !== 'function') throw new Error('AuthManager.' + f + ' is missing'); if (typeof A.create !== 'function') throw new Error('AuthManager.create is missing');"
 
 # The Python job sandbox, plus the pure-Python libraries jobs get on every run
-# (pypdf, openpyxl). Pinned; the smoke after `uv pip install` below runs a job
-# that imports them, pandas and matplotlib, with the same Deno permissions the
-# API uses, so a broken sandbox fails the build.
+# (pypdf, openpyxl), pinned by hash. The smoke after `uv pip install` below runs
+# a job that imports them, pandas and matplotlib, with the same Deno
+# permissions the API uses, so a broken sandbox fails the build.
 COPY --from=pysandbox-build /opt/pysandbox /opt/pysandbox
-RUN pip download --no-deps --only-binary=:all: --dest /opt/pysandbox/wheels \
-        "pypdf==6.19.0" "openpyxl==3.1.5" "et_xmlfile==2.0.0"
+COPY docker/pysandbox/requirements.txt /tmp/pysandbox-requirements.txt
+RUN pip download --no-deps --only-binary=:all: --require-hashes \
+        -r /tmp/pysandbox-requirements.txt --dest /opt/pysandbox/wheels \
+    && rm /tmp/pysandbox-requirements.txt
 
 COPY packages/core/ .
 
@@ -193,6 +195,7 @@ RUN W=/app/openexecutive/workflows/python_job_worker.mjs \
     && printf '{"code":"import pypdf, openpyxl, pandas, matplotlib\\nstr(len(pypdf.__version__) > 0)","pyodide":"/opt/pysandbox/pyodide","wheels":[%s],"files":{}}' "$WHEELS" \
        | env -i PATH=/usr/bin:/bin HOME=/tmp DENO_DIR=/tmp/deno-smoke DENO_NO_UPDATE_CHECK=1 \
          /opt/pysandbox/deno run --no-prompt --quiet --no-remote \
+         --v8-flags=--max-old-space-size=256,--wasm-max-mem-pages=12288 \
          --allow-read=/opt/pysandbox,$W $W | grep -q '"result":"True"' \
     && rm -rf /tmp/deno-smoke
 

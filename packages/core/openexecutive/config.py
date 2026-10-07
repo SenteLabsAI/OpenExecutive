@@ -601,6 +601,9 @@ class Settings(BaseSettings):
     python_jobs_enabled: bool = Field(True, alias="PYTHON_JOBS_ENABLED")
     python_sandbox_dir: Path = Field(Path("/opt/pysandbox"), alias="PYTHON_SANDBOX_DIR")
     python_job_timeout_s: float = Field(120.0, alias="PYTHON_JOB_TIMEOUT_S", ge=5, le=900)
+    # The sandbox process's data limit (RLIMIT_DATA): measured, pandas plus a
+    # chart needs about 1.5 GB of it; 1 GB is too little.
+    python_job_memory_mb: int = Field(1536, alias="PYTHON_JOB_MEMORY_MB", ge=512, le=16384)
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.
