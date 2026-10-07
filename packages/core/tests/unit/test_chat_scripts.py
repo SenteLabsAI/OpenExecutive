@@ -452,3 +452,26 @@ def test_a_turns_scripts_share_one_call_budget(monkeypatch: pytest.MonkeyPatch) 
     assert len(gateway.calls) == 4
     body = json.loads(_any_result(provider, "tu-s"))
     assert body["error"] == "the script failed" and "at most 4" in body["detail"]
+
+
+def test_agent_activity_shows_the_built_tool_as_one_card() -> None:
+    from openexecutive.orchestrator.debug_events import DebugCollector
+
+    provider = _script_turn()
+    exec_ = Executive(mcp_gateway=_Gateway())  # type: ignore[arg-type]
+    collector = DebugCollector()
+
+    async def go() -> list[Any]:
+        items: list[Any] = []
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            async for item in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "file the scans"}],
+                model="claude-test", debug_collector=collector,
+            ):
+                items.append(item)
+        return items
+
+    items = asyncio.run(go())
+    [card] = [i for i in items if isinstance(i, dict) and i.get("kind") == "script_run"]
+    assert card["data"]["ok"] is True and card["data"]["calls_made"] == 4
+    assert {c["tool"] for c in card["data"]["calls"]} == {"drive__list_items", "drive__move_file"}

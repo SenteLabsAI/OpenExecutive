@@ -75,6 +75,7 @@ export type DebugEventKind =
   | "synthesis_start"
   | "synthesis_done"
   | "skill_invocation"
+  | "script_run"
   | "turn_complete"
   | "turn_error"
   | "committee_review_start"

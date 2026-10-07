@@ -2675,6 +2675,26 @@ class Executive:
                                 script_result, script_failed = payload
                     logger.info("← run_script  result=%s", _trunc(script_result))
                     results_by_id[tu["id"]] = script_result
+                    # Agent Activity: the built tool as one card, with the
+                    # calls it made (the result lists them, capped). Sent by
+                    # the round's event replay below, like specialist events.
+                    if debug_collector:
+                        try:
+                            listed = json.loads(script_result).get("calls") or []
+                        except (ValueError, AttributeError):
+                            listed = []
+                        debug_collector.emit("script_run", {
+                            "iteration": iteration,
+                            "ok": not script_failed,
+                            "saved_tool": script_args.get("tool"),
+                            "kept_as": script_args.get("save_as"),
+                            "calls": [
+                                {"tool": str(c.get("tool", ""))[:200], "ok": bool(c.get("ok"))}
+                                for c in listed if isinstance(c, dict)
+                            ],
+                            "calls_made": script_stats.get("calls", len(listed)),
+                            "duration_ms": script_stats.get("duration_ms"),
+                        })
                     # The script itself: its source and what it returned, so
                     # the per-call rows above can be traced back to it.
                     audit_log(
