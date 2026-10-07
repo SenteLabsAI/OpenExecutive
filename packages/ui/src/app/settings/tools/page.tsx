@@ -11,6 +11,7 @@ import {
   listSavedTools,
   rollbackSavedTool,
   setSavedToolEnabled,
+  setSavedToolWorkflows,
   type SavedTool,
   type SavedToolDetail,
 } from "@/lib/api";
@@ -152,6 +153,36 @@ function ToolCard({
           "no other tools"
         )}
       </p>
+      <div className="mt-3 flex items-start justify-between gap-4 rounded-xl border border-line px-3 py-2.5">
+        <div className="min-w-0">
+          <p id={`${titleId}-workflows`} className="text-sm font-medium text-fg">
+            Use in workflows
+          </p>
+          <p className="text-xs text-fg-muted">
+            {tool.workflow_version == null
+              ? "Off. Workflows can't run this until you turn it on."
+              : tool.workflow_version === tool.version
+                ? `On: workflows run version ${tool.workflow_version}.`
+                : `Workflows still run version ${tool.workflow_version}, which you turned on.`}
+          </p>
+          {tool.workflow_version != null && tool.workflow_version !== tool.version && (
+            <Button
+              size="sm"
+              className="mt-2"
+              disabled={busy || !tool.enabled}
+              onClick={() => run(() => setSavedToolWorkflows(tool.name, true))}
+            >
+              Use version {tool.version} in workflows
+            </Button>
+          )}
+        </div>
+        <Switch
+          checked={tool.workflow_version != null}
+          disabled={busy || !tool.enabled}
+          labelledBy={`${titleId}-workflows`}
+          onChange={(on) => run(() => setSavedToolWorkflows(tool.name, on))}
+        />
+      </div>
       <div className="mt-3">
         <Button size="sm" variant="ghost" onClick={toggleOpen} aria-expanded={open}>
           {open ? "Hide details" : "Details, versions and runs"}

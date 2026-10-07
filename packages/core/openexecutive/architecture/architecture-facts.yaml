@@ -6012,6 +6012,15 @@ workflows:
     AsyncMonty, released in a finally (also on aclosing/cancel). Measured:
     a worker is ~8 MB RSS, exists only while its script runs, and none are
     left after timeouts, memory-cap kills or cancellation.
+    Workflow approval of kept tools: saved_tools.workflow_version (NULL
+    until the owner turns it on; set_workflows copies current_version).
+    Workflow steps use get_for_workflows / list_for_workflows (that version,
+    enabled only); chat uses the current version. A newer save never moves
+    workflow_version; pruning keeps it. PUT /saved-tools/{name}
+    {workflows: true} needs take_the_lead._provably_theirs (409 otherwise);
+    turning off doesn't. Prompted by the automated review: a principal turn
+    that read an injected email could keep an attacker-shaped tool that a
+    workflow then ran unattended.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

@@ -132,7 +132,10 @@ async def test_a_script_that_works_is_saved_with_the_tools_it_called() -> None:
         "save_as": "count_files", "description": "Count the files in a folder.",
     })
     assert not is_error and body["result"] == 3
-    assert body["saved"] == {"name": "count_files", "version": 1, "uses_tools": [LIST], "enabled": True}
+    assert body["saved"] == {
+        "name": "count_files", "version": 1, "uses_tools": [LIST], "enabled": True,
+        "workflows": "off until the owner turns it on in Settings → Advanced → Custom tools",
+    }
     kept = saved_tools.get("count_files")
     assert kept is not None and kept.script == COUNT_SCRIPT and kept.origin == "chat"
 
@@ -175,6 +178,7 @@ async def test_a_turned_off_tool_does_not_run() -> None:
 async def test_a_step_runs_a_saved_tool_only_with_every_tool_it_used() -> None:
     saved_tools.save("file_all", "File everything.", "drive__move_file(file_id='a')", [LIST, MOVE],
                      origin="chat")
+    saved_tools.set_workflows("file_all", True)
     calls = _Calls()
     body, is_error = await _tool({"tool": "file_all"}, tools=[LIST], call=calls)
     assert is_error and body["missing_tools"] == [MOVE] and calls.made == []
@@ -221,9 +225,10 @@ def test_listing_shows_enabled_tools_without_their_scripts() -> None:
     saved_tools.save("old_tool", "Old.", "1", [], origin="chat")
     saved_tools.set_enabled("old_tool", False)
     listed = json.loads(step_script.list_saved_tools_result())["saved_tools"]
-    assert listed == [
-        {"name": "count_files", "description": "Count files.", "version": 1, "uses_tools": [LIST]}
-    ]
+    assert listed == [{
+        "name": "count_files", "description": "Count files.", "version": 1, "uses_tools": [LIST],
+        "in_workflows": False,
+    }]
 
 
 def test_a_step_definition_lists_the_saved_tools_it_may_run() -> None:
@@ -345,3 +350,42 @@ def test_old_versions_are_pruned_but_never_the_one_that_runs(monkeypatch: pytest
         saved_tools.rollback("count_files", 3)
     assert [v["version"] for v in saved_tools.versions("count_files")] == [8, 7, 6, 3]
     assert saved_tools.get("count_files").script == "3"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_workflows_run_only_the_version_the_owner_turned_on() -> None:
+    """A tool kept in chat (maybe on a turn that read an injected email)
+    never runs unattended until the owner turns it on for workflows, and a
+    newer save doesn't change what workflows run."""
+    saved_tools.save("file_all", "v1", "drive__list_items(folder='one')", [LIST], origin="chat")
+    calls = _Calls()
+    body, is_error = await _tool({"tool": "file_all"}, tools=[LIST], call=calls)
+    assert is_error and "not turned on for workflows" in body["error"] and calls.made == []
+    assert step_script.usable_saved_tools([LIST]) == []
+
+    on = saved_tools.set_workflows("file_all", True)
+    assert on.workflow_version == 1
+    # The model keeps a new version: chat runs it, workflows keep version 1.
+    body, _ = await _tool({"script": "drive__list_items(folder='two')", "save_as": "file_all",
+                           "description": "v2"})
+    assert "version 1 is on for workflows" in body["saved"]["workflows"]
+    await _tool({"tool": "file_all"}, tools=[LIST], call=calls)
+    assert calls.made[-1] == (LIST, {"folder": "one"})
+    [usable] = step_script.usable_saved_tools([LIST])
+    assert (usable.version, usable.description) == (1, "v1")
+    await _tool({"tool": "file_all"}, call=calls)
+    assert calls.made[-1] == (LIST, {"folder": "two"})
+
+    saved_tools.set_workflows("file_all", False)
+    body, is_error = await _tool({"tool": "file_all"}, tools=[LIST], call=calls)
+    assert is_error and "not turned on for workflows" in body["error"]
+
+
+def test_pruning_keeps_the_version_workflows_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(saved_tools, "_MAX_VERSIONS_KEPT_PER_TOOL", 2)
+    saved_tools.save("count_files", "v1", "1", [], origin="chat")
+    saved_tools.set_workflows("count_files", True)
+    for i in range(2, 6):
+        saved_tools.save("count_files", f"v{i}", str(i), [], origin="chat")
+    assert [v["version"] for v in saved_tools.versions("count_files")] == [5, 4, 1]
+    assert saved_tools.get_for_workflows("count_files").script == "1"  # type: ignore[union-attr]

@@ -9,8 +9,13 @@ check and audit; chat's gateway gates), and in a workflow step it runs only
 when the step already allows every tool it used (``tools``).
 
 Every save of changed content is a new version; ``current_version`` is the
-one that runs, and an owner can switch it back (``rollback``) or turn the
-tool off (``set_enabled``). Every run is recorded (``saved_tool_runs``).
+one that runs in chat, and an owner can switch it back (``rollback``) or turn
+the tool off (``set_enabled``). Every run is recorded (``saved_tool_runs``).
+
+Workflows run only a version the owner turned on for them
+(``workflow_version``, set by ``set_workflows``): a tool kept on a turn that
+read outside content could otherwise carry injected code into an unattended
+run. A newer save doesn't change it; the owner turns the new one on.
 Same DB file and conventions as ``workflows/dynamic_store.py``.
 """
 from __future__ import annotations
@@ -44,6 +49,8 @@ class SavedTool:
     origin: str
     created_at: str
     updated_at: str
+    # The version workflows may run (the owner turned it on), else None.
+    workflow_version: int | None = None
 
     def summary(self) -> dict[str, Any]:
         """What a model or the Tools page needs to pick it — never the script."""
@@ -52,6 +59,7 @@ class SavedTool:
             "description": self.description,
             "version": self.version,
             "uses_tools": self.tools,
+            "in_workflows": self.workflow_version is not None,
         }
 
 
@@ -108,6 +116,9 @@ def initialize(db_path: Path | None = None) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_saved_tool_runs_name ON saved_tool_runs(name, id)"
         )
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(saved_tools)").fetchall()}
+        if "workflow_version" not in columns:
+            conn.execute("ALTER TABLE saved_tools ADD COLUMN workflow_version INTEGER")
 
 
 def _now() -> str:
@@ -125,15 +136,21 @@ def _row_to_tool(row: Any) -> SavedTool:
         origin=row[6],
         created_at=row[7],
         updated_at=row[8],
+        workflow_version=row[9],
     )
 
 
 _SELECT = """
-    SELECT t.name, v.description, t.enabled, t.current_version, v.script, v.tools,
-           v.origin, t.created_at, t.updated_at
+    SELECT t.name, v.description, t.enabled, v.version, v.script, v.tools,
+           v.origin, t.created_at, t.updated_at, t.workflow_version
     FROM saved_tools t
     JOIN saved_tool_versions v ON v.name = t.name AND v.version = t.current_version
 """
+
+# The same, for the version workflows may run.
+_SELECT_WORKFLOW = _SELECT.replace(
+    "v.version = t.current_version", "v.version = t.workflow_version"
+)
 
 
 def get(name: str, db_path: Path | None = None) -> SavedTool | None:
@@ -141,6 +158,42 @@ def get(name: str, db_path: Path | None = None) -> SavedTool | None:
     with _get_conn(_resolve(db_path)) as conn:
         row = conn.execute(_SELECT + " WHERE t.name = ?", (name,)).fetchone()
     return _row_to_tool(row) if row else None
+
+
+def get_for_workflows(name: str, db_path: Path | None = None) -> SavedTool | None:
+    """The version of ``name`` workflows may run, or None when the owner
+    hasn't turned it on for workflows."""
+    initialize(db_path)
+    with _get_conn(_resolve(db_path)) as conn:
+        row = conn.execute(_SELECT_WORKFLOW + " WHERE t.name = ?", (name,)).fetchone()
+    return _row_to_tool(row) if row else None
+
+
+def list_for_workflows(db_path: Path | None = None) -> list[SavedTool]:
+    """Enabled tools with a version turned on for workflows, at that version."""
+    initialize(db_path)
+    with _get_conn(_resolve(db_path)) as conn:
+        rows = conn.execute(
+            _SELECT_WORKFLOW + " WHERE t.enabled = 1 ORDER BY t.name"
+        ).fetchall()
+    return [_row_to_tool(r) for r in rows]
+
+
+def set_workflows(name: str, on: bool, db_path: Path | None = None) -> SavedTool:
+    """Turn the current version on for workflows, or turn workflows off."""
+    initialize(db_path)
+    with _get_conn(_resolve(db_path)) as conn:
+        cur = conn.execute(
+            "UPDATE saved_tools SET workflow_version = "
+            + ("current_version" if on else "NULL")
+            + ", updated_at = ? WHERE name = ?",
+            (_now(), name),
+        )
+        if cur.rowcount == 0:
+            raise SavedToolError("no saved tool by that name")
+    tool = get(name, db_path)
+    assert tool is not None
+    return tool
 
 
 def list_tools(*, enabled_only: bool = False, db_path: Path | None = None) -> list[SavedTool]:
@@ -230,12 +283,14 @@ def save(
             (name, version, description, script, json.dumps(tools), origin[:200], now),
         )
         # Keep the newest versions, and always the one that ran until now
-        # (it may be an older one the owner rolled back to and trusts).
+        # (it may be an older one the owner rolled back to and trusts) and
+        # the one turned on for workflows.
         conn.execute(
             "DELETE FROM saved_tool_versions WHERE name = ? AND version NOT IN ("
             " SELECT version FROM saved_tool_versions WHERE name = ? ORDER BY version DESC LIMIT ?)"
-            " AND version != ?",
-            (name, name, _MAX_VERSIONS_KEPT_PER_TOOL, previous),
+            " AND version != ? AND version IS NOT ("
+            " SELECT workflow_version FROM saved_tools WHERE name = ?)",
+            (name, name, _MAX_VERSIONS_KEPT_PER_TOOL, previous, name),
         )
     saved = get(name, db_path)
     assert saved is not None

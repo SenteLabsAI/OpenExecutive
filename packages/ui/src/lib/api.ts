@@ -4993,6 +4993,8 @@ export interface SavedTool {
   origin: string;
   created_at: string;
   updated_at: string;
+  // The version workflows may run (the owner turned it on), or null.
+  workflow_version?: number | null;
 }
 
 export interface SavedToolVersion {
@@ -5046,10 +5048,22 @@ export async function getSavedTool(name: string, signal?: AbortSignal): Promise<
 }
 
 export async function setSavedToolEnabled(name: string, enabled: boolean): Promise<SavedToolDetail> {
+  return updateSavedTool(name, { enabled });
+}
+
+/** Turn the current version on for workflows (true), or workflows off. */
+export async function setSavedToolWorkflows(name: string, workflows: boolean): Promise<SavedToolDetail> {
+  return updateSavedTool(name, { workflows });
+}
+
+async function updateSavedTool(
+  name: string,
+  update: { enabled?: boolean; workflows?: boolean },
+): Promise<SavedToolDetail> {
   const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(update),
   });
   if (!res.ok) throw await savedToolError(res, "Couldn't change that tool.");
   return res.json();

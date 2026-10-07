@@ -154,8 +154,9 @@ _SAVED_TEXT = (
     "principal's own turns. Write a script "
     "you mean to reuse so it reads its per-run values (a folder, a date) from "
     "the dict `inputs` rather than hard-coding them. Saving again under the same "
-    "name keeps a new version. To run a saved tool, pass tool (its name) and "
-    "inputs instead of script."
+    "name keeps a new version. Workflows run a kept tool only once the owner "
+    "turns that version on for them. To run a saved tool, pass tool (its name) "
+    "and inputs instead of script."
 )
 _SANDBOX_TEXT = (
     "The script runs in a sandbox with a subset of Python: no imports beyond "
@@ -571,7 +572,8 @@ def usable_saved_tools(step_tools: list[str]) -> list[Any]:
         return []
     allowed = set(step_tools)
     try:
-        listed = saved_tools.list_tools(enabled_only=True)
+        # Only versions the owner turned on for workflows.
+        listed = saved_tools.list_for_workflows()
     except Exception:
         logger.warning("saved tools: couldn't list them for a step", exc_info=True)
         return []
@@ -651,10 +653,20 @@ async def run_script_tool(
             yield _done({"error": "saved tools run only on the principal's own turns"}, True)
             return
         try:
-            saved = saved_tools.get(str(tool_name))
+            saved = (
+                saved_tools.get(str(tool_name))
+                if tools is None
+                else saved_tools.get_for_workflows(str(tool_name))
+            )
         except Exception:
             logger.warning("saved tool: couldn't read %r", str(tool_name)[:60], exc_info=True)
             yield _done({"error": "the saved tool couldn't be read just now; nothing ran"}, True)
+            return
+        if saved is None and tools is not None:
+            yield _done({
+                "error": f"{str(tool_name)[:60]!r} is not turned on for workflows; the owner "
+                "turns it on in Settings → Advanced → Custom tools",
+            }, True)
             return
         if saved is None or not saved.enabled:
             yield _done({"error": f"no saved tool named {str(tool_name)[:60]!r} is turned on"}, True)
@@ -726,6 +738,14 @@ async def run_script_tool(
                 body["saved"] = {
                     "name": kept.name, "version": kept.version, "uses_tools": kept.tools,
                     "enabled": kept.enabled,
+                    # Workflows run only a version the owner turned on.
+                    "workflows": (
+                        f"version {kept.workflow_version} is on for workflows; this one runs there "
+                        "once the owner turns it on in Settings → Advanced → Custom tools"
+                        if kept.workflow_version not in (None, kept.version)
+                        else "on" if kept.workflow_version == kept.version
+                        else "off until the owner turns it on in Settings → Advanced → Custom tools"
+                    ),
                 }
                 if not kept.enabled:
                     body["saved"]["note"] = "the owner turned this tool off; it won't run until they turn it on"

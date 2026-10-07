@@ -4,12 +4,17 @@ The principal's alone, scripts included.
 
   GET  /saved-tools                     — every saved tool and whether saving is on
   GET  /saved-tools/{name}              — one tool: its script, versions and recent runs
-  PUT  /saved-tools/{name}              — {enabled}: turn it on or off
+  PUT  /saved-tools/{name}              — {enabled?, workflows?}: turn it on or off,
+                                          and on or off for workflows
   POST /saved-tools/{name}/rollback     — {version}: make that version the one that runs
 
 The Executive saves tools on its own (approved automatically: a saved tool
 can do no more than the chat turn or workflow step that runs it); these
-routes are how the owner looks at them and stops or reverts one.
+routes are how the owner looks at them and stops or reverts one. Workflows
+run a kept tool only once the owner turns it on for them (``workflows``),
+at the version they turned on; that is the one change here that lets more
+happen unattended, so it needs a request tied to the owner (signed sign-ins
+or local login), as Take the lead's switches do.
 """
 from __future__ import annotations
 
@@ -33,6 +38,8 @@ class SavedToolOut(BaseModel):
     origin: str
     created_at: str
     updated_at: str
+    # The version workflows may run, or None: not on for workflows.
+    workflow_version: int | None = None
 
 
 class SavedToolsOut(BaseModel):
@@ -65,10 +72,12 @@ class SavedToolDetail(SavedToolOut):
     runs: list[RunOut]
 
 
-class EnabledIn(BaseModel):
+class ToolUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool
+    enabled: bool | None = None
+    # True turns the current version on for workflows; False turns them off.
+    workflows: bool | None = None
 
 
 class RollbackIn(BaseModel):
@@ -88,7 +97,7 @@ def _out(tool: Any) -> SavedToolOut:
     return SavedToolOut(
         name=tool.name, description=tool.description, enabled=tool.enabled, version=tool.version,
         uses_tools=tool.tools, origin=tool.origin, created_at=tool.created_at,
-        updated_at=tool.updated_at,
+        updated_at=tool.updated_at, workflow_version=tool.workflow_version,
     )
 
 
@@ -133,19 +142,43 @@ def get_saved_tool(name: str, request: Request) -> SavedToolDetail:
     return _detail(name)
 
 
+def _tied_to_the_owner(request: Request) -> bool:
+    """Whether this request is provably the owner's (signed sign-ins or local
+    login), as Take the lead requires before letting more run on its own."""
+    from openexecutive.api.routes.take_the_lead import _principal, _provably_theirs
+
+    return _provably_theirs(request, _principal(request))
+
+
 @router.put("/saved-tools/{name}", response_model=SavedToolDetail)
-def set_saved_tool_enabled(name: str, body: EnabledIn, request: Request) -> SavedToolDetail:
+def update_saved_tool(name: str, body: ToolUpdate, request: Request) -> SavedToolDetail:
     from openexecutive.workflows import saved_tools
 
     _require_principal(request)
+    if body.enabled is None and body.workflows is None:
+        raise HTTPException(status_code=422, detail="Nothing to change.")
+    if body.workflows and not _tied_to_the_owner(request):
+        raise HTTPException(
+            status_code=409,
+            detail="This needs signed sign-ins on this server, so that nobody else can turn it on for you.",
+        )
     try:
-        tool = saved_tools.set_enabled(name, body.enabled)
+        tool = None
+        if body.enabled is not None:
+            tool = saved_tools.set_enabled(name, body.enabled)
+            _audit(
+                f"Custom tool {tool.name} turned {'on' if tool.enabled else 'off'}",
+                {"name": tool.name, "enabled": tool.enabled},
+            )
+        if body.workflows is not None:
+            tool = saved_tools.set_workflows(name, body.workflows)
+            _audit(
+                f"Custom tool {tool.name} "
+                + (f"version {tool.workflow_version} on for workflows" if body.workflows else "off for workflows"),
+                {"name": tool.name, "workflow_version": tool.workflow_version},
+            )
     except saved_tools.SavedToolError:
         raise HTTPException(status_code=404, detail="No custom tool by that name.") from None
-    _audit(
-        f"Custom tool {tool.name} turned {'on' if tool.enabled else 'off'}",
-        {"name": tool.name, "enabled": tool.enabled},
-    )
     return _detail(name)
 
 
