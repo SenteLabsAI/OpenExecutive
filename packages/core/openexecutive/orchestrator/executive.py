@@ -1950,6 +1950,11 @@ class Executive:
             if private_turn and script_tool_uses:
                 withheld_uses = [*withheld_uses, *script_tool_uses]
                 script_tool_uses = []
+            # list_saved_tools is principal-only (PRINCIPAL_ONLY_TOOLS).
+            refused_scripts = [tu for tu in script_tool_uses if tu["name"] in principal_withheld]
+            if refused_scripts:
+                withheld_uses = [*withheld_uses, *refused_scripts]
+                script_tool_uses = [tu for tu in script_tool_uses if tu not in refused_scripts]
             # A private turn is not offered load_mcp_server either (it
             # reaches any URL), nor any MCP tool through call_tool but those
             # in PRIVATE_TURN_MCP_TOOLS (Google Workspace reads, and the Gmail
@@ -2503,6 +2508,9 @@ class Executive:
                             # verified, interactive surface: a saved tool
                             # runs on whoever's turn calls it later.
                             may_save=not principal_withheld and not unattended_withheld,
+                            # Running one too: someone else's turn would run
+                            # the principal's recipe with inputs they chose.
+                            may_run_saved=not principal_withheld and not unattended_withheld,
                             wall_clock_s=script_clock,
                         )
                     ) as script_steps:

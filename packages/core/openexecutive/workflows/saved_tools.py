@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -183,7 +184,10 @@ def save(
     off (only the owner turns it back on).
     """
     tools = sorted(set(tools))
-    description = description.strip()
+    # One line of printable text: it is shown to models in tool descriptions.
+    description = " ".join(
+        "".join(" " if unicodedata.category(ch) in ("Cc", "Cf") else ch for ch in description).split()
+    )
     validate_save(name, description, script, tools)
     initialize(db_path)
     now = _now()

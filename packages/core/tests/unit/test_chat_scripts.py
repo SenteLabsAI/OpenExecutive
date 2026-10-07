@@ -295,7 +295,9 @@ def test_chat_saves_a_script_and_lists_then_runs_it(
     assert script_rows[1]["full"]["input"] == {"tool": "file_scans"}
 
 
-def test_list_saved_tools_is_offered_beside_run_script() -> None:
+def test_list_saved_tools_is_offered_beside_run_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Offered only while the principal is speaking (PRINCIPAL_ONLY_TOOLS).
+    monkeypatch.setattr("openexecutive.orchestrator.executive.principal_only_withheld", lambda _s: frozenset())
     provider = _ScriptedProvider([_FinalMsg([_TextBlock("Hi.")], "end_turn")])
     _run(provider, _Gateway())
     [listed] = [t for t in provider.calls[0]["tools"] if t.get("name") == "list_saved_tools"]
@@ -322,3 +324,28 @@ def test_a_turn_that_is_not_the_principals_cannot_save(
     from openexecutive.workflows import saved_tools
 
     assert saved_tools.get("file_scans") is None
+
+
+def test_someone_elses_turn_is_not_offered_or_run_saved_tools(
+    saved_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows import saved_tools
+
+    saved_tools.save("file_scans", "File the scans.", SCRIPT, ["drive__list_items"], origin="chat")
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.executive.principal_only_withheld",
+        lambda _s: frozenset({"list_saved_tools", "load_mcp_server"}),
+    )
+    gateway = _Gateway()
+    provider = _ScriptedProvider([
+        _FinalMsg([
+            _ToolUseBlock("tu-l", "list_saved_tools", {}),
+            _ToolUseBlock("tu-r", "run_script", {"tool": "file_scans"}),
+        ], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+    _run(provider, gateway)
+    assert "list_saved_tools" not in [t.get("name") for t in provider.calls[0]["tools"]]
+    assert "only the principal" in json.loads(_any_result(provider, "tu-l"))["error"]
+    assert "principal's own turns" in json.loads(_any_result(provider, "tu-r"))["error"]
+    assert gateway.calls == []

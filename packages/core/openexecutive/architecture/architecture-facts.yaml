@@ -6014,7 +6014,14 @@ workflows:
     schema has no save_as/description. A saved tool runs with the authority
     of whoever runs it, so its author must be at least as trusted as any
     runner (an inbound email or teammate could otherwise plant or re-version
-    a tool the principal's turns and workflows then run). Beyond that,
+    a tool the principal's turns and workflows then run). Running a saved
+    tool is likewise limited (may_run_saved): workflow steps and the
+    principal's own turns only; list_saved_tools is in
+    content_trust.PRINCIPAL_ONLY_TOOLS (not offered, refused if emitted), so
+    a stranger's email can't list the principal's automations or run one
+    with chosen inputs. Descriptions are normalized to one line (Cc/Cf to
+    spaces, whitespace collapsed); every save is audited saved_tool_changed
+    with actor executive. Beyond that,
     saving is auto-approved by design: a saved tool runs through
     whatever context calls it (step: _StepCalls.call; chat: gateway
     call_tool and its gates), and a workflow step runs one only when

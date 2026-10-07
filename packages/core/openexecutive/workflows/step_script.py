@@ -472,6 +472,7 @@ async def run_script_tool(
     call: CallFn,
     origin: str,
     may_save: bool,
+    may_run_saved: bool = True,
     wall_clock_s: float = _WALL_CLOCK_S,
 ) -> AsyncGenerator[ScriptYield, None]:
     """Answer one ``run_script`` tool use: a new script, or a saved tool.
@@ -481,6 +482,8 @@ async def run_script_tool(
     the authority of whoever runs it, so its author must be trusted at least
     as much as anyone who may run it — never an inbound email, a teammate, an
     unattended run or a workflow step reading outside content.
+    ``may_run_saved`` is whether it may run one: a workflow step (the owner
+    approved its tools) or the principal's own turn, never someone else's.
 
     ``tools`` is a workflow step's allowlist (None in chat). A saved tool runs
     in a step only when every tool it used is one of the step's; in chat the
@@ -519,6 +522,9 @@ async def run_script_tool(
             return
         if save_as is not None:
             yield _done({"error": "save_as goes with a new script, not a saved tool"}, True)
+            return
+        if not may_run_saved:
+            yield _done({"error": "saved tools run only on the principal's own turns"}, True)
             return
         try:
             saved = saved_tools.get(str(tool_name))
@@ -599,12 +605,30 @@ async def run_script_tool(
                 }
                 if not kept.enabled:
                     body["saved"]["note"] = "the owner turned this tool off; it won't run until they turn it on"
+                _audit_save(kept, origin)
             except saved_tools.SavedToolError as exc:
                 body["save_error"] = str(exc)
             except Exception:
                 logger.warning("saved tool: couldn't save %r", str(save_as)[:60], exc_info=True)
                 body["save_error"] = "not saved: storage error (the script itself ran)"
     yield ("done", (json.dumps(body, default=str, ensure_ascii=False), is_error))
+
+
+def _audit_save(kept: Any, origin: str) -> None:
+    """One audit row per save, so a new version shows beside the owner's
+    own changes (saved_tool_changed)."""
+    from openexecutive.audit import log_event
+
+    try:
+        log_event(
+            "saved_tool_changed",
+            f"Saved tool {kept.name} saved (version {kept.version})",
+            actor="executive",
+            details={"name": kept.name, "version": kept.version, "uses_tools": kept.tools,
+                     "origin": origin},
+        )
+    except Exception:
+        logger.warning("saved tool: couldn't audit a save", exc_info=True)
 
 
 class MontyScriptShape(Exception):
