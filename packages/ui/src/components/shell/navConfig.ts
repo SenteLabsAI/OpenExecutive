@@ -362,6 +362,14 @@ export const ADVANCED_ITEMS: AdvancedItem[] = [
     description: "Interactive reference docs explaining how the system is built.",
   },
   {
+    href: "/settings/tools",
+    label: "Custom tools",
+    icon: "bolt",
+    group: "configure",
+    description:
+      "Tools the Executive built when it didn't have the one it needed: turn each on or off, see its runs, or go back a version.",
+  },
+  {
     href: "/demo",
     label: "Company Simulator",
     icon: "cog",

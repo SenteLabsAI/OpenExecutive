@@ -571,6 +571,34 @@ class Settings(BaseSettings):
     tool_result_max_chars: int = Field(
         50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
     )
+    # Workflow action steps may also act through one short sandboxed script
+    # (`run_script`, workflows/step_script.py) that calls the step's own tools
+    # — each call through the same allowlist, budget, target check and audit.
+    # Off: the step only calls its tools one by one, as before.
+    workflow_step_scripts: bool = Field(True, alias="WORKFLOW_STEP_SCRIPTS")
+    # A step's script calls have a budget of their own, 10x the step's
+    # max_tool_calls up to this ceiling: they cost no model turn each, so the
+    # direct-call budget (1-50) would cap a folder at ~50 files. Each call
+    # still goes through the allowlist, target check and audit.
+    workflow_script_max_calls: int = Field(
+        500, alias="WORKFLOW_SCRIPT_MAX_CALLS", ge=1, le=5_000
+    )
+    # The same in chat: the Executive may run one sandboxed script over the
+    # gateway tools a conversation has found, each call checked exactly as a
+    # call_tool. Never offered on a turn private to the principal.
+    chat_scripts: bool = Field(True, alias="CHAT_SCRIPTS")
+    # The most tool calls a chat turn's scripts may make in all (gateway and
+    # the Executive's own tools); message_person and upsert_person have
+    # tighter caps of their own (step_script.CHAT_OWN_TOOL_CAPS).
+    chat_script_max_calls: int = Field(200, alias="CHAT_SCRIPT_MAX_CALLS", ge=1, le=5_000)
+    # How many scripts (each a Monty worker process, up to 128 MB and one CPU
+    # core while computing) may run at once across the whole server, chat and
+    # workflows together. More wait their turn, within their own time limit.
+    script_max_workers: int = Field(2, alias="SCRIPT_MAX_WORKERS", ge=1, le=32)
+    # A script that worked may be saved and run again by name (saved tools,
+    # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
+    # list_saved_tools lists nothing; saved tools stay stored.
+    saved_tools_enabled: bool = Field(True, alias="SAVED_TOOLS_ENABLED")
 
     # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
     # A PDF with no text layer (a scan, or one printed to PDF as images) is

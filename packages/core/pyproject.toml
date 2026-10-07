@@ -50,6 +50,10 @@ dependencies = [
     "tzdata>=2026.4",
     # Renders the briefs the scheduler emails (utils/markdown_email.py).
     "markdown-it-py>=3.0",
+    # Runs the short scripts a workflow action step writes (workflows/step_script.py)
+    # in Monty worker processes: no files, network or environment, only the
+    # step's own tools. Ships prebuilt wheels plus the `monty` worker binary.
+    "pydantic-monty>=1.1,<2",
 ]
 
 [project.urls]

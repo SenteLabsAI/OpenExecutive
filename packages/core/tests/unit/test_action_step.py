@@ -171,8 +171,9 @@ async def test_prompt_shape_is_cache_friendly(
     assert call["system"] == [
         {"type": "text", "text": WORKFLOW_ACTOR_SYSTEM, "cache_control": {"type": "ephemeral"}}
     ]
-    # Only the step's tools, sorted by name — never the gateway meta-tools.
-    assert [t["name"] for t in call["tools"]] == sorted([APPEND, READ])
+    # Only the step's tools (plus run_script, which reaches nothing else),
+    # sorted by name — never the gateway meta-tools.
+    assert [t["name"] for t in call["tools"]] == sorted([APPEND, READ, "run_script"])
     user = call["messages"][0]["content"]
     assert "Add today's bills to the tracker." in user
     assert "sheet: Bill tracker" in user
@@ -211,6 +212,9 @@ async def test_call_budget_is_enforced_then_tools_are_switched_off(
         ]
     )
     _install(monkeypatch, provider)
+    # Without step scripts: with them, tools stay on while the script budget
+    # has room (test_step_script.test_a_step_out_of_direct_calls_may_still_script_the_rest).
+    monkeypatch.setenv("WORKFLOW_STEP_SCRIPTS", "false")
     out = await _run(_step(max_tool_calls=1))
     assert [c["name"] for c in gateway.calls] == [READ]
     results = provider.calls[1]["messages"][-1]["content"]

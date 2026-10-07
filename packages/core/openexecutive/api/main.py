@@ -42,6 +42,7 @@ from openexecutive.api.routes import (
     people,
     personas,
     review,
+    saved_tools,
     scheduled,
     sessions,
     setup_status,
@@ -955,6 +956,7 @@ def create_app() -> FastAPI:
     # the literal /workflows/designer/* paths.
     app.include_router(workflow_designer.router, tags=["workflows"])
     app.include_router(workflows.router, tags=["workflows"])
+    app.include_router(saved_tools.router, tags=["workflows"])
     app.include_router(evals.router, tags=["evals"])
     app.include_router(episodic.router, tags=["memories"])
     app.include_router(review.router, tags=["review"])

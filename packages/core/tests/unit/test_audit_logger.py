@@ -348,3 +348,27 @@ def test_usage_summary_respects_time_window(tmp_path: Path) -> None:
     )
     assert windowed["totals"]["calls"] == 1
     assert windowed["totals"]["input_tokens"] == 99
+
+
+def test_usage_summary_adds_up_scripts(audit: AuditLogger) -> None:
+    # A chat script (kind: script) and a workflow step's (tool: run_script).
+    audit.log("tool_invocation", "script:run_script (ok)",
+              details={"tool": "run_script", "kind": "script", "ok": True, "calls": 40, "duration_ms": 900})
+    audit.log("tool_invocation", "script:run_script (failed)",
+              details={"tool": "run_script", "kind": "script", "ok": False, "calls": 3, "duration_ms": 100})
+    audit.log("workflow_tool_call", "wf/step: run_script (ok)",
+              details={"tool": "run_script", "outcome": "ok", "calls": 101, "duration_ms": 2000})
+    # Not scripts: a script's own calls, and a direct tool.
+    audit.log("workflow_tool_call", "wf/step: drive__move_file (ok)",
+              details={"tool": "drive__move_file", "outcome": "ok"})
+    audit.log("tool_invocation", "mcp:x", details={"tool": "x", "kind": "mcp", "via": "run_script"})
+
+    scripts = audit.usage_summary()["scripts"]
+    assert scripts == {
+        "scripts": 3, "ok": 2, "calls": 144, "turns_avoided": 39 + 2 + 100,
+        "duration_ms": 3000, "in_workflows": 1,
+    }
+
+
+def test_usage_summary_scripts_empty(tmp_path: Path) -> None:
+    assert AuditLogger(tmp_path / "audit.db").usage_summary()["scripts"]["scripts"] == 0

@@ -1,0 +1,14 @@
+id: custom_tools_001
+domain: mcp
+description: "A job that reads a list and then checks each item before acting (list people, look each one up, raise one alert) is done with one built tool (run_script calling list_people, lookup_person per person, then create_alert) rather than a model turn per stage, and the reply says what was done in plain words — no 'script' or 'code'"
+requires_mcp: true
+query: "Check every person on my People list and create one alert listing anyone who has no Telegram ID."
+# Documentation for now: the runner judges the reply text.
+expected_tool_calls:
+  - run_script
+quality_criteria:
+  checks_every_person_rather_than_guessing: true
+  creates_a_single_alert_naming_the_people_found: true
+  says_how_many_people_were_checked_and_how_many_lack_a_telegram_id: true
+  does_not_say_script_code_python_or_sandbox: true
+  does_not_name_internal_tools_to_the_user: true

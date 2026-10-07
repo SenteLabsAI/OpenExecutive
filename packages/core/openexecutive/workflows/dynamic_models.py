@@ -258,6 +258,14 @@ def _check_action_tools(step: ActionStepSpec) -> list[str]:
     for tool in step.tools:
         if not TOOL_NAME_RE.match(tool):
             errors.append(f"action step {step.id!r} has an invalid tool name {tool!r}")
+        elif tool == "run_script":
+            # Built into every action step at run time (workflows/step_script.py);
+            # it is not a tool the user approves.
+            errors.append(
+                f"action step {step.id!r} lists 'run_script', which every action step "
+                "already has at run time — remove it from tools and keep the step's "
+                "real tools"
+            )
         elif tool in FORBIDDEN_STEP_TOOLS:
             errors.append(
                 f"action step {step.id!r} may not use {tool!r} — name the specific "

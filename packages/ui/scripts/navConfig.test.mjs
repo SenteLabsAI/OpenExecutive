@@ -169,7 +169,7 @@ test("the Settings tools are grouped by what you'd use them for", () => {
     {
       key: "configure",
       label: "Configure",
-      items: ["Agent Council → /council", "Company Simulator → /demo", "Client Companies → /clients"],
+      items: ["Agent Council → /council", "Custom tools → /settings/tools", "Company Simulator → /demo", "Client Companies → /clients"],
     },
     { key: "learn", label: "Learn", items: ["User Guide → /guide", "Architecture → /architecture"] },
   ]);

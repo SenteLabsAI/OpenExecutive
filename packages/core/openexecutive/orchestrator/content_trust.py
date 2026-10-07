@@ -77,8 +77,9 @@ UNTRUSTED_NOTICE = (
 
 # Tools offered only while the principal is speaking on an interactive,
 # verified surface. Each changes the install for every later turn and has no
-# speaker check of its own.
-PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({"load_mcp_server"})
+# speaker check of its own — or, for list_saved_tools, shows the principal's
+# own saved automations (run_script refuses tool= on the same turns).
+PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({"list_saved_tools", "load_mcp_server"})
 
 # Inside a block the tag's own name is renamed outright, in any case and
 # spacing, so no form of it — "</untrusted_content>", "< /UNTRUSTED_CONTENT",

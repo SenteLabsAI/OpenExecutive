@@ -75,6 +75,7 @@ export type DebugEventKind =
   | "synthesis_start"
   | "synthesis_done"
   | "skill_invocation"
+  | "script_run"
   | "turn_complete"
   | "turn_error"
   | "committee_review_start"
@@ -3355,6 +3356,19 @@ export interface UsageSummary {
   by_model: UsageByModel[];
   // Absent on a backend older than the by-source breakdown.
   by_source?: UsageBySource[];
+  // Sandboxed scripts (run_script). Absent on an older backend.
+  scripts?: ScriptUsage;
+}
+
+export interface ScriptUsage {
+  scripts: number;
+  ok: number;
+  calls: number;
+  // Upper bound: each call past a script's first would otherwise have needed
+  // a model turn, unless the model had batched it with others.
+  turns_avoided: number;
+  duration_ms: number;
+  in_workflows: number;
 }
 
 export async function getAuditUsage(
@@ -4965,4 +4979,104 @@ export async function deleteMyLeadRule(id: number): Promise<LeadRule[]> {
   const res = await fetch(`${API_BASE}/delegation/take-the-lead/rules/${id}`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't remove the rule.");
   return ((await res.json()) as { rules: LeadRule[] }).rules;
+}
+
+// ── Custom tools (Settings → Advanced → Custom tools) ───────────────────────
+// Scripts the Executive kept to run again by name. The owner's alone.
+
+export interface SavedTool {
+  name: string;
+  description: string;
+  enabled: boolean;
+  version: number;
+  uses_tools: string[];
+  origin: string;
+  created_at: string;
+  updated_at: string;
+  // The version workflows may run (the owner turned it on), or null.
+  workflow_version?: number | null;
+}
+
+export interface SavedToolVersion {
+  version: number;
+  description: string;
+  script: string;
+  uses_tools: string[];
+  origin: string;
+  created_at: string;
+}
+
+export interface SavedToolRun {
+  version: number;
+  ok: boolean;
+  calls: number;
+  duration_ms: number;
+  origin: string;
+  at: string;
+}
+
+export interface SavedToolDetail extends SavedTool {
+  script: string;
+  versions: SavedToolVersion[];
+  runs: SavedToolRun[];
+}
+
+async function savedToolError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") return new Error(body.detail);
+  } catch {
+    // not JSON
+  }
+  return new Error(fallback);
+}
+
+/** Null when the caller isn't the owner (403). */
+export async function listSavedTools(
+  signal?: AbortSignal,
+): Promise<{ enabled: boolean; tools: SavedTool[] } | null> {
+  const res = await fetch(`${API_BASE}/saved-tools`, { signal });
+  if (res.status === 403) return null;
+  if (!res.ok) throw await savedToolError(res, "Couldn't load the custom tools.");
+  return res.json();
+}
+
+export async function getSavedTool(name: string, signal?: AbortSignal): Promise<SavedToolDetail> {
+  const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, { signal });
+  if (!res.ok) throw await savedToolError(res, "Couldn't load that tool.");
+  return res.json();
+}
+
+export async function setSavedToolEnabled(name: string, enabled: boolean): Promise<SavedToolDetail> {
+  return updateSavedTool(name, { enabled });
+}
+
+/** Turn `version` (the one shown to the owner) on for workflows, or
+ * workflows off (null). Naming the version means a newer one the Executive
+ * saved meanwhile is never approved by accident. */
+export async function setSavedToolWorkflows(name: string, version: number | null): Promise<SavedToolDetail> {
+  return updateSavedTool(name, version == null ? { workflows: false } : { workflows: true, version });
+}
+
+async function updateSavedTool(
+  name: string,
+  update: { enabled?: boolean; workflows?: boolean; version?: number },
+): Promise<SavedToolDetail> {
+  const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await savedToolError(res, "Couldn't change that tool.");
+  return res.json();
+}
+
+export async function rollbackSavedTool(name: string, version: number): Promise<SavedToolDetail> {
+  const res = await fetch(`${API_BASE}/saved-tools/${encodeURIComponent(name)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) throw await savedToolError(res, "Couldn't switch the version.");
+  return res.json();
 }

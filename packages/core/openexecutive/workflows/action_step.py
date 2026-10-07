@@ -34,6 +34,7 @@ exactly one of ``("output", report)`` or ``("error", fixed_message)``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -43,7 +44,7 @@ from typing import Any
 
 from openexecutive.agents.workflow_actor import WORKFLOW_ACTOR_AGENT_ID, WorkflowActorAgent
 from openexecutive.config import get_settings
-from openexecutive.workflows import tool_catalog
+from openexecutive.workflows import step_script, tool_catalog
 from openexecutive.workflows.approved_targets import approved_values, normalize_value
 from openexecutive.workflows.dynamic_models import ActionStepSpec, DynamicWorkflowDef
 from openexecutive.workflows.wait_for_human import HeldCall
@@ -58,6 +59,9 @@ _TOOL_CALL_TIMEOUT_S = 120.0
 _MAX_INPUT_CHARS = 2_000
 _MAX_PRIOR_OUTPUT_CHARS = 6_000
 _MAX_COMPANY_CHARS = 6_000
+# A step's script calls may number this many times its max_tool_calls (up
+# to WORKFLOW_SCRIPT_MAX_CALLS): each costs no model turn.
+_SCRIPT_BUDGET_MULTIPLIER = 10
 
 StepYield = tuple[str, Any]
 
@@ -374,6 +378,7 @@ def _audit(
     tool: str,
     outcome: str,
     targets: dict[str, str] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> None:
     from openexecutive.audit import log_event
 
@@ -382,6 +387,8 @@ def _audit(
     }
     if targets:
         details["targets"] = targets
+    if stats:
+        details.update(stats)
     log_event(
         "workflow_tool_call",
         f"{workflow_name}/{step_id}: {tool} ({outcome})",
@@ -422,6 +429,100 @@ async def _call_tool(
 
 def _refusal(reason: str) -> tuple[str, bool]:
     return json.dumps({"error": reason}), True
+
+
+class _StepCalls:
+    """Every tool call a step makes, whether the model makes it directly or a
+    step script (``step_script``) makes it: the allowlist, the call budget,
+    the first-write target check and the audit row, in one place.
+
+    Events for the engine (``progress``, ``held``) are queued and handed over
+    by ``drain`` after each call, so a script's calls report the same way.
+    Direct calls spend ``budget``; a script's calls (``script_call``) spend
+    ``script_budget``, which is larger because they cost no model turn each.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_name: str,
+        step_id: str,
+        allowed: set[str],
+        resolved: dict[str, tool_catalog.ToolInfo],
+        budget: _Budget,
+        script_budget: _Budget,
+        policy: TargetPolicy | None,
+        actions: list[tuple[str, str]],
+    ) -> None:
+        self._workflow_name = workflow_name
+        self._step_id = step_id
+        self._allowed = allowed
+        self._resolved = resolved
+        self._budget = budget
+        self._script_budget = script_budget
+        self._policy = policy
+        self._actions = actions
+        self._holds = _Holds()
+        self._events: list[StepYield] = []
+
+    def drain(self) -> list[StepYield]:
+        events, self._events = self._events, []
+        return events
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        """Run (or refuse, or hold) one direct call. Returns (result text,
+        is_error); never raises."""
+        return await self._call(name, arguments, self._budget, "this step's tool-call budget is used up")
+
+    async def script_call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        """The same for a call a step script makes, against the script budget."""
+        return await self._call(
+            name, arguments, self._script_budget,
+            f"this step's script call budget ({self._script_budget.limit} calls) is used up",
+        )
+
+    async def _call(
+        self, name: str, arguments: dict[str, Any], budget: _Budget, spent_reason: str
+    ) -> tuple[str, bool]:
+        targets: dict[str, str] | None = None
+        if name not in self._allowed:
+            (content, is_error), outcome = _refusal(
+                f"{name} is not one of this step's tools"
+            ), "refused: not allowed"
+        elif budget.spent:
+            (content, is_error), outcome = _refusal(spent_reason), "refused: budget"
+        else:
+            info = self._resolved[name]
+            writes = info.read_only is not True
+            if writes:
+                targets = _target_digest(arguments)
+            decision = self._holds.decide(name, arguments, self._policy if writes else None)
+            if isinstance(decision, str):
+                (content, is_error), outcome = _refusal(decision), "refused: target check"
+            elif decision is not None:
+                # Not run and not counted against the budget: it runs later,
+                # exactly as given, only if the owner approves. A repeat of
+                # a call already held is answered the same way, not held twice.
+                if decision is not _ALREADY_HELD:
+                    self._events.append(("held", decision))
+                content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
+            else:
+                budget.used += 1
+                self._events.append(("progress", f"Using {name}…"))
+                try:
+                    content, is_error = await _call_tool(name, arguments, info)
+                except asyncio.CancelledError:
+                    # Stopped mid-call (a script's clock, or the run): it may
+                    # have taken effect, so it still gets its audit row.
+                    _audit(self._workflow_name, self._step_id, name, "cancelled (may have run)", targets)
+                    self._actions.append((name, "cancelled (may have run)"))
+                    raise
+                outcome = "error" if is_error else "ok"
+                if writes and not is_error and self._policy is not None:
+                    self._policy.note_written(content, info)
+        _audit(self._workflow_name, self._step_id, name, outcome, targets)
+        self._actions.append((name, outcome))
+        return content, is_error
 
 
 class _Budget:
@@ -485,9 +586,19 @@ async def run_action_step(
     agent = WorkflowActorAgent()
     resolved_model = model if model is not None else agent.effective_model()
     provider = get_provider(resolved_model)
-    tools = sorted(
-        (resolved[name].as_anthropic_tool() for name in step.tools), key=lambda t: t["name"]
-    )
+    scripts = settings.workflow_step_scripts and step_script.available()
+    tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools]
+    if scripts:
+        tool_defs.append(
+            step_script.tool_definition(
+                list(step.tools),
+                step_script.usable_saved_tools(list(step.tools)),
+                call_budget=min(
+                    step.max_tool_calls * _SCRIPT_BUDGET_MULTIPLIER, settings.workflow_script_max_calls
+                ),
+            )
+        )
+    tools = sorted(tool_defs, key=lambda t: t["name"])
     system = [
         {"type": "text", "text": agent.effective_system_prompt(), "cache_control": {"type": "ephemeral"}}
     ]
@@ -504,12 +615,24 @@ async def run_action_step(
             ),
         }
     ]
-    allowed = set(step.tools)
     budget = _Budget(step.max_tool_calls)
+    script_budget = _Budget(
+        min(step.max_tool_calls * _SCRIPT_BUDGET_MULTIPLIER, settings.workflow_script_max_calls)
+    )
     actions: list[tuple[str, str]] = []
-    holds = _Holds()
+    calls = _StepCalls(
+        workflow_name=workflow_name,
+        step_id=step.id,
+        allowed=set(step.tools),
+        resolved=resolved,
+        budget=budget,
+        script_budget=script_budget,
+        policy=policy,
+        actions=actions,
+    )
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
+    fanout_hinted = False
     for turn in range(max_turns):
         kwargs: dict[str, Any] = {
             "model": resolved_model,
@@ -518,9 +641,14 @@ async def run_action_step(
             "tools": tools,
             "messages": messages,
         }
-        # Tools off once the budget is spent, and on the last turn regardless,
-        # so the model always gets a turn to report what it did.
-        if budget.spent or turn == max_turns - 1:
+        # Tools off once the budgets are spent, and on the last turn
+        # regardless, so the model always gets a turn to report what it did.
+        # A step whose direct calls are spent may still script the rest while
+        # its script budget has room (a direct call is then refused as over
+        # budget, which tells the model so).
+        if (
+            budget.spent and not (scripts and not script_budget.spent)
+        ) or turn == max_turns - 1:
             kwargs["tool_choice"] = {"type": "none"}
         response, failure = await _model_turn(
             provider, kwargs, step_id=step.id, model=resolved_model, turn=turn
@@ -541,38 +669,36 @@ async def run_action_step(
         for use in tool_uses:
             name = str(use["name"])
             arguments = use["input"] if isinstance(use["input"], dict) else {}
-            targets: dict[str, str] | None = None
-            if name not in allowed:
-                (content, is_error), outcome = _refusal(
-                    f"{name} is not one of this step's tools"
-                ), "refused: not allowed"
-            elif budget.spent:
-                (content, is_error), outcome = _refusal(
-                    "this step's tool-call budget is used up"
-                ), "refused: budget"
+            if scripts and name == step_script.RUN_SCRIPT_TOOL:
+                yield ("progress", "Running a script…")
+                content, is_error = json.dumps({"error": "the script did not finish"}), True
+                stats: dict[str, Any] = {}
+                async with contextlib.aclosing(
+                    step_script.run_script_tool(
+                        arguments,
+                        tools=list(step.tools),
+                        call=calls.script_call,
+                        origin=f"workflow:{workflow_name}/{step.id}",
+                        may_save=False,
+                    )
+                ) as script_steps:
+                    async for kind, payload in script_steps:
+                        # Each call's events (progress, held) as it happens.
+                        for event in calls.drain():
+                            yield event
+                        if kind == "stats":
+                            stats = payload
+                        elif kind == "done":
+                            content, is_error = payload
+                outcome = "error" if is_error else "ok"
+                # The script's own calls were audited one by one as they ran;
+                # this row adds how many and how long (script_summary).
+                _audit(workflow_name, step.id, step_script.RUN_SCRIPT_TOOL, outcome, stats=stats)
+                actions.append((step_script.RUN_SCRIPT_TOOL, outcome))
             else:
-                writes = resolved[name].read_only is not True
-                if writes:
-                    targets = _target_digest(arguments)
-                decision = holds.decide(name, arguments, policy if writes else None)
-                if isinstance(decision, str):
-                    (content, is_error), outcome = _refusal(decision), "refused: target check"
-                elif decision is not None:
-                    # Not run and not counted against the budget: it runs later,
-                    # exactly as given, only if the owner approves. A repeat of
-                    # a call already held is answered the same way, not held twice.
-                    if decision is not _ALREADY_HELD:
-                        yield ("held", decision)
-                    content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
-                else:
-                    budget.used += 1
-                    yield ("progress", f"Using {name}…")
-                    content, is_error = await _call_tool(name, arguments, resolved[name])
-                    outcome = "error" if is_error else "ok"
-                    if writes and not is_error and policy is not None:
-                        policy.note_written(content, resolved[name])
-            _audit(workflow_name, step.id, name, outcome, targets)
-            actions.append((name, outcome))
+                content, is_error = await calls.call(name, arguments)
+            for event in calls.drain():
+                yield event
             results.append(
                 {
                     "type": "tool_result",
@@ -581,6 +707,16 @@ async def run_action_step(
                     "is_error": is_error,
                 }
             )
+        # A tool came back with a list: nudge toward one script for the
+        # per-item work, once a step (step_script.FANOUT_HINT).
+        if (
+            scripts
+            and not fanout_hinted
+            and not any(str(u["name"]) == step_script.RUN_SCRIPT_TOOL for u in tool_uses)
+            and any(step_script.lists_many(str(r["content"])) for r in results)
+        ):
+            results.append({"type": "text", "text": step_script.FANOUT_HINT})
+            fanout_hinted = True
         messages.append({"role": "user", "content": results})
 
     # Out of turns without a final report: the goal may be half done, so this
@@ -747,7 +883,15 @@ def held_question(workflow_title: str, held: list[HeldCall]) -> str:
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:
     lines = [report.strip() or "(The step finished without a report.)", "", "**Actions taken**", ""]
     if actions:
-        lines += [f"- `{name}` — {outcome}" for name, outcome in actions]
+        # Repeats collapse to one line with a count, so a script's 300 moves
+        # read as one line, in the order each first happened.
+        counts: dict[tuple[str, str], int] = {}
+        for action in actions:
+            counts[action] = counts.get(action, 0) + 1
+        lines += [
+            f"- `{name}` — {outcome}" + (f" (×{n})" if n > 1 else "")
+            for (name, outcome), n in counts.items()
+        ]
     else:
         lines.append("- No tools were called.")
     return "\n".join(lines)

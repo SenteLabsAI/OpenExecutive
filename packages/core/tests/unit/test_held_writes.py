@@ -296,7 +296,7 @@ async def test_oversized_or_uncheckable_calls_are_refused_not_run(
     ):
         out.append(item)
     assert not [k for k, _ in out if k == "held"] and gateway.calls == []
-    assert out[-1][1].count("refused: target check") == 2
+    assert out[-1][1].count("refused: target check (×2)") == 1
 
 
 # --- engine: pause and resume --------------------------------------------------

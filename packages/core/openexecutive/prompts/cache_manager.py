@@ -7,6 +7,7 @@ from openexecutive.prompts.connected_systems import render_connected_systems
 from openexecutive.prompts.executive_persona import (
     DELEGATION_ADDENDUM,
     MCP_ADDENDUM,
+    TOOL_BUILDING_ADDENDUM,
     WEB_SEARCH_ADDENDUM,
     default_persona,
 )
@@ -18,6 +19,14 @@ if TYPE_CHECKING:
 KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base covering executive frameworks across strategy, finance, HR, legal, operations, marketing, product, sales, and board communications. When relevant, you retrieve specific frameworks and best practices to ground your analysis. This knowledge base reflects MBA-level and practitioner-level expertise across all core business domains."""
 
 _VOICE_PERSONA_PLACEHOLDER = "{VOICE_PERSONA}"
+
+
+def _chat_scripts_on(settings: Any) -> bool:
+    """The same test as Executive._script_tools: the setting, and Monty
+    installed. Both are fixed per process, so block 0 stays warm."""
+    from openexecutive.workflows.step_script import available
+
+    return bool(settings.chat_scripts) and available()
 
 
 def build_system_blocks(
@@ -143,6 +152,9 @@ def build_system_blocks(
         base_persona
         + (WEB_SEARCH_ADDENDUM if settings.enable_web_search else "")
         + (MCP_ADDENDUM if mcp_enabled else "")
+        # The chat offers run_script with a gateway unless CHAT_SCRIPTS=false
+        # (Executive._script_tools): a setting, so constant per deployment.
+        + (TOOL_BUILDING_ADDENDUM if mcp_enabled and _chat_scripts_on(settings) else "")
         + identity_addendum
         + render_connected_systems(mcp_servers=mcp_servers, settings=settings)
         + (DELEGATION_ADDENDUM if delegation else "")

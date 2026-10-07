@@ -250,3 +250,12 @@ def test_cadence_workflow_may_have_action_steps(monkeypatch: pytest.MonkeyPatch)
         cadence_person_id=1,
     )
     assert validate_definition(defn) == []
+
+
+def test_run_script_is_not_a_step_tool() -> None:
+    action = {
+        "kind": "action", "id": "act", "title": "Act", "goal": "Create the alerts.",
+        "tools": ["oe__create_alert", "run_script"],
+    }
+    errors = validate_definition(_valid_def(steps=[action, _synthesis()]))
+    assert any("run_script" in e and "already has" in e for e in errors)

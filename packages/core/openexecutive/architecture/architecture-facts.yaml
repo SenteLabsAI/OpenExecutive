@@ -5954,6 +5954,142 @@ workflows:
     from an edit conversation opens `?edit=<name>&designer=<id>`, takes the
     current is_active from the stored workflow, and saves with PUT.
 
+    Step scripts (`run_script`, workflows/step_script.py): an action step is
+    also offered `run_script` (unless WORKFLOW_STEP_SCRIPTS=false) so the
+    agent can write one short Python script for repetitive work instead of a
+    model turn per call. It runs in Monty (pydantic-monty, a sandboxed
+    interpreter for model-written code) in a worker process per script,
+    stepped from the event loop with AsyncMonty feed_start/resume: each call
+    to an undefined function pauses the worker and is answered by
+    action_step._StepCalls.call, the same path as a direct tool_use
+    (allowlist — a name outside it is refused AND audited —, a budget: script
+    calls spend _StepCalls.script_call's own, 10x max_tool_calls capped by
+    WORKFLOW_SCRIPT_MAX_CALLS (default 500), not the 1-50 direct budget,
+    TargetPolicy with held writes returning {"status": "held"}, one
+    workflow_tool_call audit row per call), plus a `run_script` row. The
+    step's tools are identifier-mapped functions, plus call_tool(name,
+    arguments); OS calls get Monty's refusal; no files, network, env,
+    subprocess or third-party imports. Because the script is driven in the
+    step's own task, cancelling the run (or the wall clock) stops the worker
+    and the in-flight call together, and each call's progress/held events
+    reach the engine as they happen (run_script is an async generator). No
+    threads. Limits: execution time (excludes waiting on tools), memory,
+    recursion, a max_suspensions backstop above any step budget, wall clock,
+    script size; printed output past its cap is dropped, not fatal.
+    Each script yields ("stats", {calls, duration_ms}) before done; the
+    run_script audit rows (chat kind: script, workflow tool: run_script)
+    carry them, and AuditLogger.usage_summary adds them up as `scripts`
+    (scripts, ok, calls, turns_avoided = sum(calls - 1), duration_ms,
+    in_workflows) for the Token usage page. Actions taken collapses repeats. Results
+    and errors list the calls the script made, so a model fixing a script
+    that failed partway does not repeat writes that already ran. Scripts are
+    never stored; definitions stay data, not code. The workflow designer's
+    prompt keeps per-item work in ONE action step (items spelled out in its
+    goal) and never lists run_script; validate_definition rejects a step that
+    lists it, so the designer's repair turn removes it.
+
+    Chat scripts may also call the Executive's own tools in
+    step_script.CHAT_OWN_TOOLS (reads; create/ack alerts; open loops; goals;
+    watch list; schedule_followup; message_person; upsert_person) when the
+    turn is offered each (turn_handlers minus withheld_tools), via the
+    turn's handler (Take the lead gated_handlers on a leading run), with the
+    usual chip and a kind: skill, via: run_script audit row. Excluded:
+    broadcasts, calendar, memory/skill edits, workflows, research, documents,
+    Act as me. The cached persona gets the constant TOOL_BUILDING_ADDENDUM
+    (mcp_enabled and CHAT_SCRIPTS): build a tool rather than say there is
+    none, check list_saved_tools first, keep what recurs, and never say
+    "script"/"code" to people. People see saved tools as "Custom tools"
+    (Settings -> Advanced -> Custom tools, guide section custom_tools) and
+    the usage summary as "Done in one go".
+    A turn's chat scripts share CHAT_SCRIPT_MAX_CALLS (default 200) calls,
+    counted in Executive._stream_agent_loop's script_counts, plus per-turn
+    caps on own tools (step_script.CHAT_OWN_TOOL_CAPS: message_person 10,
+    upsert_person 25, create_alert 50). A CancelledError mid-call writes a
+    cancelled audit row before re-raising. TOOL_BUILDING_ADDENDUM is gated
+    on cache_manager._chat_scripts_on (setting + step_script.available()).
+    Worker slots: run_script acquires a per-event-loop asyncio.Semaphore of
+    SCRIPT_MAX_WORKERS (default 2) inside the wall clock before starting
+    AsyncMonty, released in a finally (also on aclosing/cancel). Measured:
+    a worker is ~8 MB RSS, exists only while its script runs, and none are
+    left after timeouts, memory-cap kills or cancellation.
+    Workflow approval of kept tools: saved_tools.workflow_version (NULL
+    until the owner turns it on; set_workflows(name, version) sets the version
+    the owner named, which must exist, so a version saved while they were
+    reviewing is never approved by accident; set_enabled(False) clears it).
+    Workflow steps use get_for_workflows / list_for_workflows (that version,
+    enabled only); chat uses the current version. A newer save never moves
+    workflow_version; pruning keeps it. PUT /saved-tools/{name}
+    {workflows: true} needs take_the_lead._provably_theirs (409 otherwise);
+    turning off doesn't. Prompted by the automated review: a principal turn
+    that read an injected email could keep an attacker-shaped tool that a
+    workflow then ran unattended.
+    Fan-out nudge: after a round whose results hold a list of >= 5 items
+    (step_script.lists_many: top level or up to two levels into a JSON
+    object, not an error), with run_script offered and unused that round
+    (chat: not withheld, not mail-touched), the constant FANOUT_HINT is added
+    as a text block to that round's user message — once a turn in chat, once
+    a step in workflows. The addendum and run_script description state the
+    cost: every round re-reads the whole conversation.
+
+    Chat scripts: the Executive's chat is offered the same `run_script` tool
+    (step_script.CHAT_TOOL_DEFINITION, a constant so the cached tool prefix is
+    stable) whenever the gateway runs, unless CHAT_SCRIPTS=false. With no
+    allowlist (tools=None), any MCP-shaped function name (server__tool) or
+    call_tool(name, arguments) is a call by that exact name; the gateway
+    decides what may run (its discovered set — search_tools results, kept for
+    the gateway's process-wide session, not per conversation — its deny-list
+    and recipient gates). Dunder or one-sided names never become calls. Each
+    call is dispatched as a call_tool —
+    through take_the_lead.gated_call_tool on an unattended leading run — and
+    gets the same action chip and tool_invocation row (details.via =
+    run_script; ok: false + FAILED when it raised) as it happens, plus one
+    kind: script row with the source and result. Wall clock = half of
+    CHAT_STREAM_TIMEOUT_S (30-600 s), enforced per await so it holds although
+    the chat route drives the stream one task per step; contextlib.aclosing
+    closes the script and its worker when a turn stops. Held results
+    ({status: held | waiting_for_approval}) are marked in the returned calls
+    list. Not offered on a turn private to the principal
+    (in PRIVATE_TURN_WITHHELD_TOOLS; refused there if emitted anyway), and
+    withheld whole by the Act as me lockdown (MAIL_TOUCHED_WITHHELD_TOOLS).
+
+    Saved tools (workflows/saved_tools.py): run_script takes save_as +
+    description with a new script; a script that SUCCEEDS is saved with the
+    sorted set of tools it actually called (a failed one never is), and
+    run_script(tool=<name>, inputs={...}) runs the saved script with
+    `inputs` bound as a dict (exactly one of script/tool; save_as with tool
+    is refused). Only the principal's own turns save (run_script_tool
+    may_save): chat passes may_save when principal_only_withheld(session) is
+    empty (principal speaking on a verified interactive surface, not email)
+    and the run is attended; workflow steps pass False and their run_script
+    schema has no save_as/description. A saved tool runs with the authority
+    of whoever runs it, so its author must be at least as trusted as any
+    runner (an inbound email or teammate could otherwise plant or re-version
+    a tool the principal's turns and workflows then run). Running a saved
+    tool is likewise limited (may_run_saved): workflow steps and the
+    principal's own turns only; list_saved_tools is in
+    content_trust.PRINCIPAL_ONLY_TOOLS (not offered, refused if emitted), so
+    a stranger's email can't list the principal's automations or run one
+    with chosen inputs. Descriptions are normalized to one line (Cc/Cf to
+    spaces, whitespace collapsed); every save is audited saved_tool_changed
+    with actor executive. Beyond that,
+    saving is auto-approved by design: a saved tool runs through
+    whatever context calls it (step: _StepCalls.call; chat: gateway
+    call_tool and its gates), and a workflow step runs one only when
+    saved.tools is a subset of step.tools (else an error naming
+    missing_tools). Steps see usable saved tools in their run_script
+    description (step_script.tool_definition(tools, saved)); chat gets the
+    constant list_saved_tools tool (summaries, never scripts). Tables
+    saved_tools / saved_tool_versions / saved_tool_runs in the episodic DB:
+    a save with changed description, script or tools is a new version that
+    becomes current; an identical save changes nothing; a turned-off tool
+    stays off when the model saves a new version; runs keep the newest 200
+    per tool; at most 200 tools. Owner-only routes /saved-tools (list,
+    detail with script/versions/last 20 runs, PUT enabled, POST rollback;
+    audited saved_tool_changed) back Settings -> Advanced -> Saved tools.
+    SAVED_TOOLS_ENABLED=false stops saving and running everywhere.
+    list_saved_tools is allowed under the Act as me lockdown (local read)
+    and withheld on a turn private to the principal, like run_script.
+
     Action steps (workflows that act): `ActionStepSpec` {goal, tools,
     max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
     of exact names — MCP gateway tools (`server__tool`) and built-ins
