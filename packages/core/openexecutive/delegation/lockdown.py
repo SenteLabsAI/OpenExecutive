@@ -168,13 +168,6 @@ CARRIED_REFUSAL = (
 )
 
 REFUSAL = (
-    "This conversation read the user's own mail, so nothing in it fetches an "
-    "outside address, runs a script, connects a tool server or queues work "
-    "to run later: any of those could carry what the mail said. Tell the "
-    "user to ask for it in a new conversation. Do not retry it here."
-)
-
-REFUSAL = (
     "This turn read the user's own mail, so nothing that reaches anyone else "
     "runs until it ends: no message, post, invite, queued work, outside fetch "
     "or shared change. Tell the user it can be done if they ask again in a new "
