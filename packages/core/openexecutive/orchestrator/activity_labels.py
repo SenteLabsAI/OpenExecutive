@@ -117,6 +117,10 @@ _LABELS: dict[str, str] = {
 
     # Act as me: a draft in the speaker's own Gmail (never sent)
     "ghostwrite_email": "Drafting an email in your voice…",
+    # Act as me: reads of the speaker's own mailbox
+    "search_my_email": "Searching your email…",
+    "read_my_email": "Reading your email…",
+    "my_email_awaiting_reply": "Checking what's waiting on a reply…",
 
     # Always in the loop: the speaker's own notes
     "recall_history": "Checking your notes…",

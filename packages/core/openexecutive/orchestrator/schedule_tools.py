@@ -1833,6 +1833,7 @@ PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
     "google_workspace__draft_gmail_message",
     "google_workspace__get_events",
     "google_workspace__get_gmail_message_content",
+    "google_workspace__get_gmail_thread_content",
     "google_workspace__list_calendars",
     "google_workspace__query_freebusy",
     "google_workspace__search_drive_files",

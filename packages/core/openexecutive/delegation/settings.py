@@ -86,11 +86,15 @@ class TurnDelegation:
 
     enabled: bool = False
     offered: bool = False
-    # Set by ``ghostwrite_email`` before it reads the mailbox: from then on
+    # Set by ``ghostwrite_email`` (or a read of their mailbox) before it reads the mailbox: from then on
     # every audit row the turn writes is private (``people_tools``).
     touched_mail: bool = False
     # Drafts made this turn, against the per-turn cap.
     drafts: int = 0
+    # Searches and thread reads of their mailbox this turn, against the
+    # per-turn caps (``orchestrator.mail_read_tools``).
+    searches: int = 0
+    threads_read: int = 0
     # The speaker's own words this turn (``executive._speaker_text``): a new
     # email may go to an address they typed. Pinned here because the turn's
     # message joins the session history only once the turn ends.

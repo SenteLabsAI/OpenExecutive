@@ -1,6 +1,8 @@
 """Act as me: what a turn may still do once it has read the owner's own mail.
 
-``ghostwrite_email`` reads mail other people wrote to the owner. From the
+``ghostwrite_email`` and the reads of the owner's mailbox
+(``search_my_email``, ``read_my_email``, ``my_email_awaiting_reply``) read
+mail other people wrote to the owner. From the
 round it runs in until the turn ends, nothing that reaches anyone else runs:
 no message, post, broadcast or invite, no queued or started work, no fetch of
 an outside address, and no write to state other people read (the roster,
@@ -14,7 +16,7 @@ until a new tool is), and anything unclassified is withheld. Through MCP
 
 The dispatch guard in ``orchestrator.executive`` refuses a withheld call
 without changing the offered tool list (the cached prefix stays the same all
-turn), and treats a round that calls ``ghostwrite_email`` as already touched,
+turn), and treats a round that calls any of them as already touched,
 because a round's tools run concurrently. The send paths check again
 (``mail_touched_refusal``) so nothing that reaches them in such a turn runs.
 The server-side ``web_search`` stays, as on a turn private to the owner: it
@@ -47,6 +49,10 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "list_workflows",
     "load_skill",
     "lookup_person",
+    # Reads of the owner's own mailbox (mail_read_tools).
+    "my_email_awaiting_reply",
+    "read_my_email",
+    "search_my_email",
     "propose_form_values",
     # The speaker's own notes (Always in the loop): a read, kept to the turn.
     "recall_history",
@@ -105,6 +111,7 @@ MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "google_workspace__get_events",
     "google_workspace__get_gmail_message_content",
+    "google_workspace__get_gmail_thread_content",
     "google_workspace__list_calendars",
     "google_workspace__query_freebusy",
     "google_workspace__search_drive_files",
