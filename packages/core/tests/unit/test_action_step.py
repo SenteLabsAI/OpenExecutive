@@ -212,6 +212,9 @@ async def test_call_budget_is_enforced_then_tools_are_switched_off(
         ]
     )
     _install(monkeypatch, provider)
+    # Without step scripts: with them, tools stay on while the script budget
+    # has room (test_step_script.test_a_step_out_of_direct_calls_may_still_script_the_rest).
+    monkeypatch.setenv("WORKFLOW_STEP_SCRIPTS", "false")
     out = await _run(_step(max_tool_calls=1))
     assert [c["name"] for c in gateway.calls] == [READ]
     results = provider.calls[1]["messages"][-1]["content"]

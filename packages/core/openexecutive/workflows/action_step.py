@@ -641,9 +641,14 @@ async def run_action_step(
             "tools": tools,
             "messages": messages,
         }
-        # Tools off once the budget is spent, and on the last turn regardless,
-        # so the model always gets a turn to report what it did.
-        if budget.spent or turn == max_turns - 1:
+        # Tools off once the budgets are spent, and on the last turn
+        # regardless, so the model always gets a turn to report what it did.
+        # A step whose direct calls are spent may still script the rest while
+        # its script budget has room (a direct call is then refused as over
+        # budget, which tells the model so).
+        if (
+            budget.spent and not (scripts and not script_budget.spent)
+        ) or turn == max_turns - 1:
             kwargs["tool_choice"] = {"type": "none"}
         response, failure = await _model_turn(
             provider, kwargs, step_id=step.id, model=resolved_model, turn=turn

@@ -331,3 +331,17 @@ async def test_each_save_is_audited(audit: list[dict[str, Any]]) -> None:
     await _tool({"script": "1", "save_as": "one_tool", "description": "One."})
     [row] = [r for r in audit if r["type"] == "saved_tool_changed"]
     assert row["actor"] == "executive" and row["details"]["version"] == 1
+
+
+def test_old_versions_are_pruned_but_never_the_one_that_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(saved_tools, "_MAX_VERSIONS_KEPT_PER_TOOL", 3)
+    for i in range(1, 6):
+        saved_tools.save("count_files", f"v{i}", str(i), [], origin="chat")
+    assert [v["version"] for v in saved_tools.versions("count_files")] == [5, 4, 3]
+    # Rolled back to 3: newer saves never prune the version that runs.
+    saved_tools.rollback("count_files", 3)
+    for i in range(6, 9):
+        saved_tools.save("count_files", f"v{i}", str(i), [], origin="chat")
+        saved_tools.rollback("count_files", 3)
+    assert [v["version"] for v in saved_tools.versions("count_files")] == [8, 7, 6, 3]
+    assert saved_tools.get("count_files").script == "3"  # type: ignore[union-attr]

@@ -577,3 +577,22 @@ async def test_a_step_call_stopped_mid_flight_is_still_audited(
         await task
     assert [r["details"]["outcome"] for r in audit] == ["cancelled (may have run)"]
     assert actions == [(MOVE, "cancelled (may have run)")]
+
+
+@pytest.mark.asyncio
+async def test_a_step_out_of_direct_calls_may_still_script_the_rest(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    _, provider = await _run(
+        monkeypatch,
+        [
+            _resp(_use(LIST, {"folder": "Inbox scans"})),
+            _resp(_use("run_script", {"script": FILE_SCRIPT}, "tu_2")),
+            _resp(_text("Filed.")),
+        ],
+        step=_step(max_tool_calls=1),
+    )
+    # The direct budget (1) is spent after the first turn, but tools stay on
+    # for the script; the last turn is still tools-off.
+    assert "tool_choice" not in provider.calls[1]
+    assert len(gateway.calls) == 1 + 4

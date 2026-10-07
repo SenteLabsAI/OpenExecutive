@@ -30,6 +30,7 @@ MAX_DESCRIPTION_CHARS = 500
 MAX_TOOLS_PER_SAVED_TOOL = 32
 MAX_SAVED_TOOLS = 200
 _MAX_RUNS_KEPT_PER_TOOL = 200
+_MAX_VERSIONS_KEPT_PER_TOOL = 20
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ def save(
         # process on the same file) can't pick the same version number.
         conn.execute("BEGIN IMMEDIATE")
         current = conn.execute(_SELECT + " WHERE t.name = ?", (name,)).fetchone()
+        previous = 0
         if current is None:
             count = conn.execute("SELECT COUNT(*) FROM saved_tools").fetchone()[0]
             if count >= MAX_SAVED_TOOLS:
@@ -212,6 +214,7 @@ def save(
             tool = _row_to_tool(current)
             if (tool.description, tool.script, tool.tools) == (description, script, tools):
                 return tool
+            previous = tool.version
             version = int(
                 conn.execute(
                     "SELECT MAX(version) FROM saved_tool_versions WHERE name = ?", (name,)
@@ -225,6 +228,14 @@ def save(
             "INSERT INTO saved_tool_versions (name, version, description, script, tools, origin, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (name, version, description, script, json.dumps(tools), origin[:200], now),
+        )
+        # Keep the newest versions, and always the one that ran until now
+        # (it may be an older one the owner rolled back to and trusts).
+        conn.execute(
+            "DELETE FROM saved_tool_versions WHERE name = ? AND version NOT IN ("
+            " SELECT version FROM saved_tool_versions WHERE name = ? ORDER BY version DESC LIMIT ?)"
+            " AND version != ?",
+            (name, name, _MAX_VERSIONS_KEPT_PER_TOOL, previous),
         )
     saved = get(name, db_path)
     assert saved is not None
