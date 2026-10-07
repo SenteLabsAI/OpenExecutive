@@ -509,7 +509,14 @@ class _StepCalls:
             else:
                 budget.used += 1
                 self._events.append(("progress", f"Using {name}…"))
-                content, is_error = await _call_tool(name, arguments, info)
+                try:
+                    content, is_error = await _call_tool(name, arguments, info)
+                except asyncio.CancelledError:
+                    # Stopped mid-call (a script's clock, or the run): it may
+                    # have taken effect, so it still gets its audit row.
+                    _audit(self._workflow_name, self._step_id, name, "cancelled (may have run)", targets)
+                    self._actions.append((name, "cancelled (may have run)"))
+                    raise
                 outcome = "error" if is_error else "ok"
                 if writes and not is_error and self._policy is not None:
                     self._policy.note_written(content, info)

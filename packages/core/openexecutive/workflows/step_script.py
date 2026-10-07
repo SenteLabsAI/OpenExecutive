@@ -163,7 +163,8 @@ _SANDBOX_TEXT = (
     "modules; no files, network or classes with inheritance. The value of the "
     "last expression is returned to you, along with anything printed and the "
     "calls the script made. If it fails partway, the calls that already ran are "
-    "listed: do not repeat them."
+    "listed: do not repeat them. A call marked may_have_run was cut off by the "
+    "time limit and may have taken effect: check before repeating it."
 )
 
 
@@ -416,13 +417,19 @@ async def run_script(
     slots = _slots()
 
     def payload(**fields: Any) -> str:
+        # The record of calls first: a long result is cut from the end
+        # (TOOL_RESULT_MAX_CHARS), and the list of writes that already ran
+        # must survive the cut.
+        head: dict[str, Any] = {}
+        if "error" in fields:
+            head["error"] = fields.pop("error")
         if made:
-            fields["calls"] = made[:_MAX_LISTED_CALLS]
+            head["calls"] = made[:_MAX_LISTED_CALLS]
             if len(made) > _MAX_LISTED_CALLS:
-                fields["calls_not_listed"] = len(made) - _MAX_LISTED_CALLS
+                head["calls_not_listed"] = len(made) - _MAX_LISTED_CALLS
         if printed.size or printed.dropped:
-            fields["printed"] = printed.text()
-        return json.dumps(fields, default=str, ensure_ascii=False)
+            head["printed"] = printed.text()
+        return json.dumps({**head, **fields}, default=str, ensure_ascii=False)
 
     try:
         # A free worker slot first (SCRIPT_MAX_WORKERS), within the clock.
@@ -470,7 +477,13 @@ async def run_script(
                     except TypeError as exc:
                         snapshot = await bounded(snapshot.resume({"exception": exc}))
                         continue
-                    content, is_error = await bounded(call(tool, arguments))
+                    try:
+                        content, is_error = await bounded(call(tool, arguments))
+                    except TimeoutError:
+                        # Cut off mid-call by the clock: it may have taken
+                        # effect, so it is listed for the model to check.
+                        made.append({"tool": tool, "ok": False, "may_have_run": True})
+                        raise
                     entry: dict[str, Any] = {"tool": tool, "ok": not is_error}
                     parsed = _parse_result(content)
                     if isinstance(parsed, dict) and parsed.get("status") in _WAITING:

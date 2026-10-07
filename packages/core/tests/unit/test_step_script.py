@@ -520,3 +520,60 @@ async def test_scripts_take_turns_for_the_worker_slots(monkeypatch: pytest.Monke
     content, failed = await one(wall_clock_s=0.1)
     assert failed and "busy" in json.loads(content)["error"]
     assert not (await first)[1]
+
+
+@pytest.mark.asyncio
+async def test_the_call_list_comes_first_and_a_cut_off_call_is_listed() -> None:
+    import asyncio
+
+    async def hang(name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        if arguments.get("folder") == "slow":
+            await asyncio.sleep(30)
+        return "[]", False
+
+    content, failed = await _drive(
+        "drive__list_items(folder='a')\ndrive__list_items(folder='slow')", hang, wall_clock_s=1.0
+    )
+    body = json.loads(content)
+    assert failed and body["error"] == "the script ran past its time limit"
+    assert body["calls"] == [
+        {"tool": LIST, "ok": True},
+        {"tool": LIST, "ok": False, "may_have_run": True},
+    ]
+    # A long result is cut from the end: the record of calls comes before it.
+    content, _ = await _drive("drive__list_items(folder='a')\n'x' * 50", hang)
+    assert list(json.loads(content))[:2] == ["calls", "result"]
+
+
+async def _drive(script: str, call: Any, wall_clock_s: float = 30.0) -> tuple[str, bool]:
+    done: tuple[str, bool] = ("", True)
+    async for kind, payload in step_script.run_script(script, [LIST], call, wall_clock_s=wall_clock_s):
+        if kind == "done":
+            done = payload
+    return done
+
+
+@pytest.mark.asyncio
+async def test_a_step_call_stopped_mid_flight_is_still_audited(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    import asyncio
+
+    async def hang(*_a: Any) -> tuple[str, bool]:
+        await asyncio.sleep(30)
+        return "{}", False
+
+    monkeypatch.setattr(act, "_call_tool", hang)
+    resolved = await tc.resolve([MOVE])
+    actions: list[tuple[str, str]] = []
+    calls = act._StepCalls(
+        workflow_name="wf", step_id="s", allowed={MOVE}, resolved=resolved,
+        budget=act._Budget(5), script_budget=act._Budget(50), policy=None, actions=actions,
+    )
+    task = asyncio.create_task(calls.script_call(MOVE, {"file_id": "f1"}))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [r["details"]["outcome"] for r in audit] == ["cancelled (may have run)"]
+    assert actions == [(MOVE, "cancelled (may have run)")]
