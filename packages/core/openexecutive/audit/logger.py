@@ -246,6 +246,18 @@ _USAGE_INT_FIELDS: tuple[str, ...] = (
 )
 
 
+# The audit rows of one run_script each: chat's ``kind: script`` row and a
+# workflow step's ``tool: run_script`` row.
+_SCRIPT_ROWS = (
+    "((event_type = 'tool_invocation' AND json_extract(details_json,'$.kind') = 'script')"
+    " OR (event_type = 'workflow_tool_call' AND json_extract(details_json,'$.tool') = 'run_script'))"
+)
+
+
+def _zero_scripts() -> dict[str, int]:
+    return {"scripts": 0, "ok": 0, "calls": 0, "turns_avoided": 0, "duration_ms": 0, "in_workflows": 0}
+
+
 def _zero_usage() -> dict[str, float | int]:
     return {**{k: 0 for k in _USAGE_INT_FIELDS}, "cost_usd": 0.0}
 
@@ -569,6 +581,27 @@ class AuditLogger:
             ).fetchone()
         return int(row["n"]) if row else 0
 
+    def _script_summary(self, where: str, params: list[Any]) -> dict[str, int]:
+        """Totals over the run_script rows (chat ``kind: script`` and workflow
+        ``tool: run_script``) a window holds. ``turns_avoided`` is an upper
+        bound: each call past a script's first would otherwise have needed a
+        model turn, unless the model had batched it with others."""
+        calls = "COALESCE(CAST(json_extract(details_json,'$.calls') AS INTEGER),0)"
+        with _get_conn(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS scripts, "
+                "SUM(CASE WHEN COALESCE(json_extract(details_json,'$.ok'),"
+                " json_extract(details_json,'$.outcome') = 'ok') THEN 1 ELSE 0 END) AS ok, "
+                f"COALESCE(SUM({calls}),0) AS calls, "
+                f"COALESCE(SUM(MAX({calls} - 1, 0)),0) AS turns_avoided, "
+                "COALESCE(SUM(CAST(json_extract(details_json,'$.duration_ms') AS INTEGER)),0)"
+                " AS duration_ms, "
+                "SUM(CASE WHEN event_type = 'workflow_tool_call' THEN 1 ELSE 0 END) AS in_workflows "
+                f"FROM audit_log {where}",
+                params,
+            ).fetchone()
+        return {k: int(row[k] or 0) for k in _zero_scripts()}
+
     def usage_summary(
         self,
         *,
@@ -592,6 +625,7 @@ class AuditLogger:
         """
         empty: dict[str, Any] = {
             "totals": _zero_usage(), "by_day": [], "by_model": [], "by_source": [],
+            "scripts": _zero_scripts(),
         }
         if not self._db_path.exists():
             return empty
@@ -631,6 +665,9 @@ class AuditLogger:
             ).fetchall()
 
         return {
+            "scripts": self._script_summary(where.replace(
+                "event_type = 'cache_event'", _SCRIPT_ROWS
+            ), params),
             "totals": _row_to_usage(totals_row),
             "by_day": [{"day": r["day"], **_row_to_usage(r)} for r in by_day_rows],
             "by_model": [{"model": r["model"], **_row_to_usage(r)} for r in by_model_rows],

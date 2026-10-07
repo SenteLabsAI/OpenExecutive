@@ -192,6 +192,34 @@ export default function TokenUsagePage() {
           ) : null}
 
           {/* By source */}
+          {data?.scripts && data.scripts.scripts > 0 ? (
+            <section className="mt-8">
+              <h2 className="text-sm font-medium text-fg mb-2">Scripts</h2>
+              <p className="text-xs text-fg-muted mb-3">
+                When work repeats over many items, the Executive runs one short script that makes the
+                tool calls itself, instead of a model turn per call.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard
+                  label="Scripts run"
+                  value={fmtInt(data.scripts.scripts)}
+                  hint={`${fmtInt(data.scripts.ok)} worked · ${fmtInt(data.scripts.in_workflows)} in workflows`}
+                />
+                <StatCard label="Tool calls in scripts" value={fmtInt(data.scripts.calls)} />
+                <StatCard
+                  label="Model turns avoided"
+                  value={`up to ${fmtInt(data.scripts.turns_avoided)}`}
+                  hint="calls that needed no model turn of their own"
+                />
+                <StatCard
+                  label="Time in scripts"
+                  value={`${(data.scripts.duration_ms / 1000).toFixed(1)}s`}
+                  hint="mostly the tools' own time"
+                />
+              </div>
+            </section>
+          ) : null}
+
           {data && data.by_source && data.by_source.length > 0 ? (
             <section className="mt-8">
               <h2 className="text-sm font-medium text-fg mb-2">By source</h2>

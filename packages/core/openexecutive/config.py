@@ -576,6 +576,13 @@ class Settings(BaseSettings):
     # — each call through the same allowlist, budget, target check and audit.
     # Off: the step only calls its tools one by one, as before.
     workflow_step_scripts: bool = Field(True, alias="WORKFLOW_STEP_SCRIPTS")
+    # A step's script calls have a budget of their own, 10x the step's
+    # max_tool_calls up to this ceiling: they cost no model turn each, so the
+    # direct-call budget (1-50) would cap a folder at ~50 files. Each call
+    # still goes through the allowlist, target check and audit.
+    workflow_script_max_calls: int = Field(
+        500, alias="WORKFLOW_SCRIPT_MAX_CALLS", ge=1, le=5_000
+    )
     # The same in chat: the Executive may run one sandboxed script over the
     # gateway tools a conversation has found, each call checked exactly as a
     # call_tool. Never offered on a turn private to the principal.

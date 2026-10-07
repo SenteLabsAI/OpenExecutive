@@ -2496,6 +2496,7 @@ class Executive:
                     )
                     script_result = json.dumps({"error": "the script did not finish"})
                     script_failed = True
+                    script_stats: dict[str, Any] = {}
                     # aclosing: a stopped turn closes the script, and with it
                     # the Monty worker, instead of leaving it to the GC.
                     async with contextlib.aclosing(
@@ -2563,7 +2564,9 @@ class Executive:
                                         },
                                     )
                             made.clear()
-                            if kind == "done":
+                            if kind == "stats":
+                                script_stats = payload
+                            elif kind == "done":
                                 script_result, script_failed = payload
                     logger.info("← run_script  result=%s", _trunc(script_result))
                     results_by_id[tu["id"]] = script_result
@@ -2580,6 +2583,9 @@ class Executive:
                             "kind": "script",
                             "iteration": iteration,
                             "ok": not script_failed,
+                            # Calls made and time taken (the usage summary
+                            # adds these up: audit.logger.script_summary).
+                            **script_stats,
                             "result_preview": audit_tool_result(step_script.RUN_SCRIPT_TOOL, script_result),
                             **({"saved_tool": str(script_args["tool"])[:60]} if script_args.get("tool") else {}),
                             **({"save_as": str(script_args["save_as"])[:60]} if script_args.get("save_as") else {}),

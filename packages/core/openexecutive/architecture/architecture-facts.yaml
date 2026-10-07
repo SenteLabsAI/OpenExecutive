@@ -5962,7 +5962,9 @@ workflows:
     stepped from the event loop with AsyncMonty feed_start/resume: each call
     to an undefined function pauses the worker and is answered by
     action_step._StepCalls.call, the same path as a direct tool_use
-    (allowlist — a name outside it is refused AND audited —, shared budget,
+    (allowlist — a name outside it is refused AND audited —, a budget: script
+    calls spend _StepCalls.script_call's own, 10x max_tool_calls capped by
+    WORKFLOW_SCRIPT_MAX_CALLS (default 500), not the 1-50 direct budget,
     TargetPolicy with held writes returning {"status": "held"}, one
     workflow_tool_call audit row per call), plus a `run_script` row. The
     step's tools are identifier-mapped functions, plus call_tool(name,
@@ -5973,7 +5975,12 @@ workflows:
     reach the engine as they happen (run_script is an async generator). No
     threads. Limits: execution time (excludes waiting on tools), memory,
     recursion, a max_suspensions backstop above any step budget, wall clock,
-    script size; printed output past its cap is dropped, not fatal. Results
+    script size; printed output past its cap is dropped, not fatal.
+    Each script yields ("stats", {calls, duration_ms}) before done; the
+    run_script audit rows (chat kind: script, workflow tool: run_script)
+    carry them, and AuditLogger.usage_summary adds them up as `scripts`
+    (scripts, ok, calls, turns_avoided = sum(calls - 1), duration_ms,
+    in_workflows) for the Token usage page. Actions taken collapses repeats. Results
     and errors list the calls the script made, so a model fixing a script
     that failed partway does not repeat writes that already ran. Scripts are
     never stored; definitions stay data, not code. The workflow designer's

@@ -155,7 +155,7 @@ async def test_one_script_makes_every_call_through_the_step(
     # Each call audited on its own, then the script itself.
     assert [r["details"]["tool"] for r in audit] == [LIST, MOVE, MOVE, MOVE, "run_script"]
     report = out[-1][1]
-    assert out[-1][0] == "output" and report.count(f"`{MOVE}` — ok") == 3
+    assert out[-1][0] == "output" and f"`{MOVE}` — ok (×3)" in report
     assert "`run_script` — ok" in report
 
 
@@ -177,12 +177,14 @@ async def test_script_cannot_call_a_tool_outside_the_step(
 
 
 @pytest.mark.asyncio
-async def test_script_calls_share_the_step_budget(
+async def test_script_calls_have_a_budget_of_their_own(
     monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
 ) -> None:
+    """10x the step's max_tool_calls: a script's calls cost no model turn each,
+    so the direct budget (1-50) would cap a folder at ~50 files."""
     script = """
 done = 0
-for i in range(10):
+for i in range(40):
     try:
         drive__list_items(folder="x")
         done += 1
@@ -190,15 +192,49 @@ for i in range(10):
         pass
 done
 """
-    _, provider = await _run(
+    outputs, provider = await _run(
         monkeypatch,
-        [_resp(_use("run_script", {"script": script})), _resp(_text("Stopped at the budget."))],
+        [
+            _resp(_use("run_script", {"script": script})),
+            # The direct budget (3) is untouched by the script's 30 calls.
+            _resp(_use(LIST, {"folder": "y"}, "tu_2")),
+            _resp(_text("Done.")),
+        ],
         step=_step(max_tool_calls=3),
     )
-    assert _script_result(provider)["result"] == 3
-    assert len(gateway.calls) == 3
+    assert _script_result(provider)["result"] == 30
+    assert len(gateway.calls) == 31
     refused = [r for r in audit if r["details"]["outcome"] == "refused: budget"]
-    assert len(refused) == 7
+    assert len(refused) == 10
+    assert "up to 30 tool calls" in str(provider.calls[0]["tools"])
+    [row] = [r for r in audit if r["details"]["tool"] == "run_script"]
+    assert row["details"]["calls"] == 40 and row["details"]["duration_ms"] >= 0
+    # The step's report collapses repeats: one line per tool and outcome.
+    [output] = [p for kind, p in outputs if kind == "output"]
+    assert f"`{LIST}` — ok (×31)" in output and f"`{LIST}` — refused: budget (×10)" in output
+
+
+@pytest.mark.asyncio
+async def test_the_script_budget_has_a_ceiling(
+    monkeypatch: pytest.MonkeyPatch, gateway: _FakeGateway, audit: list[dict[str, Any]]
+) -> None:
+    monkeypatch.setenv("WORKFLOW_SCRIPT_MAX_CALLS", "5")
+    script = """
+n = 0
+for i in range(8):
+    try:
+        drive__list_items(folder="x")
+        n += 1
+    except RuntimeError:
+        pass
+n
+"""
+    _, provider = await _run(
+        monkeypatch,
+        [_resp(_use("run_script", {"script": script})), _resp(_text("Done."))],
+        step=_step(max_tool_calls=20),
+    )
+    assert _script_result(provider)["result"] == 5
 
 
 @pytest.mark.asyncio

@@ -3355,6 +3355,19 @@ export interface UsageSummary {
   by_model: UsageByModel[];
   // Absent on a backend older than the by-source breakdown.
   by_source?: UsageBySource[];
+  // Sandboxed scripts (run_script). Absent on an older backend.
+  scripts?: ScriptUsage;
+}
+
+export interface ScriptUsage {
+  scripts: number;
+  ok: number;
+  calls: number;
+  // Upper bound: each call past a script's first would otherwise have needed
+  // a model turn, unless the model had batched it with others.
+  turns_avoided: number;
+  duration_ms: number;
+  in_workflows: number;
 }
 
 export async function getAuditUsage(

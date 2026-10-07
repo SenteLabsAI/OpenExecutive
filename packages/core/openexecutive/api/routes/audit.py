@@ -148,6 +148,19 @@ class UsageBySource(UsageTotals):
     source: str
 
 
+class ScriptUsage(BaseModel):
+    """What the sandboxed scripts (run_script) did over the window: how many
+    ran (and how many worked), the tool calls they made, the time they took,
+    and an upper bound on the model turns those calls would otherwise have
+    needed (each call past a script's first, unless batched)."""
+    scripts: int = 0
+    ok: int = 0
+    calls: int = 0
+    turns_avoided: int = 0
+    duration_ms: int = 0
+    in_workflows: int = 0
+
+
 class UsageSummary(BaseModel):
     """Aggregate token usage + cost across ALL sessions over an optional time
     window, with by-day, by-model and by-source breakdowns. Derived from
@@ -159,6 +172,7 @@ class UsageSummary(BaseModel):
     by_day: list[UsageByDay]
     by_model: list[UsageByModel]
     by_source: list[UsageBySource] = []
+    scripts: ScriptUsage = ScriptUsage()
 
 
 class Degradation(BaseModel):
@@ -630,6 +644,7 @@ def get_audit_usage(
         by_day=[UsageByDay(**d) for d in data["by_day"]],
         by_model=[UsageByModel(**m) for m in data["by_model"]],
         by_source=[UsageBySource(**s) for s in data.get("by_source", [])],
+        scripts=ScriptUsage(**data.get("scripts", {})),
     )
 
 

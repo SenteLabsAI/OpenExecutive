@@ -152,12 +152,22 @@ _SANDBOX_TEXT = (
 )
 
 
-def tool_definition(tools: list[str], saved: list[Any] | None = None) -> dict[str, Any]:
+def tool_definition(
+    tools: list[str], saved: list[Any] | None = None, *, call_budget: int | None = None
+) -> dict[str, Any]:
     """The ``run_script`` tool for a workflow step with these tools.
 
     ``saved`` is the saved tools this step may run (every tool each uses is
-    one of the step's), listed by name and description.
+    one of the step's), listed by name and description. ``call_budget`` is
+    how many calls this step's scripts may make in all.
     """
+    budget_text = (
+        f"This step's scripts may make up to {call_budget} tool calls in all, a "
+        "budget of their own (larger than the direct-call budget, because a "
+        "script's calls cost no model turn); "
+        if call_budget is not None
+        else "Every call counts against this step's tool budget and "
+    )
     funcs = function_names(tools)
     listing = "\n".join(f"- {fn}(...)  # calls {name}" for fn, name in sorted(funcs.items()))
     saved_listing = ""
@@ -178,7 +188,7 @@ def tool_definition(tools: list[str], saved: list[Any] | None = None) -> dict[st
             "Each tool is a function taking the tool's arguments as keywords:\n"
             f"{listing}\n"
             "call_tool(name, arguments) also reaches any of them by exact name. "
-            f"{_CALL_TEXT} Every call counts against this step's tool budget and "
+            f"{_CALL_TEXT} {budget_text}each call "
             "follows the same rules as calling the tool directly.\n\n"
             f"{_SANDBOX_TEXT}{saved_listing}"
         ),
@@ -476,6 +486,8 @@ async def run_script_tool(
     wall_clock_s: float = _WALL_CLOCK_S,
 ) -> AsyncGenerator[ScriptYield, None]:
     """Answer one ``run_script`` tool use: a new script, or a saved tool.
+    A script that ran yields ``("stats", {calls, duration_ms})`` just before
+    its ``done``.
 
     ``may_save`` is whether this context may save (or re-version) a tool:
     only the principal's own interactive chat turns. A saved tool runs with
@@ -611,6 +623,12 @@ async def run_script_tool(
             except Exception:
                 logger.warning("saved tool: couldn't save %r", str(save_as)[:60], exc_info=True)
                 body["save_error"] = "not saved: storage error (the script itself ran)"
+    # For the audit row and the usage summary: what the script did, without
+    # adding to what the model reads.
+    yield ("stats", {
+        "calls": call_count,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    })
     yield ("done", (json.dumps(body, default=str, ensure_ascii=False), is_error))
 
 

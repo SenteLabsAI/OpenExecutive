@@ -59,6 +59,9 @@ _TOOL_CALL_TIMEOUT_S = 120.0
 _MAX_INPUT_CHARS = 2_000
 _MAX_PRIOR_OUTPUT_CHARS = 6_000
 _MAX_COMPANY_CHARS = 6_000
+# A step's script calls may number this many times its max_tool_calls (up
+# to WORKFLOW_SCRIPT_MAX_CALLS): each costs no model turn.
+_SCRIPT_BUDGET_MULTIPLIER = 10
 
 StepYield = tuple[str, Any]
 
@@ -375,6 +378,7 @@ def _audit(
     tool: str,
     outcome: str,
     targets: dict[str, str] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> None:
     from openexecutive.audit import log_event
 
@@ -383,6 +387,8 @@ def _audit(
     }
     if targets:
         details["targets"] = targets
+    if stats:
+        details.update(stats)
     log_event(
         "workflow_tool_call",
         f"{workflow_name}/{step_id}: {tool} ({outcome})",
@@ -432,6 +438,8 @@ class _StepCalls:
 
     Events for the engine (``progress``, ``held``) are queued and handed over
     by ``drain`` after each call, so a script's calls report the same way.
+    Direct calls spend ``budget``; a script's calls (``script_call``) spend
+    ``script_budget``, which is larger because they cost no model turn each.
     """
 
     def __init__(
@@ -442,6 +450,7 @@ class _StepCalls:
         allowed: set[str],
         resolved: dict[str, tool_catalog.ToolInfo],
         budget: _Budget,
+        script_budget: _Budget,
         policy: TargetPolicy | None,
         actions: list[tuple[str, str]],
     ) -> None:
@@ -450,6 +459,7 @@ class _StepCalls:
         self._allowed = allowed
         self._resolved = resolved
         self._budget = budget
+        self._script_budget = script_budget
         self._policy = policy
         self._actions = actions
         self._holds = _Holds()
@@ -460,16 +470,27 @@ class _StepCalls:
         return events
 
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Run (or refuse, or hold) one call. Returns (result text, is_error); never raises."""
+        """Run (or refuse, or hold) one direct call. Returns (result text,
+        is_error); never raises."""
+        return await self._call(name, arguments, self._budget, "this step's tool-call budget is used up")
+
+    async def script_call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        """The same for a call a step script makes, against the script budget."""
+        return await self._call(
+            name, arguments, self._script_budget,
+            f"this step's script call budget ({self._script_budget.limit} calls) is used up",
+        )
+
+    async def _call(
+        self, name: str, arguments: dict[str, Any], budget: _Budget, spent_reason: str
+    ) -> tuple[str, bool]:
         targets: dict[str, str] | None = None
         if name not in self._allowed:
             (content, is_error), outcome = _refusal(
                 f"{name} is not one of this step's tools"
             ), "refused: not allowed"
-        elif self._budget.spent:
-            (content, is_error), outcome = _refusal(
-                "this step's tool-call budget is used up"
-            ), "refused: budget"
+        elif budget.spent:
+            (content, is_error), outcome = _refusal(spent_reason), "refused: budget"
         else:
             info = self._resolved[name]
             writes = info.read_only is not True
@@ -486,7 +507,7 @@ class _StepCalls:
                     self._events.append(("held", decision))
                 content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
             else:
-                self._budget.used += 1
+                budget.used += 1
                 self._events.append(("progress", f"Using {name}…"))
                 content, is_error = await _call_tool(name, arguments, info)
                 outcome = "error" if is_error else "ok"
@@ -563,7 +584,11 @@ async def run_action_step(
     if scripts:
         tool_defs.append(
             step_script.tool_definition(
-                list(step.tools), step_script.usable_saved_tools(list(step.tools))
+                list(step.tools),
+                step_script.usable_saved_tools(list(step.tools)),
+                call_budget=min(
+                    step.max_tool_calls * _SCRIPT_BUDGET_MULTIPLIER, settings.workflow_script_max_calls
+                ),
             )
         )
     tools = sorted(tool_defs, key=lambda t: t["name"])
@@ -584,6 +609,9 @@ async def run_action_step(
         }
     ]
     budget = _Budget(step.max_tool_calls)
+    script_budget = _Budget(
+        min(step.max_tool_calls * _SCRIPT_BUDGET_MULTIPLIER, settings.workflow_script_max_calls)
+    )
     actions: list[tuple[str, str]] = []
     calls = _StepCalls(
         workflow_name=workflow_name,
@@ -591,6 +619,7 @@ async def run_action_step(
         allowed=set(step.tools),
         resolved=resolved,
         budget=budget,
+        script_budget=script_budget,
         policy=policy,
         actions=actions,
     )
@@ -630,11 +659,12 @@ async def run_action_step(
             if scripts and name == step_script.RUN_SCRIPT_TOOL:
                 yield ("progress", "Running a script…")
                 content, is_error = json.dumps({"error": "the script did not finish"}), True
+                stats: dict[str, Any] = {}
                 async with contextlib.aclosing(
                     step_script.run_script_tool(
                         arguments,
                         tools=list(step.tools),
-                        call=calls.call,
+                        call=calls.script_call,
                         origin=f"workflow:{workflow_name}/{step.id}",
                         may_save=False,
                     )
@@ -643,11 +673,14 @@ async def run_action_step(
                         # Each call's events (progress, held) as it happens.
                         for event in calls.drain():
                             yield event
-                        if kind == "done":
+                        if kind == "stats":
+                            stats = payload
+                        elif kind == "done":
                             content, is_error = payload
                 outcome = "error" if is_error else "ok"
-                # The script's own calls were audited one by one as they ran.
-                _audit(workflow_name, step.id, step_script.RUN_SCRIPT_TOOL, outcome)
+                # The script's own calls were audited one by one as they ran;
+                # this row adds how many and how long (script_summary).
+                _audit(workflow_name, step.id, step_script.RUN_SCRIPT_TOOL, outcome, stats=stats)
                 actions.append((step_script.RUN_SCRIPT_TOOL, outcome))
             else:
                 content, is_error = await calls.call(name, arguments)
@@ -827,7 +860,15 @@ def held_question(workflow_title: str, held: list[HeldCall]) -> str:
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:
     lines = [report.strip() or "(The step finished without a report.)", "", "**Actions taken**", ""]
     if actions:
-        lines += [f"- `{name}` — {outcome}" for name, outcome in actions]
+        # Repeats collapse to one line with a count, so a script's 300 moves
+        # read as one line, in the order each first happened.
+        counts: dict[tuple[str, str], int] = {}
+        for action in actions:
+            counts[action] = counts.get(action, 0) + 1
+        lines += [
+            f"- `{name}` — {outcome}" + (f" (×{n})" if n > 1 else "")
+            for (name, outcome), n in counts.items()
+        ]
     else:
         lines.append("- No tools were called.")
     return "\n".join(lines)
