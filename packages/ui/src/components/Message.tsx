@@ -8,7 +8,9 @@ import AnswerSourcesFooter from "@/components/AnswerSourcesFooter";
 import BrandMark from "@/components/BrandMark";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
+import { loadsInline } from "@/lib/markdownImages";
 import { isMailboxLink } from "@/lib/replyCards";
+import { hostOf } from "@/lib/url";
 import FeatureName from "@/components/FeatureName";
 
 interface MessageProps {
@@ -152,6 +154,19 @@ export default function Message({
               // Block javascript: and data: URL schemes to prevent XSS via prompt injection
               if (/^(javascript|data|vbscript):/i.test(url)) return "";
               return url;
+            }}
+            components={{
+              // An image from another site never loads by itself: its URL
+              // could carry what the reply quotes (see loadsInline).
+              img: ({ src, alt }) =>
+                loadsInline(src) ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={src as string} alt={alt ?? ""} />
+                ) : typeof src === "string" && src ? (
+                  <a href={src} target="_blank" rel="noopener noreferrer nofollow">
+                    {alt || "Image"} ({hostOf(src)})
+                  </a>
+                ) : null,
             }}
           >
             {content}

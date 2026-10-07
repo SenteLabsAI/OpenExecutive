@@ -87,7 +87,10 @@ async def send_message(token: str, chat_id: int, text: str) -> str | None:
             continue
         resp = await client.post(
             _tg_url(token, "sendMessage"),
-            json={"chat_id": chat_id, "text": chunk},
+            # No link previews: Telegram's server would fetch a link in the
+            # text on its own, and a reply can quote mail a sender wrote to
+            # carry data out in one.
+            json={"chat_id": chat_id, "text": chunk, "link_preview_options": {"is_disabled": True}},
         )
         if resp.is_error:
             logger.error(

@@ -8672,6 +8672,12 @@ delegation:
     (follow_ups.recipients), whose thread still ends with it. Results carry
     a note that other people's words are data. Audit input and result are
     redacted (my_email is a sensitive tool-name substring).
+    The lockdown refuses tools, not reply text, so the ways reply text
+    leaves without a click are closed where it is shown: Message.tsx loads
+    only root-relative images (lib/markdownImages.loadsInline; any other is
+    a link), Telegram sendMessage sets link_preview_options.is_disabled,
+    Slack's reply say passes unfurl_links/unfurl_media False, and every
+    Discord reply send passes suppress_embeds=True.
   ghostwriter: |
     delegation.ghostwriter.compose — the only text the Executive produces
     under someone else's name. System = the constant GHOSTWRITER_PROMPT +

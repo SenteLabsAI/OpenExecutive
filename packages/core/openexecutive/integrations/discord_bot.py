@@ -1195,7 +1195,7 @@ def create_discord_bot():
         await interaction.response.defer(thinking=True)
 
         async def send_fn(text: str) -> None:
-            await interaction.followup.send(text)
+            await interaction.followup.send(text, suppress_embeds=True)
 
         cleaned = prompt.strip()
         if not cleaned:
@@ -1347,13 +1347,15 @@ def create_discord_bot():
             # Reply in the same channel — for DMs that's the DM, for thread
             # continuations that's the existing thread. Do NOT call
             # message.create_thread() inside a thread; Discord rejects it.
+            # suppress_embeds: Discord would fetch a link in the reply on its
+            # own, and a reply can quote mail a sender wrote to carry data out.
             async def send_fn(text: str) -> None:
-                await message.channel.send(text)
+                await message.channel.send(text, suppress_embeds=True)
         elif mode == CLASSIFY_MENTION:
             # @mention inside an existing (human-owned) thread — reply inline,
             # don't try to spawn a sub-thread (Discord rejects nested threads).
             async def send_fn(text: str) -> None:
-                await message.channel.send(text)
+                await message.channel.send(text, suppress_embeds=True)
         elif mode == CLASSIFY_MENTION_CHANNEL:
             # @mention in a plain TextChannel. Defer the thread-vs-inline
             # decision until after the reply is generated — see the
@@ -1438,7 +1440,7 @@ def create_discord_bot():
                         )
 
                 async def thread_send(text: str) -> None:
-                    await new_thread.send(text)
+                    await new_thread.send(text, suppress_embeds=True)
 
                 return MentionRouteResult(
                     send_fn=thread_send,
