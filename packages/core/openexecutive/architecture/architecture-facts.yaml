@@ -9065,7 +9065,9 @@ delegation:
     for email, calendar and Drive; the roster for DMs and message_person).
     What has no recipient check stays off for the whole conversation
     (lockdown.CARRIED_WITHHELD_TOOLS: read_document, add/tune watchlist
-    entry, run_script, run_executive_research, load_mcp_server; call_tool
+    entry, run_script, run_executive_research, load_mcp_server, and queued
+    work — schedule_followup, suggest_workflow, run_workflow, save_workflow,
+    since an unattended run can fetch and research; call_tool
     only within PRIVATE_TURN_MCP_TOOLS), refused at dispatch
     (carried_withholds, when touched_mail and not read_mail) and in each
     handler (lockdown.outside_reach_refusal): a reply can repeat text the

@@ -139,7 +139,8 @@ MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
 
 # What stays off for the rest of a conversation that once read the owner's
 # mail, not just its reading turn: the tools that reach an outside address
-# with no recipient check. A later turn holds the mail only as the
+# with no recipient check, and work queued to run later unattended (a
+# follow-up or workflow run can fetch and research with nobody watching). A later turn holds the mail only as the
 # Executive's own replies, but a reply can repeat text the mail planted, and
 # a URL or a script could carry it anywhere. Messages, invites and email
 # stay on: each reaches only people the roster allows (``_roster_allow_set``,
@@ -152,14 +153,18 @@ CARRIED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "read_document",
     "run_executive_research",
     "run_script",
+    "run_workflow",
+    "save_workflow",
+    "schedule_followup",
+    "suggest_workflow",
     "tune_watchlist_entry",
 })
 
 CARRIED_REFUSAL = (
     "This conversation read the user's own mail, so nothing in it fetches an "
-    "outside address, runs a script or connects a tool server: the address "
-    "could carry what the mail said. Tell the user to ask for it in a new "
-    "conversation. Do not retry it here."
+    "outside address, runs a script, connects a tool server or queues work "
+    "to run later: any of those could carry what the mail said. Tell the "
+    "user to ask for it in a new conversation. Do not retry it here."
 )
 
 REFUSAL = (

@@ -382,3 +382,48 @@ def test_the_handlers_refuse_on_their_own(kept_private: list[Any]) -> None:
         assert lockdown.outside_reach_refusal("read_document") is None
     finally:
         current_session.reset(token)
+
+
+@pytest.mark.parametrize("tool", sorted(lockdown.CARRIED_WITHHELD_TOOLS))
+def test_every_carried_tool_is_refused_on_a_later_turn(tool: str, kept_private: list[Any]) -> None:
+    from openexecutive.delegation.settings import TurnDelegation
+
+    session = Session()
+    token = current_session.set(session)
+    try:
+        session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
+            offered=True, touched_mail=True, read_mail=False, session_id=session.session_id,
+        )
+        assert lockdown.carried_withholds(tool, {})
+        assert "new conversation" in (lockdown.outside_reach_refusal(tool) or "")
+    finally:
+        current_session.reset(token)
+
+
+@pytest.mark.parametrize(("handler", "tool"), [
+    ("openexecutive.orchestrator.schedule_tools:handle_schedule_followup", "schedule_followup"),
+    ("openexecutive.orchestrator.schedule_tools:handle_suggest_workflow", "suggest_workflow"),
+    ("openexecutive.orchestrator.workflow_run_tools:handle_run_workflow", "run_workflow"),
+    ("openexecutive.orchestrator.workflow_authoring_tools:handle_save_workflow", "save_workflow"),
+    ("openexecutive.orchestrator.document_tools:handle_read_document", "read_document"),
+    ("openexecutive.orchestrator.watchlist_tools:handle_add_watchlist_entry", "add_watchlist_entry"),
+    ("openexecutive.orchestrator.watchlist_tools:handle_tune_watchlist_entry", "tune_watchlist_entry"),
+    ("openexecutive.orchestrator.research_tools:handle_run_executive_research", "run_executive_research"),
+])
+def test_queued_work_and_fetch_handlers_refuse_on_their_own(handler: str, tool: str) -> None:
+    import importlib
+
+    from openexecutive.delegation.settings import TurnDelegation
+
+    module, name = handler.split(":")
+    fn = getattr(importlib.import_module(module), name)
+    session = Session()
+    token = current_session.set(session)
+    try:
+        session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
+            offered=True, touched_mail=True, read_mail=False, session_id=session.session_id,
+        )
+        result = json.loads(asyncio.run(fn({})))
+        assert "new conversation" in result["error"] and tool in result["error"]
+    finally:
+        current_session.reset(token)
