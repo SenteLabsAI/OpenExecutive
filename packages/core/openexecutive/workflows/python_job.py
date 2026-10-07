@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ import re
 import resource
 import shutil
 import tempfile
+import threading
 import time
 import urllib.parse
 import uuid
@@ -61,6 +63,8 @@ _KEEP_DAYS = 7
 # All kept result files together; the oldest jobs go first past it. The
 # company volume also holds the database and the knowledge base.
 _KEEP_TOTAL_BYTES = 200 * 2**20
+# Jobs prune after they finish, outside the job slot.
+_prune_lock = threading.Lock()
 # One job at a time per process: each takes 200-450 MB while it runs.
 _slot = asyncio.Semaphore(1)
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,120}$")
@@ -151,15 +155,21 @@ def _limit_memory(limit_mb: int) -> Any:
     return apply
 
 
-async def _read_capped(stream: asyncio.StreamReader, limit: int) -> bytes | None:
-    """Read a stream to its end, or None as soon as it passes ``limit``."""
+async def _read_line(stream: asyncio.StreamReader, limit: int) -> bytes | None:
+    """Read up to the first newline (or the end), or None once past ``limit``.
+    The worker prints its result as one line of JSON."""
     chunks: list[bytes] = []
     size = 0
     while chunk := await stream.read(2**16):
+        end = chunk.find(b"\n")
+        if end >= 0:
+            chunk = chunk[:end]
         size += len(chunk)
         if size > limit:
             return None
         chunks.append(chunk)
+        if end >= 0:
+            break
     return b"".join(chunks)
 
 
@@ -221,10 +231,14 @@ async def _run_in(
         await proc.stdin.drain()
         proc.stdin.close()
         err_task = asyncio.create_task(_read_head(proc.stderr, 2**16))
-        out = await _read_capped(proc.stdout, _MAX_STDOUT_BYTES)
-        if out is None:
-            # Past the cap: stop it now rather than wait out the timeout.
-            proc.kill()
+        out = await _read_line(proc.stdout, _MAX_STDOUT_BYTES)
+        # The result line is in hand, stdout ended, or it passed its cap:
+        # stop the process now. Waiting for it to exit would let job code that
+        # keeps running (a Worker, a disabled Deno.exit, a closed stdout) hold
+        # the slot to the timeout.
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
         err = await err_task
         await proc.wait()
         return out, err
@@ -241,15 +255,17 @@ async def _run_in(
         raise
     if out is None:
         return {"error": "the job's output was too large; nothing was kept"}
-    if proc.returncode != 0:
-        detail = (err or b"").decode(errors="replace")[-400:]
-        logger.warning("python job: sandbox exited %s: %s", proc.returncode, detail)
-        return {"error": "the job stopped: it may have run out of memory or crashed"}
+    # The exit code doesn't count once the worker printed its result: the
+    # process is killed as soon as stdout ends.
     try:
         body = json.loads(out)
     except ValueError:
-        return {"error": "the sandbox returned no result"}
-    return body if isinstance(body, dict) else {"error": "the sandbox returned no result"}
+        body = None
+    if isinstance(body, dict):
+        return body
+    detail = (err or b"").decode(errors="replace")[-400:]
+    logger.warning("python job: sandbox exited %s: %s", proc.returncode, detail)
+    return {"error": "the job stopped: it may have run out of memory or crashed"}
 
 
 def _knowledge_file(name: str) -> Path | None:
@@ -265,6 +281,16 @@ def _knowledge_file(name: str) -> Path | None:
 def _prune(root: Path) -> None:
     """Drop jobs past their days, then the oldest while all kept files pass
     _KEEP_TOTAL_BYTES."""
+    with _prune_lock:
+        try:
+            _prune_unlocked(root)
+        except FileNotFoundError:
+            # A folder went while it was being measured; the next job's
+            # prune picks up the rest.
+            logger.info("python job: a result folder went while pruning", exc_info=True)
+
+
+def _prune_unlocked(root: Path) -> None:
     if not root.is_dir():
         return
     # Deno's cache from before jobs had a folder of their own.

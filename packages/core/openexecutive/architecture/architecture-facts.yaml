@@ -6059,6 +6059,11 @@ workflows:
     so a leftover Worker can't hold the slot. Resources: preexec sets
     oom_score_adj=1000 and nice 10 (2 GB shared-cpu machines: a ~900 MB worst
     job plus the API); kept results capped at 200 MB total, oldest first.
+    Recheck: job code could undo the worker's Deno.exit or close stdout and
+    keep running, so the API reads only the result line (one line of JSON)
+    and kills the process then; the exit code no longer counts once a result
+    parsed. _prune runs under a lock and treats a vanished folder as gone
+    (concurrent prunes raised FileNotFoundError and lost the reply's links).
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

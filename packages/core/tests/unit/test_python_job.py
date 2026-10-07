@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -138,11 +139,15 @@ async def test_the_api_stops_reading_a_flood(monkeypatch: pytest.MonkeyPatch) ->
     reader = asyncio.StreamReader()
     reader.feed_data(b"x" * 300)
     reader.feed_eof()
-    assert await python_job._read_capped(reader, 100) is None
+    assert await python_job._read_line(reader, 100) is None
     reader = asyncio.StreamReader()
     reader.feed_data(b"ok")
     reader.feed_eof()
-    assert await python_job._read_capped(reader, 100) == b"ok"
+    assert await python_job._read_line(reader, 100) == b"ok"
+    # Up to the result line only: the process may never close stdout.
+    reader = asyncio.StreamReader()
+    reader.feed_data(b'{"result": "ok"}\nmore')
+    assert await python_job._read_line(reader, 100) == b'{"result": "ok"}'
 
 
 @pytest.mark.skipif(
@@ -231,3 +236,35 @@ def test_the_real_sandbox_leaves_nothing_behind_and_stops_early(company: Path) -
     started = time.monotonic()
     assert asyncio.run(python_job.run_job(worker, {}, timeout_s=60))["result"] == "ok"
     assert time.monotonic() - started < 30
+    # Nor one the job stops the worker's own exit for, or a closed stdout.
+    for trick in (
+        "Deno.exit=()=>{}; new Worker('data:text/javascript,for(;;){}', {type: 'module'})",
+        "setTimeout(()=>{Deno.stdout.close(); for(;;){}}, 0)",
+    ):
+        started = time.monotonic()
+        body = asyncio.run(python_job.run_job(
+            f"from pyodide.code import run_js\nrun_js({trick!r})\n'ok'", {}, timeout_s=60
+        ))
+        assert time.monotonic() - started < 30, (trick, body)
+
+
+def test_concurrent_prunes_dont_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(python_job, "_KEEP_TOTAL_BYTES", 0)
+    for i in range(300):
+        job = tmp_path / f"{i:032x}"
+        job.mkdir()
+        (job / "r.bin").write_bytes(b"x")
+    errors: list[BaseException] = []
+
+    def prune() -> None:
+        try:
+            python_job._prune(tmp_path)
+        except BaseException as exc:  # noqa: BLE001 - the test records any failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=prune) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and list(tmp_path.iterdir()) == []
