@@ -5940,8 +5940,10 @@ workflows:
     names a sign-off's reply-shape change since a non-approve_reject gate
     lets the run continue whatever the answer, and has a catch-all line for
     unmapped fields), flags only newly added write tools, and saves via
-    `POST /workflows/custom/{name}/save-edit` {session_id}: the server
-    saves the session's own draft (never a client body), re-validates it,
+    `POST /workflows/custom/{name}/save-edit` {session_id, definition}: the
+    server saves the session's own draft (never a client body), only when it
+    equals the reviewed `definition` (409 if a message landed since the card
+    loaded — sessions are not bound to a caller), re-validates it,
     keeps the stored is_active, and writes with
     `save_if_unchanged(draft, session.original)` — 409 if the workflow
     changed since the session opened (e.g. switched off mid-edit), for a

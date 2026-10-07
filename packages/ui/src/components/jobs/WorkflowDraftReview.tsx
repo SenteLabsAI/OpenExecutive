@@ -126,7 +126,7 @@ export default function WorkflowDraftReview({
         await activateCustomWorkflow(def);
         pending.onActivated();
       } else if (edit && sessionId) {
-        const saved = await saveWorkflowDesignerEdit(def.name, sessionId);
+        const saved = await saveWorkflowDesignerEdit(sessionId, def);
         router.push(`/jobs/${encodeURIComponent(saved.name)}`);
       } else {
         const saved = await createCustomWorkflow(def);

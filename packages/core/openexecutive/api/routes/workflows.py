@@ -335,10 +335,12 @@ async def save_designer_edit(name: str, request: Request) -> dict[str, Any]:
     """Save the draft of a conversation that edits ``name``.
 
     The conversation is opened by ``POST /workflows/designer/edit``. This saves
-    that session's own draft, never a definition the client sends, and only if
-    the stored workflow is still the version the conversation opened on: an
-    edit started before someone changed it or switched it off is a 409, not a
-    silent overwrite. The stored on/off state is kept. Declared under
+    that session's own draft, never a definition the client sends, and only
+    when it is the ``definition`` the user reviewed (a message that landed
+    after the card loaded is a 409, so the click saves only what was shown)
+    and the stored workflow is still the version the conversation opened on:
+    an edit started before someone changed it or switched it off is a 409,
+    not a silent overwrite. The stored on/off state is kept. Declared under
     ``/workflows/custom`` so whatever limits writes to custom workflows covers
     it too.
     """
@@ -360,6 +362,11 @@ async def save_designer_edit(name: str, request: Request) -> dict[str, Any]:
             )
         if session.phase != "draft" or session.draft is None:
             raise HTTPException(status_code=409, detail="There are no changes to save yet.")
+        if not _reviewed_matches(session.draft.definition, body.get("definition")):
+            raise HTTPException(
+                status_code=409,
+                detail="The draft changed since you reviewed it — check the latest version.",
+            )
         defn = session.draft.definition.model_copy(
             update={"name": name, "is_active": original.is_active}
         )

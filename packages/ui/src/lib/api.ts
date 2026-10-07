@@ -2282,19 +2282,21 @@ export async function activateCustomWorkflow(
 
 /**
  * Save the draft of a conversation that edits a saved workflow. The server
- * saves its own copy of the draft, and only if the workflow has not changed
- * since the conversation opened (409 otherwise).
+ * saves its own copy of the draft, and only if it is `reviewed` (the draft on
+ * screen) and the workflow has not changed since the conversation opened
+ * (409 otherwise).
  */
 export async function saveWorkflowDesignerEdit(
-  name: string,
-  sessionId: string
+  sessionId: string,
+  reviewed: DynamicWorkflowDef
 ): Promise<DynamicWorkflowDef> {
+  const name = reviewed.name;
   const res = await fetch(
     `${API_BASE}/workflows/custom/${encodeURIComponent(name)}/save-edit`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId }),
+      body: JSON.stringify({ session_id: sessionId, definition: reviewed }),
     }
   );
   if (!res.ok) throw await _customError(res);
