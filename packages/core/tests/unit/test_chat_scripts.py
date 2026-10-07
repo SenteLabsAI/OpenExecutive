@@ -229,6 +229,43 @@ def test_a_turn_that_read_the_owners_mail_refuses_the_whole_script(
     assert any(r["details"].get("refused") == "mail_touched" for r in audit)
 
 
+def test_a_later_turn_of_a_mail_conversation_refuses_scripts_and_outside_tools_but_sends(
+    monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
+) -> None:
+    # A later turn of a conversation that read the owner's mail: private
+    # (touched_mail) but not locked (read_mail). What reaches only the roster
+    # runs; a script or a gateway tool outside PRIVATE_TURN_MCP_TOOLS doesn't.
+    from types import SimpleNamespace
+
+    from openexecutive.orchestrator import executive as ex
+
+    pinned = SimpleNamespace(offered=False, touched_mail=True, read_mail=False)
+    monkeypatch.setattr("openexecutive.orchestrator.executive.turn_delegation", lambda _s: pinned)
+    slack: list[dict[str, Any]] = []
+
+    async def send_slack_dm(tool_input: dict[str, Any]) -> str:
+        slack.append(tool_input)
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setitem(ex._ALL_SKILL_HANDLERS, "send_slack_dm", send_slack_dm)
+    gateway = _Gateway()
+    send = {"name": "google_workspace__send_gmail_message", "arguments": {"to": "ben@co.example"}}
+    provider = _ScriptedProvider([
+        _FinalMsg([
+            _ToolUseBlock("tu-s", "run_script", {"script": SCRIPT}),
+            _ToolUseBlock("tu-f", "call_tool", {"name": "fetch__fetch_url", "arguments": {"url": "https://x.example"}}),
+            _ToolUseBlock("tu-g", "call_tool", send),
+            _ToolUseBlock("tu-d", "send_slack_dm", {"slack_user_id": "U1", "text": "hi"}),
+        ], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+    _run(provider, gateway)
+    for refused in ("tu-s", "tu-f"):
+        assert "new conversation" in json.loads(_any_result(provider, refused))["error"]
+    assert gateway.calls == [send]
+    assert slack == [{"slack_user_id": "U1", "text": "hi"}]
+
+
 def test_the_script_itself_is_audited_with_its_source(audit: list[dict[str, Any]]) -> None:
     _run(_script_turn(), _Gateway())
     rows = [r for r in audit if r["details"].get("kind") == "script"]
