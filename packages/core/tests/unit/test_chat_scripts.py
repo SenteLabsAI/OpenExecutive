@@ -219,7 +219,7 @@ def test_a_turn_that_read_the_owners_mail_refuses_the_whole_script(
 ) -> None:
     from types import SimpleNamespace
 
-    pinned = SimpleNamespace(offered=False, touched_mail=True)
+    pinned = SimpleNamespace(offered=False, touched_mail=True, read_mail=True)
     monkeypatch.setattr("openexecutive.orchestrator.executive.turn_delegation", lambda _s: pinned)
     gateway = _Gateway()
     provider = _script_turn()

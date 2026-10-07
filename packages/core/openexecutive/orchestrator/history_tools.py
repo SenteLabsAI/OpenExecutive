@@ -100,8 +100,9 @@ def _keep_private(session: Any, person: Any) -> bool:
     """Keep the turn the speaker's before their notes enter it: from now on
     its rows are private to them and it teaches no memory (``touched_mail``,
     as when Act as me reads their mailbox). The conversation also becomes
-    theirs alone (``mark_mail_private``), so every later turn in it starts
-    the same way and a follow-up restating a note stays private too. False
+    theirs alone (``mark_mail_private``), so every later turn in it is
+    private the same way and a follow-up restating a note stays private too
+    (the lockdown, ``read_mail``, is this turn's alone). False
     when that can't be made so."""
     from openexecutive.delegation.settings import turn_delegation
     from openexecutive.memory.session_store import mark_mail_private
@@ -109,7 +110,7 @@ def _keep_private(session: Any, person: Any) -> bool:
     pinned = turn_delegation(session)
     if pinned is None:
         return False
-    pinned.touched_mail = True
+    pinned.touched_mail = pinned.read_mail = True
     session_id = getattr(session, "session_id", None)
     if not session_id:
         return False

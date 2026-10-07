@@ -190,6 +190,57 @@ def test_a_turn_that_read_no_mail_still_sends(sent: list[dict[str, Any]]) -> Non
     assert sent == [SLACK]
 
 
+@pytest.fixture
+def kept_private(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Every session reads as one that read its owner's mail before
+    (``sessions.mail_private``); the pins each turn made, to inspect."""
+    from openexecutive.delegation import settings as dsettings
+    from openexecutive.memory import session_store
+
+    def owner(_sid: str, *_a: Any, **_k: Any) -> tuple[bool, int | None]:
+        principal = people_store.find_principal_person()
+        return True, principal.id if principal else None
+
+    monkeypatch.setattr(session_store, "session_mail_private", lambda *_a, **_k: True)
+    monkeypatch.setattr(session_store, "get_session_owner", owner)
+    pins: list[Any] = []
+    real = dsettings.pin_turn_delegation
+
+    def pin(session: Any, speaker_text: str) -> Any:
+        # A fake mailbox's turn skips the conversation's flag; apply it as a
+        # real turn in that conversation would.
+        pinned = real(session, speaker_text)
+        dsettings._carry_kept_private(pinned)
+        pins.append(pinned)
+        return pinned
+
+    monkeypatch.setattr(dsettings, "pin_turn_delegation", pin)
+    monkeypatch.setattr(ex, "pin_turn_delegation", pin, raising=False)
+    return pins
+
+
+def test_a_later_turn_in_a_private_conversation_stays_private_but_can_send(
+    sent: list[dict[str, Any]], kept_private: list[Any]
+) -> None:
+    # History holds only their words and the Executive's replies, never the
+    # mail a tool returned, so the lockdown is the reading turn's alone.
+    _turn([ToolUseBlock("tu2", "send_slack_dm", SLACK)])
+    assert sent == [SLACK]
+    assert kept_private and kept_private[-1].touched_mail is True
+    assert kept_private[-1].read_mail is False
+
+
+def test_reading_mail_in_that_later_turn_locks_it_again(
+    sent: list[dict[str, Any]], kept_private: list[Any]
+) -> None:
+    _turn(
+        [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
+        [ToolUseBlock("tu2", "send_slack_dm", SLACK)],
+    )
+    assert sent == []
+    assert kept_private[-1].read_mail is True
+
+
 def test_the_offered_tools_never_change_mid_turn(sent: list[dict[str, Any]]) -> None:
     _, touched = _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
@@ -208,7 +259,7 @@ def test_the_send_paths_refuse_on_their_own(monkeypatch: pytest.MonkeyPatch) -> 
 
     session = Session()
     session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
-        enabled=True, offered=True, touched_mail=True, session_id=session.session_id,
+        enabled=True, offered=True, touched_mail=True, read_mail=True, session_id=session.session_id,
     )
     token = current_session.set(session)
     try:
@@ -216,6 +267,7 @@ def test_the_send_paths_refuse_on_their_own(monkeypatch: pytest.MonkeyPatch) -> 
         assert refused is not None and "read the user's own mail" in json.loads(refused)["error"]
         assert lockdown.mail_touched_refusal("run_workflow") is not None
         session.turn_delegation.touched_mail = False  # type: ignore[attr-defined]
+        session.turn_delegation.read_mail = False  # type: ignore[attr-defined]
         assert lockdown.mail_touched_refusal("run_workflow") is None
     finally:
         current_session.reset(token)
@@ -227,7 +279,7 @@ def test_the_gateway_runs_only_reads_after_the_turn_read_mail() -> None:
     gateway = MCPGateway.__new__(MCPGateway)
     session = Session()
     session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
-        enabled=True, offered=True, touched_mail=True, session_id=session.session_id,
+        enabled=True, offered=True, touched_mail=True, read_mail=True, session_id=session.session_id,
     )
     token = current_session.set(session)
     try:

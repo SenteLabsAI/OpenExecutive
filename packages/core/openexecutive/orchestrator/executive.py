@@ -1989,13 +1989,15 @@ class Executive:
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
                 withheld_uses = [*withheld_uses, *withheld_mcp_uses]
             # Act as me: once the turn has read the principal's own mail (in
-            # an earlier round, or with a ghostwrite_email or recall_history
-            # in this one — a round's tools run together), nothing that reaches anyone else
-            # runs for the rest of the turn (delegation.lockdown). The offered
-            # list stays as it is, so the cached prefix never changes mid-turn.
+            # an earlier round, or with a ghostwrite_email, a mailbox read or
+            # recall_history in this one — a round's tools run together),
+            # nothing that reaches anyone else runs for the rest of the turn
+            # (delegation.lockdown). A later turn starts unlocked
+            # (TurnDelegation.read_mail). The offered list stays as it is, so
+            # the cached prefix never changes mid-turn.
             mail_touched_uses: list[dict[str, Any]] = []
             if pinned_delegation is not None and (
-                pinned_delegation.touched_mail
+                pinned_delegation.read_mail
                 or any(tu["name"] in DELEGATION_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
             ):
                 mail_touched_uses = [

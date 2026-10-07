@@ -9,7 +9,7 @@ so they are fenced the same way:
 - **Offered** only on a turn ``pin_turn_delegation`` offered Act as me to,
   never in ``_ALL_SKILL_TOOLS``; the handler re-checks the pin and the surface.
 - **Private.** Before the first read each marks the turn as having read the
-  owner's mail (``TurnDelegation.touched_mail``): its audit rows are private,
+  owner's mail (``TurnDelegation.touched_mail`` and ``read_mail``): its audit rows are private,
   it teaches no memory, the conversation is theirs alone, and nothing that
   reaches anyone else runs for the rest of the turn (``delegation.lockdown``).
 - **Read-only.** Nothing is changed, labelled, drafted or sent.
@@ -214,19 +214,33 @@ def _sender(message: Any) -> str:
     return f"{name} <{message.from_addr}>" if name else message.from_addr
 
 
+def _id_refusal(writer: Any, value: str, what: str) -> str | None:
+    """Why ``value`` can't be one of their mailbox's ids (each mailbox has its
+    own id shape, Gmail's or Outlook's), or None when it can."""
+    from openexecutive.delegation.gmail import valid_id as gmail_id
+
+    valid_id = getattr(writer.mailbox, "valid_id", gmail_id)
+    return None if valid_id(value) else _error(f"That {what}_id isn't a {what} id from their mailbox.")
+
+
 async def _run(
     tool_name: str,
     slot: tuple[str, int, str],
     read: Callable[[Any], Awaitable[str]],
+    check: Callable[[Any], str | None] | None = None,
 ) -> str:
-    """The shared fence: whose mailbox, this turn's cap, the mailbox opened
-    privately, then ``read`` — or the refusal or error to return."""
+    """The shared fence: whose mailbox, ``check`` on the input (before a slot
+    is spent on it), this turn's cap, the mailbox opened privately, then
+    ``read`` — or the refusal or error to return."""
     from openexecutive.delegation.gmail import STATUS_MESSAGES, GmailAuthError, GmailError
     from openexecutive.orchestrator.delegation_tools import _open_mailbox, _writer
 
     writer = _writer(tool_name)
     if isinstance(writer, str):
         return writer
+    refused = check(writer) if check is not None else None
+    if refused is not None:
+        return refused
     refused = _take(writer.pinned, *slot)
     if refused is not None:
         return refused
@@ -368,16 +382,12 @@ async def _attachment_list(mailbox: Any, messages: list[Any], first: int) -> lis
 async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.delegation.gmail import mailbox_link
-    from openexecutive.delegation.gmail import valid_id as gmail_id
 
     thread_id = str(tool_input.get("thread_id") or "").strip()
     if not thread_id:
         return _error("Pass `thread_id` (from search_my_email).")
 
     async def read(writer: Any) -> str:
-        valid_id = getattr(writer.mailbox, "valid_id", gmail_id)
-        if not valid_id(thread_id):
-            return _error("That thread_id isn't a thread id from their mailbox.")
         thread = await writer.mailbox.get_thread(thread_id)
         messages = [m for m in thread.messages if "DRAFT" not in m.labels]
         if not messages:
@@ -396,7 +406,12 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
             "note": _DATA_NOTE + _YOURS_NOTE,
         })
 
-    return await _run(READ_MY_EMAIL, ("threads_read", THREADS_PER_TURN, "thread reads"), read)
+    return await _run(
+        READ_MY_EMAIL,
+        ("threads_read", THREADS_PER_TURN, "thread reads"),
+        read,
+        lambda writer: _id_refusal(writer, thread_id, "thread"),
+    )
 
 
 async def handle_my_email_awaiting_reply(tool_input: dict[str, Any]) -> str:
@@ -475,7 +490,6 @@ def _suffix(name: str) -> str:
 
 async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
     from openexecutive.delegation.ghostwriter import one_line
-    from openexecutive.delegation.gmail import valid_id as gmail_id
     from openexecutive.integrations.attachments import _extract_text, format_attached_text
 
     message_id = str(tool_input.get("message_id") or "").strip()
@@ -484,9 +498,6 @@ async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
         return _error("Pass `message_id` and `index` as read_my_email listed the attachment.")
 
     async def read(writer: Any) -> str:
-        valid_id = getattr(writer.mailbox, "valid_id", gmail_id)
-        if not valid_id(message_id):
-            return _error("That message_id isn't a message id from their mailbox.")
         listed = await writer.mailbox.list_attachments(message_id)
         if not 1 <= index <= len(listed):
             return _error(f"That message has {len(listed)} attachment(s); index is 1 to {len(listed)}.")
@@ -523,7 +534,10 @@ async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
         })
 
     return await _run(
-        READ_MY_EMAIL_ATTACHMENT, ("attachments_read", ATTACHMENTS_PER_TURN, "attachment reads"), read
+        READ_MY_EMAIL_ATTACHMENT,
+        ("attachments_read", ATTACHMENTS_PER_TURN, "attachment reads"),
+        read,
+        lambda writer: _id_refusal(writer, message_id, "message"),
     )
 
 

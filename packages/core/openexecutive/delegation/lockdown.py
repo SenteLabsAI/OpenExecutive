@@ -22,9 +22,10 @@ because a round's tools run concurrently. The send paths check again
 (``mail_touched_refusal``) so nothing that reaches them in such a turn runs.
 The server-side ``web_search`` stays, as on a turn private to the owner: it
 cannot be refused at dispatch without a cache miss. The lockdown lasts for
-the turn; the owner's next message starts afresh, except in a conversation
-that has read their mail (``sessions.mail_private``), where every turn
-starts touched (``settings.pin_turn_delegation``).
+the turn (``TurnDelegation.read_mail``); the owner's next message starts
+afresh, even in a conversation that read their mail: it stays private to
+them (``touched_mail``), but history carries only their words and the
+Executive's replies, never the mail a tool returned.
 """
 from __future__ import annotations
 
@@ -160,10 +161,10 @@ def mail_touched_refusal(label: str) -> str | None:
     """For a send path's own check: the refusal when the current turn has
     read the owner's mail, else None. Never raises, and fails closed: a pin
     that can't be read counts as touched."""
-    from openexecutive.delegation.settings import turn_touched_delegate_mail
+    from openexecutive.delegation.settings import turn_read_delegate_mail
 
     try:
-        touched = turn_touched_delegate_mail()
+        touched = turn_read_delegate_mail()
     except Exception:
         touched = True
     return mail_touched_withheld_error(label) if touched else None

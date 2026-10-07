@@ -439,3 +439,11 @@ def test_attachment_reads_are_capped_per_turn(roster: SimpleNamespace) -> None:
     session = _attachment_session(_attached("terms.txt", b"ok"))
     session.turn_delegation.attachments_read = mr.ATTACHMENTS_PER_TURN
     assert "attachment reads" in _read_attachment(session, {"message_id": "m1", "index": 1})["error"]
+
+
+def test_a_malformed_id_spends_no_read(roster: SimpleNamespace) -> None:
+    session = _attachment_session(_attached("terms.txt", b"ok"))
+    assert "isn't a thread id" in _read(session, {"thread_id": "../x"})["error"]
+    assert "isn't a message id" in _read_attachment(session, {"message_id": "../x", "index": 1})["error"]
+    assert session.turn_delegation.threads_read == 0
+    assert session.turn_delegation.attachments_read == 0

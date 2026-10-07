@@ -2525,9 +2525,10 @@ memory:
       notes, in a private chat (history_chat.private_chat, or
       Session.private_chat), with their switch on. Act as me isn't needed. Recall
       sets touched_mail first, for the principal too (private rows, no
-      memory, the lockdown from that round), and marks the conversation
-      mail_private so later turns start the same way and, for a team
-      member, the principal can't open it.
+      memory, the lockdown from that round: touched_mail and read_mail), and
+      marks the conversation mail_private so later turns are private the same
+      way (not locked down) and, for a team member, the principal can't open
+      it.
     - recall_history takes due=true to list only dated notes, a week overdue
       to two weeks ahead, soonest first ("what's due today?").
     - The owner's briefs read the owner's own notes (memory.history_brief):
@@ -9015,11 +9016,11 @@ delegation:
     with its owner, binding one to an ownerless row and refusing to read if
     that fails or the conversation is someone else's), after which only the
     session's owner may open it (chat._session_access) and working-style
-    learning skips it. Every later turn in it starts touched
+    learning skips it. Every later turn in it starts touched_mail
     (settings.pin_turn_delegation reads the flag, failing closed): the
     turn's rows are the owner's, and so are the web chat's rows before it
     (the inbound chat_turn and the knowledge_retrieval row); no memory pass
-    runs and the lockdown holds, even when the answer comes from history
+    runs, even when the answer comes from history
     alone; anyone else speaking there is not offered Act as me. A channel
     adapter's own pre-turn rows (integration_inbound, and the retrieval
     Discord and Telegram run first) are written as before. The inbox
@@ -9053,9 +9054,14 @@ delegation:
     through; the broadcast, calendar, workflow, research and follow-up
     handlers; MCPGateway.call_tool and load_mcp_server). The server-side
     web_search stays, as on a turn private to the principal. The lockdown is
-    per turn: the principal's next message starts afresh, except in a
-    conversation that has read their mail (mail_private), where every turn
-    starts touched. The process log
+    per turn (TurnDelegation.read_mail, set only by the tools that read the
+    mailbox or notes; lockdown.mail_touched_refusal reads
+    settings.turn_read_delegate_mail): the next message starts afresh, in a
+    mail_private conversation too, which stays private (touched_mail) but
+    not locked. History (session.conversation_history, chat_messages) keeps
+    only the speaker's words and the Executive's final replies, never a
+    tool's result, so a later turn sees the mail only as the Executive's own
+    reply; the send paths' recipient checks still apply. The process log
     names a refused call_tool's inner tool only when it is shaped like a
     tool name (executive._loggable_tool, [a-z0-9_]{1,64}), else
     "call_tool:<unlisted>": that name is the model's own text, which mail
