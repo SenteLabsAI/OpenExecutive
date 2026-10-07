@@ -636,6 +636,7 @@ async def run_action_step(
                         tools=list(step.tools),
                         call=calls.call,
                         origin=f"workflow:{workflow_name}/{step.id}",
+                        may_save=False,
                     )
                 ) as script_steps:
                     async for kind, payload in script_steps:

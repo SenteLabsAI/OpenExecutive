@@ -268,8 +268,10 @@ def _any_result(provider: _ScriptedProvider, use_id: str) -> str:
 
 
 def test_chat_saves_a_script_and_lists_then_runs_it(
-    saved_db: None, audit: list[dict[str, Any]]
+    saved_db: None, audit: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The principal speaking on a verified surface: the one place a save lands.
+    monkeypatch.setattr("openexecutive.orchestrator.executive.principal_only_withheld", lambda _s: frozenset())
     gateway = _Gateway()
     provider = _ScriptedProvider([
         _FinalMsg([_ToolUseBlock("tu-s", "run_script", {
@@ -298,3 +300,25 @@ def test_list_saved_tools_is_offered_beside_run_script() -> None:
     _run(provider, _Gateway())
     [listed] = [t for t in provider.calls[0]["tools"] if t.get("name") == "list_saved_tools"]
     assert {k: v for k, v in listed.items() if k != "cache_control"} == step_script.LIST_SAVED_TOOLS_DEFINITION
+
+
+def test_a_turn_that_is_not_the_principals_cannot_save(
+    saved_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.executive.principal_only_withheld",
+        lambda _s: frozenset({"load_mcp_server"}),
+    )
+    gateway = _Gateway()
+    provider = _ScriptedProvider([
+        _FinalMsg([_ToolUseBlock("tu-s", "run_script", {
+            "script": SCRIPT, "save_as": "file_scans", "description": "File the inbox scans.",
+        })], "tool_use"),
+        _FinalMsg([_TextBlock("Done.")], "end_turn"),
+    ])
+    _run(provider, gateway)
+    body = json.loads(_any_result(provider, "tu-s"))
+    assert body["result"] == 3 and "only the principal" in body["save_error"]
+    from openexecutive.workflows import saved_tools
+
+    assert saved_tools.get("file_scans") is None

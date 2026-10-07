@@ -54,10 +54,10 @@ class _Calls:
 
 
 async def _tool(arguments: dict[str, Any], tools: list[str] | None = None, call: Any = None,
-                origin: str = "chat") -> tuple[dict[str, Any], bool]:
+                origin: str = "chat", may_save: bool = True) -> tuple[dict[str, Any], bool]:
     final: tuple[str, bool] = ("", True)
     async for kind, payload in step_script.run_script_tool(
-        arguments, tools=tools, call=call or _Calls(), origin=origin,
+        arguments, tools=tools, call=call or _Calls(), origin=origin, may_save=may_save,
     ):
         if kind == "done":
             final = payload
@@ -280,3 +280,20 @@ async def test_saving_a_turned_off_tool_says_so() -> None:
     saved_tools.set_enabled("count_files", False)
     body, _ = await _tool({"script": "2", "save_as": "count_files", "description": "Count."})
     assert body["saved"]["enabled"] is False and "turned this tool off" in body["saved"]["note"]
+
+
+@pytest.mark.asyncio
+async def test_only_a_context_that_may_save_saves() -> None:
+    """A step, an inbound email or a teammate's turn runs the script but
+    never saves it: a saved tool later runs on whoever's turn calls it."""
+    body, is_error = await _tool(
+        {"script": "2", "save_as": "two_tool", "description": "Two."}, may_save=False,
+    )
+    assert not is_error and body["result"] == 2 and "only the principal" in body["save_error"]
+    assert saved_tools.get("two_tool") is None
+
+
+def test_a_step_is_not_offered_saving() -> None:
+    definition = step_script.tool_definition([LIST])
+    assert set(definition["input_schema"]["properties"]) == {"script", "tool", "inputs"}
+    assert "save_as" not in definition["description"]

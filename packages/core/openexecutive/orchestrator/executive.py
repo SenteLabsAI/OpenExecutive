@@ -2499,6 +2499,10 @@ class Executive:
                             tools=None,
                             call=_script_call,
                             origin="chat",
+                            # Saving only while the principal speaks on a
+                            # verified, interactive surface: a saved tool
+                            # runs on whoever's turn calls it later.
+                            may_save=not principal_withheld and not unattended_withheld,
                             wall_clock_s=script_clock,
                         )
                     ) as script_steps:

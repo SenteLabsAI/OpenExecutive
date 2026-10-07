@@ -118,6 +118,13 @@ _INPUT_SCHEMA: dict[str, Any] = {
         },
     },
 }
+# A workflow step runs saved tools but never saves one (see run_script_tool).
+_STEP_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        k: v for k, v in _INPUT_SCHEMA["properties"].items() if k not in ("save_as", "description")
+    },
+}
 _CALL_TEXT = (
     "A call returns the tool's result, parsed from JSON when it is JSON (else "
     "the text); a failed or refused call raises RuntimeError with the reason. "
@@ -128,7 +135,8 @@ _CALL_TEXT = (
 _SAVED_TEXT = (
     "To keep a script that worked for next time, also pass save_as (a "
     "snake_case name) and description (one sentence on what it does and which "
-    "inputs it takes); it is saved only if this run succeeds. Write a script "
+    "inputs it takes); it is saved only if this run succeeds, and only on the "
+    "principal's own turns. Write a script "
     "you mean to reuse so it reads its per-run values (a folder, a date) from "
     "the dict `inputs` rather than hard-coding them. Saving again under the same "
     "name keeps a new version. To run a saved tool, pass tool (its name) and "
@@ -154,7 +162,10 @@ def tool_definition(tools: list[str], saved: list[Any] | None = None) -> dict[st
     listing = "\n".join(f"- {fn}(...)  # calls {name}" for fn, name in sorted(funcs.items()))
     saved_listing = ""
     if saved:
-        saved_listing = "\n\nSaved tools this step can run (pass tool=<name>):\n" + "\n".join(
+        saved_listing = (
+            "\n\nSaved tools this step can run: pass tool=<name> and inputs={...} "
+            "instead of script.\n"
+        ) + "\n".join(
             f"- {t.name}: {t.description}" for t in saved
         )
     return {
@@ -169,9 +180,9 @@ def tool_definition(tools: list[str], saved: list[Any] | None = None) -> dict[st
             "call_tool(name, arguments) also reaches any of them by exact name. "
             f"{_CALL_TEXT} Every call counts against this step's tool budget and "
             "follows the same rules as calling the tool directly.\n\n"
-            f"{_SANDBOX_TEXT}\n\n{_SAVED_TEXT}{saved_listing}"
+            f"{_SANDBOX_TEXT}{saved_listing}"
         ),
-        "input_schema": _INPUT_SCHEMA,
+        "input_schema": _STEP_INPUT_SCHEMA,
     }
 
 
@@ -460,9 +471,16 @@ async def run_script_tool(
     tools: list[str] | None,
     call: CallFn,
     origin: str,
+    may_save: bool,
     wall_clock_s: float = _WALL_CLOCK_S,
 ) -> AsyncGenerator[ScriptYield, None]:
     """Answer one ``run_script`` tool use: a new script, or a saved tool.
+
+    ``may_save`` is whether this context may save (or re-version) a tool:
+    only the principal's own interactive chat turns. A saved tool runs with
+    the authority of whoever runs it, so its author must be trusted at least
+    as much as anyone who may run it — never an inbound email, a teammate, an
+    unattended run or a workflow step reading outside content.
 
     ``tools`` is a workflow step's allowlist (None in chat). A saved tool runs
     in a step only when every tool it used is one of the step's; in chat the
@@ -566,6 +584,8 @@ async def run_script_tool(
     elif save_as is not None:
         if not saving_on:
             body["save_error"] = "saved tools are turned off"
+        elif not may_save:
+            body["save_error"] = "not saved: only the principal's own turns can save tools"
         elif is_error:
             body["save_error"] = "not saved: the script failed"
         else:
