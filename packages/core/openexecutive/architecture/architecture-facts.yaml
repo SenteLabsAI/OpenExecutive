@@ -8831,6 +8831,34 @@ delegation:
     a link), Telegram sendMessage sets link_preview_options.is_disabled,
     Slack's reply say passes unfurl_links/unfurl_media False, and every
     Discord reply send passes suppress_embeds=True.
+  forward_and_remind: |
+    ghostwrite_email takes forward (a thread id) with to: a draft forwarding
+    the thread's latest non-draft message, intent the note above it (the
+    ghostwriter writes the note only), recipients by _new_recipients
+    (roster or typed this turn), subject "Fwd: ...". DraftSpec.forward
+    (gmail.ForwardOf: message id, header block, the sender's own words).
+    Gmail: build_raw quotes the header and text under the note and attaches
+    DraftSpec.attachments; create_draft fills them from the original
+    (attachment_bytes), at most FORWARD_MAX_FILES 10 and FORWARD_MAX_BYTES
+    20 MB, counting the rest in CreatedDraft.skipped_attachments (flag
+    attachments_left_off). Outlook: POST /messages/{id}/createForward with
+    the note as comment and only recipients and the ghostwritten property
+    in message; the body is never patched.
+    remind_me(text, when) (orchestrator.reminder_tools) is in
+    DELEGATION_TOOLS but not MAILBOX_TOOL_NAMES: it opens no mailbox and
+    never sets touched_mail/read_mail. delegation.reminders.clean_text makes
+    the text one line, replaces links/addresses with [link], caps 300; when
+    is read in the workspace timezone (a date alone is 9:00), at least a
+    minute ahead and within a year. Caps: TurnDelegation.reminders 5 a turn,
+    MAX_PENDING 25 waiting; refused when delivery_order finds no channel.
+    Stored in delegation_reminders (person_id, text, due_at, created_at,
+    claimed_at, sent_at, cancelled_at), never scheduled_actions. The
+    scheduler hook _maybe_send_reminders -> reminders.maybe_send (once a
+    minute) -> send_due claims each due row (claimed_at compare-and-set),
+    drops it when over two days late, and sends "Reminder: <text>" through
+    deliver_to_person to the setter alone, private audit rows
+    (delegation_reminder_set / _sent). In MAIL_TOUCHED_ALLOWED_TOOLS: it
+    reaches only the speaker, as fixed text, and nothing runs at fire time.
   ghostwriter: |
     delegation.ghostwriter.compose — the only text the Executive produces
     under someone else's name. System = the constant GHOSTWRITER_PROMPT +

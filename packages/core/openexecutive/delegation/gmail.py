@@ -44,7 +44,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from email.message import EmailMessage, Message
 from email.utils import formataddr, getaddresses
@@ -116,6 +116,9 @@ STATUS_MESSAGES: dict[str, str] = {
 
 # Gmail ids are short hex strings; anything else never reaches a URL path.
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# A forward's attached files, at most (Gmail's own message limit is 25 MB).
+FORWARD_MAX_FILES = 10
+FORWARD_MAX_BYTES = 20 * 1024 * 1024
 # Gmail's attachment ids are far longer than its message ids.
 _ATTACHMENT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,4096}")
 _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
@@ -229,6 +232,19 @@ class ThreadSummary:
 
 
 @dataclass
+class ForwardOf:
+    """The message a draft forwards (``DraftSpec.forward``): the provider's
+    id for it, and the header block and text Gmail quotes under the note.
+    Outlook forwards by id (``createForward``), original and files included;
+    Gmail's draft quotes ``header`` and ``text`` and attaches the message's
+    files itself (``DelegateGmail.create_draft``)."""
+
+    message_id: str
+    header: str
+    text: str
+
+
+@dataclass
 class DraftSpec:
     to: list[str]
     subject: str
@@ -241,6 +257,10 @@ class DraftSpec:
     # One of the person's own send-as addresses to write from (the one the
     # mail being answered went to); None is their primary address.
     from_addr: str | None = None
+    # A forward instead of a reply or a new email: the body is the note above it.
+    forward: ForwardOf | None = None
+    # Files to attach (name, MIME type, bytes): a forward's, on Gmail.
+    attachments: list[tuple[str, str, bytes]] = field(default_factory=list)
 
 
 @dataclass
@@ -248,6 +268,8 @@ class CreatedDraft:
     draft_id: str
     message_id: str
     thread_id: str
+    # A forward's files that were left off (too many or too large).
+    skipped_attachments: int = 0
 
 
 @dataclass
@@ -626,7 +648,16 @@ def build_raw(sender: str, spec: DraftSpec) -> str:
     if spec.references:
         msg["References"] = clean_header(spec.references)
     msg[GHOSTWRITTEN_HEADER] = "1"
-    msg.set_content(spec.body)
+    body = spec.body
+    if spec.forward is not None:
+        body = f"{spec.body}\n\n{spec.forward.header}\n\n{spec.forward.text}"
+    msg.set_content(body)
+    for name, mime, data in spec.attachments:
+        maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+        msg.add_attachment(
+            data, maintype=maintype or "application", subtype=subtype or "octet-stream",
+            filename=clean_header(name) or "attachment",
+        )
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
 
 
@@ -934,6 +965,24 @@ class DelegateGmail:
     async def list_attachments(self, message_id: str) -> list[MailAttachment]:
         return (await self.get_message(message_id)).attachments
 
+    async def _with_forwarded_files(self, spec: DraftSpec) -> tuple[DraftSpec, int]:
+        """``spec`` with its forwarded message's files attached, and how
+        many were left off for the caps."""
+        assert spec.forward is not None
+        files: list[tuple[str, str, bytes]] = []
+        total = skipped = 0
+        for meta in await self.list_attachments(spec.forward.message_id):
+            if len(files) >= FORWARD_MAX_FILES or total + meta.size > FORWARD_MAX_BYTES:
+                skipped += 1
+                continue
+            meta, data = await self.attachment_bytes(spec.forward.message_id, meta.index)
+            if total + len(data) > FORWARD_MAX_BYTES:
+                skipped += 1
+                continue
+            total += len(data)
+            files.append((meta.name, meta.mime_type, data))
+        return replace(spec, attachments=files), skipped
+
     async def attachment_bytes(self, message_id: str, index: int) -> tuple[MailAttachment, bytes]:
         """The ``index``-th attached file of the message (1-based) and its
         bytes, read with the attachment id Gmail gives on this fetch."""
@@ -1005,9 +1054,14 @@ class DelegateGmail:
         return SentMessage(id=str(data.get("id") or ""), thread_id=str(data.get("threadId") or ""))
 
     async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
-        """Save ``spec`` as a draft in the person's Gmail. Nothing is sent."""
+        """Save ``spec`` as a draft in the person's Gmail. Nothing is sent.
+        A forward attaches the forwarded message's files, as many as fit
+        ``FORWARD_MAX_FILES`` and ``FORWARD_MAX_BYTES``."""
         if spec.thread_id is not None and not valid_id(spec.thread_id):
             raise GmailError("invalid thread id")
+        skipped = 0
+        if spec.forward is not None and not spec.attachments:
+            spec, skipped = await self._with_forwarded_files(spec)
         message: dict[str, Any] = {"raw": build_raw(self.email, spec)}
         if spec.thread_id:
             message["threadId"] = spec.thread_id
@@ -1019,6 +1073,7 @@ class DelegateGmail:
             draft_id=str(data.get("id") or ""),
             message_id=str(created.get("id") or ""),
             thread_id=str(created.get("threadId") or spec.thread_id or ""),
+            skipped_attachments=skipped,
         )
 
 

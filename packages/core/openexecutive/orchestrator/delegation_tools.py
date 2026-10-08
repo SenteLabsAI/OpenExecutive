@@ -59,7 +59,9 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
         "mailbox, e.g. 'from:dana@example.com subject:pilot'); if several threads "
         "match you get `candidates` — ask them which one and call again with its "
         "thread_id. To start a new email instead, pass `to` (people on their roster, "
-        "or addresses they gave you). Afterwards tell them the draft is waiting in "
+        "or addresses they gave you). To forward an email, pass `forward` (its "
+        "thread_id: its latest message is forwarded, with its files) and `to`; "
+        "`intent` is the note above it. Afterwards tell them the draft is waiting in "
         "their Drafts, show the preview, and pass on any open questions — "
         "never say it was sent."
     ),
@@ -95,6 +97,13 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
             "reply_all": {
                 "type": "boolean",
                 "description": "Reply to everyone on the thread, not just the sender.",
+            },
+            "forward": {
+                "type": "string",
+                "description": (
+                    "The thread_id of an email to FORWARD (its latest message, with "
+                    "its files), with `to`. `intent` is the note above it."
+                ),
             },
         },
         "required": ["intent"],
@@ -340,6 +349,77 @@ def _plan(writer: _Writer, thread: Any, tool_input: dict[str, Any], roster: dict
     return {"to": checked, "cc": [], "subject": None, "in_reply_to": None, "references": None, "flags": []}
 
 
+def _forward_header(message: Any) -> str:
+    """The block a forward quotes above the original, as mail apps write it."""
+    from openexecutive.delegation.ghostwriter import one_line
+
+    sender = one_line(message.from_name, 120)
+    sender = f"{sender} <{message.from_addr}>" if sender else message.from_addr
+    return "\n".join([
+        "---------- Forwarded message ---------",
+        f"From: {sender}",
+        f"Date: {one_line(message.date or message.received_at, 60)}",
+        f"Subject: {one_line(message.subject, 200)}",
+        f"To: {one_line(', '.join(message.to), 400)}",
+    ])
+
+
+async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tuple[str, bool]:
+    """Forward the latest message of thread ``forward`` to ``to`` (roster or
+    typed addresses only), with a note in their voice above it, as a draft:
+    ``(result, saved)``. Errors propagate to the handler."""
+    from openexecutive.config import get_settings
+    from openexecutive.delegation.ghostwriter import compose, one_line
+    from openexecutive.delegation.gmail import DraftSpec, ForwardOf
+    from openexecutive.delegation.gmail import valid_id as gmail_id
+    from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
+    from openexecutive.integrations.email_poller import sender_new_text
+
+    thread_id = str(tool_input.get("forward") or "").strip()
+    if not getattr(writer.mailbox, "valid_id", gmail_id)(thread_id):
+        return _error("`forward` must be a thread_id from their mailbox."), False
+    roster = _roster_by_email()
+    to = _new_recipients(tool_input.get("to"), writer.pinned.speaker_text, roster)
+    if isinstance(to, str):
+        return _error(to), False
+    thread = await writer.mailbox.get_thread(thread_id)
+    shown = [m for m in thread.messages if "DRAFT" not in m.labels]
+    if not shown:
+        return _error("That thread has no message to forward."), False
+    original = shown[-1]
+    subject = one_line(original.subject, 200)
+    subject = subject if subject.lower().startswith(("fwd:", "fw:")) else f"Fwd: {subject}"
+    stored = get_voice(writer.person.id)
+    names = (writer.person.full_name or "").split()
+    composed = await compose(
+        writer_name=" ".join(names) or writer.email,
+        voice_block=render_voice_block(stored.profile, first_name=names[0] if names else "them"),
+        thread_text=None,
+        reply_subject=None,
+        intent=f"A short note above an email being forwarded (\"{subject}\"). {intent}",
+        recipients=[_recipient(a, roster) for a in to],
+        signature=stored.profile.signature,
+        exec_name=get_settings().exec_display_name,
+        model=composer_model(),
+    )
+    draft = await writer.mailbox.create_draft(DraftSpec(
+        to=to,
+        subject=subject,
+        body=composed.body,
+        from_name=" ".join(names),
+        forward=ForwardOf(
+            message_id=original.id,
+            header=_forward_header(original),
+            text=sender_new_text(original.text or "") or (original.text or ""),
+        ),
+    ))
+    plan = {"to": to, "cc": [], "flags": []}
+    if getattr(draft, "skipped_attachments", 0):
+        plan["flags"].append("attachments_left_off")
+    composed.subject = subject
+    return _drafted(writer, None, plan, composed, draft), True
+
+
 async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tuple[str, bool]:
     """Write the draft and save it in their mailbox: ``(result, saved)``.
     Mailbox and composer errors propagate to the handler."""
@@ -348,6 +428,8 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     from openexecutive.delegation.gmail import DraftSpec
     from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
 
+    if tool_input.get("forward"):
+        return await _forward(writer, intent, tool_input)
     roster = _roster_by_email()
     thread, early = await _find_thread(writer.mailbox, tool_input)
     if early is not None:

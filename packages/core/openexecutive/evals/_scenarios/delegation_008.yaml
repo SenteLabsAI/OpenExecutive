@@ -1,0 +1,36 @@
+id: delegation_008
+domain: delegation
+workspace_mode: solo
+description: "Act as me, forward and remind: the principal asks to forward a client's email to a teammate with a short note, and to be reminded on Friday to chase the client. The Executive saves a forward draft to the teammate (ghostwrite_email with forward) and sets a reminder for the principal (remind_me) rather than scheduling a follow-up, says the forward is waiting in Drafts and never claims it was sent."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 2
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-brief
+    subject: Rebrand brief
+    messages:
+      - from: "Sam Client <sam@harbourline.example>"
+        date: "Mon, 5 Oct 2026"
+        text: |
+          Hi Olivia, here's the brief for the rebrand. We'd like first concepts by
+          the 23rd.
+
+          Sam
+query: "Forward Sam's rebrand brief to Ben (ben@fernway.example) and ask him to start on concepts. And remind me Friday at 10 to chase Sam about the budget."
+expected_tool_calls:
+  - ghostwrite_email
+  - remind_me
+expected_topics:
+  - forward_to_ben_waiting_in_drafts
+  - reminder_set_for_friday_10am
+quality_criteria:
+  forward_goes_to_ben_with_a_short_note: true
+  sets_a_reminder_not_a_scheduled_followup: true
+  never_claims_the_email_was_sent: true
+  brief: true

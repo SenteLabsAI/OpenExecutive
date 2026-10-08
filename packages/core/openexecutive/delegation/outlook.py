@@ -802,7 +802,9 @@ class DelegateOutlook:
             "singleValueExtendedProperties": [{"id": GHOSTWRITTEN_PROPERTY, "value": "1"}],
         }
         async with self._client() as client:
-            if not spec.thread_id:
+            if spec.forward is not None:
+                data = await self._forward_draft(client, spec, fields)
+            elif not spec.thread_id:
                 data = await self._request(client, "POST", "/messages", json_body=fields)
             else:
                 data = await self._reply_draft(client, spec, fields)
@@ -811,6 +813,19 @@ class DelegateOutlook:
             draft_id=draft_id,
             message_id=draft_version(draft_id, str(data.get("changeKey") or "")),
             thread_id=str(data.get("conversationId") or spec.thread_id or ""),
+        )
+
+    async def _forward_draft(self, client: httpx.AsyncClient, spec: DraftSpec, fields: dict[str, Any]) -> dict[str, Any]:
+        """A forward made with Graph's ``createForward``, which keeps the
+        original, its forward header and its files. The note goes in as the
+        comment; the body is never patched, or the original would be lost."""
+        assert spec.forward is not None
+        if not valid_id(spec.forward.message_id):
+            raise GmailError("invalid message id")
+        message = {k: fields[k] for k in ("toRecipients", "ccRecipients", "singleValueExtendedProperties")}
+        return await self._request(
+            client, "POST", f"/messages/{quote(spec.forward.message_id, safe='')}/createForward",
+            json_body={"comment": spec.body, "message": message},
         )
 
     async def _reply_draft(self, client: httpx.AsyncClient, spec: DraftSpec, fields: dict[str, Any]) -> dict[str, Any]:
