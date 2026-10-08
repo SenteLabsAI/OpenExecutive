@@ -8863,6 +8863,9 @@ delegation:
     (delegation_reminder_set / _sent). In MAIL_TOUCHED_ALLOWED_TOOLS: it
     reaches only the speaker, as fixed text, and nothing runs at fire time.
     due_at is stored in UTC so _due's string comparison is in time order.
+    A due reminder whose person is outside their availability (quiet hours,
+    leave; OUTBOUND_RESPECT_QUIET_HOURS) is left unclaimed (_held) and goes
+    when it ends; the guard would otherwise suppress it after the claim.
     The Slack and Discord DMs it may ride turn link previews off
     (unfurl_links/unfurl_media False; Discord flags SUPPRESS_EMBEDS). A
     forward's subject never goes into the composer's intent.

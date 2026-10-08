@@ -186,6 +186,23 @@ def test_a_reminder_missed_by_days_is_dropped_not_sent_late(
     assert delivered == []
 
 
+def test_a_reminder_due_in_quiet_hours_waits_and_then_goes(
+    roster: SimpleNamespace, delivered: list[tuple[int, str]]
+) -> None:
+    from datetime import date
+
+    people_store.upsert_person(
+        person_id=roster.principal, full_name="Olivia Owner", is_principal=True, email=OWNER,
+        on_leave_until=date(2026, 10, 7),
+    )
+    people_registry.invalidate()
+    reminders.add(roster.principal, "Reply to Dana", NOW - timedelta(minutes=1), now=NOW)
+    assert asyncio.run(reminders.send_due(NOW)) == 0
+    assert delivered == [] and reminders.pending_count(roster.principal) == 1  # unclaimed, not lost
+    assert asyncio.run(reminders.send_due(NOW + timedelta(hours=13))) == 1  # leave over on Oct 8
+    assert [text for _, text in delivered] == ["Reminder you set on Oct 7: Reply to Dana"]
+
+
 def test_an_archived_person_gets_nothing(roster: SimpleNamespace, delivered: list[tuple[int, str]]) -> None:
     reminders.add(roster.principal, "x", NOW - timedelta(minutes=1), now=NOW)
     people_store.archive_person(roster.principal)

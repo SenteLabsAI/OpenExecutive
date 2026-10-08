@@ -27,8 +27,12 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openexecutive.delegation.schema import REMINDERS_TABLE, ensure_schema
+
+if TYPE_CHECKING:
+    from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +128,7 @@ def _due(now: datetime, db_path: Path | None) -> list[Reminder]:
     try:
         rows = conn.execute(
             f"SELECT id, person_id, text, due_at, created_at FROM {REMINDERS_TABLE} "  # noqa: S608
-            "WHERE claimed_at IS NULL AND cancelled_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50",
+            "WHERE claimed_at IS NULL AND cancelled_at IS NULL AND due_at <= ? ORDER BY due_at",
             (now.astimezone(UTC).isoformat(),),
         ).fetchall()
     finally:
@@ -159,6 +163,18 @@ def _mark_sent(reminder_id: int, now: datetime, db_path: Path | None) -> None:
         conn.close()
 
 
+def _held(person: Person, now: datetime) -> bool:
+    """True while ``person`` is outside their availability (quiet hours, on
+    leave) and the outbound guard respects it. The guard would suppress the
+    DM, and a claimed reminder is never retried, so it waits unclaimed."""
+    from openexecutive.config import get_settings
+    from openexecutive.people.channel import is_within_availability
+
+    if not get_settings().outbound_respect_quiet_hours:
+        return False
+    return not is_within_availability(person, now=now)
+
+
 def message(text: str, created_at: str) -> str:
     """The reminder as sent, saying when they set it, so it reads as theirs."""
     from openexecutive.memory.workspace_settings import get_user_timezone
@@ -187,13 +203,16 @@ async def send_due(now: datetime, *, db_path: Path | None = None) -> int:
     sent = 0
     for reminder in due:
         try:
+            person = get_person(reminder.person_id)
+            if person is not None and not person.archived and _held(person, now):
+                # Quiet hours or leave: left unclaimed, so it goes once they end.
+                continue
             if not _claim(reminder.id, now, db_path):
                 continue
             due_at = datetime.fromisoformat(reminder.due_at)
             if now - due_at > STALE_AFTER:
                 logger.info("reminders: dropped reminder %s, %s late", reminder.id, now - due_at)
                 continue
-            person = get_person(reminder.person_id)
             if person is None or person.archived:
                 continue
             rows = private_rows() if person.is_principal else rows_for_person(reminder.person_id)
