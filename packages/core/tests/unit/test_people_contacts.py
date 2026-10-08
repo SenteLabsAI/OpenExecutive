@@ -303,7 +303,7 @@ def test_telegram_gate_ignores_a_contact(
     from openexecutive.integrations import telegram_bot
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:AAH" + "x" * 32)
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "hook-secret")
     # Rebind: a module imported while another test had get_settings patched
     # would otherwise keep that stub.
     monkeypatch.setattr(telegram_bot, "get_settings", config.get_settings)
@@ -312,7 +312,8 @@ def test_telegram_gate_ignores_a_contact(
     app = FastAPI()
     app.include_router(telegram_bot.router)
     update = {"message": {"chat": {"id": chat_id}, "message_id": 1, "text": "hello"}}
-    assert TestClient(app).post("/webhook/telegram", json=update).status_code == 200
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "hook-secret"}
+    assert TestClient(app).post("/webhook/telegram", json=update, headers=headers).status_code == 200
     assert (process.await_count == 1) is admitted
 
 

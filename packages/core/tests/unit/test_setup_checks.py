@@ -581,12 +581,12 @@ async def test_telegram_bad_token_is_never_put_in_a_url() -> None:
     assert http.requests == []
 
 
-async def test_telegram_local_login_needs_the_secret() -> None:
+async def test_telegram_missing_secret_is_an_error() -> None:
     async with Recorder(never_called).client() as c:
         check = await check_telegram(
             make_snap(make_settings(TELEGRAM_BOT_TOKEN=TELEGRAM), local_login=True), c
         )
-    assert check.state == "error" and "Local login" in check.summary
+    assert check.state == "error" and "TELEGRAM_WEBHOOK_SECRET isn't set" in check.summary
 
 
 @pytest.mark.parametrize(
@@ -629,9 +629,9 @@ async def test_telegram_rejected_token_and_missing_secret() -> None:
     assert rejected.state == "error" and "turned down" in rejected.summary
 
     snap = make_snap(make_settings(TELEGRAM_BOT_TOKEN=TELEGRAM))
-    async with telegram(GOOD_HOOK).client() as c:
+    async with Recorder(never_called).client() as c:
         open_hook = await check_telegram(snap, c)
-    assert open_hook.state == "warn" and "fake ones" in open_hook.summary
+    assert open_hook.state == "error" and "TELEGRAM_WEBHOOK_SECRET isn't set" in open_hook.summary
 
 
 # ---------------------------------------------------------------------------

@@ -70,8 +70,8 @@ def test_a_secret_telegram_cannot_send_refuses_even_a_matching_header(
     assert _post(secret, header) == 401
 
 
-def test_no_secret_still_accepts_updates(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Unchanged: without a secret the webhook can't tell Telegram from anyone
-    # else, which Setup status reports amber.
+def test_no_secret_refuses_updates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fail-closed: a token without a valid secret would accept anyone's POST
+    # (this path is exempt from the shared-secret gate when self-verifying).
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "")
-    assert _post("", None) == 200
+    assert _post("", None) == 503

@@ -289,8 +289,7 @@ async def _process_and_reply(
         from openexecutive.integrations.channel_context import (
             build_channel_context_block,
         )
-        from openexecutive.knowledge.retriever import retrieve
-        from openexecutive.memory.episodic import format_for_prompt
+        from openexecutive.integrations.turn_context import fetch_turn_context
         from openexecutive.onboarding.profile_builder import load_or_create_profile
         from openexecutive.orchestrator.executive import Executive
         from openexecutive.orchestrator.mcp_gateway import get_active_gateway
@@ -307,8 +306,9 @@ async def _process_and_reply(
             # already tells the model about this surface.
             origin_channel="google_chat",
         )
-        retrieved_context = retrieve(query=message_text)
-        episodic_context = format_for_prompt()
+        retrieved_context, episodic_context = await fetch_turn_context(
+            message_text, session_id=session_id
+        )
 
         chat_message = message_text
         image_blocks: list[dict] = []

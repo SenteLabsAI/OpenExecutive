@@ -832,9 +832,9 @@ _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 def _webhook_verifies_its_caller(path: str) -> bool:
     """Whether this webhook authenticates its caller by itself. Google Chat
-    always checks the signed JWT; Telegram only when TELEGRAM_WEBHOOK_SECRET is
-    set to a value Telegram can send — without it, it accepts anyone's
-    update."""
+    always checks the signed JWT; Telegram does when TELEGRAM_WEBHOOK_SECRET is
+    a value Telegram can send (otherwise the webhook refuses every update with
+    503 and does not count as self-verifying)."""
     if path == "/webhook/google-chat":
         return True
     if path == "/webhook/telegram":

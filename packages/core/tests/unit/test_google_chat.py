@@ -208,7 +208,7 @@ def test_process_calls_alert_pipeline_with_correct_fields(monkeypatch: pytest.Mo
         lambda event: recorded.append(event),
     )
     monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_: "")
-    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda: "")
+    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda **_: "")
 
     profile = SimpleNamespace(is_empty=lambda: True)
     monkeypatch.setattr(
@@ -253,7 +253,7 @@ def test_process_sends_error_reply_on_executive_failure(monkeypatch: pytest.Monk
     """If Executive.chat() raises, an error message is sent via send_reply."""
     monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _: None)
     monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_: "")
-    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda: "")
+    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda **_: "")
 
     profile = SimpleNamespace(is_empty=lambda: True)
     monkeypatch.setattr(
@@ -426,7 +426,7 @@ def _run_with_attachments(
     monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _: None)
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
     monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_: "")
-    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda: "")
+    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda **_: "")
     monkeypatch.setattr(
         "openexecutive.onboarding.profile_builder.load_or_create_profile",
         lambda: SimpleNamespace(is_empty=lambda: True),

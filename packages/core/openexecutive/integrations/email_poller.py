@@ -757,8 +757,7 @@ async def _run_executive(
     reply_block: str = "",
     provider: MailProvider | None = None,
 ) -> None:
-    from openexecutive.knowledge.retriever import retrieve
-    from openexecutive.memory.episodic import format_for_prompt
+    from openexecutive.integrations.turn_context import fetch_turn_context
     from openexecutive.onboarding.profile_builder import load_or_create_profile
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.session import Session
@@ -957,11 +956,14 @@ async def _run_executive(
     # deeper Honcho prefetch) is a per-request opt-in on /chat only; it
     # was previously forced on here for every inbound email, including
     # off-roster senders the gateway will not let us reply to anyway.
+    retrieved_context, episodic_context = await fetch_turn_context(
+        raw_email[:500], session_id=session_id or ""
+    )
     await executive.chat(
         user_message=base_message,
         session=session,
-        retrieved_context=retrieve(query=raw_email[:500]),
-        episodic_context=format_for_prompt(),
+        retrieved_context=retrieved_context,
+        episodic_context=episodic_context,
         person_id=person_id,
         co_present_person_ids=co_present_person_ids or None,
         # Only the sender's own words reach peer memory — see _email_memory_text.

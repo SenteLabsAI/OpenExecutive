@@ -74,6 +74,10 @@ Thumbs.db
 # Eval results (generated, not committed)
 evals/results/
 
+# Claude Code / Cursor local settings (may grow tokens; never commit)
+.claude/settings.local.json
+.claude/*.local.json
+
 # Anvil
 ~/.claude/anvil/
 *.db

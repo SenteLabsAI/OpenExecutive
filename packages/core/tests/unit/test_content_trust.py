@@ -212,7 +212,7 @@ def _run(raw: str, from_addr: str, *, person: Any = None, authenticated: bool = 
             return_value=SimpleNamespace(is_empty=lambda: True),
         ),
         patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
-        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda **_: ""),
         patch(
             "openexecutive.people.identity.resolve_email_sender",
             new=lambda addr, include_contacts=False: person,

@@ -114,6 +114,15 @@ class Settings(BaseSettings):
     # Thorough preset) to put them on the largest model.
     deep_reasoning_model: str = Field("claude-sonnet-5-5", alias="DEEP_REASONING_MODEL")
     routing_model: str = Field("claude-haiku-5-5", alias="ROUTING_MODEL")
+    # Chat-turn consult_specialist calls (actor="specialist") keep deep
+    # reasoning OFF by default even when the agent class sets
+    # use_deep_reasoning=True (cso/cfo/gc/board_comms). Workflows and MCP
+    # still honour the class default. Set true (or pin via the Council) to
+    # restore adaptive thinking on chat consults — the dominant cost lever
+    # on specialist-heavy turns.
+    specialist_chat_deep_reasoning: bool = Field(
+        False, alias="SPECIALIST_CHAT_DEEP_REASONING"
+    )
     # Model for the executive_research specialist fan-out (research-mode turn
     # only — the chat path still uses each agent's deep_reasoning_model). The
     # research turn is retrieve-from-web-search + summarize, which does not

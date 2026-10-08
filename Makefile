@@ -49,6 +49,11 @@ stop:
 test:
 	cd packages/core && uv run pytest tests/ -v --tb=short
 
+# Unit suite only (no integration modules). Prefer `make check` before a push.
+test-unit:
+	cd packages/core && env -u BACKEND_SHARED_SECRET -u OE_PUBLIC_DEPLOYMENT \
+		uv run pytest tests/unit/ -v --tb=short
+
 # The fast inner loop: only the test files that cover what this branch changed
 # (scripts/changed_tests.py), with the same env handling as `check`. Run
 # `make check` once before the first push; CI covers the rest.

@@ -171,28 +171,36 @@ def complete_run(
     run_id: str,
     artifact: str,
     db_path: Path | None = None,
-) -> None:
+) -> bool:
+    """Mark a run done. Only flips ``running`` rows — never overwrites
+    ``awaiting_human`` / terminal status. Returns whether a row changed."""
     now = datetime.now(UTC).isoformat()
     with _get_conn(_resolve(db_path)) as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE workflow_runs SET status = 'done', artifact = ?, updated_at = ? "
-            "WHERE run_id = ?",
+            "WHERE run_id = ? AND status = 'running'",
             (artifact, now, run_id),
         )
+        return cur.rowcount > 0
 
 
 def fail_run(
     run_id: str,
     error: str,
     db_path: Path | None = None,
-) -> None:
+) -> bool:
+    """Mark a run errored. Flips ``running`` or ``timed_out`` rows — a late
+    fail after a successful checkpoint must not clobber ``awaiting_human`` /
+    ``done``, but the resumer's ``on_timeout=fail`` path marks ``timed_out``
+    first then calls this. Returns whether a row changed."""
     now = datetime.now(UTC).isoformat()
     with _get_conn(_resolve(db_path)) as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE workflow_runs SET status = 'error', error = ?, updated_at = ? "
-            "WHERE run_id = ?",
+            "WHERE run_id = ? AND status IN ('running', 'timed_out')",
             (error, now, run_id),
         )
+        return cur.rowcount > 0
 
 
 def get_run(run_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
@@ -566,12 +574,11 @@ def finish_resumed_run(
 ) -> bool:
     """Write a resumed run's terminal row, but only if the claim still holds.
 
-    The fenced counterpart to `complete_run` / `fail_run`, which have no status
-    guard at all. Without the fence a worker the stale sweep replaced could
-    land its result on top of the replacement's, or flip an already-`done` run
-    back to `error`. Also clears the resume payload, so the row cannot be
-    re-claimed. Returns False when the claim was superseded — the caller
-    should do nothing further.
+    The claim-fenced counterpart to `complete_run` / `fail_run` (those only
+    require ``status = 'running'``). Without the claim fence a worker the
+    stale sweep replaced could land its result on top of the replacement's.
+    Also clears the resume payload, so the row cannot be re-claimed. Returns
+    False when the claim was superseded — the caller should do nothing further.
     """
     if not _resolve(db_path).exists():
         return False

@@ -38,7 +38,7 @@ def _update(chat_type: str = "private", chat_id: int = 777) -> dict[str, Any]:
     }
 
 
-def _post(update: dict[str, Any], secret: str | None) -> AsyncMock:
+def _post(update: dict[str, Any], secret: str | None, *, expect_status: int = 200) -> AsyncMock:
     hold = AsyncMock()
     app = FastAPI()
     app.include_router(telegram_bot.router)
@@ -48,7 +48,9 @@ def _post(update: dict[str, Any], secret: str | None) -> AsyncMock:
         patch.object(telegram_bot, "_hold_unknown_sender", new=hold),
         patch.object(telegram_bot, "_process_and_reply", new=AsyncMock()),
     ):
-        assert TestClient(app).post("/webhook/telegram", json=update, headers=headers).status_code == 200
+        assert TestClient(app).post(
+            "/webhook/telegram", json=update, headers=headers
+        ).status_code == expect_status
     return hold
 
 
@@ -68,7 +70,7 @@ def test_a_group_stays_silent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_an_unverified_webhook_stays_silent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "")
-    _post(_update(), None).assert_not_awaited()
+    _post(_update(), None, expect_status=503).assert_not_awaited()
 
 
 def test_holding_acknowledges_a_stranger_but_not_a_contact() -> None:

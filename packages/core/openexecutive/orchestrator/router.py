@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from openexecutive.agents.base import BaseAgent
+from openexecutive.agents.base import CHAT_SPECIALIST_ACTOR, BaseAgent
 
 if TYPE_CHECKING:
     from openexecutive.memory.workspace_settings import PrincipalRole
@@ -491,7 +491,7 @@ async def route_parallel(
                 episodic_context=episodic_context,
                 failure_cases=failures_per_call[idx],
                 department_memory=dept_memory_per_call[idx],
-                actor="specialist",
+                actor=CHAT_SPECIALIST_ACTOR,
                 company_stage=company_stage,
                 principal_role=principal_role,
             )

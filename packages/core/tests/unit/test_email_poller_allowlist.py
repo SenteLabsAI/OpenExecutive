@@ -408,7 +408,7 @@ def _capture_user_message_from_run_executive_held(from_addr: str, *, acknowledge
         patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
               return_value=SimpleNamespace(is_empty=lambda: True)),
         patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
-        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda **_: ""),
         patch.object(poller, "get_settings", return_value=_settings()),
     ):
         asyncio.run(poller._run_executive(

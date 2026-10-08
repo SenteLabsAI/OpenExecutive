@@ -220,7 +220,7 @@ def _patch_settings_and_anthropic(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
 def test_analyze_uses_default_when_no_override(tmp_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
-    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low", specialist_chat_deep_reasoning=False))
     create_mock = _patch_settings_and_anthropic(monkeypatch)
     import asyncio
 
@@ -232,7 +232,7 @@ def test_analyze_uses_default_when_no_override(tmp_db: Path, monkeypatch: pytest
 
 def test_analyze_honors_db_override(tmp_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
-    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low", specialist_chat_deep_reasoning=False))
     create_mock = _patch_settings_and_anthropic(monkeypatch)
     ov_mod.set_override(
         "dummy_override_test",
@@ -252,7 +252,7 @@ def test_analyze_honors_db_override(tmp_db: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_analyze_explicit_override_beats_db(tmp_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
-    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low", specialist_chat_deep_reasoning=False))
     create_mock = _patch_settings_and_anthropic(monkeypatch)
     ov_mod.set_override(
         "dummy_override_test",
@@ -339,7 +339,7 @@ def test_analyze_appends_instructions_to_builtin_prompt(
     tmp_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
-    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low", specialist_chat_deep_reasoning=False))
     create_mock = _patch_settings_and_anthropic(monkeypatch)
     ov_mod.set_override(
         "dummy_override_test",
@@ -361,7 +361,7 @@ def test_analyze_appends_instructions_to_replaced_prompt(
     tmp_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ov_mod, "DB_PATH", tmp_db)
-    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low"))
+    monkeypatch.setattr("openexecutive.agents.base.get_settings", lambda: SimpleNamespace(anthropic_api_key="x", specialist_effort="low", specialist_chat_deep_reasoning=False))
     create_mock = _patch_settings_and_anthropic(monkeypatch)
     ov_mod.set_override(
         "dummy_override_test",
