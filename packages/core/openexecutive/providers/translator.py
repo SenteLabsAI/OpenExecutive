@@ -524,12 +524,16 @@ def _translate_reasoning(anthropic_kwargs: dict[str, Any]) -> dict[str, Any] | N
       the level comes from ``output_config.effort``, defaulting to "low".
     * ``{"type": "enabled", "budget_tokens": N}`` (pre-4.6 models) →
       ``{"max_tokens": N}``.
-    * ``{"type": "disabled"}``, absent, or malformed → ``None`` (no field).
+    * ``{"type": "disabled"}`` → ``{"enabled": False}``, so a model that
+      thinks by default (Haiku 5.5) is told not to, as on the Anthropic path.
+    * Absent or malformed → ``None`` (no field).
     """
     thinking = anthropic_kwargs.get("thinking")
     if not isinstance(thinking, dict):
         return None
     kind = thinking.get("type")
+    if kind == "disabled":
+        return {"enabled": False}
     if kind == "enabled":
         budget = thinking.get("budget_tokens")
         if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:

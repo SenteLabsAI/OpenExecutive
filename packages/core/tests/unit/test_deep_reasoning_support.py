@@ -114,16 +114,23 @@ def test_legacy_budget_tokens_becomes_reasoning_max_tokens() -> None:
 
 @pytest.mark.parametrize(
     "thinking",
-    [None, {"type": "disabled"}, "adaptive", {}],
-    ids=["absent", "disabled", "not-a-dict", "no-type"],
+    [None, "adaptive", {}],
+    ids=["absent", "not-a-dict", "no-type"],
 )
-def test_no_reasoning_field_when_thinking_is_off_or_malformed(thinking: Any) -> None:
+def test_no_reasoning_field_when_thinking_is_absent_or_malformed(thinking: Any) -> None:
     kwargs = _deep_kwargs("x")
     if thinking is None:
         del kwargs["thinking"]
     else:
         kwargs["thinking"] = thinking
     assert "reasoning" not in to_openai_request("x", kwargs)
+
+
+def test_disabled_thinking_turns_reasoning_off() -> None:
+    # A model that thinks by default (Haiku 5.5) must be told not to.
+    kwargs = _deep_kwargs("x", "medium")
+    kwargs["thinking"] = {"type": "disabled"}
+    assert to_openai_request("x", kwargs)["reasoning"] == {"enabled": False}
 
 
 @pytest.mark.parametrize("budget", [0, -1, None, True, "4096"])

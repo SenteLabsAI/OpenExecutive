@@ -154,3 +154,19 @@ def test_reasoning_effort_logged_once_per_slug(
     _run_create(provider)
     assert fake_logger.info.call_count == 1
     assert fake_logger.info.call_args.args[1:] == ("low", "llama3.3")
+
+
+def test_haiku_5_5_slug_gets_thinking_off_and_no_temperature() -> None:
+    """Through a gateway, Haiku 5.5 is told not to think unless asked and
+    never sent a temperature it would reject."""
+    provider = OpenAICompatibleProvider(
+        base_url="https://gateway.example/v1",
+        api_key="k",
+        slug_lookup={"claude-haiku-5-5": "anthropic/claude-haiku-5.5"},
+        spec_lookup={"anthropic/claude-haiku-5.5": FeatureSpec()},
+    )
+    captured = _run_create(provider, model="claude-haiku-5-5", temperature=0)
+    body = captured["json"]
+    assert body["model"] == "anthropic/claude-haiku-5.5"
+    assert body["reasoning"] == {"enabled": False}
+    assert "temperature" not in body

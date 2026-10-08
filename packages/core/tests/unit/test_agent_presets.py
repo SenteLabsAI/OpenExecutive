@@ -153,7 +153,7 @@ def test_apply_preset_writes_one_history_row_per_agent(client: TestClient) -> No
     assert history[0]["instructions"] == "Prefer tables."
     assert history[0]["model"] is None
     detail = client.get("/agents/cfo").json()
-    assert detail["model"] == "claude-haiku-4-5"
+    assert detail["model"] == "claude-haiku-5-5"
     assert detail["instructions"] == "Prefer tables."  # untouched
 
     # Balanced keeps the row because it still holds instructions.
