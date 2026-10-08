@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -342,8 +343,18 @@ async def _run_remote(
     for field, limit in (("result", _MAX_INPUTS_CHARS), ("error", 2000), ("printed", 8000)):
         if (text := _text(body.get(field), limit)) is not None:
             out[field] = text
-    if isinstance(body.get("files"), dict):
-        out["files"] = body["files"]
+    sent = body.get("files")
+    if isinstance(sent, dict) and sent:
+        # The runner is another server: check every file is text that decodes
+        # as base64 before the handler decodes it for real.
+        try:
+            ok = all(isinstance(n, str) and isinstance(b, str) and base64.b64decode(b, validate=True) is not None
+                     for n, b in sent.items())
+        except (binascii.Error, ValueError):
+            ok = False
+        if not ok:
+            return {"error": "the job runner sent back a file it couldn't read", "_usage": usage}
+        out["files"] = sent
     if isinstance(body.get("skipped"), list):
         out["skipped"] = [n for n in body["skipped"] if isinstance(n, str)][:_MAX_OUTPUT_FILES]
     return out

@@ -611,7 +611,8 @@ class Settings(BaseSettings):
     # Run Python jobs on a separate runner instead of the local sandbox: each
     # job is POSTed there (workflows/python_job.py, _run_remote) with this key
     # as a bearer token, and the local sandbox isn't needed. https only, or
-    # plain http to a loopback or private-network host.
+    # plain http to localhost or a .internal / .flycast name. The key is
+    # required with the URL.
     python_job_runner_url: str | None = Field(None, alias="PYTHON_JOB_RUNNER_URL")
     python_job_runner_key: str | None = Field(None, alias="PYTHON_JOB_RUNNER_KEY")
 
@@ -630,6 +631,13 @@ class Settings(BaseSettings):
                 "PYTHON_JOB_RUNNER_URL must be an https URL (plain http only to localhost, .internal or .flycast)"
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_python_job_runner_key(self) -> "Settings":
+        # Without a key every job (code and files) would go out unauthenticated.
+        if self.python_job_runner_url and not (self.python_job_runner_key or "").strip():
+            raise ValueError("PYTHON_JOB_RUNNER_URL requires PYTHON_JOB_RUNNER_KEY")
+        return self
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.

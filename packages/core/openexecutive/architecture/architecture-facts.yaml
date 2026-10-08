@@ -6130,7 +6130,10 @@ workflows:
     skipped and usage {peak_mb, cpu_ms} are kept; HTTP errors, timeouts and
     unreadable replies become job errors. available() is true with a runner
     and no local sandbox. URL must be https, or http to localhost/.internal/
-    .flycast. The runner is trusted to isolate jobs.
+    .flycast, and needs the key (settings refuse a URL without one). Result
+    files must be str -> valid base64 (b64decode validate=True) or the job
+    errors, so a bad runner reply can't raise in the handler. The runner is
+    trusted to isolate jobs.
     Kept jobs, attachments, metering: run_python_job takes save_as +
     description (kept as saved_tools kind 'python', tools [], code as the
     script; only when the job worked) and tool + inputs to run one again

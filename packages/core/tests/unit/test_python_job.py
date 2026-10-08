@@ -426,6 +426,7 @@ def _runner(monkeypatch: pytest.MonkeyPatch, handler: Any) -> list[Any]:
 def test_a_runner_makes_jobs_available_without_the_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYTHON_SANDBOX_DIR", str(tmp_path / "nothing"))
     monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", "https://runner.example.com/run")
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_KEY", "k-123")
     assert python_job.available() is True
     monkeypatch.setenv("PYTHON_JOBS_ENABLED", "false")
     assert python_job.available() is False
@@ -457,6 +458,8 @@ def test_the_job_goes_to_the_runner_and_its_result_comes_back(monkeypatch: pytes
     ("huge", "too large"),
     ("timeout", "ran past its 30 s limit"),
     ("down", "could not be reached"),
+    ("bad_file", "a file it couldn't read"),
+    ("bad_name", "a file it couldn't read"),
 ])
 def test_a_runner_failure_is_a_job_error(monkeypatch: pytest.MonkeyPatch, response: str, message: str) -> None:
     import httpx
@@ -470,6 +473,10 @@ def test_a_runner_failure_is_a_job_error(monkeypatch: pytest.MonkeyPatch, respon
             return httpx.Response(200, content=b"x" * (python_job._MAX_STDOUT_BYTES + 1))
         if response == "timeout":
             raise httpx.ReadTimeout("slow", request=request)
+        if response == "bad_file":
+            return httpx.Response(200, json={"files": {"out.csv": "not-base64!"}})
+        if response == "bad_name":
+            return httpx.Response(200, json={"files": {"out.csv": 5}})
         raise httpx.ConnectError("refused", request=request)
 
     _runner(monkeypatch, answer)
@@ -493,4 +500,14 @@ def test_plain_http_is_allowed_on_a_private_network(monkeypatch: pytest.MonkeyPa
     from openexecutive.config import Settings
 
     monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", "http://runner.flycast/run")
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_KEY", "k-123")
     assert Settings().python_job_runner_url == "http://runner.flycast/run"  # type: ignore[call-arg]
+
+
+def test_the_runner_url_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.config import Settings
+
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", "https://runner.example.com/run")
+    monkeypatch.delenv("PYTHON_JOB_RUNNER_KEY", raising=False)
+    with pytest.raises(ValueError, match="PYTHON_JOB_RUNNER_KEY"):
+        Settings()  # type: ignore[call-arg]
