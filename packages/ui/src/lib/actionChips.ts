@@ -57,11 +57,14 @@ function isConnectedTool(tool: string): boolean {
 }
 
 /**
- * Whether tapping the chip opens the list of runs. A repeat always does. A
- * single built-in action already says what it did in its own words (and may
- * link somewhere), so only a single connected-tool run with a target opens.
+ * Whether tapping the chip opens the list of runs. A repeat does when some
+ * run has a target or link to show. A single built-in action already says
+ * what it did in its own words (and may link somewhere), so only a single
+ * connected-tool run with a target opens.
  */
 export function opensDetails(group: ChipGroup): boolean {
+  // A list with nothing in it would only repeat the count.
+  if (!group.runs.some((run) => run.target || run.link)) return false;
   if (group.runs.length > 1) return true;
   const run = group.runs[0];
   return !!run && !run.link && !!run.target && isConnectedTool(group.tool);

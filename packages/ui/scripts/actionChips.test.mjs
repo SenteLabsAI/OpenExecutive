@@ -58,3 +58,9 @@ test("a chip opens its list for a repeat or a connected tool with a target", () 
   const [linked] = groupActions([{ ...drive("x"), link: "/artifacts" }]);
   assert.equal(opensDetails(linked), false);
 });
+
+test("a repeat with nothing to list stays a plain chip with its count", () => {
+  const [bare] = groupActions([drive(null), drive(null), drive(null)]);
+  assert.equal(bare.runs.length, 3);
+  assert.equal(opensDetails(bare), false);
+});
