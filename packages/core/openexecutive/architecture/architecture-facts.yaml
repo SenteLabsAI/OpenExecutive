@@ -3820,8 +3820,9 @@ people:
     `/conclusions` show each caller only their own entry, the principal
     included), unless they turned on "Share my work style with the team"
     (Settings → About you, `history_work_style_sharing`, a team member in a
-    team workspace, off by default): then anyone's turn may ask how they
-    work, the question wrapped in `people_tools.WORK_STYLE_FRAME` (role,
+    team workspace, off by default): then a verified principal or teammate
+    (never an inbound email, unverified chat or unattended run) may ask how
+    they work, the question wrapped in `people_tools.WORK_STYLE_FRAME` (role,
     focus, how they like updates, working style; no health, family,
     personal life or quotes; prompt guidance, not a filter) and
     `target_person_id` refused. Not shared answers `shared: false` with the

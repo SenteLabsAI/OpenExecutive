@@ -1748,6 +1748,18 @@ def test_ask_about_someone_who_shares_their_work_style(
     assert off["shared"] is False and "Olivia hasn't chosen to share" in off["note"]
 
 
+def test_not_shared_names_only_team_members(roster: SimpleNamespace) -> None:
+    """A contact reads exactly like an unknown id, so asking can't confirm one
+    exists or learn their name."""
+    from openexecutive.orchestrator import people_tools
+
+    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
+    contact = _tool(people_tools.handle_ask_about_person, {"person_id": roster.contact, "question": "?"}, teammate)
+    unknown = _tool(people_tools.handle_ask_about_person, {"person_id": 99999, "question": "?"}, teammate)
+    assert contact["note"] == unknown["note"]
+    assert contact["note"].startswith("This person")
+
+
 def test_a_contact_cannot_share_their_work_style(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

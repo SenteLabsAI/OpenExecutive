@@ -636,10 +636,11 @@ def test_ask_about_someone_else_who_has_not_shared_answers_not_shared() -> None:
 
 def test_ask_about_someone_else_on_an_unverified_turn_is_not_shared() -> None:
     """No verified asker (an inbound email, an unattended run) reads nobody's
-    unshared memory."""
-    result = _ask_call({"person_id": 7, "question": "q"}, asker=None)
-    assert result["shared"] is False
-    assert result["_captured"] == {}
+    memory, shared or not."""
+    for shared in (False, True):
+        result = _ask_call({"person_id": 7, "question": "q"}, asker=None, shared=shared)
+        assert result["shared"] is False
+        assert result["_captured"] == {}
 
 
 def test_ask_about_someone_who_shared_is_framed_to_how_they_work() -> None:

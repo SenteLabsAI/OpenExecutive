@@ -1104,10 +1104,9 @@ def _verified_asker_id() -> int | None:
     session = current_session.get()
     try:
         if is_principal_on_verified_surface(session):
-            from openexecutive.people.store import find_principal_person
-
-            principal = find_principal_person()
-            return principal.id if principal is not None else None
+            # The verified caller themselves, already checked to be a principal.
+            caller = getattr(session, "caller_person_id", None)
+            return int(caller) if caller is not None else None
         teammate = teammate_on_verified_surface(session)
         return teammate.id if teammate is not None else None
     except Exception:
@@ -1135,6 +1134,10 @@ def _person_name(person_id: int) -> str:
         person = get_person(person_id)
     except Exception:
         person = None
+    # Only a team member is named: a contact or an archived row reads
+    # exactly like an unknown id, so this can't confirm one exists.
+    if person is None or getattr(person, "kind", None) != "team" or getattr(person, "archived", False):
+        return "This person"
     name = str(getattr(person, "full_name", "") or "").strip()
     return name.split()[0] if name else "This person"
 
@@ -1169,11 +1172,14 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
     # Whose memory this is decides who may read it. A person's own, on a
     # surface that verified it is them: as it is. Anyone else's only when that
     # person turned on "Share my work style with the team" (memory.history),
-    # framed to how they work, and never their view of someone else. Every
-    # other caller (another teammate, an inbound email, an unattended run)
-    # gets the same "not shared" answer, whether or not anything is known.
-    if person_id != _verified_asker_id():
-        if not _shares_work_style(person_id):
+    # framed to how they work, never their view of someone else, and only to
+    # a verified asker. Everyone else gets the same "not shared" answer,
+    # whether or not anything is known.
+    asker_id = _verified_asker_id()
+    if person_id != asker_id:
+        # Shared with the team: a verified teammate or the principal asking,
+        # never an inbound email, an unverified chat or an unattended run.
+        if asker_id is None or not _shares_work_style(person_id):
             return json.dumps(
                 {"person_id": person_id, "target_person_id": target_person_id,
                  "answer": "", "found": False, "shared": False,
