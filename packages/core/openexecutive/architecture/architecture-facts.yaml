@@ -9187,7 +9187,10 @@ delegation:
     stay so "check my mail against the statements on the Drive" works in one
     conversation: in the reading turn nothing they return can reach anyone,
     and Drive reads are not remembered on such a turn
-    (drive_reads.may_remember). Every tool the Executive can be offered is in
+    (drive_reads.may_remember). Accepted residual: opening a file someone
+    else owns registers a view in their file activity, so mail planted to
+    steer which shared file opens could signal a few bits per read; no file
+    content leaves. Every tool the Executive can be offered is in
     exactly one of MAIL_TOUCHED_ALLOWED_TOOLS / MAIL_TOUCHED_WITHHELD_TOOLS
     (a test fails on an unclassified one) and an unclassified name is
     withheld. The dispatch guard in executive._stream_agent_loop refuses at

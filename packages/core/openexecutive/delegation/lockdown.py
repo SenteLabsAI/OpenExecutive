@@ -127,6 +127,8 @@ MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # Sheets reads stay so "check my mail against the file on the Drive" works in
 # one conversation: what they return can reach no one while the lockdown holds,
 # and Drive reads are not remembered on such a turn (drive_reads.may_remember).
+# Accepted residual: opening a file someone else owns shows in their file
+# activity, so mail that steers which file opens could signal a few bits.
 MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "google_workspace__get_doc_content",
     "google_workspace__get_drive_file_content",
